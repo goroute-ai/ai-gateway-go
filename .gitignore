@@ -1,0 +1,40 @@
+# Binaries for programs and plugins
+/gateway
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Temporary and external scratch directories
+*_api.yaml
+gemini_api_*.yaml
+*.log
+*.tmp
+.tmp/
+.DS_Store
+# Frontend dependencies & build artifacts
+node_modules/
+web/node_modules/
+web/dist/
+
+# Build distribution output (exempt internal/ui/dist embedded by Go)
+/dist/
+!internal/ui/dist/
+!internal/ui/dist/**
+
+# Local coding-agent rules & workspace memory (kept local only, not tracked on GitHub)
+CLAUDE.local.md
+.claude/
+.agents/

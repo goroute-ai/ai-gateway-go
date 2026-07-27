@@ -1,0 +1,172 @@
+version: "2"
+
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 50
+
+linters:
+  enable:
+    # Correctness
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - errorlint
+    - nilerr
+    - copyloopvar
+    - durationcheck
+    - reassign
+    # Style & documentation
+    - gocritic
+    - revive
+    - godot
+    - misspell
+    - dupword
+    - predeclared
+    - errname
+    - asciicheck
+    # Complexity & duplication
+    - gocyclo
+    - nestif
+    - funlen
+    - dupl
+    # Performance
+    - perfsprint
+    - unconvert
+    - ineffassign
+    - goconst
+    # Security & resources
+    - gosec
+    - bidichk
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+    - rowserrcheck
+    # Testing & modernization
+    - thelper
+    - usetesting
+    - modernize
+    - intrange
+    - usestdlibvars
+    - nolintlint
+
+  disable:
+    - lll
+    - wsl_v5
+    - prealloc
+    - wrapcheck
+    - err113
+    - mnd
+    - iface
+    - nakedret
+    - noinlineerr
+    - gocognit
+    - cyclop
+    - depguard
+    - goheader
+    - importas
+    - funcorder
+    - godoclint
+    - varnamelen
+    - exhaustruct
+    - gochecknoglobals
+    - gochecknoinits
+    - unparam
+    - makezero
+    - testpackage
+    - embeddedstructfieldcheck
+    - iotamixing
+    - unqueryvet
+    - recvcheck
+    - mirror
+    - protogetter
+    - spancheck
+    - zerologlint
+
+  exclusions:
+    generated: lax
+    paths:
+      - vendor$
+      - third_party$
+      - testutils$
+      - examples$
+      - internal/openapi/.*\.gen\.go$
+      - internal/a2a/pb/.*\.pb\.go$
+    rules:
+      - path: _test\.go
+        linters:
+          - funlen
+          - dupl
+          - gosec
+          - goconst
+          - noctx
+          - errcheck
+          - gocritic
+      - path: tests/
+        linters:
+          - funlen
+          - dupl
+          - gosec
+          - goconst
+          - noctx
+          - errcheck
+      # Keep revive doc-comment checks strict on exported APIs while allowing test helpers.
+      - path: _test\.go
+        linters:
+          - revive
+      - path: internal/storage/(memory|postgres).*\.go
+        linters:
+          - revive
+        text: "exported method .* should have comment"
+
+  settings:
+    dupl:
+      threshold: 120
+    errcheck:
+      check-type-assertions: false
+    funlen:
+      lines: 140
+      statements: 90
+    goconst:
+      min-len: 3
+      min-occurrences: 5
+    gocyclo:
+      min-complexity: 18
+    nestif:
+      min-complexity: 6
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - internal/openapi/.*\.gen\.go$
+      - internal/a2a/pb/.*\.pb\.go$
