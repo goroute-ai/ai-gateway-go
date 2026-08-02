@@ -1,0 +1,429 @@
+package domain
+
+import (
+	"strings"
+	"time"
+)
+
+// ModelLifecycleStatus tracks the lifecycle stage of a model in the Global Catalogue.
+type ModelLifecycleStatus string
+
+// Global Model Catalogue lifecycle states.
+const (
+	ModelStatusDiscovered ModelLifecycleStatus = "discovered"
+	ModelStatusActive     ModelLifecycleStatus = "active"
+	ModelStatusPreview    ModelLifecycleStatus = "preview"
+	ModelStatusDeprecated ModelLifecycleStatus = "deprecated"
+	ModelStatusRetired    ModelLifecycleStatus = "retired"
+)
+
+// RoutingStrategy defines how Stage 2 Load Balancer selects among healthy deployments.
+type RoutingStrategy string
+
+// Supported Stage 2 load-balancing strategies.
+const (
+	StrategyWeightedShuffle    RoutingStrategy = "weighted-shuffle"
+	StrategyLeastBusy          RoutingStrategy = "least-busy"
+	StrategyLatencyBased       RoutingStrategy = "latency-based"
+	StrategyFastestResponse    RoutingStrategy = "fastest-response"
+	StrategyUsageBasedHeadroom RoutingStrategy = "usage-based-headroom"
+	StrategyLowestCost         RoutingStrategy = "lowest-cost"
+	StrategyRoundRobin         RoutingStrategy = "round-robin"
+)
+
+// NormalizeRoutingStrategy canonicalizes casing, underscores, and legacy routing strategy aliases.
+func NormalizeRoutingStrategy(s RoutingStrategy) RoutingStrategy {
+	norm := strings.ToLower(strings.TrimSpace(string(s)))
+	norm = strings.ReplaceAll(norm, "_", "-")
+	switch norm {
+	case "simple-shuffle", "priority-tiered":
+		return StrategyWeightedShuffle
+	default:
+		return RoutingStrategy(norm)
+	}
+}
+
+// IsValidRoutingStrategy reports whether s is a supported load-balancing strategy.
+func IsValidRoutingStrategy(s RoutingStrategy) bool {
+	switch s {
+	case StrategyWeightedShuffle,
+		StrategyLeastBusy,
+		StrategyLatencyBased,
+		StrategyFastestResponse,
+		StrategyUsageBasedHeadroom,
+		StrategyLowestCost,
+		StrategyRoundRobin:
+		return true
+	default:
+		return false
+	}
+}
+
+// DeploymentStatus represents the operational health of a model deployment.
+type DeploymentStatus string
+
+// Operational deployment health states.
+const (
+	DeploymentStatusActive   DeploymentStatus = "active"
+	DeploymentStatusCooldown DeploymentStatus = "cooldown"
+	DeploymentStatusDisabled DeploymentStatus = "disabled"
+)
+
+// OperationType identifies a specific data-plane operation supported by a model or adapter.
+type OperationType string
+
+// Supported gateway inference and media operations.
+const (
+	OperationChat            OperationType = "chat"
+	OperationCompletion      OperationType = "completion"
+	OperationResponses       OperationType = "responses"
+	OperationEmbedding       OperationType = "embedding"
+	OperationModeration      OperationType = "moderation"
+	OperationImageGeneration OperationType = "image_generation"
+	OperationImageEdit       OperationType = "image_edit"
+	OperationAudioSTT        OperationType = "audio_stt"
+	OperationAudioTTS        OperationType = "audio_tts"
+	OperationImageVariation  OperationType = "image_variation"
+	OperationRealtime        OperationType = "realtime"
+)
+
+// GlobalModel represents Layer 1 of Model Management: the Global Model Catalogue.
+type GlobalModel struct {
+	ID                           string               `json:"id"` // e.g. "openai/gpt-4.1"
+	Provider                     ProviderType         `json:"provider"`
+	ModelName                    string               `json:"model_name"` // e.g. "gpt-4.1"
+	DisplayName                  string               `json:"display_name"`
+	MaxInputTokens               int                  `json:"max_input_tokens"`
+	MaxOutputTokens              int                  `json:"max_output_tokens"`
+	Capabilities                 ModelCapabilities    `json:"capabilities"`
+	SupportedOperations          []OperationType      `json:"supported_operations,omitempty"`
+	SupportsStreaming            bool                 `json:"supports_streaming"`
+	SupportsTools                bool                 `json:"supports_tools"`
+	SupportsVision               bool                 `json:"supports_vision"`
+	SupportsReasoning            bool                 `json:"supports_reasoning"`
+	SupportsEmbeddings           bool                 `json:"supports_embeddings"`
+	SupportsInference            bool                 `json:"supports_inference"`
+	InputCostMicrosPer1M         int64                `json:"input_cost_micros_per_1m"`
+	OutputCostMicrosPer1M        int64                `json:"output_cost_micros_per_1m"`
+	CachedInputCostMicrosPer1M   int64                `json:"cached_input_cost_micros_per_1m"`
+	CacheWriteCostMicrosPer1M    int64                `json:"cache_write_cost_micros_per_1m,omitempty"`
+	ReasoningCostMicrosPer1M     int64                `json:"reasoning_cost_micros_per_1m"`
+	ImageCostMicrosBase          int64                `json:"image_cost_micros_base,omitempty"`
+	ImageCostMicrosHD            int64                `json:"image_cost_micros_hd,omitempty"`
+	AudioSTTCostMicrosPerSecond  int64                `json:"audio_stt_cost_micros_per_second,omitempty"`
+	AudioTTSCostMicrosPer1KChars int64                `json:"audio_tts_cost_micros_per_1k_chars,omitempty"`
+	ModalityPricingJSON          map[string]any       `json:"modality_pricing_json,omitempty"`
+	PricingVersion               int                  `json:"pricing_version"`
+	PricingStatus                PricingStatus        `json:"pricing_status"`
+	PricingProvenanceSource      string               `json:"pricing_provenance_source,omitempty"`
+	PricingEffectiveDate         string               `json:"pricing_effective_date,omitempty"`
+	QualityTier                  int                  `json:"quality_tier,omitempty"`
+	LifecycleStatus              ModelLifecycleStatus `json:"lifecycle_status"`
+	DeprecationDate              *time.Time           `json:"deprecation_date,omitempty"`
+	DiscoveredAt                 time.Time            `json:"discovered_at"`
+	UpdatedAt                    time.Time            `json:"updated_at"`
+}
+
+// SupportsOperation reports whether the model supports the requested operation.
+// When SupportedOperations is explicitly populated, it is authoritative; otherwise
+// it falls back to SupportsInference and tri-state capabilities.
+func (gm *GlobalModel) SupportsOperation(op OperationType) bool {
+	if gm == nil {
+		return false
+	}
+	if len(gm.SupportedOperations) > 0 {
+		for _, s := range gm.SupportedOperations {
+			if s == op {
+				return true
+			}
+		}
+		return false
+	}
+	caps := gm.ResolveCapabilities()
+	switch op {
+	case OperationChat, OperationResponses:
+		return gm.SupportsInference
+	case OperationCompletion:
+		return false
+	case OperationEmbedding:
+		return gm.SupportsEmbeddings || caps.Embeddings == CapabilitySupported
+	case OperationModeration:
+		return caps.Moderation == CapabilitySupported
+	case OperationImageGeneration:
+		return caps.ImageGen == CapabilitySupported
+	case OperationImageEdit, OperationImageVariation:
+		return false
+	case OperationAudioSTT:
+		return caps.AudioSTT == CapabilitySupported
+	case OperationAudioTTS:
+		return caps.AudioTTS == CapabilitySupported
+	case OperationRealtime:
+		return caps.Realtime == CapabilitySupported
+	default:
+		return false
+	}
+}
+
+// ModelPricingHistory tracks versioned pricing changes for a GlobalModel over time.
+type ModelPricingHistory struct {
+	ID                         string        `json:"id"`
+	GlobalModelID              string        `json:"global_model_id"`
+	PricingVersion             int           `json:"pricing_version"`
+	InputCostMicrosPer1M       int64         `json:"input_cost_micros_per_1m"`
+	OutputCostMicrosPer1M      int64         `json:"output_cost_micros_per_1m"`
+	CachedInputCostMicrosPer1M int64         `json:"cached_input_cost_micros_per_1m"`
+	ReasoningCostMicrosPer1M   int64         `json:"reasoning_cost_micros_per_1m"`
+	PricingStatus              PricingStatus `json:"pricing_status,omitempty"`
+	PricingProvenanceSource    string        `json:"pricing_provenance_source,omitempty"`
+	ChangedBy                  string        `json:"changed_by"`
+	EffectiveFrom              time.Time     `json:"effective_from"`
+}
+
+// ResolveCapabilities returns the tri-state capability set for this model.
+// If Capabilities has not been explicitly configured, it falls back defensively
+// to the boolean capability flags.
+func (gm *GlobalModel) ResolveCapabilities() ModelCapabilities {
+	if gm == nil {
+		return ModelCapabilities{
+			Tools:             CapabilityUnknown,
+			Streaming:         CapabilityUnknown,
+			Vision:            CapabilityUnknown,
+			Reasoning:         CapabilityUnknown,
+			StructuredOutputs: CapabilityUnknown,
+			Embeddings:        CapabilityUnknown,
+		}
+	}
+	caps := gm.Capabilities
+	if caps.Tools == "" {
+		if gm.SupportsTools {
+			caps.Tools = CapabilitySupported
+		} else {
+			caps.Tools = CapabilityUnknown
+		}
+	}
+	if caps.Streaming == "" {
+		if gm.SupportsStreaming {
+			caps.Streaming = CapabilitySupported
+		} else {
+			caps.Streaming = CapabilityUnknown
+		}
+	}
+	if caps.Vision == "" {
+		if gm.SupportsVision {
+			caps.Vision = CapabilitySupported
+		} else {
+			caps.Vision = CapabilityUnknown
+		}
+	}
+	if caps.Reasoning == "" {
+		if gm.SupportsReasoning {
+			caps.Reasoning = CapabilitySupported
+		} else {
+			caps.Reasoning = CapabilityUnknown
+		}
+	}
+	if caps.Embeddings == "" {
+		if gm.SupportsEmbeddings {
+			caps.Embeddings = CapabilitySupported
+		} else {
+			caps.Embeddings = CapabilityUnknown
+		}
+	}
+	if caps.StructuredOutputs == "" {
+		caps.StructuredOutputs = CapabilityUnknown
+	}
+	if caps.Moderation == "" {
+		caps.Moderation = CapabilityUnknown
+	}
+	if caps.ImageGen == "" {
+		caps.ImageGen = CapabilityUnknown
+	}
+	if caps.AudioSTT == "" {
+		caps.AudioSTT = CapabilityUnknown
+	}
+	if caps.AudioTTS == "" {
+		caps.AudioTTS = CapabilityUnknown
+	}
+	if caps.Batches == "" {
+		caps.Batches = CapabilityUnknown
+	}
+	if caps.Realtime == "" {
+		caps.Realtime = CapabilityUnknown
+	}
+	return caps
+}
+
+// DiscoveredModel is returned by ProviderAdapter.ListModels() during automated discovery.
+type DiscoveredModel struct {
+	Provider    ProviderType
+	ModelName   string
+	DisplayName string
+	CreatedAt   int64
+}
+
+// OrgProviderSubscription represents Layer 2 of Model Management: Tenant Vendor Entitlements.
+type OrgProviderSubscription struct {
+	OrgID         string       `json:"org_id"`
+	Provider      ProviderType `json:"provider"`
+	IsEnabled     bool         `json:"is_enabled"`
+	AutoEnableNew bool         `json:"auto_enable_new"`
+	SubscribedAt  time.Time    `json:"subscribed_at"`
+}
+
+// OrgModelPolicy represents Layer 3 of Model Management: Tenant Model Approval.
+type OrgModelPolicy struct {
+	OrgID         string    `json:"org_id"`
+	GlobalModelID string    `json:"global_model_id"`
+	IsEnabled     bool      `json:"is_enabled"`
+	ApprovedBy    string    `json:"approved_by"`
+	ApprovedAt    time.Time `json:"approved_at"`
+}
+
+// ProviderCredential represents Boundary 2 encrypted credentials in the Vault.
+type ProviderCredential struct {
+	ID              string            `json:"id"`
+	OrgID           string            `json:"org_id"`
+	Provider        ProviderType      `json:"provider"`
+	Name            string            `json:"name"`
+	BaseURL         string            `json:"base_url"`
+	EncryptedAPIKey []byte            `json:"-"`
+	DataNonce       []byte            `json:"-"`
+	EncryptedDEK    []byte            `json:"-"`
+	DEKNonce        []byte            `json:"-"`
+	DecryptedAPIKey string            `json:"-"` // Populated in memory only when needed by adapter
+	KeyVersion      int               `json:"key_version"`
+	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
+	LastRotatedAt   *time.Time        `json:"last_rotated_at,omitempty"`
+	LastValidatedAt *time.Time        `json:"last_validated_at,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	IsActive        bool              `json:"is_active"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+}
+
+// GuardrailAction specifies how the gateway responds when a security guardrail is triggered.
+type GuardrailAction string
+
+// Guardrail response enforcement actions.
+const (
+	GuardrailActionBlock  GuardrailAction = "block"
+	GuardrailActionRedact GuardrailAction = "redact"
+	GuardrailActionAudit  GuardrailAction = "audit"
+	GuardrailActionRoute  GuardrailAction = "route"
+)
+
+// GuardrailMode controls whether a guardrail policy enforces actions or only logs violations.
+type GuardrailMode string
+
+// Supported organization guardrail enforcement modes.
+const (
+	GuardrailModeEnforce     GuardrailMode = "enforce"
+	GuardrailModeLoggingOnly GuardrailMode = "logging_only"
+)
+
+// GuardrailPolicy defines per-organization security, PII redaction, and prompt-injection rules.
+type GuardrailPolicy struct {
+	OrgID                    string          `json:"org_id"`
+	Mode                     GuardrailMode   `json:"mode,omitempty"`
+	ScanAllRoles             bool            `json:"scan_all_roles"`
+	EnablePromptInjection    bool            `json:"enable_prompt_injection"`
+	PromptInjectionAction    GuardrailAction `json:"prompt_injection_action"`
+	EnablePIIDetection       bool            `json:"enable_pii_detection"`
+	PIIAction                GuardrailAction `json:"pii_action"`
+	EnableSecretDetection    bool            `json:"enable_secret_detection"`
+	SecretAction             GuardrailAction `json:"secret_action"`
+	BlockedKeywords          []string        `json:"blocked_keywords,omitempty"`
+	RedactOutputPII          bool            `json:"redact_output_pii"`
+	EnableToxicityFilter     bool            `json:"enable_toxicity_filter,omitempty"`
+	ToxicityAction           GuardrailAction `json:"toxicity_action,omitempty"`
+	ToxicityThreshold        string          `json:"toxicity_threshold,omitempty"`
+	EnabledContentCategories []string        `json:"enabled_content_categories,omitempty"`
+	ContentExceptions        []string        `json:"content_exceptions,omitempty"`
+	SensitiveRouteTarget     string          `json:"sensitive_route_target,omitempty"`
+	UpdatedAt                time.Time       `json:"updated_at"`
+}
+
+// EffectiveMode returns the normalized GuardrailMode, defaulting to GuardrailModeEnforce.
+func (p *GuardrailPolicy) EffectiveMode() GuardrailMode {
+	if p != nil && p.Mode == GuardrailModeLoggingOnly {
+		return GuardrailModeLoggingOnly
+	}
+	return GuardrailModeEnforce
+}
+
+// FallbackTarget specifies a fallback model group target along with optional parameter overrides.
+type FallbackTarget struct {
+	GroupAliasOrID string         `json:"target" yaml:"target"`
+	Overrides      map[string]any `json:"overrides,omitempty" yaml:"overrides,omitempty"`
+}
+
+// RetryPolicy configures per-error-class retry budgets for routing and failover.
+type RetryPolicy struct {
+	RateLimitRetries   int `json:"rate_limit_retries,omitempty" yaml:"rate_limit_retries,omitempty"`
+	TimeoutRetries     int `json:"timeout_retries,omitempty" yaml:"timeout_retries,omitempty"`
+	ServerErrorRetries int `json:"server_error_retries,omitempty" yaml:"server_error_retries,omitempty"`
+	AuthErrorRetries   int `json:"auth_error_retries,omitempty" yaml:"auth_error_retries,omitempty"`
+	NotFoundRetries    int `json:"not_found_retries,omitempty" yaml:"not_found_retries,omitempty"`
+	BadRequestRetries  int `json:"bad_request_retries,omitempty" yaml:"bad_request_retries,omitempty"`
+	DefaultRetries     int `json:"default_retries,omitempty" yaml:"default_retries,omitempty"`
+}
+
+// CooldownPolicy configures adaptive circuit-breaker thresholds and cooldown bounds.
+type CooldownPolicy struct {
+	AllowedFails         map[string]int `json:"allowed_fails,omitempty" yaml:"allowed_fails,omitempty"`
+	FailureRateThreshold float64        `json:"failure_rate_threshold,omitempty" yaml:"failure_rate_threshold,omitempty"`
+	MinRequestsPerMinute int            `json:"min_requests_per_minute,omitempty" yaml:"min_requests_per_minute,omitempty"`
+	MaxCooldownSeconds   int            `json:"max_cooldown_seconds,omitempty" yaml:"max_cooldown_seconds,omitempty"`
+}
+
+// ModelGroup represents a logical routing target (e.g. "gpt-4.1", "fast", "reasoning", "auto").
+type ModelGroup struct {
+	ID                     string           `json:"id"`
+	OrgID                  string           `json:"org_id"`
+	Alias                  string           `json:"alias"`
+	Description            string           `json:"description,omitempty"`
+	RoutingStrategy        RoutingStrategy  `json:"routing_strategy"`
+	FallbackGroupIDs       []string         `json:"fallback_group_ids,omitempty"`
+	ContextWindowFallbacks []FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	ContentPolicyFallbacks []FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	FallbackTargets        []FallbackTarget `json:"fallback_targets,omitempty"`
+	SaturationFallbacks    []FallbackTarget `json:"saturation_fallbacks,omitempty"`
+	DropUnsupportedParams  bool             `json:"drop_unsupported_params,omitempty"`
+	DisableCooldowns       bool             `json:"disable_cooldowns,omitempty"`
+	RetryPolicy            *RetryPolicy     `json:"retry_policy,omitempty"`
+	CooldownPolicy         *CooldownPolicy  `json:"cooldown_policy,omitempty"`
+	MaxRetries             int              `json:"max_retries"`
+	CooldownSeconds        int              `json:"cooldown_seconds"`
+	FailureThreshold       int              `json:"failure_threshold"`
+	IsActive               bool             `json:"is_active"`
+	CreatedAt              time.Time        `json:"created_at"`
+	UpdatedAt              time.Time        `json:"updated_at"`
+}
+
+// Deployment represents Layer 4 of Model Management: a concrete physical endpoint inside a ModelGroup.
+type Deployment struct {
+	ID                  string           `json:"id"`
+	CircuitProbeToken   string           `json:"-"`
+	ModelGroupID        string           `json:"model_group_id"`
+	GlobalModelID       string           `json:"global_model_id"`
+	CredentialID        string           `json:"credential_id"`
+	DeploymentName      string           `json:"deployment_name"`
+	Region              string           `json:"region"`
+	Weight              int              `json:"weight"`
+	RPMCapacity         int              `json:"rpm_capacity"`
+	TPMCapacity         int              `json:"tpm_capacity"`
+	ITPMCapacity        int              `json:"itpm_capacity,omitempty"`
+	OTPMCapacity        int              `json:"otpm_capacity,omitempty"`
+	MaxParallelRequests int              `json:"max_parallel_requests,omitempty"`
+	TimeoutMs           int              `json:"timeout_ms"`
+	Priority            int              `json:"priority"`
+	Tags                []string         `json:"tags,omitempty"`
+	MaxBudgetMicros     int64            `json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod   string           `json:"budget_reset_period,omitempty"`
+	Status              DeploymentStatus `json:"status"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+	// Hydrated associations for hot-path execution
+	GlobalModel *GlobalModel        `json:"global_model,omitempty"`
+	Credential  *ProviderCredential `json:"credential,omitempty"`
+}
