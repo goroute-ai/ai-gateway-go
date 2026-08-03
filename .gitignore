@@ -1,0 +1,25 @@
+# Binaries for programs and plugins
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Temporary and external scratch directories
+*_api.yaml
+gemini_api_*.yaml
+*.log
+*.tmp
+.DS_Store
+dist/
