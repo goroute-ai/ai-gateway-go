@@ -1,0 +1,455 @@
+# ==============================================================================
+# GoRoute AI Gateway — Production Configuration Template
+# ==============================================================================
+# Copy this file to configs/config.yaml or supply its path via -config flag:
+#   /app/ai-gateway -config /etc/goroute/config.yaml
+#
+# Environment variables override YAML values. Use os.environ/VAR syntax for
+# secret substitution (e.g. os.environ/OPENAI_API_KEY).
+# ==============================================================================
+
+server:
+  environment: "production"  # "development", "staging", or "production"
+  public_base_url: "https://gateway.example.com" # Canonical external origin for OIDC redirect/logout & CLI URLs
+  host: "0.0.0.0"
+  port: 8080
+  grpc_port: 0               # Optional A2A gRPC server port (0 = disabled, e.g. 9090)
+  read_timeout: 30s
+  write_timeout: 300s
+  idle_timeout: 120s
+  shutdown_timeout: 15s
+  cors_allowed_origins: []   # Keep [] for same-origin BFF UI; production rejects "*", "null", and http:// origins (override: GATEWAY_CORS_ALLOWED_ORIGINS)
+  cors_allow_credentials: false
+  enable_hsts: false
+  max_file_storage_bytes_per_org: 5368709120 # Max per-org file storage quota in bytes (default 5 GiB; 0 = unlimited)
+  max_concurrent_file_uploads: 8             # Max concurrent /v1/files uploads per instance (default 8; 0 = unlimited)
+
+logging:
+  level: "info"              # "debug", "info", "warn", "error"
+  format: "json"             # "json" for structured production logging, "text" for local dev
+  add_source: false          # Attach source file and line number to log entries
+
+tracing:
+  enabled: false             # Enable OpenTelemetry distributed tracing and OTLP metrics export
+  otlp_endpoint: ""          # Optional OTLP/HTTP endpoint, for example https://otel-collector:4318/v1/traces
+  service_name: "ai-gateway-go"
+  headers: {}                # Optional exporter headers, use os.environ/NAME for secret values
+
+storage:
+  mode: "postgres"           # "postgres" (recommended for production) or "memory"
+  postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"
+  rds_iam:
+    enabled: false
+    region: ""               # RDS AWS region. Use a DSN with sslmode=verify-full.
+    # access_key_id: "os.environ/AWS_ACCESS_KEY_ID"
+    # secret_access_key: "os.environ/AWS_SECRET_ACCESS_KEY"
+    # role_arn: "os.environ/AWS_ROLE_ARN"
+    # web_identity_token_file: "os.environ/AWS_WEB_IDENTITY_TOKEN_FILE"
+  redis_addr: "redis-host:6379"
+  redis_addrs: []            # Optional list of Redis Cluster / Sentinel seed addresses (overrides redis_addr when non-empty)
+  redis_master_name: ""      # Optional Redis Sentinel master name
+  redis_pass: ""             # Optional Redis authentication password (or os.environ/REDIS_PASSWORD)
+  redis_db: 0
+
+auth:
+  # Master keys must be securely generated (e.g. openssl rand -hex 32)
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
+  # Previous Master KEKs accepted for zero-downtime rolling restarts after /admin/v1/security/rotate-kek:
+  # previous_master_encryption_keys:
+  #   - "os.environ/GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEY"
+  allow_master_key_data_plane: false
+  allow_ambient_cloud_iam: false
+  enable_data_plane_jwt: false       # Allow OIDC/JWT bearer auth on /v1/* data plane routes
+  custom_api_key_header: ""          # Optional custom header name overriding default virtual key extraction order
+  # Secure delivery or an in-process KeySecretSink is required to activate scheduled replacement keys.
+  # key_rotation_delivery_url: "https://secrets.example.com/goroute/key-rotation"
+  # key_rotation_delivery_token: "os.environ/GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"
+  # Declarative secret-manager sink ("webhook" | "vault_kv2"):
+  # key_rotation_sink:
+  #   driver: "vault_kv2"
+  #   address: "https://vault.example.com:8200"
+  #   mount: "secret"
+  #   path_prefix: "goroute/virtual-keys"
+  #   namespace: ""
+  #   token: "os.environ/VAULT_TOKEN"
+  key_rotation_poll_interval: 1m
+  key_rotation_grace_period: 24h
+  key_expiry_alert_poll_interval: 15m
+  # Inbound JWT / OIDC Bearer authentication (Data Plane & Control Plane)
+  # Note: Symmetric HS* JWT verification is disabled; all OIDC issuers must use asymmetric JWKS / Discovery.
+  jwt_issuer: ""
+  jwt_audience: ""
+  oidc_jwks_url: ""
+  oidc_issuers: []
+  #  - issuer: "https://keycloak.example.com/realms/goroute"
+  #    audience: "goroute-gateway"   # Required to prevent cross-client token replay
+  #    jwks_url: "https://keycloak.example.com/realms/goroute/protocol/openid-connect/certs"
+  #    discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #    algorithms: ["RS256", "PS256", "ES256", "EdDSA"]
+  #    allowed_email_domains: ["example.com"]
+  #    allow_unverified_email: false # Require email_verified == true for domain checks & JIT email matching
+  #    allow_privileged_role_claims: false # Keep false unless IdP role claim is authorized to JIT platform_admin
+  #    auto_register: false
+  #    default_org_id: "org_default"
+  #    default_team_id: ""
+  #    default_role: "developer"
+  #    claim_mapping:
+  #      user_id: "sub"
+  #      email: "email"
+  #      org_id: "org_id"
+  #      team_ids: "groups"
+  #      role: "role"
+  #      end_user: "end_user_id"
+  # Control Plane OIDC Authorization Code + PKCE SSO providers
+  sso_providers: []
+  #  - id: "keycloak"
+  #    name: "Keycloak SSO"
+  #    type: "oidc"                   # Only open standard "oidc" is supported
+  #    display_name: "Sign in with Keycloak"
+  #    client_id: "os.environ/SSO_KEYCLOAK_CLIENT_ID"
+  #    client_secret: "os.environ/SSO_KEYCLOAK_CLIENT_SECRET"
+  #    issuer: "https://keycloak.example.com/realms/goroute"
+  #    discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #    redirect_url: "https://gateway.example.com/auth/sso/keycloak/callback"
+  #    scopes: ["openid", "profile", "email"]
+  #    algorithms: ["RS256", "ES256", "EdDSA"]
+  #    allowed_email_domains: ["example.com"]
+  #    allow_unverified_email: false
+  #    allow_privileged_role_claims: false
+  #    auto_register: true
+  #    default_org_id: "org_default"
+  #    default_role: "org_viewer"
+  #    claim_mapping:
+  #      groups: "realm_access.roles"
+  #    group_role_mappings:
+  #      - group: "goroute-org-admins"
+  #        role: "org_admin"
+  #      - group: "goroute-developers"
+  #        role: "developer"
+  #    role_mapping_strategy: "highest_privilege" # or "first_match"
+  #    group_team_mappings:
+  #      eng-ml: "team_ml"
+  #    sync_roles_on_login: false     # When true, synchronizes role/team on every SSO login and revokes prior sessions on role change
+  # Optional standalone external post-auth authorizer (Webhook or OPA Data API, SSRF-protected)
+  external_authorizer:
+    enabled: false
+    # mode: "webhook"                # "webhook" or "opa"
+    # url: "https://policy.internal.example.com/v1/authorize"
+    # timeout: 500ms
+    # fail_mode: "closed"            # "closed" (recommended) or "open"
+    # cache_ttl: 5s
+    # auth_header: "os.environ/POLICY_AUTH_HEADER"
+    # hmac_secret: "os.environ/POLICY_HMAC_SECRET"
+  # OAuth 2.0 RFC 7662 Token Introspection / OIDC UserInfo (supports OIDC Discovery via issuer/discovery_url)
+  introspection: {}
+  #  issuer: "https://keycloak.example.com/realms/goroute"
+  #  audience: "goroute-gateway"
+  #  discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #  # token_info_endpoint: "https://keycloak.example.com/realms/goroute/protocol/openid-connect/token/introspect"
+  #  client_id: "os.environ/INTROSPECT_CLIENT_ID"
+  #  client_secret: "os.environ/INTROSPECT_CLIENT_SECRET"
+  #  mode: "introspect"               # "auto", "introspect" (RFC 7662), or "userinfo"
+  #  cache_ttl: 5m
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET" # Required >=32 bytes in production for goroute_session HMAC
+  session_ttl: 24h
+  cli_login_default_ttl: 24h         # Default expiration for CLI-minted Virtual Keys
+  cli_login_max_ttl: 720h            # Maximum expiration (30d) for CLI-minted Virtual Keys
+  auth_start_rate_limit_per_min: 30  # Per-IP rate limit on /auth/sso/*/login and /auth/cli/start
+  default_org_id: "org_default"
+  default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
+  l1_cache_ttl: 15s
+  l2_cache_ttl: 5m
+
+router:
+  default_fast_alias: "fast"
+  default_reasoning_alias: "reasoning"
+  default_coding_alias: "coding"
+  complexity_threshold: 0.40
+  long_context_tokens: 32000
+  default_max_retries: 2
+  base_retry_delay: 50ms
+  max_retry_delay: 2s
+  default_cooldown: 60s
+  failure_window: 30s
+  failure_threshold: 3
+  max_fallback_depth: 16
+  default_fallbacks: []
+  #  - target: "fast-backup"
+  #    overrides:
+  #      temperature: 0.2
+  retry_policy: {}
+  #  rate_limit_retries: 2
+  #  timeout_retries: 1
+  #  server_error_retries: 2
+  #  auth_error_retries: 1
+  #  not_found_retries: 0
+  #  bad_request_retries: 0
+  #  default_retries: 1
+  cooldown_policy: {}
+  #  allowed_fails:
+  #    rate_limit: 5
+  #    server_error: 3
+  #    auth: 1
+  #  failure_rate_threshold: 0.5
+  #  min_requests_per_minute: 10
+  #  max_cooldown_seconds: 300
+  enable_mid_stream_continuation: false
+  max_stream_continuations: 1
+  health_staleness_threshold: 0s     # 0s = disable health staleness check
+  strict_capacity_filtering: false   # Exclude deployments with exhausted local RPM/TPM capacity windows
+  provider_budgets: {}               # Optional per-provider budget cap in micro-USD (e.g. openai: 100000000)
+  session_affinity_ttl: 30m
+  session_affinity_repin_on_failover: true
+  prompt_cache_affinity: false
+  pre_router_mode: ""                # "", "heuristic", "semantic", "quality", or "adaptive"
+  semantic_router:
+    enabled: false
+    embedding_model: ""
+    similarity_threshold: 0.78
+    timeout: 2s
+    routes: []
+    #  - name: "coding-intent"
+    #    target_model: "coding"
+    #    description: "Software engineering, debugging, and code generation"
+    #    utterances:
+    #      - "Write a Go function to parse JSON"
+    #      - "Debug this failing SQL query"
+  cache_aware_routing: false
+  bandit:
+    enabled: false
+    default_alpha: 1.0
+    default_beta: 1.0
+    exploration_rate: 0.1
+    decay_half_life: 24h
+    latency_weight: 0.5
+    cost_weight: 0.5
+    sync_interval: 5s
+    candidate_models: []
+    #  - "fast"
+    #  - "reasoning"
+    #  - "coding"
+  hedge_delay_ms: 0                  # 0 = disabled; >0 enables staggered hedged racing
+  max_hedge_concurrency: 2
+  scheduler:
+    enabled: false
+    max_queue_depth: 256
+    max_wait_time: 5s
+    default_priority: 0
+    max_parallel_wait_ms: 0          # Bounded wait (ms) when all candidate deployments hit max_parallel_requests
+  priority_capacity:
+    enabled: false
+    saturation_threshold: 0.85
+    active_caller_ttl: 5m
+    window_duration: 1m
+    default_weight: 1.0
+    default_borrow_multiple: 2.0
+  latency_tolerance_pct: 0.0         # Optional band above fastest EWMA deployment for latency-based load balancing
+  max_honored_retry_after: 60s       # Upper bound on upstream Retry-After waits before failing over
+  disable_cooldowns: false           # Disable circuit breaker cooldown tripping globally
+  fallback_on_saturation: false      # Allow falling back when capacity/concurrency/priority saturation occurs
+  drop_unsupported_params: false     # Strip unsupported capabilities/params instead of rejecting requests
+  fallback_on_unsupported_params: false # Fall back on upstream unsupported-parameter errors without cooldown tripping
+  allow_strategy_override: false     # Allow per-request X-Gateway-Routing-Strategy / goroute_extensions overrides
+  debug_routing_headers: false       # Allow opt-in redacted X-Gateway-Fallback-Errors when caller sends X-Gateway-Debug-Routing: true
+
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: false # Degrade to in-memory rate-limit/budget tracking if Redis is unreachable (default false = fail-closed)
+  window_seconds: 60
+  concurrency_ttl_sec: 300           # Lease TTL (s) for concurrent request slots and max_parallel_requests ZSET leases
+  default_estimated_tpm: 128
+  redis_timeout: 50ms
+  global_rpm_limit: 0
+  global_tpm_limit: 0
+  global_max_concurrent: 0
+  default_agent_session_max_iterations: 0
+  default_agent_session_max_budget_micros: 0
+  default_agent_session_ttl_sec: 0
+  dynamic_on_upstream_429: false     # Optional brief per-key soft cooldown after upstream 429 rate-limits
+
+finops:
+  channel_buffer_size: 16384
+  batch_size: 250
+  flush_interval: 500ms
+  worker_count: 4
+  soft_budget_webhook_url: ""
+  soft_budget_cooldown_sec: 3600
+  budget_exceeded_throttle_pct: 0.10
+
+discovery:
+  enabled: true
+  sync_interval: 6h
+  auto_approve: false        # Require admin approval for newly discovered upstream models
+
+cache:
+  enabled: true
+  default_ttl: 1h
+  max_l1_entries: 4096
+
+guardrails:
+  scanners: []
+  #  - name: "dlp-webhook"
+  #    url: "https://guardrails.internal.corp/v1/scan"
+  #    timeout_ms: 2000
+  #    fail_open: false
+  #    headers:
+  #      Authorization: "os.environ/GUARDRAIL_SCANNER_TOKEN"
+  definitions: []
+  #  - name: "pii-shield"
+  #    provider: "local_content_filter"
+  #    event_hooks: ["pre_call", "post_call"]
+  #    stream_scope: "both"
+  #    default_on: true
+  #    timeout_ms: 1500
+  #    fail_open: false
+  #    precedence: 10
+  #    status: "active"
+  #    config:
+  #      action: "modify"
+  #      redact_mode: "mask"
+  #    guardrail_info:
+  #      usage_unit: "request"
+  #      cost_per_call_micros: 25
+  #    # secrets:
+  #    #   api_key: "os.environ/GUARDRAIL_PROVIDER_KEY" # encrypted at rest via Vault
+  #    bindings:
+  #      - team_id: "team_security"
+  #        is_locked: true
+  tool_policies: []
+  #  - tool_name: "shell_exec"
+  #    input_policy: "blocked"
+  #    output_policy: "untrusted"
+  #  - tool_name: "crm_lookup"
+  #    input_policy: "untrusted"
+  #    output_policy: "untrusted"
+
+# ------------------------------------------------------------------------------
+# Security & Network Egress (SSRF Hardening)
+# ------------------------------------------------------------------------------
+security:
+  network:
+    outbound_ssrf:
+      # In production, private networks and insecure HTTP must be disabled
+      allow_private_networks: false
+      allowed_private_cidrs: []   # Targeted VPC CIDRs only (e.g. ["10.20.0.0/16"]); production rejects < /8 (IPv4), < /7 (IPv6), loopback, link-local, and IMDS ranges (override: GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS)
+      allow_insecure_http: false   # Strict HTTPS enforcement
+      allow_loopback_http: false   # Set true in local dev ONLY to allow http://localhost|127.0.0.1|::1 (e.g. Keycloak dev server) without opening private RFC 1918 networks
+      allowed_schemes: ["https"]
+      blocked_ips:
+        - "169.254.169.254"       # Cloud metadata service protection
+        - "fd00:ec2::254"         # AWS IPv6 metadata
+      dial_timeout: 10s
+      max_redirects: 3
+      egress_proxy_url: ""        # Optional corporate HTTP/HTTPS egress proxy URL
+    inbound_caller:
+      expose_on_public_internet: false
+      allowed_client_cidrs: []
+      trusted_proxy_cidrs: []
+
+# ------------------------------------------------------------------------------
+# Model Context Protocol (MCP) Configuration
+# ------------------------------------------------------------------------------
+mcp:
+  enabled: true
+  allow_stdio_servers: false       # Fail-closed: stdio subprocesses disabled
+  allowed_stdio_binaries: []       # Allowlist of canonical binary paths when stdio is enabled
+  enable_session_compat_2025: true # Enable 2025-11-25 stateful compatibility adapter
+  session_ttl_2025: 15m
+  cache_key_secret: ""             # Optional HMAC secret for delimiter-collision-proof cache keys
+  max_payload_bytes: 10485760      # 10 MB payload limit
+  default_timeout: 30s
+  subscriptions_listen_active: true
+
+# ------------------------------------------------------------------------------
+# Agent-to-Agent (A2A v1.0) Configuration
+# ------------------------------------------------------------------------------
+a2a:
+  enabled: true
+  enable_jsonrpc: true
+  enable_http_json: true
+  enable_subscribe_post_compat: false # Canonical is GET /tasks/{id}:subscribe
+  allow_legacy_card_discovery: false
+  max_task_lifespan: 24h
+  stream_buffer_capacity: 256
+  stream_publish_interval: 50ms
+  max_push_retries: 5
+  signing_key_id: "gw-a2a-signer-v1"
+  allowed_signing_algs:
+    - "ES256"
+    - "RS256"
+    - "EdDSA"
+  trusted_card_jwks: {}            # Upstream agent slug -> JWKS URL mapping
+
+# ------------------------------------------------------------------------------
+# Certified Custom OpenAI-Compatible Upstream Providers
+# ------------------------------------------------------------------------------
+providers:
+  request_timeout: 2m          # Total deadline for non-streaming upstream requests
+  response_header_timeout: 2m  # Maximum wait for upstream response headers / TTFT
+  stream_idle_timeout: 2m      # Maximum gap between upstream stream chunks
+  max_idle_conns: 256          # Retained idle provider connections across all hosts
+  max_idle_conns_per_host: 16  # Retained idle connections per provider host
+
+# ------------------------------------------------------------------------------
+# Declarative Model List & Fallback Topologies
+# ------------------------------------------------------------------------------
+model_list:
+  - model_name: fast
+    routing_strategy: weighted-shuffle
+    fallbacks: ["fast-backup"]
+    # context_window_fallbacks:
+    #   - target: "long-context"
+    # content_policy_fallbacks:
+    #   - target: "fast-backup"
+    # fallback_targets:
+    #   - target: "fast-backup"
+    #     overrides:
+    #       max_tokens: 2048
+    # saturation_fallbacks:
+    #   - target: "fast-backup"
+    # drop_unsupported_params: false
+    # disable_cooldowns: false
+    model_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+      weight: 100
+      rpm: 1000
+      tpm: 1000000
+      # itpm: 500000
+      # otpm: 500000
+      # max_parallel_requests: 64
+      # region: "us-east"
+      # priority: 1
+      # tags: ["tier:fast", "region:us"]
+      # max_budget_micros: 0
+      # budget_reset_period: "monthly"
+
+  - model_name: fast-backup
+    model_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      weight: 100
+
+  - model_name: reasoning
+    routing_strategy: least-busy
+    fallbacks: ["reasoning-backup"]
+    model_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+      weight: 100
+
+  - model_name: reasoning-backup
+    model_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+      weight: 100
+
+  - model_name: openrouter-sonnet
+    model_params:
+      model: openrouter/anthropic/claude-sonnet-4-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      headers:
+        HTTP-Referer: "https://goroute.example.com"
+        X-Title: "GoRoute AI Gateway"
+      weight: 100
