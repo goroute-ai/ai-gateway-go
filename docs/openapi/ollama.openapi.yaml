@@ -1,0 +1,147 @@
+openapi: 3.1.0
+info:
+  title: Ollama REST API Specification
+  version: 0.5.0
+  description: Official Ollama local inference server API specification for /api/chat, /api/embed, and /api/tags.
+servers:
+  - url: http://localhost:11434
+paths:
+  /api/chat:
+    post:
+      operationId: ollamaChat
+      summary: Generate the next message in a chat with a provided model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaChatRequest'
+      responses:
+        '200':
+          description: Chat completion or NDJSON stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaChatResponse'
+  /api/embed:
+    post:
+      operationId: ollamaEmbed
+      summary: Generate embeddings from a model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaEmbedRequest'
+      responses:
+        '200':
+          description: Embeddings response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaEmbedResponse'
+  /api/tags:
+    get:
+      operationId: ollamaListModels
+      summary: List models that are available locally
+      responses:
+        '200':
+          description: Local model tags list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaTagsResponse'
+components:
+  schemas:
+    OllamaChatRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaMessage'
+        tools:
+          type: array
+          items:
+            type: object
+        stream:
+          type: boolean
+        format:
+          type: string
+        options:
+          type: object
+    OllamaMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        images:
+          type: array
+          items:
+            type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+    OllamaChatResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        created_at:
+          type: string
+        message:
+          $ref: '#/components/schemas/OllamaMessage'
+        done:
+          type: boolean
+        done_reason:
+          type: string
+        prompt_eval_count:
+          type: integer
+        eval_count:
+          type: integer
+    OllamaEmbedRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+        input:
+          type: array
+          items:
+            type: string
+    OllamaEmbedResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        embeddings:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+        prompt_eval_count:
+          type: integer
+    OllamaTagsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              model:
+                type: string
+              modified_at:
+                type: string
+              size:
+                type: integer
