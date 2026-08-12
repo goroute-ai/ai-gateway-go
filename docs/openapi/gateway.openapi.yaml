@@ -1,0 +1,273 @@
+openapi: 3.1.0
+info:
+  title: Enterprise AI Gateway Unified API
+  version: 1.0.0
+  description: >
+    Production-grade OpenAI-compatible Unified AI Gateway API supporting OpenAI,
+    Anthropic Claude, Google Gemini, Mistral AI, and Ollama with intelligent routing,
+    load balancing, retries/fallbacks, virtual keys, Redis Lua rate limiting, and FinOps spend tracking.
+servers:
+  - url: http://localhost:8080
+    description: Local Gateway Server
+security:
+  - VirtualKeyBearer: []
+components:
+  securitySchemes:
+    VirtualKeyBearer:
+      type: http
+      scheme: bearer
+      description: Virtual API Key (`sk-gw-...`) or Admin Master Key
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Explicit model name (`gpt-4.1`, `claude-sonnet-4-20250514`, `gemini-2.5-pro`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+        tool_choice:
+          description: Controls which (if any) tool is called by the model.
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        max_tokens:
+          type: integer
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+          default: false
+        stream_options:
+          type: object
+          properties:
+            include_usage:
+              type: boolean
+        response_format:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [text, json_object, json_schema]
+        reasoning_effort:
+          type: string
+          enum: [low, medium, high]
+        user:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    ChatMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: [system, developer, user, assistant, tool]
+        content:
+          type: string
+        name:
+          type: string
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        reasoning_content:
+          type: string
+    Tool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required:
+            - name
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+    ToolCall:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required:
+            - name
+            - arguments
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+    ChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: '#/components/schemas/ChatMessage'
+              finish_reason:
+                type: string
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        cached_prompt_tokens:
+          type: integer
+        reasoning_tokens:
+          type: integer
+    EmbeddingRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+        input:
+          type: array
+          items:
+            type: string
+        encoding_format:
+          type: string
+          enum: [float, base64]
+        dimensions:
+          type: integer
+    EmbeddingResponse:
+      type: object
+      required:
+        - object
+        - data
+        - model
+        - usage
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object:
+                type: string
+              index:
+                type: integer
+              embedding:
+                type: array
+                items:
+                  type: number
+                  format: double
+        model:
+          type: string
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a unified chat completion across OpenAI, Anthropic, Gemini, Mistral, or Ollama
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                type: string
+  /v1/embeddings:
+    post:
+      operationId: createEmbedding
+      summary: Create vector embeddings across supported providers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingRequest'
+      responses:
+        '200':
+          description: Embedding response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingResponse'
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List models available to the authenticated organization and virtual key
+      responses:
+        '200':
+          description: OpenAI-compatible model list
