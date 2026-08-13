@@ -1,0 +1,1014 @@
+package cache
+
+import (
+	"container/list"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
+)
+
+type cacheEpochs struct {
+	Global       int64 `json:"global"`
+	Organization int64 `json:"organization"`
+	Model        int64 `json:"model"`
+}
+
+type cacheEntry struct {
+	Response           *domain.CanonicalChatResponse       `json:"response,omitempty"`
+	CompletionResponse *domain.CanonicalCompletionResponse `json:"completion_response,omitempty"`
+	EmbeddingResponse  *domain.CanonicalEmbeddingResponse  `json:"embedding_response,omitempty"`
+	StreamChunks       []domain.CanonicalStreamChunk       `json:"stream_chunks,omitempty"`
+	OrgID              string                              `json:"org_id"`
+	Model              string                              `json:"model"`
+	Epochs             cacheEpochs                         `json:"epochs"`
+	ExpiresAt          time.Time                           `json:"expires_at"`
+}
+
+// ResponseCache provides tenant-isolated exact-match response caching. Every hit validates
+// shared invalidation epochs before returning either an L1 or Redis entry.
+type ResponseCache struct {
+	enabled bool
+	ttl     time.Duration
+	redis   *storage.RedisFabric
+	l1      boundedL1
+
+	epochMu     sync.RWMutex
+	globalEpoch int64
+	orgEpochs   map[string]int64
+	modelEpochs map[string]int64
+	revision    int64
+	l1Hits      atomic.Uint64
+	l1Misses    atomic.Uint64
+	l2Hits      atomic.Uint64
+	epochChecks atomic.Uint64
+	epochNanos  atomic.Uint64
+}
+
+// MetricsSnapshot captures point-in-time cache hit, miss, and epoch-check counters.
+type MetricsSnapshot struct {
+	L1Hits      uint64
+	L1Misses    uint64
+	L2Hits      uint64
+	EpochChecks uint64
+	EpochNanos  uint64
+}
+
+const defaultL1Capacity = 4096
+
+type l1Item struct {
+	key   string
+	entry cacheEntry
+}
+
+// boundedL1 is a process-local LRU. TTL-only deletion would retain expired
+// entries forever when callers continuously use unique keys.
+type boundedL1 struct {
+	mu       sync.Mutex
+	capacity int
+	items    map[string]*list.Element
+	order    *list.List
+	evicted  uint64
+}
+
+func newBoundedL1(capacity int) boundedL1 {
+	if capacity <= 0 {
+		capacity = defaultL1Capacity
+	}
+	return boundedL1{capacity: capacity, items: make(map[string]*list.Element, capacity), order: list.New()}
+}
+
+func (l *boundedL1) load(key string) (cacheEntry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	elem, ok := l.items[key]
+	if !ok {
+		return cacheEntry{}, false
+	}
+	l.order.MoveToFront(elem)
+	return elem.Value.(l1Item).entry, true
+}
+
+func (l *boundedL1) store(key string, entry cacheEntry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if elem, ok := l.items[key]; ok {
+		elem.Value = l1Item{key: key, entry: entry}
+		l.order.MoveToFront(elem)
+		return
+	}
+	if len(l.items) >= l.capacity {
+		oldest := l.order.Back()
+		if oldest != nil {
+			delete(l.items, oldest.Value.(l1Item).key)
+			l.order.Remove(oldest)
+			l.evicted++
+		}
+	}
+	l.items[key] = l.order.PushFront(l1Item{key: key, entry: entry})
+}
+
+func (l *boundedL1) delete(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if elem, ok := l.items[key]; ok {
+		delete(l.items, key)
+		l.order.Remove(elem)
+	}
+}
+
+func (l *boundedL1) purge(orgID, model string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	purged := 0
+	for elem := l.order.Back(); elem != nil; {
+		prev := elem.Prev()
+		item := elem.Value.(l1Item)
+		matchScope := orgID == "" && model == ""
+		if matchScope || (orgID != "" && item.entry.OrgID == orgID) || (model != "" && item.entry.Model == model) {
+			delete(l.items, item.key)
+			l.order.Remove(elem)
+			purged++
+		}
+		elem = prev
+	}
+	return purged
+}
+
+func (l *boundedL1) stats() (size, capacity int, evicted uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.items), l.capacity, l.evicted
+}
+
+// NewResponseCache creates a ResponseCache with the default L1 capacity and optional Redis L2 backing.
+func NewResponseCache(enabled bool, ttl time.Duration, redisFabric *storage.RedisFabric) *ResponseCache {
+	return NewResponseCacheWithL1Capacity(enabled, ttl, defaultL1Capacity, redisFabric)
+}
+
+// NewResponseCacheWithL1Capacity creates a ResponseCache with an explicit bounded L1 LRU capacity.
+func NewResponseCacheWithL1Capacity(enabled bool, ttl time.Duration, maxL1Entries int, redisFabric *storage.RedisFabric) *ResponseCache {
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	return &ResponseCache{
+		enabled:     enabled,
+		ttl:         ttl,
+		redis:       redisFabric,
+		l1:          newBoundedL1(maxL1Entries),
+		orgEpochs:   make(map[string]int64),
+		modelEpochs: make(map[string]int64),
+	}
+}
+
+// IsCacheable reports whether a ChatCompletion request is eligible for exact-match caching.
+func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || req.Stream {
+		return false
+	}
+	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
+		return false
+	}
+	if cacheControlHeader == "enabled" || cacheControlHeader == "force" {
+		return true
+	}
+	return req.Temperature != nil && *req.Temperature == 0
+}
+
+// IsStreamCacheable reports whether a streaming ChatCompletion request is eligible
+// for exact-match SSE chunk caching.
+//
+// Stream caching is strictly OPT-IN ONLY: unlike non-streaming IsCacheable (which
+// defaults to enabled when temperature == 0), streaming requests are never cached
+// unless the caller explicitly opts in via the Cache-Control (or X-Gateway-Cache-Control)
+// header using an explicit opt-in directive such as "Cache-Control: gateway-stream-cache",
+// "Cache-Control: max-age=<N>" (N > 0), "only-if-cached", "enabled", or "force".
+// Directives "no-cache", "no-store", "bypass", or "max-age=0" always disable caching.
+// Unless "force" is specified, non-deterministic requests with a non-zero temperature
+// (Temperature != nil && *Temperature != 0) are not cached.
+func (c *ResponseCache) IsStreamCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || !req.Stream {
+		return false
+	}
+	optIn, force := parseStreamCacheControl(cacheControlHeader)
+	if !optIn {
+		return false
+	}
+	if force {
+		return true
+	}
+	return req.Temperature == nil || *req.Temperature == 0
+}
+
+func parseStreamCacheControl(header string) (optIn bool, force bool) {
+	if strings.TrimSpace(header) == "" {
+		return false, false
+	}
+	for _, rawPart := range strings.Split(header, ",") {
+		part := strings.ToLower(strings.TrimSpace(rawPart))
+		if part == "" {
+			continue
+		}
+		switch part {
+		case "no-cache", "no-store", "bypass", "max-age=0":
+			return false, false
+		case "force":
+			optIn = true
+			force = true
+		case "gateway-stream-cache", "enabled", "only-if-cached":
+			optIn = true
+		default:
+			if strings.HasPrefix(part, "max-age=") {
+				valStr := strings.TrimSpace(strings.TrimPrefix(part, "max-age="))
+				valStr = strings.Trim(valStr, `"`)
+				n, err := strconv.Atoi(valStr)
+				if err != nil || n <= 0 {
+					return false, false
+				}
+				optIn = true
+			}
+		}
+	}
+	return optIn, force
+}
+
+// ComputeKey generates a collision-resistant SHA-256 cache key scoped to the organization and request.
+func (c *ResponseCache) ComputeKey(orgID string, req *domain.CanonicalChatRequest) string {
+	return c.ComputeKeyWithScope(orgID, "", "", req)
+}
+
+// ComputeKeyWithScope generates a collision-resistant SHA-256 cache key scoped to the
+// organization, and when model == "auto", also scoped to teamID and effectiveModel.
+func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalChatRequest) string {
+	type keyPayload struct {
+		OrgID          string                       `json:"org_id"`
+		TeamID         string                       `json:"team_id,omitempty"`
+		EffectiveModel string                       `json:"effective_model,omitempty"`
+		Request        *domain.CanonicalChatRequest `json:"request"`
+	}
+	if req == nil {
+		return ""
+	}
+	// RequestID is per-call observability metadata. Stream requests are not
+	// cacheable, so omitting it avoids irrelevant key differences. All other
+	// canonical fields participate, including provider and modality extensions.
+	canonical := *req
+	canonical.RequestID = ""
+	canonical.Stream = false
+	payload := keyPayload{
+		OrgID:   orgID,
+		Request: &canonical,
+	}
+	if req.Model == "auto" {
+		payload.TeamID = teamID
+		if effectiveModel != "" {
+			payload.EffectiveModel = effectiveModel
+		} else {
+			payload.EffectiveModel = req.ResolvedModel
+		}
+	}
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(payload); err != nil {
+		// An unencodable extension value must disable caching, never collapse to
+		// the same empty-payload digest as another request.
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Get retrieves a cached chat completion from L1 or Redis L2 if unexpired and matching current invalidation epochs.
+func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalChatResponse, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	now := time.Now()
+	if entry, ok := c.l1.load(key); ok {
+		if entry.Response != nil && now.Before(entry.ExpiresAt) {
+			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+			if err != nil {
+				c.l1Misses.Add(1)
+				return nil, false
+			}
+			if current == entry.Epochs {
+				c.l1Hits.Add(1)
+				return cloneResponse(entry.Response), true
+			}
+		}
+		if entry.Response != nil {
+			c.l1.delete(key)
+		}
+	}
+	c.l1Misses.Add(1)
+
+	if c.redis == nil || c.redis.Client() == nil {
+		return nil, false
+	}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.Get(ctx, "gw:cache:resp:"+key).Result()
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, ok := res.(string)
+	if !ok || raw == "" {
+		return nil, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal([]byte(raw), &entry) != nil || entry.Response == nil {
+		return nil, false
+	}
+	if !now.Before(entry.ExpiresAt) {
+		return nil, false
+	}
+	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+	if err != nil || current != entry.Epochs {
+		return nil, false
+	}
+	c.l2Hits.Add(1)
+	c.l1.store(key, entry)
+	return cloneResponse(entry.Response), true
+}
+
+// Set stores resp in the response cache without an explicit organization scope.
+func (c *ResponseCache) Set(ctx context.Context, key string, resp *domain.CanonicalChatResponse) {
+	c.SetWithMeta(ctx, key, "", resp)
+}
+
+// SetWithMeta stores resp in L1 and Redis L2 tagged with the current orgID and model invalidation epochs.
+func (c *ResponseCache) SetWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalChatResponse) {
+	if c == nil || key == "" || resp == nil {
+		return
+	}
+	model := resp.Model
+	epochs, err := c.currentEpochs(ctx, orgID, model)
+	if err != nil {
+		return
+	}
+	entry := cacheEntry{
+		Response:  cloneResponse(resp),
+		OrgID:     orgID,
+		Model:     model,
+		Epochs:    epochs,
+		ExpiresAt: time.Now().Add(c.ttl),
+	}
+	if c.redis != nil && c.redis.Client() != nil {
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, "gw:cache:resp:"+key, b, c.ttl).Result()
+		}); err != nil {
+			return
+		}
+	}
+	c.l1.store(key, entry)
+}
+
+// IsCompletionCacheable reports whether a legacy text completion request is eligible for exact-match caching.
+func (c *ResponseCache) IsCompletionCacheable(req *domain.CanonicalCompletionRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || req.Stream {
+		return false
+	}
+	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
+		return false
+	}
+	if cacheControlHeader == "enabled" || cacheControlHeader == "force" {
+		return true
+	}
+	return req.Temperature != nil && *req.Temperature == 0
+}
+
+// IsCompletionStreamCacheable reports whether a streaming legacy text completion
+// request is eligible for exact-match SSE chunk caching.
+//
+// Like IsStreamCacheable, stream caching is strictly OPT-IN ONLY and requires an
+// explicit Cache-Control (or X-Gateway-Cache-Control) opt-in directive such as
+// "Cache-Control: gateway-stream-cache", "Cache-Control: max-age=<N>" (N > 0),
+// "only-if-cached", "enabled", or "force".
+func (c *ResponseCache) IsCompletionStreamCacheable(req *domain.CanonicalCompletionRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || !req.Stream {
+		return false
+	}
+	optIn, force := parseStreamCacheControl(cacheControlHeader)
+	if !optIn {
+		return false
+	}
+	if force {
+		return true
+	}
+	return req.Temperature == nil || *req.Temperature == 0
+}
+
+// ComputeCompletionKey generates a collision-resistant SHA-256 cache key for `/v1/completions` scoped to orgID.
+func (c *ResponseCache) ComputeCompletionKey(orgID string, req *domain.CanonicalCompletionRequest) string {
+	return c.ComputeCompletionKeyWithScope(orgID, "", "", req)
+}
+
+// ComputeCompletionKeyWithScope generates a collision-resistant SHA-256 cache key for `/v1/completions`
+// scoped by orgID, teamID, and effectiveModel.
+func (c *ResponseCache) ComputeCompletionKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalCompletionRequest) string {
+	type completionKeyPayload struct {
+		Modality       string                             `json:"modality"`
+		OrgID          string                             `json:"org_id"`
+		TeamID         string                             `json:"team_id,omitempty"`
+		EffectiveModel string                             `json:"effective_model,omitempty"`
+		Request        *domain.CanonicalCompletionRequest `json:"request"`
+	}
+	if req == nil {
+		return ""
+	}
+	canonical := *req
+	canonical.RequestID = ""
+	canonical.Stream = false
+	effModel := effectiveModel
+	if effModel == "" {
+		effModel = req.ResolvedModel
+	}
+	payload := completionKeyPayload{
+		Modality:       "completion",
+		OrgID:          orgID,
+		TeamID:         teamID,
+		EffectiveModel: effModel,
+		Request:        &canonical,
+	}
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(payload); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// GetCompletion retrieves a cached `/v1/completions` response from L1 or L2 Redis, validating shared epochs.
+func (c *ResponseCache) GetCompletion(ctx context.Context, key string) (*domain.CanonicalCompletionResponse, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	now := time.Now()
+	if entry, ok := c.l1.load(key); ok {
+		if entry.CompletionResponse != nil && now.Before(entry.ExpiresAt) {
+			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+			if err != nil {
+				c.l1Misses.Add(1)
+				return nil, false
+			}
+			if current == entry.Epochs {
+				c.l1Hits.Add(1)
+				return cloneCompletionResponse(entry.CompletionResponse), true
+			}
+		}
+		c.l1.delete(key)
+	}
+	c.l1Misses.Add(1)
+
+	if c.redis == nil || c.redis.Client() == nil {
+		return nil, false
+	}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.Get(ctx, "gw:cache:cmpl:"+key).Result()
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, ok := res.(string)
+	if !ok || raw == "" {
+		return nil, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal([]byte(raw), &entry) != nil || entry.CompletionResponse == nil {
+		return nil, false
+	}
+	if !now.Before(entry.ExpiresAt) {
+		return nil, false
+	}
+	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+	if err != nil || current != entry.Epochs {
+		return nil, false
+	}
+	c.l2Hits.Add(1)
+	c.l1.store(key, entry)
+	return cloneCompletionResponse(entry.CompletionResponse), true
+}
+
+// SetCompletion stores a `/v1/completions` response in L1 and L2 Redis.
+func (c *ResponseCache) SetCompletion(ctx context.Context, key string, resp *domain.CanonicalCompletionResponse) {
+	c.SetCompletionWithMeta(ctx, key, "", resp)
+}
+
+// SetCompletionWithMeta stores a `/v1/completions` response scoped by orgID and model epochs in L1 and L2 Redis.
+func (c *ResponseCache) SetCompletionWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalCompletionResponse) {
+	if c == nil || key == "" || resp == nil {
+		return
+	}
+	model := resp.Model
+	epochs, err := c.currentEpochs(ctx, orgID, model)
+	if err != nil {
+		return
+	}
+	entry := cacheEntry{
+		CompletionResponse: cloneCompletionResponse(resp),
+		OrgID:              orgID,
+		Model:              model,
+		Epochs:             epochs,
+		ExpiresAt:          time.Now().Add(c.ttl),
+	}
+	if c.redis != nil && c.redis.Client() != nil {
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, "gw:cache:cmpl:"+key, b, c.ttl).Result()
+		}); err != nil {
+			return
+		}
+	}
+	c.l1.store(key, entry)
+}
+
+// IsEmbeddingCacheable reports whether a `/v1/embeddings` request is eligible for exact-match caching.
+func (c *ResponseCache) IsEmbeddingCacheable(req *domain.CanonicalEmbeddingRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || len(req.Input) == 0 {
+		return false
+	}
+	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
+		return false
+	}
+	return true
+}
+
+// ComputeEmbeddingKey generates a collision-resistant SHA-256 cache key for `/v1/embeddings` scoped to orgID.
+func (c *ResponseCache) ComputeEmbeddingKey(orgID string, req *domain.CanonicalEmbeddingRequest) string {
+	return c.ComputeEmbeddingKeyWithScope(orgID, "", "", req)
+}
+
+// ComputeEmbeddingKeyWithScope generates a collision-resistant SHA-256 cache key for `/v1/embeddings`
+// scoped by orgID, teamID, and effectiveModel.
+func (c *ResponseCache) ComputeEmbeddingKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalEmbeddingRequest) string {
+	type embeddingKeyPayload struct {
+		Modality       string                            `json:"modality"`
+		OrgID          string                            `json:"org_id"`
+		TeamID         string                            `json:"team_id,omitempty"`
+		EffectiveModel string                            `json:"effective_model,omitempty"`
+		Request        *domain.CanonicalEmbeddingRequest `json:"request"`
+	}
+	if req == nil {
+		return ""
+	}
+	canonical := *req
+	canonical.RequestID = ""
+	effModel := effectiveModel
+	if effModel == "" {
+		effModel = req.ResolvedModel
+	}
+	payload := embeddingKeyPayload{
+		Modality:       "embedding",
+		OrgID:          orgID,
+		TeamID:         teamID,
+		EffectiveModel: effModel,
+		Request:        &canonical,
+	}
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(payload); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// GetEmbedding retrieves a cached `/v1/embeddings` response from L1 or L2 Redis, validating shared epochs.
+func (c *ResponseCache) GetEmbedding(ctx context.Context, key string) (*domain.CanonicalEmbeddingResponse, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	now := time.Now()
+	if entry, ok := c.l1.load(key); ok {
+		if entry.EmbeddingResponse != nil && now.Before(entry.ExpiresAt) {
+			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+			if err != nil {
+				c.l1Misses.Add(1)
+				return nil, false
+			}
+			if current == entry.Epochs {
+				c.l1Hits.Add(1)
+				return cloneEmbeddingResponse(entry.EmbeddingResponse), true
+			}
+		}
+		c.l1.delete(key)
+	}
+	c.l1Misses.Add(1)
+
+	if c.redis == nil || c.redis.Client() == nil {
+		return nil, false
+	}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.Get(ctx, "gw:cache:emb:"+key).Result()
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, ok := res.(string)
+	if !ok || raw == "" {
+		return nil, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal([]byte(raw), &entry) != nil || entry.EmbeddingResponse == nil {
+		return nil, false
+	}
+	if !now.Before(entry.ExpiresAt) {
+		return nil, false
+	}
+	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+	if err != nil || current != entry.Epochs {
+		return nil, false
+	}
+	c.l2Hits.Add(1)
+	c.l1.store(key, entry)
+	return cloneEmbeddingResponse(entry.EmbeddingResponse), true
+}
+
+// SetEmbedding stores a `/v1/embeddings` response in L1 and L2 Redis.
+func (c *ResponseCache) SetEmbedding(ctx context.Context, key string, resp *domain.CanonicalEmbeddingResponse) {
+	c.SetEmbeddingWithMeta(ctx, key, "", resp)
+}
+
+// SetEmbeddingWithMeta stores a `/v1/embeddings` response scoped by orgID and model epochs in L1 and L2 Redis.
+func (c *ResponseCache) SetEmbeddingWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalEmbeddingResponse) {
+	if c == nil || key == "" || resp == nil {
+		return
+	}
+	model := resp.Model
+	epochs, err := c.currentEpochs(ctx, orgID, model)
+	if err != nil {
+		return
+	}
+	entry := cacheEntry{
+		EmbeddingResponse: cloneEmbeddingResponse(resp),
+		OrgID:             orgID,
+		Model:             model,
+		Epochs:            epochs,
+		ExpiresAt:         time.Now().Add(c.ttl),
+	}
+	if c.redis != nil && c.redis.Client() != nil {
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, "gw:cache:emb:"+key, b, c.ttl).Result()
+		}); err != nil {
+			return
+		}
+	}
+	c.l1.store(key, entry)
+}
+
+// GetStreamChunks retrieves cached streaming SSE chunks from L1 (`"stream:" + key`) or L2 Redis (`gw:cache:stream:`),
+// validating shared epochs and returning a deep copy safe for concurrent replay/redaction.
+func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]domain.CanonicalStreamChunk, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	l1Key := "stream:" + key
+	now := time.Now()
+	if entry, ok := c.l1.load(l1Key); ok {
+		if len(entry.StreamChunks) > 0 && now.Before(entry.ExpiresAt) {
+			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+			if err != nil {
+				c.l1Misses.Add(1)
+				return nil, false
+			}
+			if current == entry.Epochs {
+				c.l1Hits.Add(1)
+				return cloneStreamChunks(entry.StreamChunks), true
+			}
+		}
+		if len(entry.StreamChunks) > 0 {
+			c.l1.delete(l1Key)
+		}
+	}
+	c.l1Misses.Add(1)
+
+	if c.redis == nil || c.redis.Client() == nil {
+		return nil, false
+	}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.Get(ctx, "gw:cache:stream:"+key).Result()
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, ok := res.(string)
+	if !ok || raw == "" {
+		return nil, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal([]byte(raw), &entry) != nil || len(entry.StreamChunks) == 0 {
+		return nil, false
+	}
+	if !now.Before(entry.ExpiresAt) {
+		return nil, false
+	}
+	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+	if err != nil || current != entry.Epochs {
+		return nil, false
+	}
+	c.l2Hits.Add(1)
+	c.l1.store(l1Key, entry)
+	return cloneStreamChunks(entry.StreamChunks), true
+}
+
+// SetStreamChunks stores a slice of streaming SSE chunks in L1 (`"stream:" + key`) and L2 Redis (`gw:cache:stream:`)
+// scoped by orgID and model invalidation epochs.
+func (c *ResponseCache) SetStreamChunks(ctx context.Context, key string, orgID string, model string, chunks []domain.CanonicalStreamChunk) {
+	if c == nil || key == "" || len(chunks) == 0 {
+		return
+	}
+	if model == "" {
+		for _, ch := range chunks {
+			if ch.Model != "" {
+				model = ch.Model
+				break
+			}
+		}
+	}
+	epochs, err := c.currentEpochs(ctx, orgID, model)
+	if err != nil {
+		return
+	}
+	entry := cacheEntry{
+		StreamChunks: cloneStreamChunks(chunks),
+		OrgID:        orgID,
+		Model:        model,
+		Epochs:       epochs,
+		ExpiresAt:    time.Now().Add(c.ttl),
+	}
+	if c.redis != nil && c.redis.Client() != nil {
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, "gw:cache:stream:"+key, b, c.ttl).Result()
+		}); err != nil {
+			return
+		}
+	}
+	c.l1.store("stream:"+key, entry)
+}
+
+// Invalidate advances shared global, organization, and/or model epochs and removes matching local entries.
+// The returned revision is monotonic across all invalidation operations.
+func (c *ResponseCache) Invalidate(ctx context.Context, orgID, model string) (int, int64, error) {
+	var revision int64
+	if c.redis != nil && c.redis.Client() != nil {
+		keys := []string{cacheRevisionKey()}
+		if orgID == "" && model == "" {
+			keys = append(keys, cacheGlobalEpochKey())
+		} else {
+			if orgID != "" {
+				keys = append(keys, cacheOrgEpochKey(orgID))
+			}
+			if model != "" {
+				keys = append(keys, cacheModelEpochKey(model))
+			}
+		}
+		res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return invalidateCacheEpochsScript.Run(ctx, rdb, keys).Int64()
+		})
+		if err != nil {
+			return 0, 0, err
+		}
+		var ok bool
+		revision, ok = res.(int64)
+		if !ok {
+			return 0, 0, fmt.Errorf("cache invalidation returned unexpected revision")
+		}
+	} else {
+		c.epochMu.Lock()
+		c.revision++
+		revision = c.revision
+		if orgID == "" && model == "" {
+			c.globalEpoch++
+		} else {
+			if orgID != "" {
+				c.orgEpochs[orgID]++
+			}
+			if model != "" {
+				c.modelEpochs[model]++
+			}
+		}
+		c.epochMu.Unlock()
+	}
+
+	purged := c.l1.purge(orgID, model)
+	return purged, revision, nil
+}
+
+// L1Stats returns the current bounded process-local entry count and lifetime
+// eviction count for operator diagnostics.
+func (c *ResponseCache) L1Stats() (size, capacity int, evicted uint64) {
+	if c == nil {
+		return 0, 0, 0
+	}
+	return c.l1.stats()
+}
+
+// Metrics returns cumulative cache-hit and shared-epoch lookup measurements.
+func (c *ResponseCache) Metrics() MetricsSnapshot {
+	if c == nil {
+		return MetricsSnapshot{}
+	}
+	return MetricsSnapshot{
+		L1Hits:      c.l1Hits.Load(),
+		L1Misses:    c.l1Misses.Load(),
+		L2Hits:      c.l2Hits.Load(),
+		EpochChecks: c.epochChecks.Load(),
+		EpochNanos:  c.epochNanos.Load(),
+	}
+}
+
+func (c *ResponseCache) currentEpochs(ctx context.Context, orgID, model string) (cacheEpochs, error) {
+	started := time.Now()
+	defer func() {
+		c.epochChecks.Add(1)
+		c.epochNanos.Add(uint64(time.Since(started)))
+	}()
+	if c.redis == nil || c.redis.Client() == nil {
+		c.epochMu.RLock()
+		defer c.epochMu.RUnlock()
+		return cacheEpochs{Global: c.globalEpoch, Organization: c.orgEpochs[orgID], Model: c.modelEpochs[model]}, nil
+	}
+	keys := []string{cacheGlobalEpochKey(), cacheOrgEpochKey(orgID), cacheModelEpochKey(model)}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.MGet(ctx, keys...).Result()
+	})
+	if err != nil {
+		return cacheEpochs{}, err
+	}
+	values, ok := res.([]any)
+	if !ok || len(values) != len(keys) {
+		return cacheEpochs{}, fmt.Errorf("cache epoch lookup returned unexpected values")
+	}
+	parsed := make([]int64, len(values))
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return cacheEpochs{}, fmt.Errorf("cache epoch %d has unexpected type %T", i, value)
+		}
+		parsed[i], err = strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return cacheEpochs{}, fmt.Errorf("parse cache epoch %d: %w", i, err)
+		}
+	}
+	return cacheEpochs{Global: parsed[0], Organization: parsed[1], Model: parsed[2]}, nil
+}
+
+func cloneResponse(resp *domain.CanonicalChatResponse) *domain.CanonicalChatResponse {
+	if resp == nil {
+		return nil
+	}
+	cp := *resp
+	if resp.Metadata != nil {
+		cp.Metadata = maps.Clone(resp.Metadata)
+	}
+	if resp.Choices != nil {
+		cp.Choices = make([]domain.CanonicalChoice, len(resp.Choices))
+		for i, ch := range resp.Choices {
+			cp.Choices[i] = ch
+			cp.Choices[i].Message = cloneMessage(ch.Message)
+		}
+	}
+	return &cp
+}
+
+func cloneCompletionResponse(resp *domain.CanonicalCompletionResponse) *domain.CanonicalCompletionResponse {
+	if resp == nil {
+		return nil
+	}
+	cp := *resp
+	if resp.Choices != nil {
+		cp.Choices = slices.Clone(resp.Choices)
+	}
+	return &cp
+}
+
+func cloneEmbeddingResponse(resp *domain.CanonicalEmbeddingResponse) *domain.CanonicalEmbeddingResponse {
+	if resp == nil {
+		return nil
+	}
+	cp := *resp
+	if resp.Data != nil {
+		cp.Data = make([]domain.EmbeddingData, len(resp.Data))
+		for i, d := range resp.Data {
+			cp.Data[i] = d
+			if d.Embedding != nil {
+				cp.Data[i].Embedding = slices.Clone(d.Embedding)
+			}
+		}
+	}
+	return &cp
+}
+
+func cloneStreamChunks(chunks []domain.CanonicalStreamChunk) []domain.CanonicalStreamChunk {
+	if len(chunks) == 0 {
+		return nil
+	}
+	out := make([]domain.CanonicalStreamChunk, len(chunks))
+	for i, ch := range chunks {
+		out[i] = ch
+		if ch.Usage != nil {
+			u := *ch.Usage
+			out[i].Usage = &u
+		}
+		if ch.Choices != nil {
+			choices := make([]domain.CanonicalStreamChoice, len(ch.Choices))
+			for j, choice := range ch.Choices {
+				choices[j] = choice
+				if choice.FinishReason != nil {
+					fr := *choice.FinishReason
+					choices[j].FinishReason = &fr
+				}
+				if choice.Delta.ToolCalls != nil {
+					tcs := make([]domain.CanonicalToolCall, len(choice.Delta.ToolCalls))
+					for k, tc := range choice.Delta.ToolCalls {
+						tcs[k] = tc
+						if tc.Index != nil {
+							idx := *tc.Index
+							tcs[k].Index = &idx
+						}
+					}
+					choices[j].Delta.ToolCalls = tcs
+				}
+			}
+			out[i].Choices = choices
+		}
+	}
+	return out
+}
+
+func cloneMessage(msg domain.CanonicalMessage) domain.CanonicalMessage {
+	if msg.ToolCalls != nil {
+		msg.ToolCalls = slices.Clone(msg.ToolCalls)
+	}
+	if msg.CacheControl != nil {
+		cc := *msg.CacheControl
+		msg.CacheControl = &cc
+	}
+	if msg.Parts != nil {
+		parts := make([]domain.ContentPart, len(msg.Parts))
+		for i, p := range msg.Parts {
+			parts[i] = p
+			if p.ImageURL != nil {
+				img := *p.ImageURL
+				parts[i].ImageURL = &img
+			}
+			if p.Document != nil {
+				doc := *p.Document
+				parts[i].Document = &doc
+			}
+			if p.CacheControl != nil {
+				cc := *p.CacheControl
+				parts[i].CacheControl = &cc
+			}
+		}
+		msg.Parts = parts
+	}
+	if msg.Annotations != nil {
+		anns := make([]domain.Annotation, len(msg.Annotations))
+		for i, a := range msg.Annotations {
+			anns[i] = a
+			if a.URLCitation != nil {
+				cit := *a.URLCitation
+				anns[i].URLCitation = &cit
+			}
+		}
+		msg.Annotations = anns
+	}
+	return msg
+}
+
+func cacheGlobalEpochKey() string { return "gw:cache:{epochs}:global" }
+func cacheRevisionKey() string    { return "gw:cache:{epochs}:revision" }
+
+func cacheOrgEpochKey(orgID string) string {
+	return fmt.Sprintf("gw:cache:{epochs}:org:%x", sha256.Sum256([]byte(orgID)))
+}
+
+func cacheModelEpochKey(model string) string {
+	return fmt.Sprintf("gw:cache:{epochs}:model:%x", sha256.Sum256([]byte(model)))
+}
