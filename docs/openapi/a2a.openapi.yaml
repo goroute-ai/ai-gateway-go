@@ -1,0 +1,205 @@
+openapi: 3.1.0
+info:
+  title: GoRoute AI Gateway — Agent-to-Agent (A2A) Protocol Service
+  version: 1.0.0
+  description: >
+    Enterprise implementation of Linux Foundation Agent-to-Agent Protocol (A2A v1.0).
+    Features RFC 8785 JCS canonicalization, JWS cryptographic card signatures, dual HTTP+JSON
+    and JSON-RPC 2.0 dispatch, Subscribe-First SSE task streaming, multi-tenant visibility isolation,
+    transactional outbox with exponential backoff & dead-letter queue, and administrative emergency kill-switch.
+servers:
+  - url: https://api.goroute.ai
+    description: Production Gateway
+  - url: http://localhost:8080
+    description: Local Development Gateway
+paths:
+  /.well-known/agent-card.json:
+    get:
+      summary: Gateway Well-Known Agent Card
+      description: Returns the cryptographically signed Agent Card declaring supported interfaces, models, and tools.
+      operationId: getWellKnownAgentCard
+      responses:
+        '200':
+          description: Signed JSON Agent Card
+          content:
+            application/json:
+              schema:
+                type: object
+  /a2a/v1/agents/{agentSlug}:
+    post:
+      summary: Send Message to Agent
+      description: Sends an A2A message to an upstream agent via HTTP+JSON or JSON-RPC 2.0 dual-binding.
+      operationId: sendA2AMessage
+      security:
+        - VirtualKeyAuth: []
+      parameters:
+        - name: agentSlug
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Slug of target agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Agent response message or task
+          content:
+            application/json:
+              schema:
+                type: object
+  /a2a/v1/agents/{agentSlug}/tasks:
+    get:
+      summary: List Tasks for Agent
+      operationId: listA2ATasks
+      security:
+        - VirtualKeyAuth: []
+      parameters:
+        - name: agentSlug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of tasks conforming to caller visibility policy
+  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:
+    get:
+      summary: Get Task Details
+      operationId: getA2ATask
+      security:
+        - VirtualKeyAuth: []
+      parameters:
+        - name: agentSlug
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task details with state and artifacts
+  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:cancel:
+    post:
+      summary: Cancel Task
+      operationId: cancelA2ATask
+      security:
+        - VirtualKeyAuth: []
+      parameters:
+        - name: agentSlug
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Canceled task object
+  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:subscribe:
+    get:
+      summary: Subscribe to Task Event Stream
+      description: Subscribe-First Server-Sent Events (SSE) stream delivering historical backfill and live real-time task events.
+      operationId: subscribeA2ATaskStream
+      security:
+        - VirtualKeyAuth: []
+      parameters:
+        - name: agentSlug
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: after_seq
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Event sequence number to replay from
+      responses:
+        '200':
+          description: Real-time task event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /admin/v1/a2a/agents:
+    post:
+      summary: Register Upstream A2A Agent
+      operationId: adminCreateA2AAgent
+      security:
+        - MasterAdminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug, endpoint_url]
+              properties:
+                name: {type: string}
+                slug: {type: string}
+                endpoint_url: {type: string, format: uri}
+                task_visibility_mode: {type: string, enum: [key_strict, user_strict, team, org_admin]}
+                auth_type: {type: string, enum: [none, static, vault_jwt]}
+                max_task_iterations: {type: integer}
+                max_task_budget_micros: {type: integer}
+      responses:
+        '201':
+          description: A2A Agent created
+    get:
+      summary: List A2A Agents
+      operationId: adminListA2AAgents
+      security:
+        - MasterAdminAuth: []
+      responses:
+        '200':
+          description: List of registered agents
+  /admin/v1/a2a/agents/{id}/kill-switch:
+    post:
+      summary: Toggle Emergency Kill-Switch for Agent
+      operationId: adminSetA2AKillSwitch
+      security:
+        - MasterAdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [killed]
+              properties:
+                killed: {type: boolean}
+      responses:
+        '200':
+          description: Kill-switch status updated
+components:
+  securitySchemes:
+    VirtualKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: sk-gw-key
+    MasterAdminAuth:
+      type: http
+      scheme: bearer
