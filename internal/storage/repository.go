@@ -1,0 +1,423 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+)
+
+// ErrNotFound is returned when a requested entity does not exist in the repository.
+var ErrNotFound = errors.New("not found")
+
+// BudgetResetResult lists the entity IDs whose budgets were reset.
+type BudgetResetResult struct {
+	OrgIDs        []string
+	TeamIDs       []string
+	UserIDs       []string
+	VirtualKeyIDs []string
+	Events        []BudgetResetEvent
+}
+
+// BudgetResetEvent is a durable instruction to clear one Redis spend counter.
+type BudgetResetEvent struct {
+	ID       string
+	Scope    string
+	EntityID string
+	OrgID    string
+	ResetAt  time.Time
+}
+
+// Total returns the total number of entities reset across all scopes.
+func (r BudgetResetResult) Total() int {
+	return len(r.OrgIDs) + len(r.TeamIDs) + len(r.UserIDs) + len(r.VirtualKeyIDs)
+}
+
+// BudgetResetWithIDsRepository is an optional extension of Repository that returns
+// the IDs of organizations, teams, users, and virtual keys reset during a budget cycle.
+type BudgetResetWithIDsRepository interface {
+	ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error)
+}
+
+// BudgetResetOutboxRepository retries Redis counter resets after database resets commit.
+type BudgetResetOutboxRepository interface {
+	ListPendingBudgetResets(ctx context.Context, limit int) ([]BudgetResetEvent, error)
+	MarkBudgetResetsDelivered(ctx context.Context, ids []string) error
+}
+
+// BatchSpendEventAckRepository acknowledges delivered spend outbox events in a single batch.
+type BatchSpendEventAckRepository interface {
+	MarkSpendEventsDelivered(ctx context.Context, ids []string) error
+}
+
+// SpendOutboxMaintenanceRepository exposes outbox depth inspection and delivered-row pruning.
+type SpendOutboxMaintenanceRepository interface {
+	CountPendingSpendEvents(ctx context.Context) (int64, error)
+	PruneDeliveredSpendEvents(ctx context.Context, olderThan time.Time, limit int) (int64, error)
+}
+
+// UserLookupRepository is an optional extension of Repository for direct user lookup by ID.
+type UserLookupRepository interface {
+	GetUser(ctx context.Context, id string) (*domain.User, error)
+}
+
+// VirtualKeyAuthBundle holds all identity entities resolved for an inbound Virtual Key in a single lookup.
+type VirtualKeyAuthBundle struct {
+	Key                   *domain.VirtualKey
+	Org                   *domain.Organization
+	Team                  *domain.Team
+	Project               *domain.Project
+	User                  *domain.User
+	TeamMembership        *domain.TeamMembership
+	Deprecated            bool
+	DeprecatedKeyRevokeAt time.Time
+}
+
+// VirtualKeyBundleLookup resolves an active or grace-period deprecated virtual key and its
+// organization, team, project, user, and team membership records in a single storage call.
+type VirtualKeyBundleLookup interface {
+	GetVirtualKeyAuthBundleByHash(ctx context.Context, keyHash string, now time.Time) (*VirtualKeyAuthBundle, error)
+}
+
+// OrganizationUpdateRepository persists updates to organization governance and budget policies.
+type OrganizationUpdateRepository interface {
+	UpdateOrganization(ctx context.Context, org *domain.Organization) error
+}
+
+// VirtualKeyFilter controls server-side filtering and pagination for ListVirtualKeysFiltered.
+type VirtualKeyFilter struct {
+	OrgID     string
+	Status    string // "", "active", "revoked", "expired"
+	TeamID    string
+	UserID    string
+	ProjectID string
+	Search    string
+	Limit     int
+	Offset    int
+}
+
+// VirtualKeyBulkPatch defines partial mutable fields applied across multiple keys.
+type VirtualKeyBulkPatch struct {
+	IsActive        *bool
+	MaxBudgetMicros *int64
+	RPMLimit        *int
+	TPMLimit        *int
+	AllowedModels   []string // non-nil replaces allowed_models
+	RevokedBy       string
+}
+
+// EntitySpendScope identifies a persisted spend counter reset target.
+type EntitySpendScope string
+
+const (
+	EntitySpendScopeKey        EntitySpendScope = "key"
+	EntitySpendScopeTeamMember EntitySpendScope = "team_member"
+)
+
+// KeyGovernanceRepository provides extended key filtering, bulk lifecycle, spend reset,
+// guaranteed-throughput checks, and expiry alerting storage operations.
+type KeyGovernanceRepository interface {
+	ListVirtualKeysFiltered(ctx context.Context, filter VirtualKeyFilter) ([]*domain.VirtualKey, int, error)
+	BulkUpdateVirtualKeys(ctx context.Context, orgID string, ids []string, patch VirtualKeyBulkPatch) ([]*domain.VirtualKey, error)
+	ResetEntitySpend(ctx context.Context, scope EntitySpendScope, orgID, entityID, secondaryID string) error
+	SumChildKeyThroughput(ctx context.Context, orgID, teamID, excludeKeyID string) (rpmSum int, tpmSum int, err error)
+	ListVirtualKeysExpiringBefore(ctx context.Context, cutoff time.Time, limit int) ([]*domain.VirtualKey, error)
+	MarkVirtualKeyExpiryAlertSent(ctx context.Context, keyID string, alertDay int) error
+	MarkVirtualKeyRotated(ctx context.Context, keyID string, rotatedAt time.Time) error
+	RevokeVirtualKeyWithActor(ctx context.Context, id, revokedBy string) error
+	UnblockVirtualKey(ctx context.Context, id string) error
+}
+
+// KEKRotationBatch holds encrypted records across all vault-protected resources.
+type KEKRotationBatch struct {
+	Credentials       []*domain.ProviderCredential
+	MCPServers        []*domain.MCPServer
+	A2AAgents         []*domain.A2AAgent
+	Guardrails        []*domain.GuardrailDefinition
+	StagedVirtualKeys []*domain.VirtualKey
+}
+
+// KEKRotationSummary reports counts of entities updated during a transactional KEK rotation.
+type KEKRotationSummary struct {
+	CredentialsRewrapped       int `json:"credentials_rewrapped"`
+	MCPServersRewrapped        int `json:"mcp_servers_rewrapped"`
+	A2AAgentsRewrapped         int `json:"a2a_agents_rewrapped"`
+	GuardrailsRewrapped        int `json:"guardrails_rewrapped"`
+	StagedVirtualKeysRewrapped int `json:"staged_virtual_keys_rewrapped"`
+}
+
+// KEKRotationRepository atomically loads, locks, re-wraps, and commits DEKs under a single transaction.
+type KEKRotationRepository interface {
+	RotateKEKsTransactionally(ctx context.Context, rewrap func(batch KEKRotationBatch) (KEKRotationBatch, error)) (KEKRotationSummary, error)
+}
+
+// TeamMembershipBulkSyncRepository transactionally upserts and removes team memberships in one operation.
+type TeamMembershipBulkSyncRepository interface {
+	BulkSyncTeamMemberships(ctx context.Context, orgID, teamID string, upserts []*domain.TeamMembership, removeUserIDs []string) (upserted []*domain.TeamMembership, removed int, err error)
+}
+
+// TeamSpendRepository is an optional extension of Repository for team-scoped FinOps spend queries.
+type TeamSpendRepository interface {
+	GetTeamSpendSummary(ctx context.Context, orgID, teamID string) (*SpendSummary, error)
+	ListTeamSpendLogs(ctx context.Context, orgID, teamID string, limit int) ([]domain.SpendEvent, error)
+}
+
+// GlobalModelNameLookup is an optional indexed lookup for hot inference paths.
+// Implementations must return every matching provider model when provider is
+// empty so callers can retain conservative cross-provider pricing bounds.
+type GlobalModelNameLookup interface {
+	ListGlobalModelsByName(ctx context.Context, provider domain.ProviderType, modelName string) ([]*domain.GlobalModel, error)
+}
+
+// GlobalModelPricingSummary is a conservative maximum across all priced models.
+// It lets alias budgets avoid rescanning the catalog on every request.
+type GlobalModelPricingSummary struct {
+	CatalogSize                int
+	PricedModelCount           int
+	InputCostMicrosPer1M       int64
+	CachedInputCostMicrosPer1M int64
+	CacheWriteCostMicrosPer1M  int64
+	OutputCostMicrosPer1M      int64
+	ReasoningCostMicrosPer1M   int64
+	MaxOutputTokens            int
+	HasPricedModels            bool
+	Rebuilt                    bool
+}
+
+// GlobalModelPricingSummaryLookup returns a lazily refreshed pricing maximum.
+// Implementations must invalidate it on every catalog or pricing mutation.
+type GlobalModelPricingSummaryLookup interface {
+	GetGlobalModelPricingSummary(ctx context.Context) (GlobalModelPricingSummary, error)
+}
+
+// GlobalModelCatalogSize provides an O(1) model count for operational metrics.
+type GlobalModelCatalogSize interface {
+	GlobalModelCatalogSize() int
+}
+
+// GlobalModelPricingSummaryMetrics exposes how often full pricing summaries
+// were rebuilt after catalog changes.
+type GlobalModelPricingSummaryMetrics interface {
+	PricingSummaryRebuilds() uint64
+}
+
+// PostgresLookupMetrics exposes low-cardinality counters for read-through
+// fallback queries that occur when the in-memory projection has no value.
+type PostgresLookupMetrics interface {
+	LookupQueryStats() (subscriptionQueries, emptySubscriptionQueries, guardrailQueries, missingGuardrailQueries uint64)
+}
+
+// SpendSummary aggregates financial metrics per organization, team, model, or provider.
+type SpendSummary struct {
+	TotalRequests     int64            `json:"total_requests"`
+	TotalTokens       int64            `json:"total_tokens"`
+	TotalCostMicros   int64            `json:"total_cost_micros"`
+	TotalCostUSD      float64          `json:"total_cost_usd"`
+	UnpricedRequests  int64            `json:"unpriced_requests"`
+	UnpricedTokens    int64            `json:"unpriced_tokens"`
+	SpendByProvider   map[string]int64 `json:"spend_by_provider"`
+	SpendByModel      map[string]int64 `json:"spend_by_model"`
+	SpendByTeam       map[string]int64 `json:"spend_by_team"`
+	SpendByUser       map[string]int64 `json:"spend_by_user"`
+	SpendByVirtualKey map[string]int64 `json:"spend_by_virtual_key"`
+}
+
+// GuardrailBindingFilter filters guardrail binding queries. Empty fields match all values.
+type GuardrailBindingFilter struct {
+	OrgID         string
+	GuardrailID   string
+	GuardrailName string
+	TeamID        string
+	VirtualKeyID  string
+	EndUserID     string
+	ModelGroupID  string
+	Tag           string
+}
+
+// EffectiveGuardrails holds an organization's active guardrail definitions and associated bindings.
+type EffectiveGuardrails struct {
+	Definitions []*domain.GuardrailDefinition
+	Bindings    []*domain.GuardrailBinding
+}
+
+// GuardrailRegistryRepository defines persistence operations for named guardrail definitions,
+// hierarchical scope bindings, and Vault-encrypted secret rotation.
+type GuardrailRegistryRepository interface {
+	CreateGuardrailDefinition(ctx context.Context, def *domain.GuardrailDefinition) error
+	GetGuardrailDefinition(ctx context.Context, id string) (*domain.GuardrailDefinition, error)
+	ListGuardrailDefinitions(ctx context.Context, orgID string, status domain.GuardrailStatus, name string) ([]*domain.GuardrailDefinition, error)
+	UpdateGuardrailDefinition(ctx context.Context, def *domain.GuardrailDefinition) error
+	DeleteGuardrailDefinition(ctx context.Context, id string) error
+
+	CreateGuardrailBinding(ctx context.Context, binding *domain.GuardrailBinding) error
+	GetGuardrailBinding(ctx context.Context, id string) (*domain.GuardrailBinding, error)
+	ListGuardrailBindings(ctx context.Context, filter GuardrailBindingFilter) ([]*domain.GuardrailBinding, error)
+	UpdateGuardrailBinding(ctx context.Context, binding *domain.GuardrailBinding) error
+	DeleteGuardrailBinding(ctx context.Context, id string) error
+
+	ListEffectiveGuardrailsForOrg(ctx context.Context, orgID string) (*EffectiveGuardrails, error)
+	RotateGuardrailSecrets(ctx context.Context, orgID, id, encryptedSecrets, encryptedDEK string) error
+}
+
+// AuditLogObserverRepository is optionally implemented by stores that stream every
+// persisted audit event (admin, MCP, A2A, key rotation, guardrails) to a SIEM observer.
+type AuditLogObserverRepository interface {
+	SetAuditLogObserver(fn func(*domain.AuditLog))
+}
+
+// Repository defines the persistence contract shared across Control Plane and Data Plane services.
+type Repository interface {
+	// Health & Connectivity
+	Ping(ctx context.Context) error
+
+	// Layer 1: Global Model Catalogue & Versioned Pricing
+	UpsertGlobalModel(ctx context.Context, m *domain.GlobalModel) error
+	GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error)
+	ListGlobalModels(ctx context.Context) ([]*domain.GlobalModel, error)
+	UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error)
+	ListModelPricingHistory(ctx context.Context, modelID string) ([]*domain.ModelPricingHistory, error)
+
+	// Organizations (Multi-Tenant Root)
+	CreateOrganization(ctx context.Context, org *domain.Organization) error
+	GetOrganization(ctx context.Context, id string) (*domain.Organization, error)
+	ListOrganizations(ctx context.Context) ([]*domain.Organization, error)
+
+	// Layer 2: Organization Provider Subscriptions
+	SetOrgProviderSubscription(ctx context.Context, sub *domain.OrgProviderSubscription) error
+	GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error)
+
+	// Layer 3: Organization Model Availability Policies
+	SetOrgModelPolicy(ctx context.Context, pol *domain.OrgModelPolicy) error
+	GetOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error)
+
+	// Teams & Users
+	CreateTeam(ctx context.Context, team *domain.Team) error
+	UpdateTeam(ctx context.Context, team *domain.Team) error
+	GetTeam(ctx context.Context, id string) (*domain.Team, error)
+	ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error)
+	DeleteTeam(ctx context.Context, id string) error
+	CreateUser(ctx context.Context, user *domain.User) error
+	UpdateUser(ctx context.Context, user *domain.User) error
+	GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error)
+	ListUsers(ctx context.Context, orgID string) ([]*domain.User, error)
+	DeleteUser(ctx context.Context, id string) error
+
+	// Boundary 1 Auth: Virtual API Keys
+	CreateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error
+	UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error
+	GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error)
+	GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error)
+	ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error)
+	RevokeVirtualKey(ctx context.Context, id string) error
+
+	// Boundary 2 Auth: Provider Credentials Vault
+	CreateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error
+	UpdateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error
+	GetProviderCredential(ctx context.Context, id string) (*domain.ProviderCredential, error)
+	ListProviderCredentials(ctx context.Context, orgID string) ([]*domain.ProviderCredential, error)
+
+	// Layer 4: Model Groups & Deployments
+	CreateModelGroup(ctx context.Context, mg *domain.ModelGroup) error
+	GetModelGroupByAlias(ctx context.Context, orgID, alias string) (*domain.ModelGroup, error)
+	GetModelGroupByID(ctx context.Context, id string) (*domain.ModelGroup, error)
+	ListModelGroups(ctx context.Context, orgID string) ([]*domain.ModelGroup, error)
+	UpdateModelGroup(ctx context.Context, mg *domain.ModelGroup) error
+	DeleteModelGroup(ctx context.Context, id string) error
+	CreateDeployment(ctx context.Context, dep *domain.Deployment) error
+	GetDeployment(ctx context.Context, id string) (*domain.Deployment, error)
+	ListDeploymentsByGroup(ctx context.Context, groupID string) ([]*domain.Deployment, error)
+	ListAllDeployments(ctx context.Context) ([]*domain.Deployment, error)
+	UpdateDeployment(ctx context.Context, dep *domain.Deployment) error
+	DeleteDeployment(ctx context.Context, id string) error
+	UpdateDeploymentStatus(ctx context.Context, depID string, status domain.DeploymentStatus) error
+
+	// Security Guardrail Policies & Registry
+	SetGuardrailPolicy(ctx context.Context, pol *domain.GuardrailPolicy) error
+	GetGuardrailPolicy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error)
+	GuardrailRegistryRepository
+
+	// FinOps Spend & Audit Logging
+	EnqueueSpendEvent(ctx context.Context, event domain.SpendEvent) error
+	ClaimSpendEvents(ctx context.Context, limit int, lease time.Duration) ([]domain.SpendEvent, error)
+	MarkSpendEventDelivered(ctx context.Context, id string) error
+	RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error
+	RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error
+	GetSpendSummary(ctx context.Context, orgID string) (*SpendSummary, error)
+	ListSpendLogs(ctx context.Context, orgID string, limit int) ([]domain.SpendEvent, error)
+	ResetExpiredBudgets(ctx context.Context, now time.Time) (int, error)
+	RecordAuditLog(ctx context.Context, log *domain.AuditLog) error
+	ListAuditLogs(ctx context.Context, orgID string, limit int) ([]*domain.AuditLog, error)
+	ListAuditLogsFiltered(ctx context.Context, filter domain.AuditLogFilter) ([]*domain.AuditLog, string, error)
+
+	// MCP: Servers, Tools, Toolsets & BYOK Credentials
+	CreateMCPServer(ctx context.Context, server *domain.MCPServer) error
+	UpdateMCPServer(ctx context.Context, server *domain.MCPServer) error
+	GetMCPServer(ctx context.Context, id string) (*domain.MCPServer, error)
+	GetMCPServerBySlug(ctx context.Context, orgID, slug string) (*domain.MCPServer, error)
+	ListMCPServers(ctx context.Context, orgID string) ([]*domain.MCPServer, error)
+	DeleteMCPServer(ctx context.Context, id string) error
+
+	UpsertMCPTools(ctx context.Context, serverID, orgID string, tools []*domain.MCPTool) error
+	ListMCPTools(ctx context.Context, serverID string) ([]*domain.MCPTool, error)
+	GetMCPTool(ctx context.Context, id string) (*domain.MCPTool, error)
+
+	CreateMCPToolset(ctx context.Context, toolset *domain.MCPToolset) error
+	GetMCPToolsetBySlug(ctx context.Context, orgID, slug string) (*domain.MCPToolset, error)
+	ListMCPToolsets(ctx context.Context, orgID string) ([]*domain.MCPToolset, error)
+
+	SetMCPUserCredential(ctx context.Context, cred *domain.MCPUserCredential) error
+	GetMCPUserCredential(ctx context.Context, serverID, userID string) (*domain.MCPUserCredential, error)
+
+	// A2A: Agents, Tasks, Events, Publications & Outbox
+	CreateA2AAgent(ctx context.Context, agent *domain.A2AAgent) error
+	UpdateA2AAgent(ctx context.Context, agent *domain.A2AAgent) error
+	GetA2AAgent(ctx context.Context, id string) (*domain.A2AAgent, error)
+	GetA2AAgentBySlug(ctx context.Context, orgID, slug string) (*domain.A2AAgent, error)
+	ListA2AAgents(ctx context.Context, orgID string) ([]*domain.A2AAgent, error)
+	SetA2AAgentKillSwitch(ctx context.Context, id string, killed bool) error
+
+	CreateA2ATask(ctx context.Context, task *domain.A2ATask) error
+	UpdateA2ATaskState(ctx context.Context, taskID, state string, outputJSON string, costMicros int64) error
+	GetA2ATask(ctx context.Context, id string) (*domain.A2ATask, error)
+	ListA2ATasks(ctx context.Context, agentID, virtualKeyID string, limit int) ([]*domain.A2ATask, error)
+
+	AppendA2ATaskEvent(ctx context.Context, taskID, eventType, payloadJSON string) (*domain.A2ATaskEvent, error)
+	ListA2ATaskEvents(ctx context.Context, taskID string, afterSeq int64, limit int) ([]*domain.A2ATaskEvent, error)
+
+	ClaimPendingA2AStreamPublications(ctx context.Context, batchSize int) ([]*domain.A2AStreamPublication, error)
+	MarkA2AStreamPublicationSuccess(ctx context.Context, id string) error
+
+	CreateA2AOutboxEvent(ctx context.Context, event *domain.A2AOutboxEvent) error
+	ClaimPendingA2AOutboxEvents(ctx context.Context, batchSize int) ([]*domain.A2AOutboxEvent, error)
+	GetA2AOutboxEvent(ctx context.Context, id string) (*domain.A2AOutboxEvent, error)
+	UpdateA2AOutboxEventStatus(ctx context.Context, id, status string) error
+
+	SetA2APushNotificationConfig(ctx context.Context, cfg *domain.A2APushNotificationConfig) error
+	GetA2APushNotificationConfig(ctx context.Context, taskID string) (*domain.A2APushNotificationConfig, error)
+
+	// Files Management (Stateful Tenant Assets)
+	CreateFile(ctx context.Context, file *domain.CanonicalFile) error
+	GetFile(ctx context.Context, orgID, fileID string) (*domain.CanonicalFile, error)
+	ListFiles(ctx context.Context, orgID string, purpose string) ([]*domain.CanonicalFile, error)
+	DeleteFile(ctx context.Context, orgID, fileID string) error
+
+	// Batches Management (Asynchronous Batch Processing)
+	CreateBatch(ctx context.Context, batch *domain.CanonicalBatch) error
+	GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error)
+	ListBatches(ctx context.Context, orgID string, limit int) ([]*domain.CanonicalBatch, error)
+	UpdateBatchStatus(ctx context.Context, batchID string, status string, outputFileID string, counts domain.BatchCounts, completedAt *time.Time) error
+}
+
+// RoutingRevisionProvider is optionally implemented by in-memory repositories to let
+// routing L1 caches detect direct mutations immediately without polling or stale windows.
+type RoutingRevisionProvider interface {
+	RoutingRevision() uint64
+}
+
+// MCPRuntimeSettingsRepository is optionally implemented by repositories that persist
+// the active gateway-wide MCP API specification selected via Control Plane / Web UI.
+type MCPRuntimeSettingsRepository interface {
+	GetMCPRuntimeSettings(ctx context.Context) (*domain.MCPRuntimeSettings, error)
+	UpdateMCPRuntimeSettings(ctx context.Context, settings *domain.MCPRuntimeSettings) error
+}
