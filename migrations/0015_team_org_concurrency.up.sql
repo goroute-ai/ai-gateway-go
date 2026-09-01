@@ -1,0 +1,5 @@
+ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS max_concurrent_requests INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE teams
+    ADD COLUMN IF NOT EXISTS max_concurrent_requests INTEGER NOT NULL DEFAULT 0;
