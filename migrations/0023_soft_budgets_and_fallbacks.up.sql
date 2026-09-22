@@ -1,0 +1,19 @@
+ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS soft_budget_micros BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS throttle_on_budget_exceeded BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS budget_fallbacks JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE teams
+    ADD COLUMN IF NOT EXISTS soft_budget_micros BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS throttle_on_budget_exceeded BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS budget_fallbacks JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS soft_budget_micros BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS throttle_on_budget_exceeded BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS budget_fallbacks JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE virtual_keys
+    ADD COLUMN IF NOT EXISTS soft_budget_micros BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS throttle_on_budget_exceeded BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS budget_fallbacks JSONB NOT NULL DEFAULT '{}'::jsonb;
