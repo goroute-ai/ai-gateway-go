@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: GoRoute AI Gateway — Model Context Protocol (MCP) API
+  version: 2026-07-28
+  description: >
+    Production-grade enterprise gateway endpoints for Model Context Protocol (MCP).
+    Supports stateless Streamable HTTP (2026-07-28) primary protocol, 2025-11-25 stateful compatibility adapter,
+    virtual hub aggregation, scoped servers, curated toolsets, AEAD-encrypted MRTR resumption,
+    arbitrary precision decimal preservation, and SSE event multiplexing.
+servers:
+  - url: https://api.goroute.ai
+    description: Production Gateway
+  - url: http://localhost:8080
+    description: Local Development Gateway
+security:
+  - VirtualKeyAuth: []
+paths:
+  /mcp:
+    post:
+      summary: MCP Virtual Hub Aggregator
+      description: Aggregates tools, resources, and prompts across all authorized upstream MCP servers for the caller.
+      operationId: callMCPVirtualHub
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
+      responses:
+        '200':
+          description: Standard JSON-RPC 2.0 response with aggregation outcomes metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+  /mcp/{serverSlug}:
+    post:
+      summary: Scoped MCP Server Endpoint
+      description: Routes JSON-RPC 2.0 calls directly to a specific registered upstream MCP server.
+      operationId: callMCPScopedServer
+      parameters:
+        - name: serverSlug
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique slug identifier of the registered upstream MCP server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
+      responses:
+        '200':
+          description: Standard JSON-RPC 2.0 response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+  /mcp/toolsets/{toolsetSlug}:
+    post:
+      summary: Curated MCP Toolset Endpoint
+      description: Exposes a curated subset of tools across multiple MCP servers under a unified namespace.
+      operationId: callMCPToolset
+      parameters:
+        - name: toolsetSlug
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique slug identifier of the curated toolset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
+      responses:
+        '200':
+          description: Standard JSON-RPC 2.0 response filtered to toolset membership
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+  /mcp/subscriptions/listen:
+    get:
+      summary: MCP SSE Multiplexed Subscriptions
+      description: Real-time Server-Sent Events stream delivering notifications, logs, and resource updates across upstream servers.
+      operationId: listenMCPSubscriptions
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /mcp-rest/tools/list:
+    get:
+      summary: MCP REST Bridge — List Tools
+      description: Returns tools available under the caller's authorized scope over plain JSON REST.
+      operationId: restListMCPTools
+      parameters:
+        - name: server_slug
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional MCP server slug filter
+      responses:
+        '200':
+          description: List of tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+  /mcp-rest/tools/call:
+    post:
+      summary: MCP REST Bridge — Call Tool
+      description: Executes an MCP tool call over plain JSON REST with unambiguous server resolution.
+      operationId: restCallMCPTool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool_name]
+              properties:
+                server_slug: {type: string}
+                tool_name: {type: string}
+                arguments: {type: object}
+      responses:
+        '200':
+          description: Tool call execution result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content: {type: array, items: {type: object}}
+                  is_error: {type: boolean}
+                  _meta: {type: object}
+  /v1/goroute/mcp/registry:
+    get:
+      summary: Progressive Catalog Registry Feed
+      description: Returns the enterprise catalog feed with semantic tags, transport types, and 256-bit opaque tool handles.
+      operationId: getMCPRegistryFeed
+      responses:
+        '200':
+          description: Registry feed of registered MCP servers and available tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+  /admin/v1/mcp/servers:
+    post:
+      summary: Register Upstream MCP Server
+      operationId: adminCreateMCPServer
+      security:
+        - MasterAdminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug, protocol_version, endpoint_url]
+              properties:
+                org_id: {type: string}
+                name: {type: string}
+                slug: {type: string}
+                protocol_version: {type: string, enum: ['2026-07-28', '2025-11-25']}
+                endpoint_url: {type: string, format: uri}
+                auth_type: {type: string, enum: ['none', 'static', 'byok']}
+                auth_secret: {type: string}
+      responses:
+        '201':
+          description: MCP Server registered successfully
+    get:
+      summary: List Registered MCP Servers
+      operationId: adminListMCPServers
+      security:
+        - MasterAdminAuth: []
+      responses:
+        '200':
+          description: List of registered MCP servers
+components:
+  securitySchemes:
+    VirtualKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: sk-gw-key
+    MasterAdminAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    JSONRPCRequest:
+      type: object
+      required: [jsonrpc, method, id]
+      properties:
+        jsonrpc: {type: string, enum: ['2.0']}
+        method: {type: string}
+        id: {oneOf: [{type: string}, {type: integer}]}
+        params: {type: object}
+    JSONRPCResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: {type: string, enum: ['2.0']}
+        id: {oneOf: [{type: string}, {type: integer}, {type: 'null'}]}
+        result: {type: object}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: integer}
+            message: {type: string}
+            data: {type: object}
