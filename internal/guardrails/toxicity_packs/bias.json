@@ -1,0 +1,18 @@
+{
+  "category_name": "bias",
+  "default_action": "block",
+  "keywords": [
+    {"term": "racial superiority", "severity": "high"},
+    {"term": "ethnic cleansing", "severity": "high"},
+    {"term": "inferior race", "severity": "high"},
+    {"term": "hate speech", "severity": "medium"},
+    {"term": "discriminatory stereotype", "severity": "medium"},
+    {"term": "systemic prejudice", "severity": "low"}
+  ],
+  "exceptions": [
+    "hate speech detection",
+    "combat ethnic cleansing",
+    "bias mitigation",
+    "discriminatory stereotype analysis"
+  ]
+}

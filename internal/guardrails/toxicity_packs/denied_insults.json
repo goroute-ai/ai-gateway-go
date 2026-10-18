@@ -1,0 +1,16 @@
+{
+  "category_name": "denied_insults",
+  "default_action": "block",
+  "keywords": [
+    {"term": "worthless piece of garbage", "severity": "high"},
+    {"term": "subhuman", "severity": "high"},
+    {"term": "pathetic loser", "severity": "medium"},
+    {"term": "complete idiot", "severity": "medium"},
+    {"term": "moron", "severity": "low"},
+    {"term": "imbecile", "severity": "low"}
+  ],
+  "exceptions": [
+    "subhuman conditions",
+    "anti-insult filter"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "category_name": "harmful_self_harm",
+  "default_action": "block",
+  "keywords": [
+    {"term": "commit suicide", "severity": "high"},
+    {"term": "how to kill myself", "severity": "high"},
+    {"term": "end my life", "severity": "high"},
+    {"term": "self-harm methods", "severity": "high"},
+    {"term": "self harm", "severity": "medium"},
+    {"term": "cutting myself", "severity": "medium"},
+    {"term": "suicidal ideation", "severity": "low"}
+  ],
+  "exceptions": [
+    "suicide prevention",
+    "suicide hotline",
+    "self-harm helpline",
+    "self harm awareness"
+  ]
+}
