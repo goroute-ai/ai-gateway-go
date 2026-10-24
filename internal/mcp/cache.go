@@ -1,0 +1,252 @@
+package mcp
+
+import (
+	"bytes"
+	"container/list"
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
+)
+
+const maxMCPCacheMemEntries = 4096
+
+// MCPCache provides high-performance length-prefixed HMAC caching for MCP operations.
+type MCPCache struct {
+	secret   []byte
+	redis    *storage.RedisFabric
+	memMu    sync.Mutex
+	memStore map[string]*list.Element
+	memLRU   *list.List
+	maxMem   int
+}
+
+type cacheEntry struct {
+	key       string
+	data      []byte
+	expiresAt time.Time
+}
+
+// NewMCPCacheStrict creates a new MCP cache instance and fails if no HMAC secret is configured.
+func NewMCPCacheStrict(secret []byte, redis *storage.RedisFabric) (*MCPCache, error) {
+	if len(secret) == 0 {
+		return nil, errors.New("mcp cache: HMAC secret must be configured")
+	}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	return &MCPCache{
+		secret:   cp,
+		redis:    redis,
+		memStore: make(map[string]*list.Element),
+		memLRU:   list.New(),
+		maxMem:   maxMCPCacheMemEntries,
+	}, nil
+}
+
+// NewMCPCache creates a new MCP cache instance. If secret is empty, a random per-process
+// ephemeral secret is generated so no hardcoded fallback secret is ever used.
+func NewMCPCache(secret []byte, redis *storage.RedisFabric) *MCPCache {
+	if len(secret) == 0 {
+		ephemeral := make([]byte, 32)
+		if _, err := rand.Read(ephemeral); err != nil {
+			panic("mcp cache: failed to generate random HMAC secret: " + err.Error())
+		}
+		secret = ephemeral
+	}
+	c, _ := NewMCPCacheStrict(secret, redis)
+	return c
+}
+
+// ComputeCacheKey generates a length-prefixed, collision-resistant HMAC-SHA256 cache key.
+func (c *MCPCache) ComputeCacheKey(
+	orgID string,
+	keyPrefix string,
+	serverSlug string,
+	method string,
+	params []byte,
+	configVersion int64,
+) string {
+	mac := hmac.New(sha256.New, c.secret)
+
+	// Write length-prefixed segments: len(field):field
+	writeSegment := func(field []byte) {
+		lenPrefix := fmt.Sprintf("%d:", len(field))
+		mac.Write([]byte(lenPrefix))
+		mac.Write(field)
+		mac.Write([]byte("|"))
+	}
+
+	writeSegment([]byte(orgID))
+	writeSegment([]byte(keyPrefix))
+	writeSegment([]byte(serverSlug))
+	writeSegment([]byte(method))
+	writeSegment(params)
+	writeSegment([]byte(fmt.Sprintf("%d", configVersion)))
+
+	return "gw:mcp:cache:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// ShouldCache inspects the method and JSON-RPC response to ensure safety and CacheableResult rules.
+// Never caches InputRequiredResult, input_required, requestState, ttlMs=0, or session-bound structures.
+func ShouldCache(method string, resp *JSONRPCResponse) bool {
+	if resp == nil || resp.Error != nil {
+		return false
+	}
+
+	if resMap, ok := resp.Result.(map[string]any); ok {
+		if rt, _ := resMap["resultType"].(string); rt == "input_required" {
+			return false
+		}
+		switch ttl := resMap["ttlMs"].(type) {
+		case int:
+			if ttl == 0 {
+				return false
+			}
+		case int64:
+			if ttl == 0 {
+				return false
+			}
+		case float64:
+			if ttl == 0 {
+				return false
+			}
+		}
+		if scope, _ := resMap["cacheScope"].(string); scope != "" && scope != "public" && scope != "private" {
+			return false
+		}
+	}
+
+	// Forbid caching interactive or stateful results
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return false
+	}
+	lower := bytes.ToLower(resultBytes)
+	if bytes.Contains(lower, []byte("inputrequiredresult")) ||
+		bytes.Contains(lower, []byte("requeststate")) ||
+		bytes.Contains(lower, []byte("mrtr_")) {
+		return false
+	}
+
+	// Cache discovery/read methods
+	switch method {
+	case "server/discover", "tools/list", "resources/list", "resources/templates/list", "prompts/list":
+		return true
+	default:
+		return false // Non-discovery methods default to non-cacheable unless explicitly enabled
+	}
+}
+
+// Get retrieves a cached JSONRPCResponse if present and unexpired.
+func (c *MCPCache) Get(ctx context.Context, key string) (*JSONRPCResponse, bool) {
+	if c.redis != nil {
+		res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Get(ctx, key).Result()
+		})
+		if err == nil {
+			if dataStr, ok := res.(string); ok && dataStr != "" {
+				var resp JSONRPCResponse
+				if err := json.Unmarshal([]byte(dataStr), &resp); err == nil {
+					return &resp, true
+				}
+			}
+		}
+	}
+
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+	elem, ok := c.memStore[key]
+	if !ok {
+		return nil, false
+	}
+	entry := elem.Value.(*cacheEntry)
+	if time.Now().After(entry.expiresAt) {
+		c.memLRU.Remove(elem)
+		delete(c.memStore, key)
+		return nil, false
+	}
+	c.memLRU.MoveToFront(elem)
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(entry.data, &resp); err != nil {
+		return nil, false
+	}
+	return &resp, true
+}
+
+// Set stores a JSONRPCResponse in the cache with the specified TTL.
+func (c *MCPCache) Set(ctx context.Context, key string, resp *JSONRPCResponse, ttl time.Duration) error {
+	if resp == nil || ttl <= 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+
+	if c.redis != nil {
+		_, _ = c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, key, string(data), ttl).Result()
+		})
+	}
+
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+	now := time.Now()
+	if elem, ok := c.memStore[key]; ok {
+		entry := elem.Value.(*cacheEntry)
+		entry.data = data
+		entry.expiresAt = now.Add(ttl)
+		c.memLRU.MoveToFront(elem)
+		return nil
+	}
+	for c.memLRU.Len() >= c.maxMem {
+		tail := c.memLRU.Back()
+		if tail == nil {
+			break
+		}
+		tailEntry := tail.Value.(*cacheEntry)
+		c.memLRU.Remove(tail)
+		delete(c.memStore, tailEntry.key)
+	}
+	if tail := c.memLRU.Back(); tail != nil {
+		if tailEntry := tail.Value.(*cacheEntry); now.After(tailEntry.expiresAt) {
+			c.memLRU.Remove(tail)
+			delete(c.memStore, tailEntry.key)
+		}
+	}
+	elem := c.memLRU.PushFront(&cacheEntry{
+		key:       key,
+		data:      data,
+		expiresAt: now.Add(ttl),
+	})
+	c.memStore[key] = elem
+	return nil
+}
+
+// InvalidateKey deletes a cache entry by key.
+func (c *MCPCache) InvalidateKey(ctx context.Context, key string) error {
+	if c.redis != nil {
+		_, _ = c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Del(ctx, key).Result()
+		})
+	}
+
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+	if elem, ok := c.memStore[key]; ok {
+		c.memLRU.Remove(elem)
+		delete(c.memStore, key)
+	}
+	return nil
+}
