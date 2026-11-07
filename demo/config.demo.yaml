@@ -1,0 +1,27 @@
+# Declarative Gateway Configuration (Zero Admin HTTP Calls Required)
+# Start with: go run ./cmd/gateway -config demo/config.demo.yaml
+
+server:
+  port: 8080
+
+auth:
+  master_admin_key: "sk-gw-demo-master-key"
+  master_encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+model_list:
+  - model_name: gemini-2.5-flash
+    model_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: fast
+    routing_strategy: weighted-shuffle
+    model_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: reasoning
+    routing_strategy: least-busy
+    model_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
