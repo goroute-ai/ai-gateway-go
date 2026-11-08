@@ -1,0 +1,4 @@
+ALTER TABLE operator_sessions
+    ADD COLUMN IF NOT EXISTS provider_id VARCHAR(128) NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS encrypted_id_token TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS encrypted_id_token_dek TEXT NOT NULL DEFAULT '';
