@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: aigateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./../migrations/0001_init_schema.up.sql:/docker-entrypoint-initdb.d/0001_init_schema.up.sql:ro
+      - ./../migrations/0002_add_platform_modules.up.sql:/docker-entrypoint-initdb.d/0002_add_platform_modules.up.sql:ro
+      - ./../migrations/0003_add_mcp_and_a2a.up.sql:/docker-entrypoint-initdb.d/0003_add_mcp_and_a2a.up.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  ai-gateway:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      GATEWAY_PORT: "8080"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+      GATEWAY_REDIS_ADDR: "redis:6379"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-master-admin-default-key-change-me"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

@@ -1,0 +1,156 @@
+# ==============================================================================
+# GoRoute AI Gateway — Production Configuration Template
+# ==============================================================================
+# Copy this file to configs/config.yaml or supply its path via -config flag:
+#   /app/ai-gateway -config /etc/goroute/config.yaml
+#
+# Environment variables override YAML values. Use os.environ/VAR syntax for
+# secret substitution (e.g. os.environ/GEMINI_API_KEY).
+# ==============================================================================
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 300s
+  idle_timeout: 120s
+  shutdown_timeout: 15s
+
+logging:
+  level: "info"              # "debug", "info", "warn", "error"
+  format: "json"             # "json" for structured production logging, "text" for local dev
+  add_source: false
+
+storage:
+  mode: "postgres"           # "postgres" (recommended for production) or "memory"
+  postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"
+  redis_addr: "redis-host:6379"
+  redis_db: 0
+
+auth:
+  # Master keys must be securely generated (e.g. openssl rand -hex 32)
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
+  jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
+  default_org_id: "org_default"
+  default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
+  l1_cache_ttl: 15s
+  l2_cache_ttl: 5m
+
+router:
+  default_fast_alias: "fast"
+  default_reasoning_alias: "reasoning"
+  default_coding_alias: "coding"
+  complexity_threshold: 0.40
+  long_context_tokens: 32000
+  default_max_retries: 2
+  base_retry_delay: 50ms
+  max_retry_delay: 2s
+  default_cooldown: 60s
+  failure_window: 30s
+  failure_threshold: 3
+
+rate_limit:
+  enabled: true
+  window_seconds: 60
+  concurrency_ttl_sec: 300
+  default_estimated_tpm: 128
+  redis_timeout: 50ms
+
+finops:
+  channel_buffer_size: 16384
+  batch_size: 250
+  flush_interval: 500ms
+  worker_count: 4
+
+discovery:
+  enabled: true
+  sync_interval: 6h
+  auto_approve: false        # Require admin approval for newly discovered upstream models
+
+cache:
+  enabled: true
+  default_ttl: 1h
+
+# ------------------------------------------------------------------------------
+# Security & Network Egress (SSRF Hardening)
+# ------------------------------------------------------------------------------
+security:
+  network:
+    outbound_ssrf:
+      # In production, private networks and insecure HTTP must be disabled
+      allow_private_networks: false
+      allowed_private_cidrs: []
+      allow_insecure_http: false   # Strict HTTPS enforcement
+      allowed_schemes: ["https"]
+      blocked_ips:
+        - "169.254.169.254"       # Cloud metadata service protection
+        - "fd00:ec2::254"         # AWS IPv6 metadata
+      dial_timeout: 10s
+      max_redirects: 3
+    inbound_caller:
+      expose_on_public_internet: false
+      allowed_client_cidrs: []
+
+# ------------------------------------------------------------------------------
+# Model Context Protocol (MCP) Configuration
+# ------------------------------------------------------------------------------
+mcp:
+  enabled: true
+  allow_stdio_servers: false       # Fail-closed: stdio subprocesses disabled
+  enable_session_compat_2025: true # Enable 2025-11-25 stateful compatibility adapter
+  session_ttl_2025: 15m
+  max_payload_bytes: 10485760      # 10 MB payload limit
+  default_timeout: 30s
+  subscriptions_listen_active: true
+
+# ------------------------------------------------------------------------------
+# Agent-to-Agent (A2A v1.0) Configuration
+# ------------------------------------------------------------------------------
+a2a:
+  enabled: true
+  enable_jsonrpc: true
+  enable_http_json: true
+  enable_subscribe_post_compat: false # Canonical is GET /tasks/{id}:subscribe
+  allow_legacy_card_discovery: false
+  max_task_lifespan: 24h
+  stream_buffer_capacity: 256
+  stream_publish_interval: 50ms
+  max_push_retries: 5
+  signing_key_id: "gw-a2a-signer-v1"
+  allowed_signing_algs:
+    - "ES256"
+    - "RS256"
+    - "EdDSA"
+
+# ------------------------------------------------------------------------------
+# Declarative Model List & Fallback Topologies
+# ------------------------------------------------------------------------------
+model_list:
+  - model_name: fast
+    routing_strategy: weighted-shuffle
+    model_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+      weight: 100
+      fallbacks: ["fast-backup"]
+
+  - model_name: fast-backup
+    model_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      weight: 100
+
+  - model_name: reasoning
+    routing_strategy: least-busy
+    model_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+      weight: 100
+      fallbacks: ["reasoning-backup"]
+
+  - model_name: reasoning-backup
+    model_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+      weight: 100
