@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-e2e specgen demos run docker-build docker-up docker-down clean release-check
+.PHONY: all build fmt vet lint test test-unit test-e2e specgen run docker-build docker-up docker-down clean release-check
 
 all: release-check
 
@@ -53,15 +53,6 @@ test-unit:
 test-e2e:
 	@echo "==> Running live stack end-to-end integration tests..."
 	go test -race -v -count=1 ./tests/e2e
-
-demos:
-	@echo "==> Running overview demo laboratory..."
-	go run ./demo/main.go
-	@echo "==> Running specialized demo laboratories (01-09)..."
-	@for d in demo/0[1-9]*; do \
-		echo "--- Running $$d ---"; \
-		go run "$$d/main.go" || exit 1; \
-	done
 
 # ------------------------------------------------------------------------------
 # Docker & Deployment

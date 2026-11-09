@@ -4,7 +4,7 @@ Welcome to the official configuration and developer guide for **GoRoute AI Gatew
 
 This guide explains how to configure, operate, and integrate every architectural system and platform module in your system using:
 1. **Declarative YAML (`configs/config.yaml`)** — Declarative `model_list` and gateway settings.
-2. **Go SDK (`pkg/gateway`)** — 1-line embedded router or remote client with runnable demos in [`demo/`](../demo/README.md).
+2. **Go SDK (`pkg/gateway`)** — 1-line embedded router or remote client.
 3. **HTTP Data Plane (`/v1/*`) & Control Plane (`/admin/v1/*`)** — OpenAI-compatible inference and multi-tenant enterprise governance.
 
 ---
@@ -84,8 +84,6 @@ gw, err := gateway.New(
 
 ## Unified API & Wire Normalization
 
-> **Runnable Demo:** [`demo/01_unified_api/main.go`](../demo/01_unified_api/main.go) (`go run ./demo/01_unified_api`)
-
 ### What It Does
 Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) and translates requests/responses across **5 upstream wire protocols**:
 - **OpenAI** (`/v1/chat/completions`, `/v1/embeddings`)
@@ -132,8 +130,6 @@ Every `/v1/chat/completions` response includes real-time gateway telemetry heade
 
 ## Multi-Tenant Model & Provider Management
 
-> **Runnable Demo:** [`demo/02_model_management/main.go`](../demo/02_model_management/main.go) (`go run ./demo/02_model_management`)
-
 ### What It Does
 Enforces a strict **4-Layer Multi-Tenant Model Hierarchy** while supporting zero-friction **Dynamic `provider/model` Wildcard Routing** and **Automated Upstream Model Discovery**:
 1. **Layer 1 (Global Model Catalogue)**: Capabilities (`supports_tools`, `supports_reasoning`, `max_input_tokens`) and versioned pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`) for all models.
@@ -173,8 +169,6 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/subscripti
 
 ## Intelligent Routing & Load Balancing
 
-> **Runnable Demo:** [`demo/03_smart_routing/main.go`](../demo/03_smart_routing/main.go) (`go run ./demo/03_smart_routing`)
-
 ### Stage 1: The 3 Routing Modes
 1. **Mode 1 — Explicit Model (`"gemini-2.5-flash"`, `"claude-sonnet-4-20250514"`)**: Routes directly to the specified model or `"provider/model"`.
 2. **Mode 2 — Logical Alias (`"fast"`, `"reasoning"`, `"coding"`)**: Routes to a named `ModelGroup` containing one or more load-balanced deployments across regions or providers.
@@ -209,8 +203,6 @@ router:
 ---
 
 ## Dual-Boundary Auth, 4-Layer RBAC & Credential Vault
-
-> **Runnable Demo:** [`demo/04_auth_and_vault/main.go`](../demo/04_auth_and_vault/main.go) (`go run ./demo/04_auth_and_vault`)
 
 ### Dual-Boundary Security Architecture
 - **Boundary 1 (Client $\rightarrow$ Gateway)**: Clients authenticate with Gateway-issued **Virtual API Keys (`sk-gw-...`)**. Only the **SHA-256 hex digest** is persisted; the raw key is returned once upon creation. Validated in $<1\text{ ms}$ via a 2-tier cache (**L1 In-Process RWMutex Map** + **L2 Redis Cache** with instant Pub/Sub invalidation).
@@ -255,8 +247,6 @@ curl -X POST http://localhost:8080/admin/v1/credentials/{credID}/validate \
 
 ## Retries, 3-State Circuit Breakers & Fallbacks
 
-> **Runnable Demo:** [`demo/05_retries_and_fallbacks/main.go`](../demo/05_retries_and_fallbacks/main.go) (`go run ./demo/05_retries_and_fallbacks`)
-
 ### How High-Availability Failover Works
 1. **Upstream Error Classification**:
    - `429 Too Many Requests`, `500`, `502`, `503`, `504`: Classified as **Retryable**.
@@ -298,8 +288,6 @@ model_list:
 
 ## FinOps Usage, Micro-Dollar Cost Tracking & Budgets
 
-> **Runnable Demo:** [`demo/06_finops_and_budgets/main.go`](../demo/06_finops_and_budgets/main.go) (`go run ./demo/06_finops_and_budgets`)
-
 ### Integer Pico/Micro-Dollar Cost Formula
 To eliminate IEEE-754 floating-point drift across millions of transactions, all pricing and spend ledgers use **64-bit integer micro-dollars** ($1\text{ USD} = 1,000,000\text{ micro-USD}$), computed via **pico-dollars** ($10^{-12}\text{ USD}$) with half-up rounding:
 
@@ -334,8 +322,6 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 ---
 
 ## Rate Limiting & Deterministic Response Caching
-
-> **Runnable Demo:** [`demo/07_ratelimit_and_cache/main.go`](../demo/07_ratelimit_and_cache/main.go) (`go run ./demo/07_ratelimit_and_cache`)
 
 ### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM & Concurrency)
 1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Gemini/Mistral/Llama) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.

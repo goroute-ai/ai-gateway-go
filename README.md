@@ -274,24 +274,6 @@ model_list:
 
 ---
 
-### Runnable Interactive Demos
-
-Explore self-contained runnable Go programs demonstrating each gateway subsystem:
-
-| Demo | Path | Focus Area | Command |
-| :--- | :--- | :--- | :--- |
-| **01. Unified API** | [`demo/01_unified_api`](./demo/01_unified_api/main.go) | Synchronous chat, zero-buffer SSE streaming, telemetry headers | `go run ./demo/01_unified_api` |
-| **02. Model Management** | [`demo/02_model_management`](./demo/02_model_management/main.go) | Declarative `model_list`, `provider/model` wildcard routing | `go run ./demo/02_model_management` |
-| **03. Smart Routing** | [`demo/03_smart_routing`](./demo/03_smart_routing/main.go) | Zero-LLM complexity classifier (`model: "auto"`), load balancing | `go run ./demo/03_smart_routing` |
-| **04. Auth & Vault** | [`demo/04_auth_and_vault`](./demo/04_auth_and_vault/main.go) | Scoped Virtual Keys, 4-layer RBAC allowlists, instant revocation | `go run ./demo/04_auth_and_vault` |
-| **05. Retries & Fallbacks** | [`demo/05_retries_and_fallbacks`](./demo/05_retries_and_fallbacks/main.go) | 503 Outage simulation, circuit breakers, cross-provider fallback | `go run ./demo/05_retries_and_fallbacks` |
-| **06. FinOps & Budgets** | [`demo/06_finops_and_budgets`](./demo/06_finops_and_budgets/main.go) | Micro-dollar accounting, spend limits, async batch ledger | `go run ./demo/06_finops_and_budgets` |
-| **07. Rate Limit & Cache** | [`demo/07_ratelimit_and_cache`](./demo/07_ratelimit_and_cache/main.go) | Redis sliding window, HTTP 429 quota gating, exact-match cache | `go run ./demo/07_ratelimit_and_cache` |
-| **08. MCP Gateway** | [`demo/08_mcp_gateway`](./demo/08_mcp_gateway/main.go) | MCP 2026-07-28 stateless hub, 2025-11-25 compat, anti-poisoning | `go run ./demo/08_mcp_gateway` |
-| **09. A2A Protocol** | [`demo/09_a2a_protocol`](./demo/09_a2a_protocol/main.go) | Linux Foundation A2A v1.0, JCS signing, Subscribe-First SSE | `go run ./demo/09_a2a_protocol` |
-
----
-
 ### Documentation
 
 * **[Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Version history, breaking changes, and migration notes.
@@ -299,7 +281,6 @@ Explore self-contained runnable Go programs demonstrating each gateway subsystem
 * **[Subsystem Internals & Engineering Guide (`docs/INTERNALS.md`)](./docs/INTERNALS.md)** — Code-level tour, sequence diagrams, algorithms, and formulas.
 * **[Architecture Reference (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)** — Detailed system design, 4-layer RBAC, and ERD.
 * **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** — In-depth YAML, Go SDK, and HTTP API reference.
-* **[Hands-On Demonstration Suite (`demo/README.md`)](./demo/README.md)** — Interactive demonstration manual for all core gateway systems.
 * **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)** — Full OpenAPI 3.0/3.1 contracts.
 
 ---

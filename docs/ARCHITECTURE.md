@@ -621,10 +621,6 @@ ai-gateway-go/
 │   └── server/                       # Chi HTTP router, Bootstrap seeder, Data Plane & Control Plane handlers
 ├── configs/
 │   └── config.yaml                   # Default production-ready gateway configuration
-├── demo/
-│   ├── main.go                       # Client demonstration (Explicit Model, Logical Alias, Smart Routing)
-│   ├── config.demo.yaml              # Declarative model_list configuration example
-│   └── README.md                     # Demo documentation
 ├── deployments/
 │   ├── Dockerfile                    # Multi-stage distroless container build
 │   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 7 + Prometheus

@@ -17,11 +17,9 @@ docs/
 │   ├── mcp.openapi.yaml
 │   ├── a2a.openapi.yaml
 │   └── README.md
-├── specs/                     # Pinned vendor protocol specifications
-│   ├── mcp/2026-07-28/schema.json
-│   └── a2a/v1.0/a2a.proto
-└── ../demo/                   # 9 hands-on runnable demonstration laboratories
-    └── README.md
+└── specs/                     # Pinned vendor protocol specifications
+    ├── mcp/2026-07-28/schema.json
+    └── a2a/v1.0/a2a.proto
 ```
 
 ---
@@ -58,21 +56,12 @@ docs/
    - In-process Go SDK (`pkg/gateway`) integration and remote client usage.
    - Complete configuration parameters table with default values and security notes.
 
-5. **[Hands-On Demonstration Suite (`../demo/README.md`)](../demo/README.md)**  
-   *9 self-contained, runnable Go programs demonstrating each architectural system:*
-   - `demo/main.go` — Overview: Explicit Model, Logical Alias (`fast`), and Smart Auto-Router (`auto`).
-   - `demo/01_unified_api` — Unified API & Real-Time SSE Token Streaming.
-   - `demo/02_model_management` — 4-Layer Model Management & Dynamic Wildcard Routing.
-   - `demo/03_smart_routing` — Zero-LLM Complexity Classifier & Weighted Load Balancing.
-   - `demo/04_auth_and_vault` — Scoped Virtual Keys (`sk-gw-...`), 4-Tier RBAC & Instant Revocation.
-   - `demo/05_retries_and_fallbacks` — Outage Simulation, Circuit Breaker Cooldown & Failover to Claude.
-   - `demo/06_finops_and_budgets` — Micro-Dollar Token Accounting & Aggregated Spend Ledgers.
-   - `demo/07_ratelimit_and_cache` — 0ms Deterministic Exact-Match Cache & Atomic RPM Quotas.
-   - `demo/08_mcp_gateway` — MCP 2026-07-28 Stateless Virtual Hub, Tool Pinning & Precision Math.
-   - `demo/09_a2a_protocol` — Linux Foundation A2A v1.0 JCS Signing, SSE Streams & Kill-Switch.
-
-6. **[OpenAPI 3.1 Specifications (`openapi/README.md`)](./openapi/README.md)**  
+5. **[OpenAPI 3.1 Specifications (`openapi/README.md`)](./openapi/README.md)**  
    *Machine-readable API contracts:*
+   - Unified Gateway Data Plane contract (`gateway.openapi.yaml`).
+   - Model Context Protocol contract (`mcp.openapi.yaml`).
+   - Agent-to-Agent Protocol contract (`a2a.openapi.yaml`).
+   - Official upstream provider contracts (`openai`, `anthropic`, `gemini`, `mistral`, `ollama`).
    - Unified Gateway Data Plane contract (`gateway.openapi.yaml`).
    - Model Context Protocol contract (`mcp.openapi.yaml`).
    - Agent-to-Agent Protocol contract (`a2a.openapi.yaml`).
