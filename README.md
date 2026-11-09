@@ -3,9 +3,9 @@
 </p>
 
 # GoRoute AI Gateway
-*The ultra-fast, lightweight AI Gateway written in 100% Pure Go.*
+*The ultra-fast, lightweight AI Gateway, MCP Hub, and Agent-to-Agent Router in 100% Pure Go.*
 
-Call **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Mistral AI**, and **local Ollama** using a single, unified OpenAI-compatible format.
+Call **OpenAI**, **Anthropic Claude**, **Google Gemini**, **Mistral AI**, and **local Ollama** using a single unified API with sub-millisecond routing overhead and under 25MB of RAM.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](https://go.dev/)
@@ -17,72 +17,27 @@ Call **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Mistral AI**, and **
 
 ### What is GoRoute AI Gateway?
 
-GoRoute AI Gateway provides a unified data plane and Go SDK for interacting with large language models with enterprise resilience and sub-millisecond routing overhead:
+GoRoute AI Gateway is an enterprise-grade AI data plane and embedded Go SDK engineered from scratch in 100% Pure Go (Zero CGO, zero Python runtime). It standardizes LLM interactions, provides an official hub for next-generation agentic protocols (**Model Context Protocol 2026-07-28** and **Linux Foundation A2A v1.0**), and enforces enterprise FinOps, security, and resiliency policies:
 
-* **Unified OpenAI Format**: Single endpoint (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) standardizing requests, streaming SSE, and tool calling across 5+ providers.
-* **Model Context Protocol (MCP)**: Production gateway supporting MCP 2026-07-28 stateless Streamable HTTP, 2025-11-25 compatibility adapter, legacy 2024 SSE, Stdio sandboxing, Virtual Hub multi-server aggregation (`POST /mcp`), Plain REST Bridge (`GET /mcp-rest/tools/list`, `POST /mcp-rest/tools/call`), Progressive Discovery (`GET /v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI Transport, curated toolsets, AEAD-encrypted MRTR resumption, anti-tool-poisoning scanner, and arbitrary decimal precision preservation (`big.Rat`).
-* **Agent-to-Agent Protocol (A2A)**: Linux Foundation A2A v1.0 service featuring RFC 8785 JCS canonicalization, JWS cryptographic card signatures, dual HTTP+JSON and JSON-RPC 2.0 dispatch, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Compatibility Bridge (`model: "a2a/{slug}"`), Subscribe-First SSE task streaming, multi-tenant visibility isolation, transactional outbox with dead-letter queue, and administrative emergency kill-switch.
-* **Server-Side Autonomous Tool Loop**: Multi-turn tool loop orchestrator (`internal/orchestrator`) executing model function calls via MCP tools server-side with strict safety bounds and anti-double-billing FinOps ledger accounting.
-* **Enterprise Upstream Authentication**: Decoupled upstream security supporting AWS SigV4, Client Identifier Metadata Documents (CIMD with S256 PKCE), RFC 9207 & 8707 anti-mix-up validation, and RFC 8693 OAuth 2.0 Token Exchange with TTL-aware caching.
-* **Dual Deployment**: Run as a standalone self-hosted proxy microservice or embed directly in your Go services via `pkg/gateway`.
-* **Enterprise Reliability**: Automated cross-provider fallbacks, 3-state circuit breakers, and 5 load-balancing strategies (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, `lowest-cost`).
-* **FinOps & Virtual Keys**: Micro-dollar spend tracking ($1 = 1,000,000 µ$), scoped virtual keys (`sk-gw-...`), and atomic Redis Lua rate limiting (RPM/TPM).
-* **High-Throughput Performance**: Sustained 1,341+ req/s throughput across 80 concurrent virtual users with sub-2ms median latency under live PostgreSQL and Redis.
-
----
-
-### Universal Installation & Quick Start
-
-Deploy GoRoute AI Gateway in seconds using your preferred environment:
-
-#### 1. Universal One-Line Shell Installer (macOS, Linux, WSL)
-Automatically detects your OS/architecture, validates SHA-256 checksums, and installs the standalone binary:
-```bash
-curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash
-```
-*To install a specific version:* `curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash -s -- v1.0.0`
-
-#### 2. Precompiled Release Binaries
-Download prebuilt, statically linked binaries with zero runtime dependencies from the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.0.0):
-* [macOS Apple Silicon (`darwin_arm64`)](https://github.com/goroute-ai/ai-gateway-go/releases/download/v1.0.0/ai-gateway_1.0.0_darwin_arm64.tar.gz)
-* [macOS Intel (`darwin_amd64`)](https://github.com/goroute-ai/ai-gateway-go/releases/download/v1.0.0/ai-gateway_1.0.0_darwin_amd64.tar.gz)
-* [Linux x86_64 (`linux_amd64`)](https://github.com/goroute-ai/ai-gateway-go/releases/download/v1.0.0/ai-gateway_1.0.0_linux_amd64.tar.gz)
-* [Linux ARM64 / Graviton (`linux_arm64`)](https://github.com/goroute-ai/ai-gateway-go/releases/download/v1.0.0/ai-gateway_1.0.0_linux_arm64.tar.gz)
-* [Windows x86_64 (`windows_amd64`)](https://github.com/goroute-ai/ai-gateway-go/releases/download/v1.0.0/ai-gateway_1.0.0_windows_amd64.zip)
-
-#### 3. Containerized Microservice (Docker & Kubernetes)
-Run the lightweight Distroless container image:
-```bash
-docker run -d --name ai-gateway \
-  -p 8080:8080 -p 50051:50051 \
-  -v $(pwd)/configs/config.yaml:/app/configs/config.yaml \
-  ghcr.io/goroute-ai/ai-gateway-go:latest
-```
-
-#### 4. Full Production Stack (PostgreSQL 16 + Redis 7 + Gateway)
-Spin up the complete multi-tenant production fabric with database migrations and rate-limiting cache:
-```bash
-curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
-docker compose up -d
-```
-
-#### 5. Go Toolchain (`go install`)
-Build and install directly using the official Go toolchain:
-```bash
-go install github.com/goroute-ai/ai-gateway-go/cmd/gateway@v1.0.0
-```
+* **Unified OpenAI Format**: Single endpoint (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) standardizing requests, zero-buffer SSE streaming, and tool calls across 5+ providers.
+* **Dual Deployment**: Run as a standalone self-hosted proxy microservice or embed directly in your Go applications via the `pkg/gateway` SDK.
+* **Model Context Protocol (MCP)**: Production gateway supporting MCP 2026-07-28 stateless Streamable HTTP, stateful 2025-11-25 compatibility, Stdio process sandboxing, Virtual Hub multi-server aggregation (`POST /mcp`), Plain REST Bridge (`POST /mcp-rest/tools/call`), Progressive Discovery (`GET /v1/goroute/mcp/registry`), AEAD-encrypted MRTR token resumption, and arbitrary decimal precision preservation (`big.Rat`).
+* **Agent-to-Agent Protocol (A2A)**: Linux Foundation A2A v1.0 service featuring RFC 8785 JCS canonicalization, JWS cryptographic card signatures (`GET /.well-known/agent-card.json`), dual HTTP+JSON and JSON-RPC 2.0 dispatch, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Compatibility Bridge (`model: "a2a/{slug}"`), Subscribe-First SSE task streaming, and transactional outbox.
+* **Server-Side Autonomous Tool Loop**: Multi-turn tool loop orchestrator (`internal/orchestrator`) executing model function calls server-side with anti-double-billing FinOps ledger accounting.
+* **Intelligent Routing & Resiliency**: Stage 1 zero-LLM heuristic prompt complexity classifier (`< 0.1ms`), Stage 2 lock-free EWMA load balancer with 5 strategies (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, `lowest-cost`), 3-state circuit breakers, and automatic cross-provider fallback chains.
+* **FinOps Micro-Dollar Ledger**: Integer micro-dollar cost engine ($1 = 1,000,000 µ$) with zero floating-point drift, async `pgx.Batch` statement writer, and multi-tier budget enforcers.
+* **Distributed Rate Limiting & Cache**: Atomic Redis Lua sliding-window rate limiting (RPM/TPM) and tenant-isolated deterministic SHA-256 exact-match cache.
 
 ---
 
-### Embedded Go SDK (`pkg/gateway`)
+### Quick Start (Option A: Developer-First)
 
-For embedding GoRoute directly into your Go applications with full type safety and zero internal dependencies:
+#### Path 1: Embedded Go SDK (`pkg/gateway`) — 1-Line Embed
+Embed GoRoute directly inside your Go microservices with zero external proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
 go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.0.0
 ```
-
-Make your first call in seconds:
 
 ```go
 package main
@@ -98,29 +53,29 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// Initialize with declarative model aliases, custom providers, and logging control
+	// Initialize embedded gateway with model aliases and environment variables
 	gw, err := gateway.New(
 		gateway.WithModelList(
 			gateway.ModelEntry{ModelName: "fast", Model: "gemini/gemini-2.5-flash", APIKey: "os.environ/GEMINI_API_KEY"},
 			gateway.ModelEntry{ModelName: "reasoning", Model: "anthropic/claude-sonnet-4-20250514", APIKey: "os.environ/ANTHROPIC_API_KEY"},
 		),
 		gateway.WithDemoMocksIfEnvMissing(), // Instant zero-config local testing
-		gateway.WithSilentLogs(),             // Suppress internal gateway stdout logs in library mode
+		gateway.WithSilentLogs(),             // Suppress internal logs in library mode
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer gw.Close()
 
-	// 1-Line Chat Completion (supports explicit model names, logical aliases, or "auto")
-	res, err := gw.Chat(ctx, "fast", "In one sentence, what is an AI Gateway?")
+	// 1-Line synchronous completion
+	res, err := gw.Chat(ctx, "fast", "In one sentence, explain what an AI Gateway does.")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("[%s] %s (cost: %d µ$, latency: %d µs)\n", res.Provider, res.Content, res.CostMicros, res.RoutingMicros)
+	fmt.Printf("[%s] %s (cost: %d µ$, routing: %d µs)\n", res.Provider, res.Content, res.CostMicros, res.RoutingMicros)
 
-	// Multi-Turn Chat using exported public SDK types (no internal/domain imports needed)
+	// Multi-turn chat using clean exported SDK types (no internal domain imports needed)
 	multiRes, err := gw.ChatWithRequest(ctx, gateway.ChatRequest{
 		Model: "reasoning",
 		Messages: []gateway.Message{
@@ -135,39 +90,35 @@ func main() {
 }
 ```
 
+#### Path 2: Universal One-Line Shell Installer (macOS, Linux, WSL)
+Installs the standalone static binary with automatic OS/architecture detection and SHA-256 verification:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash
+```
+
+Run instantly with local mock fallback:
+```bash
+ai-gateway --config configs/config.yaml
+```
+
+*Precompiled binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.0.0).*
+
+#### Path 3: Production Multi-Tenant Stack (Docker Compose)
+Spins up GoRoute, PostgreSQL 16 (for migrations and spend logs), Redis 7 (for sliding-window rate limiting), and Prometheus:
+
+```bash
+curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
+docker compose up -d
+```
+
 ---
 
-### Quick Start: Self-Hosted AI Gateway (Proxy)
+### Multi-Language Client Ingress
 
-#### 1. Start the Gateway
+GoRoute exposes a 100% OpenAI-compatible data plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`). Point any standard client to `http://localhost:8080/v1`:
 
-```bash
-# Start locally with in-memory storage (zero external dependencies)
-make run
-
-# Or launch the production stack (Gateway + PostgreSQL + Redis + Prometheus)
-make docker-up
-```
-
-> [!NOTE]
-> **Production Key Hardening**: When running with `ENV=production` or `GATEWAY_ENV=production`, GoRoute strictly rejects default keys (`sk-gw-master-admin-default-key-change-me`, default encryption keys, and JWT secrets) at startup to prevent insecure deployments. Always set `GATEWAY_MASTER_ADMIN_KEY`, `GATEWAY_MASTER_ENCRYPTION_KEY`, and `GATEWAY_JWT_SECRET` in your production environment.
-
-#### 2. Call Using Any OpenAI-Compatible Client
-
-##### via cURL:
-
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "fast",
-    "messages": [{"role": "user", "content": "Hello from GoRoute AI Gateway!"}]
-  }'
-```
-
-##### via Official OpenAI Python SDK:
-
+#### Python (Official `openai` SDK)
 ```python
 from openai import OpenAI
 
@@ -178,9 +129,114 @@ client = OpenAI(
 
 response = client.chat.completions.create(
     model="fast",
-    messages=[{"role": "user", "content": "Explain GoRoute in 10 words."}]
+    messages=[{"role": "user", "content": "Explain GoRoute in 10 words."}],
+    temperature=0.7
 )
 print(response.choices[0].message.content)
+```
+
+#### TypeScript / Node.js (Official `openai` SDK)
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: "sk-gw-master-admin-default-key-change-me",
+  baseURL: "http://localhost:8080/v1",
+});
+
+async function run() {
+  const stream = await client.chat.completions.create({
+    model: "fast",
+    messages: [{ role: "user", content: "Stream me a haiku about performance." }],
+    stream: true,
+  });
+
+  for await (const chunk of stream) {
+    process.stdout.write(chunk.choices[0]?.delta?.content || "");
+  }
+}
+run();
+```
+
+#### cURL (Immediate Terminal Invocation)
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fast",
+    "messages": [{"role": "user", "content": "Hello from GoRoute!"}],
+    "stream": false
+  }'
+```
+
+---
+
+### Agentic Protocols Spotlight
+
+#### Model Context Protocol (MCP 2026-07-28 & 2025-11-25)
+GoRoute functions as a production MCP Hub aggregating multiple upstream MCP tools, running local tools in sandboxed Stdio processes, and bridging MCP tools into plain REST:
+
+```bash
+# List aggregated tools across all registered MCP servers
+curl http://localhost:8080/mcp-rest/tools/list \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me"
+
+# Call an MCP tool directly via lightweight REST bridge
+curl -X POST http://localhost:8080/mcp-rest/tools/call \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "calculate_tax",
+    "arguments": {"amount": 250.00, "state": "CA"}
+  }'
+```
+
+#### Linux Foundation Agent-to-Agent Protocol (A2A v1.0)
+GoRoute exposes full RFC 8785 JCS canonicalized and RFC 7515 JWS signed Agent Cards, dual HTTP+JSON and JSON-RPC dispatch, and an OpenAI Compatibility Bridge:
+
+```bash
+# Discover cryptographic Agent Card
+curl http://localhost:8080/.well-known/agent-card.json
+
+# Call an A2A agent using standard OpenAI chat completions
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "a2a/financial-analyst",
+    "messages": [{"role": "user", "content": "Analyze Q3 portfolio spend."}]
+  }'
+```
+
+#### Server-Side Autonomous Tool Loop
+With `internal/orchestrator`, GoRoute intercepts function calls emitted by models, invokes the corresponding MCP tools server-side, feeds results back to the model recursively, and returns the final answer in a single roundtrip to the client. Token spend across all turns is consolidated into a single ledger transaction with **anti-double-billing protection**.
+
+---
+
+### FinOps Micro-Dollar Accounting & Virtual Keys
+
+GoRoute operates with integer micro-dollar arithmetic ($1 = 1,000,000 µ$), completely eliminating IEEE-754 floating-point drift:
+
+```bash
+# 1. Issue a Scoped Virtual Key with Budget & Rate Limits
+curl -X POST http://localhost:8080/admin/v1/keys \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "mobile-app-prod",
+    "org_id": "org_default",
+    "team_id": "team_mobile",
+    "role": "developer",
+    "max_budget_micros": 50000000,
+    "allowed_models": ["fast", "gemini-2.5-flash", "llama3.2:1b"],
+    "rate_limit_rpm": 600,
+    "rate_limit_tpm": 1000000
+  }'
+
+# 2. Query Live Aggregated Spend
+curl http://localhost:8080/admin/v1/spend/summary \
+  -H "Authorization: Bearer sk-gw-master-admin-default-key-change-me"
 ```
 
 ---
@@ -190,6 +246,10 @@ print(response.choices[0].message.content)
 Define models, weights, routing strategies, and fallbacks declaratively (supporting `os.environ/VAR` substitution):
 
 ```yaml
+gateway:
+  port: 8080
+  admin_key: os.environ/GATEWAY_MASTER_ADMIN_KEY
+
 model_list:
   - model_name: fast
     routing_strategy: weighted-shuffle
@@ -204,42 +264,37 @@ model_list:
       model: anthropic/claude-sonnet-4-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
       fallbacks: ["backup-claude"]
+
+  - model_name: local
+    routing_strategy: lowest-cost
+    model_params:
+      model: ollama/llama3.2:1b
+      api_base: http://localhost:11434
 ```
 
 ---
 
-### Core Features
+### Runnable Interactive Demos
 
-* **Smart Routing & Load Balancing**: Zero-LLM `< 0.1ms` prompt complexity classifier (`model: "auto"`) plus 5 load balancing algorithms (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, `lowest-cost`).
-* **Reliability & Circuit Breakers**: 3-state circuit breaker (`CLOSED` / `OPEN` / `HALF_OPEN`), exponential backoff retries, and cross-provider failover.
-* **Virtual Keys & 4-Layer RBAC**: Issue scoped `sk-gw-...` keys with model allowlists, rate limits (RPM/TPM), and instant revocation.
-* **FinOps & Token Accounting**: Integer micro-dollar arithmetic (`1 USD = 1,000,000 µ$`) eliminating IEEE-754 float drift with async batch flushing.
-* **Distributed Rate Limiting & Cache**: Redis Lua atomic sliding window (`RPM`, `TPM`, budget gating) and deterministic SHA-256 exact-match cache.
-* **Observability**: Built-in Prometheus metrics (`/metrics`), health checks (`/health`), and OpenTelemetry tracing.
+Explore self-contained runnable Go programs demonstrating each gateway subsystem:
 
----
-
-### Runnable Demos
-
-Explore each gateway capability with self-contained, runnable Go scripts:
-
-| Demo | Path | Focus Area |
-| :--- | :--- | :--- |
-| **01. Unified API** | [`demo/01_unified_api`](./demo/01_unified_api/main.go) | Synchronous chat, zero-buffer SSE streaming, telemetry headers |
-| **02. Model Management** | [`demo/02_model_management`](./demo/02_model_management/main.go) | Declarative `model_list`, `provider/model` wildcard routing |
-| **03. Smart Routing** | [`demo/03_smart_routing`](./demo/03_smart_routing/main.go) | Zero-LLM complexity classifier (`model: "auto"`), load balancing |
-| **04. Auth & Vault** | [`demo/04_auth_and_vault`](./demo/04_auth_and_vault/main.go) | Scoped Virtual Keys, 4-layer RBAC allowlists, instant revocation |
-| **05. Retries & Fallbacks** | [`demo/05_retries_and_fallbacks`](./demo/05_retries_and_fallbacks/main.go) | 503 Outage simulation, circuit breakers, cross-provider fallback |
-| **06. FinOps & Budgets** | [`demo/06_finops_and_budgets`](./demo/06_finops_and_budgets/main.go) | Micro-dollar accounting, spend limits, async batch ledger |
-| **07. Rate Limit & Cache** | [`demo/07_ratelimit_and_cache`](./demo/07_ratelimit_and_cache/main.go) | Redis sliding window, HTTP 429 quota gating, exact-match cache |
-| **08. MCP Gateway** | [`demo/08_mcp_gateway`](./demo/08_mcp_gateway/main.go) | MCP 2026-07-28 stateless hub, 2025-11-25 compat, anti-poisoning, tool pinning |
-| **09. A2A Protocol** | [`demo/09_a2a_protocol`](./demo/09_a2a_protocol/main.go) | Linux Foundation A2A v1.0, JCS signing, Subscribe-First SSE, emergency kill-switch |
+| Demo | Path | Focus Area | Command |
+| :--- | :--- | :--- | :--- |
+| **01. Unified API** | [`demo/01_unified_api`](./demo/01_unified_api/main.go) | Synchronous chat, zero-buffer SSE streaming, telemetry headers | `go run ./demo/01_unified_api` |
+| **02. Model Management** | [`demo/02_model_management`](./demo/02_model_management/main.go) | Declarative `model_list`, `provider/model` wildcard routing | `go run ./demo/02_model_management` |
+| **03. Smart Routing** | [`demo/03_smart_routing`](./demo/03_smart_routing/main.go) | Zero-LLM complexity classifier (`model: "auto"`), load balancing | `go run ./demo/03_smart_routing` |
+| **04. Auth & Vault** | [`demo/04_auth_and_vault`](./demo/04_auth_and_vault/main.go) | Scoped Virtual Keys, 4-layer RBAC allowlists, instant revocation | `go run ./demo/04_auth_and_vault` |
+| **05. Retries & Fallbacks** | [`demo/05_retries_and_fallbacks`](./demo/05_retries_and_fallbacks/main.go) | 503 Outage simulation, circuit breakers, cross-provider fallback | `go run ./demo/05_retries_and_fallbacks` |
+| **06. FinOps & Budgets** | [`demo/06_finops_and_budgets`](./demo/06_finops_and_budgets/main.go) | Micro-dollar accounting, spend limits, async batch ledger | `go run ./demo/06_finops_and_budgets` |
+| **07. Rate Limit & Cache** | [`demo/07_ratelimit_and_cache`](./demo/07_ratelimit_and_cache/main.go) | Redis sliding window, HTTP 429 quota gating, exact-match cache | `go run ./demo/07_ratelimit_and_cache` |
+| **08. MCP Gateway** | [`demo/08_mcp_gateway`](./demo/08_mcp_gateway/main.go) | MCP 2026-07-28 stateless hub, 2025-11-25 compat, anti-poisoning | `go run ./demo/08_mcp_gateway` |
+| **09. A2A Protocol** | [`demo/09_a2a_protocol`](./demo/09_a2a_protocol/main.go) | Linux Foundation A2A v1.0, JCS signing, Subscribe-First SSE | `go run ./demo/09_a2a_protocol` |
 
 ---
 
 ### Documentation
 
-* **[Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Detailed version history, breaking changes, and migration notes.
+* **[Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Version history, breaking changes, and migration notes.
 * **[Complete API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)** — Comprehensive Data Plane, MCP, A2A v1.0, Admin, and Prometheus metrics endpoints.
 * **[Subsystem Internals & Engineering Guide (`docs/INTERNALS.md`)](./docs/INTERNALS.md)** — Code-level tour, sequence diagrams, algorithms, and formulas.
 * **[Architecture Reference (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)** — Detailed system design, 4-layer RBAC, and ERD.
