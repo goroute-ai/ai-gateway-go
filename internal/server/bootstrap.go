@@ -238,13 +238,13 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 	if gemKey := resolveProviderEnvKey(domain.ProviderGemini); gemKey != "" {
 		if !hasAlias("gemini-2.5-flash") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "gemini-2.5-flash",
+				ModelName:   "gemini-2.5-flash",
 				ModelParams: config.ModelParams{Model: "gemini/gemini-2.5-flash", APIKey: gemKey},
 			})
 		}
 		if !hasAlias("fast") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "fast",
+				ModelName:   "fast",
 				ModelParams: config.ModelParams{Model: "gemini/gemini-2.5-flash", APIKey: gemKey},
 			})
 		}
@@ -252,13 +252,13 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 	if antKey := resolveProviderEnvKey(domain.ProviderAnthropic); antKey != "" {
 		if !hasAlias("claude-sonnet-4-20250514") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "claude-sonnet-4-20250514",
+				ModelName:   "claude-sonnet-4-20250514",
 				ModelParams: config.ModelParams{Model: "anthropic/claude-sonnet-4-20250514", APIKey: antKey},
 			})
 		}
 		if !hasAlias("reasoning") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "reasoning",
+				ModelName:   "reasoning",
 				ModelParams: config.ModelParams{Model: "anthropic/claude-sonnet-4-20250514", APIKey: antKey},
 			})
 		}
@@ -266,13 +266,13 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 	if oaiKey := resolveProviderEnvKey(domain.ProviderOpenAI); oaiKey != "" {
 		if !hasAlias("gpt-4.1") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "gpt-4.1",
+				ModelName:   "gpt-4.1",
 				ModelParams: config.ModelParams{Model: "openai/gpt-4.1", APIKey: oaiKey},
 			})
 		}
 		if !hasAlias("fast") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "fast",
+				ModelName:   "fast",
 				ModelParams: config.ModelParams{Model: "openai/gpt-4.1-mini", APIKey: oaiKey},
 			})
 		}
@@ -280,7 +280,7 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 	if misKey := resolveProviderEnvKey(domain.ProviderMistral); misKey != "" {
 		if !hasAlias("mistral-large-latest") {
 			out = append(out, config.ModelListEntry{
-				ModelName:     "mistral-large-latest",
+				ModelName:   "mistral-large-latest",
 				ModelParams: config.ModelParams{Model: "mistral/mistral-large-latest", APIKey: misKey},
 			})
 		}

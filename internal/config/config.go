@@ -98,10 +98,10 @@ type LogConfig struct {
 // allowing developers to configure models, aliases ("fast", "reasoning"), and credentials
 // without imperative Control Plane HTTP setup calls.
 type ModelListEntry struct {
-	ModelName       string        `yaml:"model_name" json:"model_name"`
-	ModelParams   ModelParams `yaml:"model_params" json:"model_params"`
-	RoutingStrategy string        `yaml:"routing_strategy,omitempty" json:"routing_strategy,omitempty"`
-	Fallbacks       []string      `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
+	ModelName       string      `yaml:"model_name" json:"model_name"`
+	ModelParams     ModelParams `yaml:"model_params" json:"model_params"`
+	RoutingStrategy string      `yaml:"routing_strategy,omitempty" json:"routing_strategy,omitempty"`
+	Fallbacks       []string    `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
 }
 
 // ModelParams holds upstream provider and model routing parameters for a deployment entry.
