@@ -11,6 +11,9 @@ services:
       - ./../migrations/0001_init_schema.up.sql:/docker-entrypoint-initdb.d/0001_init_schema.up.sql:ro
       - ./../migrations/0002_add_platform_modules.up.sql:/docker-entrypoint-initdb.d/0002_add_platform_modules.up.sql:ro
       - ./../migrations/0003_add_mcp_and_a2a.up.sql:/docker-entrypoint-initdb.d/0003_add_mcp_and_a2a.up.sql:ro
+      - ./../migrations/0004_add_pricing_status.up.sql:/docker-entrypoint-initdb.d/0004_add_pricing_status.up.sql:ro
+      - ./../migrations/0005_add_model_capabilities.up.sql:/docker-entrypoint-initdb.d/0005_add_model_capabilities.up.sql:ro
+      - ./../migrations/0006_add_supports_inference.up.sql:/docker-entrypoint-initdb.d/0006_add_supports_inference.up.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
       interval: 5s

@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Enterprise AI Gateway Unified API
-  version: 1.0.0
+  version: 1.1.0
   description: >
-    Production-grade OpenAI-compatible Unified AI Gateway API supporting OpenAI,
-    Anthropic Claude, Google Gemini, Mistral AI, and Ollama with intelligent routing,
-    load balancing, retries/fallbacks, virtual keys, Redis Lua rate limiting, and FinOps spend tracking.
+    Production-grade OpenAI-compatible Unified AI Gateway API supporting universal model providers
+    (OpenAI, Anthropic Claude, Google Gemini, Google Vertex AI, AWS Bedrock, Cohere, Mistral AI, Ollama,
+    and 30+ certified OpenAI-compatible platforms) with intelligent routing, load balancing, retries/fallbacks,
+    virtual keys, Redis Lua rate limiting, FinOps spend tracking, MCP 2026-07-28 tools, and Linux Foundation A2A v1.0.
 servers:
   - url: http://localhost:8080
     description: Local Gateway Server

@@ -59,7 +59,7 @@ test-e2e:
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.0.0 -f deployments/Dockerfile .
+	docker build -t goroute/ai-gateway:v1.1.0 -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build
@@ -77,5 +77,5 @@ clean:
 
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.0.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway v1.1.0 — All Release Checks Passed Successfully! "
 	@echo "======================================================================"
