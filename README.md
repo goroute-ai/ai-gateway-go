@@ -9,7 +9,7 @@ Call major hosted and local model providers through a unified API. Dedicated pro
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.0.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.0.0)
+[![Release](https://img.shields.io/badge/Release-v1.1.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.1.0)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative)](./docs/openapi/README.md)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
@@ -41,7 +41,7 @@ GoRoute AI Gateway is an enterprise-grade AI data plane and embedded Go SDK engi
 Embed GoRoute directly inside your Go microservices with zero external proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.0.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.1.0
 ```
 
 ```go
@@ -107,7 +107,7 @@ Run instantly with local mock fallback:
 ai-gateway --config configs/config.yaml
 ```
 
-*Precompiled binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.0.0).*
+*Precompiled binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.1.0).*
 
 #### Path 3: Production Multi-Tenant Stack (Docker Compose)
 Spins up GoRoute, PostgreSQL 16 (for migrations and spend logs), Redis 7 (for sliding-window rate limiting), and Prometheus:

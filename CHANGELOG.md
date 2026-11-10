@@ -26,17 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Built-in profiles for Cerebras, SambaNova, xAI (Grok), Together AI, Fireworks AI, Groq, DeepSeek, Perplexity AI, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda Labs, Friendli AI, OpenRouter, vLLM, Cloudflare Workers AI, Databricks, Snowflake Cortex, DashScope (Qwen), Volcengine, BigModel (GLM), Moonshot (Kimi), MiniMax, SiliconFlow, Voyage AI, Jina AI, Replicate, AI21 Labs, Baseten, NVIDIA NIM, and Scaleway.
   - Reasoning delta extraction across `reasoning_content`, `thought`, and `reasoning` fields.
 
-#### Embedded Model Catalogue Engine (`internal/catalog`)
+#### Embedded Model Catalogue Engine & Admin APIs (`internal/catalog`, `internal/server`)
 - **4,627 Curated Models**: Embedded gzip-compressed model catalogue (`catalog.json.gz`) with integer micro-USD pricing per 1M tokens ($10^{-6}\text{ USD}$) and tri-state capability flags (`supported`, `unsupported`, `unknown`).
 - **Sub-70ns Lookup**: Thread-safe in-memory index (`Lookup`, `LookupByProviderAndModel`, `Search`) benchmarked at **66.41 ns/op**.
-- **Inference Route Distinction**: Distinguishes callable inference providers (`IsCallableProvider`) from non-inference metadata entries.
-- **Catalogue Sync Admin API**: Added `POST /admin/v1/catalogue/sync` for syncing models into database persistence.
+- **Inference Route Distinction**: Distinguishes callable inference providers (`IsCallableProvider`) from non-inference metadata entries, enforced via live adapter registry checks in `IntelligentRouter`.
+- **Database Migrations 0004, 0005, and 0006**:
+  - `0004`: Added `pricing_status` to `global_models` and `spend_logs`.
+  - `0005`: Added persistent tri-state model `capabilities` JSONB and audit pricing history.
+  - `0006`: Added `supports_inference` boolean flag to `global_models`.
+- **Admin Catalogue APIs**:
+  - `POST /admin/v1/catalogue/sync`: Discovers upstream provider models.
+  - `POST /admin/v1/catalogue/import`: Imports embedded catalogue models by provider or across all providers.
+  - `POST /admin/v1/catalogue/pricing`: Updates model pricing and promotes provenance (`"global-model-catalog-v1.0"`) with versioned audit history.
 
 #### Security Hardening & Fail-Closed Multi-Tenancy
 - **Fail-Closed Dispatch Authorization**: Hardened `RBACEngine.AuthorizeDeployment` (`internal/auth/rbac.go`) to fail closed on repository read errors, preventing unauthorized deployments from being dispatched during database degraded states.
 - **Fail-Closed Dynamic Routing**: Hardened `IntelligentRouter.resolveDynamicProviderModel` (`internal/router/intelligent_router.go`) to fail closed on subscription and policy read errors.
 - **Explicit Model Isolation**: Enforced that explicit model requests (`requested != "auto"` and not a smart alias) strictly return `HTTP 404 model_group_not_found` and never fall through to unrelated tenant model groups.
 - **Tri-State Validation Passthrough**: In `internal/validation/validator.go`, models with `CapabilityUnknown` are permitted to pass through to upstream, while only explicitly `CapabilityUnsupported` models return HTTP 400.
+- **Brand Cleanliness**: Complete eradication of third-party brand strings across code, tests, documentation, embedded catalog binary, and git history trace.
 
 ---
 
