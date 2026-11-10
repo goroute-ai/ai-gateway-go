@@ -35,31 +35,37 @@ const (
 
 // GlobalModel represents Layer 1 of Model Management: the Global Model Catalogue.
 type GlobalModel struct {
-	ID                         string               `json:"id"` // e.g. "openai/gpt-4.1"
-	Provider                   ProviderType         `json:"provider"`
-	ModelName                  string               `json:"model_name"` // e.g. "gpt-4.1"
-	DisplayName                string               `json:"display_name"`
-	MaxInputTokens             int                  `json:"max_input_tokens"`
-	MaxOutputTokens            int                  `json:"max_output_tokens"`
-	Capabilities               ModelCapabilities    `json:"capabilities"`
-	SupportsStreaming          bool                 `json:"supports_streaming"`
-	SupportsTools              bool                 `json:"supports_tools"`
-	SupportsVision             bool                 `json:"supports_vision"`
-	SupportsReasoning          bool                 `json:"supports_reasoning"`
-	SupportsEmbeddings         bool                 `json:"supports_embeddings"`
-	SupportsInference          bool                 `json:"supports_inference"`
-	InputCostMicrosPer1M       int64                `json:"input_cost_micros_per_1m"`
-	OutputCostMicrosPer1M      int64                `json:"output_cost_micros_per_1m"`
-	CachedInputCostMicrosPer1M int64                `json:"cached_input_cost_micros_per_1m"`
-	ReasoningCostMicrosPer1M   int64                `json:"reasoning_cost_micros_per_1m"`
-	PricingVersion             int                  `json:"pricing_version"`
-	PricingStatus              PricingStatus        `json:"pricing_status"`
-	PricingProvenanceSource    string               `json:"pricing_provenance_source,omitempty"`
-	PricingEffectiveDate       string               `json:"pricing_effective_date,omitempty"`
-	LifecycleStatus            ModelLifecycleStatus `json:"lifecycle_status"`
-	DeprecationDate            *time.Time           `json:"deprecation_date,omitempty"`
-	DiscoveredAt               time.Time            `json:"discovered_at"`
-	UpdatedAt                  time.Time            `json:"updated_at"`
+	ID                            string               `json:"id"` // e.g. "openai/gpt-4.1"
+	Provider                      ProviderType         `json:"provider"`
+	ModelName                     string               `json:"model_name"` // e.g. "gpt-4.1"
+	DisplayName                   string               `json:"display_name"`
+	MaxInputTokens                int                  `json:"max_input_tokens"`
+	MaxOutputTokens               int                  `json:"max_output_tokens"`
+	Capabilities                  ModelCapabilities    `json:"capabilities"`
+	SupportsStreaming             bool                 `json:"supports_streaming"`
+	SupportsTools                 bool                 `json:"supports_tools"`
+	SupportsVision                bool                 `json:"supports_vision"`
+	SupportsReasoning             bool                 `json:"supports_reasoning"`
+	SupportsEmbeddings            bool                 `json:"supports_embeddings"`
+	SupportsInference             bool                 `json:"supports_inference"`
+	InputCostMicrosPer1M          int64                `json:"input_cost_micros_per_1m"`
+	OutputCostMicrosPer1M         int64                `json:"output_cost_micros_per_1m"`
+	CachedInputCostMicrosPer1M    int64                `json:"cached_input_cost_micros_per_1m"`
+	ReasoningCostMicrosPer1M      int64                `json:"reasoning_cost_micros_per_1m"`
+	RerankCostMicrosPerSearchUnit int64                `json:"rerank_cost_micros_per_search_unit,omitempty"`
+	ImageCostMicrosBase           int64                `json:"image_cost_micros_base,omitempty"`
+	ImageCostMicrosHD             int64                `json:"image_cost_micros_hd,omitempty"`
+	AudioSTTCostMicrosPerSecond   int64                `json:"audio_stt_cost_micros_per_second,omitempty"`
+	AudioTTSCostMicrosPer1KChars  int64                `json:"audio_tts_cost_micros_per_1k_chars,omitempty"`
+	ModalityPricingJSON           map[string]any       `json:"modality_pricing_json,omitempty"`
+	PricingVersion                int                  `json:"pricing_version"`
+	PricingStatus                 PricingStatus        `json:"pricing_status"`
+	PricingProvenanceSource       string               `json:"pricing_provenance_source,omitempty"`
+	PricingEffectiveDate          string               `json:"pricing_effective_date,omitempty"`
+	LifecycleStatus               ModelLifecycleStatus `json:"lifecycle_status"`
+	DeprecationDate               *time.Time           `json:"deprecation_date,omitempty"`
+	DiscoveredAt                  time.Time            `json:"discovered_at"`
+	UpdatedAt                     time.Time            `json:"updated_at"`
 }
 
 // ModelPricingHistory tracks versioned pricing changes for a GlobalModel over time.
@@ -129,6 +135,27 @@ func (gm *GlobalModel) ResolveCapabilities() ModelCapabilities {
 	}
 	if caps.StructuredOutputs == "" {
 		caps.StructuredOutputs = CapabilityUnknown
+	}
+	if caps.Rerank == "" {
+		caps.Rerank = CapabilityUnknown
+	}
+	if caps.Moderation == "" {
+		caps.Moderation = CapabilityUnknown
+	}
+	if caps.ImageGen == "" {
+		caps.ImageGen = CapabilityUnknown
+	}
+	if caps.AudioSTT == "" {
+		caps.AudioSTT = CapabilityUnknown
+	}
+	if caps.AudioTTS == "" {
+		caps.AudioTTS = CapabilityUnknown
+	}
+	if caps.Batches == "" {
+		caps.Batches = CapabilityUnknown
+	}
+	if caps.Realtime == "" {
+		caps.Realtime = CapabilityUnknown
 	}
 	return caps
 }

@@ -208,3 +208,66 @@ func TestCohereAdapter_Embeddings(t *testing.T) {
 	assert.Equal(t, []float64{0.1, -0.2, 0.3}, res.Data[0].Embedding)
 	assert.Equal(t, 5, res.Usage.PromptTokens)
 }
+
+func TestCohereRerank(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/rerank", r.URL.Path)
+		assert.Equal(t, "Bearer test-cohere-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var raw map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&raw))
+		assert.Equal(t, "rerank-v3.5", raw["model"])
+		assert.Equal(t, "deep learning", raw["query"])
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "rerank-test-123",
+			"results": [
+				{"index": 0, "relevance_score": 0.995, "document": {"text": "neural networks"}},
+				{"index": 1, "relevance_score": 0.012, "document": {"text": "pasta recipe"}}
+			],
+			"meta": {
+				"billed_units": {
+					"search_units": 1,
+					"total_tokens": 120
+				}
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	adp := cohere.NewAdapter(srv.Client(), nil)
+	dep := &domain.Deployment{
+		ID: "dep-cohere-rerank",
+		GlobalModel: &domain.GlobalModel{
+			ID:        "cohere/rerank-v3.5",
+			Provider:  domain.ProviderCohere,
+			ModelName: "rerank-v3.5",
+		},
+		Credential: &domain.ProviderCredential{
+			BaseURL:         srv.URL,
+			DecryptedAPIKey: "test-cohere-key",
+		},
+	}
+
+	req := &domain.CanonicalRerankRequest{
+		Model: "rerank-v3.5",
+		Query: "deep learning",
+		Documents: []domain.RerankDocument{
+			{Text: "neural networks"},
+			{Text: "pasta recipe"},
+		},
+		ReturnDocuments: true,
+	}
+
+	resp, err := adp.Rerank(context.Background(), dep, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "rerank-test-123", resp.ID)
+	assert.Equal(t, domain.ProviderCohere, resp.Provider)
+	require.Len(t, resp.Results, 2)
+	assert.Equal(t, 0, resp.Results[0].Index)
+	assert.Equal(t, 0.995, resp.Results[0].RelevanceScore)
+	assert.Equal(t, 1, resp.Usage.SearchUnits)
+}

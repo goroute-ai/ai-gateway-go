@@ -232,8 +232,88 @@ func (s *GatewayServer) setupRoutes() {
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
 		v1.Post("/chat/completions", s.handleChatCompletions)
+		v1.Post("/completions", s.handleLegacyCompletions)
 		v1.Post("/embeddings", s.handleEmbeddings)
 		v1.Get("/models", s.handleListModels)
+		v1.Post("/rerank", s.handleRerank)
+		v1.Post("/moderations", s.handleModerations)
+		v1.Post("/messages", s.handleAnthropicMessages)
+		v1.Post("/messages/count_tokens", s.handleAnthropicCountTokens)
+		v1.Post("/tokenize", s.handleTokenize)
+		v1.Post("/audio/transcriptions", s.handleAudioTranscriptions)
+		v1.Post("/audio/translations", s.handleAudioTranslations)
+		v1.Post("/audio/speech", s.handleAudioSpeech)
+		v1.Post("/images/generations", s.handleImageGenerations)
+		v1.Post("/images/edits", s.handleImageEdits)
+		v1.Post("/images/variations", s.handleImageVariations)
+
+		// Files
+		v1.Post("/files", s.handleUploadFile)
+		v1.Get("/files", s.handleListFiles)
+		v1.Get("/files/{file_id}", s.handleGetFile)
+		v1.Get("/files/{file_id}/content", s.handleGetFileContent)
+		v1.Delete("/files/{file_id}", s.handleDeleteFile)
+
+		// Batches
+		v1.Post("/batches", s.handleCreateBatch)
+		v1.Get("/batches", s.handleListBatches)
+		v1.Get("/batches/{batch_id}", s.handleGetBatch)
+		v1.Post("/batches/{batch_id}/cancel", s.handleCancelBatch)
+
+		// Responses API & Realtime WebSocket
+		v1.Post("/responses", s.handleResponses)
+		v1.Get("/realtime", s.handleRealtimeWebSocket)
+	})
+
+	// Unversioned and multi-spec aliases for broad SDK / API-compatible providers parity
+	r.Group(func(unv chi.Router) {
+		unv.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		unv.Post("/chat/completions", s.handleChatCompletions)
+		unv.Post("/completions", s.handleLegacyCompletions)
+		unv.Post("/embeddings", s.handleEmbeddings)
+		unv.Get("/models", s.handleListModels)
+		unv.Post("/rerank", s.handleRerank)
+		unv.Post("/v2/rerank", s.handleRerank)
+		unv.Post("/moderations", s.handleModerations)
+		unv.Post("/messages", s.handleAnthropicMessages)
+		unv.Post("/tokenize", s.handleTokenize)
+		unv.Post("/audio/transcriptions", s.handleAudioTranscriptions)
+		unv.Post("/audio/translations", s.handleAudioTranslations)
+		unv.Post("/audio/speech", s.handleAudioSpeech)
+		unv.Post("/images/generations", s.handleImageGenerations)
+		unv.Post("/images/edits", s.handleImageEdits)
+		unv.Post("/images/variations", s.handleImageVariations)
+
+		// Files
+		unv.Post("/files", s.handleUploadFile)
+		unv.Get("/files", s.handleListFiles)
+		unv.Get("/files/{file_id}", s.handleGetFile)
+		unv.Get("/files/{file_id}/content", s.handleGetFileContent)
+		unv.Delete("/files/{file_id}", s.handleDeleteFile)
+
+		// Batches
+		unv.Post("/batches", s.handleCreateBatch)
+		unv.Get("/batches", s.handleListBatches)
+		unv.Get("/batches/{batch_id}", s.handleGetBatch)
+		unv.Post("/batches/{batch_id}/cancel", s.handleCancelBatch)
+
+		// Responses & Realtime
+		unv.Post("/responses", s.handleResponses)
+		unv.Get("/realtime", s.handleRealtimeWebSocket)
+	})
+
+	// OpenAI Direct Wire Spec (/openai/v1/*)
+	r.Route("/openai/v1", func(oai chi.Router) {
+		oai.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		oai.Post("/responses", s.handleResponses)
+		oai.Get("/realtime", s.handleRealtimeWebSocket)
+	})
+
+	// Anthropic Native Ingress Spec (/anthropic/v1/*)
+	r.Route("/anthropic/v1", func(ant chi.Router) {
+		ant.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		ant.Post("/messages", s.handleAnthropicMessages)
+		ant.Post("/messages/count_tokens", s.handleAnthropicCountTokens)
 	})
 
 	// MCP Data Plane (/mcp/* — Model Context Protocol Virtual Hub, Scoped Server & Curated Toolsets)

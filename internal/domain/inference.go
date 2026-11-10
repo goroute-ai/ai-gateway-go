@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"io"
+	"time"
+)
 
 // ProviderType identifies an upstream LLM vendor supported by the gateway.
 type ProviderType string
@@ -260,34 +264,358 @@ type EmbeddingData struct {
 	Embedding []float64 `json:"embedding"`
 }
 
+// ModalityType identifies the operational modality of a gateway request.
+type ModalityType string
+
+const (
+	ModalityChat       ModalityType = "chat"
+	ModalityCompletion ModalityType = "completion"
+	ModalityEmbedding  ModalityType = "embedding"
+	ModalityRerank     ModalityType = "rerank"
+	ModalityModeration ModalityType = "moderation"
+	ModalityImage      ModalityType = "image"
+	ModalityAudioSTT   ModalityType = "audio_stt"
+	ModalityAudioTTS   ModalityType = "audio_tts"
+	ModalityBatch      ModalityType = "batch"
+	ModalityResponse   ModalityType = "response"
+	ModalityRealtime   ModalityType = "realtime"
+)
+
 // SpendEvent is pushed asynchronously to the FinOps worker pool after each inference call.
 type SpendEvent struct {
-	ID                      string        `json:"id"`
-	RequestID               string        `json:"request_id"`
-	TraceID                 string        `json:"trace_id,omitempty"`
-	Protocol                string        `json:"protocol,omitempty"`        // "inference", "mcp", "a2a"
-	ProtocolTarget          string        `json:"protocol_target,omitempty"` // e.g. "mcp:github/search_repos" or "a2a:weather-agent"
-	OrgID                   string        `json:"org_id"`
-	TeamID                  string        `json:"team_id,omitempty"`
-	UserID                  string        `json:"user_id,omitempty"`
-	VirtualKeyID            string        `json:"virtual_key_id"`
-	Endpoint                string        `json:"endpoint"`
-	RequestedModel          string        `json:"requested_model"`
-	ResolvedModel           string        `json:"resolved_model"`
-	Provider                ProviderType  `json:"provider"`
-	DeploymentID            string        `json:"deployment_id"`
-	PricingVersion          int           `json:"pricing_version,omitempty"`
-	PricingStatus           PricingStatus `json:"pricing_status,omitempty"`
-	PricingProvenanceSource string        `json:"pricing_provenance_source,omitempty"`
-	Usage                   TokenUsage    `json:"usage"`
-	CostMicros              int64         `json:"cost_micros"`
-	LatencyMs               int64         `json:"latency_ms"`
-	TTFTMs                  int64         `json:"ttft_ms"`
-	StatusCode              int           `json:"status_code"`
-	IsStream                bool          `json:"is_stream"`
-	CacheHit                bool          `json:"cache_hit"`
-	FallbackAttempted       bool          `json:"fallback_attempted"`
-	RetryCount              int           `json:"retry_count"`
-	ErrorMessage            string        `json:"error_message,omitempty"`
-	CreatedAt               time.Time     `json:"created_at"`
+	ID                      string         `json:"id"`
+	RequestID               string         `json:"request_id"`
+	TraceID                 string         `json:"trace_id,omitempty"`
+	Protocol                string         `json:"protocol,omitempty"`        // "inference", "mcp", "a2a"
+	ProtocolTarget          string         `json:"protocol_target,omitempty"` // e.g. "mcp:github/search_repos" or "a2a:weather-agent"
+	OrgID                   string         `json:"org_id"`
+	TeamID                  string         `json:"team_id,omitempty"`
+	UserID                  string         `json:"user_id,omitempty"`
+	VirtualKeyID            string         `json:"virtual_key_id"`
+	Endpoint                string         `json:"endpoint"`
+	Modality                ModalityType   `json:"modality,omitempty"`
+	ModalityUnits           map[string]any `json:"modality_units,omitempty"`
+	RequestedModel          string         `json:"requested_model"`
+	ResolvedModel           string         `json:"resolved_model"`
+	Provider                ProviderType   `json:"provider"`
+	DeploymentID            string         `json:"deployment_id"`
+	PricingVersion          int            `json:"pricing_version,omitempty"`
+	PricingStatus           PricingStatus  `json:"pricing_status,omitempty"`
+	PricingProvenanceSource string         `json:"pricing_provenance_source,omitempty"`
+	Usage                   TokenUsage     `json:"usage"`
+	CostMicros              int64          `json:"cost_micros"`
+	LatencyMs               int64          `json:"latency_ms"`
+	TTFTMs                  int64          `json:"ttft_ms"`
+	StatusCode              int            `json:"status_code"`
+	IsStream                bool           `json:"is_stream"`
+	CacheHit                bool           `json:"cache_hit"`
+	FallbackAttempted       bool           `json:"fallback_attempted"`
+	RetryCount              int            `json:"retry_count"`
+	ErrorMessage            string         `json:"error_message,omitempty"`
+	CreatedAt               time.Time      `json:"created_at"`
+}
+
+// --- RERANK ---
+
+// RerankDocument represents a document in a reranking request, which can be either a plain string or a structured JSON object.
+type RerankDocument struct {
+	Text string         `json:"text,omitempty"`
+	Raw  map[string]any `json:"raw,omitempty"`
+}
+
+func (d *RerankDocument) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		d.Text = s
+		return nil
+	}
+	return json.Unmarshal(b, &d.Raw)
+}
+
+func (d RerankDocument) MarshalJSON() ([]byte, error) {
+	if d.Text != "" && len(d.Raw) == 0 {
+		return json.Marshal(d.Text)
+	}
+	if len(d.Raw) > 0 {
+		return json.Marshal(d.Raw)
+	}
+	return json.Marshal(d.Text)
+}
+
+type CanonicalRerankRequest struct {
+	RequestID       string           `json:"request_id,omitempty"`
+	Model           string           `json:"model"`
+	ResolvedModel   string           `json:"resolved_model,omitempty"`
+	Query           string           `json:"query"`
+	Documents       []RerankDocument `json:"documents"`
+	TopN            *int             `json:"top_n,omitempty"`
+	RankFields      []string         `json:"rank_fields,omitempty"`
+	ReturnDocuments bool             `json:"return_documents"`
+	MaxTokensPerDoc *int             `json:"max_tokens_per_doc,omitempty"`
+}
+
+type RerankResultItem struct {
+	Index          int            `json:"index"`
+	RelevanceScore float64        `json:"relevance_score"`
+	Document       map[string]any `json:"document,omitempty"`
+}
+
+type RerankUsage struct {
+	SearchUnits int `json:"search_units"`
+	TotalTokens int `json:"total_tokens"`
+}
+
+type CanonicalRerankResponse struct {
+	ID       string             `json:"id"`
+	Model    string             `json:"model"`
+	Provider ProviderType       `json:"provider"`
+	Results  []RerankResultItem `json:"results"`
+	Meta     map[string]any     `json:"meta,omitempty"`
+	Usage    RerankUsage        `json:"usage"`
+}
+
+// --- MODERATION ---
+
+type CanonicalModerationRequest struct {
+	RequestID     string   `json:"request_id,omitempty"`
+	Model         string   `json:"model"`
+	ResolvedModel string   `json:"resolved_model,omitempty"`
+	Input         []string `json:"input"`
+}
+
+type ModerationResultItem struct {
+	Flagged        bool               `json:"flagged"`
+	Categories     map[string]bool    `json:"categories"`
+	CategoryScores map[string]float64 `json:"category_scores"`
+}
+
+type CanonicalModerationResponse struct {
+	ID       string                 `json:"id"`
+	Model    string                 `json:"model"`
+	Provider ProviderType           `json:"provider"`
+	Results  []ModerationResultItem `json:"results"`
+}
+
+// --- COMPLETIONS (LEGACY) ---
+
+// CompletionPrompt supports single string prompt or array of string prompts.
+type CompletionPrompt struct {
+	Strings []string
+}
+
+func (p *CompletionPrompt) UnmarshalJSON(b []byte) error {
+	var single string
+	if err := json.Unmarshal(b, &single); err == nil {
+		p.Strings = []string{single}
+		return nil
+	}
+	return json.Unmarshal(b, &p.Strings)
+}
+
+func (p CompletionPrompt) MarshalJSON() ([]byte, error) {
+	if len(p.Strings) == 1 {
+		return json.Marshal(p.Strings[0])
+	}
+	return json.Marshal(p.Strings)
+}
+
+type CanonicalCompletionRequest struct {
+	RequestID     string           `json:"request_id,omitempty"`
+	Model         string           `json:"model"`
+	ResolvedModel string           `json:"resolved_model,omitempty"`
+	Prompt        CompletionPrompt `json:"prompt"`
+	MaxTokens     *int             `json:"max_tokens,omitempty"`
+	Temperature   *float64         `json:"temperature,omitempty"`
+	TopP          *float64         `json:"top_p,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	Stop          []string         `json:"stop,omitempty"`
+	User          string           `json:"user,omitempty"`
+}
+
+type CanonicalCompletionChoice struct {
+	Index        int    `json:"index"`
+	Text         string `json:"text"`
+	FinishReason string `json:"finish_reason"`
+}
+
+type CanonicalCompletionResponse struct {
+	ID       string                      `json:"id"`
+	Model    string                      `json:"model"`
+	Provider ProviderType                `json:"provider"`
+	Choices  []CanonicalCompletionChoice `json:"choices"`
+	Usage    TokenUsage                  `json:"usage"`
+}
+
+// --- IMAGES ---
+
+type CanonicalImageRequest struct {
+	RequestID      string `json:"request_id,omitempty"`
+	Prompt         string `json:"prompt"`
+	Model          string `json:"model"`
+	ResolvedModel  string `json:"resolved_model,omitempty"`
+	N              int    `json:"n,omitempty"`
+	Quality        string `json:"quality,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // "url" or "b64_json"
+	Size           string `json:"size,omitempty"`            // "1024x1024", etc.
+	Style          string `json:"style,omitempty"`           // "vivid" or "natural"
+	User           string `json:"user,omitempty"`
+	Operation      string `json:"-"` // "edit" or "variation"; empty means generation
+	ImageData      []byte `json:"-"`
+	ImageFilename  string `json:"-"`
+	MaskData       []byte `json:"-"`
+	MaskFilename   string `json:"-"`
+}
+
+type ImageItem struct {
+	URL           string `json:"url,omitempty"`
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+type CanonicalImageResponse struct {
+	Created  int64        `json:"created"`
+	Provider ProviderType `json:"provider"`
+	Model    string       `json:"model"`
+	Data     []ImageItem  `json:"data"`
+}
+
+// --- AUDIO ---
+
+type CanonicalAudioTranscriptionRequest struct {
+	RequestID              string    `json:"request_id,omitempty"`
+	Model                  string    `json:"model"`
+	ResolvedModel          string    `json:"resolved_model,omitempty"`
+	FileName               string    `json:"file_name"`
+	SpoolFilePath          string    `json:"-"`
+	FileReader             io.Reader `json:"-"`
+	Language               string    `json:"language,omitempty"`
+	Prompt                 string    `json:"prompt,omitempty"`
+	ResponseFormat         string    `json:"response_format,omitempty"` // "json", "text", "verbose_json"
+	Temperature            *float64  `json:"temperature,omitempty"`
+	TimestampGranularities []string  `json:"timestamp_granularities,omitempty"`
+}
+
+type CanonicalAudioResponse struct {
+	Text       string         `json:"text"`
+	DurationMs int64          `json:"duration_ms,omitempty"`
+	Language   string         `json:"language,omitempty"`
+	Words      []any          `json:"words,omitempty"`
+	Segments   []any          `json:"segments,omitempty"`
+	Raw        map[string]any `json:"raw,omitempty"`
+}
+
+type CanonicalAudioSpeechRequest struct {
+	RequestID      string  `json:"request_id,omitempty"`
+	Model          string  `json:"model"`
+	ResolvedModel  string  `json:"resolved_model,omitempty"`
+	Input          string  `json:"input"`
+	Voice          string  `json:"voice"`
+	ResponseFormat string  `json:"response_format,omitempty"` // "mp3", "opus", "aac", "flac", "wav"
+	Speed          float64 `json:"speed,omitempty"`
+}
+
+// --- FILES & BATCHES ---
+
+type CanonicalFile struct {
+	ID               string     `json:"id"`
+	OrgID            string     `json:"org_id"`
+	TeamID           string     `json:"team_id,omitempty"`
+	UserID           string     `json:"user_id,omitempty"`
+	Bytes            int64      `json:"bytes"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Filename         string     `json:"filename"`
+	Purpose          string     `json:"purpose"`
+	Status           string     `json:"status"`
+	ContentSHA256    string     `json:"content_sha256,omitempty"`
+	StoragePath      string     `json:"storage_path,omitempty"`
+	UpstreamID       string     `json:"upstream_id,omitempty"`
+	UpstreamProvider string     `json:"upstream_provider,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+}
+
+type BatchCounts struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+}
+
+type CanonicalBatch struct {
+	ID               string         `json:"id"`
+	OrgID            string         `json:"org_id"`
+	TeamID           string         `json:"team_id,omitempty"`
+	InputFileID      string         `json:"input_file_id"`
+	OutputFileID     string         `json:"output_file_id,omitempty"`
+	ErrorFileID      string         `json:"error_file_id,omitempty"`
+	Endpoint         string         `json:"endpoint"`
+	Status           string         `json:"status"` // "validating", "in_progress", "completed", "failed", "cancelled"
+	CompletionWindow string         `json:"completion_window"`
+	CreatedAt        time.Time      `json:"created_at"`
+	CompletedAt      *time.Time     `json:"completed_at,omitempty"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
+	RequestCounts    BatchCounts    `json:"request_counts"`
+	UpstreamID       string         `json:"upstream_id,omitempty"`
+	UpstreamProvider string         `json:"upstream_provider,omitempty"`
+}
+
+// --- RESPONSES API ---
+
+type CanonicalResponseRequest struct {
+	Model           string          `json:"model"`
+	Input           json.RawMessage `json:"input"` // string or []CanonicalChatMessage or []any
+	Instructions    string          `json:"instructions,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+	Tools           []any           `json:"tools,omitempty"`
+	Metadata        map[string]any  `json:"metadata,omitempty"`
+}
+
+type CanonicalResponseContentPart struct {
+	Type string `json:"type"` // "output_text"
+	Text string `json:"text"`
+}
+
+type CanonicalResponseOutputItem struct {
+	ID      string                         `json:"id"`
+	Type    string                         `json:"type"`   // "message"
+	Status  string                         `json:"status"` // "completed"
+	Role    string                         `json:"role"`   // "assistant"
+	Content []CanonicalResponseContentPart `json:"content"`
+}
+
+type CanonicalResponseOutput struct {
+	ID        string                        `json:"id"`
+	Object    string                        `json:"object"` // "response"
+	CreatedAt int64                         `json:"created_at"`
+	Model     string                        `json:"model"`
+	Status    string                        `json:"status"` // "completed", "in_progress", "failed"
+	Output    []CanonicalResponseOutputItem `json:"output"`
+	Usage     *TokenUsage                   `json:"usage,omitempty"`
+}
+
+// --- REALTIME WEBSOCKET API ---
+
+type CanonicalRealtimeSessionConfig struct {
+	Modalities        []string `json:"modalities,omitempty"` // ["text", "audio"]
+	Instructions      string   `json:"instructions,omitempty"`
+	Voice             string   `json:"voice,omitempty"`
+	InputAudioFormat  string   `json:"input_audio_format,omitempty"`  // "pcm16", "g711_ulaw", "g711_alaw"
+	OutputAudioFormat string   `json:"output_audio_format,omitempty"` // "pcm16", "g711_ulaw", "g711_alaw"
+	Temperature       *float64 `json:"temperature,omitempty"`
+}
+
+type CanonicalRealtimeClientEvent struct {
+	EventID string                          `json:"event_id,omitempty"`
+	Type    string                          `json:"type"` // e.g. "session.update", "input_audio_buffer.append", "response.create"
+	Session *CanonicalRealtimeSessionConfig `json:"session,omitempty"`
+	Audio   string                          `json:"audio,omitempty"` // base64
+}
+
+type CanonicalRealtimeServerEvent struct {
+	EventID string                          `json:"event_id,omitempty"`
+	Type    string                          `json:"type"`
+	Session *CanonicalRealtimeSessionConfig `json:"session,omitempty"`
+	Delta   string                          `json:"delta,omitempty"`
+	Text    string                          `json:"text,omitempty"`
+	Error   any                             `json:"error,omitempty"`
 }

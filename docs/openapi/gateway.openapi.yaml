@@ -227,6 +227,291 @@ components:
           type: string
         usage:
           $ref: '#/components/schemas/TokenUsage'
+    RerankRequest:
+      type: object
+      required:
+        - model
+        - query
+        - documents
+      properties:
+        model:
+          type: string
+        query:
+          type: string
+        documents:
+          type: array
+          items:
+            anyOf:
+              - type: string
+              - type: object
+        top_n:
+          type: integer
+        return_documents:
+          type: boolean
+    RerankResponse:
+      type: object
+      required:
+        - id
+        - results
+      properties:
+        id:
+          type: string
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              relevance_score:
+                type: number
+    ModerationRequest:
+      type: object
+      required:
+        - input
+      properties:
+        model:
+          type: string
+        input:
+          anyOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+    ModerationResponse:
+      type: object
+      required:
+        - id
+        - model
+        - results
+      properties:
+        id:
+          type: string
+        model:
+          type: string
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              flagged:
+                type: boolean
+              categories:
+                type: object
+              category_scores:
+                type: object
+    LegacyCompletionRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+        prompt:
+          anyOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+        stream:
+          type: boolean
+    LegacyCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              index:
+                type: integer
+              finish_reason:
+                type: string
+    TokenizeRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+        input:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    TokenizeResponse:
+      type: object
+      required:
+        - count
+        - model
+      properties:
+        count:
+          type: integer
+        model:
+          type: string
+        tokens:
+          type: array
+          items:
+            type: integer
+    AudioSpeechRequest:
+      type: object
+      required:
+        - model
+        - input
+        - voice
+      properties:
+        model:
+          type: string
+        input:
+          type: string
+        voice:
+          type: string
+        response_format:
+          type: string
+          enum: [mp3, opus, aac, flac, wav]
+        speed:
+          type: number
+    ImageGenerationRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+        model:
+          type: string
+        n:
+          type: integer
+        quality:
+          type: string
+          enum: [standard, hd]
+        size:
+          type: string
+        response_format:
+          type: string
+          enum: [url, b64_json]
+    ImageGenerationResponse:
+      type: object
+      required:
+        - created
+        - data
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              b64_json:
+                type: string
+              revised_prompt:
+                type: string
+    FileObject:
+      type: object
+      required:
+        - id
+        - bytes
+        - created_at
+        - filename
+        - purpose
+        - status
+      properties:
+        id:
+          type: string
+        bytes:
+          type: integer
+        created_at:
+          type: integer
+        filename:
+          type: string
+        purpose:
+          type: string
+        status:
+          type: string
+    BatchObject:
+      type: object
+      required:
+        - id
+        - input_file_id
+        - endpoint
+        - status
+      properties:
+        id:
+          type: string
+        input_file_id:
+          type: string
+        output_file_id:
+          type: string
+        endpoint:
+          type: string
+        status:
+          type: string
+        request_counts:
+          type: object
+          properties:
+            total:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+    ResponsesAPIRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+        input:
+          description: Input text or conversation sequence
+        instructions:
+          type: string
+        stream:
+          type: boolean
+    ResponsesAPIResponse:
+      type: object
+      required:
+        - id
+        - object
+        - status
+        - model
+        - output
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        status:
+          type: string
+        model:
+          type: string
+        output:
+          type: array
+          items:
+            type: object
 paths:
   /v1/chat/completions:
     post:
@@ -272,3 +557,244 @@ paths:
       responses:
         '200':
           description: OpenAI-compatible model list
+  /v1/rerank:
+    post:
+      operationId: createRerank
+      summary: Cross-encoder document reranking via Cohere, Jina, or Voyage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerankRequest'
+      responses:
+        '200':
+          description: Ranked search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RerankResponse'
+  /v1/moderations:
+    post:
+      operationId: createModeration
+      summary: Content safety and moderation classification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModerationRequest'
+      responses:
+        '200':
+          description: Moderation scores and category flags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModerationResponse'
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Legacy text completions with transparent modern chat fallback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegacyCompletionRequest'
+      responses:
+        '200':
+          description: Legacy completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyCompletionResponse'
+  /v1/messages:
+    post:
+      operationId: createAnthropicMessage
+      summary: Anthropic Claude Messages ingress bridge with bidirectional SSE streaming
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Anthropic message response or event-stream
+  /v1/tokenize:
+    post:
+      operationId: countTokens
+      summary: Precise token counting and prompt breakdown
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenizeRequest'
+      responses:
+        '200':
+          description: Token count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenizeResponse'
+  /v1/audio/transcriptions:
+    post:
+      operationId: createAudioTranscription
+      summary: Speech-to-text audio transcription with spooling and retry protection
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                model:
+                  type: string
+      responses:
+        '200':
+          description: Transcribed text
+  /v1/audio/speech:
+    post:
+      operationId: createAudioSpeech
+      summary: Text-to-speech audio synthesis streaming
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioSpeechRequest'
+      responses:
+        '200':
+          description: Raw audio stream
+  /v1/images/generations:
+    post:
+      operationId: createImageGeneration
+      summary: Multi-modal image generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationRequest'
+      responses:
+        '200':
+          description: Generated image URLs or b64 data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResponse'
+  /v1/images/edits:
+    post:
+      operationId: createImageEdit
+      summary: Edit a PNG image with a prompt
+      description: Currently supports PNG uploads up to 20 MiB for providers that implement image edits.
+      responses:
+        '200':
+          description: Edited image response
+  /v1/images/variations:
+    post:
+      operationId: createImageVariation
+      summary: Generate variations from a PNG image
+      description: Currently supports PNG uploads up to 20 MiB for providers that implement image variations.
+      responses:
+        '200':
+          description: Image variation response
+  /v1/files:
+    post:
+      operationId: uploadFile
+      summary: Upload a tenant-scoped file
+      description: Files are stored on the gateway's configured local filesystem directory. Production deployments must mount shared durable storage at GOROUTE_FILES_DIR for multi-instance operation.
+      responses:
+        '201':
+          description: File object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileObject'
+    get:
+      operationId: listFiles
+      summary: List uploaded files for tenant
+      responses:
+        '200':
+          description: List of files
+  /v1/files/{file_id}:
+    get:
+      operationId: getFile
+      summary: Retrieve file metadata
+      responses:
+        '200':
+          description: File object
+    delete:
+      operationId: deleteFile
+      summary: Delete file
+      responses:
+        '200':
+          description: Deletion confirmation
+  /v1/files/{file_id}/content:
+    get:
+      operationId: getFileContent
+      summary: Stream file raw content bytes
+      responses:
+        '200':
+          description: Binary file stream
+  /v1/batches:
+    post:
+      operationId: createBatch
+      summary: Submit asynchronous batch job
+      responses:
+        '201':
+          description: Batch object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchObject'
+    get:
+      operationId: listBatches
+      summary: List batch jobs
+      responses:
+        '200':
+          description: List of batches
+  /v1/batches/{batch_id}:
+    get:
+      operationId: getBatch
+      summary: Retrieve batch status and progress counts
+      responses:
+        '200':
+          description: Batch object
+  /v1/batches/{batch_id}/cancel:
+    post:
+      operationId: cancelBatch
+      summary: Cancel in-progress batch
+      responses:
+        '200':
+          description: Cancelled batch object
+  /v1/responses:
+    post:
+      operationId: createResponse
+      summary: Create a text response
+      description: Supports text input and streamed or non-streamed text output. Tool calling, response retrieval, and persisted conversation state are not currently supported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResponsesAPIRequest'
+      responses:
+        '200':
+          description: Response output or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponsesAPIResponse'
+  /v1/realtime:
+    get:
+      operationId: realtimeSession
+      summary: Text-only Realtime-compatible WebSocket session
+      description: Supports text conversation events over WebSocket. Audio input/output and upstream Realtime WebSocket bridging are not currently supported.
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket

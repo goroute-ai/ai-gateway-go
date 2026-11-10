@@ -75,7 +75,7 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 	adminKey := "sk-gw-master-admin-key"
 
 	// 1. Create MCPServer definition via POST /admin/v1/mcp/servers
-	createPayload := []byte(fmt.Sprintf(`{
+	createPayload := fmt.Appendf(nil, `{
 		"org_id": "org_default",
 		"name": "Docs Search Engine",
 		"slug": "docs-engine",
@@ -83,7 +83,7 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 		"endpoint_url": "%s",
 		"auth_type": "static",
 		"auth_secret": "my-secret-token"
-	}`, mockUpstream.URL))
+	}`, mockUpstream.URL)
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/v1/mcp/servers", bytes.NewReader(createPayload))
 	req.Header.Set("Authorization", "Bearer "+adminKey)
@@ -147,12 +147,12 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode, "Malicious tool definition must be blocked with 403 Forbidden")
 
 	// 5. Create MCPToolset via POST /admin/v1/mcp/toolsets
-	toolsetPayload := []byte(fmt.Sprintf(`{
+	toolsetPayload := fmt.Appendf(nil, `{
 		"org_id": "org_default",
 		"name": "Search Kit",
 		"slug": "search-kit",
 		"tool_ids": ["%s"]
-	}`, syncResp.Tools[0].ID))
+	}`, syncResp.Tools[0].ID)
 
 	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/admin/v1/mcp/toolsets", bytes.NewReader(toolsetPayload))
 	req.Header.Set("Authorization", "Bearer "+adminKey)
@@ -177,12 +177,12 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 	assert.Len(t, tsListResp.Toolsets, 1)
 
 	// 7. Store BYOK Credential via POST /admin/v1/mcp/credentials
-	credPayload := []byte(fmt.Sprintf(`{
+	credPayload := fmt.Appendf(nil, `{
 		"server_id": "%s",
 		"user_id": "user_dev_100",
 		"org_id": "org_default",
 		"token": "ghp_byok_secret_token_12345"
-	}`, serverID))
+	}`, serverID)
 
 	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/admin/v1/mcp/credentials", bytes.NewReader(credPayload))
 	req.Header.Set("Authorization", "Bearer "+adminKey)

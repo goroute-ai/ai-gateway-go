@@ -41,6 +41,8 @@ type MemoryRepository struct {
 	a2aStreamPubs  []*domain.A2AStreamPublication
 	a2aOutbox      []*domain.A2AOutboxEvent
 	a2aPushConfigs map[string]*domain.A2APushNotificationConfig
+	files          map[string]*domain.CanonicalFile
+	batches        map[string]*domain.CanonicalBatch
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -58,6 +60,8 @@ func NewMemoryRepository() *MemoryRepository {
 		deployments:    make(map[string]*domain.Deployment),
 		pricingHistory: make(map[string][]*domain.ModelPricingHistory),
 		guardrails:     make(map[string]*domain.GuardrailPolicy),
+		files:          make(map[string]*domain.CanonicalFile),
+		batches:        make(map[string]*domain.CanonicalBatch),
 		mcpServers:     make(map[string]*domain.MCPServer),
 		mcpTools:       make(map[string]*domain.MCPTool),
 		mcpToolsets:    make(map[string]*domain.MCPToolset),
@@ -1476,4 +1480,119 @@ func (r *MemoryRepository) GetA2APushNotificationConfig(ctx context.Context, tas
 	}
 	cp := *c
 	return &cp, nil
+}
+
+// Files Management
+
+func (r *MemoryRepository) CreateFile(ctx context.Context, file *domain.CanonicalFile) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if file.ID == "" {
+		file.ID = uuid.NewString()
+	}
+	if file.CreatedAt.IsZero() {
+		file.CreatedAt = time.Now().UTC()
+	}
+	cp := *file
+	r.files[file.ID] = &cp
+	return nil
+}
+
+func (r *MemoryRepository) GetFile(ctx context.Context, orgID, fileID string) (*domain.CanonicalFile, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	f, ok := r.files[fileID]
+	if !ok || (orgID != "" && f.OrgID != orgID) {
+		return nil, fmt.Errorf("file %s not found", fileID)
+	}
+	cp := *f
+	return &cp, nil
+}
+
+func (r *MemoryRepository) ListFiles(ctx context.Context, orgID string, purpose string) ([]*domain.CanonicalFile, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.CanonicalFile
+	for _, f := range r.files {
+		if (orgID == "" || f.OrgID == orgID) && (purpose == "" || f.Purpose == purpose) {
+			cp := *f
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteFile(ctx context.Context, orgID, fileID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f, ok := r.files[fileID]
+	if !ok || (orgID != "" && f.OrgID != orgID) {
+		return fmt.Errorf("file %s not found", fileID)
+	}
+	delete(r.files, fileID)
+	return nil
+}
+
+// Batches Management
+
+func (r *MemoryRepository) CreateBatch(ctx context.Context, batch *domain.CanonicalBatch) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if batch.ID == "" {
+		batch.ID = uuid.NewString()
+	}
+	if batch.CreatedAt.IsZero() {
+		batch.CreatedAt = time.Now().UTC()
+	}
+	cp := *batch
+	r.batches[batch.ID] = &cp
+	return nil
+}
+
+func (r *MemoryRepository) GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	b, ok := r.batches[batchID]
+	if !ok || (orgID != "" && b.OrgID != orgID) {
+		return nil, fmt.Errorf("batch %s not found", batchID)
+	}
+	cp := *b
+	return &cp, nil
+}
+
+func (r *MemoryRepository) ListBatches(ctx context.Context, orgID string, limit int) ([]*domain.CanonicalBatch, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []*domain.CanonicalBatch
+	for _, b := range r.batches {
+		if orgID == "" || b.OrgID == orgID {
+			cp := *b
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) UpdateBatchStatus(ctx context.Context, batchID string, status string, outputFileID string, counts domain.BatchCounts, completedAt *time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.batches[batchID]
+	if !ok {
+		return fmt.Errorf("batch %s not found", batchID)
+	}
+	b.Status = status
+	if outputFileID != "" {
+		b.OutputFileID = outputFileID
+	}
+	b.RequestCounts = counts
+	b.CompletedAt = completedAt
+	return nil
 }

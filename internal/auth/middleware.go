@@ -55,7 +55,27 @@ func ExtractGatewayCredentials(r *http.Request) (string, error) {
 	if authBearer != "" {
 		return authBearer, nil
 	}
-	return apiKey, nil
+	if apiKey != "" {
+		return apiKey, nil
+	}
+
+	// Check Sec-WebSocket-Protocol for websocket connections
+	for _, proto := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		proto = strings.TrimSpace(proto)
+		if strings.HasPrefix(proto, "openai-insecure-api-key.") {
+			return strings.TrimPrefix(proto, "openai-insecure-api-key."), nil
+		}
+	}
+
+	// Check query parameter for websocket connections
+	if qKey := r.URL.Query().Get("api_key"); qKey != "" {
+		return qKey, nil
+	}
+	if qToken := r.URL.Query().Get("token"); qToken != "" {
+		return qToken, nil
+	}
+
+	return "", nil
 }
 
 // DataPlaneMiddleware authenticates `/v1/*` requests using Virtual API Keys (`sk-gw-...`) and checks endpoint RBAC.

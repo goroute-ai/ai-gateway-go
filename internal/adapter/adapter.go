@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -23,6 +24,32 @@ type ProviderAdapter interface {
 	StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk StreamChunkHandler) (*domain.TokenUsage, error)
 	Embeddings(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error)
 	ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error)
+}
+
+// RerankAdapter is implemented by providers supporting document reranking (e.g. Cohere, Jina, Voyage, Bedrock).
+type RerankAdapter interface {
+	Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error)
+}
+
+// ModerationAdapter is implemented by providers supporting content safety moderation (e.g. OpenAI, Azure).
+type ModerationAdapter interface {
+	Moderate(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error)
+}
+
+// ImageAdapter is implemented by providers supporting image generation and editing (e.g. OpenAI DALL-E, Azure, Vertex Imagen).
+type ImageAdapter interface {
+	GenerateImage(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error)
+}
+
+// AudioAdapter is implemented by providers supporting audio transcription (STT) and speech generation (TTS).
+type AudioAdapter interface {
+	TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error)
+	GenerateSpeech(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioSpeechRequest) (io.ReadCloser, string, error)
+}
+
+// CompletionAdapter is implemented by providers supporting legacy text completion models.
+type CompletionAdapter interface {
+	TextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, error)
 }
 
 // NewPooledHTTPClient returns a high-concurrency HTTP client tuned for upstream LLM API connections.

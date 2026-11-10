@@ -1,6 +1,9 @@
 package finops
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
@@ -38,4 +41,71 @@ func CalculateCostMicros(gm *domain.GlobalModel, usage domain.TokenUsage) int64 
 
 	// Ceiling division by 1,000,000 so non-zero token usage on paid models never rounds down to 0 micro-dollars
 	return (numerator + 999_999) / 1_000_000
+}
+
+// CalculateRerankCostMicros calculates rerank cost using explicit per-search-unit integer rate.
+func CalculateRerankCostMicros(gm *domain.GlobalModel, searchUnits int) int64 {
+	if gm == nil || searchUnits <= 0 {
+		return 0
+	}
+	rate := gm.RerankCostMicrosPerSearchUnit
+	if rate <= 0 {
+		return 0
+	}
+	return int64(searchUnits) * rate
+}
+
+// CalculateImageCostMicros calculates image cost strictly according to model, resolution, and quality.
+func CalculateImageCostMicros(gm *domain.GlobalModel, quality string, size string, count int) int64 {
+	if gm == nil || count <= 0 {
+		return 0
+	}
+	// Check if detailed modality pricing JSON has an exact model/quality/size rate
+	if len(gm.ModalityPricingJSON) > 0 {
+		key := fmt.Sprintf("%s_%s", strings.ToLower(quality), strings.ToLower(size))
+		if v, ok := gm.ModalityPricingJSON[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				if int64(val) > 0 {
+					return int64(val) * int64(count)
+				}
+			case int64:
+				if val > 0 {
+					return val * int64(count)
+				}
+			}
+		}
+	}
+
+	base := gm.ImageCostMicrosBase
+	if strings.EqualFold(quality, "hd") && gm.ImageCostMicrosHD > 0 {
+		base = gm.ImageCostMicrosHD
+	}
+	return base * int64(count)
+}
+
+// CalculateAudioSTTCostMicros calculates STT cost based on duration in integer milliseconds.
+func CalculateAudioSTTCostMicros(gm *domain.GlobalModel, durationMs int64) int64 {
+	if gm == nil || durationMs <= 0 {
+		return 0
+	}
+	ratePerSec := gm.AudioSTTCostMicrosPerSecond
+	if ratePerSec <= 0 {
+		return 0
+	}
+	// Integer ceiling division: (durationMs * ratePerSec + 999) / 1000
+	return (durationMs*ratePerSec + 999) / 1000
+}
+
+// CalculateAudioTTSCostMicros calculates TTS cost based on character count.
+func CalculateAudioTTSCostMicros(gm *domain.GlobalModel, charCount int) int64 {
+	if gm == nil || charCount <= 0 {
+		return 0
+	}
+	ratePer1K := gm.AudioTTSCostMicrosPer1KChars
+	if ratePer1K <= 0 {
+		return 0
+	}
+	// Integer ceiling division by 1,000: (chars * ratePer1K + 999) / 1000
+	return (int64(charCount)*ratePer1K + 999) / 1000
 }

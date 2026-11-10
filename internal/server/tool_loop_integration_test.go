@@ -419,6 +419,10 @@ func TestToolLoop_SyncAndStreamIntegration(t *testing.T) {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+
 	if !sawDone {
 		t.Fatalf("streaming did not receive [DONE]")
 	}

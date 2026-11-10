@@ -413,7 +413,7 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		vk.AllowedModels = []string{}
 	}
 	if vk.AllowedEndpoints == nil {
-		vk.AllowedEndpoints = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models"}
+		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
 	}
 	if vk.Role == "" {
 		vk.Role = domain.RoleServiceAccount
@@ -810,10 +810,10 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	}
 	const q = `
 		INSERT INTO spend_logs (
-			id, request_id, trace_id, org_id, endpoint, requested_model, resolved_model, provider,
+			id, request_id, trace_id, org_id, endpoint, modality, modality_units, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 			cost_micros, pricing_version, pricing_status, pricing_provenance_source, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -832,8 +832,16 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		if _, err := uuid.Parse(orgID); err != nil {
 			orgID = "00000000-0000-0000-0000-000000000000"
 		}
+		modality := string(ev.Modality)
+		if modality == "" {
+			modality = string(domain.ModalityChat)
+		}
+		modUnitsJSON, _ := json.Marshal(ev.ModalityUnits)
+		if len(ev.ModalityUnits) == 0 {
+			modUnitsJSON = []byte("{}")
+		}
 		batch.Queue(q,
-			id, ev.RequestID, ev.TraceID, orgID, ev.Endpoint, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
+			id, ev.RequestID, ev.TraceID, orgID, ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
 			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
 		)
@@ -1720,4 +1728,150 @@ func (p *PostgresRepository) GetA2APushNotificationConfig(ctx context.Context, t
 	}
 	_ = p.mem.SetA2APushNotificationConfig(ctx, &cfg)
 	return &cfg, nil
+}
+
+// Files Management
+
+func (p *PostgresRepository) CreateFile(ctx context.Context, file *domain.CanonicalFile) error {
+	if file.ID == "" {
+		file.ID = uuid.NewString()
+	}
+	if file.CreatedAt.IsZero() {
+		file.CreatedAt = time.Now().UTC()
+	}
+	const q = `
+		INSERT INTO files (id, org_id, team_id, user_id, bytes, created_at, filename, purpose, status, content_sha256, storage_path, upstream_provider, upstream_id, expires_at)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
+	_, err := p.pool.Exec(ctx, q, file.ID, file.OrgID, file.TeamID, file.UserID, file.Bytes, file.CreatedAt, file.Filename, file.Purpose, file.Status, file.ContentSHA256, file.StoragePath, file.UpstreamProvider, file.UpstreamID, file.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	return p.mem.CreateFile(ctx, file)
+}
+
+func (p *PostgresRepository) GetFile(ctx context.Context, orgID, fileID string) (*domain.CanonicalFile, error) {
+	if f, err := p.mem.GetFile(ctx, orgID, fileID); err == nil && f != nil {
+		return f, nil
+	}
+	const q = `
+		SELECT id, org_id, COALESCE(team_id::text, ''), COALESCE(user_id::text, ''), bytes, created_at, filename, purpose, status, content_sha256, storage_path, COALESCE(upstream_provider, ''), COALESCE(upstream_id, ''), expires_at
+		FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+	var f domain.CanonicalFile
+	if err := p.pool.QueryRow(ctx, q, fileID, orgID).Scan(
+		&f.ID, &f.OrgID, &f.TeamID, &f.UserID, &f.Bytes, &f.CreatedAt, &f.Filename, &f.Purpose, &f.Status, &f.ContentSHA256, &f.StoragePath, &f.UpstreamProvider, &f.UpstreamID, &f.ExpiresAt,
+	); err != nil {
+		return nil, fmt.Errorf("file %s not found: %w", fileID, err)
+	}
+	_ = p.mem.CreateFile(ctx, &f)
+	return &f, nil
+}
+
+func (p *PostgresRepository) ListFiles(ctx context.Context, orgID string, purpose string) ([]*domain.CanonicalFile, error) {
+	const q = `
+		SELECT id, org_id, COALESCE(team_id::text, ''), COALESCE(user_id::text, ''), bytes, created_at, filename, purpose, status, content_sha256, storage_path, COALESCE(upstream_provider, ''), COALESCE(upstream_id, ''), expires_at
+		FROM files WHERE ($1 = '' OR org_id = $1::uuid) AND ($2 = '' OR purpose = $2)
+		ORDER BY created_at DESC`
+	rows, err := p.pool.Query(ctx, q, orgID, purpose)
+	if err != nil {
+		return p.mem.ListFiles(ctx, orgID, purpose)
+	}
+	defer rows.Close()
+	var out []*domain.CanonicalFile
+	for rows.Next() {
+		var f domain.CanonicalFile
+		if err := rows.Scan(
+			&f.ID, &f.OrgID, &f.TeamID, &f.UserID, &f.Bytes, &f.CreatedAt, &f.Filename, &f.Purpose, &f.Status, &f.ContentSHA256, &f.StoragePath, &f.UpstreamProvider, &f.UpstreamID, &f.ExpiresAt,
+		); err == nil {
+			out = append(out, &f)
+			_ = p.mem.CreateFile(ctx, &f)
+		}
+	}
+	return out, nil
+}
+
+func (p *PostgresRepository) DeleteFile(ctx context.Context, orgID, fileID string) error {
+	const q = `DELETE FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+	if _, err := p.pool.Exec(ctx, q, fileID, orgID); err != nil {
+		return err
+	}
+	return p.mem.DeleteFile(ctx, orgID, fileID)
+}
+
+// Batches Management
+
+func (p *PostgresRepository) CreateBatch(ctx context.Context, batch *domain.CanonicalBatch) error {
+	if batch.ID == "" {
+		batch.ID = uuid.NewString()
+	}
+	if batch.CreatedAt.IsZero() {
+		batch.CreatedAt = time.Now().UTC()
+	}
+	metaJSON, _ := json.Marshal(batch.Metadata)
+	countsJSON, _ := json.Marshal(batch.RequestCounts)
+	const q = `
+		INSERT INTO batches (id, org_id, team_id, input_file_id, output_file_id, error_file_id, endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, upstream_provider, upstream_id)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+	_, err := p.pool.Exec(ctx, q, batch.ID, batch.OrgID, batch.TeamID, batch.InputFileID, batch.OutputFileID, batch.ErrorFileID, batch.Endpoint, batch.Status, batch.CompletionWindow, batch.CreatedAt, batch.CompletedAt, metaJSON, countsJSON, batch.UpstreamProvider, batch.UpstreamID)
+	if err != nil {
+		return err
+	}
+	return p.mem.CreateBatch(ctx, batch)
+}
+
+func (p *PostgresRepository) GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error) {
+	if b, err := p.mem.GetBatch(ctx, orgID, batchID); err == nil && b != nil {
+		return b, nil
+	}
+	const q = `
+		SELECT id, org_id, COALESCE(team_id::text, ''), input_file_id, COALESCE(output_file_id, ''), COALESCE(error_file_id, ''), endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, COALESCE(upstream_provider, ''), COALESCE(upstream_id, '')
+		FROM batches WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+	var b domain.CanonicalBatch
+	var metaJSON, countsJSON []byte
+	if err := p.pool.QueryRow(ctx, q, batchID, orgID).Scan(
+		&b.ID, &b.OrgID, &b.TeamID, &b.InputFileID, &b.OutputFileID, &b.ErrorFileID, &b.Endpoint, &b.Status, &b.CompletionWindow, &b.CreatedAt, &b.CompletedAt, &metaJSON, &countsJSON, &b.UpstreamProvider, &b.UpstreamID,
+	); err != nil {
+		return nil, fmt.Errorf("batch %s not found: %w", batchID, err)
+	}
+	_ = json.Unmarshal(metaJSON, &b.Metadata)
+	_ = json.Unmarshal(countsJSON, &b.RequestCounts)
+	_ = p.mem.CreateBatch(ctx, &b)
+	return &b, nil
+}
+
+func (p *PostgresRepository) ListBatches(ctx context.Context, orgID string, limit int) ([]*domain.CanonicalBatch, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const q = `
+		SELECT id, org_id, COALESCE(team_id::text, ''), input_file_id, COALESCE(output_file_id, ''), COALESCE(error_file_id, ''), endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, COALESCE(upstream_provider, ''), COALESCE(upstream_id, '')
+		FROM batches WHERE ($1 = '' OR org_id = $1::uuid)
+		ORDER BY created_at DESC LIMIT $2`
+	rows, err := p.pool.Query(ctx, q, orgID, limit)
+	if err != nil {
+		return p.mem.ListBatches(ctx, orgID, limit)
+	}
+	defer rows.Close()
+	var out []*domain.CanonicalBatch
+	for rows.Next() {
+		var b domain.CanonicalBatch
+		var metaJSON, countsJSON []byte
+		if err := rows.Scan(
+			&b.ID, &b.OrgID, &b.TeamID, &b.InputFileID, &b.OutputFileID, &b.ErrorFileID, &b.Endpoint, &b.Status, &b.CompletionWindow, &b.CreatedAt, &b.CompletedAt, &metaJSON, &countsJSON, &b.UpstreamProvider, &b.UpstreamID,
+		); err == nil {
+			_ = json.Unmarshal(metaJSON, &b.Metadata)
+			_ = json.Unmarshal(countsJSON, &b.RequestCounts)
+			out = append(out, &b)
+			_ = p.mem.CreateBatch(ctx, &b)
+		}
+	}
+	return out, nil
+}
+
+func (p *PostgresRepository) UpdateBatchStatus(ctx context.Context, batchID string, status string, outputFileID string, counts domain.BatchCounts, completedAt *time.Time) error {
+	countsJSON, _ := json.Marshal(counts)
+	const q = `UPDATE batches SET status = $1, output_file_id = COALESCE(NULLIF($2, ''), output_file_id), request_counts = $3, completed_at = $4 WHERE id = $5`
+	if _, err := p.pool.Exec(ctx, q, status, outputFileID, countsJSON, completedAt, batchID); err != nil {
+		return err
+	}
+	return p.mem.UpdateBatchStatus(ctx, batchID, status, outputFileID, counts, completedAt)
 }
