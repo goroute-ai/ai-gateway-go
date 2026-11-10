@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
@@ -443,14 +445,44 @@ func (s *GatewayServer) handleAdminTriggerDiscoverySync(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, report)
 }
 
+func (s *GatewayServer) handleAdminImportCatalogue(w http.ResponseWriter, r *http.Request) {
+	targetProv := domain.ProviderType(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider"))))
+	var models []*domain.GlobalModel
+	if targetProv != "" {
+		models = catalog.Search(targetProv, "")
+	} else {
+		models = catalog.All()
+	}
+
+	imported := 0
+	for _, m := range models {
+		if err := s.repo.UpsertGlobalModel(r.Context(), m); err == nil {
+			imported++
+		}
+	}
+
+	s.audit(r.Context(), "", "catalogue.import.completed", "catalogue", "global", map[string]any{
+		"imported": imported,
+		"provider": string(targetProv),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imported": imported,
+		"provider": string(targetProv),
+		"total":    catalog.Count(),
+	})
+}
+
 func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		GlobalModelID              string `json:"global_model_id"`
-		InputCostMicrosPer1M       int64  `json:"input_cost_micros_per_1m"`
-		OutputCostMicrosPer1M      int64  `json:"output_cost_micros_per_1m"`
-		CachedInputCostMicrosPer1M int64  `json:"cached_input_cost_micros_per_1m"`
-		ReasoningCostMicrosPer1M   int64  `json:"reasoning_cost_micros_per_1m"`
-		ChangedBy                  string `json:"changed_by,omitempty"`
+		GlobalModelID              string               `json:"global_model_id"`
+		InputCostMicrosPer1M       int64                `json:"input_cost_micros_per_1m"`
+		OutputCostMicrosPer1M      int64                `json:"output_cost_micros_per_1m"`
+		CachedInputCostMicrosPer1M int64                `json:"cached_input_cost_micros_per_1m"`
+		ReasoningCostMicrosPer1M   int64                `json:"reasoning_cost_micros_per_1m"`
+		PricingStatus              domain.PricingStatus `json:"pricing_status,omitempty"`
+		PricingProvenanceSource    string               `json:"pricing_provenance_source,omitempty"`
+		PricingEffectiveDate       string               `json:"pricing_effective_date,omitempty"`
+		ChangedBy                  string               `json:"changed_by,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -459,7 +491,20 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 	if req.ChangedBy == "" {
 		req.ChangedBy = "admin"
 	}
-	gm, err := s.repo.UpdateModelPricing(r.Context(), req.GlobalModelID, req.InputCostMicrosPer1M, req.OutputCostMicrosPer1M, req.CachedInputCostMicrosPer1M, req.ReasoningCostMicrosPer1M, req.ChangedBy)
+	if req.PricingStatus == "" {
+		req.PricingStatus = domain.PricingStatusVerified
+	}
+	if req.PricingProvenanceSource == "" {
+		req.PricingProvenanceSource = "admin-audit-" + time.Now().UTC().Format("2006-01-02")
+	}
+	if req.PricingEffectiveDate == "" {
+		req.PricingEffectiveDate = time.Now().UTC().Format(time.RFC3339)
+	}
+	gm, err := s.repo.UpdateModelPricing(
+		r.Context(), req.GlobalModelID, req.InputCostMicrosPer1M, req.OutputCostMicrosPer1M,
+		req.CachedInputCostMicrosPer1M, req.ReasoningCostMicrosPer1M, req.PricingStatus,
+		req.PricingProvenanceSource, req.PricingEffectiveDate, req.ChangedBy,
+	)
 	if err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Message: err.Error()})
 		return
@@ -469,6 +514,8 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 		"model_name":               gm.ModelName,
 		"pricing_version":          gm.PricingVersion,
 		"input_cost_micros_per_1m": gm.InputCostMicrosPer1M,
+		"pricing_status":           gm.PricingStatus,
+		"provenance_source":        gm.PricingProvenanceSource,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model":   gm,

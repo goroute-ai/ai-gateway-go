@@ -144,7 +144,15 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 
 	// Layer 2: Check Organization Provider Subscription
 	subs, err := e.repo.GetOrgProviderSubscriptions(ctx, orgID)
-	if err == nil && len(subs) > 0 {
+	if err != nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "auth_repository_error",
+			Message:    "Failed to verify organization provider subscriptions: " + err.Error(),
+		}
+	}
+	if len(subs) > 0 {
 		subscribed := false
 		for _, s := range subs {
 			if s.Provider == dep.GlobalModel.Provider && s.IsEnabled {
@@ -164,7 +172,15 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 
 	// Layer 3: Check Organization Model Policy
 	policies, err := e.repo.GetOrgModelPolicies(ctx, orgID)
-	if err == nil && len(policies) > 0 {
+	if err != nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "auth_repository_error",
+			Message:    "Failed to verify organization model policies: " + err.Error(),
+		}
+	}
+	if len(policies) > 0 {
 		for _, p := range policies {
 			if p.GlobalModelID == dep.GlobalModel.ID && !p.IsEnabled {
 				return &domain.GatewayError{

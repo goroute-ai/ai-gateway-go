@@ -522,3 +522,146 @@ func TestLiveUpstream_OptIn(t *testing.T) {
 	assert.True(t, len(resp.Choices) > 0)
 	assert.Contains(t, strings.ToUpper(resp.Choices[0].Message.Content), "PONG")
 }
+
+func TestContract_BuiltinProfilesRegistered(t *testing.T) {
+	reg := openaicompat.NewProfileRegistry(nil, nil)
+	expectedProviders := []domain.ProviderType{
+		domain.ProviderCerebras,
+		domain.ProviderSambaNova,
+		domain.ProviderXAI,
+		domain.ProviderFireworks,
+		domain.ProviderPerplexity,
+		domain.ProviderAnyscale,
+		domain.ProviderDeepInfra,
+		domain.ProviderNovita,
+		domain.ProviderNebius,
+		domain.ProviderHyperbolic,
+		domain.ProviderLambda,
+		domain.ProviderFriendli,
+		domain.ProviderOpenRouter,
+		domain.ProviderVLLM,
+		domain.ProviderCloudflare,
+		domain.ProviderDatabricks,
+		domain.ProviderSnowflake,
+		domain.ProviderDashScope,
+		domain.ProviderVolcengine,
+		domain.ProviderBigModel,
+		domain.ProviderMoonshot,
+		domain.ProviderMiniMax,
+		domain.ProviderSiliconFlow,
+		domain.ProviderVoyage,
+		domain.ProviderJina,
+		domain.ProviderReplicate,
+		domain.ProviderAI21,
+		domain.ProviderBaseten,
+		domain.ProviderNvidia,
+		domain.ProviderScaleway,
+	}
+
+	for _, p := range expectedProviders {
+		profile, ok := reg.Get(p)
+		require.True(t, ok, "expected profile for provider %s to be registered", p)
+		assert.Equal(t, p, profile.ID)
+		assert.NotEmpty(t, profile.DisplayName)
+		adp, err := reg.CreateAdapter(p)
+		require.NoError(t, err)
+		assert.NotNil(t, adp)
+	}
+}
+
+func TestContract_ReasoningExtraction(t *testing.T) {
+	// Test non-streaming reasoning extraction with "reasoning_content"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl-test",
+			"model": "deepseek-reasoner",
+			"choices": [{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "The answer is 42",
+					"reasoning_content": "Calculating the ultimate answer..."
+				},
+				"finish_reason": "stop"
+			}],
+			"usage": {
+				"prompt_tokens": 10,
+				"completion_tokens": 20,
+				"total_tokens": 30
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	reg := openaicompat.NewProfileRegistry(ts.Client(), nil)
+	adp, err := reg.CreateAdapter(domain.ProviderDeepSeek)
+	require.NoError(t, err)
+
+	dep := &domain.Deployment{
+		ID: "dep-deepseek-test",
+		GlobalModel: &domain.GlobalModel{
+			ID:        "deepseek/deepseek-reasoner",
+			Provider:  "deepseek",
+			ModelName: "deepseek-reasoner",
+		},
+		Credential: &domain.ProviderCredential{
+			DecryptedAPIKey: "test-key",
+			BaseURL:         ts.URL,
+		},
+	}
+
+	resp, err := adp.ChatCompletion(context.Background(), dep, &domain.CanonicalChatRequest{
+		Model: "deepseek-reasoner",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "What is the answer?"},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Choices, 1)
+	assert.Equal(t, "The answer is 42", resp.Choices[0].Message.Content)
+	assert.Equal(t, "Calculating the ultimate answer...", resp.Choices[0].Message.ReasoningContent)
+
+	// Test streaming reasoning extraction with alternative field "thought"
+	tsStream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk1\",\"choices\":[{\"index\":0,\"delta\":{\"thought\":\"Step 1\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Final result\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer tsStream.Close()
+
+	streamReg := openaicompat.NewProfileRegistry(tsStream.Client(), nil)
+	streamAdp, err := streamReg.CreateAdapter(domain.ProviderDeepSeek)
+	require.NoError(t, err)
+
+	depStream := &domain.Deployment{
+		ID:          "dep-deepseek-stream",
+		GlobalModel: dep.GlobalModel,
+		Credential: &domain.ProviderCredential{
+			DecryptedAPIKey: "test-key",
+			BaseURL:         tsStream.URL,
+		},
+	}
+
+	var deltas []domain.CanonicalStreamDelta
+	usage, err := streamAdp.StreamChatCompletion(context.Background(), depStream, &domain.CanonicalChatRequest{
+		Model: "deepseek-reasoner",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Calculate"},
+		},
+	}, func(chunk *domain.CanonicalStreamChunk) error {
+		if len(chunk.Choices) > 0 {
+			deltas = append(deltas, chunk.Choices[0].Delta)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Len(t, deltas, 2)
+	assert.Equal(t, "Step 1", deltas[0].ReasoningContent)
+	assert.Equal(t, "Final result", deltas[1].Content)
+}

@@ -3,10 +3,14 @@ package router
 import (
 	"context"
 	"math"
+	"slices"
 	"strings"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
@@ -24,8 +28,9 @@ type RouteDecision struct {
 // resolving smart aliases (`auto`, `fast`, `reasoning`, `coding`) and explicit model names
 // into concrete ModelGroups without calling an external LLM on the hot path.
 type IntelligentRouter struct {
-	repo storage.Repository
-	cfg  config.RouterConfig
+	repo             storage.Repository
+	cfg              config.RouterConfig
+	providerCallable func(domain.ProviderType) bool
 }
 
 func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *IntelligentRouter {
@@ -44,7 +49,15 @@ func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *Int
 	if cfg.LongContextTokens <= 0 {
 		cfg.LongContextTokens = 32000
 	}
-	return &IntelligentRouter{repo: repo, cfg: cfg}
+	return &IntelligentRouter{repo: repo, cfg: cfg, providerCallable: catalog.IsCallableProvider}
+}
+
+// SetProviderCallable lets server wiring use the live adapter registry, including
+// startup-configured custom profiles, when resolving direct provider/model routes.
+func (ir *IntelligentRouter) SetProviderCallable(check func(domain.ProviderType) bool) {
+	if check != nil {
+		ir.providerCallable = check
+	}
 }
 
 // ResolveGroup determines the target ModelGroup for a chat completion request.
@@ -78,7 +91,8 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 	// Dynamic `provider/model` & Catalogue Resolution (wildcard behavior):
 	// If the user requested "gemini/gemini-2.5-flash" or "gemini-2.5-flash" directly and the organization
 	// has an active credential for that provider, resolve or auto-provision the ModelGroup on the fly.
-	if requested != "auto" {
+	isSmartAlias := requested == "auto" || slices.Contains(auth.SmartAliases, requested)
+	if !isSmartAlias {
 		if dynGroup := ir.resolveDynamicProviderModel(ctx, orgID, decision.TargetGroupAlias); dynGroup != nil {
 			decision.ModelGroup = dynGroup
 			decision.TargetGroupAlias = dynGroup.Alias
@@ -87,20 +101,32 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 		}
 	}
 
-	// Fallback: if a specific smart alias group ("coding" or "reasoning") isn't configured yet,
-	// try any active model group matching the requested model or the first active group in the org.
+	// Fallback logic:
+	// For explicit models, we check if there's any active group whose Alias matches requested.
+	// If not, explicit model requests MUST fail immediately with 404 (NEVER fall through to groups[0] or default alias).
 	groups, _ := ir.repo.ListModelGroups(ctx, orgID)
 	for _, g := range groups {
-		if g.IsActive && (g.Alias == requested || g.Alias == ir.cfg.DefaultFastAlias || g.Alias == ir.cfg.DefaultReasoningAlias) {
+		if g.IsActive && g.Alias == requested {
 			decision.ModelGroup = g
 			decision.TargetGroupAlias = g.Alias
 			return decision, nil
 		}
 	}
-	if len(groups) > 0 && groups[0].IsActive {
-		decision.ModelGroup = groups[0]
-		decision.TargetGroupAlias = groups[0].Alias
-		return decision, nil
+
+	// Fallback to default fast/reasoning alias or first active group is STRICTLY reserved for smart aliases
+	if isSmartAlias {
+		for _, g := range groups {
+			if g.IsActive && (g.Alias == ir.cfg.DefaultFastAlias || g.Alias == ir.cfg.DefaultReasoningAlias) {
+				decision.ModelGroup = g
+				decision.TargetGroupAlias = g.Alias
+				return decision, nil
+			}
+		}
+		if len(groups) > 0 && groups[0].IsActive {
+			decision.ModelGroup = groups[0]
+			decision.TargetGroupAlias = groups[0].Alias
+			return decision, nil
+		}
 	}
 
 	return nil, &domain.GatewayError{
@@ -112,8 +138,8 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 }
 
 // resolveDynamicProviderModel handles direct model requests (e.g. "gemini/gemini-2.5-flash"
-// or "gemini-2.5-flash") by checking if the bare model group already exists or if the organization holds
-// an active credential for that model's provider in the Global Model Catalogue.
+// or "gemini-2.5-flash") by validating Layer 2 Provider Subscriptions, Layer 3 Org Model Policies,
+// and active tenant credentials before dynamically provisioning or referencing the route.
 func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, orgID, requested string) *domain.ModelGroup {
 	prov, bareModel, globalModelID := config.ParseProviderModel(requested)
 	if bareModel != "" && bareModel != requested {
@@ -124,14 +150,42 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 	if prov == "" || globalModelID == "" {
 		return nil
 	}
-	gm, err := ir.repo.GetGlobalModel(ctx, globalModelID)
-	if err != nil || gm == nil || gm.LifecycleStatus == domain.ModelStatusRetired {
-		return nil
+
+	// 1. Layer 2 Check: Org Provider Subscriptions (fail-closed if subscriptions are configured or repository fails)
+	subs, err := ir.repo.GetOrgProviderSubscriptions(ctx, orgID)
+	if err != nil {
+		return nil // Fail closed on database/repository error
+	}
+	if len(subs) > 0 {
+		hasSubscription := false
+		for _, s := range subs {
+			if s != nil && s.Provider == prov && s.IsEnabled {
+				hasSubscription = true
+				break
+			}
+		}
+		if !hasSubscription {
+			return nil
+		}
 	}
 
+	// 2. Layer 3 Check: Org Model Policies (fail-closed if model is explicitly disabled or repository fails)
+	pols, err := ir.repo.GetOrgModelPolicies(ctx, orgID)
+	if err != nil {
+		return nil // Fail closed on database/repository error
+	}
+	if len(pols) > 0 {
+		for _, p := range pols {
+			if p != nil && p.GlobalModelID == globalModelID && !p.IsEnabled {
+				return nil
+			}
+		}
+	}
+
+	// 3. Active Tenant Credential Check (strict multi-tenant isolation; zero env var leakage)
 	creds, err := ir.repo.ListProviderCredentials(ctx, orgID)
 	if err != nil {
-		return nil
+		return nil // Fail closed on database/repository error
 	}
 	var activeCred *domain.ProviderCredential
 	for _, c := range creds {
@@ -144,7 +198,41 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 		return nil
 	}
 
-	// Auto-create the ModelGroup & Deployment for this catalogued model so subsequent calls hit O(1) lookup
+	// 4. Verify the provider has a registered callable transport. A credential BaseURL
+	// alone is not enough to safely infer the wire protocol or request adaptation.
+	if ir.providerCallable == nil || !ir.providerCallable(prov) {
+		return nil
+	}
+
+	// 5. Model Lookup & Dynamic Catalogue Import
+	gm, err := ir.repo.GetGlobalModel(ctx, globalModelID)
+	if err != nil || gm == nil {
+		var toImport *domain.GlobalModel
+		if catModel, ok := catalog.LookupByProviderAndModel(prov, bareModel); ok {
+			catCopy := *catModel
+			toImport = &catCopy
+		} else {
+			toImport = modelmgmt.EnrichDiscoveredModel(domain.DiscoveredModel{
+				Provider:    prov,
+				ModelName:   bareModel,
+				DisplayName: bareModel,
+			}, true)
+			toImport.SupportsInference = true
+		}
+		if toImport != nil && !toImport.SupportsInference {
+			return nil // Refuse to dynamically provision non-inference models (e.g. image dimension pricing)
+		}
+		toImport.LifecycleStatus = domain.ModelStatusActive
+		if err := ir.repo.UpsertGlobalModel(ctx, toImport); err == nil {
+			gm = toImport
+		}
+	}
+
+	if gm == nil || !gm.SupportsInference || (gm.LifecycleStatus != domain.ModelStatusActive && gm.LifecycleStatus != domain.ModelStatusPreview) {
+		return nil
+	}
+
+	// 5. Auto-provision ModelGroup & Deployment for this tenant
 	mg := &domain.ModelGroup{
 		OrgID:            orgID,
 		Alias:            bareModel,

@@ -142,7 +142,53 @@ When an upstream provider blocks a prompt or candidate, GoRoute returns standard
 ### 2.3 Model Inventory
 `GET /v1/models`
 
-Returns 4-layer tenant-filtered model inventory accessible to the caller's Virtual API Key.
+Returns 4-layer tenant-filtered model inventory accessible to the caller's Virtual API Key, including rich tri-state capabilities and integer micro-dollar pricing metadata.
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "openai/gpt-4.1",
+      "object": "model",
+      "created": 1731081600,
+      "owned_by": "openai",
+      "display_name": "OpenAI GPT-4.1",
+      "max_input_tokens": 1047576,
+      "max_output_tokens": 32768,
+      "capabilities": {
+        "tools": "supported",
+        "streaming": "supported",
+        "vision": "supported",
+        "reasoning": "unknown",
+        "structured_outputs": "supported",
+        "embeddings": "unsupported"
+      },
+      "supports_streaming": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_reasoning": false,
+      "supports_embeddings": false,
+      "input_cost_micros_per_1m": 2000000,
+      "output_cost_micros_per_1m": 8000000,
+      "cached_input_cost_micros_per_1m": 500000,
+      "pricing_status": "verified",
+      "pricing_provenance_source": "official-vendor-pricing-2025",
+      "pricing_effective_date": "2025-05-01",
+      "lifecycle_status": "active"
+    }
+  ]
+}
+```
+
+### 2.4 Direct Dynamic `provider/model` Routing
+GoRoute supports direct model execution using `provider/model` notation (e.g. `cerebras/llama-3.3-70b`, `bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0`, `vertex/gemini-2.5-pro`, `xai/grok-2`):
+- **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
+- **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
+- **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
+- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute dynamically imports it from the embedded 4,627-model catalogue with active lifecycle status and provisions the route on the fly.
+- **Fail-Closed Boundary**: If repository queries fail, or if the model is unconfigured/unauthorized, GoRoute fails closed and returns `HTTP 404 model_group_not_found` (explicit model requests never silently fall back to unrelated tenant model groups).
 
 ---
 
@@ -499,6 +545,60 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 `POST /admin/v1/health/probe`
 
 Triggers immediate synthetic health verification across all configured provider deployments.
+
+### 5.5 Upstream Model Discovery and Embedded Catalogue Import
+`POST /admin/v1/catalogue/sync`
+
+Triggers model discovery against active provider credentials. To import entries from the embedded 4,627-model catalogue into the database, use `POST /admin/v1/catalogue/import` instead.
+
+This endpoint has no request body; it polls active credentials that support model listing.
+- `POST /admin/v1/catalogue/import?provider=cerebras` imports embedded catalogue metadata, optionally filtered by provider. Omit `provider` to import all entries.
+
+```bash
+curl -X POST http://localhost:8080/admin/v1/catalogue/import?provider=cerebras \
+  -H "Authorization: Bearer $MASTER_ADMIN_KEY"
+```
+
+#### Discovery Response (HTTP 200 OK)
+```json
+{
+  "synced_at": "2026-11-10T00:00:00Z",
+  "total_discovered": 18,
+  "new_models": [],
+  "updated_models": []
+}
+```
+
+The embedded catalogue import returns a separate summary:
+
+```json
+{
+  "imported": 18,
+  "provider": "cerebras",
+  "total": 4627
+}
+```
+
+### 5.6 Model Pricing & Provenance Promotion
+`POST /admin/v1/catalogue/pricing`
+
+Updates pricing rates and promotes pricing provenance for a catalogued model.
+
+#### Request Body (JSON)
+```json
+{
+  "global_model_id": "gemini/gemini-2.5-flash",
+  "input_cost_micros_per_1m": 150000,
+  "output_cost_micros_per_1m": 600000,
+  "cached_input_cost_micros_per_1m": 37500,
+  "reasoning_cost_micros_per_1m": 600000,
+  "pricing_status": "verified",
+  "pricing_provenance_source": "vendor-contract-amendment-2026",
+  "pricing_effective_date": "2026-11-01"
+}
+```
+- Promotes `pricing_status` to `"verified"`, which unblocks budget-restricted enterprise callers.
+- Automatically appends an immutable, versioned audit record to `model_pricing_history`.
 
 ---
 

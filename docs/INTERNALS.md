@@ -1,7 +1,7 @@
 # GoRoute AI Gateway — Complete Subsystem Internals & Engineering Guide
 
 > **Target Audience**: Platform Engineers, Distributed Systems Architects, and Core Contributors.  
-> **Runtime Target**: 100% Pure Go (Go 1.22+), PostgreSQL 16+, Redis 7+.  
+> **Runtime Target**: 100% Pure Go (Go version declared in `go.mod`), PostgreSQL 16+, Redis 7+.  
 > **Key Metric**: Sub-millisecond data plane routing overhead (< 0.5 ms), zero synchronous database queries on the inference hot path, and zero Cgo/external runtime dependencies.
 
 ---
@@ -271,6 +271,11 @@ For every stored upstream provider API key:
 4. Plaintext DEK buffers in memory are wiped (`b[i] = 0`) immediately following encryption.
 5. **Zero-Downtime Key Rotation**: Calling `POST /admin/v1/credentials/{id}/rotate` decrypts the credential, generates a fresh DEK, re-encrypts, increments `key_version`, and updates the audit log without interrupting live traffic.
 
+### 5.3 Fail-Closed Authorization & Dispatch Guarantees
+GoRoute enforces strict **fail-closed** authorization boundaries across all execution layers:
+- **Stage 1 (Routing Time)**: In `IntelligentRouter.resolveDynamicProviderModel`, reading Layer 2 Provider Subscriptions or Layer 3 Model Policies must succeed. If the repository returns an error (e.g. database timeout or connection pool exhaustion), dynamic provisioning immediately aborts and returns `nil`, falling through to explicit model verification. Explicit requests for unconfigured or unauthorized models strictly return `HTTP 404 model_group_not_found` and never fall through to unrelated tenant model groups.
+- **Stage 2 (Dispatch Time)**: In `RBACEngine.AuthorizeDeployment`, checking Layer 2 subscriptions and Layer 3 policies is mandatory. If `GetOrgProviderSubscriptions` or `GetOrgModelPolicies` yields an error, `AuthorizeDeployment` immediately returns `HTTP 500 auth_repository_error`, causing the load balancer to exclude the deployment and preventing unauthorized execution during database failure modes.
+
 ---
 
 ## 6. Reliability Manager: 3-State Circuit Breakers & Failover
@@ -310,6 +315,34 @@ stateDiagram-v2
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
 - **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` chain (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`), transparently re-translating the request across providers and setting header `X-Gateway-Fallback-Attempted: true`.
+
+### 6.4 Pure Go Dedicated Protocol Engines
+GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
+1. **AWS SigV4 Signer (`internal/adapter/bedrock/sigv4.go`)**:
+   - Standard AWS Signature Version 4 implementation in pure Go standard library (`crypto/hmac`, `crypto/sha256`).
+   - Generates canonical query, headers, and request strings; derives HMAC-SHA256 signing keys (`kDate`, `kRegion`, `kService`, `kSigning`).
+   - Supports static IAM credentials and temporary STS credentials (`X-Amz-Security-Token`).
+2. **AWS EventStream Binary Protocol Decoder (`internal/adapter/bedrock/eventstream.go`)**:
+   - Decodes AWS binary framed messages with big-endian 12-byte prelude (`total_length`, `headers_length`, `prelude_crc`).
+   - Validates CRC32 checksums over prelude and full payload frame.
+   - Extracts binary-encoded headers (`:message-type`, `:event-type`, `:content-type`) and unpacks raw JSON chunks into canonical SSE streaming deltas.
+3. **Google Cloud Vertex AI OAuth2 Engine (`internal/adapter/vertex/auth.go`)**:
+   - Parses Google Cloud Service Account JSON credentials without external GCP libraries.
+   - Generates RS256 signed JWT assertions using `crypto/rsa` and `crypto/sha256`.
+   - Exchanges assertions with `https://oauth2.googleapis.com/token` for short-lived OAuth2 Bearer tokens.
+   - Caches active access tokens with background automatic renewal prior to expiration.
+4. **Cohere v2 Adapter (`internal/adapter/cohere/adapter.go`)**:
+   - Implements native translation targeting `https://api.cohere.com/v2/chat` and `https://api.cohere.com/v2/embed`.
+   - Maps CanonicalChatRequest to Cohere v2 JSON schemas, unpacks SSE stream chunks (`content-delta`, `tool-call-delta`, `message-end`), and extracts input/output token usage.
+5. **Certified OpenAI-Compatible Profile Registry (`internal/adapter/openaicompat/`)**:
+   - Maintains explicit profiles for 30+ production providers (Cerebras, SambaNova, xAI, Together, Fireworks, Groq, DeepSeek, Perplexity, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda, Friendli, OpenRouter, vLLM, Cloudflare, Databricks, Snowflake, DashScope, Volcengine, BigModel, Moonshot, MiniMax, SiliconFlow, Voyage, Jina, Replicate, AI21, Baseten, Nvidia, Scaleway).
+   - Ingests reasoning content tokens across both standard non-streaming responses and real-time streaming deltas (`reasoning_content`, `thought`, `reasoning`).
+
+### 6.5 Embedded Model Catalogue Engine (`internal/modelcatalog/`)
+- Curates 4,627 production LLM models derived from verified model registry datasets, compressed into a 164 KB embedded binary (`catalog.json.gz`).
+- Unpacks at initialization using a single `sync.Once` into lock-free in-memory lookup hash tables (`modelsByID`, `modelsByPN`, `modelsByName`).
+- Distinguishes **callable inference routes** (`catalog.IsCallableProvider(prov)`) from metadata-only catalogue entries.
+- Lookup benchmark latency: **66.41 ns/op** with zero heap allocations on the hit path.
 
 ---
 

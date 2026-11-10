@@ -41,11 +41,13 @@ type GlobalModel struct {
 	DisplayName                string               `json:"display_name"`
 	MaxInputTokens             int                  `json:"max_input_tokens"`
 	MaxOutputTokens            int                  `json:"max_output_tokens"`
+	Capabilities               ModelCapabilities    `json:"capabilities"`
 	SupportsStreaming          bool                 `json:"supports_streaming"`
 	SupportsTools              bool                 `json:"supports_tools"`
 	SupportsVision             bool                 `json:"supports_vision"`
 	SupportsReasoning          bool                 `json:"supports_reasoning"`
 	SupportsEmbeddings         bool                 `json:"supports_embeddings"`
+	SupportsInference          bool                 `json:"supports_inference"`
 	InputCostMicrosPer1M       int64                `json:"input_cost_micros_per_1m"`
 	OutputCostMicrosPer1M      int64                `json:"output_cost_micros_per_1m"`
 	CachedInputCostMicrosPer1M int64                `json:"cached_input_cost_micros_per_1m"`
@@ -62,17 +64,73 @@ type GlobalModel struct {
 
 // ModelPricingHistory tracks versioned pricing changes for a GlobalModel over time.
 type ModelPricingHistory struct {
-	ID                         string    `json:"id"`
-	GlobalModelID              string    `json:"global_model_id"`
-	PricingVersion             int       `json:"pricing_version"`
-	InputCostMicrosPer1M       int64     `json:"input_cost_micros_per_1m"`
-	OutputCostMicrosPer1M      int64     `json:"output_cost_micros_per_1m"`
-	CachedInputCostMicrosPer1M int64     `json:"cached_input_cost_micros_per_1m"`
+	ID                         string        `json:"id"`
+	GlobalModelID              string        `json:"global_model_id"`
+	PricingVersion             int           `json:"pricing_version"`
+	InputCostMicrosPer1M       int64         `json:"input_cost_micros_per_1m"`
+	OutputCostMicrosPer1M      int64         `json:"output_cost_micros_per_1m"`
+	CachedInputCostMicrosPer1M int64         `json:"cached_input_cost_micros_per_1m"`
 	ReasoningCostMicrosPer1M   int64         `json:"reasoning_cost_micros_per_1m"`
 	PricingStatus              PricingStatus `json:"pricing_status,omitempty"`
 	PricingProvenanceSource    string        `json:"pricing_provenance_source,omitempty"`
 	ChangedBy                  string        `json:"changed_by"`
-	EffectiveFrom              time.Time `json:"effective_from"`
+	EffectiveFrom              time.Time     `json:"effective_from"`
+}
+
+// ResolveCapabilities returns the tri-state capability set for this model.
+// If Capabilities has not been explicitly configured, it falls back defensively
+// to the boolean capability flags.
+func (gm *GlobalModel) ResolveCapabilities() ModelCapabilities {
+	if gm == nil {
+		return ModelCapabilities{
+			Tools:             CapabilityUnknown,
+			Streaming:         CapabilityUnknown,
+			Vision:            CapabilityUnknown,
+			Reasoning:         CapabilityUnknown,
+			StructuredOutputs: CapabilityUnknown,
+			Embeddings:        CapabilityUnknown,
+		}
+	}
+	caps := gm.Capabilities
+	if caps.Tools == "" {
+		if gm.SupportsTools {
+			caps.Tools = CapabilitySupported
+		} else {
+			caps.Tools = CapabilityUnknown
+		}
+	}
+	if caps.Streaming == "" {
+		if gm.SupportsStreaming {
+			caps.Streaming = CapabilitySupported
+		} else {
+			caps.Streaming = CapabilityUnknown
+		}
+	}
+	if caps.Vision == "" {
+		if gm.SupportsVision {
+			caps.Vision = CapabilitySupported
+		} else {
+			caps.Vision = CapabilityUnknown
+		}
+	}
+	if caps.Reasoning == "" {
+		if gm.SupportsReasoning {
+			caps.Reasoning = CapabilitySupported
+		} else {
+			caps.Reasoning = CapabilityUnknown
+		}
+	}
+	if caps.Embeddings == "" {
+		if gm.SupportsEmbeddings {
+			caps.Embeddings = CapabilitySupported
+		} else {
+			caps.Embeddings = CapabilityUnknown
+		}
+	}
+	if caps.StructuredOutputs == "" {
+		caps.StructuredOutputs = CapabilityUnknown
+	}
+	return caps
 }
 
 // DiscoveredModel is returned by ProviderAdapter.ListModels() during automated discovery.
@@ -103,26 +161,26 @@ type OrgModelPolicy struct {
 
 // ProviderCredential represents Boundary 2 encrypted credentials in the Vault.
 type ProviderCredential struct {
-	ID              string            `json:"id"`
-	OrgID           string            `json:"org_id"`
-	Provider        ProviderType      `json:"provider"`
-	Name            string            `json:"name"`
-	BaseURL         string            `json:"base_url"`
-	EncryptedAPIKey []byte            `json:"-"`
-	DataNonce       []byte            `json:"-"`
-	EncryptedDEK    []byte            `json:"-"`
-	DEKNonce        []byte            `json:"-"`
-	DecryptedAPIKey string            `json:"-"` // Populated in memory only when needed by adapter
-	KeyVersion      int               `json:"key_version"`
-	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
+	ID                  string            `json:"id"`
+	OrgID               string            `json:"org_id"`
+	Provider            ProviderType      `json:"provider"`
+	Name                string            `json:"name"`
+	BaseURL             string            `json:"base_url"`
+	EncryptedAPIKey     []byte            `json:"-"`
+	DataNonce           []byte            `json:"-"`
+	EncryptedDEK        []byte            `json:"-"`
+	DEKNonce            []byte            `json:"-"`
+	DecryptedAPIKey     string            `json:"-"` // Populated in memory only when needed by adapter
+	KeyVersion          int               `json:"key_version"`
+	ExpiresAt           *time.Time        `json:"expires_at,omitempty"`
 	LastRotatedAt       *time.Time        `json:"last_rotated_at,omitempty"`
 	LastValidatedAt     *time.Time        `json:"last_validated_at,omitempty"`
 	AzureDeploymentName string            `json:"azure_deployment_name,omitempty"`
 	APIVersion          string            `json:"api_version,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
-	IsActive        bool              `json:"is_active"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	IsActive            bool              `json:"is_active"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 // GuardrailAction specifies how the gateway responds when a security guardrail is triggered.

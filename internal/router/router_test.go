@@ -153,3 +153,350 @@ func TestTwoStageRouterRetriesCooldownAndCrossProviderFallback(t *testing.T) {
 		t.Fatalf("expected complex prompt to route to 'reasoning', got %+v (err=%v)", decision, err)
 	}
 }
+
+func TestIntelligentRouter_DynamicRoutingAuthorization(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	rCfg := config.Default().Router
+	ir := router.NewIntelligentRouter(repo, rCfg)
+
+	orgA := &domain.Organization{ID: "org-a", Name: "Org A", Slug: "org-a", IsActive: true}
+	_ = repo.CreateOrganization(ctx, orgA)
+
+	// 1. Tenant Org A has no Groq credential -> Requesting direct "groq/llama-3.3-70b-versatile" fails
+	req := &domain.CanonicalChatRequest{
+		Model: "groq/llama-3.3-70b-versatile",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+	dec, err := ir.ResolveGroup(ctx, orgA.ID, req)
+	if err == nil {
+		t.Fatalf("expected failure for tenant without credentials, got dec: %+v", dec)
+	}
+
+	// 2. Add Groq credential for Org A, but set Layer 2 Provider Subscription to disabled
+	groqCred := &domain.ProviderCredential{
+		ID:              "cred-groq-a",
+		OrgID:           orgA.ID,
+		Provider:        domain.ProviderGroq,
+		Name:            "groq-a",
+		DecryptedAPIKey: "gsk_test",
+		IsActive:        true,
+	}
+	_ = repo.CreateProviderCredential(ctx, groqCred)
+	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
+		OrgID:     orgA.ID,
+		Provider:  domain.ProviderGroq,
+		IsEnabled: false, // Explicitly disabled
+	})
+
+	dec, err = ir.ResolveGroup(ctx, orgA.ID, req)
+	if err == nil {
+		t.Fatalf("expected failure when provider subscription is disabled, got dec: %+v", dec)
+	}
+
+	// 3. Enable Provider Subscription, but set Layer 3 Org Model Policy to disabled for this model
+	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
+		OrgID:     orgA.ID,
+		Provider:  domain.ProviderGroq,
+		IsEnabled: true,
+	})
+	_ = repo.SetOrgModelPolicy(ctx, &domain.OrgModelPolicy{
+		OrgID:         orgA.ID,
+		GlobalModelID: "groq/llama-3.3-70b-versatile",
+		IsEnabled:     false, // Explicitly disabled
+	})
+
+	dec, err = ir.ResolveGroup(ctx, orgA.ID, req)
+	if err == nil {
+		t.Fatalf("expected failure when model policy is disabled, got dec: %+v", dec)
+	}
+
+	// 4. Enable Org Model Policy -> Authorized! Dynamic router auto-provisions ModelGroup and Deployment from catalogue!
+	_ = repo.SetOrgModelPolicy(ctx, &domain.OrgModelPolicy{
+		OrgID:         orgA.ID,
+		GlobalModelID: "groq/llama-3.3-70b-versatile",
+		IsEnabled:     true,
+	})
+
+	dec, err = ir.ResolveGroup(ctx, orgA.ID, req)
+	if err != nil {
+		t.Fatalf("expected successful dynamic routing for authorized tenant, got err: %v", err)
+	}
+	if dec == nil || dec.ModelGroup == nil {
+		t.Fatalf("expected non-nil decision and model group, got %+v", dec)
+	}
+	if dec.TargetGroupAlias != "llama-3.3-70b-versatile" {
+		t.Fatalf("expected alias llama-3.3-70b-versatile, got %s", dec.TargetGroupAlias)
+	}
+
+	// Verify model in repo was seeded with domain.ModelStatusActive so it's visible in GET /v1/models
+	gm, err := repo.GetGlobalModel(ctx, "groq/llama-3.3-70b-versatile")
+	if err != nil || gm == nil {
+		t.Fatalf("expected global model to be dynamically imported into repo, got gm=%v, err=%v", gm, err)
+	}
+	if gm.LifecycleStatus != domain.ModelStatusActive {
+		t.Fatalf("expected lifecycle status to be active, got %s", gm.LifecycleStatus)
+	}
+
+	// 5. Test direct catalogue import for a model defined in embedded catalog: "cerebras/llama-3.3-70b"
+	cerebrasCred := &domain.ProviderCredential{
+		ID:              "cred-cerebras-a",
+		OrgID:           orgA.ID,
+		Provider:        domain.ProviderCerebras,
+		Name:            "cerebras-a",
+		DecryptedAPIKey: "csk_test",
+		IsActive:        true,
+	}
+	_ = repo.CreateProviderCredential(ctx, cerebrasCred)
+	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
+		OrgID:     orgA.ID,
+		Provider:  domain.ProviderCerebras,
+		IsEnabled: true,
+	})
+
+	cerebrasReq := &domain.CanonicalChatRequest{
+		Model: "cerebras/llama-3.3-70b",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hello Cerebras"},
+		},
+	}
+	decCerebras, err := ir.ResolveGroup(ctx, orgA.ID, cerebrasReq)
+	if err != nil {
+		t.Fatalf("expected successful dynamic routing for Cerebras, got %v", err)
+	}
+	if decCerebras.TargetGroupAlias != "llama-3.3-70b" {
+		t.Fatalf("expected alias llama-3.3-70b, got %s", decCerebras.TargetGroupAlias)
+	}
+
+	gmCerebras, err := repo.GetGlobalModel(ctx, "cerebras/llama-3.3-70b")
+	if err != nil || gmCerebras == nil {
+		t.Fatalf("expected Cerebras model in repo, got %v", err)
+	}
+	if gmCerebras.LifecycleStatus != domain.ModelStatusActive {
+		t.Fatalf("expected active lifecycle status, got %s", gmCerebras.LifecycleStatus)
+	}
+	if gmCerebras.PricingProvenanceSource != "global-model-catalog-v1.0" {
+		t.Fatalf("expected provenance global-model-catalog-v1.0, got %s", gmCerebras.PricingProvenanceSource)
+	}
+	if gmCerebras.PricingStatus != domain.PricingStatusUnknown {
+		t.Fatalf("expected pricing status unknown, got %s", gmCerebras.PricingStatus)
+	}
+	if gmCerebras.InputCostMicrosPer1M <= 0 {
+		t.Fatalf("expected non-zero input cost from catalog, got %d", gmCerebras.InputCostMicrosPer1M)
+	}
+}
+
+func TestIntelligentRouter_ExplicitModelNoFallback(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	rCfg := config.Default().Router
+	ir := router.NewIntelligentRouter(repo, rCfg)
+
+	org := &domain.Organization{ID: "org-no-fallback", Name: "No Fallback Org", Slug: "no-fallback-org", IsActive: true}
+	_ = repo.CreateOrganization(ctx, org)
+
+	// Configure an active model group for "fast" in this org
+	fastGroup := &domain.ModelGroup{
+		ID:              "group-fast",
+		OrgID:           org.ID,
+		Alias:           "fast",
+		RoutingStrategy: domain.StrategyLatencyBased,
+		IsActive:        true,
+	}
+	_ = repo.CreateModelGroup(ctx, fastGroup)
+
+	// 1. User explicitly requests an unconfigured model without credentials: "anthropic/claude-3-opus"
+	// The gateway MUST NOT silently fall back to group "fast" (groups[0]); it must return 404!
+	req := &domain.CanonicalChatRequest{
+		Model: "anthropic/claude-3-opus",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hello Claude"},
+		},
+	}
+	dec, err := ir.ResolveGroup(ctx, org.ID, req)
+	if err == nil {
+		t.Fatalf("expected 404 error for explicit unauthorized model, but got routed to %+v", dec)
+	}
+	gwErr, ok := err.(*domain.GatewayError)
+	if !ok || gwErr.StatusCode != 404 || gwErr.Code != "model_group_not_found" {
+		t.Fatalf("expected 404 model_group_not_found, got %+v", err)
+	}
+
+	// 2. User requests smart alias "auto" -> Should successfully route to "fast" group
+	autoReq := &domain.CanonicalChatRequest{
+		Model: "auto",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Fast question"},
+		},
+	}
+	decAuto, err := ir.ResolveGroup(ctx, org.ID, autoReq)
+	if err != nil {
+		t.Fatalf("expected smart alias auto to route to active group, got err: %v", err)
+	}
+	if decAuto.ModelGroup.Alias != "fast" {
+		t.Fatalf("expected smart alias auto to resolve to fast group, got %s", decAuto.ModelGroup.Alias)
+	}
+}
+
+type failingRepo struct {
+	storage.Repository
+	failSubs bool
+	failPols bool
+}
+
+func (f *failingRepo) GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
+	if f.failSubs {
+		return nil, fmt.Errorf("simulated db connection timeout")
+	}
+	return f.Repository.GetOrgProviderSubscriptions(ctx, orgID)
+}
+
+func (f *failingRepo) GetOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error) {
+	if f.failPols {
+		return nil, fmt.Errorf("simulated db connection timeout")
+	}
+	return f.Repository.GetOrgModelPolicies(ctx, orgID)
+}
+
+func TestIntelligentRouter_FailClosedOnRepoError(t *testing.T) {
+	ctx := context.Background()
+	memRepo := storage.NewMemoryRepository()
+	rCfg := config.Default().Router
+
+	org := &domain.Organization{ID: "org-fail-closed", Name: "Fail Closed Org", Slug: "fail-closed", IsActive: true}
+	_ = memRepo.CreateOrganization(ctx, org)
+
+	// Org has active Groq credential
+	groqCred := &domain.ProviderCredential{
+		ID:              "cred-groq-fc",
+		OrgID:           org.ID,
+		Provider:        domain.ProviderGroq,
+		Name:            "groq-fc",
+		DecryptedAPIKey: "gsk_test",
+		IsActive:        true,
+	}
+	_ = memRepo.CreateProviderCredential(ctx, groqCred)
+
+	req := &domain.CanonicalChatRequest{
+		Model: "groq/llama-3.3-70b-versatile",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	// 1. When GetOrgProviderSubscriptions fails with a database error, dynamic router MUST FAIL CLOSED
+	failSubsRepo := &failingRepo{Repository: memRepo, failSubs: true}
+	irSubs := router.NewIntelligentRouter(failSubsRepo, rCfg)
+	_, err := irSubs.ResolveGroup(ctx, org.ID, req)
+	if err == nil {
+		t.Fatal("expected failure when GetOrgProviderSubscriptions returns database error (fail closed)")
+	}
+
+	// 2. When GetOrgModelPolicies fails with a database error, dynamic router MUST FAIL CLOSED
+	failPolsRepo := &failingRepo{Repository: memRepo, failPols: true}
+	irPols := router.NewIntelligentRouter(failPolsRepo, rCfg)
+	_, err = irPols.ResolveGroup(ctx, org.ID, req)
+	if err == nil {
+		t.Fatal("expected failure when GetOrgModelPolicies returns database error (fail closed)")
+	}
+}
+
+func TestIntelligentRouter_RejectsPreloadedNonInferenceModel(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-non-inference", Name: "Non Inference", Slug: "non-inference", IsActive: true}
+	_ = repo.CreateOrganization(ctx, org)
+	_ = repo.CreateProviderCredential(ctx, &domain.ProviderCredential{
+		ID: "cred-groq-non-inference", OrgID: org.ID, Provider: domain.ProviderGroq,
+		Name: "groq", IsActive: true,
+	})
+	_ = repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+		ID: "groq/image-only", Provider: domain.ProviderGroq, ModelName: "image-only",
+		LifecycleStatus: domain.ModelStatusActive, SupportsInference: false,
+	})
+
+	ir := router.NewIntelligentRouter(repo, config.Default().Router)
+	_, err := ir.ResolveGroup(ctx, org.ID, &domain.CanonicalChatRequest{
+		Model: "groq/image-only", Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected a preloaded non-inference model to be rejected")
+	}
+}
+
+func TestIntelligentRouter_RequiresRegisteredTransportEvenWithCredentialBaseURL(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-unknown-transport", Name: "Unknown Transport", Slug: "unknown-transport", IsActive: true}
+	_ = repo.CreateOrganization(ctx, org)
+	_ = repo.CreateProviderCredential(ctx, &domain.ProviderCredential{
+		ID: "cred-custom-endpoint", OrgID: org.ID, Provider: domain.ProviderType("unregistered"),
+		Name: "custom", BaseURL: "https://example.invalid/v1", IsActive: true,
+	})
+
+	ir := router.NewIntelligentRouter(repo, config.Default().Router)
+	_, err := ir.ResolveGroup(ctx, org.ID, &domain.CanonicalChatRequest{
+		Model: "unregistered/model-x", Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected provider with only a credential base URL to be rejected without a registered transport")
+	}
+}
+
+func TestIntelligentRouter_RefuseUncallableProviderWithoutEndpoint(t *testing.T) {
+	ctx := context.Background()
+	memRepo := storage.NewMemoryRepository()
+	rCfg := config.Default().Router
+	ir := router.NewIntelligentRouter(memRepo, rCfg)
+
+	org := &domain.Organization{ID: "org-uncallable", Name: "Uncallable Org", Slug: "uncallable", IsActive: true}
+	_ = memRepo.CreateOrganization(ctx, org)
+
+	// Org has active credential for an uncallable third-party tool (e.g. "duckduckgo") without APIBase
+	toolCred := &domain.ProviderCredential{
+		ID:              "cred-duckduckgo",
+		OrgID:           org.ID,
+		Provider:        domain.ProviderType("duckduckgo"),
+		Name:            "ddg-key",
+		DecryptedAPIKey: "tool_key",
+		IsActive:        true,
+	}
+	_ = memRepo.CreateProviderCredential(ctx, toolCred)
+
+	req := &domain.CanonicalChatRequest{
+		Model: "duckduckgo/search-tool",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	// Router MUST refuse to dynamically provision an uncallable provider without a registered transport.
+	dec, err := ir.ResolveGroup(ctx, org.ID, req)
+	if err == nil {
+		t.Fatalf("expected 404 for uncallable provider without api_base, got decision: %+v", dec)
+	}
+	gwErr, ok := err.(*domain.GatewayError)
+	if !ok || gwErr.StatusCode != 404 || gwErr.Code != "model_group_not_found" {
+		t.Fatalf("expected 404 model_group_not_found, got %+v", err)
+	}
+
+	// A credential BaseURL alone does not register a compatible adapter.
+	toolCred.BaseURL = "https://custom-openai-compat.internal/v1"
+	_ = memRepo.UpdateProviderCredential(ctx, toolCred)
+	if _, err := ir.ResolveGroup(ctx, org.ID, req); err == nil {
+		t.Fatal("expected a credential BaseURL without a registered transport to remain uncallable")
+	}
+
+	// A startup-registered custom profile is callable even when its endpoint comes from the profile.
+	ir.SetProviderCallable(func(provider domain.ProviderType) bool { return provider == domain.ProviderType("duckduckgo") })
+
+	decCustom, err := ir.ResolveGroup(ctx, org.ID, req)
+	if err != nil {
+		t.Fatalf("expected dynamic provisioning to succeed for a registered custom profile, got error: %v", err)
+	}
+	if decCustom.TargetGroupAlias != "search-tool" {
+		t.Fatalf("expected alias search-tool, got %s", decCustom.TargetGroupAlias)
+	}
+}

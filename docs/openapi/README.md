@@ -10,7 +10,7 @@ The gateway uses an **OpenAPI Contract-First** architecture: every provider adap
 
 | Provider | Specification File | Format / Version | Upstream Origin / Fetch Command | Core Covered Endpoints |
 | :--- | :--- | :---: | :--- | :--- |
-| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain` & `api/openapi` | `POST /v1/chat/completions`<br/>`POST /v1/embeddings`<br/>`GET /v1/models` |
+| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain`, `internal/server`, and `internal/openapi` | `POST /v1/chat/completions`<br/>`POST /v1/embeddings`<br/>`GET /v1/models` |
 | **Google Gemini** | [`gemini.openapi.yaml`](./gemini.openapi.yaml) | OpenAPI 3.0.3 | Google Discovery Engine v1beta:<br/>`curl "https://generativelanguage.googleapis.com/$discovery/OPENAPI3_0?version=v1beta"` | `POST /v1beta/models/{model}:generateContent`<br/>`POST /v1beta/models/{model}:streamGenerateContent`<br/>`POST /v1beta/models/{model}:embedContent`<br/>`GET /v1beta/models` |
 | **OpenAI** | [`openai.openapi.yaml`](./openai.openapi.yaml) | OpenAPI 3.0.0 | Official OpenAI Repository (release `0c432eb`):<br/>`curl "https://raw.githubusercontent.com/openai/openai-openapi/0c432eb66fd0c758fd8b9bd69db41c1096e5f4db/openapi.yaml"` | `POST /v1/chat/completions`<br/>`POST /v1/embeddings`<br/>`GET /v1/models` |
 | **Anthropic Claude** | [`anthropic.openapi.yaml`](./anthropic.openapi.yaml) | OpenAPI 3.0.0 | Anthropic Messages REST API | `POST /v1/messages`<br/>`POST /v1/messages/count_tokens`<br/>`GET /v1/models` |
@@ -42,12 +42,9 @@ The gateway uses an **OpenAPI Contract-First** architecture: every provider adap
 └────────────────────────┘└────────────────────────┘└────────────────────────┘
 ```
 
-1. **Type Safety Without Reflection**:
-   Struct types in `internal/openapi/providers/*_types.gen.go` are generated directly from these schemas, eliminating Go reflection overhead on the hot request path.
-2. **Schema Drift Detection**:
-   Running `go run ./cmd/specgen` validates all specifications, ensuring their paths, parameters, and models remain compliant with upstream releases.
-3. **Automated Error Normalization**:
-   Upstream HTTP error schemas defined in these specs are mapped deterministically into the standard OpenAI error envelope.
+1. **Typed Provider Models**: Generated provider types are checked in under `internal/openapi/providers/`. The repository's `cmd/specgen` currently validates OpenAPI documents and checks that generated A2A protobuf code exists; it does not regenerate provider Go types or compare every type to its schema.
+2. **Contract Validation**: Run `go run ./cmd/specgen` after contract edits to catch missing, malformed, or pathless OpenAPI documents and invalid JSON schema data.
+3. **Runtime Mapping**: Provider adapters translate wire payloads and normalize errors. Confirm exact behavior in the adapter implementation and tests; contract files alone do not verify runtime mappings.
 
 ---
 

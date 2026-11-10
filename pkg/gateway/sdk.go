@@ -70,16 +70,16 @@ type Client struct {
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	configPath        string
-	remoteURL         string
-	apiKey            string
-	modelList         []ModelEntry
-	httpClient        *http.Client
+	configPath           string
+	remoteURL            string
+	apiKey               string
+	modelList            []ModelEntry
+	httpClient           *http.Client
 	demoMocksFallback    bool
 	allowPrivateNetworks bool
 	customLogger         *slog.Logger
-	silentLogs        bool
-	logLevel          string
+	silentLogs           bool
+	logLevel             string
 }
 
 // WithLogger configures a custom slog.Logger for embedded gateway operation.

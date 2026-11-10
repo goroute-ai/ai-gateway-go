@@ -93,7 +93,8 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 	if requested != "" && !slices.Contains(auth.SmartAliases, requested) && v.repo != nil {
 		gm := v.resolveTargetGlobalModel(ctx, orgID, requested)
 		if gm != nil {
-			if req.Stream && !gm.SupportsStreaming {
+			caps := gm.ResolveCapabilities()
+			if req.Stream && caps.Streaming == domain.CapabilityUnsupported {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
@@ -101,7 +102,7 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 					Message:    fmt.Sprintf("Model %q does not support SSE streaming (stream: true)", gm.ModelName),
 				}
 			}
-			if len(req.Tools) > 0 && !gm.SupportsTools {
+			if len(req.Tools) > 0 && caps.Tools == domain.CapabilityUnsupported {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
@@ -109,7 +110,7 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 					Message:    fmt.Sprintf("Model %q does not support function/tool calling", gm.ModelName),
 				}
 			}
-			if hasImageInput && !gm.SupportsVision {
+			if hasImageInput && caps.Vision == domain.CapabilityUnsupported {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,

@@ -110,7 +110,12 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 		},
 		{
 			ID: "anthropic/claude-3-5-haiku-latest", Provider: domain.ProviderAnthropic, ModelName: "claude-3-5-haiku-latest", DisplayName: "Anthropic Claude 3.5 Haiku",
-			MaxInputTokens: 200000, MaxOutputTokens: 8192, SupportsStreaming: true, SupportsTools: true,
+			MaxInputTokens: 200000, MaxOutputTokens: 8192, SupportsStreaming: true, SupportsTools: true, SupportsVision: false,
+			Capabilities: domain.ModelCapabilities{
+				Streaming: domain.CapabilitySupported,
+				Tools:     domain.CapabilitySupported,
+				Vision:    domain.CapabilityUnsupported,
+			},
 			InputCostMicrosPer1M: 800000, OutputCostMicrosPer1M: 4000000, CachedInputCostMicrosPer1M: 80000,
 			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
@@ -169,6 +174,7 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 	}
 
 	for _, m := range defaults {
+		m.SupportsInference = true
 		if m.PricingVersion <= 0 {
 			m.PricingVersion = 1
 		}
@@ -233,7 +239,7 @@ func (r *MemoryRepository) UpsertGlobalModel(ctx context.Context, m *domain.Glob
 	return nil
 }
 
-func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, changedBy string) (*domain.GlobalModel, error) {
+func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	gm, ok := r.globalModels[modelID]
@@ -259,6 +265,17 @@ func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID strin
 	if reasoningMicros >= 0 {
 		gm.ReasoningCostMicrosPer1M = reasoningMicros
 	}
+	if status != "" {
+		gm.PricingStatus = status
+	} else {
+		gm.PricingStatus = domain.PricingStatusVerified
+	}
+	if provenance != "" {
+		gm.PricingProvenanceSource = provenance
+	}
+	if effectiveDate != "" {
+		gm.PricingEffectiveDate = effectiveDate
+	}
 	gm.UpdatedAt = now
 	if changedBy == "" {
 		changedBy = "admin"
@@ -271,6 +288,8 @@ func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID strin
 		OutputCostMicrosPer1M:      gm.OutputCostMicrosPer1M,
 		CachedInputCostMicrosPer1M: gm.CachedInputCostMicrosPer1M,
 		ReasoningCostMicrosPer1M:   gm.ReasoningCostMicrosPer1M,
+		PricingStatus:              gm.PricingStatus,
+		PricingProvenanceSource:    gm.PricingProvenanceSource,
 		ChangedBy:                  changedBy,
 		EffectiveFrom:              now,
 	})

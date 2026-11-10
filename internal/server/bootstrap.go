@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
@@ -102,11 +103,18 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 
 		// 3. Ensure GlobalModel exists in Layer 1 Catalogue
 		if _, err := s.repo.GetGlobalModel(ctx, globalModelID); err != nil {
-			enriched := modelmgmt.EnrichDiscoveredModel(domain.DiscoveredModel{
-				Provider:    prov,
-				ModelName:   bareModel,
-				DisplayName: bareModel,
-			}, true)
+			var enriched *domain.GlobalModel
+			if catModel, ok := catalog.LookupByProviderAndModel(prov, bareModel); ok {
+				catCopy := *catModel
+				catCopy.LifecycleStatus = domain.ModelStatusActive
+				enriched = &catCopy
+			} else {
+				enriched = modelmgmt.EnrichDiscoveredModel(domain.DiscoveredModel{
+					Provider:    prov,
+					ModelName:   bareModel,
+					DisplayName: bareModel,
+				}, true)
+			}
 			_ = s.repo.UpsertGlobalModel(ctx, enriched)
 		}
 
@@ -223,6 +231,101 @@ func resolveProviderEnvKey(prov domain.ProviderType) string {
 		return strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	case domain.ProviderMistral:
 		return strings.TrimSpace(os.Getenv("MISTRAL_API_KEY"))
+	case domain.ProviderGroq:
+		return strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
+	case domain.ProviderDeepSeek:
+		return strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+	case domain.ProviderTogether:
+		if k := strings.TrimSpace(os.Getenv("TOGETHER_API_KEY")); k != "" {
+			return k
+		}
+		return strings.TrimSpace(os.Getenv("TOGETHERAI_API_KEY"))
+	case domain.ProviderBedrock:
+		if k := strings.TrimSpace(os.Getenv("AWS_BEDROCK_API_KEY")); k != "" {
+			return k
+		}
+		ak := strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID"))
+		sk := strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY"))
+		if ak != "" && sk != "" {
+			region := strings.TrimSpace(os.Getenv("AWS_REGION"))
+			if region == "" {
+				region = "us-east-1"
+			}
+			return fmt.Sprintf("%s:%s:%s", ak, sk, region)
+		}
+		return ""
+	case domain.ProviderVertex:
+		if k := strings.TrimSpace(os.Getenv("VERTEX_API_KEY")); k != "" {
+			return k
+		}
+		if sa := strings.TrimSpace(os.Getenv("GCP_SERVICE_ACCOUNT_KEY")); sa != "" {
+			return sa
+		}
+		return strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	case domain.ProviderCohere:
+		return strings.TrimSpace(os.Getenv("COHERE_API_KEY"))
+	case domain.ProviderCerebras:
+		return strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	case domain.ProviderSambaNova:
+		return strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
+	case domain.ProviderXAI:
+		return strings.TrimSpace(os.Getenv("XAI_API_KEY"))
+	case domain.ProviderFireworks:
+		return strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY"))
+	case domain.ProviderPerplexity:
+		return strings.TrimSpace(os.Getenv("PERPLEXITY_API_KEY"))
+	case domain.ProviderAnyscale:
+		return strings.TrimSpace(os.Getenv("ANYSCALE_API_KEY"))
+	case domain.ProviderDeepInfra:
+		return strings.TrimSpace(os.Getenv("DEEPINFRA_API_KEY"))
+	case domain.ProviderNovita:
+		return strings.TrimSpace(os.Getenv("NOVITA_API_KEY"))
+	case domain.ProviderNebius:
+		return strings.TrimSpace(os.Getenv("NEBIUS_API_KEY"))
+	case domain.ProviderHyperbolic:
+		return strings.TrimSpace(os.Getenv("HYPERBOLIC_API_KEY"))
+	case domain.ProviderLambda:
+		return strings.TrimSpace(os.Getenv("LAMBDA_API_KEY"))
+	case domain.ProviderFriendli:
+		if k := strings.TrimSpace(os.Getenv("FRIENDLI_TOKEN")); k != "" {
+			return k
+		}
+		return strings.TrimSpace(os.Getenv("FRIENDLI_API_KEY"))
+	case domain.ProviderOpenRouter:
+		return strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	case domain.ProviderVLLM:
+		return strings.TrimSpace(os.Getenv("VLLM_API_KEY"))
+	case domain.ProviderCloudflare:
+		return strings.TrimSpace(os.Getenv("CLOUDFLARE_API_KEY"))
+	case domain.ProviderDashScope:
+		return strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY"))
+	case domain.ProviderVolcengine:
+		return strings.TrimSpace(os.Getenv("VOLCENGINE_API_KEY"))
+	case domain.ProviderBigModel:
+		if k := strings.TrimSpace(os.Getenv("BIGMODEL_API_KEY")); k != "" {
+			return k
+		}
+		return strings.TrimSpace(os.Getenv("ZHIPU_API_KEY"))
+	case domain.ProviderMoonshot:
+		return strings.TrimSpace(os.Getenv("MOONSHOT_API_KEY"))
+	case domain.ProviderMiniMax:
+		return strings.TrimSpace(os.Getenv("MINIMAX_API_KEY"))
+	case domain.ProviderSiliconFlow:
+		return strings.TrimSpace(os.Getenv("SILICONFLOW_API_KEY"))
+	case domain.ProviderVoyage:
+		return strings.TrimSpace(os.Getenv("VOYAGE_API_KEY"))
+	case domain.ProviderJina:
+		return strings.TrimSpace(os.Getenv("JINA_API_KEY"))
+	case domain.ProviderReplicate:
+		return strings.TrimSpace(os.Getenv("REPLICATE_API_TOKEN"))
+	case domain.ProviderAI21:
+		return strings.TrimSpace(os.Getenv("AI21_API_KEY"))
+	case domain.ProviderBaseten:
+		return strings.TrimSpace(os.Getenv("BASETEN_API_KEY"))
+	case domain.ProviderNvidia:
+		return strings.TrimSpace(os.Getenv("NVIDIA_NIM_API_KEY"))
+	case domain.ProviderScaleway:
+		return strings.TrimSpace(os.Getenv("SCW_SECRET_KEY"))
 	default:
 		return ""
 	}

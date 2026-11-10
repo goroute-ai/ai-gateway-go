@@ -529,12 +529,19 @@ func (a *Adapter) toCanonicalResponse(r *providers.OpenAIChatCompletionResponse,
 		if str, ok := c.Message.Content.(string); ok {
 			contentStr = str
 		}
+		reasoning := c.Message.ReasoningContent
+		if reasoning == "" {
+			reasoning = c.Message.Reasoning
+		}
+		if reasoning == "" {
+			reasoning = c.Message.Thought
+		}
 		msg := domain.CanonicalMessage{
 			Role:             c.Message.Role,
 			Content:          contentStr,
 			Name:             c.Message.Name,
 			ToolCallID:       c.Message.ToolCallID,
-			ReasoningContent: c.Message.ReasoningContent,
+			ReasoningContent: reasoning,
 		}
 		if len(c.Message.ToolCalls) > 0 {
 			msg.ToolCalls = make([]domain.CanonicalToolCall, len(c.Message.ToolCalls))
@@ -569,16 +576,22 @@ type rawOpenAIStreamChunk struct {
 			Role             string                     `json:"role,omitempty"`
 			Content          string                     `json:"content,omitempty"`
 			ReasoningContent string                     `json:"reasoning_content,omitempty"` // e.g. DeepSeek R1
+			Reasoning        string                     `json:"reasoning,omitempty"`
+			Thought          string                     `json:"thought,omitempty"`
 			ToolCalls        []domain.CanonicalToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens            int                                                `json:"prompt_tokens"`
-		CompletionTokens        int                                                `json:"completion_tokens"`
-		TotalTokens             int                                                `json:"total_tokens"`
-		PromptTokensDetails     *struct{ CachedTokens int `json:"cached_tokens"` } `json:"prompt_tokens_details,omitempty"`
-		CompletionTokensDetails *struct{ ReasoningTokens int `json:"reasoning_tokens"` } `json:"completion_tokens_details,omitempty"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details,omitempty"`
+		CompletionTokensDetails *struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details,omitempty"`
 	} `json:"usage,omitempty"`
 }
 
@@ -595,8 +608,15 @@ func (a *Adapter) toCanonicalStreamChunk(raw *rawOpenAIStreamChunk, model string
 			Content:   c.Delta.Content,
 			ToolCalls: c.Delta.ToolCalls,
 		}
-		if a.profile.ExtractReasoningDelta && c.Delta.ReasoningContent != "" {
-			delta.ReasoningContent = c.Delta.ReasoningContent
+		if a.profile.ExtractReasoningDelta {
+			reasoning := c.Delta.ReasoningContent
+			if reasoning == "" {
+				reasoning = c.Delta.Reasoning
+			}
+			if reasoning == "" {
+				reasoning = c.Delta.Thought
+			}
+			delta.ReasoningContent = reasoning
 		}
 		out.Choices[i] = domain.CanonicalStreamChoice{
 			Index:        c.Index,

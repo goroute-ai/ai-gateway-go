@@ -6,11 +6,48 @@ import "time"
 type ProviderType string
 
 const (
-	ProviderOpenAI    ProviderType = "openai"
-	ProviderAnthropic ProviderType = "anthropic"
-	ProviderGemini    ProviderType = "gemini"
-	ProviderMistral   ProviderType = "mistral"
-	ProviderOllama    ProviderType = "ollama"
+	ProviderOpenAI      ProviderType = "openai"
+	ProviderAnthropic   ProviderType = "anthropic"
+	ProviderGemini      ProviderType = "gemini"
+	ProviderMistral     ProviderType = "mistral"
+	ProviderOllama      ProviderType = "ollama"
+	ProviderGroq        ProviderType = "groq"
+	ProviderDeepSeek    ProviderType = "deepseek"
+	ProviderTogether    ProviderType = "together"
+	ProviderAzure       ProviderType = "azure"
+	ProviderBedrock     ProviderType = "bedrock"
+	ProviderVertex      ProviderType = "vertex"
+	ProviderCohere      ProviderType = "cohere"
+	ProviderCerebras    ProviderType = "cerebras"
+	ProviderSambaNova   ProviderType = "sambanova"
+	ProviderXAI         ProviderType = "xai"
+	ProviderFireworks   ProviderType = "fireworks"
+	ProviderPerplexity  ProviderType = "perplexity"
+	ProviderAnyscale    ProviderType = "anyscale"
+	ProviderDeepInfra   ProviderType = "deepinfra"
+	ProviderNovita      ProviderType = "novita"
+	ProviderNebius      ProviderType = "nebius"
+	ProviderHyperbolic  ProviderType = "hyperbolic"
+	ProviderLambda      ProviderType = "lambda"
+	ProviderFriendli    ProviderType = "friendli"
+	ProviderOpenRouter  ProviderType = "openrouter"
+	ProviderVLLM        ProviderType = "vllm"
+	ProviderCloudflare  ProviderType = "cloudflare"
+	ProviderDatabricks  ProviderType = "databricks"
+	ProviderSnowflake   ProviderType = "snowflake"
+	ProviderDashScope   ProviderType = "dashscope"
+	ProviderVolcengine  ProviderType = "volcengine"
+	ProviderBigModel    ProviderType = "bigmodel"
+	ProviderMoonshot    ProviderType = "moonshot"
+	ProviderMiniMax     ProviderType = "minimax"
+	ProviderSiliconFlow ProviderType = "siliconflow"
+	ProviderVoyage      ProviderType = "voyage"
+	ProviderJina        ProviderType = "jina"
+	ProviderReplicate   ProviderType = "replicate"
+	ProviderAI21        ProviderType = "ai21"
+	ProviderBaseten     ProviderType = "baseten"
+	ProviderNvidia      ProviderType = "nvidia"
+	ProviderScaleway    ProviderType = "scaleway"
 )
 
 // AllProviders returns the list of supported upstream providers.
@@ -21,6 +58,43 @@ func AllProviders() []ProviderType {
 		ProviderGemini,
 		ProviderMistral,
 		ProviderOllama,
+		ProviderGroq,
+		ProviderDeepSeek,
+		ProviderTogether,
+		ProviderAzure,
+		ProviderBedrock,
+		ProviderVertex,
+		ProviderCohere,
+		ProviderCerebras,
+		ProviderSambaNova,
+		ProviderXAI,
+		ProviderFireworks,
+		ProviderPerplexity,
+		ProviderAnyscale,
+		ProviderDeepInfra,
+		ProviderNovita,
+		ProviderNebius,
+		ProviderHyperbolic,
+		ProviderLambda,
+		ProviderFriendli,
+		ProviderOpenRouter,
+		ProviderVLLM,
+		ProviderCloudflare,
+		ProviderDatabricks,
+		ProviderSnowflake,
+		ProviderDashScope,
+		ProviderVolcengine,
+		ProviderBigModel,
+		ProviderMoonshot,
+		ProviderMiniMax,
+		ProviderSiliconFlow,
+		ProviderVoyage,
+		ProviderJina,
+		ProviderReplicate,
+		ProviderAI21,
+		ProviderBaseten,
+		ProviderNvidia,
+		ProviderScaleway,
 	}
 }
 
@@ -188,32 +262,32 @@ type EmbeddingData struct {
 
 // SpendEvent is pushed asynchronously to the FinOps worker pool after each inference call.
 type SpendEvent struct {
-	ID                string       `json:"id"`
-	RequestID         string       `json:"request_id"`
-	TraceID           string       `json:"trace_id,omitempty"`
-	Protocol          string       `json:"protocol,omitempty"`        // "inference", "mcp", "a2a"
-	ProtocolTarget    string       `json:"protocol_target,omitempty"` // e.g. "mcp:github/search_repos" or "a2a:weather-agent"
-	OrgID             string       `json:"org_id"`
-	TeamID            string       `json:"team_id,omitempty"`
-	UserID            string       `json:"user_id,omitempty"`
-	VirtualKeyID      string       `json:"virtual_key_id"`
-	Endpoint          string       `json:"endpoint"`
-	RequestedModel    string       `json:"requested_model"`
-	ResolvedModel     string       `json:"resolved_model"`
-	Provider          ProviderType `json:"provider"`
-	DeploymentID      string        `json:"deployment_id"`
+	ID                      string        `json:"id"`
+	RequestID               string        `json:"request_id"`
+	TraceID                 string        `json:"trace_id,omitempty"`
+	Protocol                string        `json:"protocol,omitempty"`        // "inference", "mcp", "a2a"
+	ProtocolTarget          string        `json:"protocol_target,omitempty"` // e.g. "mcp:github/search_repos" or "a2a:weather-agent"
+	OrgID                   string        `json:"org_id"`
+	TeamID                  string        `json:"team_id,omitempty"`
+	UserID                  string        `json:"user_id,omitempty"`
+	VirtualKeyID            string        `json:"virtual_key_id"`
+	Endpoint                string        `json:"endpoint"`
+	RequestedModel          string        `json:"requested_model"`
+	ResolvedModel           string        `json:"resolved_model"`
+	Provider                ProviderType  `json:"provider"`
+	DeploymentID            string        `json:"deployment_id"`
 	PricingVersion          int           `json:"pricing_version,omitempty"`
 	PricingStatus           PricingStatus `json:"pricing_status,omitempty"`
 	PricingProvenanceSource string        `json:"pricing_provenance_source,omitempty"`
 	Usage                   TokenUsage    `json:"usage"`
-	CostMicros        int64        `json:"cost_micros"`
-	LatencyMs         int64        `json:"latency_ms"`
-	TTFTMs            int64        `json:"ttft_ms"`
-	StatusCode        int          `json:"status_code"`
-	IsStream          bool         `json:"is_stream"`
-	CacheHit          bool         `json:"cache_hit"`
-	FallbackAttempted bool         `json:"fallback_attempted"`
-	RetryCount        int          `json:"retry_count"`
-	ErrorMessage      string       `json:"error_message,omitempty"`
-	CreatedAt         time.Time    `json:"created_at"`
+	CostMicros              int64         `json:"cost_micros"`
+	LatencyMs               int64         `json:"latency_ms"`
+	TTFTMs                  int64         `json:"ttft_ms"`
+	StatusCode              int           `json:"status_code"`
+	IsStream                bool          `json:"is_stream"`
+	CacheHit                bool          `json:"cache_hit"`
+	FallbackAttempted       bool          `json:"fallback_attempted"`
+	RetryCount              int           `json:"retry_count"`
+	ErrorMessage            string        `json:"error_message,omitempty"`
+	CreatedAt               time.Time     `json:"created_at"`
 }

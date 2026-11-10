@@ -28,7 +28,7 @@ type Repository interface {
 	UpsertGlobalModel(ctx context.Context, m *domain.GlobalModel) error
 	GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error)
 	ListGlobalModels(ctx context.Context) ([]*domain.GlobalModel, error)
-	UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, changedBy string) (*domain.GlobalModel, error)
+	UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error)
 	ListModelPricingHistory(ctx context.Context, modelID string) ([]*domain.ModelPricingHistory, error)
 
 	// Organizations (Multi-Tenant Root)

@@ -39,6 +39,7 @@ func NewProfileRegistry(httpClient *http.Client, policy *network.Policy) *Profil
 	}
 
 	reg.registerLaunchSet()
+	reg.registerBuiltinProfiles()
 	return reg
 }
 

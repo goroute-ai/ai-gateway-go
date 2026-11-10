@@ -182,3 +182,137 @@ func TestAzureCredential_PersistenceAndReload(t *testing.T) {
 		t.Fatalf("expected updated APIVersion, got %q", updated.APIVersion)
 	}
 }
+
+func TestMigration0005_Syntax(t *testing.T) {
+	upSQLPath := filepath.Join("..", "..", "migrations", "0005_add_model_capabilities.up.sql")
+	upSQL, err := os.ReadFile(upSQLPath)
+	if err != nil {
+		t.Fatalf("failed to read 0005 up migration: %v", err)
+	}
+	if len(upSQL) == 0 {
+		t.Fatal("0005 up migration is empty")
+	}
+
+	downSQLPath := filepath.Join("..", "..", "migrations", "0005_add_model_capabilities.down.sql")
+	downSQL, err := os.ReadFile(downSQLPath)
+	if err != nil {
+		t.Fatalf("failed to read 0005 down migration: %v", err)
+	}
+	if len(downSQL) == 0 {
+		t.Fatal("0005 down migration is empty")
+	}
+}
+
+func TestCapabilities_TriStatePersistenceAndFallback(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	// 1. Model with explicit tri-state capabilities
+	m := &domain.GlobalModel{
+		ID:        "groq/llama-3.3-70b",
+		Provider:  domain.ProviderType("groq"),
+		ModelName: "llama-3.3-70b",
+		Capabilities: domain.ModelCapabilities{
+			Tools:             domain.CapabilitySupported,
+			Streaming:         domain.CapabilitySupported,
+			Vision:            domain.CapabilityUnsupported,
+			Reasoning:         domain.CapabilityUnknown,
+			StructuredOutputs: domain.CapabilitySupported,
+			Embeddings:        domain.CapabilityUnsupported,
+		},
+		PricingStatus: domain.PricingStatusUnknown,
+	}
+	if err := repo.UpsertGlobalModel(ctx, m); err != nil {
+		t.Fatalf("failed to upsert model with capabilities: %v", err)
+	}
+
+	got, err := repo.GetGlobalModel(ctx, "groq/llama-3.3-70b")
+	if err != nil {
+		t.Fatalf("failed to get model: %v", err)
+	}
+	caps := got.ResolveCapabilities()
+	if caps.Tools != domain.CapabilitySupported {
+		t.Errorf("expected Tools=supported, got %s", caps.Tools)
+	}
+	if caps.Vision != domain.CapabilityUnsupported {
+		t.Errorf("expected Vision=unsupported, got %s", caps.Vision)
+	}
+	if caps.Reasoning != domain.CapabilityUnknown {
+		t.Errorf("expected Reasoning=unknown, got %s", caps.Reasoning)
+	}
+
+	// 2. Model with legacy booleans only (defensive fallback)
+	legacy := &domain.GlobalModel{
+		ID:                "openai/legacy-test",
+		Provider:          domain.ProviderOpenAI,
+		ModelName:         "legacy-test",
+		SupportsTools:     true,
+		SupportsStreaming: true,
+		SupportsVision:    false,
+		SupportsReasoning: false,
+	}
+	legacyCaps := legacy.ResolveCapabilities()
+	if legacyCaps.Tools != domain.CapabilitySupported {
+		t.Errorf("expected legacy Tools=supported, got %s", legacyCaps.Tools)
+	}
+	if legacyCaps.Vision != domain.CapabilityUnknown {
+		t.Errorf("expected legacy Vision=unknown (not unsupported), got %s", legacyCaps.Vision)
+	}
+}
+
+func TestUpdateModelPricing_PromotionAndHistory(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	// Start with unknown pricing
+	initial := &domain.GlobalModel{
+		ID:                      "deepseek/deepseek-chat",
+		Provider:                domain.ProviderType("deepseek"),
+		ModelName:               "deepseek-chat",
+		InputCostMicrosPer1M:    140,
+		OutputCostMicrosPer1M:   280,
+		PricingStatus:           domain.PricingStatusUnknown,
+		PricingProvenanceSource: "catalog-import",
+	}
+	if err := repo.UpsertGlobalModel(ctx, initial); err != nil {
+		t.Fatalf("failed to upsert initial model: %v", err)
+	}
+
+	// Admin audits and promotes to verified pricing
+	updated, err := repo.UpdateModelPricing(
+		ctx, "deepseek/deepseek-chat",
+		270, 1100, 70, 0,
+		domain.PricingStatusVerified, "deepseek-official-audit-2025-11", "2025-11-01", "auditor-alice",
+	)
+	if err != nil {
+		t.Fatalf("failed to update pricing: %v", err)
+	}
+	if updated.PricingStatus != domain.PricingStatusVerified {
+		t.Errorf("expected PricingStatusVerified, got %s", updated.PricingStatus)
+	}
+	if updated.PricingProvenanceSource != "deepseek-official-audit-2025-11" {
+		t.Errorf("expected audit provenance, got %s", updated.PricingProvenanceSource)
+	}
+	if updated.InputCostMicrosPer1M != 270 || updated.OutputCostMicrosPer1M != 1100 {
+		t.Errorf("expected updated prices, got in=%d out=%d", updated.InputCostMicrosPer1M, updated.OutputCostMicrosPer1M)
+	}
+
+	// Verify history record
+	history, err := repo.ListModelPricingHistory(ctx, "deepseek/deepseek-chat")
+	if err != nil {
+		t.Fatalf("failed to list pricing history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 history records (initial + updated), got %d", len(history))
+	}
+	rec := history[1]
+	if rec.PricingStatus != domain.PricingStatusVerified {
+		t.Errorf("expected history record to have PricingStatusVerified, got %s", rec.PricingStatus)
+	}
+	if rec.PricingProvenanceSource != "deepseek-official-audit-2025-11" {
+		t.Errorf("expected history provenance, got %s", rec.PricingProvenanceSource)
+	}
+	if rec.ChangedBy != "auditor-alice" {
+		t.Errorf("expected changed_by auditor-alice, got %s", rec.ChangedBy)
+	}
+}

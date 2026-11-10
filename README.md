@@ -5,10 +5,10 @@
 # GoRoute AI Gateway
 *The ultra-fast, lightweight AI Gateway, MCP Hub, and Agent-to-Agent Router in 100% Pure Go.*
 
-Call **OpenAI**, **Anthropic Claude**, **Google Gemini**, **Mistral AI**, and **local Ollama** using a single unified API with sub-millisecond routing overhead and under 25MB of RAM.
+Call major hosted and local model providers through a unified API. Dedicated provider adapters and configurable OpenAI-compatible provider profiles are implemented under `internal/adapter/`.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
 [![Release](https://img.shields.io/badge/Release-v1.0.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.0.0)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative)](./docs/openapi/README.md)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
@@ -19,7 +19,12 @@ Call **OpenAI**, **Anthropic Claude**, **Google Gemini**, **Mistral AI**, and **
 
 GoRoute AI Gateway is an enterprise-grade AI data plane and embedded Go SDK engineered from scratch in 100% Pure Go (Zero CGO, zero Python runtime). It standardizes LLM interactions, provides an official hub for next-generation agentic protocols (**Model Context Protocol 2026-07-28** and **Linux Foundation A2A v1.0**), and enforces enterprise FinOps, security, and resiliency policies:
 
-* **Unified OpenAI Format**: Single endpoint (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) standardizing requests, zero-buffer SSE streaming, and tool calls across 5+ providers.
+* **Universal AI Provider Breadth (4-Tier Architecture)**:
+  - **Dedicated Native Adapters**: OpenAI, Anthropic Claude (Messages API), Google Gemini, AWS Bedrock (Pure Go SigV4 + EventStream binary decoder), Google Cloud Vertex AI (Pure Go Service Account OAuth2 JWT), Cohere v2 (Chat & Embed), Mistral AI, and local Ollama.
+  - **Certified OpenAI-Compatible Profiles (30+ Engines)**: Cerebras, SambaNova, xAI (Grok), Together AI, Fireworks AI, Groq, DeepSeek, Perplexity AI, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda Labs, Friendli AI, OpenRouter, vLLM, Cloudflare Workers AI, Databricks, Snowflake Cortex, DashScope (Qwen), Volcengine, BigModel (GLM), Moonshot (Kimi), MiniMax, SiliconFlow, Voyage AI, Jina AI, Replicate, AI21 Labs, Baseten, NVIDIA NIM, and Scaleway.
+  - **Embedded Model Catalogue Engine**: 4,627 curated models with integer micro-USD pricing, tri-state capability tracking (`supported`, `unsupported`, `unknown`), and sub-70ns in-memory lookup.
+  - **Dynamic Multi-Tenant Provisioning**: Direct `provider/model` requests auto-provision deployments on the fly with strict fail-closed Layer 2 (Provider Subscriptions) and Layer 3 (Model Policies) authorization.
+* **Unified OpenAI Format**: Single endpoint (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) standardizing requests, streaming, and tool calls across all providers.
 * **Dual Deployment**: Run as a standalone self-hosted proxy microservice or embed directly in your Go applications via the `pkg/gateway` SDK.
 * **Model Context Protocol (MCP)**: Production gateway supporting MCP 2026-07-28 stateless Streamable HTTP, stateful 2025-11-25 compatibility, Stdio process sandboxing, Virtual Hub multi-server aggregation (`POST /mcp`), Plain REST Bridge (`POST /mcp-rest/tools/call`), Progressive Discovery (`GET /v1/goroute/mcp/registry`), AEAD-encrypted MRTR token resumption, and arbitrary decimal precision preservation (`big.Rat`).
 * **Agent-to-Agent Protocol (A2A)**: Linux Foundation A2A v1.0 service featuring RFC 8785 JCS canonicalization, JWS cryptographic card signatures (`GET /.well-known/agent-card.json`), dual HTTP+JSON and JSON-RPC 2.0 dispatch, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Compatibility Bridge (`model: "a2a/{slug}"`), Subscribe-First SSE task streaming, and transactional outbox.
