@@ -1,0 +1,69 @@
+# GitHub Issue & Pull Request Labels Configuration for GoRoute AI Gateway
+
+# Contribution Starter Labels
+- name: "good first issue"
+  color: "7057ff"
+  description: "Good for newcomers; bite-sized and well-defined tasks"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Extra attention or community contribution is needed"
+
+# Type Labels
+- name: "bug"
+  color: "d73a4a"
+  description: "Something isn't working as expected"
+
+- name: "enhancement"
+  color: "a2eeef"
+  description: "New feature or capability request"
+
+- name: "documentation"
+  color: "0075ca"
+  description: "Improvements or additions to documentation or guides"
+
+- name: "refactor"
+  color: "cfd3d7"
+  description: "Code refactoring without functional changes"
+
+- name: "performance"
+  color: "f9d0c4"
+  description: "Improvements to latency, throughput, or memory allocation"
+
+# Component & Subsystem Labels
+- name: "area/provider"
+  color: "1d76db"
+  description: "Upstream provider adapters (OpenAI, Anthropic, Cohere, Bedrock, Vertex, etc.)"
+
+- name: "area/routing"
+  color: "5319e7"
+  description: "Intelligent routing, load balancing, retries, fallbacks, and circuit breakers"
+
+- name: "area/finops"
+  color: "0e8a16"
+  description: "Micro-dollar integer cost calculation, spend logs, and pricing catalogue"
+
+- name: "area/protocols"
+  color: "fbca04"
+  description: "Model Context Protocol (MCP) and Agent-to-Agent (A2A) protocols"
+
+- name: "area/security"
+  color: "b60205"
+  description: "Authentication, Virtual Keys, RBAC allowlists, and SSRF network egress"
+
+- name: "area/storage"
+  color: "bfdadc"
+  description: "PostgreSQL migrations, Redis keyspace, and stateful repository drivers"
+
+- name: "area/data-plane"
+  color: "c2e0c6"
+  description: "Unified inference endpoints (Chat, Embeddings, Rerank, Audio, Images, Batches)"
+
+# Status Labels
+- name: "status/review-needed"
+  color: "fbca04"
+  description: "Requires maintainer or peer review"
+
+- name: "status/blocked"
+  color: "b60205"
+  description: "Blocked by an external dependency or ongoing discussion"

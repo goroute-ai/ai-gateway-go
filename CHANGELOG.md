@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-10
+
+### Full API Breadth Parity with LiteLLM, Multi-Modal Ingress & Production Hardening
+
+#### Expanded Unified Data Plane (21 Routes)
+- **Document Reranking (`POST /v1/rerank`, `POST /rerank`, `POST /v2/rerank`)**:
+  - Implements `adapter.RerankAdapter` targeting Cohere v2 API (`/v2/rerank`).
+  - Supports query, document arrays, `top_n`, relevance scoring, and micro-dollar integer spend accounting per search unit.
+- **Content Moderation (`POST /v1/moderations`, `POST /moderations`)**:
+  - Implements `adapter.ModerationAdapter` with OpenAI `omni-moderation-latest`.
+  - Enforces fail-closed safety semantics preventing downgrade or unverified fallback.
+- **Legacy Text Completions (`POST /v1/completions`, `POST /completions`)**:
+  - Implements `adapter.CompletionAdapter` supporting single-string and string-array prompts with full usage reporting.
+- **Anthropic Messages Ingress (`POST /v1/messages`, `POST /messages`, `POST /v1/messages/count_tokens`)**:
+  - Native Anthropic Messages bridge translating Anthropic turns, thinking blocks, and tool schemas into canonical requests and back.
+  - Native Anthropic token counting endpoint (`/v1/messages/count_tokens`).
+- **Fast Heuristic Tokenization (`POST /v1/tokenize`, `POST /tokenize`)**:
+  - Zero-latency, in-process token counter approximating BPE tokenization without upstream network calls or costs.
+- **Audio Transcription & Speech (`POST /v1/audio/transcriptions`, `/translations`, `/speech`)**:
+  - Implements `adapter.AudioAdapter` with multipart disk spooling for zero-memory retryability.
+  - STT billed per integer second; TTS billed per 1,000 characters using 64-bit integer ceiling division.
+- **Image Generation, Edits & Variations (`POST /v1/images/generations`, `/edits`, `/variations`)**:
+  - Implements `adapter.ImageAdapter` with resolution and quality-based pricing matrix.
+- **Stateful Tenant Files (`POST /v1/files`, `GET /v1/files`, `GET /v1/files/{id}`, `GET /v1/files/{id}/content`, `DELETE /v1/files/{id}`)**:
+  - Secure on-disk storage (`0700` directory mode, `0600` file mode) with streaming SHA-256 deduplication indexing.
+- **Asynchronous Batch Processing (`POST /v1/batches`, `GET /v1/batches`, `GET /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`)**:
+  - Background JSONL processor with in-loop cancellation checks, per-line Virtual Key model-scope RBAC, and granular FinOps spend logging.
+- **OpenAI Responses API (`POST /v1/responses`, `POST /responses`)**:
+  - Stateless translation bridge for the OpenAI Responses API schema routing through the gateway's 7-stage reliability pipeline.
+- **OpenAI Realtime WebSockets (`GET /v1/realtime`, `GET /realtime`, `GET /openai/v1/realtime`)**:
+  - Full-duplex bidirectional WebSocket session handler using `nhooyr.io/websocket` and `responseRecorder.Hijack()`.
+
+#### Database Migration 0007 & Schema Evolution
+- Added modality pricing rates to `global_models` (`rerank_cost_micros_per_search_unit`, `image_cost_micros_base`, `image_cost_micros_hd`, `audio_stt_cost_micros_per_second`, `audio_tts_cost_micros_per_1k_chars`, `modality_pricing_json`).
+- Added `modality` and `modality_units` JSONB to `spend_logs` with index on `(org_id, modality, created_at DESC)`.
+- Added stateful `files` and `batches` tables with `VARCHAR(64)` foreign keys matching multi-tenant schema constraints.
+
+#### Security & Production Hardening
+- **Strict Model-Scope RBAC**: Verified and enforced `AuthorizeRequestedModel` across Responses, Realtime, and Batch line items.
+- **FinOps Spend Records**: Wired asynchronous spend events for Batch executions and WebSocket sessions.
+- **HTTP Hijacker**: Implemented `http.Hijacker` in logger middleware for zero-interruption WebSocket upgrades.
+- **Linter & Analyzer Compliance**: Converted intermediate allocations to `fmt.Appendf` and verified `bufio.Scanner.Err()`.
+
+---
+
 ## [1.1.0] - 2026-11-10
 
 ### Universal AI Provider Architecture, Embedded Model Catalogue & Production Hardening
