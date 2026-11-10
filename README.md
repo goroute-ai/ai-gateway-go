@@ -286,17 +286,6 @@ model_list:
 
 ---
 
-### Documentation
-
-* **[Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Version history, breaking changes, and migration notes.
-* **[Complete API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)** — Comprehensive Data Plane, MCP, A2A v1.0, Admin, and Prometheus metrics endpoints.
-* **[Subsystem Internals & Engineering Guide (`docs/INTERNALS.md`)](./docs/INTERNALS.md)** — Code-level tour, sequence diagrams, algorithms, and formulas.
-* **[Architecture Reference (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)** — Detailed system design, 4-layer RBAC, and ERD.
-* **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** — In-depth YAML, Go SDK, and HTTP API reference.
-* **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)** — Full OpenAPI 3.0/3.1 contracts.
-
----
-
 ### License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
