@@ -82,7 +82,7 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 	clientBearer := "Bearer sk-gw-client-test-key"
 
 	// 1. Create A2A Agent via POST /admin/v1/a2a/agents
-	createPayload := []byte(fmt.Sprintf(`{
+	createPayload := fmt.Appendf(nil, `{
 		"org_id": "org_default",
 		"name": "Audit Agent",
 		"slug": "audit-agent",
@@ -91,7 +91,7 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 		"auth_type": "none",
 		"max_task_iterations": 20,
 		"max_task_budget_micros": 5000000
-	}`, mockUpstream.URL))
+	}`, mockUpstream.URL)
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/v1/a2a/agents", bytes.NewReader(createPayload))
 	req.Header.Set("Authorization", "Bearer "+adminKey)

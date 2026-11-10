@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"math"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -57,6 +58,46 @@ func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *Int
 func (ir *IntelligentRouter) SetProviderCallable(check func(domain.ProviderType) bool) {
 	if check != nil {
 		ir.providerCallable = check
+	}
+}
+
+// ResolveExplicitModel resolves a specific model name or alias for an organization,
+// including dynamic provider/model catalogue resolution.
+func (ir *IntelligentRouter) ResolveExplicitModel(ctx context.Context, orgID string, requested string) (*domain.ModelGroup, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "model_required",
+			Message:    "Model parameter is required",
+		}
+	}
+
+	// 1. Exact alias lookup
+	mg, err := ir.repo.GetModelGroupByAlias(ctx, orgID, requested)
+	if err == nil && mg != nil && mg.IsActive {
+		return mg, nil
+	}
+
+	// 2. Dynamic provider/model resolution
+	if dynGroup := ir.resolveDynamicProviderModel(ctx, orgID, requested); dynGroup != nil {
+		return dynGroup, nil
+	}
+
+	// 3. Fallback scan of active groups
+	groups, _ := ir.repo.ListModelGroups(ctx, orgID)
+	for _, g := range groups {
+		if g.IsActive && g.Alias == requested {
+			return g, nil
+		}
+	}
+
+	return nil, &domain.GatewayError{
+		StatusCode: http.StatusNotFound,
+		Type:       domain.ErrorTypeNotFound,
+		Code:       "model_not_found",
+		Message:    "No active model group configured for: " + requested,
 	}
 }
 

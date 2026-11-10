@@ -74,6 +74,29 @@ type User struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// DefaultAllowedEndpoints contains the default data-plane endpoints permitted for newly issued Virtual Keys.
+var DefaultAllowedEndpoints = []string{
+	"/v1/*",
+	"/chat/*",
+	"/embeddings",
+	"/models",
+	"/rerank",
+	"/v2/rerank",
+	"/moderations",
+	"/completions",
+	"/messages",
+	"/anthropic/*",
+	"/audio/*",
+	"/images/*",
+	"/files",
+	"/files/*",
+	"/batches",
+	"/batches/*",
+	"/responses",
+	"/realtime",
+	"/openai/*",
+}
+
 // VirtualKey represents a Gateway-issued API credential (`sk-gw-...`) for Boundary 1 authentication.
 type VirtualKey struct {
 	ID                    string            `json:"id"`

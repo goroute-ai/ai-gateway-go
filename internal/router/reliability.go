@@ -2,11 +2,13 @@ package router
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +138,23 @@ func filterKnownPricing(deployments []*domain.Deployment) []*domain.Deployment {
 		}
 	}
 	return known
+}
+
+func filterByCapability(deployments []*domain.Deployment, check func(caps domain.ModelCapabilities) domain.CapabilityState) []*domain.Deployment {
+	var candidates []*domain.Deployment
+	for _, dep := range deployments {
+		if dep == nil || dep.GlobalModel == nil {
+			continue
+		}
+		caps := dep.GlobalModel.Capabilities
+		if caps == (domain.ModelCapabilities{}) {
+			caps = dep.GlobalModel.ResolveCapabilities()
+		}
+		if check(caps) != domain.CapabilityUnsupported {
+			candidates = append(candidates, dep)
+		}
+	}
+	return candidates
 }
 
 // ExecuteChat routes and executes a synchronous chat completion with automated retries and fallbacks.
@@ -526,6 +545,1160 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 	meta.WinningDeployment = dep
 	meta.LatencyMs = time.Since(start).Milliseconds()
 	return resp, meta, nil
+}
+
+// ExecuteRerank routes and executes a rerank request with automated retries and fallbacks.
+func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "rerank_model_not_found",
+			Message:    "No active rerank model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for rerank",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		// Prune deployments that explicitly do not support reranking
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.Rerank
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group rerank retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			rerankAdp, ok := adp.(adapter.RerankAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "rerank_not_supported",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support reranking",
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			resp, err := rerankAdp.Rerank(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback rerank deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
+}
+
+// ExecuteModeration routes and executes a moderation request with automated retries and fallbacks.
+func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "moderation_model_not_found",
+			Message:    "No active moderation model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for moderation",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		// Prune deployments that explicitly do not support moderation
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.Moderation
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group moderation retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			modAdp, ok := adp.(adapter.ModerationAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "moderation_not_supported",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support moderation",
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			resp, err := modAdp.Moderate(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback moderation deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
+}
+
+// ExecuteCompletion routes and executes a text completion request with automated retries and fallbacks.
+func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "completion_model_not_found",
+			Message:    "No active model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for completion",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group completion retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+
+			var resp *domain.CanonicalCompletionResponse
+			// If adapter implements native CompletionAdapter, use it
+			if compAdp, ok := adp.(adapter.CompletionAdapter); ok {
+				resp, err = compAdp.TextCompletion(ctx, dep, &reqCopy)
+			} else {
+				// Transparent fallback: promote to ChatCompletion
+				promptText := strings.Join(req.Prompt.Strings, "\n\n")
+				chatReq := &domain.CanonicalChatRequest{
+					RequestID:     req.RequestID,
+					Model:         req.Model,
+					ResolvedModel: dep.GlobalModel.ModelName,
+					Messages: []domain.CanonicalMessage{
+						{
+							Role:    "user",
+							Content: promptText,
+						},
+					},
+					MaxTokens:   req.MaxTokens,
+					Temperature: req.Temperature,
+					TopP:        req.TopP,
+					Stop:        req.Stop,
+					User:        req.User,
+				}
+				chatResp, chatErr := adp.ChatCompletion(ctx, dep, chatReq)
+				if chatErr != nil {
+					err = chatErr
+				} else if chatResp != nil {
+					choices := make([]domain.CanonicalCompletionChoice, len(chatResp.Choices))
+					for i, c := range chatResp.Choices {
+						choices[i] = domain.CanonicalCompletionChoice{
+							Index:        c.Index,
+							Text:         c.Message.Content,
+							FinishReason: c.FinishReason,
+						}
+					}
+					resp = &domain.CanonicalCompletionResponse{
+						ID:       chatResp.ID,
+						Model:    chatResp.Model,
+						Provider: chatResp.Provider,
+						Choices:  choices,
+						Usage:    chatResp.Usage,
+					}
+				}
+			}
+
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback completion deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
+}
+
+// ExecuteAudioTranscription routes and executes an audio transcription/translation request.
+func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "audio_model_not_found",
+			Message:    "No active model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for audio transcription",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		// Prune deployments that explicitly do not support audio STT
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.AudioSTT
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group audio transcription retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			audioAdp, ok := adp.(adapter.AudioAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "audio_stt_not_supported",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support audio transcription",
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			resp, err := audioAdp.TranscribeAudio(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback audio transcription deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
+}
+
+// ExecuteAudioSpeech routes and executes a text-to-speech request, returning an audio stream.
+func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalAudioSpeechRequest) (io.ReadCloser, string, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, "", nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "speech_model_not_found",
+			Message:    "No active model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for speech",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		// Prune deployments that explicitly do not support audio TTS
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.AudioTTS
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			audioAdp, ok := adp.(adapter.AudioAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "audio_tts_not_supported",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support text-to-speech",
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			stream, contentType, err := audioAdp.GenerateSpeech(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && stream != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return stream, contentType, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, "", meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, "", meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback speech deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, "", meta, lastErr
+}
+
+// ExecuteImage routes and executes an image generation request with idempotency protection.
+func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "image_model_not_found",
+			Message:    "No active model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for image",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		// Prune deployments that explicitly do not support image generation
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.ImageGen
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			imgAdp, ok := adp.(adapter.ImageAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "image_gen_not_supported",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support image generation",
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			resp, err := imgAdp.GenerateImage(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				rm.recordSuccess(dep.ID)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				meta.TTFTMs = depLatency
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+			lastErr = err
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+
+			// Idempotency safety: never retry non-idempotent image generation unless explicitly retryable
+			gwErr, isGwErr := err.(*domain.GatewayError)
+			if isGwErr {
+				if gwErr.AuthFailure {
+					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+					continue
+				}
+				if !gwErr.Retryable {
+					return nil, meta, gwErr
+				}
+				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+			} else {
+				// Ambiguous network errors on image generation should not retry blindly without caller idempotency
+				return nil, meta, err
+			}
+
+			if attempt < maxAttempts-1 {
+				retryAfter := 0
+				if isGwErr && gwErr != nil {
+					retryAfter = gwErr.RetryAfterSec
+				}
+				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				if sleepDur > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, meta, ctx.Err()
+					case <-time.After(sleepDur):
+					}
+				}
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback image deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
 }
 
 func (rm *ReliabilityManager) buildGroupChain(ctx context.Context, primary *domain.ModelGroup) []*domain.ModelGroup {

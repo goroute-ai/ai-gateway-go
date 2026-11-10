@@ -95,7 +95,7 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 		vk.BudgetResetPeriod = domain.BudgetResetMonthly
 	}
 	if len(vk.AllowedEndpoints) == 0 {
-		vk.AllowedEndpoints = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models"}
+		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
 	}
 	// Confirmed Default: newly provisioned keys default to DenyAll ([]string{}) for MCP and A2A
 	if vk.AllowedMCPServers == nil {

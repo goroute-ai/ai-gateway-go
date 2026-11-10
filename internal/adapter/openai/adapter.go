@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -386,6 +390,578 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 		})
 	}
 	return out, nil
+}
+
+// Moderate dispatches a text moderation request to the OpenAI Moderations API.
+func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+	model := dep.GlobalModel.ModelName
+	if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyMap := map[string]any{
+		"model": model,
+		"input": req.Input,
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal moderation request: %w", err)
+	}
+
+	endpoint := resolveBaseURL(dep.Credential) + "/moderations"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, dep.Credential)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		retryAfter := adapter.ParseRetryAfter(resp.Header)
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
+	}
+
+	var rawResp struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Results []struct {
+			Flagged        bool               `json:"flagged"`
+			Categories     map[string]bool    `json:"categories"`
+			CategoryScores map[string]float64 `json:"category_scores"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(respBytes, &rawResp); err != nil {
+		return nil, fmt.Errorf("unmarshal moderation response: %w", err)
+	}
+
+	results := make([]domain.ModerationResultItem, len(rawResp.Results))
+	for i, r := range rawResp.Results {
+		results[i] = domain.ModerationResultItem{
+			Flagged:        r.Flagged,
+			Categories:     r.Categories,
+			CategoryScores: r.CategoryScores,
+		}
+	}
+
+	return &domain.CanonicalModerationResponse{
+		ID:       rawResp.ID,
+		Model:    rawResp.Model,
+		Provider: domain.ProviderOpenAI,
+		Results:  results,
+	}, nil
+}
+
+// TextCompletion executes a legacy text completion request against OpenAI /v1/completions.
+func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	} else if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyMap := map[string]any{
+		"model": model,
+	}
+	if len(req.Prompt.Strings) == 1 {
+		bodyMap["prompt"] = req.Prompt.Strings[0]
+	} else if len(req.Prompt.Strings) > 1 {
+		bodyMap["prompt"] = req.Prompt.Strings
+	}
+	if req.MaxTokens != nil {
+		bodyMap["max_tokens"] = *req.MaxTokens
+	}
+	if req.Temperature != nil {
+		bodyMap["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		bodyMap["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 {
+		bodyMap["stop"] = req.Stop
+	}
+	if req.User != "" {
+		bodyMap["user"] = req.User
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal completion request: %w", err)
+	}
+
+	endpoint := resolveBaseURL(dep.Credential) + "/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, dep.Credential)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		retryAfter := adapter.ParseRetryAfter(resp.Header)
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
+	}
+
+	var rawResp struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index        int    `json:"index"`
+			Text         string `json:"text"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(respBytes, &rawResp); err != nil {
+		return nil, fmt.Errorf("unmarshal completion response: %w", err)
+	}
+
+	choices := make([]domain.CanonicalCompletionChoice, len(rawResp.Choices))
+	for i, c := range rawResp.Choices {
+		choices[i] = domain.CanonicalCompletionChoice{
+			Index:        c.Index,
+			Text:         c.Text,
+			FinishReason: c.FinishReason,
+		}
+	}
+
+	return &domain.CanonicalCompletionResponse{
+		ID:       rawResp.ID,
+		Model:    rawResp.Model,
+		Provider: domain.ProviderOpenAI,
+		Choices:  choices,
+		Usage: domain.TokenUsage{
+			PromptTokens:     rawResp.Usage.PromptTokens,
+			CompletionTokens: rawResp.Usage.CompletionTokens,
+			TotalTokens:      rawResp.Usage.TotalTokens,
+		},
+	}, nil
+}
+
+// TranscribeAudio sends an audio file to OpenAI's transcriptions/translations endpoint.
+func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	} else if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyBuf := &bytes.Buffer{}
+	mpWriter := multipart.NewWriter(bodyBuf)
+
+	_ = mpWriter.WriteField("model", model)
+	if req.Language != "" {
+		_ = mpWriter.WriteField("language", req.Language)
+	}
+	if req.Prompt != "" {
+		_ = mpWriter.WriteField("prompt", req.Prompt)
+	}
+	if req.ResponseFormat != "" {
+		_ = mpWriter.WriteField("response_format", req.ResponseFormat)
+	}
+	if req.Temperature != nil {
+		_ = mpWriter.WriteField("temperature", fmt.Sprintf("%f", *req.Temperature))
+	}
+	for _, tg := range req.TimestampGranularities {
+		_ = mpWriter.WriteField("timestamp_granularities[]", tg)
+	}
+
+	fileName := req.FileName
+	if fileName == "" {
+		fileName = "audio.mp3"
+	}
+	part, err := mpWriter.CreateFormFile("file", fileName)
+	if err != nil {
+		return nil, fmt.Errorf("create form file: %w", err)
+	}
+
+	if req.SpoolFilePath != "" {
+		f, err := os.Open(req.SpoolFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("open audio spool file: %w", err)
+		}
+		defer f.Close()
+		if _, err := io.Copy(part, f); err != nil {
+			return nil, fmt.Errorf("copy spool file to form: %w", err)
+		}
+	} else if req.FileReader != nil {
+		if _, err := io.Copy(part, req.FileReader); err != nil {
+			return nil, fmt.Errorf("copy file reader to form: %w", err)
+		}
+	} else {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_audio_data",
+			Message:    "no audio file reader or spool file provided",
+		}
+	}
+
+	if err := mpWriter.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	subPath := "/audio/transcriptions"
+	if strings.Contains(req.RequestID, "translation") {
+		subPath = "/audio/translations"
+	}
+	endpoint := resolveBaseURL(dep.Credential) + subPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bodyBuf)
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, dep.Credential)
+	httpReq.Header.Set("Content-Type", mpWriter.FormDataContentType())
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		retryAfter := adapter.ParseRetryAfter(resp.Header)
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
+	}
+
+	if req.ResponseFormat == "text" {
+		return &domain.CanonicalAudioResponse{
+			Text: strings.TrimSpace(string(respBytes)),
+		}, nil
+	}
+
+	var jsonMap map[string]any
+	if err := json.Unmarshal(respBytes, &jsonMap); err != nil {
+		return &domain.CanonicalAudioResponse{Text: string(respBytes)}, nil
+	}
+
+	out := &domain.CanonicalAudioResponse{Raw: jsonMap}
+	if txt, ok := jsonMap["text"].(string); ok {
+		out.Text = txt
+	}
+	if durSec, ok := jsonMap["duration"].(float64); ok {
+		out.DurationMs = int64(durSec * 1000)
+	}
+	if lang, ok := jsonMap["language"].(string); ok {
+		out.Language = lang
+	}
+	if words, ok := jsonMap["words"].([]any); ok {
+		out.Words = words
+	}
+	if segments, ok := jsonMap["segments"].([]any); ok {
+		out.Segments = segments
+	}
+	return out, nil
+}
+
+// GenerateSpeech generates audio from text using OpenAI's /v1/audio/speech endpoint.
+func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioSpeechRequest) (io.ReadCloser, string, error) {
+	if dep == nil {
+		return nil, "", &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	} else if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyMap := map[string]any{
+		"model": model,
+		"input": req.Input,
+		"voice": req.Voice,
+	}
+	if req.ResponseFormat != "" {
+		bodyMap["response_format"] = req.ResponseFormat
+	}
+	if req.Speed > 0 {
+		bodyMap["speed"] = req.Speed
+	}
+
+	b, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal speech request: %w", err)
+	}
+
+	endpoint := resolveBaseURL(dep.Credential) + "/audio/speech"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
+	if err != nil {
+		return nil, "", err
+	}
+	setHeaders(httpReq, dep.Credential)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, "", &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		respBytes, _ := io.ReadAll(resp.Body)
+		retryAfter := adapter.ParseRetryAfter(resp.Header)
+		return nil, "", domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "audio/mpeg"
+	}
+	return resp.Body, contentType, nil
+}
+
+// GenerateImage generates images using OpenAI's /v1/images/generations endpoint.
+func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	} else if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyMap := map[string]any{
+		"prompt": req.Prompt,
+		"model":  model,
+	}
+	if req.N > 0 {
+		bodyMap["n"] = req.N
+	}
+	if req.Quality != "" {
+		bodyMap["quality"] = req.Quality
+	}
+	if req.ResponseFormat != "" {
+		bodyMap["response_format"] = req.ResponseFormat
+	}
+	if req.Size != "" {
+		bodyMap["size"] = req.Size
+	}
+	if req.Style != "" {
+		bodyMap["style"] = req.Style
+	}
+	if req.User != "" {
+		bodyMap["user"] = req.User
+	}
+
+	endpoint := resolveBaseURL(dep.Credential) + "/images/generations"
+	var requestBody io.Reader
+	contentType := "application/json"
+	if req.Operation == "edit" || req.Operation == "variation" {
+		if len(req.ImageData) == 0 {
+			return nil, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "missing_image", Message: "image is required"}
+		}
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if req.Operation == "edit" {
+			endpoint = resolveBaseURL(dep.Credential) + "/images/edits"
+			_ = writer.WriteField("prompt", req.Prompt)
+		} else {
+			endpoint = resolveBaseURL(dep.Credential) + "/images/variations"
+		}
+		for key, value := range map[string]string{"model": model, "n": strconv.Itoa(req.N), "size": req.Size} {
+			if value != "" && value != "0" {
+				if err := writer.WriteField(key, value); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if req.Quality != "" {
+			_ = writer.WriteField("quality", req.Quality)
+		}
+		if req.ResponseFormat != "" {
+			_ = writer.WriteField("response_format", req.ResponseFormat)
+		}
+		if req.Style != "" {
+			_ = writer.WriteField("style", req.Style)
+		}
+		if req.User != "" {
+			_ = writer.WriteField("user", req.User)
+		}
+		imagePart, err := writer.CreateFormFile("image", safeImageFilename(req.ImageFilename))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := imagePart.Write(req.ImageData); err != nil {
+			return nil, err
+		}
+		if len(req.MaskData) > 0 {
+			maskPart, err := writer.CreateFormFile("mask", safeImageFilename(req.MaskFilename))
+			if err != nil {
+				return nil, err
+			}
+			if _, err := maskPart.Write(req.MaskData); err != nil {
+				return nil, err
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return nil, err
+		}
+		requestBody = &body
+		contentType = writer.FormDataContentType()
+	} else {
+		b, err := json.Marshal(bodyMap)
+		if err != nil {
+			return nil, fmt.Errorf("marshal image request: %w", err)
+		}
+		requestBody = bytes.NewReader(b)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, requestBody)
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, dep.Credential)
+	httpReq.Header.Set("Content-Type", contentType)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		retryAfter := adapter.ParseRetryAfter(resp.Header)
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
+	}
+
+	var rawResp struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			URL           string `json:"url"`
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBytes, &rawResp); err != nil {
+		return nil, fmt.Errorf("unmarshal image response: %w", err)
+	}
+
+	items := make([]domain.ImageItem, len(rawResp.Data))
+	for i, d := range rawResp.Data {
+		items[i] = domain.ImageItem{
+			URL:           d.URL,
+			B64JSON:       d.B64JSON,
+			RevisedPrompt: d.RevisedPrompt,
+		}
+	}
+
+	return &domain.CanonicalImageResponse{
+		Created:  rawResp.Created,
+		Provider: domain.ProviderOpenAI,
+		Model:    model,
+		Data:     items,
+	}, nil
+}
+
+func safeImageFilename(name string) string {
+	name = strings.ReplaceAll(filepath.Base(name), `\`, "_")
+	if name == "." || name == "" {
+		return "image.png"
+	}
+	return name
 }
 
 func setHeaders(req *http.Request, cred *domain.ProviderCredential) {

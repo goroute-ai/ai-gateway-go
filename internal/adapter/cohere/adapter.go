@@ -13,6 +13,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
@@ -541,4 +542,126 @@ func parseCohereError(statusCode int, body []byte) error {
 		gwErr.Retryable = true
 	}
 	return gwErr
+}
+
+// Rerank performs document reranking using the Cohere v2 Rerank API.
+func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+	apiKey, err := a.getAPIKey(dep)
+	if err != nil {
+		return nil, err
+	}
+
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	}
+
+	type cohereRerankReq struct {
+		Model           string                  `json:"model"`
+		Query           string                  `json:"query"`
+		Documents       []domain.RerankDocument `json:"documents"`
+		TopN            *int                    `json:"top_n,omitempty"`
+		RankFields      []string                `json:"rank_fields,omitempty"`
+		ReturnDocuments bool                    `json:"return_documents"`
+		MaxTokensPerDoc *int                    `json:"max_tokens_per_doc,omitempty"`
+	}
+
+	cReq := cohereRerankReq{
+		Model:           model,
+		Query:           req.Query,
+		Documents:       req.Documents,
+		TopN:            req.TopN,
+		RankFields:      req.RankFields,
+		ReturnDocuments: req.ReturnDocuments,
+		MaxTokensPerDoc: req.MaxTokensPerDoc,
+	}
+
+	bodyBytes, err := json.Marshal(cReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal cohere rerank request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v2/rerank", a.getBaseURL(dep))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create cohere rerank request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "goroute-ai-gateway")
+
+	observability.InjectTraceHeaders(ctx, httpReq)
+
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "cohere_network_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read cohere rerank response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, parseCohereError(resp.StatusCode, respBytes)
+	}
+
+	var rawResp struct {
+		ID      string `json:"id"`
+		Results []struct {
+			Index          int            `json:"index"`
+			RelevanceScore float64        `json:"relevance_score"`
+			Document       map[string]any `json:"document,omitempty"`
+		} `json:"results"`
+		Meta struct {
+			BilledUnits struct {
+				SearchUnits int `json:"search_units"`
+				TotalTokens int `json:"total_tokens"`
+			} `json:"billed_units"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(respBytes, &rawResp); err != nil {
+		return nil, fmt.Errorf("unmarshal cohere rerank response: %w", err)
+	}
+
+	results := make([]domain.RerankResultItem, len(rawResp.Results))
+	for i, r := range rawResp.Results {
+		results[i] = domain.RerankResultItem{
+			Index:          r.Index,
+			RelevanceScore: r.RelevanceScore,
+			Document:       r.Document,
+		}
+	}
+
+	searchUnits := rawResp.Meta.BilledUnits.SearchUnits
+	if searchUnits <= 0 {
+		searchUnits = 1
+	}
+
+	return &domain.CanonicalRerankResponse{
+		ID:       rawResp.ID,
+		Model:    req.Model,
+		Provider: domain.ProviderCohere,
+		Results:  results,
+		Usage: domain.RerankUsage{
+			SearchUnits: searchUnits,
+			TotalTokens: rawResp.Meta.BilledUnits.TotalTokens,
+		},
+	}, nil
 }

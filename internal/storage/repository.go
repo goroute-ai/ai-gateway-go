@@ -131,4 +131,16 @@ type Repository interface {
 
 	SetA2APushNotificationConfig(ctx context.Context, cfg *domain.A2APushNotificationConfig) error
 	GetA2APushNotificationConfig(ctx context.Context, taskID string) (*domain.A2APushNotificationConfig, error)
+
+	// Files Management (Stateful Tenant Assets)
+	CreateFile(ctx context.Context, file *domain.CanonicalFile) error
+	GetFile(ctx context.Context, orgID, fileID string) (*domain.CanonicalFile, error)
+	ListFiles(ctx context.Context, orgID string, purpose string) ([]*domain.CanonicalFile, error)
+	DeleteFile(ctx context.Context, orgID, fileID string) error
+
+	// Batches Management (Asynchronous Batch Processing)
+	CreateBatch(ctx context.Context, batch *domain.CanonicalBatch) error
+	GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error)
+	ListBatches(ctx context.Context, orgID string, limit int) ([]*domain.CanonicalBatch, error)
+	UpdateBatchStatus(ctx context.Context, batchID string, status string, outputFileID string, counts domain.BatchCounts, completedAt *time.Time) error
 }

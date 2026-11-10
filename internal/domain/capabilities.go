@@ -19,6 +19,13 @@ type ModelCapabilities struct {
 	Reasoning         CapabilityState `json:"reasoning"`
 	StructuredOutputs CapabilityState `json:"structured_outputs"`
 	Embeddings        CapabilityState `json:"embeddings"`
+	Rerank            CapabilityState `json:"rerank"`
+	Moderation        CapabilityState `json:"moderation"`
+	ImageGen          CapabilityState `json:"image_gen"`
+	AudioSTT          CapabilityState `json:"audio_stt"`
+	AudioTTS          CapabilityState `json:"audio_tts"`
+	Batches           CapabilityState `json:"batches"`
+	Realtime          CapabilityState `json:"realtime"`
 }
 
 // PricingStatus defines the provenance and verification status of a model's token pricing.
