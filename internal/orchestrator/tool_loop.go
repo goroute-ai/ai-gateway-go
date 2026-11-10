@@ -16,7 +16,7 @@ import (
 // InferenceApplication abstracts the inference engine for executing chat completions.
 type InferenceApplication interface {
 	ExecuteChat(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error)
-	ExecuteStream(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, *router.ExecutionMeta, error)
+	ExecuteStream(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler, onSelected func(dep *domain.Deployment)) (*domain.TokenUsage, *router.ExecutionMeta, error)
 }
 
 // MCPHubApplication abstracts the MCP Hub for tool discovery and execution.
@@ -279,11 +279,15 @@ func (o *ToolLoopOrchestrator) ExecuteStreamLoop(
 	idCtx *domain.IdentityContext,
 	req *domain.CanonicalChatRequest,
 	onChunk adapter.StreamChunkHandler,
+	onSelected func(dep *domain.Deployment),
 ) (*domain.TokenUsage, *router.ExecutionMeta, error) {
 	// Execute the multi-turn loop with lookahead buffering
 	resp, meta, err := o.ExecuteLoop(ctx, idCtx, req)
 	if err != nil {
 		return nil, meta, err
+	}
+	if meta != nil && meta.WinningDeployment != nil && onSelected != nil {
+		onSelected(meta.WinningDeployment)
 	}
 	if resp == nil || len(resp.Choices) == 0 {
 		return &domain.TokenUsage{}, meta, nil

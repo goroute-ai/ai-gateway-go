@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ type Config struct {
 	Cache     CacheConfig      `yaml:"cache"`
 	MCP       MCPConfig        `yaml:"mcp"`
 	A2A       A2AConfig        `yaml:"a2a"`
+	Providers ProvidersConfig  `yaml:"providers"`
 	ModelList []ModelListEntry `yaml:"model_list"`
 }
 
@@ -106,14 +108,31 @@ type ModelListEntry struct {
 
 // ModelParams holds upstream provider and model routing parameters for a deployment entry.
 type ModelParams struct {
-	Model   string            `yaml:"model" json:"model"`       // e.g. "gemini/gemini-2.5-flash" or "anthropic/claude-sonnet-4-20250514"
-	APIKey  string            `yaml:"api_key" json:"api_key"`   // literal key or "os.environ/GEMINI_API_KEY" or "${GEMINI_API_KEY}"
-	APIBase string            `yaml:"api_base" json:"api_base"` // optional custom upstream base URL
-	Region  string            `yaml:"region,omitempty" json:"region,omitempty"`
-	Weight  int               `yaml:"weight,omitempty" json:"weight,omitempty"`
-	RPM     int               `yaml:"rpm,omitempty" json:"rpm,omitempty"`
-	TPM     int               `yaml:"tpm,omitempty" json:"tpm,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Model               string            `yaml:"model" json:"model"`       // e.g. "gemini/gemini-2.5-flash" or "anthropic/claude-sonnet-4-20250514"
+	APIKey              string            `yaml:"api_key" json:"api_key"`   // literal key or "os.environ/GEMINI_API_KEY" or "${GEMINI_API_KEY}"
+	APIBase             string            `yaml:"api_base" json:"api_base"` // optional custom upstream base URL
+	Region              string            `yaml:"region,omitempty" json:"region,omitempty"`
+	Weight              int               `yaml:"weight,omitempty" json:"weight,omitempty"`
+	RPM                 int               `yaml:"rpm,omitempty" json:"rpm,omitempty"`
+	TPM                 int               `yaml:"tpm,omitempty" json:"tpm,omitempty"`
+	AzureDeploymentName string            `yaml:"azure_deployment_name,omitempty" json:"azure_deployment_name,omitempty"`
+	APIVersion          string            `yaml:"api_version,omitempty" json:"api_version,omitempty"`
+	Headers             map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+}
+
+type ProvidersConfig struct {
+	CustomOpenAICompatible []CustomProviderConfig `yaml:"custom_openai_compatible" json:"custom_openai_compatible"`
+}
+
+type CustomProviderConfig struct {
+	ID                        string            `yaml:"id" json:"id"`
+	DisplayName               string            `yaml:"display_name" json:"display_name"`
+	BaseURL                   string            `yaml:"base_url" json:"base_url"`
+	SupportsStreaming         string            `yaml:"supports_streaming,omitempty" json:"supports_streaming,omitempty"`
+	SupportsTools             string            `yaml:"supports_tools,omitempty" json:"supports_tools,omitempty"`
+	SupportsStructuredOutputs string            `yaml:"supports_structured_outputs,omitempty" json:"supports_structured_outputs,omitempty"`
+	SupportsListModels        bool              `yaml:"supports_list_models" json:"supports_list_models"`
+	DefaultHeaders            map[string]string `yaml:"default_headers,omitempty" json:"default_headers,omitempty"`
 }
 
 type ServerConfig struct {
@@ -492,6 +511,21 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Custom providers validation
+	for _, cp := range c.Providers.CustomOpenAICompatible {
+		id := strings.ToLower(strings.TrimSpace(cp.ID))
+		if id == "" {
+			return fmt.Errorf("providers.custom_openai_compatible: id cannot be empty")
+		}
+		if strings.TrimSpace(cp.BaseURL) == "" {
+			return fmt.Errorf("providers.custom_openai_compatible %q: base_url cannot be empty", id)
+		}
+		u, err := url.Parse(strings.TrimSpace(cp.BaseURL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("providers.custom_openai_compatible %q: base_url must have http or https scheme", id)
+		}
+	}
+
 	return nil
 }
 
@@ -537,8 +571,16 @@ func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) 
 			prov = domain.ProviderGemini
 		case "anthropic", "claude":
 			prov = domain.ProviderAnthropic
-		case "openai", "azure":
+		case "openai":
 			prov = domain.ProviderOpenAI
+		case "azure", "azure_openai":
+			prov = domain.ProviderType("azure")
+		case "groq":
+			prov = domain.ProviderType("groq")
+		case "deepseek":
+			prov = domain.ProviderType("deepseek")
+		case "together", "together_ai":
+			prov = domain.ProviderType("together")
 		case "mistral", "mistralai":
 			prov = domain.ProviderMistral
 		case "ollama", "ollama_chat":

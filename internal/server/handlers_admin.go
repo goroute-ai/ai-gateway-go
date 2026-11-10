@@ -339,13 +339,21 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 	_ = s.repo.UpdateProviderCredential(r.Context(), cred)
 
 	valid := discErr == nil
+	validationStatus := "success"
 	errMsg := ""
 	if discErr != nil {
-		errMsg = discErr.Error()
+		if gwErr, ok := discErr.(*domain.GatewayError); ok && gwErr.Code == "list_models_unsupported" {
+			valid = true
+			validationStatus = "unsupported_by_provider"
+		} else {
+			validationStatus = "failed"
+			errMsg = discErr.Error()
+		}
 	}
 	s.audit(r.Context(), cred.OrgID, "credential.validated", "provider_credential", cred.ID, map[string]any{
 		"provider":          cred.Provider,
 		"valid":             valid,
+		"validation_status": validationStatus,
 		"discovered_models": len(models),
 		"latency_ms":        latencyMs,
 	})
@@ -353,6 +361,7 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 		"id":                cred.ID,
 		"provider":          cred.Provider,
 		"valid":             valid,
+		"validation_status": validationStatus,
 		"discovered_models": len(models),
 		"latency_ms":        latencyMs,
 		"last_validated_at": now,

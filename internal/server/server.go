@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/mistral"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openaicompat"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -77,12 +78,29 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		return nil, err
 	}
 
+	netPolicy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
+	if err != nil {
+		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
+	}
+
 	reg := adapter.NewRegistry()
 	reg.Register(openai.NewAdapter(httpClient))
 	reg.Register(anthropic.NewAdapter(httpClient))
 	reg.Register(gemini.NewAdapter(httpClient))
 	reg.Register(mistral.NewAdapter(httpClient))
 	reg.Register(ollama.NewAdapter(httpClient))
+
+	profileClient := httpClient
+	if profileClient == nil {
+		profileClient = network.NewHTTPClient(netPolicy)
+	}
+	profileReg := openaicompat.NewProfileRegistry(profileClient)
+	for _, custom := range cfg.Providers.CustomOpenAICompatible {
+		if err := profileReg.RegisterCustom(custom); err != nil {
+			return nil, fmt.Errorf("failed to register custom provider %q: %w", custom.ID, err)
+		}
+	}
+	reg.SetDynamicResolver(profileReg.DynamicResolver())
 
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
 	rbac := auth.NewRBACEngine(repo)
@@ -104,10 +122,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
 
-	netPolicy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
-	if err != nil {
-		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
-	}
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
 	mcpHub := mcp.NewHub(repo, vault, rbac, mcpDispatcher, mcpAuthResolver)

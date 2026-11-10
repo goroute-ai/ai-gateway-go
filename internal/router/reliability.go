@@ -118,6 +118,26 @@ func (rm *ReliabilityManager) SetCollector(col *observability.Collector) {
 	rm.collector = col
 }
 
+func isBudgetConstrained(idCtx *domain.IdentityContext) bool {
+	if idCtx == nil {
+		return false
+	}
+	return idCtx.KeyMaxBudgetMicros > 0 || idCtx.TeamMaxBudgetMicros > 0 || idCtx.OrgMaxBudgetMicros > 0
+}
+
+func filterKnownPricing(deployments []*domain.Deployment) []*domain.Deployment {
+	var known []*domain.Deployment
+	for _, dep := range deployments {
+		if dep != nil && dep.GlobalModel != nil {
+			status := domain.ResolvePricingStatus(dep.GlobalModel)
+			if status == domain.PricingStatusVerified || status == domain.PricingStatusCustom {
+				known = append(known, dep)
+			}
+		}
+	}
+	return known
+}
+
 // ExecuteChat routes and executes a synchronous chat completion with automated retries and fallbacks.
 func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *ExecutionMeta, error) {
 	start := time.Now()
@@ -139,6 +159,9 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 		meta.RoutingMicros = 1
 	}
 
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+
 	var lastErr error
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
@@ -154,6 +177,19 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
 		if err != nil || len(deployments) == 0 {
 			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				logger.WarnContext(ctx, "Skipping model group for budgeted caller: all deployments have unverified pricing",
+					slog.String("component", "router"),
+					slog.String("group_alias", group.Alias),
+				)
+				continue
+			}
+			deployments = filtered
 		}
 
 		maxAttempts := group.MaxRetries + 1
@@ -242,11 +278,20 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 	}
 
 	if lastErr == nil {
-		lastErr = &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeUpstream,
-			Code:       "all_deployments_unavailable",
-			Message:    "All primary and fallback model deployments are currently unavailable or in cooldown",
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback model deployments are currently unavailable or in cooldown",
+			}
 		}
 	}
 	return nil, meta, lastErr
@@ -254,7 +299,13 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 
 // ExecuteStream routes and executes a streaming SSE chat completion.
 // Retries and fallbacks happen transparently if an upstream fails BEFORE the first chunk is emitted.
-func (rm *ReliabilityManager) ExecuteStream(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, *ExecutionMeta, error) {
+func (rm *ReliabilityManager) ExecuteStream(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	req *domain.CanonicalChatRequest,
+	onChunk adapter.StreamChunkHandler,
+	onSelected func(dep *domain.Deployment),
+) (*domain.TokenUsage, *ExecutionMeta, error) {
 	start := time.Now()
 	orgID := ""
 	if idCtx != nil {
@@ -268,6 +319,9 @@ func (rm *ReliabilityManager) ExecuteStream(ctx context.Context, idCtx *domain.I
 
 	meta := &ExecutionMeta{RouteDecision: decision}
 	groupChain := rm.buildGroupChain(ctx, decision.ModelGroup)
+
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
 
 	var lastErr error
 	for groupIdx, group := range groupChain {
@@ -284,6 +338,19 @@ func (rm *ReliabilityManager) ExecuteStream(ctx context.Context, idCtx *domain.I
 		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
 		if err != nil || len(deployments) == 0 {
 			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				logger.WarnContext(ctx, "Skipping model group for budgeted caller: all deployments have unverified pricing",
+					slog.String("component", "router"),
+					slog.String("group_alias", group.Alias),
+				)
+				continue
+			}
+			deployments = filtered
 		}
 
 		maxAttempts := group.MaxRetries + 1
@@ -324,6 +391,10 @@ func (rm *ReliabilityManager) ExecuteStream(ctx context.Context, idCtx *domain.I
 
 			reqCopy := *req
 			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			if onSelected != nil {
+				onSelected(dep)
+			}
 
 			depStart := time.Now()
 			firstChunkRecorded := false
@@ -372,11 +443,20 @@ func (rm *ReliabilityManager) ExecuteStream(ctx context.Context, idCtx *domain.I
 	}
 
 	if lastErr == nil {
-		lastErr = &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeUpstream,
-			Code:       "all_deployments_unavailable",
-			Message:    "All primary and fallback streaming deployments are unavailable",
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback streaming deployments are unavailable",
+			}
 		}
 	}
 	return nil, meta, lastErr
@@ -416,6 +496,19 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 			Code:       "no_healthy_embedding_deployments",
 			Message:    "No healthy deployments available for embedding model " + req.Model,
 		}
+	}
+
+	if isBudgetConstrained(idCtx) {
+		filtered := filterKnownPricing(deployments)
+		if len(filtered) == 0 {
+			return nil, meta, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		}
+		deployments = filtered
 	}
 
 	dep := rm.loadBalancer.Select(mg.RoutingStrategy, deployments)

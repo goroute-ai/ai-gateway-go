@@ -49,10 +49,14 @@ func (m *mockInferenceApp) ExecuteStream(
 	idCtx *domain.IdentityContext,
 	req *domain.CanonicalChatRequest,
 	onChunk adapter.StreamChunkHandler,
+	onSelected func(dep *domain.Deployment),
 ) (*domain.TokenUsage, *router.ExecutionMeta, error) {
 	resp, meta, err := m.ExecuteChat(ctx, idCtx, req)
 	if err != nil {
 		return nil, meta, err
+	}
+	if meta != nil && meta.WinningDeployment != nil && onSelected != nil {
+		onSelected(meta.WinningDeployment)
 	}
 	return &resp.Usage, meta, nil
 }
@@ -461,7 +465,7 @@ func TestToolLoopOrchestrator_LookaheadStreaming(t *testing.T) {
 	usage, _, err := orch.ExecuteStreamLoop(ctx, idCtx, chatReq, func(chunk *domain.CanonicalStreamChunk) error {
 		chunks = append(chunks, chunk)
 		return nil
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 45, usage.TotalTokens)

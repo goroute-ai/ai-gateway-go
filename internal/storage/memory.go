@@ -172,12 +172,17 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 		if m.PricingVersion <= 0 {
 			m.PricingVersion = 1
 		}
+		m.PricingStatus = domain.PricingStatusVerified
+		m.PricingProvenanceSource = "official-vendor-pricing-2025"
+		m.PricingEffectiveDate = "2025-05-01"
 		r.globalModels[m.ID] = m
 		r.pricingHistory[m.ID] = []*domain.ModelPricingHistory{
 			{
 				ID:                         uuid.NewString(),
 				GlobalModelID:              m.ID,
 				PricingVersion:             m.PricingVersion,
+				PricingStatus:              m.PricingStatus,
+				PricingProvenanceSource:    m.PricingProvenanceSource,
 				InputCostMicrosPer1M:       m.InputCostMicrosPer1M,
 				OutputCostMicrosPer1M:      m.OutputCostMicrosPer1M,
 				CachedInputCostMicrosPer1M: m.CachedInputCostMicrosPer1M,
@@ -208,6 +213,7 @@ func (r *MemoryRepository) UpsertGlobalModel(ctx context.Context, m *domain.Glob
 	}
 	m.UpdatedAt = now
 	cp := *m
+	cp.PricingStatus = domain.ResolvePricingStatus(m)
 	r.globalModels[cp.ID] = &cp
 	if len(r.pricingHistory[cp.ID]) == 0 {
 		r.pricingHistory[cp.ID] = []*domain.ModelPricingHistory{
@@ -752,6 +758,9 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 		}
 		if ev.CreatedAt.IsZero() {
 			ev.CreatedAt = time.Now().UTC()
+		}
+		if ev.PricingStatus == "" {
+			ev.PricingStatus = domain.PricingStatusUnrecorded
 		}
 		r.spendLogs = append(r.spendLogs, ev)
 

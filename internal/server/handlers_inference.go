@@ -158,10 +158,17 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				CacheHit:          true,
 				GuardrailRedacted: guardrailRedacted,
 			})
+			cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
+			if cachedGM == nil {
+				cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
+			}
+			cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
+
 			w.Header().Set("X-Gateway-Cache", "HIT")
 			w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
 			w.Header().Set("X-Gateway-Model", cachedResp.Model)
 			w.Header().Set("X-Gateway-Cost-Micros", "0")
+			w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(cachedResp)
 
@@ -176,6 +183,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				RequestedModel: chatReq.Model,
 				ResolvedModel:  cachedResp.Model,
 				Provider:       cachedResp.Provider,
+				PricingStatus:  cachePricingStatus,
 				Usage:          cachedResp.Usage,
 				CostMicros:     0,
 				StatusCode:     http.StatusOK,
@@ -205,14 +213,21 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		var usage *domain.TokenUsage
 		var meta *router.ExecutionMeta
 
+		onSelected := func(dep *domain.Deployment) {
+			if dep != nil && dep.GlobalModel != nil {
+				status := domain.ResolvePricingStatus(dep.GlobalModel)
+				w.Header().Set("X-Gateway-Pricing-Status", string(status))
+			}
+		}
+
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 			usage, meta, err = s.orchestrator.ExecuteStreamLoop(r.Context(), idCtx, &chatReq, func(chunk *domain.CanonicalStreamChunk) error {
 				return sseWriter.WriteChunk(chunk)
-			})
+			}, onSelected)
 		} else {
 			usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, &chatReq, func(chunk *domain.CanonicalStreamChunk) error {
 				return sseWriter.WriteChunk(chunk)
-			})
+			}, onSelected)
 		}
 		if err != nil {
 			statusCode := http.StatusBadGateway
@@ -319,6 +334,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			Provider:          provider,
 			DeploymentID:      depID,
 			PricingVersion:    pricingVer,
+			PricingStatus:     domain.ResolvePricingStatus(gm),
 			Usage:             usageVal,
 			CostMicros:        costMicros,
 			LatencyMs:         meta.LatencyMs,
@@ -431,10 +447,13 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		GuardrailRedacted: guardrailRedacted,
 	})
 
+	pricingStatus := domain.ResolvePricingStatus(gm)
+
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Model", resp.Model)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Version", strconv.Itoa(pricingVer))
+	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	if meta != nil {
 		w.Header().Set("X-Gateway-Latency-Ms", strconv.FormatInt(meta.LatencyMs, 10))
 		w.Header().Set("X-Gateway-Routing-Micros", strconv.FormatInt(meta.RoutingMicros, 10))
@@ -459,6 +478,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		Provider:          resp.Provider,
 		DeploymentID:      depID,
 		PricingVersion:    pricingVer,
+		PricingStatus:     pricingStatus,
 		Usage:             resp.Usage,
 		CostMicros:        costMicros,
 		LatencyMs:         meta.LatencyMs,
@@ -588,8 +608,11 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		CostMicros:       costMicros,
 	})
 
+	pricingStatus := domain.ResolvePricingStatus(gm)
+
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
+	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 
@@ -606,6 +629,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		Provider:       resp.Provider,
 		DeploymentID:   depID,
 		PricingVersion: pricingVer,
+		PricingStatus:  pricingStatus,
 		Usage:          resp.Usage,
 		CostMicros:     costMicros,
 		LatencyMs:      meta.LatencyMs,

@@ -51,6 +51,9 @@ type GlobalModel struct {
 	CachedInputCostMicrosPer1M int64                `json:"cached_input_cost_micros_per_1m"`
 	ReasoningCostMicrosPer1M   int64                `json:"reasoning_cost_micros_per_1m"`
 	PricingVersion             int                  `json:"pricing_version"`
+	PricingStatus              PricingStatus        `json:"pricing_status"`
+	PricingProvenanceSource    string               `json:"pricing_provenance_source,omitempty"`
+	PricingEffectiveDate       string               `json:"pricing_effective_date,omitempty"`
 	LifecycleStatus            ModelLifecycleStatus `json:"lifecycle_status"`
 	DeprecationDate            *time.Time           `json:"deprecation_date,omitempty"`
 	DiscoveredAt               time.Time            `json:"discovered_at"`
@@ -65,8 +68,10 @@ type ModelPricingHistory struct {
 	InputCostMicrosPer1M       int64     `json:"input_cost_micros_per_1m"`
 	OutputCostMicrosPer1M      int64     `json:"output_cost_micros_per_1m"`
 	CachedInputCostMicrosPer1M int64     `json:"cached_input_cost_micros_per_1m"`
-	ReasoningCostMicrosPer1M   int64     `json:"reasoning_cost_micros_per_1m"`
-	ChangedBy                  string    `json:"changed_by"`
+	ReasoningCostMicrosPer1M   int64         `json:"reasoning_cost_micros_per_1m"`
+	PricingStatus              PricingStatus `json:"pricing_status,omitempty"`
+	PricingProvenanceSource    string        `json:"pricing_provenance_source,omitempty"`
+	ChangedBy                  string        `json:"changed_by"`
 	EffectiveFrom              time.Time `json:"effective_from"`
 }
 
@@ -110,9 +115,11 @@ type ProviderCredential struct {
 	DecryptedAPIKey string            `json:"-"` // Populated in memory only when needed by adapter
 	KeyVersion      int               `json:"key_version"`
 	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
-	LastRotatedAt   *time.Time        `json:"last_rotated_at,omitempty"`
-	LastValidatedAt *time.Time        `json:"last_validated_at,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
+	LastRotatedAt       *time.Time        `json:"last_rotated_at,omitempty"`
+	LastValidatedAt     *time.Time        `json:"last_validated_at,omitempty"`
+	AzureDeploymentName string            `json:"azure_deployment_name,omitempty"`
+	APIVersion          string            `json:"api_version,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
 	IsActive        bool              `json:"is_active"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`

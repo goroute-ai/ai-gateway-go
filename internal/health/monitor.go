@@ -165,6 +165,10 @@ func (m *Monitor) ProbeAllNow(ctx context.Context) ([]DeploymentHealthReport, er
 				_, pErr := adp.ListModels(pCtx, &credCopy)
 				lat := time.Since(start).Milliseconds()
 				cancel()
+				if gwErr, ok := pErr.(*domain.GatewayError); ok && gwErr.Code == "list_models_unsupported" {
+					// Upstream does not support /models listing probe; treat as healthy
+					pErr = nil
+				}
 				outcome = credProbeOutcome{err: pErr, latencyMs: lat}
 			}
 			credResults[dep.CredentialID] = outcome

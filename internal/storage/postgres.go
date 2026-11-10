@@ -110,24 +110,30 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			id, provider, model_name, display_name, max_input_tokens, max_output_tokens,
 			supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings,
 			input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m,
-			reasoning_cost_micros_per_1m, pricing_version, lifecycle_status, discovered_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())
+			reasoning_cost_micros_per_1m, pricing_version, pricing_status, pricing_provenance_source,
+			pricing_effective_date, lifecycle_status, discovered_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			input_cost_micros_per_1m = EXCLUDED.input_cost_micros_per_1m,
 			output_cost_micros_per_1m = EXCLUDED.output_cost_micros_per_1m,
 			pricing_version = EXCLUDED.pricing_version,
+			pricing_status = EXCLUDED.pricing_status,
+			pricing_provenance_source = EXCLUDED.pricing_provenance_source,
+			pricing_effective_date = EXCLUDED.pricing_effective_date,
 			lifecycle_status = EXCLUDED.lifecycle_status,
 			updated_at = NOW()`
 	pv := m.PricingVersion
 	if pv <= 0 {
 		pv = 1
 	}
+	pricingStatus := string(domain.ResolvePricingStatus(m))
 	_, err := p.pool.Exec(ctx, q,
 		m.ID, string(m.Provider), m.ModelName, m.DisplayName, m.MaxInputTokens, m.MaxOutputTokens,
 		m.SupportsStreaming, m.SupportsTools, m.SupportsVision, m.SupportsReasoning, m.SupportsEmbeddings,
 		m.InputCostMicrosPer1M, m.OutputCostMicrosPer1M, m.CachedInputCostMicrosPer1M,
-		m.ReasoningCostMicrosPer1M, pv, string(m.LifecycleStatus),
+		m.ReasoningCostMicrosPer1M, pv, pricingStatus, m.PricingProvenanceSource,
+		m.PricingEffectiveDate, string(m.LifecycleStatus),
 	)
 	return err
 }
@@ -136,18 +142,20 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
 		return gm, nil
 	}
-	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_version, lifecycle_status FROM global_models WHERE id = $1`
+	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status FROM global_models WHERE id = $1`
 	var m domain.GlobalModel
-	var prov, status string
+	var prov, status, pricingStatus string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
 		&m.ID, &prov, &m.ModelName, &m.DisplayName, &m.MaxInputTokens, &m.MaxOutputTokens,
 		&m.SupportsStreaming, &m.SupportsTools, &m.SupportsVision, &m.SupportsReasoning, &m.SupportsEmbeddings,
 		&m.InputCostMicrosPer1M, &m.OutputCostMicrosPer1M, &m.CachedInputCostMicrosPer1M,
-		&m.ReasoningCostMicrosPer1M, &m.PricingVersion, &status,
+		&m.ReasoningCostMicrosPer1M, &m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
+		&m.PricingEffectiveDate, &status,
 	); err != nil {
 		return nil, fmt.Errorf("global model not found: %w", err)
 	}
 	m.Provider = domain.ProviderType(prov)
+	m.PricingStatus = domain.PricingStatus(pricingStatus)
 	m.LifecycleStatus = domain.ModelLifecycleStatus(status)
 	_ = p.mem.UpsertGlobalModel(ctx, &m)
 	return &m, nil
@@ -782,8 +790,8 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		INSERT INTO spend_logs (
 			id, request_id, trace_id, org_id, endpoint, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
-			cost_micros, pricing_version, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`
+			cost_micros, pricing_version, pricing_status, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -794,6 +802,10 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		if pv <= 0 {
 			pv = 1
 		}
+		pricingStatus := string(ev.PricingStatus)
+		if pricingStatus == "" {
+			pricingStatus = string(domain.PricingStatusUnrecorded)
+		}
 		orgID := ev.OrgID
 		if _, err := uuid.Parse(orgID); err != nil {
 			orgID = "00000000-0000-0000-0000-000000000000"
@@ -801,7 +813,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		batch.Queue(q,
 			id, ev.RequestID, ev.TraceID, orgID, ev.Endpoint, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
-			ev.CostMicros, pv, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
+			ev.CostMicros, pv, pricingStatus, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
 		)
 	}
 	br := p.pool.SendBatch(ctx, batch)

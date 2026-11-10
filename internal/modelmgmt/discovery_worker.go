@@ -133,6 +133,13 @@ func (w *DiscoveryWorker) SyncNow(ctx context.Context) (*SyncReport, error) {
 
 		discovered, err := adp.ListModels(ctx, &credCopy)
 		if err != nil {
+			if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.Code == "list_models_unsupported" {
+				logger.InfoContext(ctx, "Provider does not support /models discovery probe; skipping automated discovery",
+					slog.String("component", "model_discovery"),
+					slog.String("provider", string(cred.Provider)),
+				)
+				continue
+			}
 			report.Errors = append(report.Errors, err.Error())
 			logger.WarnContext(ctx, "Provider model discovery failed",
 				slog.String("component", "model_discovery"),

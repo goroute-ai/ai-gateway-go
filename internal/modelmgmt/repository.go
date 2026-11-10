@@ -26,6 +26,7 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		MaxOutputTokens:   16384,
 		SupportsStreaming: true,
 		SupportsTools:     true,
+		PricingStatus:     domain.PricingStatusUnknown,
 		LifecycleStatus:   status,
 		DiscoveredAt:      now,
 		UpdatedAt:         now,

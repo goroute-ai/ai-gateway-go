@@ -60,15 +60,24 @@ func ParseRetryAfter(h http.Header) int {
 }
 
 // Registry manages registered ProviderAdapters by ProviderType.
+type DynamicAdapterResolver func(p domain.ProviderType) (ProviderAdapter, bool)
+
 type Registry struct {
-	mu       sync.RWMutex
-	adapters map[domain.ProviderType]ProviderAdapter
+	mu              sync.RWMutex
+	adapters        map[domain.ProviderType]ProviderAdapter
+	dynamicResolver DynamicAdapterResolver
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
 		adapters: make(map[domain.ProviderType]ProviderAdapter),
 	}
+}
+
+func (r *Registry) SetDynamicResolver(resolver DynamicAdapterResolver) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dynamicResolver = resolver
 }
 
 func (r *Registry) Register(a ProviderAdapter) {
@@ -79,12 +88,18 @@ func (r *Registry) Register(a ProviderAdapter) {
 
 func (r *Registry) Get(p domain.ProviderType) (ProviderAdapter, error) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	a, ok := r.adapters[p]
-	if !ok {
-		return nil, fmt.Errorf("no provider adapter registered for %q", p)
+	resolver := r.dynamicResolver
+	r.mu.RUnlock()
+	if ok {
+		return a, nil
 	}
-	return a, nil
+	if resolver != nil {
+		if dyn, found := resolver(p); found && dyn != nil {
+			return dyn, nil
+		}
+	}
+	return nil, fmt.Errorf("no provider adapter registered for %q", p)
 }
 
 func (r *Registry) All() []ProviderAdapter {
