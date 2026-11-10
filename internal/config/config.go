@@ -555,39 +555,110 @@ func ResolveEnvValue(val string) string {
 	return v
 }
 
-// ParseProviderModel parses a model string (e.g. "gemini/gemini-2.5-flash"
-// or "gemini-2.5-flash") into (ProviderType, bareModelName, canonicalGlobalModelID).
+// NormalizeProvider normalizes any vendor alias or provider identifier string into GoRoute's canonical ProviderType.
+func NormalizeProvider(raw string) domain.ProviderType {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case lower == "gemini" || lower == "google" || lower == "google_ai_studio":
+		return domain.ProviderGemini
+	case lower == "vertex_ai" || lower == "vertex" || strings.HasPrefix(lower, "vertex_ai-") || strings.HasPrefix(lower, "vertex-"):
+		return domain.ProviderVertex
+	case lower == "anthropic" || lower == "claude":
+		return domain.ProviderAnthropic
+	case lower == "openai" || lower == "chatgpt" || lower == "text-completion-openai":
+		return domain.ProviderOpenAI
+	case lower == "azure" || lower == "azure_ai" || lower == "azure_text" || lower == "azure_openai":
+		return domain.ProviderAzure
+	case lower == "bedrock" || lower == "bedrock_converse" || lower == "bedrock_mantle" || lower == "amazon_nova" || lower == "amazon-nova":
+		return domain.ProviderBedrock
+	case lower == "cohere" || lower == "cohere_chat":
+		return domain.ProviderCohere
+	case lower == "mistral" || lower == "mistralai" || lower == "codestral" || lower == "text-completion-codestral":
+		return domain.ProviderMistral
+	case lower == "ollama" || lower == "ollama_chat":
+		return domain.ProviderOllama
+	case lower == "together" || lower == "together_ai":
+		return domain.ProviderTogether
+	case lower == "fireworks" || lower == "fireworks_ai" || strings.HasPrefix(lower, "fireworks_ai-"):
+		return domain.ProviderFireworks
+	case lower == "groq":
+		return domain.ProviderGroq
+	case lower == "deepseek":
+		return domain.ProviderDeepSeek
+	case lower == "cerebras":
+		return domain.ProviderCerebras
+	case lower == "sambanova":
+		return domain.ProviderSambaNova
+	case lower == "xai":
+		return domain.ProviderXAI
+	case lower == "perplexity":
+		return domain.ProviderPerplexity
+	case lower == "anyscale":
+		return domain.ProviderAnyscale
+	case lower == "deepinfra":
+		return domain.ProviderDeepInfra
+	case lower == "novita":
+		return domain.ProviderNovita
+	case lower == "nebius":
+		return domain.ProviderNebius
+	case lower == "hyperbolic":
+		return domain.ProviderHyperbolic
+	case lower == "lambda" || lower == "lambda_ai":
+		return domain.ProviderLambda
+	case lower == "friendli" || lower == "friendliai":
+		return domain.ProviderFriendli
+	case lower == "openrouter":
+		return domain.ProviderOpenRouter
+	case lower == "vllm":
+		return domain.ProviderVLLM
+	case lower == "cloudflare" || lower == "clf_ai_gateway":
+		return domain.ProviderCloudflare
+	case lower == "databricks":
+		return domain.ProviderDatabricks
+	case lower == "snowflake":
+		return domain.ProviderSnowflake
+	case lower == "dashscope" || lower == "qwen_ai_platform" || lower == "qwencloud":
+		return domain.ProviderDashScope
+	case lower == "volcengine":
+		return domain.ProviderVolcengine
+	case lower == "bigmodel" || lower == "zhipu":
+		return domain.ProviderBigModel
+	case lower == "moonshot":
+		return domain.ProviderMoonshot
+	case lower == "minimax":
+		return domain.ProviderMiniMax
+	case lower == "siliconflow":
+		return domain.ProviderSiliconFlow
+	case lower == "voyage":
+		return domain.ProviderVoyage
+	case lower == "jina" || lower == "jina_ai":
+		return domain.ProviderJina
+	case lower == "replicate":
+		return domain.ProviderReplicate
+	case lower == "ai21":
+		return domain.ProviderAI21
+	case lower == "baseten":
+		return domain.ProviderBaseten
+	case lower == "nvidia" || lower == "nvidia_nim":
+		return domain.ProviderNvidia
+	case lower == "scaleway":
+		return domain.ProviderScaleway
+	default:
+		return domain.ProviderType(lower)
+	}
+}
+
+// ParseProviderModel parses a model string (e.g. "gemini/gemini-2.5-flash",
+// "vertex_ai/gemini-1.5-pro", or "gemini-2.5-flash") into (ProviderType, bareModelName, canonicalGlobalModelID).
 func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) {
 	spec := strings.TrimSpace(modelSpec)
 	if spec == "" {
 		return "", "", ""
 	}
 	if idx := strings.IndexByte(spec, '/'); idx > 0 {
-		rawProv := strings.ToLower(strings.TrimSpace(spec[:idx]))
+		rawProv := strings.TrimSpace(spec[:idx])
 		bareModel := strings.TrimSpace(spec[idx+1:])
-		var prov domain.ProviderType
-		switch rawProv {
-		case "gemini", "google", "vertex_ai", "google_ai_studio":
-			prov = domain.ProviderGemini
-		case "anthropic", "claude":
-			prov = domain.ProviderAnthropic
-		case "openai":
-			prov = domain.ProviderOpenAI
-		case "azure", "azure_openai":
-			prov = domain.ProviderType("azure")
-		case "groq":
-			prov = domain.ProviderType("groq")
-		case "deepseek":
-			prov = domain.ProviderType("deepseek")
-		case "together", "together_ai":
-			prov = domain.ProviderType("together")
-		case "mistral", "mistralai":
-			prov = domain.ProviderMistral
-		case "ollama", "ollama_chat":
-			prov = domain.ProviderOllama
-		default:
-			prov = domain.ProviderType(rawProv)
-		}
+		prov := NormalizeProvider(rawProv)
 		return prov, bareModel, fmt.Sprintf("%s/%s", prov, bareModel)
 	}
 
@@ -601,6 +672,8 @@ func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) 
 		return domain.ProviderOpenAI, spec, fmt.Sprintf("%s/%s", domain.ProviderOpenAI, spec)
 	case strings.HasPrefix(lower, "mistral") || strings.HasPrefix(lower, "codestral") || strings.HasPrefix(lower, "pixtral"):
 		return domain.ProviderMistral, spec, fmt.Sprintf("%s/%s", domain.ProviderMistral, spec)
+	case strings.HasPrefix(lower, "command"):
+		return domain.ProviderCohere, spec, fmt.Sprintf("%s/%s", domain.ProviderCohere, spec)
 	case strings.HasPrefix(lower, "llama") || strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "deepseek"):
 		return domain.ProviderOllama, spec, fmt.Sprintf("%s/%s", domain.ProviderOllama, spec)
 	default:

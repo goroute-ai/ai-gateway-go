@@ -105,14 +105,18 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 	if err := p.mem.UpsertGlobalModel(ctx, m); err != nil {
 		return err
 	}
+	capsJSON, _ := json.Marshal(m.ResolveCapabilities())
+	if len(capsJSON) == 0 {
+		capsJSON = []byte("{}")
+	}
 	const q = `
 		INSERT INTO global_models (
 			id, provider, model_name, display_name, max_input_tokens, max_output_tokens,
 			supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings,
 			input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m,
 			reasoning_cost_micros_per_1m, pricing_version, pricing_status, pricing_provenance_source,
-			pricing_effective_date, lifecycle_status, discovered_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),NOW())
+			pricing_effective_date, lifecycle_status, capabilities, supports_inference, discovered_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			input_cost_micros_per_1m = EXCLUDED.input_cost_micros_per_1m,
@@ -122,6 +126,8 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			pricing_provenance_source = EXCLUDED.pricing_provenance_source,
 			pricing_effective_date = EXCLUDED.pricing_effective_date,
 			lifecycle_status = EXCLUDED.lifecycle_status,
+			capabilities = EXCLUDED.capabilities,
+			supports_inference = EXCLUDED.supports_inference,
 			updated_at = NOW()`
 	pv := m.PricingVersion
 	if pv <= 0 {
@@ -133,7 +139,7 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 		m.SupportsStreaming, m.SupportsTools, m.SupportsVision, m.SupportsReasoning, m.SupportsEmbeddings,
 		m.InputCostMicrosPer1M, m.OutputCostMicrosPer1M, m.CachedInputCostMicrosPer1M,
 		m.ReasoningCostMicrosPer1M, pv, pricingStatus, m.PricingProvenanceSource,
-		m.PricingEffectiveDate, string(m.LifecycleStatus),
+		m.PricingEffectiveDate, string(m.LifecycleStatus), capsJSON, m.SupportsInference,
 	)
 	return err
 }
@@ -142,21 +148,25 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
 		return gm, nil
 	}
-	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status FROM global_models WHERE id = $1`
+	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, COALESCE(capabilities, '{}'::jsonb), supports_inference FROM global_models WHERE id = $1`
 	var m domain.GlobalModel
 	var prov, status, pricingStatus string
+	var rawCaps []byte
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
 		&m.ID, &prov, &m.ModelName, &m.DisplayName, &m.MaxInputTokens, &m.MaxOutputTokens,
 		&m.SupportsStreaming, &m.SupportsTools, &m.SupportsVision, &m.SupportsReasoning, &m.SupportsEmbeddings,
 		&m.InputCostMicrosPer1M, &m.OutputCostMicrosPer1M, &m.CachedInputCostMicrosPer1M,
 		&m.ReasoningCostMicrosPer1M, &m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
-		&m.PricingEffectiveDate, &status,
+		&m.PricingEffectiveDate, &status, &rawCaps, &m.SupportsInference,
 	); err != nil {
 		return nil, fmt.Errorf("global model not found: %w", err)
 	}
 	m.Provider = domain.ProviderType(prov)
 	m.PricingStatus = domain.PricingStatus(pricingStatus)
 	m.LifecycleStatus = domain.ModelLifecycleStatus(status)
+	if len(rawCaps) > 0 {
+		_ = json.Unmarshal(rawCaps, &m.Capabilities)
+	}
 	_ = p.mem.UpsertGlobalModel(ctx, &m)
 	return &m, nil
 }
@@ -165,8 +175,8 @@ func (p *PostgresRepository) ListGlobalModels(ctx context.Context) ([]*domain.Gl
 	return p.mem.ListGlobalModels(ctx)
 }
 
-func (p *PostgresRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, changedBy string) (*domain.GlobalModel, error) {
-	gm, err := p.mem.UpdateModelPricing(ctx, modelID, inputMicros, outputMicros, cachedMicros, reasoningMicros, changedBy)
+func (p *PostgresRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error) {
+	gm, err := p.mem.UpdateModelPricing(ctx, modelID, inputMicros, outputMicros, cachedMicros, reasoningMicros, status, provenance, effectiveDate, changedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -177,18 +187,22 @@ func (p *PostgresRepository) UpdateModelPricing(ctx context.Context, modelID str
 			output_cost_micros_per_1m = $4,
 			cached_input_cost_micros_per_1m = $5,
 			reasoning_cost_micros_per_1m = $6,
+			pricing_status = $7,
+			pricing_provenance_source = $8,
+			pricing_effective_date = $9,
 			updated_at = NOW()
 		WHERE id = $1`,
 		gm.ID, gm.PricingVersion, gm.InputCostMicrosPer1M, gm.OutputCostMicrosPer1M, gm.CachedInputCostMicrosPer1M, gm.ReasoningCostMicrosPer1M,
+		string(gm.PricingStatus), gm.PricingProvenanceSource, gm.PricingEffectiveDate,
 	)
 	histID := uuid.NewString()
 	_, _ = p.pool.Exec(ctx, `
 		INSERT INTO model_pricing_history (
 			id, global_model_id, pricing_version, input_cost_micros_per_1m, output_cost_micros_per_1m,
-			cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, changed_by, effective_from
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
+			cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_status, pricing_provenance_source, changed_by, effective_from
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
 		histID, gm.ID, gm.PricingVersion, gm.InputCostMicrosPer1M, gm.OutputCostMicrosPer1M,
-		gm.CachedInputCostMicrosPer1M, gm.ReasoningCostMicrosPer1M, changedBy,
+		gm.CachedInputCostMicrosPer1M, gm.ReasoningCostMicrosPer1M, string(gm.PricingStatus), gm.PricingProvenanceSource, changedBy,
 	)
 	return gm, nil
 }

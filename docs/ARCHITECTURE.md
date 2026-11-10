@@ -1,9 +1,9 @@
 # Enterprise AI Gateway (Pure Go) — Complete High-Level & Low-Level Architecture Specification
 
 > **Document Status**: Production Reference Architecture (v1.0)  
-> **Target Runtime**: Go 1.22+ (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
-> **Supported Upstream Providers**: OpenAI, Anthropic Claude, Google Gemini, Mistral AI, and Ollama  
-> **Contract Architecture**: OpenAPI 3.1 / 3.0 Spec-Driven (`openai_api.yaml`, `anthropic_api.yaml`, `gemini_api_v1.1.0.yaml`, `mistral_api.yaml`, `ollama.openapi.yaml`) + Build-Time Code Generation
+> **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
+> **Provider Integrations**: Dedicated adapters and OpenAI-compatible dialect profiles under `internal/adapter/`; consult those packages for the current implementation set.  
+> **Contract Architecture**: OpenAPI contracts are maintained under `docs/openapi/`; `go run ./cmd/specgen` validates the checked-in contracts. A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -40,10 +40,10 @@ Modern production AI systems interact with multiple frontier and local LLM provi
 - **Security & Governance Gaps**: Distributing raw OpenAI or Anthropic master API keys across dozens of microservices makes rotation, revocation, and per-service model access control impossible.
 - **Uncontrolled AI Spend**: Lack of real-time token accounting, per-team/per-key budgets, and pre-request quota enforcement leads to runaway cloud bills.
 
-High-throughput enterprise environments demand **sub-millisecond gateway overhead**, **predictable tail latency under thousands of concurrent streaming SSE connections**, **compile-time type safety**, and **single-binary deployment**.
+The design aims for low-overhead routing, resilient streaming, typed contracts, and single-binary deployment. Treat this document as architectural intent; use the current code and [codebase map](./CODEBASE_MAP.md) to confirm runtime behavior.
 
 This gateway implements the complete **Tier-1 Enterprise AI Gateway stack in pure Go**, combining:
-1. **OpenAPI Contract-First Engineering**: A unified OpenAI-compatible public OpenAPI 3.1 specification paired with official upstream OpenAPI specifications (`openai_api.yaml`, `anthropic_api.yaml`, `gemini_api_v1.1.0.yaml`, `mistral_api.yaml`, `ollama.openapi.yaml`) compiled at build time into strongly typed Go structs.
+1. **Contract-Guided Engineering**: A unified OpenAI-compatible public OpenAPI specification and provider/protocol contracts live under `docs/openapi/`. `cmd/specgen` validates the checked-in OpenAPI documents and verifies that generated A2A code exists; it does not generate OpenAPI Go types.
 2. **Sub-2ms Hot-Path Data Plane**: Zero synchronous PostgreSQL queries on the inference path using a 2-tier cache (L1 In-Memory + L2 Redis with Pub/Sub invalidation), single-roundtrip Redis Lua rate limiting, and asynchronous batched PostgreSQL `COPY`/`INSERT` spend logging.
 
 ---
@@ -141,12 +141,11 @@ flowchart TB
         Postgres[("PostgreSQL 16+\n- 4-Layer Model Catalogue & Policies\n- Multi-Tenant Orgs, Teams, Users, Keys\n- AES-256-GCM Encrypted Credentials\n- Partitioned Spend & Audit Logs")]
     end
 
-    subgraph Upstreams["Upstream LLM Providers"]
-        OpenAI["OpenAI API\n(api.openai.com)"]
-        Anthropic["Anthropic API\n(api.anthropic.com)"]
-        Gemini["Google Gemini API\n(generativelanguage.googleapis.com)"]
-        Mistral["Mistral AI API\n(api.mistral.ai)"]
-        Ollama["Ollama Self-Hosted\n(localhost:11434 / GPU Cluster)"]
+    subgraph Upstreams["Supported Upstream LLM Transports (4-Tier Provider Architecture)"]
+        Native["Dedicated Native Adapters\n- OpenAI & Azure OpenAI\n- Anthropic Claude (Messages API)\n- Google Gemini (AI Studio)\n- AWS Bedrock (Pure Go SigV4 + EventStream)\n- Google Cloud Vertex AI (OAuth2 JWT)\n- Cohere v2 (Chat & Embed v2)\n- Mistral AI & Ollama (Local/Self-Hosted)"]
+        CompatProfiles["Certified OpenAI-Compatible Profiles (30+ Engines)\n- Cerebras · SambaNova · xAI (Grok)\n- Fireworks AI · Together AI · Groq · DeepSeek\n- Perplexity · Cloudflare · Databricks · Snowflake\n- DashScope (Qwen) · Volcengine · BigModel · Moonshot\n- Voyage AI · Jina AI · Replicate · Nvidia NIM · Scaleway"]
+        CustomDialect["Custom Dialects & Self-Hosted\n- vLLM / TGI / Ollama / LocalAI\n- Custom base_url, headers, and query params"]
+        CatalogEngine["Embedded Model Catalogue Engine\n- 4,627 curated models\n- Tri-state capabilities & micro-dollar pricing\n- Sub-70ns in-memory lookup"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nAuthorization: Bearer sk-gw-..."| LB
@@ -167,7 +166,7 @@ flowchart TB
     SpendWorker ==>|"Batch Insert + Spend Update"| Postgres
     SpendWorker -.->|"INCRBY Spend"| Redis
 
-    AdapterLayer --> OpenAI & Anthropic & Gemini & Mistral & Ollama
+    AdapterLayer --> Native & CompatProfiles & CustomDialect
 ```
 
 ---
@@ -188,6 +187,7 @@ flowchart TB
      2. Team's `allowed_models` list (if restricted),
      3. Organization's **Layer 3 Model Policy** (`org_model_policies.is_enabled = true`),
      4. Organization's **Layer 2 Provider Subscription** (`org_provider_subscriptions.is_enabled = true`).
+   - **Fail-Closed Guarantee**: If repository queries fail due to database timeout or connection errors, GoRoute immediately fails closed with `HTTP 500 auth_repository_error`, preventing unauthorized model access during degraded states.
 4. **Pre-Flight Token Estimation & Atomic Rate-Limit / Budget Check (`internal/ratelimit`)**:
    - Computes fast prompt token estimate (`EstimateRequestTokens(req)`).
    - Executes `check_and_increment.lua` on Redis in a **single network round-trip**:
@@ -198,14 +198,14 @@ flowchart TB
    - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over `(OrgID, Model, Messages, Tools, Temperature, ResponseFormat)`.
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
 6. **Two-Stage Model Routing (`internal/router`)**:
-   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity.
-   - **Stage 2 (Deployment Load Balancer)**: Selects the optimal healthy `Deployment` within the `ModelGroup` (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`).
+   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-model catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
+   - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`).
 7. **Reliability Loop & Provider OpenAPI Translation (`internal/router/reliability.go` + `internal/adapter`)**:
    - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`).
-   - Transforms `CanonicalChatRequest` into the target provider's OpenAPI schema (`OpenAI`, `Anthropic`, `Gemini`, `Mistral`, or `Ollama`).
+   - Transforms `CanonicalChatRequest` into the target provider's OpenAPI or protocol schema (OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock Converse, GCP Vertex AI, Cohere v2, Mistral, Ollama, or one of 30+ certified OpenAI-compatible profiles).
    - Executes the HTTP request (or opens an SSE stream):
      - On transient upstream failure (`429`, `500`, `502`, `503`, `529`, or dial/headers timeout before the first streamed byte), records the failure in the sliding window counter, triggers a deployment cooldown if the threshold is reached, waits for full-jitter backoff, and **retries another deployment in the same group**.
-     - If all healthy deployments in the primary `ModelGroup` are exhausted, walks the configured **`fallback_group_ids` chain** (e.g., failing over seamlessly from `gpt-4.1` on OpenAI to `claude-sonnet-4` on Anthropic).
+     - If all healthy deployments in the primary `ModelGroup` are exhausted, walks the configured **`fallback_group_ids` chain** (e.g., failing over seamlessly across providers).
 
 #### Asynchronous Post-Processing Path (Steps 8–9)
 8. **Quota Reconciliation**:
@@ -267,7 +267,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
 | `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `/admin/v1/*` |
-| `docs/openapi/openai.openapi.yaml` | `3.1.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
+| `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
 | `docs/openapi/mistral.openapi.yaml` | `3.1.0` | **Mistral AI** | `chat_completion_v1_chat_completions_post`, `embeddings_v1_embeddings_post`, `list_models_v1_models_get` |

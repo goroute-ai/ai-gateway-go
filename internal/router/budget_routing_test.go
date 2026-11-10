@@ -58,10 +58,10 @@ func TestBudgetAwareRouting_FallbackChain(t *testing.T) {
 
 	// Create a verified model
 	verifiedModel := &domain.GlobalModel{
-		ID:                     "openai/verified-model",
-		Provider:               domain.ProviderOpenAI,
-		ModelName:              "verified-model",
-		PricingStatus:          domain.PricingStatusVerified,
+		ID:                      "openai/verified-model",
+		Provider:                domain.ProviderOpenAI,
+		ModelName:               "verified-model",
+		PricingStatus:           domain.PricingStatusVerified,
 		PricingProvenanceSource: "vendor-doc-2025",
 	}
 	_ = repo.UpsertGlobalModel(ctx, verifiedModel)

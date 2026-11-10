@@ -11,14 +11,18 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/bedrock"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/cohere"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/mistral"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openaicompat"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/health"
@@ -94,6 +98,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	reg.Register(gemini.NewAdapter(adapterClient))
 	reg.Register(mistral.NewAdapter(adapterClient))
 	reg.Register(ollama.NewAdapter(adapterClient))
+	reg.Register(bedrock.NewAdapter(adapterClient, netPolicy))
+	reg.Register(vertex.NewAdapter(adapterClient, netPolicy))
+	reg.Register(cohere.NewAdapter(adapterClient, netPolicy))
 
 	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
 	for _, custom := range cfg.Providers.CustomOpenAICompatible {
@@ -116,6 +123,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	guardrailsEng := guardrails.NewEngine(repo)
 
 	ir := router.NewIntelligentRouter(repo, cfg.Router)
+	ir.SetProviderCallable(func(provider domain.ProviderType) bool {
+		_, err := reg.Get(provider)
+		return err == nil
+	})
 	lb := router.NewLoadBalancer()
 	relMgr := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, redisFabric, cfg.Router)
 	relMgr.SetCollector(collector)
@@ -306,6 +317,7 @@ func (s *GatewayServer) setupRoutes() {
 		// Automated Model Discovery, Global Catalogue & Versioned Model Pricing
 		adm.Get("/catalogue", s.handleAdminListCatalogue)
 		adm.Post("/catalogue/sync", s.handleAdminTriggerDiscoverySync)
+		adm.Post("/catalogue/import", s.handleAdminImportCatalogue)
 		adm.Post("/catalogue/pricing", s.handleAdminUpdateModelPricing)
 		adm.Get("/catalogue/pricing", s.handleAdminListModelPricingHistory)
 

@@ -30,9 +30,33 @@ This guide explains how to configure, operate, and integrate every architectural
 Set any upstream provider API key in your environment and start the server or SDK. The gateway automatically seeds the default organization (`org_default`), encrypts your keys in the in-memory AES-256-GCM vault, and registers standard aliases (`"fast"`, `"reasoning"`, `"auto"`):
 
 ```bash
-export GEMINI_API_KEY="AIzaSy..."
-export ANTHROPIC_API_KEY="sk-ant-..."
+# Frontier LLM Providers
 export OPENAI_API_KEY="sk-proj-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export GEMINI_API_KEY="AIzaSy..."
+export MISTRAL_API_KEY="mis_..."
+
+# Enterprise Cloud Hyperscalers
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION="us-east-1"
+
+export GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"my-proj",...}'
+export GCP_PROJECT_ID="my-project"
+export GCP_REGION="us-central1"
+
+# Cohere v2
+export COHERE_API_KEY="co-..."
+
+# Certified High-Performance OpenAI-Compatible Engines
+export GROQ_API_KEY="gsk_..."
+export CEREBRAS_API_KEY="csk_..."
+export SAMBANOVA_API_KEY="..."
+export XAI_API_KEY="xai-..."
+export TOGETHER_API_KEY="..."
+export FIREWORKS_API_KEY="..."
+export DEEPSEEK_API_KEY="dsk_..."
+export PERPLEXITY_API_KEY="pplx-..."
 
 go run ./cmd/gateway -config configs/config.yaml
 ```
@@ -50,16 +74,29 @@ model_list:
     routing_strategy: "weighted-shuffle"
     fallbacks: ["reasoning"]
     model_params:
+      model: "groq/llama-3.3-70b-versatile"
+      api_key: "os.environ/GROQ_API_KEY"
+      weight: 80
+      rpm: 1000
+
+  - model_name: "fast"
+    model_params:
       model: "gemini/gemini-2.5-flash"
       api_key: "os.environ/GEMINI_API_KEY"
-      weight: 100
+      weight: 20
       rpm: 1000
 
   - model_name: "reasoning"
     routing_strategy: "latency-based"
     model_params:
-      model: "anthropic/claude-sonnet-4-20250514"
-      api_key: "os.environ/ANTHROPIC_API_KEY"
+      model: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
+      api_key: "os.environ/AWS_ACCESS_KEY_ID:os.environ/AWS_SECRET_ACCESS_KEY:us-east-1"
+      weight: 100
+
+  - model_name: "enterprise-vertex"
+    model_params:
+      model: "vertex/gemini-2.5-pro"
+      api_key: "os.environ/GCP_SERVICE_ACCOUNT_JSON"
       weight: 100
 ```
 
@@ -85,7 +122,7 @@ gw, err := gateway.New(
 ## Unified API & Wire Normalization
 
 ### What It Does
-Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) and translates requests/responses across **5 upstream wire protocols**:
+Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) and translates requests/responses through dedicated adapters and configurable OpenAI-compatible provider profiles. The current adapter implementations are under `internal/adapter/`; consult those packages and provider tests for exact capabilities.
 - **OpenAI** (`/v1/chat/completions`, `/v1/embeddings`)
 - **Anthropic Claude** (`/v1/messages` with stateful SSE event synthesis: `message_start` $\rightarrow$ `content_block_delta` $\rightarrow$ `message_delta` $\rightarrow$ `message_stop`)
 - **Google Gemini** (`/v1beta/models/{model}:generateContent` & `:streamGenerateContent?alt=sse`, plus Vertex AI Express Mode auto-detection)

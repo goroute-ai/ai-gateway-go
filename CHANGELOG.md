@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-11-10
+
+### Universal AI Provider Architecture, Embedded Model Catalogue & Production Hardening
+
+#### Universal Provider Expansion & Dedicated Cloud Transports
+- **AWS Bedrock Dedicated Adapter (`internal/adapter/bedrock`)**:
+  - Pure Go AWS Signature Version 4 signer with HMAC-SHA256, STS session tokens, and regional signing.
+  - Pure Go AWS EventStream binary protocol framed chunk decoder with CRC32 verification.
+  - Implements Bedrock Converse API (`/model/{model_id}/converse` and `/model/{model_id}/converse-stream`) and Titan Embeddings without external AWS SDK dependencies.
+- **Google Cloud Vertex AI Dedicated Adapter (`internal/adapter/vertex`)**:
+  - Pure Go Service Account OAuth2 engine generating RS256 signed JWT assertions and exchanging tokens with `oauth2.googleapis.com`.
+  - Background automatic token caching and renewal before expiration.
+  - Targets regional Vertex AI endpoints (`/publishers/google/models/{model}:generateContent` and `:streamGenerateContent?alt=sse`).
+- **Cohere v2 Dedicated Adapter (`internal/adapter/cohere`)**:
+  - Native translation for Cohere v2 Chat (`/v2/chat`) and Embed (`/v2/embed`) with tool calling, SSE deltas, and usage reporting.
+- **30+ Certified OpenAI-Compatible Provider Profiles (`internal/adapter/openaicompat`)**:
+  - Built-in profiles for Cerebras, SambaNova, xAI (Grok), Together AI, Fireworks AI, Groq, DeepSeek, Perplexity AI, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda Labs, Friendli AI, OpenRouter, vLLM, Cloudflare Workers AI, Databricks, Snowflake Cortex, DashScope (Qwen), Volcengine, BigModel (GLM), Moonshot (Kimi), MiniMax, SiliconFlow, Voyage AI, Jina AI, Replicate, AI21 Labs, Baseten, NVIDIA NIM, and Scaleway.
+  - Reasoning delta extraction across `reasoning_content`, `thought`, and `reasoning` fields.
+
+#### Embedded Model Catalogue Engine (`internal/catalog`)
+- **4,627 Curated Models**: Embedded gzip-compressed model catalogue (`catalog.json.gz`) with integer micro-USD pricing per 1M tokens ($10^{-6}\text{ USD}$) and tri-state capability flags (`supported`, `unsupported`, `unknown`).
+- **Sub-70ns Lookup**: Thread-safe in-memory index (`Lookup`, `LookupByProviderAndModel`, `Search`) benchmarked at **66.41 ns/op**.
+- **Inference Route Distinction**: Distinguishes callable inference providers (`IsCallableProvider`) from non-inference metadata entries.
+- **Catalogue Sync Admin API**: Added `POST /admin/v1/catalogue/sync` for syncing models into database persistence.
+
+#### Security Hardening & Fail-Closed Multi-Tenancy
+- **Fail-Closed Dispatch Authorization**: Hardened `RBACEngine.AuthorizeDeployment` (`internal/auth/rbac.go`) to fail closed on repository read errors, preventing unauthorized deployments from being dispatched during database degraded states.
+- **Fail-Closed Dynamic Routing**: Hardened `IntelligentRouter.resolveDynamicProviderModel` (`internal/router/intelligent_router.go`) to fail closed on subscription and policy read errors.
+- **Explicit Model Isolation**: Enforced that explicit model requests (`requested != "auto"` and not a smart alias) strictly return `HTTP 404 model_group_not_found` and never fall through to unrelated tenant model groups.
+- **Tri-State Validation Passthrough**: In `internal/validation/validator.go`, models with `CapabilityUnknown` are permitted to pass through to upstream, while only explicitly `CapabilityUnsupported` models return HTTP 400.
+
+---
+
 ## [1.0.0] - 2026-11-09
 
 ### Initial Major Production Release

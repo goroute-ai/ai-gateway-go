@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -210,4 +211,63 @@ func Test3StateRBACAllowlists(t *testing.T) {
 			t.Fatalf("expected AllowedA2AAgents to default to DenyAll ([]), got: %v", vk.AllowedA2AAgents)
 		}
 	})
+}
+
+type failingAuthRepo struct {
+	storage.Repository
+	failSubs bool
+	failPols bool
+}
+
+func (f *failingAuthRepo) GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
+	if f.failSubs {
+		return nil, fmt.Errorf("simulated db connection timeout")
+	}
+	return f.Repository.GetOrgProviderSubscriptions(ctx, orgID)
+}
+
+func (f *failingAuthRepo) GetOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error) {
+	if f.failPols {
+		return nil, fmt.Errorf("simulated db connection timeout")
+	}
+	return f.Repository.GetOrgModelPolicies(ctx, orgID)
+}
+
+func TestRBACEngine_AuthorizeDeploymentFailClosed(t *testing.T) {
+	ctx := context.Background()
+	memRepo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-auth-fc", Name: "Fail Closed Org", Slug: "fail-closed-auth", IsActive: true}
+	_ = memRepo.CreateOrganization(ctx, org)
+
+	dep := &domain.Deployment{
+		ID: "dep-1",
+		GlobalModel: &domain.GlobalModel{
+			ID:       "openai/gpt-4.1",
+			Provider: domain.ProviderOpenAI,
+		},
+	}
+
+	// 1. Subscription query fails with db error -> AuthorizeDeployment MUST FAIL CLOSED (return error)
+	failSubsRepo := &failingAuthRepo{Repository: memRepo, failSubs: true}
+	rbacSubs := auth.NewRBACEngine(failSubsRepo)
+	err := rbacSubs.AuthorizeDeployment(ctx, org.ID, dep)
+	if err == nil {
+		t.Fatal("expected AuthorizeDeployment to fail closed on subscription repo error, got nil")
+	}
+	gwErr, ok := err.(*domain.GatewayError)
+	if !ok || gwErr.StatusCode != http.StatusInternalServerError || gwErr.Code != "auth_repository_error" {
+		t.Fatalf("expected 500 auth_repository_error, got %+v", err)
+	}
+
+	// 2. Model policy query fails with db error -> AuthorizeDeployment MUST FAIL CLOSED (return error)
+	failPolsRepo := &failingAuthRepo{Repository: memRepo, failPols: true}
+	rbacPols := auth.NewRBACEngine(failPolsRepo)
+	err = rbacPols.AuthorizeDeployment(ctx, org.ID, dep)
+	if err == nil {
+		t.Fatal("expected AuthorizeDeployment to fail closed on model policy repo error, got nil")
+	}
+	gwErr, ok = err.(*domain.GatewayError)
+	if !ok || gwErr.StatusCode != http.StatusInternalServerError || gwErr.Code != "auth_repository_error" {
+		t.Fatalf("expected 500 auth_repository_error, got %+v", err)
+	}
 }

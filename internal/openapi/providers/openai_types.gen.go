@@ -35,6 +35,8 @@ type OpenAIMessage struct {
 	ToolCallID       string           `json:"tool_call_id,omitempty"`
 	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	Reasoning        string           `json:"reasoning,omitempty"`
+	Thought          string           `json:"thought,omitempty"`
 }
 
 type OpenAITool struct {
