@@ -9,7 +9,7 @@ Call major hosted and local model providers through a unified API. Dedicated pro
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.1.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.1.0)
+[![Release](https://img.shields.io/badge/Release-v1.2.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.2.0)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative)](./docs/openapi/README.md)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
@@ -17,21 +17,28 @@ Call major hosted and local model providers through a unified API. Dedicated pro
 
 ### What is GoRoute AI Gateway?
 
-GoRoute AI Gateway is an enterprise-grade AI data plane and embedded Go SDK engineered from scratch in 100% Pure Go (Zero CGO, zero Python runtime). It standardizes LLM interactions, provides an official hub for next-generation agentic protocols (**Model Context Protocol 2026-07-28** and **Linux Foundation A2A v1.0**), and enforces enterprise FinOps, security, and resiliency policies:
+**GoRoute AI Gateway** is a fast, lightweight control plane for your AI apps. It sits between your software and AI providers (like OpenAI, Anthropic, Google Gemini, and AWS Bedrock), giving you **one single, standardized API** to call any model.
 
-* **Universal AI Provider Breadth (4-Tier Architecture)**:
-  - **Dedicated Native Adapters**: OpenAI, Anthropic Claude (Messages API), Google Gemini, AWS Bedrock (Pure Go SigV4 + EventStream binary decoder), Google Cloud Vertex AI (Pure Go Service Account OAuth2 JWT), Cohere v2 (Chat & Embed), Mistral AI, and local Ollama.
-  - **Certified OpenAI-Compatible Profiles (30+ Engines)**: Cerebras, SambaNova, xAI (Grok), Together AI, Fireworks AI, Groq, DeepSeek, Perplexity AI, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda Labs, Friendli AI, OpenRouter, vLLM, Cloudflare Workers AI, Databricks, Snowflake Cortex, DashScope (Qwen), Volcengine, BigModel (GLM), Moonshot (Kimi), MiniMax, SiliconFlow, Voyage AI, Jina AI, Replicate, AI21 Labs, Baseten, NVIDIA NIM, and Scaleway.
-  - **Embedded Model Catalogue Engine**: 4,627 curated models with integer micro-USD pricing, tri-state capability tracking (`supported`, `unsupported`, `unknown`), and sub-70ns in-memory lookup.
-  - **Dynamic Multi-Tenant Provisioning**: Direct `provider/model` requests auto-provision deployments on the fly with strict fail-closed Layer 2 (Provider Subscriptions) and Layer 3 (Model Policies) authorization.
-* **Unified OpenAI Format**: Single endpoint (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) standardizing requests, streaming, and tool calls across all providers.
-* **Dual Deployment**: Run as a standalone self-hosted proxy microservice or embed directly in your Go applications via the `pkg/gateway` SDK.
-* **Model Context Protocol (MCP)**: Production gateway supporting MCP 2026-07-28 stateless Streamable HTTP, stateful 2025-11-25 compatibility, Stdio process sandboxing, Virtual Hub multi-server aggregation (`POST /mcp`), Plain REST Bridge (`POST /mcp-rest/tools/call`), Progressive Discovery (`GET /v1/goroute/mcp/registry`), AEAD-encrypted MRTR token resumption, and arbitrary decimal precision preservation (`big.Rat`).
-* **Agent-to-Agent Protocol (A2A)**: Linux Foundation A2A v1.0 service featuring RFC 8785 JCS canonicalization, JWS cryptographic card signatures (`GET /.well-known/agent-card.json`), dual HTTP+JSON and JSON-RPC 2.0 dispatch, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Compatibility Bridge (`model: "a2a/{slug}"`), Subscribe-First SSE task streaming, and transactional outbox.
-* **Server-Side Autonomous Tool Loop**: Multi-turn tool loop orchestrator (`internal/orchestrator`) executing model function calls server-side with anti-double-billing FinOps ledger accounting.
-* **Intelligent Routing & Resiliency**: Stage 1 zero-LLM heuristic prompt complexity classifier (`< 0.1ms`), Stage 2 lock-free EWMA load balancer with 5 strategies (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, `lowest-cost`), 3-state circuit breakers, and automatic cross-provider fallback chains.
-* **FinOps Micro-Dollar Ledger**: Integer micro-dollar cost engine ($1 = 1,000,000 µ$) with zero floating-point drift, async `pgx.Batch` statement writer, and multi-tier budget enforcers.
-* **Distributed Rate Limiting & Cache**: Atomic Redis Lua sliding-window rate limiting (RPM/TPM) and tenant-isolated deterministic SHA-256 exact-match cache.
+Instead of writing custom code for dozens of different providers, you connect to GoRoute once. GoRoute handles the routing, security, and cost tracking.
+
+---
+
+### Why Teams Use GoRoute
+
+| Feature | What It Does |
+| :--- | :--- |
+| **One Unified API** | Connect to 30+ AI providers using one standard format. |
+| **Smart Fallbacks** | Auto-switches models during outages so your apps stay online. |
+| **Cost Controls** | Micro-dollar tracking and hard team budgets stop surprise bills. |
+| **Enterprise Security** | Virtual Keys, rate limits, and network firewalls keep data safe. |
+| **Agent Protocols** | Built-in support for MCP tools and agent-to-agent networks. |
+
+---
+
+### Why GoRoute?
+
+- **100% Pure Go**: Sub-millisecond speed, ultra-low memory, and zero heavy Python runtime.
+- **Dual Mode**: Run as a standalone container or embed directly in Go with `pkg/gateway`.
 
 ---
 
@@ -41,7 +48,7 @@ GoRoute AI Gateway is an enterprise-grade AI data plane and embedded Go SDK engi
 Embed GoRoute directly inside your Go microservices with zero external proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.1.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.2.0
 ```
 
 ```go
@@ -107,7 +114,7 @@ Run instantly with local mock fallback:
 ai-gateway --config configs/config.yaml
 ```
 
-*Precompiled binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.1.0).*
+*Precompiled binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.2.0).*
 
 #### Path 3: Production Multi-Tenant Stack (Docker Compose)
 Spins up GoRoute, PostgreSQL 16 (for migrations and spend logs), Redis 7 (for sliding-window rate limiting), and Prometheus:
