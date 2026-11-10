@@ -1,0 +1,37 @@
+name: "Good First Issue"
+description: "Suggest or propose a bite-sized, newcomer-friendly task"
+title: "[Good First Issue]: "
+labels: ["good first issue", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for opening a beginner-friendly issue! Please describe the task clearly so a new contributor can pick it up with confidence.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Task Summary
+      description: What needs to be done?
+      placeholder: E.g., Add a new OpenAI-compatible provider profile for Groq / DeepSeek.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant Files & Pointers
+      description: Where in the codebase should the contributor start?
+      placeholder: E.g., Inspect internal/adapter/openaicompat/builtin_profiles.go and add tests in builtin_profiles_test.go.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How will the contributor know they are done?
+      value: |
+        - [ ] Code follows repository invariants (Pure Go, 64-bit micro-dollar FinOps, SSRF-guarded egress).
+        - [ ] Unit tests added and passing (`go test -race ./...`).
+        - [ ] OpenAPI spec validated (`go run ./cmd/specgen`).
+        - [ ] Code formatted (`gofmt -l .` and `go vet ./...`).
+    validations:
+      required: true
