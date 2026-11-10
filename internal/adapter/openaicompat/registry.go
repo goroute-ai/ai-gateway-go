@@ -24,8 +24,10 @@ type ProfileRegistry struct {
 }
 
 // NewProfileRegistry initializes the registry with the Launch Set certified profiles.
-func NewProfileRegistry(httpClient *http.Client) *ProfileRegistry {
-	policy, _ := network.NewPolicy(config.OutboundSSRFConfig{})
+func NewProfileRegistry(httpClient *http.Client, policy *network.Policy) *ProfileRegistry {
+	if policy == nil {
+		policy, _ = network.NewPolicy(config.OutboundSSRFConfig{})
+	}
 	if httpClient == nil {
 		httpClient = network.NewHTTPClient(policy)
 	}

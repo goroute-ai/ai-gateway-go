@@ -75,8 +75,9 @@ type clientConfig struct {
 	apiKey            string
 	modelList         []ModelEntry
 	httpClient        *http.Client
-	demoMocksFallback bool
-	customLogger      *slog.Logger
+	demoMocksFallback    bool
+	allowPrivateNetworks bool
+	customLogger         *slog.Logger
 	silentLogs        bool
 	logLevel          string
 }
@@ -132,6 +133,13 @@ func WithDemoMocksIfEnvMissing() Option {
 	}
 }
 
+// WithAllowPrivateNetworks permits connections to local or private network addresses (e.g. for mock testing or local Ollama).
+func WithAllowPrivateNetworks() Option {
+	return func(c *clientConfig) {
+		c.allowPrivateNetworks = true
+	}
+}
+
 // New initializes a Gateway Client.
 //   - If `WithRemote(url, key)` is provided, it connects to that remote gateway.
 //   - Otherwise, it starts an embedded in-memory Gateway auto-configured from `WithModelList(...)`,
@@ -163,9 +171,11 @@ func New(opts ...Option) (*Client, error) {
 
 	var mockServers []*httptest.Server
 	var mockGemURL, mockClaudeURL, mockOpenAIURL string
-	if cc.demoMocksFallback {
+	if cc.demoMocksFallback || cc.allowPrivateNetworks {
 		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	}
+	if cc.demoMocksFallback {
 		mockGem := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "streamGenerateContent") {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -193,6 +203,14 @@ func New(opts ...Option) (*Client, error) {
 		mockGemURL = mockGem.URL
 		mockClaudeURL = mockClaude.URL
 		mockOpenAIURL = mockOpenAI.URL
+	}
+
+	for _, e := range cc.modelList {
+		rawBase := config.ResolveEnvValue(e.APIBase)
+		if strings.HasPrefix(rawBase, "http://127.0.0.1") || strings.HasPrefix(rawBase, "http://localhost") || strings.HasPrefix(e.Model, "ollama/") || e.SimulateStatus >= 400 {
+			cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+			cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+		}
 	}
 
 	for _, e := range cc.modelList {

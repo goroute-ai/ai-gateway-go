@@ -51,6 +51,8 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	// 2. Initialize Gateway Server
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "sk-gw-master-admin-e2e-key"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	repo := storage.NewMemoryRepository()
 	gw, err := server.New(cfg, repo, nil, nil)
 	if err != nil {

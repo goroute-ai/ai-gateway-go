@@ -120,16 +120,20 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 		// 5. Encrypt & Store Layer 4 Provider Credential in AES-256-GCM Vault
 		apiBase := config.ResolveEnvValue(entry.ModelParams.APIBase)
 		apiKey := entry.ModelParams.APIKey
-		credCacheKey := fmt.Sprintf("%s|%s|%s", prov, apiBase, apiKey)
+		azureDeploy := strings.TrimSpace(entry.ModelParams.AzureDeploymentName)
+		apiVersion := strings.TrimSpace(entry.ModelParams.APIVersion)
+		credCacheKey := fmt.Sprintf("%s|%s|%s|%s|%s", prov, apiBase, apiKey, azureDeploy, apiVersion)
 		cred, ok := credCache[credCacheKey]
 		if !ok {
 			cred = &domain.ProviderCredential{
-				OrgID:    orgID,
-				Provider: prov,
-				Name:     fmt.Sprintf("%s-bootstrap-%d", prov, idx+1),
-				BaseURL:  apiBase,
-				Headers:  entry.ModelParams.Headers,
-				IsActive: true,
+				OrgID:               orgID,
+				Provider:            prov,
+				Name:                fmt.Sprintf("%s-bootstrap-%d", prov, idx+1),
+				BaseURL:             apiBase,
+				AzureDeploymentName: azureDeploy,
+				APIVersion:          apiVersion,
+				Headers:             entry.ModelParams.Headers,
+				IsActive:            true,
 			}
 			if apiKey != "" {
 				if err := s.vault.EncryptCredential(cred, apiKey); err != nil {

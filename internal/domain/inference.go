@@ -202,9 +202,10 @@ type SpendEvent struct {
 	ResolvedModel     string       `json:"resolved_model"`
 	Provider          ProviderType `json:"provider"`
 	DeploymentID      string        `json:"deployment_id"`
-	PricingVersion    int           `json:"pricing_version,omitempty"`
-	PricingStatus     PricingStatus `json:"pricing_status,omitempty"`
-	Usage             TokenUsage    `json:"usage"`
+	PricingVersion          int           `json:"pricing_version,omitempty"`
+	PricingStatus           PricingStatus `json:"pricing_status,omitempty"`
+	PricingProvenanceSource string        `json:"pricing_provenance_source,omitempty"`
+	Usage                   TokenUsage    `json:"usage"`
 	CostMicros        int64        `json:"cost_micros"`
 	LatencyMs         int64        `json:"latency_ms"`
 	TTFTMs            int64        `json:"ttft_ms"`

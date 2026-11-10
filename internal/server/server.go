@@ -83,18 +83,19 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
 	}
 
-	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(httpClient))
-	reg.Register(anthropic.NewAdapter(httpClient))
-	reg.Register(gemini.NewAdapter(httpClient))
-	reg.Register(mistral.NewAdapter(httpClient))
-	reg.Register(ollama.NewAdapter(httpClient))
-
-	profileClient := httpClient
-	if profileClient == nil {
-		profileClient = network.NewHTTPClient(netPolicy)
+	adapterClient := httpClient
+	if adapterClient == nil {
+		adapterClient = network.NewHTTPClient(netPolicy)
 	}
-	profileReg := openaicompat.NewProfileRegistry(profileClient)
+
+	reg := adapter.NewRegistry()
+	reg.Register(openai.NewAdapter(adapterClient))
+	reg.Register(anthropic.NewAdapter(adapterClient))
+	reg.Register(gemini.NewAdapter(adapterClient))
+	reg.Register(mistral.NewAdapter(adapterClient))
+	reg.Register(ollama.NewAdapter(adapterClient))
+
+	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
 	for _, custom := range cfg.Providers.CustomOpenAICompatible {
 		if err := profileReg.RegisterCustom(custom); err != nil {
 			return nil, fmt.Errorf("failed to register custom provider %q: %w", custom.ID, err)

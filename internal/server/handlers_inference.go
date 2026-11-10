@@ -163,6 +163,10 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
 			}
 			cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
+			var cacheProvenance string
+			if cachedGM != nil {
+				cacheProvenance = cachedGM.PricingProvenanceSource
+			}
 
 			w.Header().Set("X-Gateway-Cache", "HIT")
 			w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
@@ -173,22 +177,23 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			_ = json.NewEncoder(w).Encode(cachedResp)
 
 			s.spendWorker.Enqueue(domain.SpendEvent{
-				RequestID:      reqID,
-				TraceID:        traceID,
-				OrgID:          idCtx.OrgID,
-				TeamID:         idCtx.TeamID,
-				UserID:         idCtx.UserID,
-				VirtualKeyID:   idCtx.VirtualKeyID,
-				Endpoint:       "/v1/chat/completions",
-				RequestedModel: chatReq.Model,
-				ResolvedModel:  cachedResp.Model,
-				Provider:       cachedResp.Provider,
-				PricingStatus:  cachePricingStatus,
-				Usage:          cachedResp.Usage,
-				CostMicros:     0,
-				StatusCode:     http.StatusOK,
-				CacheHit:       true,
-				CreatedAt:      time.Now().UTC(),
+				RequestID:               reqID,
+				TraceID:                 traceID,
+				OrgID:                   idCtx.OrgID,
+				TeamID:                  idCtx.TeamID,
+				UserID:                  idCtx.UserID,
+				VirtualKeyID:            idCtx.VirtualKeyID,
+				Endpoint:                "/v1/chat/completions",
+				RequestedModel:          chatReq.Model,
+				ResolvedModel:           cachedResp.Model,
+				Provider:                cachedResp.Provider,
+				PricingStatus:           cachePricingStatus,
+				PricingProvenanceSource: cacheProvenance,
+				Usage:                   cachedResp.Usage,
+				CostMicros:              0,
+				StatusCode:              http.StatusOK,
+				CacheHit:                true,
+				CreatedAt:               time.Now().UTC(),
 			})
 			logger.InfoContext(r.Context(), "Inference request served from cache",
 				slog.String("component", "inference"),
@@ -321,29 +326,34 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			RetryCount:        meta.RetryCount,
 			GuardrailRedacted: guardrailRedacted,
 		})
+		var provenance string
+		if gm != nil {
+			provenance = gm.PricingProvenanceSource
+		}
 		s.spendWorker.Enqueue(domain.SpendEvent{
-			RequestID:         reqID,
-			TraceID:           traceID,
-			OrgID:             idCtx.OrgID,
-			TeamID:            idCtx.TeamID,
-			UserID:            idCtx.UserID,
-			VirtualKeyID:      idCtx.VirtualKeyID,
-			Endpoint:          "/v1/chat/completions",
-			RequestedModel:    chatReq.Model,
-			ResolvedModel:     resolvedModel,
-			Provider:          provider,
-			DeploymentID:      depID,
-			PricingVersion:    pricingVer,
-			PricingStatus:     domain.ResolvePricingStatus(gm),
-			Usage:             usageVal,
-			CostMicros:        costMicros,
-			LatencyMs:         meta.LatencyMs,
-			TTFTMs:            meta.TTFTMs,
-			StatusCode:        http.StatusOK,
-			IsStream:          true,
-			FallbackAttempted: meta.FallbackAttempted,
-			RetryCount:        meta.RetryCount,
-			CreatedAt:         time.Now().UTC(),
+			RequestID:               reqID,
+			TraceID:                 traceID,
+			OrgID:                   idCtx.OrgID,
+			TeamID:                  idCtx.TeamID,
+			UserID:                  idCtx.UserID,
+			VirtualKeyID:            idCtx.VirtualKeyID,
+			Endpoint:                "/v1/chat/completions",
+			RequestedModel:          chatReq.Model,
+			ResolvedModel:           resolvedModel,
+			Provider:                provider,
+			DeploymentID:            depID,
+			PricingVersion:          pricingVer,
+			PricingStatus:           domain.ResolvePricingStatus(gm),
+			PricingProvenanceSource: provenance,
+			Usage:                   usageVal,
+			CostMicros:              costMicros,
+			LatencyMs:               meta.LatencyMs,
+			TTFTMs:                  meta.TTFTMs,
+			StatusCode:              http.StatusOK,
+			IsStream:                true,
+			FallbackAttempted:       meta.FallbackAttempted,
+			RetryCount:              meta.RetryCount,
+			CreatedAt:               time.Now().UTC(),
 		})
 		logger.InfoContext(r.Context(), "Streaming inference completed",
 			slog.String("component", "inference"),
@@ -465,21 +475,27 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 
+	var provenance string
+	if gm != nil {
+		provenance = gm.PricingProvenanceSource
+	}
+
 	s.spendWorker.Enqueue(domain.SpendEvent{
-		RequestID:         reqID,
-		TraceID:           traceID,
-		OrgID:             idCtx.OrgID,
-		TeamID:            idCtx.TeamID,
-		UserID:            idCtx.UserID,
-		VirtualKeyID:      idCtx.VirtualKeyID,
-		Endpoint:          "/v1/chat/completions",
-		RequestedModel:    chatReq.Model,
-		ResolvedModel:     resp.Model,
-		Provider:          resp.Provider,
-		DeploymentID:      depID,
-		PricingVersion:    pricingVer,
-		PricingStatus:     pricingStatus,
-		Usage:             resp.Usage,
+		RequestID:               reqID,
+		TraceID:                 traceID,
+		OrgID:                   idCtx.OrgID,
+		TeamID:                  idCtx.TeamID,
+		UserID:                  idCtx.UserID,
+		VirtualKeyID:            idCtx.VirtualKeyID,
+		Endpoint:                "/v1/chat/completions",
+		RequestedModel:          chatReq.Model,
+		ResolvedModel:           resp.Model,
+		Provider:                resp.Provider,
+		DeploymentID:            depID,
+		PricingVersion:          pricingVer,
+		PricingStatus:           pricingStatus,
+		PricingProvenanceSource: provenance,
+		Usage:                   resp.Usage,
 		CostMicros:        costMicros,
 		LatencyMs:         meta.LatencyMs,
 		TTFTMs:            meta.TTFTMs,
@@ -616,21 +632,27 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 
+	var provenance string
+	if gm != nil {
+		provenance = gm.PricingProvenanceSource
+	}
+
 	s.spendWorker.Enqueue(domain.SpendEvent{
-		RequestID:      reqID,
-		TraceID:        traceID,
-		OrgID:          idCtx.OrgID,
-		TeamID:         idCtx.TeamID,
-		UserID:         idCtx.UserID,
-		VirtualKeyID:   idCtx.VirtualKeyID,
-		Endpoint:       "/v1/embeddings",
-		RequestedModel: raw.Model,
-		ResolvedModel:  resp.Model,
-		Provider:       resp.Provider,
-		DeploymentID:   depID,
-		PricingVersion: pricingVer,
-		PricingStatus:  pricingStatus,
-		Usage:          resp.Usage,
+		RequestID:               reqID,
+		TraceID:                 traceID,
+		OrgID:                   idCtx.OrgID,
+		TeamID:                  idCtx.TeamID,
+		UserID:                  idCtx.UserID,
+		VirtualKeyID:            idCtx.VirtualKeyID,
+		Endpoint:                "/v1/embeddings",
+		RequestedModel:          raw.Model,
+		ResolvedModel:           resp.Model,
+		Provider:                resp.Provider,
+		DeploymentID:            depID,
+		PricingVersion:          pricingVer,
+		PricingStatus:           pricingStatus,
+		PricingProvenanceSource: provenance,
+		Usage:                   resp.Usage,
 		CostMicros:     costMicros,
 		LatencyMs:      meta.LatencyMs,
 		StatusCode:     http.StatusOK,

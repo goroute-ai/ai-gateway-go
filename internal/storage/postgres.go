@@ -489,15 +489,18 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	}
 	const q = `
 		INSERT INTO provider_credentials (
-			id, org_id, provider, name, base_url, encrypted_api_key, data_nonce, encrypted_dek,
-			dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			id, org_id, provider, name, base_url, azure_deployment_name, api_version,
+			encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version,
+			expires_at, last_rotated_at, last_validated_at, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (org_id, name) DO UPDATE SET
 			encrypted_api_key = EXCLUDED.encrypted_api_key,
 			data_nonce = EXCLUDED.data_nonce,
 			encrypted_dek = EXCLUDED.encrypted_dek,
 			dek_nonce = EXCLUDED.dek_nonce,
 			base_url = EXCLUDED.base_url,
+			azure_deployment_name = EXCLUDED.azure_deployment_name,
+			api_version = EXCLUDED.api_version,
 			updated_at = NOW()
 		RETURNING id`
 	kv := cred.KeyVersion
@@ -506,6 +509,7 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	}
 	if err := p.pool.QueryRow(ctx, q,
 		cred.ID, cred.OrgID, string(cred.Provider), cred.Name, cred.BaseURL,
+		cred.AzureDeploymentName, cred.APIVersion,
 		cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
 		kv, cred.ExpiresAt, cred.LastRotatedAt, cred.LastValidatedAt, cred.IsActive,
 	).Scan(&cred.ID); err != nil {
@@ -518,11 +522,12 @@ func (p *PostgresRepository) GetProviderCredential(ctx context.Context, id strin
 	if cred, err := p.mem.GetProviderCredential(ctx, id); err == nil && cred != nil {
 		return cred, nil
 	}
-	const q = `SELECT id, org_id, provider, name, base_url, encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active FROM provider_credentials WHERE id = $1`
+	const q = `SELECT id, org_id, provider, name, base_url, COALESCE(azure_deployment_name, ''), COALESCE(api_version, ''), encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active FROM provider_credentials WHERE id = $1`
 	var c domain.ProviderCredential
 	var prov string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&c.ID, &c.OrgID, &prov, &c.Name, &c.BaseURL, &c.EncryptedAPIKey, &c.DataNonce, &c.EncryptedDEK, &c.DEKNonce,
+		&c.ID, &c.OrgID, &prov, &c.Name, &c.BaseURL, &c.AzureDeploymentName, &c.APIVersion,
+		&c.EncryptedAPIKey, &c.DataNonce, &c.EncryptedDEK, &c.DEKNonce,
 		&c.KeyVersion, &c.ExpiresAt, &c.LastRotatedAt, &c.LastValidatedAt, &c.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("credential not found: %w", err)
@@ -542,18 +547,21 @@ func (p *PostgresRepository) UpdateProviderCredential(ctx context.Context, cred 
 	}
 	_, _ = p.pool.Exec(ctx, `
 		UPDATE provider_credentials SET
-			encrypted_api_key = $2,
-			data_nonce = $3,
-			encrypted_dek = $4,
-			dek_nonce = $5,
-			key_version = $6,
-			expires_at = $7,
-			last_rotated_at = $8,
-			last_validated_at = $9,
-			is_active = $10,
+			azure_deployment_name = $2,
+			api_version = $3,
+			encrypted_api_key = $4,
+			data_nonce = $5,
+			encrypted_dek = $6,
+			dek_nonce = $7,
+			key_version = $8,
+			expires_at = $9,
+			last_rotated_at = $10,
+			last_validated_at = $11,
+			is_active = $12,
 			updated_at = NOW()
 		WHERE id = $1`,
-		cred.ID, cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
+		cred.ID, cred.AzureDeploymentName, cred.APIVersion,
+		cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
 		kv, cred.ExpiresAt, cred.LastRotatedAt, cred.LastValidatedAt, cred.IsActive,
 	)
 	return nil
@@ -790,8 +798,8 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		INSERT INTO spend_logs (
 			id, request_id, trace_id, org_id, endpoint, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
-			cost_micros, pricing_version, pricing_status, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
+			cost_micros, pricing_version, pricing_status, pricing_provenance_source, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -813,7 +821,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		batch.Queue(q,
 			id, ev.RequestID, ev.TraceID, orgID, ev.Endpoint, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
-			ev.CostMicros, pv, pricingStatus, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
+			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
 		)
 	}
 	br := p.pool.SendBatch(ctx, batch)

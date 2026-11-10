@@ -9,17 +9,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
-func BenchmarkDialectValidationAndAdaptation(b *testing.B) {
-	reg := openaicompat.NewProfileRegistry(nil)
-	profile, ok := reg.Get("groq")
-	if !ok {
-		b.Fatal("groq profile not found")
-	}
-	validator := openaicompat.NewRequestValidator(profile)
-
+func newSampleRequest() *domain.CanonicalChatRequest {
 	maxTokens := 2048
 	temp := 0.7
-	req := &domain.CanonicalChatRequest{
+	return &domain.CanonicalChatRequest{
 		Model: "llama-3.3-70b-versatile",
 		Messages: []domain.CanonicalMessage{
 			{Role: "system", Content: "You are a helpful programming assistant."},
@@ -43,6 +36,16 @@ func BenchmarkDialectValidationAndAdaptation(b *testing.B) {
 			},
 		},
 	}
+}
+
+func BenchmarkDialectConstraintValidation(b *testing.B) {
+	reg := openaicompat.NewProfileRegistry(nil, nil)
+	profile, ok := reg.Get("groq")
+	if !ok {
+		b.Fatal("groq profile not found")
+	}
+	validator := openaicompat.NewRequestValidator(profile)
+	req := newSampleRequest()
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -50,6 +53,51 @@ func BenchmarkDialectValidationAndAdaptation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		constraints, caps, err := validator.ValidateAndResolveConstraints(req, req.Model)
 		if err != nil || constraints == nil || caps == nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDialectPayloadAdaptation(b *testing.B) {
+	reg := openaicompat.NewProfileRegistry(nil, nil)
+	profile, ok := reg.Get("groq")
+	if !ok {
+		b.Fatal("groq profile not found")
+	}
+	adp := openaicompat.NewAdapter(profile, nil)
+	req := newSampleRequest()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		payload, err := adp.BuildUpstreamPayload(req, req.Model, false)
+		if err != nil || len(payload) == 0 {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkFullRequestAdaptation(b *testing.B) {
+	reg := openaicompat.NewProfileRegistry(nil, nil)
+	profile, ok := reg.Get("groq")
+	if !ok {
+		b.Fatal("groq profile not found")
+	}
+	validator := openaicompat.NewRequestValidator(profile)
+	adp := openaicompat.NewAdapter(profile, nil)
+	req := newSampleRequest()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		constraints, caps, err := validator.ValidateAndResolveConstraints(req, req.Model)
+		if err != nil || constraints == nil || caps == nil {
+			b.Fatal(err)
+		}
+		payload, err := adp.BuildUpstreamPayload(req, req.Model, false)
+		if err != nil || len(payload) == 0 {
 			b.Fatal(err)
 		}
 	}
@@ -110,7 +158,7 @@ func BenchmarkStreamingDeltaExtraction(b *testing.B) {
 }
 
 func BenchmarkDynamicProviderResolution(b *testing.B) {
-	profileReg := openaicompat.NewProfileRegistry(nil)
+	profileReg := openaicompat.NewProfileRegistry(nil, nil)
 	mainReg := adapter.NewRegistry()
 	mainReg.SetDynamicResolver(profileReg.DynamicResolver())
 

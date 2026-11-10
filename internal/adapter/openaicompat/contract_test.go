@@ -23,7 +23,7 @@ import (
 // 3. max_completion_tokens is mapped to max_tokens in upstream payload.
 func TestContract_Groq(t *testing.T) {
 	// 1. Distill model tool rejection
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 	groqAdp, err := reg.CreateAdapter("groq")
 	require.NoError(t, err)
 
@@ -97,7 +97,7 @@ func TestContract_Groq(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client())
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
 	srvGroqAdp, err := srvReg.CreateAdapter("groq")
 	require.NoError(t, err)
 
@@ -135,7 +135,7 @@ func TestContract_Groq(t *testing.T) {
 // 1. Reasoner/R1 models reject custom temperature / top_p.
 // 2. Streaming chunks with reasoning_content are extracted into CanonicalStreamDelta.ReasoningContent.
 func TestContract_DeepSeek(t *testing.T) {
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 	dsAdp, err := reg.CreateAdapter("deepseek")
 	require.NoError(t, err)
 
@@ -188,7 +188,7 @@ func TestContract_DeepSeek(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client())
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
 	srvDsAdp, err := srvReg.CreateAdapter("deepseek")
 	require.NoError(t, err)
 
@@ -236,7 +236,7 @@ func TestContract_DeepSeek(t *testing.T) {
 // 1. Temperature clamped/validated within [0.0, 1.0].
 // 2. Embeddings execution.
 func TestContract_TogetherAI(t *testing.T) {
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 	togetherAdp, err := reg.CreateAdapter("together")
 	require.NoError(t, err)
 
@@ -294,7 +294,7 @@ func TestContract_TogetherAI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client())
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
 	srvTogetherAdp, err := srvReg.CreateAdapter("together")
 	require.NoError(t, err)
 
@@ -327,7 +327,7 @@ func TestContract_TogetherAI(t *testing.T) {
 // 4. API Key auth uses api-key header; Bearer auth uses Authorization: Bearer.
 // 5. ListModels is unsupported on Azure inference keys and returns typed list_models_unsupported.
 func TestContract_AzureOpenAI(t *testing.T) {
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 	azureAdp, err := reg.CreateAdapter("azure")
 	require.NoError(t, err)
 
@@ -375,7 +375,7 @@ func TestContract_AzureOpenAI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client())
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
 	srvAzureAdp, err := srvReg.CreateAdapter("azure")
 	require.NoError(t, err)
 
@@ -433,7 +433,7 @@ func TestContract_AzureOpenAI(t *testing.T) {
 	}))
 	defer legacySrv.Close()
 
-	srvLegacyReg := openaicompat.NewProfileRegistry(legacySrv.Client())
+	srvLegacyReg := openaicompat.NewProfileRegistry(legacySrv.Client(), nil)
 	srvLegacyAzureAdp, err := srvLegacyReg.CreateAdapter("azure")
 	require.NoError(t, err)
 
@@ -496,7 +496,7 @@ func TestLiveUpstream_OptIn(t *testing.T) {
 		t.Skip("Skipping live Groq contract test: GOROUTE_LIVE_TEST_GROQ_API_KEY is not set")
 	}
 
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 	groqAdp, err := reg.CreateAdapter("groq")
 	require.NoError(t, err)
 

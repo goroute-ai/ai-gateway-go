@@ -418,6 +418,11 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 	return out, nil
 }
 
+// BuildUpstreamPayload marshals and adapts CanonicalChatRequest to the target upstream dialect.
+func (a *Adapter) BuildUpstreamPayload(req *domain.CanonicalChatRequest, model string, stream bool) ([]byte, error) {
+	return a.buildUpstreamPayload(req, model, stream)
+}
+
 // buildUpstreamPayload marshals and adapts CanonicalChatRequest to the target upstream dialect.
 func (a *Adapter) buildUpstreamPayload(req *domain.CanonicalChatRequest, model string, stream bool) ([]byte, error) {
 	payload := make(map[string]any)

@@ -219,26 +219,30 @@ func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Requ
 
 func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		OrgID     string              `json:"org_id"`
-		Provider  domain.ProviderType `json:"provider"`
-		Name      string              `json:"name"`
-		BaseURL   string              `json:"base_url"`
-		APIKey    string              `json:"api_key"`
-		Headers   map[string]string   `json:"headers,omitempty"`
-		ExpiresAt *time.Time          `json:"expires_at,omitempty"`
+		OrgID               string              `json:"org_id"`
+		Provider            domain.ProviderType `json:"provider"`
+		Name                string              `json:"name"`
+		BaseURL             string              `json:"base_url"`
+		AzureDeploymentName string              `json:"azure_deployment_name,omitempty"`
+		APIVersion          string              `json:"api_version,omitempty"`
+		APIKey              string              `json:"api_key"`
+		Headers             map[string]string   `json:"headers,omitempty"`
+		ExpiresAt           *time.Time          `json:"expires_at,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
 	cred := &domain.ProviderCredential{
-		OrgID:     req.OrgID,
-		Provider:  req.Provider,
-		Name:      req.Name,
-		BaseURL:   req.BaseURL,
-		Headers:   req.Headers,
-		IsActive:  true,
-		ExpiresAt: req.ExpiresAt,
+		OrgID:               req.OrgID,
+		Provider:            req.Provider,
+		Name:                req.Name,
+		BaseURL:             req.BaseURL,
+		AzureDeploymentName: req.AzureDeploymentName,
+		APIVersion:          req.APIVersion,
+		Headers:             req.Headers,
+		IsActive:            true,
+		ExpiresAt:           req.ExpiresAt,
 	}
 	if err := s.vault.EncryptCredential(cred, req.APIKey); err != nil {
 		domain.WriteHTTPError(w, err)

@@ -41,6 +41,8 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 	// 3. Configure Gateway purely via declarative `ModelList` (ZERO /admin/v1/* calls!)
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "sk-gw-master-declarative-key"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	cfg.ModelList = []config.ModelListEntry{
 		{
 			ModelName: "fast",

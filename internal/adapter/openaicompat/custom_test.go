@@ -17,7 +17,7 @@ import (
 
 // TestCustomProvider_SSRFEnforcement verifies that RegisterCustom rejects private/loopback/cloud-metadata URLs.
 func TestCustomProvider_SSRFEnforcement(t *testing.T) {
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 
 	blockedURLs := []string{
 		"http://127.0.0.1:8080/v1",
@@ -43,7 +43,7 @@ func TestCustomProvider_SSRFEnforcement(t *testing.T) {
 // TestCustomProvider_BoundedResolution verifies strict bounded resolution:
 // Unregistered, uncatalogued, or typo provider names return false/error, preventing arbitrary wildcard dispatch.
 func TestCustomProvider_BoundedResolution(t *testing.T) {
-	profileReg := openaicompat.NewProfileRegistry(nil)
+	profileReg := openaicompat.NewProfileRegistry(nil, nil)
 	mainReg := adapter.NewRegistry()
 	mainReg.SetDynamicResolver(profileReg.DynamicResolver())
 
@@ -111,7 +111,7 @@ func TestCustomProvider_EndToEndDispatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profileReg := openaicompat.NewProfileRegistry(srv.Client())
+	profileReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
 	mainReg := adapter.NewRegistry()
 	mainReg.SetDynamicResolver(profileReg.DynamicResolver())
 
@@ -169,7 +169,7 @@ func TestCustomProvider_EndToEndDispatch(t *testing.T) {
 
 // TestCustomProvider_InvalidID verifies invalid characters in custom provider ID are rejected.
 func TestCustomProvider_InvalidID(t *testing.T) {
-	reg := openaicompat.NewProfileRegistry(nil)
+	reg := openaicompat.NewProfileRegistry(nil, nil)
 
 	invalidIDs := []string{
 		"invalid id with spaces",
