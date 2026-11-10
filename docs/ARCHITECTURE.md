@@ -474,6 +474,9 @@ erDiagram
     ORGANIZATIONS ||--o{ ORG_MODEL_POLICIES : approves_models
     ORGANIZATIONS ||--o{ PROVIDER_CREDENTIALS : stores_keys
     ORGANIZATIONS ||--o{ MODEL_GROUPS : defines_routing
+    ORGANIZATIONS ||--o{ FILES : uploads
+    ORGANIZATIONS ||--o{ BATCHES : triggers
+    FILES ||--o{ BATCHES : inputs_and_outputs
     TEAMS ||--o{ USERS : members
     TEAMS ||--o{ VIRTUAL_KEYS : issues
     USERS ||--o{ VIRTUAL_KEYS : owns
@@ -485,7 +488,7 @@ erDiagram
 ```
 
 ### 4.2 PostgreSQL Table Definitions
-See `migrations/0001_init_schema.up.sql` for the full executable DDL, indexes, foreign keys, and partitioning definitions.
+See `migrations/0001_init_schema.up.sql` through `migrations/0007_add_modality_pricing_and_spend.up.sql` for the full executable DDL, indexes, foreign keys, and partitioning definitions.
 
 ### 4.3 Redis Keyspace & TTL Matrix
 

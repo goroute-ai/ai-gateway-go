@@ -32,7 +32,7 @@ docs/
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
    *Human-readable endpoint and protocol guide. Machine-readable contracts under `openapi/` and `specs/` are authoritative for schema shapes.*
-   - OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`).
+   - Unified Multi-Modal Data Plane (21 endpoints: `/v1/chat/completions`, `/v1/embeddings`, `/v1/models`, `/v1/rerank`, `/v1/moderations`, `/v1/completions`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/tokenize`, `/v1/audio/*`, `/v1/images/*`, `/v1/files/*`, `/v1/batches/*`, `/v1/responses`, `/v1/realtime`).
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
    - Admin Control Plane (`/admin/v1/*`) and Prometheus Metrics scraping (`/metrics`).

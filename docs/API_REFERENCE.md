@@ -190,6 +190,202 @@ GoRoute supports direct model execution using `provider/model` notation (e.g. `c
 - **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute dynamically imports it from the embedded 4,627-model catalogue with active lifecycle status and provisions the route on the fly.
 - **Fail-Closed Boundary**: If repository queries fail, or if the model is unconfigured/unauthorized, GoRoute fails closed and returns `HTTP 404 model_group_not_found` (explicit model requests never silently fall back to unrelated tenant model groups).
 
+### 2.5 Document Reranking
+`POST /v1/rerank`, `POST /rerank`, `POST /v2/rerank`
+
+Calculates semantic relevance scores between a search query and a list of text documents. Integrates with Cohere v2 API and rerank model deployments.
+
+#### Request Schema
+```json
+{
+  "model": "rerank-v3.5",
+  "query": "What is the capital of France?",
+  "documents": [
+    "Carson City is the capital city of Nevada.",
+    "The capital of France is Paris.",
+    "Tokyo is the capital of Japan."
+  ],
+  "top_n": 2,
+  "return_documents": true
+}
+```
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "id": "rerank-req_4ebe7b01",
+  "model": "rerank-v3.5",
+  "provider": "cohere",
+  "results": [
+    {
+      "index": 1,
+      "relevance_score": 0.9984,
+      "document": { "text": "The capital of France is Paris." }
+    },
+    {
+      "index": 0,
+      "relevance_score": 0.1245,
+      "document": { "text": "Carson City is the capital city of Nevada." }
+    }
+  ],
+  "usage": {
+    "search_units": 1,
+    "total_tokens": 42
+  }
+}
+```
+
+### 2.6 Content Moderation
+`POST /v1/moderations`, `POST /moderations`
+
+Evaluates text against safety categories using upstream moderation models (e.g. OpenAI `omni-moderation-latest`).
+
+#### Request Schema
+```json
+{
+  "model": "omni-moderation-latest",
+  "input": ["I love coding with pure Go"]
+}
+```
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "id": "modr-req_865bcf43",
+  "model": "omni-moderation-latest",
+  "results": [
+    {
+      "flagged": false,
+      "categories": {
+        "hate": false,
+        "violence": false,
+        "self-harm": false
+      },
+      "category_scores": {
+        "hate": 0.00001,
+        "violence": 0.00002,
+        "self-harm": 0.00001
+      }
+    }
+  ]
+}
+```
+
+### 2.7 Legacy Text Completions
+`POST /v1/completions`, `POST /completions`
+
+OpenAI-compatible legacy prompt completion endpoint supporting both single string prompts and string arrays.
+
+#### Request Schema
+```json
+{
+  "model": "gpt-3.5-turbo-instruct",
+  "prompt": "Write a haiku about Go concurrency",
+  "max_tokens": 64,
+  "temperature": 0.7
+}
+```
+
+### 2.8 Anthropic Messages & Token Counting
+`POST /v1/messages`, `POST /messages`, `POST /v1/messages/count_tokens`
+
+Native Anthropic Messages ingress bridge. Translates Anthropic messages and tool definitions to the canonical gateway schema, dispatches through intelligent routing, and returns native Anthropic response payloads.
+
+#### Request Schema
+```json
+{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {"role": "user", "content": "Explain goroutines in 2 sentences."}
+  ]
+}
+```
+
+### 2.9 Fast Heuristic Tokenization
+`POST /v1/tokenize`, `POST /tokenize`
+
+In-gateway token count estimator (~4 characters per token average with whitespace/punctuation weighting). Returns instant token counts without upstream network requests or costs.
+
+#### Request Schema
+```json
+{
+  "model": "gpt-4o",
+  "input": "GoRoute AI Gateway is ultra fast and reliable."
+}
+```
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "count": 9,
+  "model": "gpt-4o"
+}
+```
+
+### 2.10 Audio Transcription & Speech Synthesis
+- `POST /v1/audio/transcriptions` (STT Whisper)
+- `POST /v1/audio/translations` (STT Translation to English)
+- `POST /v1/audio/speech` (TTS Speech Synthesis)
+
+Supports multipart file uploads spooled to disk for zero-memory retryability, with micro-dollar FinOps billing based on integer duration seconds and character count.
+
+#### Transcription Request (`multipart/form-data`)
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-gw-..." \
+  -F "file=@speech.mp3" \
+  -F "model=whisper-1" \
+  -F "language=en"
+```
+
+#### Speech Request (`application/json`)
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Authorization: Bearer sk-gw-..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "GoRoute AI Gateway deployed in production.",
+    "voice": "alloy"
+  }' --output speech.mp3
+```
+
+### 2.11 Image Generation, Edits & Variations
+- `POST /v1/images/generations` (Image Generation)
+- `POST /v1/images/edits` (Image Inpainting with mask)
+- `POST /v1/images/variations` (Image Variations)
+
+Supports DALL-E 2/3 and Imagen models, returning `url` or `b64_json` payloads with exact micro-dollar pricing matrices keyed to quality (`standard` vs `hd`) and dimensions (`1024x1024`, `1024x1792`).
+
+### 2.12 Stateful Tenant File Assets
+- `POST /v1/files` (Upload file)
+- `GET /v1/files` (List tenant files)
+- `GET /v1/files/{file_id}` (Retrieve file metadata)
+- `GET /v1/files/{file_id}/content` (Download file stream)
+- `DELETE /v1/files/{file_id}` (Delete file)
+
+Files are stored securely on disk (`0700` directory mode, `0600` file mode) with automated streaming SHA-256 deduplication indexing and multi-tenant isolation.
+
+### 2.13 Asynchronous Batch Processing
+- `POST /v1/batches` (Create batch job)
+- `GET /v1/batches` (List batch jobs)
+- `GET /v1/batches/{batch_id}` (Inspect batch status & counts)
+- `POST /v1/batches/{batch_id}/cancel` (Cancel running batch)
+
+Processes JSONL line items asynchronously with per-item Virtual Key model-scope RBAC verification, reliable fallback execution, in-loop cancellation checks, and granular per-line FinOps spend tracking.
+
+### 2.14 OpenAI Responses API
+`POST /v1/responses`, `POST /responses`
+
+Stateless translation bridge conforming to the OpenAI Responses API schema (`input`, `instructions`), routing through the gateway's 7-stage reliability pipeline and returning standard Responses objects.
+
+### 2.15 OpenAI Realtime WebSocket Protocol
+`GET /v1/realtime`, `GET /realtime`, `GET /openai/v1/realtime`
+
+Full-duplex bidirectional WebSocket session handler supporting real-time speech and text streaming over WebSockets. Authenticates via standard Bearer headers, `Sec-WebSocket-Protocol` (`openai-insecure-api-key.<key>`), and query parameters (`?api_key=`), backed by `responseRecorder.Hijack()`.
+
 ---
 
 ## 3. Model Context Protocol (MCP) APIs
