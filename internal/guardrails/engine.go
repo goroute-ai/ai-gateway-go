@@ -49,13 +49,22 @@ func NewEngine(repo storage.Repository) *Engine {
 
 // EvaluateInput inspects and optionally mutates (redacts) or blocks a CanonicalChatRequest before upstream execution.
 func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
-	outcome := &CheckOutcome{}
 	if e == nil || e.repo == nil || orgID == "" || req == nil {
-		return outcome, nil
+		return &CheckOutcome{}, nil
 	}
 
 	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
 	if err != nil || pol == nil {
+		return &CheckOutcome{}, nil
+	}
+
+	return e.EvaluateInputWithPolicy(ctx, pol, req)
+}
+
+// EvaluateInputWithPolicy evaluates a CanonicalChatRequest directly against an explicit GuardrailPolicy.
+func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.GuardrailPolicy, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
+	outcome := &CheckOutcome{}
+	if pol == nil || req == nil {
 		return outcome, nil
 	}
 
@@ -155,7 +164,7 @@ func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.Ca
 	if len(outcome.Violations) > 0 {
 		logger.WarnContext(ctx, "Input guardrail violations detected",
 			slog.String("component", "guardrails"),
-			slog.String("org_id", orgID),
+			slog.String("org_id", pol.OrgID),
 			slog.String("applied_action", string(outcome.AppliedAction)),
 			slog.Bool("redacted", outcome.Redacted),
 			slog.Any("violations", outcome.Violations),

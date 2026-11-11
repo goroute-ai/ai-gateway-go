@@ -35,6 +35,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/goroute-ai/ai-gateway-go/internal/ui"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
 )
 
@@ -228,6 +229,9 @@ func (s *GatewayServer) setupRoutes() {
 	})
 	r.Method(http.MethodGet, "/metrics", s.collector.PrometheusHandler())
 
+	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
+	ui.RegisterRoutes(r)
+
 	// Data Plane (/v1/* — OpenAI-Compatible Unified Inference API)
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
@@ -368,14 +372,18 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Post("/organizations", s.handleAdminCreateOrg)
 		adm.Get("/organizations", s.handleAdminListOrgs)
 		adm.Post("/organizations/{orgID}/subscriptions", s.handleAdminSetOrgSubscription)
+		adm.Get("/organizations/{orgID}/subscriptions", s.handleAdminGetOrgSubscriptions)
 		adm.Post("/organizations/{orgID}/models", s.handleAdminSetOrgModelPolicy)
+		adm.Get("/organizations/{orgID}/models", s.handleAdminGetOrgModelPolicies)
 		adm.Post("/organizations/{orgID}/guardrails", s.handleAdminSetGuardrailPolicy)
 		adm.Get("/organizations/{orgID}/guardrails", s.handleAdminGetGuardrailPolicy)
+		adm.Post("/organizations/{orgID}/guardrails/simulate", s.handleAdminSimulateGuardrails)
 
 		// Teams & Users
 		adm.Post("/teams", s.handleAdminCreateTeam)
 		adm.Get("/teams", s.handleAdminListTeams)
 		adm.Post("/users", s.handleAdminCreateUser)
+		adm.Get("/users", s.handleAdminListUsers)
 
 		// Virtual API Keys
 		adm.Post("/keys", s.handleAdminIssueKey)
@@ -386,6 +394,7 @@ func (s *GatewayServer) setupRoutes() {
 		// Provider Credentials Vault & Lifecycle (Rotation & Live Validation)
 		adm.Post("/credentials", s.handleAdminCreateCredential)
 		adm.Get("/credentials", s.handleAdminListCredentials)
+		adm.Post("/credentials/validate", s.handleAdminPreflightValidateCredential)
 		adm.Post("/credentials/{credID}/rotate", s.handleAdminRotateCredential)
 		adm.Post("/credentials/{credID}/validate", s.handleAdminValidateCredential)
 
@@ -393,6 +402,7 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Post("/model-groups", s.handleAdminCreateModelGroup)
 		adm.Get("/model-groups", s.handleAdminListModelGroups)
 		adm.Post("/deployments", s.handleAdminCreateDeployment)
+		adm.Get("/deployments", s.handleAdminListDeployments)
 
 		// Automated Model Discovery, Global Catalogue & Versioned Model Pricing
 		adm.Get("/catalogue", s.handleAdminListCatalogue)

@@ -22,4 +22,17 @@ gemini_api_*.yaml
 *.log
 *.tmp
 .DS_Store
-dist/
+# Frontend dependencies & build artifacts
+node_modules/
+web/node_modules/
+web/dist/
+
+# Build distribution output (exempt internal/ui/dist embedded by Go)
+/dist/
+!internal/ui/dist/
+!internal/ui/dist/**
+
+# Claude Code local memory & private overrides
+CLAUDE.local.md
+.claude/local/
+.claude/memory/

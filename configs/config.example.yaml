@@ -19,12 +19,13 @@ server:
 logging:
   level: "info"              # "debug", "info", "warn", "error"
   format: "json"             # "json" for structured production logging, "text" for local dev
-  add_source: false
+  add_source: false          # Attach source file and line number to log entries
 
 storage:
   mode: "postgres"           # "postgres" (recommended for production) or "memory"
   postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"
   redis_addr: "redis-host:6379"
+  redis_pass: ""             # Optional Redis authentication password (or os.environ/REDIS_PASSWORD)
   redis_db: 0
 
 auth:
@@ -88,6 +89,7 @@ security:
         - "fd00:ec2::254"         # AWS IPv6 metadata
       dial_timeout: 10s
       max_redirects: 3
+      egress_proxy_url: ""        # Optional corporate HTTP/HTTPS egress proxy URL
     inbound_caller:
       expose_on_public_internet: false
       allowed_client_cidrs: []
@@ -98,8 +100,10 @@ security:
 mcp:
   enabled: true
   allow_stdio_servers: false       # Fail-closed: stdio subprocesses disabled
+  allowed_stdio_binaries: []       # Allowlist of canonical binary paths when stdio is enabled
   enable_session_compat_2025: true # Enable 2025-11-25 stateful compatibility adapter
   session_ttl_2025: 15m
+  cache_key_secret: ""             # Optional HMAC secret for delimiter-collision-proof cache keys
   max_payload_bytes: 10485760      # 10 MB payload limit
   default_timeout: 30s
   subscriptions_listen_active: true
@@ -122,6 +126,22 @@ a2a:
     - "ES256"
     - "RS256"
     - "EdDSA"
+  trusted_card_jwks: {}            # Upstream agent slug -> JWKS URL mapping
+
+# ------------------------------------------------------------------------------
+# Certified Custom OpenAI-Compatible Upstream Providers
+# ------------------------------------------------------------------------------
+providers:
+  custom_openai_compatible:
+    - id: "custom-vllm"
+      display_name: "Self-Hosted vLLM In-House Cluster"
+      base_url: "http://vllm.internal.corp:8000/v1"
+      supports_streaming: "true"
+      supports_tools: "true"
+      supports_structured_outputs: "true"
+      supports_list_models: true
+      default_headers:
+        X-Internal-Gateway: "goroute"
 
 # ------------------------------------------------------------------------------
 # Declarative Model List & Fallback Topologies
@@ -129,11 +149,13 @@ a2a:
 model_list:
   - model_name: fast
     routing_strategy: weighted-shuffle
+    fallbacks: ["fast-backup"]
     model_params:
       model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
       weight: 100
-      fallbacks: ["fast-backup"]
+      rpm: 1000
+      tpm: 1000000
 
   - model_name: fast-backup
     model_params:
@@ -143,14 +165,24 @@ model_list:
 
   - model_name: reasoning
     routing_strategy: least-busy
+    fallbacks: ["reasoning-backup"]
     model_params:
       model: anthropic/claude-sonnet-4-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
       weight: 100
-      fallbacks: ["reasoning-backup"]
 
   - model_name: reasoning-backup
     model_params:
       model: openai/gpt-4o
       api_key: os.environ/OPENAI_API_KEY
       weight: 100
+
+  - model_name: enterprise-azure
+    model_params:
+      model: azure/gpt-4o
+      api_key: os.environ/AZURE_OPENAI_API_KEY
+      api_base: "https://my-enterprise-resource.openai.azure.com"
+      azure_deployment_name: "gpt-4o-prod"
+      api_version: "2024-08-01-preview"
+      headers:
+        X-Custom-Enterprise-Tag: "production-finance"

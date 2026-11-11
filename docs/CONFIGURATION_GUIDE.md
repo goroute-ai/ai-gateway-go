@@ -12,6 +12,7 @@ This guide explains how to configure, operate, and integrate every architectural
 ## Table of Contents
 
 - [Quickstart: Configuration Modes](#quickstart-configuration-modes)
+- [Embedded Operator Web UI & Chat Playground](#embedded-operator-web-ui--chat-playground)
 - [Unified API & Wire Normalization](#unified-api--wire-normalization)
 - [Multi-Tenant Model & Provider Management](#multi-tenant-model--provider-management)
 - [Intelligent Routing & Load Balancing](#intelligent-routing--load-balancing)
@@ -104,7 +105,7 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.2.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.3.0
 ```
 
 ```go
@@ -116,6 +117,25 @@ gw, err := gateway.New(
     gateway.WithSilentLogs(), // Suppresses internal gateway logger
 )
 ```
+
+---
+
+## Embedded Operator Web UI & Chat Playground
+
+GoRoute AI Gateway embeds an operator web application directly into the binary. No Node.js runtime or separate static server is required.
+
+### Accessing the Web UI
+1. Launch GoRoute AI Gateway (`ai-gateway --config configs/config.yaml` or `docker compose up`).
+2. Navigate to **`http://localhost:8080/ui/`** in any modern web browser.
+3. When prompted, enter your Master Admin Key (configured via `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`; the development default is `sk-gw-master-admin-default-key-change-me`).
+
+### Operator Console Features
+- **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency graphs, and tool call inspection.
+- **Model Catalogue Explorer**: Search and filter 100+ AI models across 12+ providers, inspect micro-dollar pricing, context window boundaries, and supported modalities (text, vision, audio).
+- **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team ownership, monthly micro-dollar budget limits, and RPM/TPM rate limits.
+- **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, model, and provider.
+- **Interactive Guardrail Simulator**: Test regex PII redaction and secret scanning against arbitrary text without invoking upstream models or incurring token charges.
+- **Upstream Credentials Vault**: Add and rotate AES-256-GCM encrypted provider credentials with live preflight validation against provider endpoints.
 
 ---
 
@@ -398,9 +418,9 @@ r2, _ := gw.Chat(ctx, "fast", "What is 2 + 2?", gateway.WithTemperature(0.0)) //
 
 ### Module A: Security Guardrails Engine (`POST /admin/v1/organizations/{orgID}/guardrails`)
 Inspects prompts pre-flight and completions post-response with zero external ML dependencies:
-- **Prompt Injection & Jailbreak Detection**: Blocks or audits override patterns (`ignore all previous instructions`, `system prompt override`, `DAN mode`).
-- **PII & Secret Detection/Redaction**: Detects and masks SSNs, credit cards, emails, phone numbers (`[REDACTED_PII]`), and leaked API keys/BEARER tokens (`[REDACTED_SECRET]`).
-- **Configurable Actions**: `"block"` (returns `HTTP 400 guardrail_blocked`), `"redact"` (masks sensitive spans in-place before upstream call and sets `X-Gateway-Guardrail-Action: redact`), or `"audit"`.
+- **Prompt Injection & Jailbreak Detection**: Checks user prompts against a fixed set of known text signatures, such as `ignore previous instructions`, `disregard your system prompt`, and `you are now dan`.
+- **PII & Secret Detection/Redaction**: Detects email addresses, SSNs, payment card patterns, and selected API key patterns. Redaction uses type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, and `[REDACTED_SECRET]`.
+- **Configurable Actions**: `"block"`, `"redact"`, or `"audit"` for prompt-injection, PII, and secret checks. `audit` records a violation without blocking, and `redact` modifies matching content before upstream execution. Custom blocked keywords always block when matched.
 
 ```bash
 curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails \
@@ -430,30 +450,102 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 
 | YAML Path | Environment Variable Override | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `server.host` | — | `"0.0.0.0"` | HTTP bind address. |
-| `server.port` | `GATEWAY_PORT` | `8080` | HTTP listen port. |
-| `storage.mode` | `GATEWAY_STORAGE_MODE` | `"memory"` | `"memory"` or `"postgres"`. |
-| `storage.postgres_dsn` | `GATEWAY_POSTGRES_DSN` | `postgres://...` | PostgreSQL connection string (auto-switches mode to `"postgres"`). |
-| `storage.redis_addr` | `GATEWAY_REDIS_ADDR` | `"localhost:6379"` | Redis address for L2 auth cache, Lua rate limiting, and response cache. |
-| `auth.master_admin_key` | `GATEWAY_MASTER_ADMIN_KEY` | `sk-gw-master-...` | Control plane bearer key (min 12 chars; non-default key required in `ENV=production`). |
-| `auth.master_encryption_key` | `GATEWAY_MASTER_ENCRYPTION_KEY` | 64-char hex | 32-byte AES-256-GCM Master Key Encryption Key (non-default key required in `ENV=production`). |
-| `auth.default_virtual_key` | — | `""` | Optional pre-seeded client virtual key for immediate local testing. |
-| `router.complexity_threshold` | — | `0.40` | Prompt complexity score `[0, 1]` above which `"auto"` routes to `"reasoning"`. |
+| `server.host` | — | `"0.0.0.0"` | HTTP network bind address. |
+| `server.port` | `GATEWAY_PORT` | `8080` | HTTP listen port (1–65535). |
+| `server.read_timeout` | — | `30s` | Maximum duration for reading the entire request. |
+| `server.write_timeout` | — | `300s` | Maximum duration before timing out writes of the response (sized for reasoning streams). |
+| `server.idle_timeout` | — | `120s` | Maximum amount of time to wait for the next request when keep-alives are enabled. |
+| `server.shutdown_timeout` | — | `15s` | Graceful shutdown timeout before closing active connections. |
+| `logging.level` | `GATEWAY_LOG_LEVEL` | `"info"` | Log verbosity: `"debug"`, `"info"`, `"warn"`, `"error"`. |
+| `logging.format` | `GATEWAY_LOG_FORMAT` | `"text"` | Log encoding: `"json"` (cloud structured) or `"text"` (human readable). Auto-switches to `"json"` if `ENV=production`. |
+| `logging.add_source` | `GATEWAY_LOG_ADD_SOURCE` | `false` | When true, annotates log records with caller `file:line`. |
+| `storage.mode` | `GATEWAY_STORAGE_MODE` | `"memory"` | Storage backend: `"memory"` (zero external dependencies) or `"postgres"`. |
+| `storage.postgres_dsn` | `GATEWAY_POSTGRES_DSN` | `postgres://...` | PostgreSQL connection string (auto-switches storage mode to `"postgres"` when present). |
+| `storage.redis_addr` | `GATEWAY_REDIS_ADDR` | `"localhost:6379"` | Redis host:port for L2 auth caching, Lua rate limiting, and response caching. |
+| `storage.redis_pass` | `GATEWAY_REDIS_PASS` | `""` | Optional Redis authentication password. |
+| `storage.redis_db` | — | `0` | Redis logical database index. |
+| `auth.master_admin_key` | `GATEWAY_MASTER_ADMIN_KEY` | `sk-gw-master-...` | Control plane bearer token (min 12 chars; must be changed in `production`). |
+| `auth.master_encryption_key` | `GATEWAY_MASTER_ENCRYPTION_KEY` | 64-char hex | 32-byte AES-256-GCM Master Key Encryption Key (must be changed in `production`). |
+| `auth.jwt_secret` | `GATEWAY_JWT_SECRET` | `"gateway-jwt-..."` | HMAC secret for signing internal JWT tokens. |
+| `auth.default_org_id` | — | `"org_default"` | Initial default organization ID seeded at startup. |
+| `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
+| `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
+| `auth.l2_cache_ttl` | — | `5m` | Redis L2 cache TTL for virtual key identity and permissions. |
+| `router.default_fast_alias` | — | `"fast"` | Default model group aliased to low-latency models. |
+| `router.default_reasoning_alias` | — | `"reasoning"` | Default model group aliased to high-reasoning frontier models. |
+| `router.default_coding_alias` | — | `"coding"` | Default model group aliased to code generation models. |
+| `router.complexity_threshold` | — | `0.40` | Heuristic prompt complexity score `[0, 1]` above which `"auto"` routes to `"reasoning"`. |
+| `router.long_context_tokens` | — | `32000` | Token threshold for routing to long-context-specialized models. |
 | `router.default_max_retries` | — | `2` | Intra-group retry attempts before failing over to next fallback group. |
 | `router.base_retry_delay` | `GATEWAY_ROUTER_BASE_RETRY_DELAY` | `50ms` | Base backoff delay for full-jitter exponential retries. |
+| `router.max_retry_delay` | `GATEWAY_ROUTER_MAX_RETRY_DELAY` | `2s` | Upper bound for exponential backoff retry delays. |
 | `router.default_cooldown` | `GATEWAY_ROUTER_DEFAULT_COOLDOWN` | `60s` | Duration a tripped deployment stays in `OPEN` circuit-breaker cooldown. |
-| `finops.flush_interval` | `GATEWAY_FINOPS_FLUSH_INTERVAL` | `500ms` | Async spend batch flush interval. |
+| `router.failure_window` | — | `30s` | Sliding window for counting consecutive upstream errors. |
+| `router.failure_threshold` | — | `3` | Consecutive errors required to trip circuit breaker into `OPEN` state. |
+| `rate_limit.enabled` | — | `true` | Enables distributed sliding-window rate limiting via Redis Lua. |
+| `rate_limit.window_seconds` | — | `60` | Fixed window duration in seconds for RPM/TPM calculation. |
+| `rate_limit.concurrency_ttl_sec` | — | `300` | Lease duration in seconds for concurrent in-flight request locks. |
+| `rate_limit.default_estimated_tpm` | — | `128` | Pre-flight token heuristic estimate when prompt tokens are unmeasured. |
+| `rate_limit.redis_timeout` | — | `50ms` | Maximum timeout for Redis Lua rate-limit checks before failing closed. |
+| `finops.channel_buffer_size` | — | `16384` | Capacity of asynchronous spend event channel. |
+| `finops.batch_size` | — | `250` | Maximum spend events aggregated per database flush. |
+| `finops.flush_interval` | `GATEWAY_FINOPS_FLUSH_INTERVAL` | `500ms` | Maximum duration between asynchronous spend ledger flushes. |
+| `finops.worker_count` | — | `4` | Number of concurrent background spend processor goroutines. |
 | `discovery.enabled` | — | `true` | Enables background upstream model catalogue discovery. |
+| `discovery.sync_interval` | — | `6h` | Polling interval for model catalogue synchronization worker. |
+| `discovery.auto_approve` | — | `false` | When true, auto-enables newly discovered upstream models. |
 | `cache.enabled` | — | `true` | Enables deterministic exact-match response caching. |
+| `cache.default_ttl` | — | `1h` | Default TTL for exact-match response cache entries. |
 | `mcp.enabled` | `GATEWAY_MCP_ENABLED` | `true` | Enables Model Context Protocol (MCP) data plane & control plane. |
-| `mcp.cache_key_secret` | `GATEWAY_MCP_CACHE_KEY_SECRET` | — | HMAC-SHA256 secret for delimiter-collision-proof MCP cache keys. |
-| `mcp.subscriptions_listen_active` | `GATEWAY_MCP_SUBSCRIPTIONS_LISTEN` | `true` | Enables multiplexed SSE subscriptions endpoint (`/mcp/subscriptions/listen`). |
 | `mcp.allow_stdio_servers` | `GATEWAY_MCP_ALLOW_STDIO` | `false` | Enables local stdio subprocess MCP transport (requires explicit opt-in). |
+| `mcp.allowed_stdio_binaries` | — | `[]` | Explicit allowlist of absolute binary paths permitted for stdio transport. |
+| `mcp.enable_session_compat_2025` | — | `true` | Enables MCP 2025-11-25 stateful session translation adapter. |
+| `mcp.session_ttl_2025` | — | `15m` | Session expiration TTL for legacy 2025 MCP connections. |
+| `mcp.cache_key_secret` | `GATEWAY_MCP_CACHE_KEY_SECRET` | — | HMAC-SHA256 secret for delimiter-collision-proof MCP cache keys. |
+| `mcp.max_payload_bytes` | — | `10485760` | Maximum allowed payload size for MCP requests (10 MB). |
+| `mcp.default_timeout` | — | `30s` | Default execution timeout for upstream MCP tool calls. |
+| `mcp.subscriptions_listen_active` | `GATEWAY_MCP_SUBSCRIPTIONS_LISTEN` | `true` | Enables multiplexed SSE subscriptions endpoint (`/mcp/subscriptions/listen`). |
 | `a2a.enabled` | `GATEWAY_A2A_ENABLED` | `true` | Enables Agent-to-Agent (A2A v1.0) protocol service. |
-| `a2a.signing_key_id` | `GATEWAY_A2A_SIGNING_KEY_ID` | `"gw-a2a-key-1"` | Key ID for RFC 8785 JCS / JWS Agent Card signing. |
+| `a2a.enable_jsonrpc` | — | `true` | Enables JSON-RPC 2.0 transport for A2A message exchange. |
+| `a2a.enable_http_json` | — | `true` | Enables REST/HTTP+JSON transport for A2A message exchange. |
+| `a2a.enable_subscribe_post_compat` | — | `false` | Allows legacy `POST /tasks/{id}:subscribe` in addition to canonical `GET`. |
+| `a2a.allow_legacy_card_discovery` | — | `false` | Allows unsigned or legacy uncanonicalized agent card discovery. |
+| `a2a.max_task_lifespan` | — | `24h` | Maximum durability lifespan for active A2A task records. |
+| `a2a.stream_buffer_capacity` | — | `256` | Per-task SSE event streaming buffer capacity. |
 | `a2a.stream_publish_interval` | `GATEWAY_A2A_STREAM_PUBLISH_INTERVAL` | `50ms` | Interval for background task stream publication daemon. |
 | `a2a.max_push_retries` | `GATEWAY_A2A_MAX_PUSH_RETRIES` | `5` | Maximum retry attempts for transactional outbox webhooks before DLQ. |
+| `a2a.signing_key_id` | `GATEWAY_A2A_SIGNING_KEY_ID` | `"gw-a2a-signer-v1"` | Key ID for RFC 8785 JCS / JWS Agent Card signing. |
+| `a2a.allowed_signing_algs` | — | `["ES256", "RS256", "EdDSA"]` | Allowed cryptographic signature algorithms for inbound Agent Cards. |
+| `a2a.trusted_card_jwks` | — | `{}` | Upstream agent slug -> JWKS URL mapping for card verification. |
 | `security.network.egress_proxy_url` | `GATEWAY_EGRESS_PROXY_URL` | `""` | Corporate HTTP/HTTPS egress proxy URL for enterprise outbound firewalls. |
 | `security.network.outbound_ssrf.allow_private_networks` | `GATEWAY_SSRF_ALLOW_PRIVATE` | `false` | Enables private/internal IP egress (must remain false in production). |
+| `security.network.outbound_ssrf.allowed_private_cidrs` | — | `[]` | Explicit private CIDR allowlist (e.g. `["10.0.0.0/8"]`) when egress is gated. |
 | `security.network.outbound_ssrf.allow_insecure_http` | `GATEWAY_SSRF_ALLOW_INSECURE_HTTP` | `false` | Allows plaintext HTTP upstream requests. |
+| `security.network.outbound_ssrf.allowed_schemes` | — | `["https"]` | Allowed URL schemes for provider endpoints (`https`, `http`). |
+| `security.network.outbound_ssrf.blocked_ips` | — | `["169.254.169.254", ...]` | Cloud metadata and sensitive IP addresses blocked from egress. |
+| `security.network.outbound_ssrf.dial_timeout` | — | `10s` | Network connect and TLS handshake timeout for provider egress. |
+| `security.network.outbound_ssrf.max_redirects` | — | `3` | Maximum HTTP redirect hops permitted on outbound provider calls. |
+| `security.network.inbound_caller.expose_on_public_internet` | — | `false` | Network policy flag documenting internet exposure stance. |
+| `security.network.inbound_caller.allowed_client_cidrs` | — | `[]` | Client CIDR allowlist for incoming network requests. |
+| `providers.custom_openai_compatible[].id` | — | — | Unique provider identifier (e.g. `"custom-vllm"`). |
+| `providers.custom_openai_compatible[].display_name` | — | — | Human-readable provider label. |
+| `providers.custom_openai_compatible[].base_url` | — | — | Upstream endpoint base URL. |
+| `providers.custom_openai_compatible[].supports_streaming` | — | `"true"` | Streaming capability override (`"true"`, `"false"`, `"unknown"`). |
+| `providers.custom_openai_compatible[].supports_tools` | — | `"true"` | Function/tool calling capability override. |
+| `providers.custom_openai_compatible[].supports_structured_outputs` | — | `"true"` | Structured outputs (`response_format: json_schema`) capability. |
+| `providers.custom_openai_compatible[].supports_list_models` | — | `true` | Whether upstream provider implements `GET /models`. |
+| `providers.custom_openai_compatible[].default_headers` | — | `{}` | Key-value HTTP headers automatically attached to outbound calls. |
+| `model_list[].model_name` | — | — | Virtual model name or alias presented to clients (`"fast"`, `"reasoning"`). |
+| `model_list[].routing_strategy` | — | `"weighted-shuffle"` | Routing policy: `"weighted-shuffle"`, `"least-busy"`, `"latency-based"`, `"lowest-cost"`, `"usage-based-headroom"`. |
+| `model_list[].fallbacks` | — | `[]` | Ordered array of fallback model names triggered on upstream outage or rate-limit. |
+| `model_list[].model_params.model` | — | — | Upstream provider/model identifier (e.g. `"gemini/gemini-2.5-flash"`). |
+| `model_list[].model_params.api_key` | — | — | Upstream provider API key (supports `os.environ/VAR`). |
+| `model_list[].model_params.api_base` | — | `""` | Custom upstream base URL override. |
+| `model_list[].model_params.region` | — | `""` | Cloud region for Bedrock/Vertex deployments. |
+| `model_list[].model_params.weight` | — | `100` | Integer weight for weighted load balancing. |
+| `model_list[].model_params.rpm` | — | `0` | Per-deployment Requests Per Minute capacity limit. |
+| `model_list[].model_params.tpm` | — | `0` | Per-deployment Tokens Per Minute capacity limit. |
+| `model_list[].model_params.azure_deployment_name` | — | `""` | Deployment name for Azure OpenAI endpoints. |
+| `model_list[].model_params.api_version` | — | `""` | API version query parameter for Azure OpenAI endpoints. |
+| `model_list[].model_params.headers` | — | `{}` | Custom HTTP headers forwarded to the upstream model provider. |
 | `files.storage_dir` | `GOROUTE_FILES_DIR` | `os.TempDir()/goroute-files` | Local disk directory for stateful tenant files and batch JSONL files (enforces `0700` directory mode and `0600` file mode). |

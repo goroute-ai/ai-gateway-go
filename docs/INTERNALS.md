@@ -19,6 +19,14 @@
 9. [Deterministic Exact-Match Response Caching](#9-deterministic-exact-match-response-caching)
 10. [Cross-Cutting Platform Modules](#10-cross-cutting-platform-modules)
 11. [Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix](#11-storage-architecture-postgresql-schema--redis-keyspace-matrix)
+12. [Model Context Protocol (MCP 2026-07-28 & 2025-11-25) Subsystem Internals](#12-model-context-protocol-mcp-2026-07-28--2025-11-25-subsystem-internals)
+13. [Agent-to-Agent Protocol (A2A v1.0) Subsystem Internals](#13-agent-to-agent-protocol-a2a-v10-subsystem-internals)
+14. [Server-Side Autonomous Tool Loop Orchestration](#14-server-side-autonomous-tool-loop-orchestration)
+15. [Progressive Tool Discovery & Opaque Handles](#15-progressive-tool-discovery--opaque-handles)
+16. [Native A2A gRPC & OpenAI Compatibility Bridge](#16-native-a2a-grpc--openai-compatibility-bridge)
+17. [Enterprise Upstream Authentication Strategies](#17-enterprise-upstream-authentication-strategies)
+18. [Embedded Operator Web UI Architecture & Static Serving Mechanics](#18-embedded-operator-web-ui-architecture--static-serving-mechanics)
+19. [Stateless Guardrails Simulation & Preflight Credential Validation Mechanics](#19-stateless-guardrails-simulation--preflight-credential-validation-mechanics)
 
 ---
 
@@ -709,4 +717,83 @@ The `internal/auth/upstream` package strictly isolates caller identity from upst
 4. **RFC 8693 Token Exchange (`token_exchange.go`)**:
    - Executes OAuth 2.0 token exchanges with thread-safe in-memory caching keyed by $\text{SHA256}(\text{subject} \parallel \text{audience} \parallel \text{scope})$ with automatic TTL expiration.
 
+---
 
+## 18. Embedded Operator Web UI Architecture & Static Serving Mechanics
+
+The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`).
+
+### 18.1 Route Dispatch & Fallback Lifecycle
+```
+Client Request (GET /ui/playground)
+       │
+       ▼
+1. Prefix Check: Path starts with /ui?
+       │
+       ├─ Path is "/ui" ──────────► HTTP 301 Moved Permanently to "/ui/"
+       │
+       ▼
+2. Asset Lookup in embed.FS
+       │
+       ├─ File exists on disk? (e.g. /ui/assets/index-CTqmv4_N.css)
+       │         │
+       │         ▼
+       │  Set Cache-Control: public, max-age=31536000, immutable
+       │  Serve via http.StripPrefix("/ui", http.FileServer)
+       │
+       └─ File does NOT exist (e.g. /ui/playground, /ui/keys)
+                 │
+                 ▼
+          HTML5 History API Fallback
+          Open embedded "index.html"
+          Set Content-Type: text/html; charset=utf-8
+          Set Cache-Control: no-cache
+          Serve via http.ServeContent (preserves ModTime & ETag)
+```
+
+### 18.2 Zero-Allocation Embedded Serving
+- `fs.Sub(embeddedDist, "dist")` creates a sub-tree filesystem at server bootstrap time.
+- Requests never touch the host filesystem or shell out to Node.js.
+- Static assets are served from the embedded filesystem; this avoids host filesystem lookups and runtime Node.js processes.
+
+---
+
+## 19. Stateless Guardrails Simulation & Preflight Credential Validation Mechanics
+
+### 19.1 Stateless Guardrails Simulator (`internal/guardrails/engine.go`)
+The `EvaluateInputWithPolicy` method allows platform engineers to test security policies against user prompts without mutating persistent database records or sending outbound traffic to LLMs:
+
+$$\text{Simulation Outcome} = \mathcal{G}(\text{Policy}_{\text{ephemeral}}, \text{Prompt}_{\text{raw}})$$
+
+1. **Policy Injection**: The caller submits an explicit, uncommitted `domain.GuardrailPolicy` alongside test prompts.
+2. **Pattern Pipeline**: The engine checks user messages against fixed prompt-injection signatures, custom blocked keywords, and regular expressions for email addresses, SSNs, payment card patterns, and selected API key patterns.
+3. **Action Simulation**: Violations use the configured action (`block`, `redact`, `audit`):
+   - For `redact`: Matching content is rewritten with type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, or `[REDACTED_SECRET]` in the returned canonical prompt copy.
+   - For `block`: The simulator response sets `allowed: false` and lists the matched violation types. Custom blocked keywords always block when matched.
+
+### 19.2 Preflight Credential Validation (`internal/server/handlers_admin.go`)
+To prevent configuration errors and broken deployment routes, `handleAdminPreflightValidateCredential` tests upstream provider credentials before persistence:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as Admin Operator / Web UI
+    participant GW as Gateway (/admin/v1/credentials/validate)
+    participant Sec as Network Security SafeDialer
+    participant Upstream as Target Provider (e.g. OpenAI / Anthropic)
+
+    Admin->>GW: POST { provider: "openai", api_key: "sk-...", base_url: "..." }
+    GW->>GW: Lookup adapter in adapter.Registry
+    GW->>Sec: Create transient ProviderCredential (in-memory)
+    GW->>Upstream: adp.ListModels(ctx, transientCred)
+    alt Upstream Responds 200 OK
+        Upstream-->>GW: Model List [gpt-4o, o3-mini, ...]
+        GW-->>Admin: { valid: true, status: "success", discovered_models: 24, latency_ms: 112 }
+    else Provider Does Not Support ListModels
+        Upstream-->>GW: 404 / 501 (list_models_unsupported)
+        GW-->>Admin: { valid: true, status: "unsupported_by_provider", discovered_models: 0, latency_ms: 85 }
+    else Authentication Fails (401 / 403)
+        Upstream-->>GW: HTTP 401 Unauthorized
+        GW-->>Admin: { valid: false, status: "failed", error: "invalid_api_key", latency_ms: 94 }
+    end
+```

@@ -79,6 +79,16 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, sub)
 }
 
+func (s *GatewayServer) handleAdminGetOrgSubscriptions(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgID")
+	subs, err := s.repo.GetOrgProviderSubscriptions(r.Context(), orgID)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": subs})
+}
+
 func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
 	var pol domain.OrgModelPolicy
@@ -96,6 +106,16 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 		"is_enabled":      pol.IsEnabled,
 	})
 	writeJSON(w, http.StatusOK, pol)
+}
+
+func (s *GatewayServer) handleAdminGetOrgModelPolicies(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgID")
+	pols, err := s.repo.GetOrgModelPolicies(r.Context(), orgID)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": pols})
 }
 
 func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +153,56 @@ func (s *GatewayServer) handleAdminGetGuardrailPolicy(w http.ResponseWriter, r *
 		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
 	writeJSON(w, http.StatusOK, pol)
+}
+
+func (s *GatewayServer) handleAdminSimulateGuardrails(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgID")
+	var req struct {
+		Prompt string                  `json:"prompt"`
+		Policy *domain.GuardrailPolicy `json:"policy,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "prompt is required"})
+		return
+	}
+
+	pol := req.Policy
+	if pol == nil {
+		var err error
+		pol, err = s.repo.GetGuardrailPolicy(r.Context(), orgID)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		if pol == nil {
+			pol = &domain.GuardrailPolicy{OrgID: orgID}
+		}
+	} else if pol.OrgID == "" {
+		pol.OrgID = orgID
+	}
+
+	canReq := &domain.CanonicalChatRequest{
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: req.Prompt},
+		},
+	}
+
+	outcome, evalErr := s.guardrails.EvaluateInputWithPolicy(r.Context(), pol, canReq)
+	resp := map[string]any{
+		"allowed":         evalErr == nil,
+		"applied_action":  outcome.AppliedAction,
+		"violations":      outcome.Violations,
+		"redacted":        outcome.Redacted,
+		"redacted_prompt": canReq.Messages[0].Content,
+	}
+	if evalErr != nil {
+		resp["error_message"] = evalErr.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- Teams & Users ---
@@ -178,6 +248,16 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 	}
 	s.audit(r.Context(), user.OrgID, "user.created", "user", user.ID, map[string]any{"email": user.Email, "role": user.Role})
 	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *GatewayServer) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
+	orgID := r.URL.Query().Get("org_id")
+	users, err := s.repo.ListUsers(r.Context(), orgID)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": users})
 }
 
 // --- Virtual API Keys ---
@@ -375,6 +455,70 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 	})
 }
 
+func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider            domain.ProviderType `json:"provider"`
+		APIKey              string              `json:"api_key"`
+		BaseURL             string              `json:"base_url,omitempty"`
+		AzureDeploymentName string              `json:"azure_deployment_name,omitempty"`
+		APIVersion          string              `json:"api_version,omitempty"`
+		Headers             map[string]string   `json:"headers,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	if req.Provider == "" {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "provider is required"})
+		return
+	}
+	if req.APIKey == "" && req.Provider != domain.ProviderOllama {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "api_key is required"})
+		return
+	}
+
+	adp, err := s.reg.Get(req.Provider)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+
+	credCopy := domain.ProviderCredential{
+		Provider:            req.Provider,
+		DecryptedAPIKey:     req.APIKey,
+		BaseURL:             req.BaseURL,
+		AzureDeploymentName: req.AzureDeploymentName,
+		APIVersion:          req.APIVersion,
+		Headers:             req.Headers,
+	}
+
+	start := time.Now()
+	models, discErr := adp.ListModels(r.Context(), &credCopy)
+	latencyMs := time.Since(start).Milliseconds()
+
+	valid := discErr == nil
+	validationStatus := "success"
+	errMsg := ""
+	if discErr != nil {
+		if gwErr, ok := discErr.(*domain.GatewayError); ok && gwErr.Code == "list_models_unsupported" {
+			valid = true
+			validationStatus = "unsupported_by_provider"
+		} else {
+			validationStatus = "failed"
+			errMsg = discErr.Error()
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider":          req.Provider,
+		"valid":             valid,
+		"validation_status": validationStatus,
+		"discovered_models": len(models),
+		"latency_ms":        latencyMs,
+		"error":             errMsg,
+	})
+}
+
 // --- Layer 4 Model Groups & Deployments ---
 
 func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +564,22 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 		"weight":          dep.Weight,
 	})
 	writeJSON(w, http.StatusCreated, dep)
+}
+
+func (s *GatewayServer) handleAdminListDeployments(w http.ResponseWriter, r *http.Request) {
+	groupID := r.URL.Query().Get("model_group_id")
+	var deps []*domain.Deployment
+	var err error
+	if groupID != "" {
+		deps, err = s.repo.ListDeploymentsByGroup(r.Context(), groupID)
+	} else {
+		deps, err = s.repo.ListAllDeployments(r.Context())
+	}
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": deps})
 }
 
 // --- Layer 1 Global Catalogue, Automated Discovery & Versioned Pricing ---
