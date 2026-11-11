@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.2.0`  
+> **Version**: `v1.3.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -708,93 +708,179 @@ When an upstream agent requires clarifying input, the Gateway returns a response
 
 All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 
-### 5.1 Virtual Key Provisioning & RBAC
-`POST /admin/v1/keys`
-
-```json
-{
-  "org_id": "org_default",
-  "name": "finance-agent-key",
-  "role": "service_account",
-  "rpm_limit": 1000,
-  "tpm_limit": 500000,
-  "max_budget_micros": 50000000,
-  "allowed_models": ["fast", "gemini-2.5-flash"],
-  "allowed_mcp_servers": ["fin-tools"],
-  "allowed_a2a_agents": ["risk-analyst"]
-}
-```
-
-### 5.2 MCP Server Registration & Sync
-- `POST /admin/v1/mcp/servers`: Registers an MCP upstream endpoint.
-- `POST /admin/v1/mcp/servers/{id}/sync`: Probes server, runs anti-poisoning scanner, and pins SHA-256 tool digests.
-
-### 5.3 A2A Agent Registration & Emergency Kill-Switch
-- `POST /admin/v1/a2a/agents`: Registers an upstream agent card and endpoint.
-- `POST /admin/v1/a2a/agents/{id}/kill-switch`: Toggles emergency kill-switch.
+### 5.1 Organization Management
+- `POST /admin/v1/organizations`: Create a new multi-tenant organization.
   ```json
-  { "killed": true }
+  { "name": "acme-corp", "max_budget_micros": 500000000 }
   ```
-  When killed, calls across all pods instantly return `HTTP 503 agent_killed`.
+- `GET /admin/v1/organizations`: List all registered organizations.
+  ```bash
+  curl http://localhost:8080/admin/v1/organizations -H "Authorization: Bearer $MASTER_ADMIN_KEY"
+  ```
 
-### 5.4 Active Health Probing
-`POST /admin/v1/health/probe`
+### 5.2 Team Management
+- `POST /admin/v1/teams`: Create a team within an organization.
+  ```json
+  {
+    "org_id": "org_default",
+    "name": "core-platform",
+    "max_budget_micros": 100000000,
+    "allowed_models": ["fast", "reasoning", "gemini-2.5-flash"]
+  }
+  ```
+- `GET /admin/v1/teams?org_id={orgID}`: List teams within an organization.
+  ```bash
+  curl "http://localhost:8080/admin/v1/teams?org_id=org_default" -H "Authorization: Bearer $MASTER_ADMIN_KEY"
+  ```
 
-Triggers immediate synthetic health verification across all configured provider deployments.
+### 5.3 User Management
+- `POST /admin/v1/users`: Register a user and assign their enterprise role (`admin`, `developer`, `finance_auditor`).
+  ```json
+  {
+    "org_id": "org_default",
+    "team_id": "team_core",
+    "email": "engineer@acme.com",
+    "role": "developer"
+  }
+  ```
+- `GET /admin/v1/users?org_id={orgID}`: List registered organization users.
+  ```bash
+  curl "http://localhost:8080/admin/v1/users?org_id=org_default" -H "Authorization: Bearer $MASTER_ADMIN_KEY"
+  ```
 
-### 5.5 Upstream Model Discovery and Embedded Catalogue Import
-`POST /admin/v1/catalogue/sync`
+### 5.4 Virtual Key Provisioning & Lifecycle
+- `POST /admin/v1/keys`: Issue a scoped Virtual API Key (`sk-gw-...`) with budget caps, RPM/TPM rate limits, and model allowlists.
+  ```json
+  {
+    "org_id": "org_default",
+    "team_id": "team_core",
+    "name": "data-pipeline-key",
+    "role": "service_account",
+    "max_budget_micros": 50000000,
+    "rate_limit_rpm": 1000,
+    "rate_limit_tpm": 500000,
+    "allowed_models": ["fast", "reasoning"],
+    "allowed_mcp_servers": ["github-tools"],
+    "allowed_a2a_agents": ["analyst-agent"]
+  }
+  ```
+- `GET /admin/v1/keys?org_id={orgID}`: List virtual keys for an organization.
+- `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached permissions from L1 memory and Redis.
 
-Triggers model discovery against active provider credentials. To import entries from the embedded 4,627-model catalogue into the database, use `POST /admin/v1/catalogue/import` instead.
+### 5.5 Upstream Provider Credentials Vault
+- `POST /admin/v1/credentials`: Securely stores provider credentials encrypted with AES-256-GCM.
+  ```json
+  {
+    "provider": "openai",
+    "api_key": "sk-proj-...",
+    "base_url": "https://api.openai.com/v1"
+  }
+  ```
+- `GET /admin/v1/credentials`: Lists credentials (API keys are redacted as `sk-proj-***`).
+- `POST /admin/v1/credentials/validate`: Preflight validator that tests raw credentials against the target provider API *before* saving them.
+  ```bash
+  curl -X POST http://localhost:8080/admin/v1/credentials/validate \
+    -H "Authorization: Bearer $MASTER_ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{ "provider": "openai", "api_key": "sk-proj-...", "base_url": "https://api.openai.com/v1" }'
+  ```
+  Returns `{ "valid": true, "validation_status": "success", "discovered_models": 18, "latency_ms": 142 }`.
+- `POST /admin/v1/credentials/{credID}/rotate`: Atomically replaces an existing credential's key with zero downtime.
+- `POST /admin/v1/credentials/{credID}/validate`: Validates an already-persisted vault credential.
 
-This endpoint has no request body; it polls active credentials that support model listing.
-- `POST /admin/v1/catalogue/import?provider=cerebras` imports embedded catalogue metadata, optionally filtered by provider. Omit `provider` to import all entries.
+### 5.6 Model Groups & Deployment Management
+- `POST /admin/v1/model-groups`: Creates a virtual model group (alias) with routing strategy and fallbacks.
+  ```json
+  {
+    "name": "fast",
+    "routing_strategy": "weighted-shuffle",
+    "fallback_group_ids": ["reasoning"]
+  }
+  ```
+- `GET /admin/v1/model-groups`: Lists all configured model groups.
+- `POST /admin/v1/deployments`: Adds a model deployment to a group with priority, weight, and rate limits.
+  ```json
+  {
+    "model_group_id": "mg_fast",
+    "global_model_id": "gemini/gemini-2.5-flash",
+    "credential_id": "cred_gemini",
+    "priority": 1,
+    "weight": 80,
+    "rpm_capacity": 1000,
+    "tpm_capacity": 1000000
+  }
+  ```
+- `GET /admin/v1/deployments?model_group_id={groupID}`: Lists deployments, optionally filtered by model group. Without the query parameter, returns deployments across all groups; statuses are not filtered.
 
-```bash
-curl -X POST http://localhost:8080/admin/v1/catalogue/import?provider=cerebras \
-  -H "Authorization: Bearer $MASTER_ADMIN_KEY"
-```
+### 5.7 Model Catalogue & Pricing Provenance
+- `GET /admin/v1/catalogue?provider={provider}&search={query}`: Queries the global model catalogue.
+- `POST /admin/v1/catalogue/sync`: Polls active upstream provider credentials for new models.
+- `POST /admin/v1/catalogue/import?provider={provider}`: Imports models from the embedded 4,627-model catalogue dataset.
+- `POST /admin/v1/catalogue/pricing`: Updates model pricing rates and promotes pricing status to `"verified"`.
+  ```json
+  {
+    "global_model_id": "gemini/gemini-2.5-flash",
+    "input_cost_micros_per_1m": 150000,
+    "output_cost_micros_per_1m": 600000,
+    "cached_input_cost_micros_per_1m": 37500,
+    "reasoning_cost_micros_per_1m": 600000,
+    "pricing_status": "verified",
+    "pricing_provenance_source": "vendor-contract-2026",
+    "pricing_effective_date": "2026-11-01"
+  }
+  ```
+- `GET /admin/v1/catalogue/pricing?global_model_id={modelID}`: Retrieves immutable pricing revision audit history.
 
-#### Discovery Response (HTTP 200 OK)
-```json
-{
-  "synced_at": "2026-11-10T00:00:00Z",
-  "total_discovered": 18,
-  "new_models": [],
-  "updated_models": []
-}
-```
+### 5.8 Organization Subscriptions & Model Policies
+- `GET /admin/v1/organizations/{orgID}/subscriptions`: Lists Layer 2 provider subscription statuses.
+- `POST /admin/v1/organizations/{orgID}/subscriptions`: Enables or disables an upstream provider for an organization.
+- `GET /admin/v1/organizations/{orgID}/models`: Lists Layer 3 model policies and overrides.
+- `POST /admin/v1/organizations/{orgID}/models`: Configures model access and token overrides for an organization.
 
-The embedded catalogue import returns a separate summary:
+### 5.9 Security Guardrails & Simulator
+- `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active security guardrail policies.
+- `POST /admin/v1/organizations/{orgID}/guardrails`: Configures regex PII redaction, secret scanning, and prompt injection controls.
+- `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless prompt evaluator that tests safety rules without modifying records or incurring LLM token costs.
+  ```bash
+  curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails/simulate \
+    -H "Authorization: Bearer $MASTER_ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "prompt": "Here is my secret sk-1234567890123456 and SSN 000-11-2222",
+      "policy": {
+        "enable_secret_detection": true,
+        "secret_action": "redact",
+        "enable_pii_detection": true,
+        "pii_action": "redact"
+      }
+    }'
+  ```
+  Returns `{ "allowed": true, "applied_action": "redact", "violations": ["secret_detected", "pii_detected"], "redacted": true, "redacted_prompt": "Here is my secret [REDACTED_SECRET] and SSN [REDACTED_SSN]" }`. PII checks currently cover email addresses, SSNs, and payment card patterns; replacement tags identify the detected type (for example, `[REDACTED_SSN]`).
 
-```json
-{
-  "imported": 18,
-  "provider": "cerebras",
-  "total": 4627
-}
-```
+### 5.10 FinOps Spend & Governance Audit Ledgers
+- `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars.
+- `GET /admin/v1/spend/logs?org_id={orgID}&limit={limit}&offset={offset}`: Paginated raw spend ledger records including prompt, completion, cached, reasoning tokens, and modality units.
+- `GET /admin/v1/audit/logs?org_id={orgID}&limit={limit}`: Immutable governance audit trail of administrative changes (key provisioning, policy updates, credential rotations).
 
-### 5.6 Model Pricing & Provenance Promotion
-`POST /admin/v1/catalogue/pricing`
+### 5.11 Health Probing, Telemetry & Cache Invalidation
+- `GET /admin/v1/health/deployments`: Health state machine status (`CLOSED`, `HALF_OPEN`, `OPEN`), failure counts, and latency EWMA for all deployments.
+- `POST /admin/v1/health/probe`: Triggers an immediate synthetic health probe across all configured deployments.
+- `GET /admin/v1/observability/metrics`: Real-time JSON telemetry snapshot (P50, P95, P99 latencies, cache hit ratios, and route counters).
+- `POST /admin/v1/cache/invalidate`: Purges cached virtual keys, rate limits, or exact-match responses.
+  ```json
+  { "org_id": "org_default", "key_id": "vk_abc123" }
+  ```
 
-Updates pricing rates and promotes pricing provenance for a catalogued model.
-
-#### Request Body (JSON)
-```json
-{
-  "global_model_id": "gemini/gemini-2.5-flash",
-  "input_cost_micros_per_1m": 150000,
-  "output_cost_micros_per_1m": 600000,
-  "cached_input_cost_micros_per_1m": 37500,
-  "reasoning_cost_micros_per_1m": 600000,
-  "pricing_status": "verified",
-  "pricing_provenance_source": "vendor-contract-amendment-2026",
-  "pricing_effective_date": "2026-11-01"
-}
-```
-- Promotes `pricing_status` to `"verified"`, which unblocks budget-restricted enterprise callers.
-- Automatically appends an immutable, versioned audit record to `model_pricing_history`.
+### 5.12 MCP & A2A Administration
+- `POST /admin/v1/mcp/servers`: Registers an upstream MCP server endpoint.
+- `GET /admin/v1/mcp/servers`: Lists registered MCP servers.
+- `POST /admin/v1/mcp/servers/{serverID}/sync`: Synchronizes tools, runs anti-poisoning scans, and pins SHA-256 tool digests.
+- `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.
+- `GET /admin/v1/mcp/toolsets`: Lists curated toolsets.
+- `POST /admin/v1/a2a/agents`: Registers an upstream Agent-to-Agent endpoint and card.
+- `GET /admin/v1/a2a/agents`: Lists registered A2A agents.
+- `POST /admin/v1/a2a/agents/{agentID}/rotate-key`: Rotates the agent cryptographic signing key.
+- `POST /admin/v1/a2a/agents/{agentID}/kill-switch`: Toggles emergency kill-switch (`{ "killed": true }`), instantly returning `HTTP 503 agent_killed` across all cluster pods.
 
 ---
 
@@ -889,3 +975,32 @@ upstream_auth:
     subject_token_type: "urn:ietf:params:oauth:token-type:jwt"
 ```
 
+---
+
+## 8. Embedded Operator Web UI & Static Serving (`/ui/*`)
+
+GoRoute AI Gateway embeds a production-grade single-page application (SPA) directly into the Go executable, allowing operators, engineers, and administrators to interact with all gateway capabilities without deploying a separate web server.
+
+### 8.1 Base Web Routes
+- `GET /ui`: 301 Permanent Redirect to `/ui/` (enforces trailing slash for accurate relative asset resolution).
+- `GET /ui/`: Serves `index.html` with header `Cache-Control: no-cache`.
+- `GET /ui/assets/{filename}`: Serves hashed static bundles (JavaScript, CSS, fonts) with header `Cache-Control: public, max-age=31536000, immutable`.
+- `GET /ui/*`: Client-Side History API fallback. Any unmapped subpath under `/ui/` (e.g. `/ui/playground`, `/ui/models`, `/ui/keys`, `/ui/finops`, `/ui/guardrails`, `/ui/credentials`, `/ui/agentic`) serves `index.html` with status `200 OK` for SPA client-side routing.
+
+### 8.2 Client Authentication
+The Operator UI authenticates against the gateway's REST APIs:
+1. On initial load, the user is prompted for the Master Admin Key configured by `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`.
+2. The key is held in React memory and sent as `Authorization: Bearer <key>` on API requests. Reloading the page clears it.
+3. API errors are shown by the relevant view; the API client does not currently clear the key or redirect automatically on `401 Unauthorized`.
+
+### 8.3 Supported Frontend Views
+| In-app view | Component | Core Functionality |
+| :--- | :--- | :--- |
+| Sidebar: Overview | `OverviewView` | Gateway health, latency, request, model, and error summaries. |
+| Sidebar: Playground | `PlaygroundView` | Streaming chat playground. |
+| Sidebar: Models & Routing | `ModelsView` | Model catalogue and deployment views. |
+| Sidebar: Virtual Keys | `KeysView` | Virtual key management. |
+| Sidebar: FinOps & Spend | `FinOpsView` | Spend and budget views. |
+| Sidebar: Guardrails | `GuardrailsView` | Guardrail policy and simulation views. |
+| Sidebar: Credentials Vault | `CredentialsView` | Provider credentials and preflight validation. |
+| Sidebar: Agentic Hub | `AgenticView` | MCP and A2A management views. |

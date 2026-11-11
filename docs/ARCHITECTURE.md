@@ -24,6 +24,7 @@
    - [3.6 Component 6: Distributed Rate Limiting & Quota Engine (Redis Lua)](#36-component-6-distributed-rate-limiting--quota-engine-redis-lua)
    - [3.7 Component 7: FinOps Cost Calculation & Asynchronous Spend Pipeline](#37-component-7-finops-cost-calculation--asynchronous-spend-pipeline)
    - [3.8 Component 8: Exact-Match Response Caching](#38-component-8-exact-match-response-caching)
+   - [3.9 Component 9: Embedded Operator Web UI & Streaming Chat Playground](#39-component-9-embedded-operator-web-ui--streaming-chat-playground)
 4. [Storage Architecture: PostgreSQL Schema & Redis Keyspace](#4-storage-architecture-postgresql-schema--redis-keyspace)
    - [4.1 Entity-Relationship Diagram](#41-entity-relationship-diagram)
    - [4.2 PostgreSQL Table Definitions](#42-postgresql-table-definitions)
@@ -87,11 +88,11 @@ The gateway is structured as a cohesive **Enterprise AI Control Plane** maintain
                   └──────────────────┴──────────────────┘
 ```
 
-The gateway is partitioned into eight foundational subsystems:
+The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`), two-stage intelligent & traffic routing, retries, fallbacks, SSE streaming translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (21 multi-modal data-plane routes), two-stage intelligent & modality routing, retries, fallbacks, SSE streaming translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ User $\rightarrow$ Key), 4-layer model access control, AES-256-GCM provider credential vault. | `internal/auth`, `internal/modelmgmt` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), real-time budget enforcement, hierarchical RPM/TPM rate limiting, automated budget reset schedules. | `internal/finops`, `internal/ratelimit` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -99,6 +100,7 @@ The gateway is partitioned into eight foundational subsystems:
 | **6. MCP Hub & Tool Registry** | MCP 2026-07-28 stateless hub, 2025/2024 compatibility adapters, Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
 | **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream` |
+| **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog browser, guardrails simulator, upstream credentials preflight validator, and FinOps analytics. | `internal/ui`, `web` |
 
 ---
 
@@ -463,6 +465,53 @@ All checks execute inside `internal/ratelimit/scripts/check_and_increment.lua` i
 
 ---
 
+### 3.9 Component 9: Embedded Operator Web UI & Streaming Chat Playground
+
+The gateway embeds a modern, single-page application (SPA) operator console directly into the compiled Go binary, mounted at `/ui/`:
+
+```
+                    Browser Client (http://localhost:8080/ui/)
+                                      │
+                                      ▼
+                        [Chi Router: RegisterRoutes]
+                                      │
+                   ┌──────────────────┴──────────────────┐
+                   ▼                                     ▼
+        Path: /ui/assets/*                       Path: /ui/* (SPA route)
+   Cache-Control: immutable, 1yr             HTML5 History API Fallback
+                   │                                     │
+                   └──────────────────┬──────────────────┘
+                                      │
+                                      ▼
+                       [internal/ui: embed.FS (dist/)]
+                                      │
+         ┌────────────┬───────────────┼───────────────┬────────────┐
+         ▼            ▼               ▼               ▼            ▼
+     Overview    Playground        Catalogue      Guardrails  Credentials
+    (Vitals)   (Streaming SSE)  (Models/Pricing)  (Simulator)   (Vault)
+```
+
+#### Core Design & Operational Principles:
+1. **Single-Binary Zero-Dependency Embedding**:
+   - The React 19 + TypeScript + Vite frontend in `web/` is compiled into static assets and synchronized to `internal/ui/dist/`.
+   - Go's `embed.FS` embeds all assets directly into the Go executable (`//go:embed all:dist`).
+   - The gateway serves the full UI from memory without requiring Node.js, npm, or external CDN dependencies at runtime.
+2. **Deterministic Caching & Client-Side Routing**:
+   - Assets in `/ui/assets/` carry content hashes and are served with `Cache-Control: public, max-age=31536000, immutable`.
+   - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics, enabling deep-linking and browser navigation.
+3. **Frontend Bundle Budget Enforcement**:
+   - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
+   - Total uncompressed bundle size is constrained to `< 400 KB` (gzipped `< 110 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+4. **Reproducible Container Builds**:
+   - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
+5. **Interactive Operator Capabilities**:
+   - **Streaming Chat Playground**: Real-time Server-Sent Events (SSE) streaming with multi-turn history, parameter tuning (temperature, max tokens), system instructions, and live token/latency metrics.
+   - **Live Model Catalogue**: Filterable directory of 100+ AI models across 12+ providers, showing real-time capability tags, context window sizes, and input/output micro-dollar pricing.
+   - **Interactive Guardrail Simulator**: Stateless prompt evaluator testing regex PII redaction, secret detection, and prompt injection rules without incurring upstream LLM costs.
+   - **Provider Credentials Vault & Preflight Validator**: Form-based credential management with live preflight validation against upstream provider endpoints before persistence.
+
+---
+
 ## 4. Storage Architecture: PostgreSQL Schema & Redis Keyspace
 
 ### 4.1 Entity-Relationship Diagram
@@ -488,7 +537,37 @@ erDiagram
 ```
 
 ### 4.2 PostgreSQL Table Definitions
-See `migrations/0001_init_schema.up.sql` through `migrations/0007_add_modality_pricing_and_spend.up.sql` for the full executable DDL, indexes, foreign keys, and partitioning definitions.
+
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0007`):
+
+#### 1. Multi-Tenant Identity & RBAC
+- **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
+- **`teams`** (`0001`): Departmental division within an org. Columns: `id` (VARCHAR PK), `org_id` (FK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `allowed_models` (TEXT[]), timestamps.
+- **`users`** (`0001`): Identity members. Columns: `id` (VARCHAR PK), `org_id` (FK), `team_id` (FK), `email` (UNIQUE), `role` (`admin`, `developer`, `finance_auditor`), timestamps.
+- **`virtual_keys`** (`0001`): Client ingress API keys. Columns: `id` (VARCHAR PK), `key_hash` (VARCHAR UNIQUE), `key_prefix` (VARCHAR), `org_id` (FK), `team_id` (FK), `user_id` (FK), `role`, `max_budget_micros` (INT8), `spent_micros` (INT8), `rate_limit_rpm` (INT), `rate_limit_tpm` (INT), `allowed_models` (TEXT[]), `allowed_mcp_servers` (TEXT[]), `allowed_a2a_agents` (TEXT[]), `revoked` (BOOL), timestamps.
+- **`org_provider_subscriptions`** (`0001`): Layer 2 vendor enablement per org. Columns: `org_id` (FK), `provider` (VARCHAR), `status` (`active`, `disabled`), `updated_at`. Primary key: `(org_id, provider)`.
+- **`org_model_policies`** (`0001`): Layer 3 model-level access rules. Columns: `org_id` (FK), `global_model_id` (VARCHAR), `allowed` (BOOL), `priority` (INT), `max_tokens_override` (INT), timestamps. Primary key: `(org_id, global_model_id)`.
+
+#### 2. Vault, Routing & Deployments
+- **`provider_credentials`** (`0001`): AES-256-GCM encrypted provider keys. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `encrypted_api_key` (TEXT), `base_url` (TEXT), `azure_deployment_name` (VARCHAR), `api_version` (VARCHAR), `headers_json` (TEXT), `created_at`, `updated_at`.
+- **`model_groups`** (`0001`): Virtual model aliases (`fast`, `reasoning`). Columns: `id` (VARCHAR PK), `name` (UNIQUE), `routing_strategy` (VARCHAR), `fallback_group_ids` (TEXT[]), timestamps.
+- **`model_deployments`** (`0001`): Backing physical instances. Columns: `id` (VARCHAR PK), `model_group_id` (FK), `global_model_id` (VARCHAR), `provider_credential_id` (FK), `priority` (INT), `weight` (INT), `rpm_limit` (INT), `tpm_limit` (INT), `healthy` (BOOL), timestamps.
+
+#### 3. Global Catalogue, Capabilities & Pricing Provenance
+- **`global_models`** (`0001`, `0004`, `0005`, `0006`, `0007`): Verified model registry. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `model_name` (VARCHAR), `context_window` (INT), `max_output_tokens` (INT), `supports_streaming` (BOOL), `supports_tools` (BOOL), `supports_vision` (BOOL), `supports_reasoning` (BOOL), `supports_inference` (BOOL), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `rerank_cost_micros_per_search_unit` (INT8), `image_cost_micros_base` (INT8), `image_cost_micros_hd` (INT8), `audio_stt_cost_micros_per_second` (INT8), `audio_tts_cost_micros_per_1k_chars` (INT8), `modality_pricing_json` (JSONB), `pricing_status` (`provisional`, `verified`), `pricing_provenance_source` (VARCHAR), `pricing_effective_date` (DATE), timestamps.
+- **`model_capabilities`** (`0005`): Tri-state capability matrix (`supported`, `unsupported`, `unknown`). Columns: `global_model_id` (FK PK), `supports_streaming`, `supports_tools`, `supports_structured_outputs`, `supports_vision`, `supports_audio_input`, `supports_audio_output`, `supports_reasoning`, timestamps.
+- **`model_pricing_history`** (`0005`): Immutable pricing audit revision log. Columns: `id` (VARCHAR PK), `global_model_id` (FK), `version` (INT), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `pricing_status` (VARCHAR), `provenance_source` (VARCHAR), `effective_date` (DATE), `created_at`.
+
+#### 4. Audit, Security & FinOps Ledgers
+- **`spend_logs`** (`0001`, `0007`): Append-only inference accounting ledger. Columns: `id` (VARCHAR PK), `request_id` (VARCHAR), `trace_id` (VARCHAR), `protocol` (VARCHAR), `protocol_target` (VARCHAR), `org_id` (FK), `team_id` (VARCHAR), `user_id` (VARCHAR), `virtual_key_id` (VARCHAR), `endpoint` (VARCHAR), `modality` (VARCHAR), `modality_units` (JSONB), `requested_model` (VARCHAR), `resolved_model` (VARCHAR), `provider` (VARCHAR), `deployment_id` (VARCHAR), `prompt_tokens` (INT), `completion_tokens` (INT), `total_tokens` (INT), `cached_prompt_tokens` (INT), `reasoning_tokens` (INT), `cost_micros` (INT8), `latency_ms` (INT8), `ttft_ms` (INT8), `status_code` (INT), `is_stream` (BOOL), `cache_hit` (BOOL), `fallback_attempted` (BOOL), `retry_count` (INT), `error_message` (TEXT), `created_at` (TIMESTAMPTZ, partitioned/indexed).
+- **`guardrail_policies`** (`0002`): Prompt safety policies. Columns: `id` (VARCHAR PK), `org_id` (FK UNIQUE), `enable_prompt_injection` (BOOL), `prompt_injection_action` (`block`, `log_only`), `enable_pii_detection` (BOOL), `pii_action` (`block`, `redact`, `log_only`), `enable_secret_detection` (BOOL), `secret_action` (`block`, `redact`, `log_only`), `redact_output_pii` (BOOL), timestamps.
+- **`audit_logs`** (`0002`): Administrative audit trails. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `user_id` (VARCHAR), `action` (VARCHAR), `resource_type` (VARCHAR), `resource_id` (VARCHAR), `details` (JSONB), `created_at`.
+
+#### 5. Protocols, Stateful Assets & Batch Processing
+- **`mcp_servers` & `mcp_tools`** (`0003`): MCP Hub registry, transport definitions, and SHA-256 tool digests.
+- **`a2a_agents`, `a2a_tasks`, `a2a_task_events`, `a2a_outbox`** (`0003`): Durable Agent-to-Agent state machines, task lifecycles, and transactional outbox for reliable webhook delivery.
+- **`files`** (`0007`): Stateful multi-tenant file assets. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `team_id` (VARCHAR), `user_id` (VARCHAR), `bytes` (INT8), `filename` (VARCHAR), `purpose` (VARCHAR), `status` (VARCHAR), `content_sha256` (VARCHAR), `storage_path` (TEXT), `upstream_id` (VARCHAR), `upstream_provider` (VARCHAR), `expires_at` (TIMESTAMPTZ), `created_at`.
+- **`batches`** (`0007`): Asynchronous batch processing jobs. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `team_id` (VARCHAR), `input_file_id` (FK), `output_file_id` (VARCHAR), `error_file_id` (VARCHAR), `endpoint` (VARCHAR), `status` (`validating`, `in_progress`, `completed`, `failed`, `cancelled`), `completion_window` (VARCHAR), `request_counts` (JSONB), `metadata` (JSONB), `upstream_id` (VARCHAR), `upstream_provider` (VARCHAR), `created_at`, `completed_at`.
 
 ### 4.3 Redis Keyspace & TTL Matrix
 

@@ -512,6 +512,219 @@ components:
           type: array
           items:
             type: object
+    AdminUser:
+      type: object
+      required:
+        - id
+        - org_id
+        - email
+        - role
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [platform_admin, org_admin, team_admin, developer, service_account, viewer]
+        oidc_subject:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OrgProviderSubscription:
+      type: object
+      required:
+        - org_id
+        - provider
+        - is_enabled
+        - auto_enable_new
+        - subscribed_at
+      properties:
+        org_id:
+          type: string
+        provider:
+          type: string
+          description: Provider identifier (e.g. openai, anthropic, gemini)
+        is_enabled:
+          type: boolean
+          description: Whether the organization is entitled to route traffic to this provider
+        auto_enable_new:
+          type: boolean
+          description: Automatically enable newly discovered models for this provider
+        subscribed_at:
+          type: string
+          format: date-time
+    OrgModelPolicy:
+      type: object
+      required:
+        - org_id
+        - global_model_id
+        - is_enabled
+        - approved_by
+        - approved_at
+      properties:
+        org_id:
+          type: string
+        global_model_id:
+          type: string
+          description: Unique global model identifier (e.g. openai/gpt-4.1)
+        is_enabled:
+          type: boolean
+          description: Whether tenant users/keys are permitted to invoke this model
+        approved_by:
+          type: string
+          description: Identity of administrator who approved this model policy
+        approved_at:
+          type: string
+          format: date-time
+    AdminDeployment:
+      type: object
+      required:
+        - id
+        - model_group_id
+        - global_model_id
+        - priority
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        model_group_id:
+          type: string
+        global_model_id:
+          type: string
+        credential_id:
+          type: string
+        deployment_name:
+          type: string
+        region:
+          type: string
+        weight:
+          type: integer
+        rpm_capacity:
+          type: integer
+        tpm_capacity:
+          type: integer
+        timeout_ms:
+          type: integer
+        priority:
+          type: integer
+        status:
+          type: string
+          enum: [active, cooldown, disabled]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GuardrailSimulateRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+        policy:
+          $ref: '#/components/schemas/GuardrailPolicy'
+    GuardrailPolicy:
+      type: object
+      properties:
+        org_id:
+          type: string
+        enable_prompt_injection:
+          type: boolean
+        prompt_injection_action:
+          type: string
+          enum: [block, redact, audit]
+        enable_pii_detection:
+          type: boolean
+        pii_action:
+          type: string
+          enum: [block, redact, audit]
+        enable_secret_detection:
+          type: boolean
+        secret_action:
+          type: string
+          enum: [block, redact, audit]
+        blocked_keywords:
+          type: array
+          items:
+            type: string
+        redact_output_pii:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+    GuardrailSimulateResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        applied_action:
+          type: string
+        violations:
+          type: array
+          items:
+            type: string
+        redacted:
+          type: boolean
+        redacted_prompt:
+          type: string
+        error_message:
+          type: string
+    CredentialValidateRequest:
+      type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+        api_key:
+          type: string
+          description: Required for providers that use API keys; may be omitted for Ollama.
+        base_url:
+          type: string
+        azure_deployment_name:
+          type: string
+        api_version:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+    CredentialValidateResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        provider:
+          type: string
+        validation_status:
+          type: string
+        error:
+          type: string
+        latency_ms:
+          type: integer
+          format: int64
+        discovered_models:
+          type: integer
 paths:
   /v1/chat/completions:
     post:
@@ -798,3 +1011,131 @@ paths:
       responses:
         '101':
           description: Switching Protocols to WebSocket
+  /admin/v1/users:
+    get:
+      operationId: listUsers
+      summary: List users for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminUser'
+  /admin/v1/organizations/{orgID}/subscriptions:
+    get:
+      operationId: getOrgSubscriptions
+      summary: Get subscription and tier limits for an organization
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Organization provider subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrgProviderSubscription'
+  /admin/v1/organizations/{orgID}/models:
+    get:
+      operationId: getOrgModelPolicies
+      summary: Get allowed model policies for an organization
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of model policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrgModelPolicy'
+  /admin/v1/deployments:
+    get:
+      operationId: listDeployments
+      summary: List deployments across model groups
+      parameters:
+        - name: model_group_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of deployments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminDeployment'
+  /admin/v1/organizations/{orgID}/guardrails/simulate:
+    post:
+      operationId: simulateGuardrails
+      summary: Stateless dry-run evaluation of prompt against security policy
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuardrailSimulateRequest'
+      responses:
+        '200':
+          description: Guardrail simulation evaluation verdict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailSimulateResponse'
+  /admin/v1/credentials/validate:
+    post:
+      operationId: preflightValidateCredential
+      summary: Preflight upstream validation of credentials before saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialValidateRequest'
+      responses:
+        '200':
+          description: Credential upstream validation outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialValidateResponse'

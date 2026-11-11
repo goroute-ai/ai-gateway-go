@@ -14,7 +14,7 @@ We are committed to providing a welcoming, inclusive, and harassment-free enviro
 
 ## Architectural Invariants
 
-Before writing code, please review the core repository invariants defined in [`AGENTS.md`](./AGENTS.md) and [`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md):
+Before writing code, please review the core repository invariants defined in [`CLAUDE.md`](./CLAUDE.md), [`AGENTS.md`](./AGENTS.md), and [`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md):
 
 1. **100% Pure Go, Zero CGO**: All adapters, protocol parsers, and utilities must compile with `CGO_ENABLED=0` across Linux, macOS, and Windows.
 2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (\$1.00 = 1,000,000 µ\$). Never use floating-point math for cost accumulation or pricing.
@@ -22,6 +22,7 @@ Before writing code, please review the core repository invariants defined in [`A
 4. **Multi-Tenant Isolation**: Boundary 1 Virtual Key authentication and multi-tenant RBAC allowlists (`OrgID > TeamID > UserID > VirtualKeyID`) must be preserved across all endpoints.
 5. **Contract-Driven Design**: The gateway unified OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Always run `go run ./cmd/specgen` after changing endpoints.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
+7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The uncompressed production bundle must remain under 400 KB, strictly enforced by `web/scripts/check-budget.mjs`.
 
 ---
 
@@ -30,6 +31,7 @@ Before writing code, please review the core repository invariants defined in [`A
 ### Prerequisites
 - **Go**: Version `1.22+` (Go `1.26` recommended)
 - **Git**
+- **Node.js 18+ & npm** (required only if contributing to the Operator Web UI in `web/`)
 - **Docker** (optional, for live PostgreSQL and Redis integration tests)
 
 ### Local Build and Test
@@ -40,7 +42,7 @@ Clone the repository and verify your local toolchain:
 git clone https://github.com/goroute-ai/ai-gateway-go.git
 cd ai-gateway-go
 
-# Verify dependencies
+# Verify Go dependencies
 go mod download
 
 # Run unit tests with the Go race detector
@@ -49,11 +51,30 @@ go test -race -count=1 ./internal/... ./pkg/...
 # Validate OpenAPI, JSON Schema & Protobuf contracts
 go run ./cmd/specgen
 
-# Build the gateway executable
-go build -o bin/gateway ./cmd/gateway
+# (Optional) Build frontend assets and verify bundle budget
+make ui-build
 
-# Run the gateway with example configuration
-./bin/gateway -config configs/config.yaml
+# Build the gateway executable (with embedded UI)
+go build -o bin/ai-gateway ./cmd/gateway
+
+# Run full release verification check
+make release-check
+```
+
+### Developing the Operator Web UI
+When making changes to the embedded React console in `web/`:
+```bash
+# Install frontend dependencies
+make ui-install
+
+# Start Vite live reload dev server (proxies to http://localhost:8080)
+make ui-dev
+
+# Compile assets, check bundle budget, and synchronize to internal/ui/dist/
+make ui-build
+
+# Verify that embedded distribution is in sync with web/
+make ui-check-dist
 ```
 
 ---

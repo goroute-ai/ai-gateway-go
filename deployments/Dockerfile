@@ -1,4 +1,7 @@
 # syntax=docker/dockerfile:1
+# Note: Frontend Operator UI assets are compiled and verified via 'make ui-build'
+# and embedded directly into the Go binary from internal/ui/dist via go:embed.
+# This keeps the container build fast, deterministic, reproducible, and free of Node.js toolchain overhead.
 FROM --platform=$BUILDPLATFORM golang:alpine AS builder
 ENV GOTOOLCHAIN=auto
 WORKDIR /src

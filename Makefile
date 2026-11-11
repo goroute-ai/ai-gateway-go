@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-e2e specgen run docker-build docker-up docker-down clean release-check
+.PHONY: all build fmt vet lint test test-unit test-e2e specgen run docker-build docker-up docker-down clean release-check ui-install ui-build ui-check-dist ui-dev
 
 all: release-check
 
@@ -59,13 +59,37 @@ test-e2e:
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.2.0 -f deployments/Dockerfile .
+	docker build -t goroute/ai-gateway:v1.3.0 -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build
 
 docker-down:
 	docker compose -f deployments/docker-compose.yml down
+
+# ------------------------------------------------------------------------------
+# Operator Web UI & Chat Playground
+# ------------------------------------------------------------------------------
+
+ui-install:
+	@echo "==> Installing frontend dependencies in web/..."
+	cd web && npm ci
+
+ui-build:
+	@echo "==> Building frontend web assets and enforcing bundle budget..."
+	cd web && npm run build && node scripts/check-budget.mjs
+	@echo "==> Synchronizing compiled distribution to internal/ui/dist/..."
+	rm -rf internal/ui/dist/* && cp -R web/dist/* internal/ui/dist/
+	@echo "==> Frontend assets built and synchronized successfully."
+
+ui-check-dist:
+	@echo "==> Verifying internal/ui/dist synchronization..."
+	@git diff --quiet internal/ui/dist || (echo "❌ internal/ui/dist is out of sync with web/. Run 'make ui-build' to synchronize." && exit 1)
+	@echo "==> internal/ui/dist is in sync."
+
+ui-dev:
+	@echo "==> Starting Vite local dev server with API proxy..."
+	cd web && npm run dev
 
 # ------------------------------------------------------------------------------
 # Release Verification Gate
@@ -77,5 +101,5 @@ clean:
 
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.2.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway v1.3.0 — All Release Checks Passed Successfully! "
 	@echo "======================================================================"

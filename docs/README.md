@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Documentation Hub
 
-Welcome to the **GoRoute AI Gateway** (`github.com/goroute-ai/ai-gateway-go`) documentation suite. Coding agents and new contributors should start with the repository [AGENTS.md](../AGENTS.md), then use the [codebase map](./CODEBASE_MAP.md) to find implementations and sources of truth.
+Welcome to the **GoRoute AI Gateway** (`github.com/goroute-ai/ai-gateway-go`) documentation suite. Coding agents and new contributors should start with [CLAUDE.md](../CLAUDE.md) (Claude Code) or [AGENTS.md](../AGENTS.md) (general coding agents), then use the [codebase map](./CODEBASE_MAP.md) to find implementations and sources of truth.
 
 ---
 
@@ -31,15 +31,18 @@ docs/
    *Implementation paths, tests, change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Human-readable endpoint and protocol guide. Machine-readable contracts under `openapi/` and `specs/` are authoritative for schema shapes.*
+   *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces:*
    - Unified Multi-Modal Data Plane (21 endpoints: `/v1/chat/completions`, `/v1/embeddings`, `/v1/models`, `/v1/rerank`, `/v1/moderations`, `/v1/completions`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/tokenize`, `/v1/audio/*`, `/v1/images/*`, `/v1/files/*`, `/v1/batches/*`, `/v1/responses`, `/v1/realtime`).
+   - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
-   - Admin Control Plane (`/admin/v1/*`) and Prometheus Metrics scraping (`/metrics`).
+   - Admin Control Plane (`/admin/v1/*`), including preflight credential validation and guardrail simulation, plus Prometheus Metrics scraping (`/metrics`).
 
 3. **[Subsystem Internals & Engineering Guide (`INTERNALS.md`)](./INTERNALS.md)**  
    *Deep-dive code tour and mathematical specifications for core contributors and platform architects:*
    - Synchronous and Real-Time SSE Streaming Data Plane lifecycles with sequence diagrams.
+   - Embedded Operator Web UI serving mechanics, memory footprint, cache header policy, and HTML5 History fallback.
+   - Stateless Guardrails Simulator (`EvaluateInputWithPolicy`) and preflight credential validation mechanics.
    - Stage-1 heuristic prompt complexity classifier formula (< 0.1ms) and Stage-2 load balancing models.
    - AES-256-GCM Envelope Encryption (DEK/KEK) and SHA-256 constant-time hash verification.
    - Exact 64-bit micro-dollar integer accounting formula ($10^{-6}\text{ USD}$) with zero float drift.
@@ -49,13 +52,15 @@ docs/
 
 4. **[System Architecture & Production Reference (`ARCHITECTURE.md`)](./ARCHITECTURE.md)**  
    *High-Level and Low-Level enterprise architecture specification:*
-   - Enterprise AI Control Plane topology and 4-layer model governance architecture.
+   - Enterprise AI Control Plane topology and 9 foundational subsystems, including the Embedded Operator Web UI.
+   - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
    - Reliability manager state machine (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`) and cross-provider failover chains.
    - Horizontal pod scalability and distributed caching hierarchy (L1 Memory + L2 Redis).
 
 5. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*
+   - Embedded Operator Web UI browser access (`http://localhost:8080/ui/`) and Admin Key authentication.
    - Declarative `model_list` setup via `configs/config.yaml` and environment variables.
    - In-process Go SDK (`pkg/gateway`) integration and remote client usage.
    - Complete configuration parameters table with default values and security notes.

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/partial-claude-code-settings.json",
+  "project": {
+    "name": "goroute-ai-gateway",
+    "description": "Ultra-fast AI Gateway, MCP Hub, and Agent-to-Agent Router in 100% Pure Go with Embedded React Operator UI",
+    "primaryLanguage": "go",
+    "secondaryLanguages": ["typescript", "sql"]
+  },
+  "rules": {
+    "include": [
+      ".claude/rules/go-backend.md",
+      ".claude/rules/frontend-web.md",
+      ".claude/rules/api-contracts.md"
+    ]
+  }
+}

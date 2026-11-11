@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+---
+
+## [1.3.0] - 2026-11-11
+
+### Embedded Operator Web UI, Admin Control Plane Extensions & Claude Code Alignment
+
+#### Embedded Operator Web UI & Streaming Chat Playground (`internal/ui/`, `web/`)
+- Pure Go single-binary web console embedded via `//go:embed all:dist` mounted at `/ui/`.
+- Multi-turn Server-Sent Events (SSE) chat playground with real-time token/latency meters and parameter tuning.
+- Interactive model catalogue browser, Virtual API Key provisioning, and live FinOps spend analytics.
+- Interactive Guardrail Simulator testing regex PII redaction and secret scanning with zero LLM costs.
+- Upstream provider credentials vault with live preflight validation against target provider endpoints.
+- Strict bundle budget enforcement (< 400 KB total; `web/scripts/check-budget.mjs`) and zero-Node Dockerfile.
+
+#### Admin Control Plane Extensions
+- Added `POST /admin/v1/credentials/validate`: Preflight upstream credential verification before vault persistence.
+- Added `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless prompt safety evaluation against custom policies.
+- Added `GET /admin/v1/organizations/{orgID}/subscriptions`: List Layer 2 vendor subscriptions.
+- Added `GET /admin/v1/organizations/{orgID}/models`: List Layer 3 model policies and overrides.
+- Added `GET /admin/v1/users`: List registered organization users with role assignments.
+- Added `GET /admin/v1/deployments`: List active upstream deployments across model groups.
+
+#### Claude Code Best Practices Integration
+- Persistent root guide `CLAUDE.md` (< 100 lines) following Anthropic guidelines with deterministic commands and invariants.
+- Modular rules in `.claude/rules/` (`go-backend.md`, `frontend-web.md`, `api-contracts.md`).
+- Project configuration in `.claude/settings.json` and memory hygiene in `.gitignore`.
+
+#### Comprehensive Documentation & Field Alignment
+- Fixed `fallbacks` nesting under `model_list` in `configs/config.example.yaml`.
+- Expanded `docs/CONFIGURATION_GUIDE.md` parameters table covering all 70+ configuration options and environment overrides.
+- Documented all 12 Admin Control Plane API groups in `docs/API_REFERENCE.md`.
+- Explicit PostgreSQL table schema definitions across all 16 persistent entities in `docs/ARCHITECTURE.md`.
+- Redesigned `README.md` into an enterprise product showcase with dark branding and visual architecture diagram.
+
+---
+
 ## [1.2.0] - 2026-11-10
 
 ### Full API Breadth Parity with LiteLLM, Multi-Modal Ingress & Production Hardening
