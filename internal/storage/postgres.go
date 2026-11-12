@@ -422,12 +422,12 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		INSERT INTO virtual_keys (
 			id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints,
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-			max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+			max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, string(vk.Role), vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
-		vk.MaxBudgetMicros, vk.SpentMicros, vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.IsActive,
+		vk.MaxBudgetMicros, vk.SpentMicros, vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
 	); err != nil {
 		return err
 	}
@@ -435,13 +435,13 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 }
 
 func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE key_hash = $1`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE key_hash = $1`
 	var k domain.VirtualKey
 	var role string
 	if err := p.pool.QueryRow(ctx, q, keyHash).Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
@@ -450,13 +450,13 @@ func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash st
 }
 
 func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE id = $1`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE id = $1`
 	var k domain.VirtualKey
 	var role string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
@@ -465,7 +465,7 @@ func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (
 }
 
 func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`
 	rows, err := p.pool.Query(ctx, q, orgID)
 	if err != nil {
 		return nil, err
@@ -478,7 +478,7 @@ func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) 
 		if err := rows.Scan(
 			&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 			&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-			&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+			&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 		); err != nil {
 			return nil, err
 		}
@@ -785,6 +785,9 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 		&pol.OrgID, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
 		&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
 	); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	pol.PromptInjectionAction = domain.GuardrailAction(injAct)
@@ -956,8 +959,11 @@ func (p *PostgresRepository) GetSpendSummary(ctx context.Context, orgID string) 
 		args = append(args, orgID)
 	}
 
-	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0) FROM spend_logs ` + whereClause
-	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros); err != nil {
+	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0),
+		COUNT(*) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')),
+		COALESCE(SUM(total_tokens) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')), 0)
+		FROM spend_logs ` + whereClause
+	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros, &sum.UnpricedRequests, &sum.UnpricedTokens); err != nil {
 		return p.mem.GetSpendSummary(ctx, orgID)
 	}
 	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0

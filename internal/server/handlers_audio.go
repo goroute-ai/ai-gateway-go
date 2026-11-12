@@ -129,10 +129,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	// 3. Rate Limit Quota
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, 50)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -299,10 +296,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	}
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

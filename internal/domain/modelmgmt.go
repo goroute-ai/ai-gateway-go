@@ -251,20 +251,21 @@ type ModelGroup struct {
 
 // Deployment represents Layer 4 of Model Management: a concrete physical endpoint inside a ModelGroup.
 type Deployment struct {
-	ID             string           `json:"id"`
-	ModelGroupID   string           `json:"model_group_id"`
-	GlobalModelID  string           `json:"global_model_id"`
-	CredentialID   string           `json:"credential_id"`
-	DeploymentName string           `json:"deployment_name"`
-	Region         string           `json:"region"`
-	Weight         int              `json:"weight"`
-	RPMCapacity    int              `json:"rpm_capacity"`
-	TPMCapacity    int              `json:"tpm_capacity"`
-	TimeoutMs      int              `json:"timeout_ms"`
-	Priority       int              `json:"priority"`
-	Status         DeploymentStatus `json:"status"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
+	ID                string           `json:"id"`
+	CircuitProbeToken string           `json:"-"`
+	ModelGroupID      string           `json:"model_group_id"`
+	GlobalModelID     string           `json:"global_model_id"`
+	CredentialID      string           `json:"credential_id"`
+	DeploymentName    string           `json:"deployment_name"`
+	Region            string           `json:"region"`
+	Weight            int              `json:"weight"`
+	RPMCapacity       int              `json:"rpm_capacity"`
+	TPMCapacity       int              `json:"tpm_capacity"`
+	TimeoutMs         int              `json:"timeout_ms"`
+	Priority          int              `json:"priority"`
+	Status            DeploymentStatus `json:"status"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
 	// Hydrated associations for hot-path execution
 	GlobalModel *GlobalModel        `json:"global_model,omitempty"`
 	Credential  *ProviderCredential `json:"credential,omitempty"`

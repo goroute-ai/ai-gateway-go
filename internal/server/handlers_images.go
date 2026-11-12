@@ -131,10 +131,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	// 2. Rate Limiting Quota Acquire (100 tokens estimate per generated image)
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, req.N*100)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

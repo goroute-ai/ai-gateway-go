@@ -217,6 +217,8 @@ export interface SpendSummary {
   total_tokens: number;
   total_cost_micros: number;
   total_cost_usd: number;
+  unpriced_requests: number;
+  unpriced_tokens: number;
   spend_by_provider?: Record<string, number>;
   spend_by_model?: Record<string, number>;
   spend_by_team?: Record<string, number>;

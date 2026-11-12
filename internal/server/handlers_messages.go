@@ -149,10 +149,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

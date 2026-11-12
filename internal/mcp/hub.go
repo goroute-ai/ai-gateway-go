@@ -365,9 +365,11 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 
 	// 7. Output guardrail inspection and redaction on tool call result
 	if h.guardrails != nil && resp.Result != nil {
-		if _, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result); err == nil {
-			resp.Result = redactedResult
+		_, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
+		if err != nil {
+			return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
 		}
+		resp.Result = redactedResult
 	}
 
 	// 8. FinOps spend debit. Do not cache a success until accounting is durable.

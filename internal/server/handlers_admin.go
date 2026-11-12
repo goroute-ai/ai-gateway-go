@@ -721,7 +721,16 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 		Model string `json:"model,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	purged, nsVer := s.respCache.Invalidate(r.Context(), req.OrgID, req.Model)
+	purged, nsVer, err := s.respCache.Invalidate(r.Context(), req.OrgID, req.Model)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusServiceUnavailable,
+			Type:       domain.ErrorTypeServer,
+			Code:       "cache_invalidation_unavailable",
+			Message:    "Response cache invalidation could not update shared state",
+		})
+		return
+	}
 	s.audit(r.Context(), req.OrgID, "cache.invalidated", "response_cache", "global", map[string]any{
 		"org_id":            req.OrgID,
 		"model":             req.Model,

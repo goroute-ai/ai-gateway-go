@@ -928,6 +928,10 @@ func (r *MemoryRepository) GetSpendSummary(ctx context.Context, orgID string) (*
 		sum.TotalRequests++
 		sum.TotalTokens += int64(ev.Usage.TotalTokens)
 		sum.TotalCostMicros += ev.CostMicros
+		if ev.PricingStatus == domain.PricingStatusUnknown || ev.PricingStatus == domain.PricingStatusUnrecorded {
+			sum.UnpricedRequests++
+			sum.UnpricedTokens += int64(ev.Usage.TotalTokens)
+		}
 		sum.SpendByProvider[string(ev.Provider)] += ev.CostMicros
 		sum.SpendByModel[ev.ResolvedModel] += ev.CostMicros
 		if ev.TeamID != "" {
