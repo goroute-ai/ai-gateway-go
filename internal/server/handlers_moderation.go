@@ -145,14 +145,13 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -173,7 +172,10 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		Modality:                domain.ModalityModeration,
 		ModalityUnits:           map[string]any{"input_items": len(inputs)},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 
 	logger.InfoContext(r.Context(), "Moderation request completed",
 		slog.String("component", "inference"),

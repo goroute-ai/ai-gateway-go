@@ -372,14 +372,9 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		resp.Result = redactedResult
 	}
 
-	// 8. Cache storage if response is valid and cacheable
-	if cacheKey != "" && h.cache != nil && ShouldCache("tools/call", resp) {
-		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
-	}
-
-	// 9. FinOps spend debit
+	// 8. FinOps spend debit. Do not cache a success until accounting is durable.
 	if h.spendRecorder != nil && targetTool != nil && targetTool.CostPerCallMicros > 0 {
-		h.spendRecorder.Enqueue(domain.SpendEvent{
+		if err := h.spendRecorder.Record(ctx, domain.SpendEvent{
 			ID:             "spend_" + uuid.NewString(),
 			RequestID:      reqID,
 			Protocol:       "mcp",
@@ -391,7 +386,13 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 			Endpoint:       "/mcp",
 			CostMicros:     targetTool.CostPerCallMicros,
 			CreatedAt:      time.Now().UTC(),
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("persist MCP spend event: %w", err)
+		}
+	}
+	// 9. Cache storage if response is valid and cacheable.
+	if cacheKey != "" && h.cache != nil && ShouldCache("tools/call", resp) {
+		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
 	}
 
 	callResp, err := extractCallToolResponse(resp.Result)

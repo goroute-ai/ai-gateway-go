@@ -181,14 +181,13 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -213,7 +212,10 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 			"size":         req.Size,
 		},
 		CreatedAt: time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 
 	logger.InfoContext(r.Context(), "Image generation completed",
 		slog.String("component", "images"),
@@ -319,24 +321,24 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	}
 
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
-	if s.spendWorker != nil {
-		s.spendWorker.Enqueue(domain.SpendEvent{
-			ID:             "sp_" + uuid.NewString(),
-			RequestID:      reqID,
-			OrgID:          idCtx.OrgID,
-			TeamID:         idCtx.TeamID,
-			UserID:         idCtx.UserID,
-			VirtualKeyID:   idCtx.VirtualKeyID,
-			Endpoint:       "/v1/images/edits",
-			Modality:       domain.ModalityImage,
-			RequestedModel: model,
-			ResolvedModel:  resp.Model,
-			DeploymentID:   depID,
-			PricingVersion: pricingVer,
-			CostMicros:     costMicros,
-			StatusCode:     http.StatusOK,
-			CreatedAt:      time.Now().UTC(),
-		})
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
+		ID:             "sp_" + uuid.NewString(),
+		RequestID:      reqID,
+		OrgID:          idCtx.OrgID,
+		TeamID:         idCtx.TeamID,
+		UserID:         idCtx.UserID,
+		VirtualKeyID:   idCtx.VirtualKeyID,
+		Endpoint:       "/v1/images/edits",
+		Modality:       domain.ModalityImage,
+		RequestedModel: model,
+		ResolvedModel:  resp.Model,
+		DeploymentID:   depID,
+		PricingVersion: pricingVer,
+		CostMicros:     costMicros,
+		StatusCode:     http.StatusOK,
+		CreatedAt:      time.Now().UTC(),
+	}) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -424,24 +426,24 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	}
 
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
-	if s.spendWorker != nil {
-		s.spendWorker.Enqueue(domain.SpendEvent{
-			ID:             "sp_" + uuid.NewString(),
-			RequestID:      reqID,
-			OrgID:          idCtx.OrgID,
-			TeamID:         idCtx.TeamID,
-			UserID:         idCtx.UserID,
-			VirtualKeyID:   idCtx.VirtualKeyID,
-			Endpoint:       "/v1/images/variations",
-			Modality:       domain.ModalityImage,
-			RequestedModel: model,
-			ResolvedModel:  resp.Model,
-			DeploymentID:   depID,
-			PricingVersion: pricingVer,
-			CostMicros:     costMicros,
-			StatusCode:     http.StatusOK,
-			CreatedAt:      time.Now().UTC(),
-		})
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
+		ID:             "sp_" + uuid.NewString(),
+		RequestID:      reqID,
+		OrgID:          idCtx.OrgID,
+		TeamID:         idCtx.TeamID,
+		UserID:         idCtx.UserID,
+		VirtualKeyID:   idCtx.VirtualKeyID,
+		Endpoint:       "/v1/images/variations",
+		Modality:       domain.ModalityImage,
+		RequestedModel: model,
+		ResolvedModel:  resp.Model,
+		DeploymentID:   depID,
+		PricingVersion: pricingVer,
+		CostMicros:     costMicros,
+		StatusCode:     http.StatusOK,
+		CreatedAt:      time.Now().UTC(),
+	}) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

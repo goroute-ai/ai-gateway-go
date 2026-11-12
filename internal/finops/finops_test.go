@@ -2,6 +2,7 @@ package finops_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,15 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
+
+type failingOutboxRepository struct {
+	storage.Repository
+	err error
+}
+
+func (r failingOutboxRepository) EnqueueSpendEvent(context.Context, domain.SpendEvent) error {
+	return r.err
+}
 
 func TestCostCalculatorAndAsyncSpendWorker(t *testing.T) {
 	ctx := context.Background()
@@ -45,7 +55,7 @@ func TestCostCalculatorAndAsyncSpendWorker(t *testing.T) {
 	})
 	sw.Start(ctx)
 
-	sw.Enqueue(domain.SpendEvent{
+	if err := sw.Record(ctx, domain.SpendEvent{
 		RequestID:      "req-1",
 		OrgID:          org.ID,
 		TeamID:         team.ID,
@@ -57,7 +67,9 @@ func TestCostCalculatorAndAsyncSpendWorker(t *testing.T) {
 		Usage:          domain.TokenUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 		CostMicros:     cost,
 		StatusCode:     200,
-	})
+	}); err != nil {
+		t.Fatalf("record spend event: %v", err)
+	}
 
 	sw.Stop(ctx)
 
@@ -68,5 +80,72 @@ func TestCostCalculatorAndAsyncSpendWorker(t *testing.T) {
 	updatedOrg, _ := repo.GetOrganization(ctx, org.ID)
 	if updatedOrg.SpentMicros != 6000 {
 		t.Fatalf("expected org spent_micros=6000, got %d", updatedOrg.SpentMicros)
+	}
+}
+
+func TestSpendOutboxSurvivesWorkerRestartAndDuplicateDelivery(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	ev := domain.SpendEvent{ID: "stable-spend-id", RequestID: "request-1", CostMicros: 42, StatusCode: 200}
+	first := finops.NewSpendWorker(repo, nil, config.FinOpsConfig{})
+	if err := first.Record(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	// No worker has delivered the row yet. A new worker represents a restarted process.
+	restarted := finops.NewSpendWorker(repo, nil, config.FinOpsConfig{})
+	if err := restarted.FlushNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the worker committing to the ledger but crashing before outbox ack.
+	if err := repo.RecordSpendBatch(ctx, []domain.SpendEvent{ev}); err != nil {
+		t.Fatal(err)
+	}
+	// Re-enqueueing the same stable ID and delivering it again must not double-count.
+	if err := restarted.Record(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.FlushNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := repo.GetSpendSummary(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalRequests != 1 || summary.TotalCostMicros != 42 {
+		t.Fatalf("duplicate delivery changed ledger: %+v", summary)
+	}
+}
+
+func TestSpendOutboxRetryAndDeadLetterState(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.EnqueueSpendEvent(ctx, domain.SpendEvent{ID: "retry-id"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := repo.ClaimSpendEvents(ctx, 1, time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: events=%d err=%v", len(claimed), err)
+	}
+	if err := repo.RetrySpendEvent(ctx, "retry-id", context.DeadlineExceeded, time.Now().Add(-time.Second), 2); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = repo.ClaimSpendEvents(ctx, 1, time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("retry claim: events=%d err=%v", len(claimed), err)
+	}
+	if err := repo.RetrySpendEvent(ctx, "retry-id", context.DeadlineExceeded, time.Now(), 2); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = repo.ClaimSpendEvents(ctx, 1, time.Minute)
+	if err != nil || len(claimed) != 0 {
+		t.Fatalf("dead-letter event was claimable: events=%d err=%v", len(claimed), err)
+	}
+}
+
+func TestRecordReturnsPersistenceFailure(t *testing.T) {
+	want := errors.New("database unavailable")
+	worker := finops.NewSpendWorker(failingOutboxRepository{Repository: storage.NewMemoryRepository(), err: want}, nil, config.FinOpsConfig{})
+	if err := worker.Record(context.Background(), domain.SpendEvent{RequestID: "request-1"}); !errors.Is(err, want) {
+		t.Fatalf("Record error = %v, want %v", err, want)
 	}
 }
