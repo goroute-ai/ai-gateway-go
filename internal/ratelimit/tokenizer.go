@@ -180,7 +180,7 @@ func EstimateAudioUploadTokens(model string, uploadBytes int64, prompt string) i
 		uploadBytes = 0
 	}
 	profile := ResolveTokenizerProfile(model)
-	const bytesPerEstimatedToken = 32
+	const bytesPerEstimatedToken = 512
 	audioTokens := int((uploadBytes + bytesPerEstimatedToken - 1) / bytesPerEstimatedToken)
 	total := audioTokens + EstimateTextTokens(prompt, profile) + 50
 	if total < 50 {

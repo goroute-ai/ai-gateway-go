@@ -398,7 +398,7 @@ CostMicros = floor((picos + 500000) / 1000000)
 Rate limiting is enforced atomically across **Virtual Key**, **Team**, and **Organization** scopes for Requests Per Minute (RPM), Tokens Per Minute (TPM), and Max Concurrent In-Flight Connections.
 
 ### 8.1 Model-Specific Preflight Estimation
-Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 32)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
+Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 512)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
 
 These are quota-admission estimates, not provider billing tokenizers. Audio, image-generation, and provider-specific multimodal accounting remain approximate; returned provider usage is reconciled where the endpoint exposes it. Operators should size TPM limits with that limitation in mind.
 
