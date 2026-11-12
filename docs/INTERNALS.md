@@ -449,11 +449,12 @@ Invalidation increments the relevant shared epoch(s) and a monotonic revision in
 ## 10. Cross-Cutting Platform Modules
 
 ### 10.1 Security Guardrails Engine (`internal/guardrails`)
-Zero external ML dependencies. Operates using compiled regular expressions and signature matchers:
+Zero external scanners are enabled by default. The engine operates locally using compiled regular expressions and signature matchers, and accepts optional provider-neutral `guardrails.Scanner` implementations through `GatewayServer.ConfigureGuardrailScanners`:
 - **Prompt Injection Defense**: Scans for known override signatures (`ignore previous instructions`, `disregard your system prompt`, `reveal your system prompt`, `<|im_start|>system`, `you are now DAN`).
 - **PII Redaction**: Detects and redacts Social Security Numbers (`[REDACTED_SSN]`), credit card numbers (`[REDACTED_CARD]`), and email addresses (`[REDACTED_EMAIL]`).
 - **Secret Leak Detection**: Identifies and masks leaked API keys (`sk-...`, AWS `AKIA...`, Google `AQ...`).
 - **Output Sanitization**: When `redact_output_pii` is enabled on the organization policy, model output completions are sanitized before returning to the client.
+- **Optional Scanner Hooks**: An injected scanner receives tenant ID, input/output direction, and content through a bounded context. The default timeout is two seconds; callers can set a custom timeout and choose fail-closed or fail-open handling for scanner errors. The production default remains no injected scanner and no network calls. Scanner implementations must honor context cancellation; any network-backed implementation must use the gateway's outbound network security policy.
 
 ### 10.2 Pre-Flight Validator (`internal/validation`)
 Validates request structures before consuming upstream quota:
