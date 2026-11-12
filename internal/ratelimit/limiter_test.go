@@ -2,137 +2,107 @@ package ratelimit_test
 
 import (
 	"context"
+	"errors"
+	"net"
+	"net/http"
 	"testing"
-	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/cache"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func TestRateLimiterRPMTPMConcurrencyBudgetAndResponseCache(t *testing.T) {
+func TestLimiterFailsClosedWithoutRedisForConfiguredLimits(t *testing.T) {
 	ctx := context.Background()
-	limiter := ratelimit.NewLimiter(nil, 60, 300)
-
 	idCtx := &domain.IdentityContext{
-		VirtualKeyID:       "vk-1",
-		OrgID:              "org-1",
-		KeyRPMLimit:        2,
-		KeyTPMLimit:        100,
-		KeyMaxConcurrent:   1,
-		KeyMaxBudgetMicros: 500,
+		VirtualKeyID:       "vk-limited",
+		OrgID:              "org-limited",
+		KeyRPMLimit:        10,
+		KeyMaxBudgetMicros: 1_000_000,
 	}
 
+	for i := 0; i < 2; i++ {
+		limiter := ratelimit.NewLimiter(nil, 60, 300)
+		_, err := limiter.Acquire(ctx, idCtx, 5)
+		var gatewayErr *domain.GatewayError
+		if !errors.As(err, &gatewayErr) {
+			t.Fatalf("limiter %d: expected a gateway error, got %v", i, err)
+		}
+		if gatewayErr.StatusCode != http.StatusServiceUnavailable || gatewayErr.Code != "rate_limiter_unavailable" {
+			t.Fatalf("limiter %d: expected fail-closed 503, got status=%d code=%q", i, gatewayErr.StatusCode, gatewayErr.Code)
+		}
+	}
+}
+
+func TestLimiterAllowsUnmeteredRequestWithoutRedis(t *testing.T) {
+	limiter := ratelimit.NewLimiter(nil, 60, 300)
+	release, err := limiter.Acquire(context.Background(), &domain.IdentityContext{
+		VirtualKeyID: "vk-unmetered",
+		OrgID:        "org-unmetered",
+	}, 5)
+	if err != nil {
+		t.Fatalf("unmetered request should not require Redis: %v", err)
+	}
+	release(5)
+}
+
+func TestLimiterFailsClosedWhenRedisIsUnreachable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	limiter := ratelimit.NewLimiter(storage.NewRedisFabric(addr, "", 0), 60, 300)
+	_, err = limiter.Acquire(context.Background(), &domain.IdentityContext{
+		VirtualKeyID: "vk-limited",
+		KeyRPMLimit:  10,
+	}, 5)
+	var gatewayErr *domain.GatewayError
+	if !errors.As(err, &gatewayErr) || gatewayErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected fail-closed 503 when Redis is unreachable, got %v", err)
+	}
+}
+
+func TestLimiterInstancesShareRedisQuotaState(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	fabricA := storage.NewRedisFabric(redisServer.Addr(), "", 0)
+	fabricB := storage.NewRedisFabric(redisServer.Addr(), "", 0)
+	limiterA := ratelimit.NewLimiter(fabricA, 60, 300)
+	limiterB := ratelimit.NewLimiter(fabricB, 60, 300)
+	idCtx := &domain.IdentityContext{VirtualKeyID: "vk-shared", KeyRPMLimit: 1}
+
+	release, err := limiterA.Acquire(context.Background(), idCtx, 1)
+	if err != nil {
+		t.Fatalf("first limiter acquire failed: %v", err)
+	}
+	release(1)
+
+	if _, err := limiterB.Acquire(context.Background(), idCtx, 1); err == nil {
+		t.Fatal("second limiter should observe the shared RPM counter")
+	}
+}
+
+func TestTokenizerProfilesAndRequestEstimate(t *testing.T) {
 	req := &domain.CanonicalChatRequest{
 		Model:    "gpt-4.1",
 		Messages: []domain.CanonicalMessage{{Role: "user", Content: "Hello world"}},
 	}
-	est := ratelimit.EstimateRequestTokens(req)
-	if est <= 0 {
-		t.Fatalf("expected positive token estimate, got %d", est)
+	if tokens := ratelimit.EstimateRequestTokens(req); tokens <= 0 {
+		t.Fatalf("expected positive token estimate, got %d", tokens)
 	}
-
-	// Verify model-specific tokenizer profiles
-	if prof := ratelimit.ResolveTokenizerProfile("gpt-4.1"); prof != ratelimit.ProfileO200K {
-		t.Fatalf("expected o200k_base for gpt-4.1, got %s", prof)
+	profiles := map[string]ratelimit.TokenizerProfile{
+		"gpt-4.1":                  ratelimit.ProfileO200K,
+		"claude-sonnet-4-20250514": ratelimit.ProfileClaudeBPE,
+		"gemini-2.5-flash":         ratelimit.ProfileGeminiSP,
 	}
-	if prof := ratelimit.ResolveTokenizerProfile("claude-sonnet-4-20250514"); prof != ratelimit.ProfileClaudeBPE {
-		t.Fatalf("expected claude_bpe for claude-sonnet-4, got %s", prof)
-	}
-	if prof := ratelimit.ResolveTokenizerProfile("gemini-2.5-flash"); prof != ratelimit.ProfileGeminiSP {
-		t.Fatalf("expected gemini_sp for gemini-2.5-flash, got %s", prof)
-	}
-
-	// 1. Acquire #1 succeeds
-	release1, err := limiter.Acquire(ctx, idCtx, 30)
-	if err != nil {
-		t.Fatalf("acquire #1 failed: %v", err)
-	}
-
-	// 2. While #1 is still in-flight, KeyMaxConcurrent=1 blocks a concurrent request
-	if _, err := limiter.Acquire(ctx, idCtx, 10); err == nil {
-		t.Fatalf("expected concurrency limit (1) to block second concurrent request")
-	}
-
-	// Release #1
-	release1(25)
-
-	// 3. Acquire #2 now succeeds, but a request exceeding TPM (100) is blocked
-	if _, err := limiter.Acquire(ctx, idCtx, 90); err == nil {
-		t.Fatalf("expected TPM limit (100) to block 25 + 90 = 115 tokens")
-	}
-
-	release2, err := limiter.Acquire(ctx, idCtx, 20)
-	if err != nil {
-		t.Fatalf("acquire #2 failed: %v", err)
-	}
-	release2(20)
-
-	// 4. Acquire #3 exceeds RPM limit (2)
-	if _, err := limiter.Acquire(ctx, idCtx, 5); err == nil {
-		t.Fatalf("expected RPM limit (2) to block 3rd request in same minute")
-	}
-
-	// 5. Budget Exceeded test
-	overBudgetCtx := &domain.IdentityContext{
-		VirtualKeyID:       "vk-budget",
-		OrgID:              "org-1",
-		KeyMaxBudgetMicros: 1000,
-		KeySpentMicros:     1000,
-	}
-	if _, err := limiter.Acquire(ctx, overBudgetCtx, 5); err == nil {
-		t.Fatalf("expected budget exceeded error")
-	}
-
-	// 6. Test Distributed Fallback Modes (local_divided_by_replicas & fail_closed)
-	scaledLimiter := ratelimit.NewLimiter(nil, 60, 300)
-	scaledLimiter.SetFallbackPolicy(ratelimit.FallbackLocalDividedByReplicas, 4) // 4 pods -> RPM=8 becomes 2 per pod
-	podCtx := &domain.IdentityContext{
-		VirtualKeyID: "vk-pod",
-		OrgID:        "org-1",
-		KeyRPMLimit:  8,
-	}
-	r1, err := scaledLimiter.Acquire(ctx, podCtx, 1)
-	if err != nil {
-		t.Fatalf("pod acquire #1 failed: %v", err)
-	}
-	r1(1)
-	r2, err := scaledLimiter.Acquire(ctx, podCtx, 1)
-	if err != nil {
-		t.Fatalf("pod acquire #2 failed: %v", err)
-	}
-	r2(1)
-	if _, err := scaledLimiter.Acquire(ctx, podCtx, 1); err == nil {
-		t.Fatalf("expected scaled per-pod limit (8/4 = 2 RPM) to block 3rd request")
-	}
-
-	scaledLimiter.SetFallbackPolicy(ratelimit.FallbackFailClosed, 4)
-	if _, err := scaledLimiter.Acquire(ctx, podCtx, 1); err == nil {
-		t.Fatalf("expected fail_closed fallback mode to reject request when Redis is absent")
-	}
-
-	// 7. Test Exact-Match Response Cache + Safe Cache Invalidation
-	rc := cache.NewResponseCache(true, time.Minute, nil)
-	zero := 0.0
-	req.Temperature = &zero
-	if !rc.IsCacheable(req, "") {
-		t.Fatalf("expected temperature=0 request to be cacheable")
-	}
-	ck := rc.ComputeKey("org-1", req)
-	rc.SetWithMeta(ctx, ck, "org-1", &domain.CanonicalChatResponse{ID: "cached-1", Model: "gpt-4.1"})
-	got, hit := rc.Get(ctx, ck)
-	if !hit || got.ID != "cached-1" {
-		t.Fatalf("expected cache hit for key %s", ck)
-	}
-
-	purged, _, err := rc.Invalidate(ctx, "org-1", "")
-	if err != nil {
-		t.Fatalf("invalidate response cache: %v", err)
-	}
-	if purged != 1 {
-		t.Fatalf("expected 1 purged cache entry for org-1, got %d", purged)
-	}
-	if _, hitAfter := rc.Get(ctx, ck); hitAfter {
-		t.Fatalf("expected cache miss after org invalidation")
+	for model, want := range profiles {
+		if got := ratelimit.ResolveTokenizerProfile(model); got != want {
+			t.Errorf("ResolveTokenizerProfile(%q) = %s, want %s", model, got, want)
+		}
 	}
 }

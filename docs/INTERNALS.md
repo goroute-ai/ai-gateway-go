@@ -258,7 +258,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - Authenticate using Virtual API Keys: sk-gw-<8char_id>-<36char_secret>                |
 |  - Persistent Storage: Only SHA-256(full_key) is stored in PostgreSQL                   |
 |  - Verification: crypto/subtle.ConstantTimeCompare against L1/L2 cached hash             |
-|  - Multi-Pod Invalidation: Redis Pub/Sub broadcast on gw:events:invalidation             |
+|  - Cached key expiry is checked on both L1 and Redis L2 hits                              |
+|  - Key revocation broadcasts L1 eviction through gw:events:invalidation                   |
 +-----------------------------------------------------------------------------------------+
                                              |
                                              v
@@ -270,6 +271,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - In-Memory Security: Plaintext keys zeroed out after request construction             |
 +-----------------------------------------------------------------------------------------+
 ```
+
+Virtual-key expiry metadata is stored with each cached identity and checked on every L1 and Redis L2 cache hit. Key revocation deletes the shared L2 entry and publishes a key-hash invalidation event; gateway workers evict matching L1 identities when they receive it. If Redis cannot deliver the event, another worker can retain its L1 identity only until its configured L1 cache TTL expires.
 
 ### Envelope Encryption Specification
 For every stored upstream provider API key:
@@ -317,12 +320,13 @@ stateDiagram-v2
     CLOSED --> [*]
 ```
 
-- **Distributed Cooldown**: Stored in Redis (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods immediately cease routing traffic to it.
-- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, the circuit enters `HALF_OPEN` and admits **strictly one probe request** while locking out concurrent requests. If the probe succeeds, the circuit resets to `CLOSED`.
+- **Distributed Cooldown**: Redis stores an open-state marker and the expiring cooldown (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods cease routing traffic to it.
+- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, an atomic Redis script grants one 5-minute probe lease across pods. A failed probe restores the cooldown; a successful request clears the shared state and lease. If Redis is unavailable, the manager uses local circuit state and cannot coordinate probes across replicas.
+- **Streaming Retry Safety**: Before the first output chunk, retryable failures use the same bounded full-jitter backoff and in-range upstream `Retry-After` handling as non-streaming calls. Once a chunk is emitted, the gateway returns the stream error without replaying the request.
 
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
-- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` chain (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`), transparently re-translating the request across providers and setting header `X-Gateway-Fallback-Attempted: true`.
+- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` graph in declaration order (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`). Traversal is limited to 16 edges, skips cycles and duplicate groups, and remains within the primary organization. The gateway re-translates the request across providers and sets `X-Gateway-Fallback-Attempted: true`.
 
 ### 6.4 Pure Go Dedicated Protocol Engines
 GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
@@ -418,11 +422,8 @@ Once the upstream provider returns actual token usage, the gateway reconciles th
 $$\Delta\text{Tokens} = \text{ActualTotalTokens} - \text{EstimatedPromptTokens}$$
 The minute's TPM counter is adjusted by $\Delta\text{Tokens}$, and the in-flight concurrency counter is decremented via `DECR gw:rl:conc:{key_id}`.
 
-### 8.4 Redis Circuit Breaker Fallback
-If Redis becomes unreachable, the rate limiter falls back according to its configured mode:
-- **`local_divided_by_replicas` (Default)**: Automatically divides configured limits by expected cluster pods (`limit / replicas`), preventing quota overshoots during a Redis maintenance window.
-- **`local_per_pod`**: Applies full limits locally per pod.
-- **`fail_closed`**: Rejects requests with `HTTP 503 Service Unavailable`.
+### 8.4 Redis Availability
+Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters. If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error. It does not fall back to per-process counters, because those cannot preserve tenant-wide limits across replicas. Requests without configured limits do not require Redis for quota admission.
 
 ---
 
