@@ -439,7 +439,7 @@ A request is cached if:
 
 ### Cache Key Computation
 The cache key is computed deterministically using SHA-256 over canonical JSON fields:
-$$\text{Key} = \text{"gw:cache:v2:"} + \text{NamespaceVersion} + \text{":org:"} + \text{OrgID} + \text{":"} + \text{SHA256}(\text{CanonicalPayload})$$
+$$\text{Key} = \text{SHA256}(\text{CanonicalPayload including OrgID})$$
 
 To prevent collisions between different models, parameters, reasoning settings, or user sessions, `ComputeKey` incorporates all execution variables:
 
@@ -464,7 +464,9 @@ if req.User != "" {
 }
 ```
 
-On cache hit, the gateway immediately returns `X-Gateway-Cache: HIT`, `X-Gateway-Cost-Micros: 0`, and the cached response body, bypassing upstream APIs entirely.
+On cache hit, the gateway returns `X-Gateway-Cache: HIT` and the cached response body without calling an upstream API. Entries in both L1 and Redis include the organization, model, and the shared invalidation epochs at write time. Before returning any hit, each replica reads the global, organization, and model epoch values from Redis and compares them with the entry. A mismatch is a miss.
+
+Invalidation increments the relevant shared epoch(s) and a monotonic revision in one Redis Lua script. Global invalidation increments the global epoch; organization and model invalidation increment their respective epoch(s). Because epochs are shared state, another replica's L1 entry becomes unusable on its next lookup without depending on Pub/Sub delivery. If Redis cannot validate the epochs, the cache returns a miss and does not serve a potentially stale L1 or L2 value. Once Redis recovers, the next lookup checks the current shared epochs before using any retained L1 entry. Redis keys used by the script share a Redis Cluster hash tag (`{epochs}`) so the atomic update runs in one slot.
 
 ---
 
