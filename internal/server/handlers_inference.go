@@ -118,8 +118,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 	}
 	if err != nil {
+		statusCode := http.StatusBadRequest
+		if gatewayErr, ok := err.(*domain.GatewayError); ok && gatewayErr.StatusCode > 0 {
+			statusCode = gatewayErr.StatusCode
+		}
 		s.collector.Record(observability.RequestObservation{
-			StatusCode:       http.StatusBadRequest,
+			StatusCode:       statusCode,
 			GuardrailBlocked: true,
 		})
 		domain.WriteHTTPError(w, err)
@@ -415,7 +419,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	releaseQuota(resp.Usage.TotalTokens)
 
 	// Output Guardrail PII sanitization (if enabled on the organization)
-	if s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp) {
+	redactedOutput, scanErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
+	if scanErr != nil {
+		domain.WriteHTTPError(w, scanErr)
+		return
+	}
+	if redactedOutput {
 		guardrailRedacted = true
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
