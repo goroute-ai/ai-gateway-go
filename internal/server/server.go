@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -227,7 +228,7 @@ func (s *GatewayServer) setupRoutes() {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 	})
-	r.Method(http.MethodGet, "/metrics", s.collector.PrometheusHandler())
+	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
 
 	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
 	ui.RegisterRoutes(r)
@@ -441,6 +442,29 @@ func (s *GatewayServer) setupRoutes() {
 	s.router = r
 }
 
+func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		var token string
+		if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+			token = strings.TrimSpace(header[len("Bearer "):])
+		}
+		if token == "" {
+			token = strings.TrimSpace(r.Header.Get("x-api-key"))
+		}
+		if !s.authSvc.ValidateAdminKey(token) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_admin_key",
+				Message:    "Valid Master Admin Key is required to access /metrics",
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *GatewayServer) Handler() http.Handler {
 	return s.router
 }
@@ -471,6 +495,7 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 
 // StartWorkers starts background daemons (Async Spend Batch Writer, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
 func (s *GatewayServer) StartWorkers(ctx context.Context) {
+	s.authSvc.StartInvalidationListener(ctx)
 	s.spendWorker.Start(ctx)
 	s.healthMon.Start(ctx)
 	if s.cfg.Discovery.Enabled {
@@ -486,6 +511,7 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 
 // Shutdown drains background workers cleanly.
 func (s *GatewayServer) Shutdown(ctx context.Context) {
+	s.authSvc.StopInvalidationListener()
 	if s.a2aPublisher != nil {
 		s.a2aPublisher.Stop()
 	}

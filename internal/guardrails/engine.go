@@ -47,14 +47,29 @@ func NewEngine(repo storage.Repository) *Engine {
 	return &Engine{repo: repo}
 }
 
+func policyUnavailableError() error {
+	return &domain.GatewayError{
+		StatusCode: http.StatusServiceUnavailable,
+		Type:       domain.ErrorTypeServer,
+		Code:       "guardrail_policy_unavailable",
+		Message:    "Security policy could not be loaded; request was rejected",
+	}
+}
+
 // EvaluateInput inspects and optionally mutates (redacts) or blocks a CanonicalChatRequest before upstream execution.
 func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
-	if e == nil || e.repo == nil || orgID == "" || req == nil {
+	if req == nil {
 		return &CheckOutcome{}, nil
+	}
+	if e == nil || e.repo == nil || orgID == "" {
+		return nil, policyUnavailableError()
 	}
 
 	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil {
+	if err != nil {
+		return nil, policyUnavailableError()
+	}
+	if pol == nil {
 		return &CheckOutcome{}, nil
 	}
 
@@ -175,13 +190,19 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 }
 
 // SanitizeOutput redacts PII and secrets from model output completions if configured on the Organization's GuardrailPolicy.
-func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) bool {
-	if e == nil || e.repo == nil || orgID == "" || resp == nil {
-		return false
+func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
+	if resp == nil {
+		return false, nil
+	}
+	if e == nil || e.repo == nil || orgID == "" {
+		return false, policyUnavailableError()
 	}
 	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil || !pol.RedactOutputPII {
-		return false
+	if err != nil {
+		return false, policyUnavailableError()
+	}
+	if pol == nil || !pol.RedactOutputPII {
+		return false, nil
 	}
 
 	redacted := false
@@ -205,5 +226,5 @@ func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.
 		)
 	}
 
-	return redacted
+	return redacted, nil
 }

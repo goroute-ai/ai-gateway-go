@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
@@ -54,7 +55,8 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	repo := storage.NewMemoryRepository()
-	gw, err := server.New(cfg, repo, nil, nil)
+	redisServer := miniredis.RunT(t)
+	gw, err := server.New(cfg, repo, storage.NewRedisFabric(redisServer.Addr(), "", 0), nil)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -326,8 +328,12 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	}
 
 	resp, promRaw := doJSON(http.MethodGet, "/metrics", nil, nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated Prometheus scrape to be rejected, got %d: %s", resp.StatusCode, string(promRaw))
+	}
+	resp, promRaw = doJSON(http.MethodGet, "/metrics", adminHeaders, nil, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(promRaw), "gateway_requests_total") {
-		t.Fatalf("expected Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
+		t.Fatalf("expected authenticated Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
 	}
 
 	// 16. Test Versioned Model Pricing Update (`POST /admin/v1/catalogue/pricing`) & Cache Invalidation (`POST /admin/v1/cache/invalidate`)

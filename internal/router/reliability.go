@@ -28,9 +28,10 @@ import (
 type CircuitState string
 
 const (
-	CircuitClosed   CircuitState = "closed"
-	CircuitOpen     CircuitState = "open"
-	CircuitHalfOpen CircuitState = "half_open"
+	CircuitClosed    CircuitState = "closed"
+	CircuitOpen      CircuitState = "open"
+	CircuitHalfOpen  CircuitState = "half_open"
+	maxFallbackDepth              = 16
 )
 
 type cooldownState struct {
@@ -450,6 +451,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 			}
 
 			gwErr, isGwErr := err.(*domain.GatewayError)
+			retryAfterSec := 0
 			if isGwErr {
 				if gwErr.AuthFailure {
 					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
@@ -459,6 +461,18 @@ func (rm *ReliabilityManager) ExecuteStream(
 					return nil, meta, gwErr
 				}
 				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+				retryAfterSec = gwErr.RetryAfterSec
+			}
+
+			if attempt+1 < maxAttempts {
+				sleepDur := CalculateBackoff(attempt, retryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				timer := time.NewTimer(sleepDur)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, meta, ctx.Err()
+				case <-timer.C:
+				}
 			}
 		}
 	}
@@ -1708,15 +1722,29 @@ func (rm *ReliabilityManager) buildGroupChain(ctx context.Context, primary *doma
 		return nil
 	}
 	chain := []*domain.ModelGroup{primary}
-	for _, fbID := range primary.FallbackGroupIDs {
-		if fbGroup, err := rm.repo.GetModelGroupByID(ctx, fbID); err == nil && fbGroup != nil && fbGroup.IsActive {
-			chain = append(chain, fbGroup)
-			continue
+	visited := map[string]struct{}{primary.ID: {}}
+	var visit func(*domain.ModelGroup, int)
+	visit = func(current *domain.ModelGroup, depth int) {
+		if depth >= maxFallbackDepth {
+			return
 		}
-		if fbGroup, err := rm.repo.GetModelGroupByAlias(ctx, primary.OrgID, fbID); err == nil && fbGroup != nil && fbGroup.IsActive {
+		for _, fallbackID := range current.FallbackGroupIDs {
+			fbGroup, err := rm.repo.GetModelGroupByID(ctx, fallbackID)
+			if err != nil || fbGroup == nil {
+				fbGroup, err = rm.repo.GetModelGroupByAlias(ctx, primary.OrgID, fallbackID)
+			}
+			if err != nil || fbGroup == nil || !fbGroup.IsActive || fbGroup.OrgID != primary.OrgID {
+				continue
+			}
+			if _, ok := visited[fbGroup.ID]; ok {
+				continue
+			}
+			visited[fbGroup.ID] = struct{}{}
 			chain = append(chain, fbGroup)
+			visit(fbGroup, depth+1)
 		}
 	}
+	visit(primary, 0)
 	return chain
 }
 

@@ -227,7 +227,7 @@ flowchart LR
     subgraph Pod["Gateway Pod Memory (L1)"]
         L1Key["L1 Key Cache\n(TTL: 15s)"]
         L1Model["L1 Model/Routing Cache\n(TTL: 30s)"]
-        LocalRL["Fallback Local Token Bucket\n(Active only if Redis Down)"]
+        LocalRL["No Local Quota Fallback\n(HTTP 503 for governed requests)"]
     end
 
     subgraph RedisCluster["Redis Cluster (L2 Shared Fabric)"]
@@ -242,13 +242,13 @@ flowchart LR
 
     L1Key -->|Miss| L2Key -->|Miss| PG
     PubSub -.->|"Evict on Key/Policy Update"| L1Key & L1Model
-    LuaRL -.->|"Circuit Breaker Open"| LocalRL
+    LuaRL -.->|"Redis unavailable"| LocalRL
 ```
 
 1. **Zero-State Pod Scaling**: Any number of Gateway instances can run concurrently. No sticky sessions are required.
 2. **Redis Circuit Breaker (`sony/gobreaker`)**:
    - Every Redis operation is wrapped in a fast timeout (`50ms`) and circuit breaker (trips after 5 consecutive network failures, resets after `10s`).
-   - When the circuit breaker is open, the Rate Limiter automatically switches to an in-process token bucket (`internal/ratelimit/limiter.go`) so client inference traffic continues safely during Redis maintenance.
+   - When Redis is unavailable, requests with configured limits fail with HTTP 503. The gateway does not switch to per-process counters because replica-local state cannot preserve tenant-wide limits.
 3. **Outbound Connection Pooling**:
    - Each provider adapter uses a dedicated, tuned `*http.Client` with `MaxIdleConns: 1000`, `MaxIdleConnsPerHost: 256`, `IdleConnTimeout: 90s`, and `ForceAttemptHTTP2: true`, avoiding ephemeral port exhaustion and TLS handshake latency under high load.
 4. **Multi-Pod Real-Time Cache Invalidation**:
