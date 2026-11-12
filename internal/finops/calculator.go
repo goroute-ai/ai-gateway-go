@@ -7,6 +7,40 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
+// EstimateTokenCostUpperBound prices a token request using the higher input,
+// cached-input, output, and reasoning rates. It returns false when pricing is
+// unverified or a requested token dimension cannot be priced safely.
+func EstimateTokenCostUpperBound(gm *domain.GlobalModel, inputTokens, outputTokens int) (int64, bool) {
+	status := domain.ResolvePricingStatus(gm)
+	if gm == nil || status == domain.PricingStatusUnknown || status == domain.PricingStatusUnrecorded {
+		return 0, false
+	}
+	if inputTokens < 0 || outputTokens < 0 {
+		return 0, false
+	}
+	inputRate := gm.InputCostMicrosPer1M
+	if gm.CachedInputCostMicrosPer1M > inputRate {
+		inputRate = gm.CachedInputCostMicrosPer1M
+	}
+	outputRate := gm.OutputCostMicrosPer1M
+	if gm.ReasoningCostMicrosPer1M > outputRate {
+		outputRate = gm.ReasoningCostMicrosPer1M
+	}
+	if inputTokens > 0 && inputRate <= 0 || outputTokens > 0 && outputRate <= 0 {
+		return 0, false
+	}
+	// Bound overflow before multiplying; rates and token counts are non-negative.
+	if inputTokens > 0 && int64(inputTokens) > (int64(^uint64(0)>>1)-999_999)/inputRate {
+		return 0, false
+	}
+	inputNumerator := int64(inputTokens) * inputRate
+	if outputTokens > 0 && int64(outputTokens) > (int64(^uint64(0)>>1)-inputNumerator-999_999)/outputRate {
+		return 0, false
+	}
+	numerator := inputNumerator + int64(outputTokens)*outputRate
+	return (numerator + 999_999) / 1_000_000, true
+}
+
 // CalculateCostMicros computes the exact financial cost in micro-dollars ($1.00 = 1,000,000 micro-dollars)
 // using 64-bit integer arithmetic to avoid floating-point rounding drift.
 func CalculateCostMicros(gm *domain.GlobalModel, usage domain.TokenUsage) int64 {

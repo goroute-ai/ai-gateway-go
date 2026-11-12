@@ -21,6 +21,11 @@ logging:
   format: "json"             # "json" for structured production logging, "text" for local dev
   add_source: false          # Attach source file and line number to log entries
 
+tracing:
+  otlp_endpoint: ""          # Optional OTLP/HTTP endpoint, for example https://otel-collector:4318/v1/traces
+  service_name: "ai-gateway-go"
+  headers: {}                # Optional exporter headers, use os.environ/NAME for secret values
+
 storage:
   mode: "postgres"           # "postgres" (recommended for production) or "memory"
   postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"

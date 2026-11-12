@@ -67,19 +67,26 @@ func (e *Engine) ConfigureScanners(timeout time.Duration, failClosed bool, scann
 	e.scanners = append([]Scanner(nil), scanners...)
 }
 
+func policyUnavailableError() error {
+	return &domain.GatewayError{
+		StatusCode: http.StatusServiceUnavailable,
+		Type:       domain.ErrorTypeServer,
+		Code:       "guardrail_policy_unavailable",
+		Message:    "Security policy could not be loaded; request was rejected",
+	}
+}
+
 // EvaluateInput inspects and optionally mutates (redacts) or blocks a CanonicalChatRequest before upstream execution.
 func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
-	if e == nil || orgID == "" || req == nil {
+	if req == nil {
 		return &CheckOutcome{}, nil
 	}
-
-	var pol *domain.GuardrailPolicy
-	if e.repo != nil {
-		var err error
-		pol, err = e.repo.GetGuardrailPolicy(ctx, orgID)
-		if err != nil {
-			return &CheckOutcome{}, nil
-		}
+	if e == nil || e.repo == nil || orgID == "" {
+		return nil, policyUnavailableError()
+	}
+	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	if err != nil {
+		return nil, policyUnavailableError()
 	}
 	if pol == nil && len(e.scanners) == 0 {
 		return &CheckOutcome{}, nil
@@ -87,7 +94,6 @@ func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.Ca
 	if pol == nil {
 		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
-
 	return e.EvaluateInputWithPolicy(ctx, pol, req)
 }
 
@@ -238,19 +244,24 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	return outcome, nil
 }
 
-// SanitizeOutput applies local output redaction and optional scanners.
-// Callers must handle returned errors before exposing the completion to a client.
+// SanitizeOutput redacts sensitive data and invokes configured optional scanners.
+// Callers must withhold output when this method returns an error.
 func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
-	if e == nil || orgID == "" || resp == nil {
+	if resp == nil {
 		return false, nil
 	}
-	var pol *domain.GuardrailPolicy
-	if e.repo != nil {
-		var err error
-		pol, err = e.repo.GetGuardrailPolicy(ctx, orgID)
-		if err != nil {
-			return false, nil
-		}
+	if e == nil || e.repo == nil || orgID == "" {
+		return false, policyUnavailableError()
+	}
+	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	if err != nil {
+		return false, policyUnavailableError()
+	}
+	if pol == nil && len(e.scanners) == 0 {
+		return false, nil
+	}
+	if pol == nil {
+		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
 
 	redacted := false

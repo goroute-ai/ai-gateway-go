@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 // handleModerations serves `POST /v1/moderations` and `POST /moderations`.
@@ -90,13 +91,11 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 2. Rate Limiting Quota Acquire (minimal quota for moderation)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*10)
+	// Estimate the actual text volume, not only the number of input elements.
+	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -109,14 +108,14 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	resp, meta, err := s.reliability.ExecuteModeration(r.Context(), idCtx, modReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(len(inputs) * 10)
+	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -148,14 +147,13 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -176,7 +174,10 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		Modality:                domain.ModalityModeration,
 		ModalityUnits:           map[string]any{"input_items": len(inputs)},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 
 	logger.InfoContext(r.Context(), "Moderation request completed",
 		slog.String("component", "inference"),

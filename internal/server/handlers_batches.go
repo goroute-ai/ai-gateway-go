@@ -44,6 +44,9 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 
 	var payload createBatchPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -251,6 +254,7 @@ func (s *GatewayServer) processBatchAsync(
 	scanner.Buffer(make([]byte, 64*1024), maxBatchJSONLRecordBytes)
 	counts := domain.BatchCounts{}
 	outputOverflow := false
+	var spendPersistErr error
 	appendOutput := func(line []byte) bool {
 		if outBuf.Len()+len(line)+1 > maxBatchOutputBytes {
 			outputOverflow = true
@@ -335,11 +339,6 @@ func (s *GatewayServer) processBatchAsync(
 				},
 				"error": nil,
 			}
-			sb, _ := json.Marshal(succItem)
-			if !appendOutput(sb) {
-				break
-			}
-
 			var gm *domain.GlobalModel
 			var depID string
 			var pricingVer int
@@ -352,7 +351,7 @@ func (s *GatewayServer) processBatchAsync(
 			}
 			costMicros := finops.CalculateCostMicros(gm, resp.Usage)
 			if s.spendWorker != nil {
-				s.spendWorker.Enqueue(domain.SpendEvent{
+				spendPersistErr = s.spendWorker.Record(ctx, domain.SpendEvent{
 					ID:             "sp_" + uuid.NewString(),
 					RequestID:      batch.ID + "_" + item.CustomID,
 					OrgID:          idCtx.OrgID,
@@ -370,14 +369,25 @@ func (s *GatewayServer) processBatchAsync(
 					StatusCode:     http.StatusOK,
 					CreatedAt:      time.Now().UTC(),
 				})
+				if spendPersistErr != nil {
+					counts.Completed--
+					counts.Failed++
+					break
+				}
+			}
+			sb, _ := json.Marshal(succItem)
+			if !appendOutput(sb) {
+				break
 			}
 		}
 	}
-	if scanner.Err() != nil || outputOverflow {
+	if scanner.Err() != nil || outputOverflow || spendPersistErr != nil {
 		finishedAt := time.Now().UTC()
 		message := "batch input contains a JSONL record larger than the supported limit"
 		if scanner.Err() != nil {
 			message = "failed to scan batch input: " + scanner.Err().Error()
+		} else if spendPersistErr != nil {
+			message = "failed to persist spend event: " + spendPersistErr.Error()
 		}
 		_ = s.repo.UpdateBatchStatus(ctx, batch.ID, "failed", "", counts, &finishedAt)
 		logger.Error("Batch processing failed", "batch_id", batch.ID, "error", message)

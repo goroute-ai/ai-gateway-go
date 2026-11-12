@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,18 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
+
+func admissionFailureObservation(err error) observability.RequestObservation {
+	statusCode := http.StatusTooManyRequests
+	var gatewayErr *domain.GatewayError
+	if errors.As(err, &gatewayErr) && gatewayErr.StatusCode >= http.StatusBadRequest {
+		statusCode = gatewayErr.StatusCode
+	}
+	return observability.RequestObservation{
+		StatusCode:  statusCode,
+		RateLimited: statusCode == http.StatusTooManyRequests,
+	}
+}
 
 // handleChatCompletions serves `POST /v1/chat/completions` (both synchronous JSON and SSE streaming).
 func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -118,12 +131,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 	}
 	if err != nil {
-		statusCode := http.StatusBadRequest
-		if gatewayErr, ok := err.(*domain.GatewayError); ok && gatewayErr.StatusCode > 0 {
-			statusCode = gatewayErr.StatusCode
+		status := http.StatusBadRequest
+		if ge, ok := err.(*domain.GatewayError); ok && ge.StatusCode != 0 {
+			status = ge.StatusCode
 		}
 		s.collector.Record(observability.RequestObservation{
-			StatusCode:       statusCode,
+			StatusCode:       status,
 			GuardrailBlocked: true,
 		})
 		domain.WriteHTTPError(w, err)
@@ -131,19 +144,29 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	// 2. Atomic Rate Limit / Budget Check
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	maxOutput := 0
+	if chatReq.MaxTokens != nil {
+		maxOutput = *chatReq.MaxTokens
+	}
+	budgetInputTokens := estTokens
+	if identityHasBudget(idCtx) {
+		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
+			return
+		} else if len(encoded) > budgetInputTokens {
+			budgetInputTokens = len(encoded)
+		}
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
 	actualTokensReconciled := false
 	defer func() {
 		if !actualTokensReconciled {
-			releaseQuota(0)
+			releaseQuota(-1)
 		}
 	}()
 
@@ -152,62 +175,67 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	var cacheKey string
 	if s.respCache.IsCacheable(&chatReq, cacheHeader) {
 		cacheKey = s.respCache.ComputeKey(idCtx.OrgID, &chatReq)
-		if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-			actualTokensReconciled = true
-			releaseQuota(0)
-			s.collector.Record(observability.RequestObservation{
-				Provider:          string(cachedResp.Provider),
-				Model:             cachedResp.Model,
-				StatusCode:        http.StatusOK,
-				CacheHit:          true,
-				GuardrailRedacted: guardrailRedacted,
-			})
-			cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
-			if cachedGM == nil {
-				cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
-			}
-			cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
-			var cacheProvenance string
-			if cachedGM != nil {
-				cacheProvenance = cachedGM.PricingProvenanceSource
-			}
+		if cacheKey != "" {
+			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
+				actualTokensReconciled = true
+				releaseQuota(0)
+				s.collector.Record(observability.RequestObservation{
+					Provider:          string(cachedResp.Provider),
+					Model:             cachedResp.Model,
+					StatusCode:        http.StatusOK,
+					CacheHit:          true,
+					GuardrailRedacted: guardrailRedacted,
+				})
+				cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
+				if cachedGM == nil {
+					cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
+				}
+				cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
+				var cacheProvenance string
+				if cachedGM != nil {
+					cacheProvenance = cachedGM.PricingProvenanceSource
+				}
 
-			w.Header().Set("X-Gateway-Cache", "HIT")
-			w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
-			w.Header().Set("X-Gateway-Model", cachedResp.Model)
-			w.Header().Set("X-Gateway-Cost-Micros", "0")
-			w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(cachedResp)
+				w.Header().Set("X-Gateway-Cache", "HIT")
+				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
+				w.Header().Set("X-Gateway-Model", cachedResp.Model)
+				w.Header().Set("X-Gateway-Cost-Micros", "0")
+				w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
+				w.Header().Set("Content-Type", "application/json")
 
-			s.spendWorker.Enqueue(domain.SpendEvent{
-				RequestID:               reqID,
-				TraceID:                 traceID,
-				OrgID:                   idCtx.OrgID,
-				TeamID:                  idCtx.TeamID,
-				UserID:                  idCtx.UserID,
-				VirtualKeyID:            idCtx.VirtualKeyID,
-				Endpoint:                "/v1/chat/completions",
-				RequestedModel:          chatReq.Model,
-				ResolvedModel:           cachedResp.Model,
-				Provider:                cachedResp.Provider,
-				PricingStatus:           cachePricingStatus,
-				PricingProvenanceSource: cacheProvenance,
-				Usage:                   cachedResp.Usage,
-				CostMicros:              0,
-				StatusCode:              http.StatusOK,
-				CacheHit:                true,
-				CreatedAt:               time.Now().UTC(),
-			})
-			logger.InfoContext(r.Context(), "Inference request served from cache",
-				slog.String("component", "inference"),
-				slog.String("request_id", reqID),
-				slog.String("provider", string(cachedResp.Provider)),
-				slog.String("model", cachedResp.Model),
-				slog.Bool("cache_hit", true),
-			)
-			return
+				if !s.persistSpendEvent(w, r, domain.SpendEvent{
+					RequestID:               reqID,
+					TraceID:                 traceID,
+					OrgID:                   idCtx.OrgID,
+					TeamID:                  idCtx.TeamID,
+					UserID:                  idCtx.UserID,
+					VirtualKeyID:            idCtx.VirtualKeyID,
+					Endpoint:                "/v1/chat/completions",
+					RequestedModel:          chatReq.Model,
+					ResolvedModel:           cachedResp.Model,
+					Provider:                cachedResp.Provider,
+					PricingStatus:           cachePricingStatus,
+					PricingProvenanceSource: cacheProvenance,
+					Usage:                   cachedResp.Usage,
+					CostMicros:              0,
+					StatusCode:              http.StatusOK,
+					CacheHit:                true,
+					CreatedAt:               time.Now().UTC(),
+				}) {
+					return
+				}
+				_ = json.NewEncoder(w).Encode(cachedResp)
+				logger.InfoContext(r.Context(), "Inference request served from cache",
+					slog.String("component", "inference"),
+					slog.String("request_id", reqID),
+					slog.String("provider", string(cachedResp.Provider)),
+					slog.String("model", cachedResp.Model),
+					slog.Bool("cache_hit", true),
+				)
+				return
+			}
 		}
+
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
@@ -282,8 +310,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}
 			return
 		}
-		_ = sseWriter.WriteDone()
-
 		totalTok := 0
 		var usageVal domain.TokenUsage
 		if usage != nil {
@@ -334,31 +360,37 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		if gm != nil {
 			provenance = gm.PricingProvenanceSource
 		}
-		s.spendWorker.Enqueue(domain.SpendEvent{
-			RequestID:               reqID,
-			TraceID:                 traceID,
-			OrgID:                   idCtx.OrgID,
-			TeamID:                  idCtx.TeamID,
-			UserID:                  idCtx.UserID,
-			VirtualKeyID:            idCtx.VirtualKeyID,
-			Endpoint:                "/v1/chat/completions",
-			RequestedModel:          chatReq.Model,
-			ResolvedModel:           resolvedModel,
-			Provider:                provider,
-			DeploymentID:            depID,
-			PricingVersion:          pricingVer,
-			PricingStatus:           domain.ResolvePricingStatus(gm),
-			PricingProvenanceSource: provenance,
-			Usage:                   usageVal,
-			CostMicros:              costMicros,
-			LatencyMs:               meta.LatencyMs,
-			TTFTMs:                  meta.TTFTMs,
-			StatusCode:              http.StatusOK,
-			IsStream:                true,
-			FallbackAttempted:       meta.FallbackAttempted,
-			RetryCount:              meta.RetryCount,
-			CreatedAt:               time.Now().UTC(),
-		})
+		if s.spendWorker != nil {
+			if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+				RequestID:               reqID,
+				TraceID:                 traceID,
+				OrgID:                   idCtx.OrgID,
+				TeamID:                  idCtx.TeamID,
+				UserID:                  idCtx.UserID,
+				VirtualKeyID:            idCtx.VirtualKeyID,
+				Endpoint:                "/v1/chat/completions",
+				RequestedModel:          chatReq.Model,
+				ResolvedModel:           resolvedModel,
+				Provider:                provider,
+				DeploymentID:            depID,
+				PricingVersion:          pricingVer,
+				PricingStatus:           domain.ResolvePricingStatus(gm),
+				PricingProvenanceSource: provenance,
+				Usage:                   usageVal,
+				CostMicros:              costMicros,
+				LatencyMs:               meta.LatencyMs,
+				TTFTMs:                  meta.TTFTMs,
+				StatusCode:              http.StatusOK,
+				IsStream:                true,
+				FallbackAttempted:       meta.FallbackAttempted,
+				RetryCount:              meta.RetryCount,
+				CreatedAt:               time.Now().UTC(),
+			}); err != nil {
+				_ = sseWriter.WriteError(&domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
+				return
+			}
+		}
+		_ = sseWriter.WriteDone()
 		logger.InfoContext(r.Context(), "Streaming inference completed",
 			slog.String("component", "inference"),
 			slog.String("request_id", reqID),
@@ -419,12 +451,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	releaseQuota(resp.Usage.TotalTokens)
 
 	// Output Guardrail PII sanitization (if enabled on the organization)
-	redactedOutput, scanErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
-	if scanErr != nil {
-		domain.WriteHTTPError(w, scanErr)
-		return
-	}
-	if redactedOutput {
+	outputRedacted, guardrailOutputErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
+	if outputRedacted {
 		guardrailRedacted = true
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
@@ -445,8 +473,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
 
-	if cacheKey != "" {
+	if cacheKey != "" && guardrailOutputErr == nil {
 		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+	}
+	responseStatus := http.StatusOK
+	if guardrailOutputErr != nil {
+		responseStatus = http.StatusServiceUnavailable
 	}
 
 	s.collector.Record(observability.RequestObservation{
@@ -454,7 +486,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		DeploymentID:      depID,
 		DeploymentName:    depName,
 		Model:             resp.Model,
-		StatusCode:        http.StatusOK,
+		StatusCode:        responseStatus,
 		LatencyMs:         meta.LatencyMs,
 		TTFTMs:            meta.TTFTMs,
 		RoutingMicros:     meta.RoutingMicros,
@@ -482,14 +514,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -508,12 +538,19 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		CostMicros:              costMicros,
 		LatencyMs:               meta.LatencyMs,
 		TTFTMs:                  meta.TTFTMs,
-		StatusCode:              http.StatusOK,
+		StatusCode:              responseStatus,
 		IsStream:                false,
 		FallbackAttempted:       meta.FallbackAttempted,
 		RetryCount:              meta.RetryCount,
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	if guardrailOutputErr != nil {
+		domain.WriteHTTPError(w, guardrailOutputErr)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Inference completed",
 		slog.String("component", "inference"),
 		slog.String("request_id", reqID),
@@ -581,12 +618,14 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*16)
+	estTokens := ratelimit.EstimateTextInputsTokens(raw.Model, inputs, 4)
+	inputByteBound := 0
+	for _, input := range inputs {
+		inputByteBound += len(input)
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -601,7 +640,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	}
 	resp, meta, err := s.reliability.ExecuteEmbeddings(r.Context(), idCtx, embReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -639,14 +678,13 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -666,7 +704,10 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		LatencyMs:               meta.LatencyMs,
 		StatusCode:              http.StatusOK,
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Embeddings request completed",
 		slog.String("component", "inference"),
 		slog.String("request_id", reqID),

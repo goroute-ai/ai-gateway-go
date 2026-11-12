@@ -11,6 +11,14 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
+type failingPolicyRepository struct {
+	storage.Repository
+}
+
+func (f failingPolicyRepository) GetGuardrailPolicy(context.Context, string) (*domain.GuardrailPolicy, error) {
+	return nil, errors.New("repository unavailable")
+}
+
 func TestGuardrailsPromptInjectionAndPIIRedaction(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
@@ -57,6 +65,44 @@ func TestGuardrailsPromptInjectionAndPIIRedaction(t *testing.T) {
 	}
 }
 
+func TestPolicyLookupFailuresFailClosed(t *testing.T) {
+	ctx := context.Background()
+	eng := NewEngine(failingPolicyRepository{Repository: storage.NewMemoryRepository()})
+	chatReq := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}}}
+	if _, err := eng.EvaluateInput(ctx, "org-policy-error", chatReq); err == nil {
+		t.Fatal("expected input guardrail lookup failure")
+	} else if gatewayErr, ok := err.(*domain.GatewayError); !ok || gatewayErr.StatusCode != 503 {
+		t.Fatalf("expected 503 guardrail error, got %T: %v", err, err)
+	}
+
+	resp := &domain.CanonicalChatResponse{Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{Content: "secret alice@example.com"}}}}
+	redacted, err := eng.SanitizeOutput(ctx, "org-policy-error", resp)
+	if err == nil || redacted {
+		t.Fatalf("expected output policy lookup failure, redacted=%v err=%v", redacted, err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "secret alice@example.com" {
+		t.Fatalf("expected response to remain unmodified and withheld, got %q", got)
+	}
+
+	if _, err := eng.EvaluateMCPToolCall(ctx, "org-policy-error", "tool", map[string]any{"query": "hello"}); err == nil {
+		t.Fatal("expected MCP input policy lookup failure")
+	}
+	if _, result, err := eng.EvaluateMCPToolResult(ctx, "org-policy-error", map[string]any{"value": "alice@example.com"}); err == nil || result != nil {
+		t.Fatalf("expected MCP output policy lookup failure with no result, result=%v err=%v", result, err)
+	}
+}
+
+func TestMissingGuardrailPolicyRemainsAllowed(t *testing.T) {
+	eng := NewEngine(storage.NewMemoryRepository())
+	if _, err := eng.EvaluateInput(context.Background(), "org-without-policy", &domain.CanonicalChatRequest{}); err != nil {
+		t.Fatalf("expected confirmed absence of policy to be allowed, got %v", err)
+	}
+	redacted, err := eng.SanitizeOutput(context.Background(), "org-without-policy", &domain.CanonicalChatResponse{})
+	if err != nil || redacted {
+		t.Fatalf("expected absent output policy to be allowed without redaction, redacted=%v err=%v", redacted, err)
+	}
+}
+
 type scannerFunc func(context.Context, ScanRequest) (ScanResult, error)
 
 func (f scannerFunc) Scan(ctx context.Context, req ScanRequest) (ScanResult, error) {
@@ -68,7 +114,7 @@ func testChatRequest() *domain.CanonicalChatRequest {
 }
 
 func TestOptionalScannerAllowAndBlock(t *testing.T) {
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	called := false
 	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
 		called = true
@@ -99,7 +145,7 @@ func TestOptionalScannerAllowAndBlock(t *testing.T) {
 
 func TestOptionalScannerErrorsFollowConfiguredPolicy(t *testing.T) {
 	boom := errors.New("scanner unavailable")
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, boom }))
 	_, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest())
 	var gatewayErr *domain.GatewayError
@@ -114,7 +160,7 @@ func TestOptionalScannerErrorsFollowConfiguredPolicy(t *testing.T) {
 }
 
 func TestOptionalScannerTimeoutUsesBoundedContext(t *testing.T) {
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	eng.ConfigureScanners(20*time.Millisecond, true, scannerFunc(func(ctx context.Context, _ ScanRequest) (ScanResult, error) {
 		<-ctx.Done()
 		return ScanResult{}, ctx.Err()
@@ -131,14 +177,14 @@ func TestOptionalScannerTimeoutUsesBoundedContext(t *testing.T) {
 }
 
 func TestNoOptionalScannerByDefault(t *testing.T) {
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	if _, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest()); err != nil {
 		t.Fatalf("local-only default returned error: %v", err)
 	}
 }
 
 func TestOptionalScannerCanBlockModelOutput(t *testing.T) {
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
 		if req.Direction != ScanOutput || req.Content != "unsafe output" {
 			t.Fatalf("unexpected output scan request: %+v", req)
@@ -158,7 +204,7 @@ func TestOutputScannerFailureFailsClosedOrOpenAsConfigured(t *testing.T) {
 		return &domain.CanonicalChatResponse{Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{Role: "assistant", Content: "private completion"}}}}
 	}
 	scannerErr := errors.New("scanner failed while inspecting private completion")
-	eng := NewEngine(nil)
+	eng := NewEngine(storage.NewMemoryRepository())
 	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, scannerErr }))
 	_, err := eng.SanitizeOutput(context.Background(), "org-1", resp())
 	var gatewayErr *domain.GatewayError

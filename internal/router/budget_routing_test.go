@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,4 +257,125 @@ func TestBudgetAwareRouting_StreamingSelectedCallback(t *testing.T) {
 	assert.Equal(t, domain.PricingStatusVerified, domain.ResolvePricingStatus(selectedDep.GlobalModel))
 	assert.Equal(t, 1, chunkCount)
 	assert.Equal(t, "stream-dep-1", meta.WinningDeployment.DeploymentName)
+}
+
+func TestExecuteStreamHonorsRetryAfterBeforeFirstChunk(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	vault, _ := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	rbac := auth.NewRBACEngine(repo)
+	org := &domain.Organization{Name: "RetryAfterOrg", Slug: "retry-after-org", IsActive: true}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"rate limit"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"chunk-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	cred := &domain.ProviderCredential{OrgID: org.ID, Provider: domain.ProviderOpenAI, Name: "retry-after", BaseURL: srv.URL, IsActive: true}
+	if err := vault.EncryptCredential(cred, "sk-retry-after"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateProviderCredential(ctx, cred); err != nil {
+		t.Fatal(err)
+	}
+	model := &domain.GlobalModel{ID: "openai/retry-after", Provider: domain.ProviderOpenAI, ModelName: "retry-after", PricingStatus: domain.PricingStatusVerified}
+	if err := repo.UpsertGlobalModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	group := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-after", RoutingStrategy: domain.StrategyWeightedShuffle, MaxRetries: 1, IsActive: true}
+	if err := repo.CreateModelGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{ModelGroupID: group.ID, GlobalModelID: model.ID, CredentialID: cred.ID, DeploymentName: "retry-after", Status: domain.DeploymentStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := adapter.NewRegistry()
+	reg.Register(openai.NewAdapter(srv.Client()))
+	cfg := config.Default().Router
+	cfg.BaseRetryDelay = 10 * time.Millisecond
+	cfg.MaxRetryDelay = 2 * time.Second
+	rm := router.NewReliabilityManager(repo, reg, router.NewIntelligentRouter(repo, cfg), router.NewLoadBalancer(), vault, rbac, nil, cfg)
+
+	start := time.Now()
+	_, _, err := rm.ExecuteStream(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
+		Model: "retry-after", Stream: true, Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	}, func(*domain.CanonicalStreamChunk) error { return nil }, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream failed: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Fatalf("retry started before Retry-After elapsed: %v", elapsed)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected one retry after Retry-After, got %d upstream calls", got)
+	}
+}
+
+type streamFailureAfterChunkAdapter struct {
+	adapter.ProviderAdapter
+	calls atomic.Int32
+}
+
+func (a *streamFailureAfterChunkAdapter) Provider() domain.ProviderType { return domain.ProviderOpenAI }
+
+func (a *streamFailureAfterChunkAdapter) StreamChatCompletion(_ context.Context, _ *domain.Deployment, _ *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	a.calls.Add(1)
+	if err := onChunk(&domain.CanonicalStreamChunk{ID: "first", Choices: []domain.CanonicalStreamChoice{{Index: 0}}}); err != nil {
+		return nil, err
+	}
+	return nil, &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeUpstream, Code: "stream_failed", Retryable: true}
+}
+
+func TestExecuteStreamDoesNotRetryAfterFirstChunk(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{Name: "MidStreamOrg", Slug: "mid-stream-org", IsActive: true}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatal(err)
+	}
+	model := &domain.GlobalModel{ID: "openai/mid-stream", Provider: domain.ProviderOpenAI, ModelName: "mid-stream", PricingStatus: domain.PricingStatusVerified}
+	if err := repo.UpsertGlobalModel(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	group := &domain.ModelGroup{OrgID: org.ID, Alias: "mid-stream", RoutingStrategy: domain.StrategyWeightedShuffle, MaxRetries: 2, IsActive: true}
+	if err := repo.CreateModelGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{ModelGroupID: group.ID, GlobalModelID: model.ID, DeploymentName: "mid-stream", Status: domain.DeploymentStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	streamAdapter := &streamFailureAfterChunkAdapter{}
+	reg := adapter.NewRegistry()
+	reg.Register(streamAdapter)
+	cfg := config.Default().Router
+	cfg.BaseRetryDelay = time.Millisecond
+	cfg.MaxRetryDelay = 2 * time.Millisecond
+	rm := router.NewReliabilityManager(repo, reg, router.NewIntelligentRouter(repo, cfg), router.NewLoadBalancer(), nil, auth.NewRBACEngine(repo), nil, cfg)
+	var chunks atomic.Int32
+	_, _, err := rm.ExecuteStream(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
+		Model: "mid-stream", Stream: true, Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	}, func(*domain.CanonicalStreamChunk) error { chunks.Add(1); return nil }, nil)
+	if err == nil {
+		t.Fatal("expected stream failure")
+	}
+	if got := streamAdapter.calls.Load(); got != 1 {
+		t.Fatalf("expected no retry after first chunk, got %d upstream calls", got)
+	}
+	if got := chunks.Load(); got != 1 {
+		t.Fatalf("expected one emitted chunk, got %d", got)
+	}
 }
