@@ -315,7 +315,7 @@ curl -X POST http://localhost:8080/admin/v1/credentials/{credID}/validate \
 3. **3-State Circuit Breaker (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`)**:
    - Trips from `CLOSED` to `OPEN` when failures reach `failure_threshold` (default `3`) within `failure_window` (`30s`).
    - Remains `OPEN` for `default_cooldown` (`60s`), removing the deployment from the candidate pool.
-   - Transitions to `HALF_OPEN` after cooldown and admits **strictly 1 trial recovery probe** while blocking concurrent callers; a successful probe resets to `CLOSED`, while a failure re-trips to `OPEN`.
+   - With Redis configured, an atomic shared lease admits one `HALF_OPEN` probe across replicas. The lease expires after five minutes if a process exits during the probe. A successful request clears shared circuit state; a failed probe restores the cooldown. Without Redis, probe coordination is process-local.
 4. **Cross-Provider Fallback Chains (`fallbacks`)**:
    - When all deployments in the primary `ModelGroup` are exhausted or in cooldown, `ReliabilityManager` automatically walks `Fallbacks` (e.g., failing over from Google Gemini to Anthropic Claude) and sets `X-Gateway-Fallback-Attempted: true`.
 
@@ -383,10 +383,7 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 ### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM & Concurrency)
 1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Gemini/Mistral/Llama) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.
 2. **Single-Roundtrip Redis Lua Quota Check & Post-Response Reconciliation**: Atomically verifies Key, Team, and Org RPM, TPM, Concurrency, and Spend limits in 1 RTT, then reconciles `actual_tokens - estimated_tokens` after completion.
-3. **3 Configurable Redis Outage Fallback Modes**:
-   - `local_divided_by_replicas` (Default): Scales in-memory limits to `max(1, limit / expectedPods)` so cluster-wide traffic never overshoots tenant quotas during a Redis outage.
-   - `local_per_pod`: Enforces full limit per pod.
-   - `fail_closed`: Rejects requests with `HTTP 503` when Redis is unreachable.
+3. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters. If Redis is unavailable, the gateway returns `HTTP 503` with `rate_limiter_unavailable`; it never substitutes per-process counters for a tenant-wide quota. Requests without configured limits do not require Redis for quota admission. This preserves quota guarantees during Redis outages at the cost of rejecting governed traffic until Redis recovers.
 
 ### Part B: Tenant-Isolated Deterministic Response Cache (`0ms`, `$0.00`)
 - **Eligibility**: Caches non-streaming requests where `temperature <= 0` or `seed != nil` (unless `X-Gateway-Cache-Control: no-cache` is sent).
@@ -417,6 +414,8 @@ r2, _ := gw.Chat(ctx, "fast", "What is 2 + 2?", gateway.WithTemperature(0.0)) //
 ## Cross-Cutting Platform Modules (Guardrails, Validation & Observability)
 
 ### Module A: Security Guardrails Engine (`POST /admin/v1/organizations/{orgID}/guardrails`)
+
+When policy storage confirms that an organization has no guardrail policy, inference continues without organization-level guardrails. If policy storage is unavailable, requests are rejected with `503 Service Unavailable`; chat and MCP output is withheld rather than returned without policy evaluation.
 Inspects prompts pre-flight and completions post-response with zero external ML dependencies:
 - **Prompt Injection & Jailbreak Detection**: Checks user prompts against a fixed set of known text signatures, such as `ignore previous instructions`, `disregard your system prompt`, and `you are now dan`.
 - **PII & Secret Detection/Redaction**: Detects email addresses, SSNs, payment card patterns, and selected API key patterns. Redaction uses type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, and `[REDACTED_SECRET]`.
@@ -440,7 +439,7 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
 
 ### Module C: Observability, W3C Tracing & Active Health Monitor
-- **Prometheus Metrics (`GET /metrics`)**: Exposes `ai_gateway_requests_total`, `ai_gateway_tokens_total`, `ai_gateway_spend_micros_total`, `ai_gateway_cache_hits_total`, `ai_gateway_rate_limited_total`, `ai_gateway_guardrail_blocks_total`, and `ai_gateway_latency_ms_{p50,p95,p99}`.
+- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway and provider aggregates; per-deployment identifiers are omitted to keep metric cardinality bounded.
 - **Distributed Tracing**: Set `tracing.otlp_endpoint` to an OTLP/HTTP traces URL such as `https://collector.example:4318/v1/traces`. Tracing is disabled when the endpoint is empty. The exporter uses the outbound SSRF/network policy and supports optional `tracing.headers` for collector authentication.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Real-time P50/P95/P99 latency and per-provider/per-deployment health breakdown.
 - **Active Health Monitor (`GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials and preemptively marks failing deployments unhealthy before user traffic hits them.

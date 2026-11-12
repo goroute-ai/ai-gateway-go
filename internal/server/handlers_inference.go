@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,18 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
+
+func admissionFailureObservation(err error) observability.RequestObservation {
+	statusCode := http.StatusTooManyRequests
+	var gatewayErr *domain.GatewayError
+	if errors.As(err, &gatewayErr) && gatewayErr.StatusCode >= http.StatusBadRequest {
+		statusCode = gatewayErr.StatusCode
+	}
+	return observability.RequestObservation{
+		StatusCode:  statusCode,
+		RateLimited: statusCode == http.StatusTooManyRequests,
+	}
+}
 
 // handleChatCompletions serves `POST /v1/chat/completions` (both synchronous JSON and SSE streaming).
 func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -118,8 +131,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 	}
 	if err != nil {
+		status := http.StatusBadRequest
+		if ge, ok := err.(*domain.GatewayError); ok && ge.StatusCode != 0 {
+			status = ge.StatusCode
+		}
 		s.collector.Record(observability.RequestObservation{
-			StatusCode:       http.StatusBadRequest,
+			StatusCode:       status,
 			GuardrailBlocked: true,
 		})
 		domain.WriteHTTPError(w, err)
@@ -129,10 +146,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	// 2. Atomic Rate Limit / Budget Check
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -415,7 +429,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	releaseQuota(resp.Usage.TotalTokens)
 
 	// Output Guardrail PII sanitization (if enabled on the organization)
-	if s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp) {
+	outputRedacted, guardrailOutputErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
+	if outputRedacted {
 		guardrailRedacted = true
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
@@ -436,8 +451,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
 
-	if cacheKey != "" {
+	if cacheKey != "" && guardrailOutputErr == nil {
 		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+	}
+	responseStatus := http.StatusOK
+	if guardrailOutputErr != nil {
+		responseStatus = http.StatusServiceUnavailable
 	}
 
 	s.collector.Record(observability.RequestObservation{
@@ -445,7 +464,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		DeploymentID:      depID,
 		DeploymentName:    depName,
 		Model:             resp.Model,
-		StatusCode:        http.StatusOK,
+		StatusCode:        responseStatus,
 		LatencyMs:         meta.LatencyMs,
 		TTFTMs:            meta.TTFTMs,
 		RoutingMicros:     meta.RoutingMicros,
@@ -472,9 +491,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			w.Header().Set("X-Gateway-Route-Reason", meta.RouteDecision.Reason)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
@@ -505,6 +521,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		RetryCount:              meta.RetryCount,
 		CreatedAt:               time.Now().UTC(),
 	})
+	if guardrailOutputErr != nil {
+		domain.WriteHTTPError(w, guardrailOutputErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Inference completed",
 		slog.String("component", "inference"),
 		slog.String("request_id", reqID),
@@ -574,10 +596,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*16)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

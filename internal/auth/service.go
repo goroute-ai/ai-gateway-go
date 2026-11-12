@@ -20,8 +20,14 @@ import (
 )
 
 type l1CacheEntry struct {
-	identity  *domain.IdentityContext
-	expiresAt time.Time
+	identity     *domain.IdentityContext
+	expiresAt    time.Time
+	keyExpiresAt *time.Time
+}
+
+type cachedIdentity struct {
+	Identity     domain.IdentityContext `json:"identity"`
+	KeyExpiresAt *time.Time             `json:"key_expires_at,omitempty"`
 }
 
 // Service manages Boundary 1 authentication (Virtual API Keys, L1/L2 caching, and Admin authentication).
@@ -33,6 +39,8 @@ type Service struct {
 	l1TTL               time.Duration
 	l2TTL               time.Duration
 	l1Cache             sync.Map // keyHash -> l1CacheEntry
+	invalidationMu      sync.Mutex
+	invalidationCancel  context.CancelFunc
 }
 
 func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, masterAdminKey string, l1TTL, l2TTL time.Duration) *Service {
@@ -133,12 +141,68 @@ func (s *Service) InvalidateKeyHash(ctx context.Context, keyHash string) {
 	s.l1Cache.Delete(keyHash)
 	if s.redis != nil {
 		_, _ = s.redis.Execute(func(rdb *redis.Client) (any, error) {
-			return rdb.Del(ctx, "gw:auth:key:"+keyHash).Result()
+			return rdb.Del(ctx, authCacheKey(keyHash), "gw:auth:key:"+keyHash).Result()
 		})
 		s.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
 			Type:    "key",
 			KeyHash: keyHash,
 		})
+	}
+}
+
+func authCacheKey(keyHash string) string {
+	return "gw:auth:key:v2:" + keyHash
+}
+
+func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
+	if ev.Type == "key" && ev.KeyHash != "" {
+		s.l1Cache.Delete(ev.KeyHash)
+	}
+}
+
+// StartInvalidationListener removes revoked-key identities from this process cache when another replica publishes an event.
+func (s *Service) StartInvalidationListener(ctx context.Context) {
+	if s.redis == nil || s.redis.Client() == nil {
+		return
+	}
+	s.invalidationMu.Lock()
+	if s.invalidationCancel != nil {
+		s.invalidationMu.Unlock()
+		return
+	}
+	listenerCtx, cancel := context.WithCancel(ctx)
+	s.invalidationCancel = cancel
+	s.invalidationMu.Unlock()
+	go func() {
+		pubsub := s.redis.Client().Subscribe(listenerCtx, storage.InvalidationChannel)
+		defer pubsub.Close()
+		if _, err := pubsub.Receive(listenerCtx); err != nil {
+			return
+		}
+		messages := pubsub.Channel()
+		for {
+			select {
+			case <-listenerCtx.Done():
+				return
+			case msg, ok := <-messages:
+				if !ok {
+					return
+				}
+				var ev storage.InvalidationEvent
+				if err := json.Unmarshal([]byte(msg.Payload), &ev); err == nil {
+					s.handleInvalidation(ev)
+				}
+			}
+		}
+	}()
+}
+
+func (s *Service) StopInvalidationListener() {
+	s.invalidationMu.Lock()
+	defer s.invalidationMu.Unlock()
+	if s.invalidationCancel != nil {
+		s.invalidationCancel()
+		s.invalidationCancel = nil
 	}
 }
 
@@ -172,6 +236,10 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	if val, ok := s.l1Cache.Load(keyHash); ok {
 		entry := val.(l1CacheEntry)
 		if now.Before(entry.expiresAt) {
+			if isKeyExpired(entry.keyExpiresAt, now) {
+				s.l1Cache.Delete(keyHash)
+				return nil, expiredVirtualKeyError()
+			}
 			return entry.identity, nil
 		}
 		s.l1Cache.Delete(keyHash)
@@ -180,15 +248,21 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	// 2. Check L2 Redis Cache
 	if s.redis != nil {
 		res, err := s.redis.Execute(func(rdb *redis.Client) (any, error) {
-			return rdb.Get(ctx, "gw:auth:key:"+keyHash).Result()
+			return rdb.Get(ctx, authCacheKey(keyHash)).Result()
 		})
 		if err == nil {
 			if jsonStr, ok := res.(string); ok && jsonStr != "" {
-				var idCtx domain.IdentityContext
-				if json.Unmarshal([]byte(jsonStr), &idCtx) == nil {
+				var cached cachedIdentity
+				if json.Unmarshal([]byte(jsonStr), &cached) == nil && cached.Identity.VirtualKeyID != "" {
+					if isKeyExpired(cached.KeyExpiresAt, now) {
+						s.l1Cache.Delete(keyHash)
+						return nil, expiredVirtualKeyError()
+					}
+					idCtx := cached.Identity
 					s.l1Cache.Store(keyHash, l1CacheEntry{
-						identity:  &idCtx,
-						expiresAt: now.Add(s.l1TTL),
+						identity:     &idCtx,
+						expiresAt:    now.Add(s.l1TTL),
+						keyExpiresAt: cached.KeyExpiresAt,
 					})
 					return &idCtx, nil
 				}
@@ -226,12 +300,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		}
 	}
 	if vk.ExpiresAt != nil && !now.Before(*vk.ExpiresAt) {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "expired_api_key",
-			Message:    "Virtual API key has expired",
-		}
+		return nil, expiredVirtualKeyError()
 	}
 
 	org, err := s.repo.GetOrganization(ctx, vk.OrgID)
@@ -289,19 +358,39 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	}
 
 	// Hydrate L2 Redis + L1 Memory
+	var keyExpiresAt *time.Time
+	if vk.ExpiresAt != nil {
+		expiresAt := vk.ExpiresAt.UTC()
+		keyExpiresAt = &expiresAt
+	}
+	cacheEntry := cachedIdentity{Identity: *idCtx, KeyExpiresAt: keyExpiresAt}
 	if s.redis != nil {
-		if b, err := json.Marshal(idCtx); err == nil {
+		if b, err := json.Marshal(cacheEntry); err == nil {
 			_, _ = s.redis.Execute(func(rdb *redis.Client) (any, error) {
-				return rdb.Set(ctx, "gw:auth:key:"+keyHash, b, s.l2TTL).Result()
+				return rdb.Set(ctx, authCacheKey(keyHash), b, s.l2TTL).Result()
 			})
 		}
 	}
 	s.l1Cache.Store(keyHash, l1CacheEntry{
-		identity:  idCtx,
-		expiresAt: now.Add(s.l1TTL),
+		identity:     idCtx,
+		expiresAt:    now.Add(s.l1TTL),
+		keyExpiresAt: keyExpiresAt,
 	})
 
 	return idCtx, nil
+}
+
+func isKeyExpired(expiresAt *time.Time, now time.Time) bool {
+	return expiresAt != nil && !now.Before(*expiresAt)
+}
+
+func expiredVirtualKeyError() *domain.GatewayError {
+	return &domain.GatewayError{
+		StatusCode: http.StatusUnauthorized,
+		Type:       domain.ErrorTypeAuthentication,
+		Code:       "expired_api_key",
+		Message:    "Virtual API key has expired",
+	}
 }
 
 // ValidateAdminKey performs constant-time verification of the Control Plane Master Admin Key.

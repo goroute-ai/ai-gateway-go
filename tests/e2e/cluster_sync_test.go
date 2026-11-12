@@ -496,3 +496,90 @@ func TestDualNode_DistributedOutboxDeliveryDeduplication(t *testing.T) {
 		t.Fatalf("expected outbox worker to deliver webhook event, got count 0")
 	}
 }
+
+func TestDualNode_ExpiredVirtualKeyRejectedFromRedisCache(t *testing.T) {
+	ts1, ts2, _, _, _, _, cleanup := setupDualNodeCluster(t)
+	defer cleanup()
+	c1 := &httpClientHelper{t: t, ts: ts1}
+	c2 := &httpClientHelper{t: t, ts: ts2}
+	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-cluster-admin-key"}
+
+	var org domain.Organization
+	_, raw := c1.doJSON("POST", "/admin/v1/organizations", adminHeaders, map[string]any{
+		"name": "Expiring Cluster Org",
+		"slug": fmt.Sprintf("expiring-cluster-%d", time.Now().UnixNano()),
+	}, &org)
+	if org.ID == "" {
+		t.Fatalf("create organization failed: %s", raw)
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Second)
+	var key domain.VirtualKey
+	_, raw = c1.doJSON("POST", "/admin/v1/keys", adminHeaders, map[string]any{
+		"org_id":            org.ID,
+		"name":              "expiring cluster key",
+		"allowed_endpoints": []string{"*"},
+		"expires_at":        expiresAt,
+	}, &key)
+	if key.RawKey == "" {
+		t.Fatalf("create virtual key failed: %s", raw)
+	}
+
+	userHeaders := map[string]string{"Authorization": "Bearer " + key.RawKey}
+	resp, raw := c1.doJSON("GET", "/mcp-rest/tools/list", userHeaders, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("node 1 failed to warm Redis auth cache: status=%d body=%s", resp.StatusCode, raw)
+	}
+	time.Sleep(time.Until(expiresAt) + 20*time.Millisecond)
+	resp, raw = c2.doJSON("GET", "/mcp-rest/tools/list", userHeaders, nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("node 2 accepted expired key from Redis cache: status=%d body=%s", resp.StatusCode, raw)
+	}
+}
+
+func TestDualNode_RevocationInvalidatesRemoteVirtualKeyCache(t *testing.T) {
+	ts1, ts2, _, _, _, _, cleanup := setupDualNodeCluster(t)
+	defer cleanup()
+	c1 := &httpClientHelper{t: t, ts: ts1}
+	c2 := &httpClientHelper{t: t, ts: ts2}
+	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-cluster-admin-key"}
+
+	var org domain.Organization
+	_, raw := c1.doJSON("POST", "/admin/v1/organizations", adminHeaders, map[string]any{
+		"name": "Revocation Cluster Org",
+		"slug": fmt.Sprintf("revocation-cluster-%d", time.Now().UnixNano()),
+	}, &org)
+	if org.ID == "" {
+		t.Fatalf("create organization failed: %s", raw)
+	}
+
+	var key domain.VirtualKey
+	_, raw = c1.doJSON("POST", "/admin/v1/keys", adminHeaders, map[string]any{
+		"org_id":            org.ID,
+		"name":              "revocable cluster key",
+		"allowed_endpoints": []string{"*"},
+	}, &key)
+	if key.RawKey == "" {
+		t.Fatalf("create virtual key failed: %s", raw)
+	}
+	userHeaders := map[string]string{"Authorization": "Bearer " + key.RawKey}
+	resp, raw := c2.doJSON("GET", "/mcp-rest/tools/list", userHeaders, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("node 2 failed to warm local auth cache: status=%d body=%s", resp.StatusCode, raw)
+	}
+
+	resp, raw = c1.doJSON("POST", "/admin/v1/keys/"+key.ID+"/revoke", adminHeaders, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke key failed: status=%d body=%s", resp.StatusCode, raw)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, raw = c2.doJSON("GET", "/mcp-rest/tools/list", userHeaders, nil, nil)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("node 2 continued accepting revoked key: status=%d body=%s", resp.StatusCode, raw)
+}
