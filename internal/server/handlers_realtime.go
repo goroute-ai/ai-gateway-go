@@ -411,7 +411,7 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		finalCost := totalCostMicros
 		sessionMu.Unlock()
 
-		s.spendWorker.Enqueue(domain.SpendEvent{
+		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
 			RequestID:      sessionID,
 			OrgID:          idCtx.OrgID,
@@ -425,7 +425,10 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 			Usage:          finalUsage,
 			CostMicros:     finalCost,
 			CreatedAt:      time.Now().UTC(),
-		})
+		}); err != nil {
+			logger.Error("Realtime session spend event persistence failed", "session_id", sessionID, "error", err.Error())
+			_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "server_error", "code": "spend_persistence_unavailable"}})
+		}
 	}
 
 	logger.Info("Realtime websocket session completed",

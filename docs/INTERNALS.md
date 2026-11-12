@@ -258,7 +258,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - Authenticate using Virtual API Keys: sk-gw-<8char_id>-<36char_secret>                |
 |  - Persistent Storage: Only SHA-256(full_key) is stored in PostgreSQL                   |
 |  - Verification: crypto/subtle.ConstantTimeCompare against L1/L2 cached hash             |
-|  - Multi-Pod Invalidation: Redis Pub/Sub broadcast on gw:events:invalidation             |
+|  - Cached key expiry is checked on both L1 and Redis L2 hits                              |
+|  - Key revocation broadcasts L1 eviction through gw:events:invalidation                   |
 +-----------------------------------------------------------------------------------------+
                                              |
                                              v
@@ -270,6 +271,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - In-Memory Security: Plaintext keys zeroed out after request construction             |
 +-----------------------------------------------------------------------------------------+
 ```
+
+Virtual-key expiry metadata is stored with each cached identity and checked on every L1 and Redis L2 cache hit. Key revocation deletes the shared L2 entry and publishes a key-hash invalidation event; gateway workers evict matching L1 identities when they receive it. If Redis cannot deliver the event, another worker can retain its L1 identity only until its configured L1 cache TTL expires.
 
 ### Envelope Encryption Specification
 For every stored upstream provider API key:
@@ -317,12 +320,13 @@ stateDiagram-v2
     CLOSED --> [*]
 ```
 
-- **Distributed Cooldown**: Stored in Redis (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods immediately cease routing traffic to it.
-- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, the circuit enters `HALF_OPEN` and admits **strictly one probe request** while locking out concurrent requests. If the probe succeeds, the circuit resets to `CLOSED`.
+- **Distributed Cooldown**: Redis stores an open-state marker and the expiring cooldown (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods cease routing traffic to it.
+- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, an atomic Redis script grants one 5-minute probe lease across pods. A failed probe restores the cooldown; a successful request clears the shared state and lease. If Redis is unavailable, the manager uses local circuit state and cannot coordinate probes across replicas.
+- **Streaming Retry Safety**: Before the first output chunk, retryable failures use the same bounded full-jitter backoff and in-range upstream `Retry-After` handling as non-streaming calls. Once a chunk is emitted, the gateway returns the stream error without replaying the request.
 
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
-- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` chain (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`), transparently re-translating the request across providers and setting header `X-Gateway-Fallback-Attempted: true`.
+- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` graph in declaration order (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`). Traversal is limited to 16 edges, skips cycles and duplicate groups, and remains within the primary organization. The gateway re-translates the request across providers and sets `X-Gateway-Fallback-Attempted: true`.
 
 ### 6.4 Pure Go Dedicated Protocol Engines
 GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
@@ -397,12 +401,10 @@ CostMicros = floor((picos + 500000) / 1000000)
 
 Rate limiting is enforced atomically across **Virtual Key**, **Team**, and **Organization** scopes for Requests Per Minute (RPM), Tokens Per Minute (TPM), and Max Concurrent In-Flight Connections.
 
-### 8.1 Model-Specific BPE Token Estimation
-Before forwarding a request, the gateway estimates prompt tokens using model-family heuristic ratios:
-- **Anthropic Claude**: `3.2` characters per token
-- **OpenAI GPT-4o / GPT-4.1 / o3**: `3.5` characters per token
-- **Google Gemini / Mistral / Llama**: `3.8` characters per token
-- **Framing Overhead**: Adds per-message overhead + `1024` reserve tokens when `reasoning_effort` is active.
+### 8.1 Model-Specific Preflight Estimation
+Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 512)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
+
+These are quota-admission estimates, not provider billing tokenizers. Audio, image-generation, and provider-specific multimodal accounting remain approximate; returned provider usage is reconciled where the endpoint exposes it. Operators should size TPM limits with that limitation in mind.
 
 ### 8.2 Single-Roundtrip Atomic Redis Lua Script
 The complete check and increment runs in `internal/ratelimit/scripts/check_and_increment.lua` in a single network roundtrip:
@@ -418,11 +420,8 @@ Once the upstream provider returns actual token usage, the gateway reconciles th
 $$\Delta\text{Tokens} = \text{ActualTotalTokens} - \text{EstimatedPromptTokens}$$
 The minute's TPM counter is adjusted by $\Delta\text{Tokens}$, and the in-flight concurrency counter is decremented via `DECR gw:rl:conc:{key_id}`.
 
-### 8.4 Redis Circuit Breaker Fallback
-If Redis becomes unreachable, the rate limiter falls back according to its configured mode:
-- **`local_divided_by_replicas` (Default)**: Automatically divides configured limits by expected cluster pods (`limit / replicas`), preventing quota overshoots during a Redis maintenance window.
-- **`local_per_pod`**: Applies full limits locally per pod.
-- **`fail_closed`**: Rejects requests with `HTTP 503 Service Unavailable`.
+### 8.4 Redis Availability
+Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters. If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error. It does not fall back to per-process counters, because those cannot preserve tenant-wide limits across replicas. Requests without configured limits do not require Redis for quota admission.
 
 ---
 
@@ -437,33 +436,11 @@ A request is cached if:
 3. Client did NOT specify `X-Gateway-Cache-Control: no-cache`.
 
 ### Cache Key Computation
-The cache key is computed deterministically using SHA-256 over canonical JSON fields:
-$$\text{Key} = \text{"gw:cache:v2:"} + \text{NamespaceVersion} + \text{":org:"} + \text{OrgID} + \text{":"} + \text{SHA256}(\text{CanonicalPayload})$$
+`ComputeKey` hashes canonical JSON containing the organization and the complete `CanonicalChatRequest`. It omits only `RequestID` (per-call observability metadata) and `Stream` (streaming requests are not cacheable). This includes extra provider parameters, metadata, multimodal message parts, response format, tool settings, and gateway extensions, so a newly added canonical field participates automatically. If a request contains a value that cannot be encoded as JSON, the cache key is empty and the request bypasses lookup and storage.
 
-To prevent collisions between different models, parameters, reasoning settings, or user sessions, `ComputeKey` incorporates all execution variables:
+On cache hit, the gateway returns `X-Gateway-Cache: HIT` and the cached response body without calling an upstream API. Entries in both L1 and Redis include the organization, model, and the shared invalidation epochs at write time. Before returning any hit, each replica reads the global, organization, and model epoch values from Redis and compares them with the entry. A mismatch is a miss.
 
-```go
-hash := sha256.New()
-hash.Write([]byte(orgID))
-hash.Write([]byte(resolvedModel)) // Target model after routing
-hash.Write(canonicalJSON(req.Messages))
-hash.Write(canonicalJSON(req.Tools))
-hash.Write(canonicalJSON(req.ResponseFormat))
-if req.Temperature != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.Temperature)))
-}
-if req.TopP != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.TopP)))
-}
-if req.ReasoningEffort != "" {
-    hash.Write([]byte(req.ReasoningEffort))
-}
-if req.User != "" {
-    hash.Write([]byte(req.User))
-}
-```
-
-On cache hit, the gateway immediately returns `X-Gateway-Cache: HIT`, `X-Gateway-Cost-Micros: 0`, and the cached response body, bypassing upstream APIs entirely.
+Invalidation increments the relevant shared epoch(s) and a monotonic revision in one Redis Lua script. Global invalidation increments the global epoch; organization and model invalidation increment their respective epoch(s). Because epochs are shared state, another replica's L1 entry becomes unusable on its next lookup without depending on Pub/Sub delivery. If Redis cannot validate the epochs, the cache returns a miss and does not serve a potentially stale L1 or L2 value. Once Redis recovers, the next lookup checks the current shared epochs before using any retained L1 entry. Redis keys used by the script share a Redis Cluster hash tag (`{epochs}`) so the atomic update runs in one slot.
 
 ---
 

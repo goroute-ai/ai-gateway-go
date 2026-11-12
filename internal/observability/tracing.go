@@ -8,6 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type traceContextKey struct{}
@@ -70,16 +74,38 @@ func TraceFromContext(ctx context.Context) TraceContext {
 
 // TraceMiddleware injects W3C `traceparent` and `X-Trace-Id` headers on every request and response.
 func TraceMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tc := ParseOrGenerateTrace(r)
-		w.Header().Set("X-Trace-Id", tc.TraceID)
-		w.Header().Set("traceparent", tc.TraceParent)
-		if reqID := r.Header.Get("X-Request-Id"); reqID != "" {
-			w.Header().Set("X-Request-Id", reqID)
-		}
-		ctx := WithTraceContext(r.Context(), tc)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	return TraceMiddlewareWithTracer(trace.NewNoopTracerProvider().Tracer("ai-gateway-go"))(next)
+}
+
+func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Handler {
+	if tracer == nil {
+		tracer = trace.NewNoopTracerProvider().Tracer("ai-gateway-go")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			parentCtx := propagation.TraceContext{}.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+			ctx, span := tracer.Start(parentCtx, "HTTP "+r.Method,
+				trace.WithSpanKind(trace.SpanKindServer),
+				trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.path", r.URL.Path)),
+			)
+			defer span.End()
+			tc := ParseOrGenerateTrace(r)
+			if spanContext := span.SpanContext(); span.IsRecording() && spanContext.IsValid() {
+				tc = TraceContext{
+					TraceID:     spanContext.TraceID().String(),
+					SpanID:      spanContext.SpanID().String(),
+					TraceParent: fmt.Sprintf("00-%s-%s-01", spanContext.TraceID(), spanContext.SpanID()),
+				}
+			}
+			w.Header().Set("X-Trace-Id", tc.TraceID)
+			w.Header().Set("traceparent", tc.TraceParent)
+			if reqID := r.Header.Get("X-Request-Id"); reqID != "" {
+				w.Header().Set("X-Request-Id", reqID)
+			}
+			ctx = WithTraceContext(ctx, tc)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // InjectTraceHeaders injects W3C traceparent and X-Trace-Id from ctx into outgoing http.Request headers.

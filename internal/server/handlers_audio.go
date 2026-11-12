@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const maxAudioUploadBytes = 25 * 1024 * 1024 // 25 MB
@@ -126,13 +127,12 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	}
 	_ = tmpFile.Close() // Close so readers can open concurrently
 
-	// 3. Rate Limit Quota
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, 50)
+	// Audio tokenization varies by provider. Use the upload size and optional
+	// prompt for a conservative preflight estimate rather than a fixed allowance.
+	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -154,7 +154,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(50)
+	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -186,27 +186,12 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 
-	if sttReq.ResponseFormat == "text" {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte(resp.Text))
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		if resp.Raw != nil {
-			_ = json.NewEncoder(w).Encode(resp.Raw)
-		} else {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"text":        resp.Text,
-				"duration_ms": resp.DurationMs,
-			})
-		}
-	}
-
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -227,7 +212,20 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		Modality:                domain.ModalityAudioSTT,
 		ModalityUnits:           map[string]any{"duration_ms": resp.DurationMs},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	if sttReq.ResponseFormat == "text" {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(resp.Text))
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		if resp.Raw != nil {
+			_ = json.NewEncoder(w).Encode(resp.Raw)
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"text": resp.Text, "duration_ms": resp.DurationMs})
+		}
+	}
 
 	logger.InfoContext(r.Context(), "Audio transcription completed",
 		slog.String("component", "audio"),
@@ -294,17 +292,11 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 2. Rate Limit Quota (estimate 1 token per 4 chars)
-	estTokens := len(raw.Input) / 4
-	if estTokens < 10 {
-		estTokens = 10
-	}
+	// TTS quota follows the target model's text token profile.
+	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -350,14 +342,18 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 
-	_, _ = io.Copy(w, stream)
+	streamBytes, readErr := io.ReadAll(stream)
+	if readErr != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeUpstream, Code: "audio_stream_read_failed", Message: "unable to read upstream audio response"})
+		return
+	}
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -378,7 +374,10 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		Modality:                domain.ModalityAudioTTS,
 		ModalityUnits:           map[string]any{"character_count": len(raw.Input)},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_, _ = w.Write(streamBytes)
 
 	logger.InfoContext(r.Context(), "Audio speech synthesis completed",
 		slog.String("component", "audio"),
