@@ -242,10 +242,12 @@ Configure `routing_strategy` per `model_list` entry or `ModelGroup`:
 | Strategy Value | Selection Algorithm | Best For |
 | :--- | :--- | :--- |
 | `weighted-shuffle` | Random selection proportional to deployment `weight` ($P(d_i) = w_i / \sum w_j$). | Traffic splitting (e.g., 80% Gemini / 20% OpenAI). |
-| `least-busy` | Picks deployment with lowest atomic in-flight request count. | Long-running streaming & reasoning workloads. |
-| `latency-based` | Tracks lock-free EWMA latency ($\text{EWMA}_{\text{new}} = 0.2\cdot L + 0.8\cdot \text{EWMA}_{\text{old}}$) and picks fastest endpoint. | Latency-critical interactive chat. |
-| `usage-based-headroom` | Picks deployment with highest remaining RPM/TPM quota ratio over a 1-minute window: $\min(1 - \text{rpm}/\text{cap}, 1 - \text{tpm}/\text{cap})$. Counters reset every 60s. Falls back to lowest-utilization deployment if all exceed rated capacity. | Multi-region rate-limit maximization without starvation. |
+| `least-busy` | Picks deployment with lowest shared in-flight request count. | Long-running streaming & reasoning workloads. |
+| `latency-based` | Picks lowest shared time-to-first-token EWMA (alpha 0.3); uses a 250 ms baseline for deployments without a sample. | Latency-critical interactive chat. |
+| `usage-based-headroom` | Picks deployment with most remaining TPM capacity over a 1-minute window. | Avoiding provider token limits across deployments. |
 | `lowest-cost` | Picks deployment with lowest `(InputCostMicrosPer1M + OutputCostMicrosPer1M)`. | Cost-optimized batch processing. |
+
+Adaptive strategies share expiring deployment signals through Redis. Signal keys expire after 10 minutes without updates. If shared state cannot be read or updated, routing falls back to the local process's observations and emits a structured `routing_signal_store_unavailable` warning; decisions during that period are not cluster-wide accurate. Weighted and lowest-cost strategies do not use these signals.
 
 ### YAML Configuration (`configs/config.yaml`)
 ```yaml

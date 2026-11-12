@@ -201,7 +201,7 @@ flowchart TB
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
 6. **Two-Stage Model Routing (`internal/router`)**:
    - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-record catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
-   - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`).
+   - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`). Adaptive strategies read and atomically update expiring shared Redis deployment signals; if Redis is unavailable, they use process-local estimates and log that cluster-wide accuracy is unavailable.
 7. **Reliability Loop & Provider OpenAPI Translation (`internal/router/reliability.go` + `internal/adapter`)**:
    - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`).
    - Transforms `CanonicalChatRequest` into the target provider's OpenAPI or protocol schema (OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock Converse, GCP Vertex AI, Cohere v2, Mistral, Ollama, or one of 30+ certified OpenAI-compatible profiles).
@@ -379,9 +379,9 @@ flowchart TD
         FilterHealthy["Filter Active Deployments\n(Exclude Redis Cooldowns)"]
         Strategy{"Group Routing Strategy"}
         Weighted["weighted-shuffle\n(Weighted Random)"]
-        LeastBusy["least-busy\n(Min In-Flight Requests)"]
-        Latency["latency-based\n(Min TTFT EWMA + 5% Exploration)"]
-        Headroom["usage-based-headroom\n(1m Windowed RPM/TPM Headroom)"]
+        LeastBusy["least-busy\n(Min Shared In-Flight Requests)"]
+        Latency["latency-based\n(Min Shared TTFT EWMA)"]
+        Headroom["usage-based-headroom\n(1m Windowed Shared TPM Headroom)"]
         LowestCost["lowest-cost\n(Min Input+Output Price)"]
     end
 

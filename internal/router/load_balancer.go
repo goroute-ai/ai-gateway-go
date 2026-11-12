@@ -1,12 +1,16 @@
 package router
 
 import (
+	"context"
 	"math"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
 )
 
 type deploymentTelemetry struct {
@@ -37,14 +41,21 @@ func (m *deploymentTelemetry) checkWindow(now time.Time) {
 // 4. usage-based-headroom
 // 5. lowest-cost
 type LoadBalancer struct {
-	mu      sync.RWMutex
-	metrics map[string]*deploymentTelemetry
+	mu             sync.RWMutex
+	metrics        map[string]*deploymentTelemetry
+	redis          *storage.RedisFabric
+	sharedDegraded atomic.Bool
+	sharedChecked  atomic.Bool
 }
 
-func NewLoadBalancer() *LoadBalancer {
-	return &LoadBalancer{
+func NewLoadBalancer(redisFabric ...*storage.RedisFabric) *LoadBalancer {
+	lb := &LoadBalancer{
 		metrics: make(map[string]*deploymentTelemetry),
 	}
+	if len(redisFabric) > 0 {
+		lb.redis = redisFabric[0]
+	}
+	return lb
 }
 
 // Select chooses one deployment from the candidate list of healthy deployments according to strategy.
@@ -54,6 +65,15 @@ func (lb *LoadBalancer) Select(strategy domain.RoutingStrategy, candidates []*do
 	}
 	if len(candidates) == 1 {
 		return candidates[0]
+	}
+	if lb.redis != nil && isAdaptiveStrategy(strategy) {
+		shared, err := lb.readSharedSignals(candidates)
+		if err != nil {
+			lb.setSharedDegraded(true, string(strategy))
+		} else {
+			lb.setSharedDegraded(false, string(strategy))
+			return lb.selectUsingSignals(strategy, candidates, shared)
+		}
 	}
 
 	switch strategy {
@@ -67,6 +87,62 @@ func (lb *LoadBalancer) Select(strategy domain.RoutingStrategy, candidates []*do
 		return lb.selectLowestCost(candidates)
 	default: // StrategyWeightedShuffle
 		return lb.selectWeightedRandom(candidates)
+	}
+}
+
+func isAdaptiveStrategy(strategy domain.RoutingStrategy) bool {
+	return strategy == domain.StrategyLeastBusy || strategy == domain.StrategyLatencyBased || strategy == domain.StrategyUsageBasedHeadroom
+}
+
+func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, candidates []*domain.Deployment, signals map[string]deploymentTelemetry) *domain.Deployment {
+	switch strategy {
+	case domain.StrategyLeastBusy:
+		var best *domain.Deployment
+		minInFlight := math.MaxInt
+		for _, d := range candidates {
+			if signals[d.ID].inFlight < minInFlight {
+				minInFlight = signals[d.ID].inFlight
+				best = d
+			}
+		}
+		return best
+	case domain.StrategyLatencyBased:
+		var best *domain.Deployment
+		minLatency := math.MaxFloat64
+		for _, d := range candidates {
+			lat := signals[d.ID].ewmaTTFTMs
+			if lat <= 0 {
+				lat = 250
+			}
+			if lat < minLatency {
+				minLatency = lat
+				best = d
+			}
+		}
+		return best
+	case domain.StrategyUsageBasedHeadroom:
+		var best *domain.Deployment
+		maxHeadroom := -math.MaxFloat64
+		now := time.Now()
+		for _, d := range candidates {
+			capTPM := d.TPMCapacity
+			if capTPM <= 0 {
+				capTPM = 1000000
+			}
+			signal := signals[d.ID]
+			usedTPM := 0
+			if signal.windowStart.IsZero() || now.Sub(signal.windowStart) < time.Minute {
+				usedTPM = signal.usedTPM
+			}
+			headroom := 1 - (float64(usedTPM) / float64(capTPM))
+			if headroom > maxHeadroom {
+				maxHeadroom = headroom
+				best = d
+			}
+		}
+		return best
+	default:
+		return nil
 	}
 }
 
@@ -181,17 +257,25 @@ func (lb *LoadBalancer) selectLowestCost(candidates []*domain.Deployment) *domai
 // OnRequestStart increments in-flight counters for a deployment.
 func (lb *LoadBalancer) OnRequestStart(depID string) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	m := lb.getOrCreate(depID)
 	m.checkWindow(time.Now())
 	m.inFlight++
 	m.usedRPM++
+	lb.mu.Unlock()
+	if lb.redis != nil && lb.redis.Client() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if _, err := lb.redis.Execute(func(rdb *redis.Client) (any, error) {
+			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), routingSignalTTLSeconds).Result()
+		}); err != nil {
+			lb.setSharedDegraded(true, "signal_update")
+		}
+	}
 }
 
 // OnRequestEnd decrements in-flight counters and updates EWMA latency and token usage.
 func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens int) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	m := lb.getOrCreate(depID)
 	m.checkWindow(time.Now())
 	if m.inFlight > 0 {
@@ -204,6 +288,16 @@ func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens 
 			m.ewmaTTFTMs = float64(latencyMs)
 		} else {
 			m.ewmaTTFTMs = alpha*float64(latencyMs) + (1-alpha)*m.ewmaTTFTMs
+		}
+	}
+	lb.mu.Unlock()
+	if lb.redis != nil && lb.redis.Client() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if _, err := lb.redis.Execute(func(rdb *redis.Client) (any, error) {
+			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), totalTokens, latencyMs, routingSignalTTLSeconds).Result()
+		}); err != nil {
+			lb.setSharedDegraded(true, "signal_update")
 		}
 	}
 }
