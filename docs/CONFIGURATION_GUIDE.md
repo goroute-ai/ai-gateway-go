@@ -383,10 +383,7 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 ### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM & Concurrency)
 1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Gemini/Mistral/Llama) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.
 2. **Single-Roundtrip Redis Lua Quota Check & Post-Response Reconciliation**: Atomically verifies Key, Team, and Org RPM, TPM, Concurrency, and Spend limits in 1 RTT, then reconciles `actual_tokens - estimated_tokens` after completion.
-3. **3 Configurable Redis Outage Fallback Modes**:
-   - `local_divided_by_replicas` (Default): Scales in-memory limits to `max(1, limit / expectedPods)` so cluster-wide traffic never overshoots tenant quotas during a Redis outage.
-   - `local_per_pod`: Enforces full limit per pod.
-   - `fail_closed`: Rejects requests with `HTTP 503` when Redis is unreachable.
+3. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters. If Redis is unavailable, the gateway returns `HTTP 503` with `rate_limiter_unavailable`; it never substitutes per-process counters for a tenant-wide quota. Requests without configured limits do not require Redis for quota admission. This preserves quota guarantees during Redis outages at the cost of rejecting governed traffic until Redis recovers.
 
 ### Part B: Tenant-Isolated Deterministic Response Cache (`0ms`, `$0.00`)
 - **Eligibility**: Caches non-streaming requests where `temperature <= 0` or `seed != nil` (unless `X-Gateway-Cache-Control: no-cache` is sent).
