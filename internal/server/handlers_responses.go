@@ -26,6 +26,9 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 
 	var req domain.CanonicalResponseRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 10<<20)).Decode(&req); err != nil {

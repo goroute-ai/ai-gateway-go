@@ -51,7 +51,10 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 		return err
 	}
 	if sw.limiter != nil && ev.CostMicros > 0 {
-		sw.limiter.RecordSpendIncrement(ctx, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros)
+		sw.limiter.RecordSpendIncrementForRequest(context.Background(), ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros)
+	} else if sw.limiter != nil && ev.RequestID != "" {
+		// A zero-cost success (for example a cache hit) still releases its reservation.
+		sw.limiter.RecordSpendIncrementForRequest(context.Background(), ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, 0)
 	}
 	select {
 	case sw.notify <- struct{}{}:

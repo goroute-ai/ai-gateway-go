@@ -144,7 +144,20 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	// 2. Atomic Rate Limit / Budget Check
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	maxOutput := 0
+	if chatReq.MaxTokens != nil {
+		maxOutput = *chatReq.MaxTokens
+	}
+	budgetInputTokens := estTokens
+	if identityHasBudget(idCtx) {
+		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
+			return
+		} else if len(encoded) > budgetInputTokens {
+			budgetInputTokens = len(encoded)
+		}
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -153,7 +166,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	actualTokensReconciled := false
 	defer func() {
 		if !actualTokensReconciled {
-			releaseQuota(0)
+			releaseQuota(-1)
 		}
 	}()
 
@@ -606,7 +619,11 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	}
 
 	estTokens := ratelimit.EstimateTextInputsTokens(raw.Model, inputs, 4)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	inputByteBound := 0
+	for _, input := range inputs {
+		inputByteBound += len(input)
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -623,7 +640,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	}
 	resp, meta, err := s.reliability.ExecuteEmbeddings(r.Context(), idCtx, embReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		domain.WriteHTTPError(w, err)
 		return
 	}
