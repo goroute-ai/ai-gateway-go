@@ -258,7 +258,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - Authenticate using Virtual API Keys: sk-gw-<8char_id>-<36char_secret>                |
 |  - Persistent Storage: Only SHA-256(full_key) is stored in PostgreSQL                   |
 |  - Verification: crypto/subtle.ConstantTimeCompare against L1/L2 cached hash             |
-|  - Multi-Pod Invalidation: Redis Pub/Sub broadcast on gw:events:invalidation             |
+|  - Cached key expiry is checked on both L1 and Redis L2 hits                              |
+|  - Key revocation broadcasts L1 eviction through gw:events:invalidation                   |
 +-----------------------------------------------------------------------------------------+
                                              |
                                              v
@@ -270,6 +271,8 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - In-Memory Security: Plaintext keys zeroed out after request construction             |
 +-----------------------------------------------------------------------------------------+
 ```
+
+Virtual-key expiry metadata is stored with each cached identity and checked on every L1 and Redis L2 cache hit. Key revocation deletes the shared L2 entry and publishes a key-hash invalidation event; gateway workers evict matching L1 identities when they receive it. If Redis cannot deliver the event, another worker can retain its L1 identity only until its configured L1 cache TTL expires.
 
 ### Envelope Encryption Specification
 For every stored upstream provider API key:

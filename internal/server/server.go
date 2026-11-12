@@ -471,6 +471,7 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 
 // StartWorkers starts background daemons (Async Spend Batch Writer, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
 func (s *GatewayServer) StartWorkers(ctx context.Context) {
+	s.authSvc.StartInvalidationListener(ctx)
 	s.spendWorker.Start(ctx)
 	s.healthMon.Start(ctx)
 	if s.cfg.Discovery.Enabled {
@@ -486,6 +487,7 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 
 // Shutdown drains background workers cleanly.
 func (s *GatewayServer) Shutdown(ctx context.Context) {
+	s.authSvc.StopInvalidationListener()
 	if s.a2aPublisher != nil {
 		s.a2aPublisher.Stop()
 	}

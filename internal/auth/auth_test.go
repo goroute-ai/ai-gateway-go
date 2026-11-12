@@ -145,6 +145,39 @@ func TestExtractGatewayCredentialsAmbiguity(t *testing.T) {
 	})
 }
 
+func TestAuthenticateVirtualKeyRejectsExpiredL1Identity(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{Name: "Expiring key org", Slug: "expiring-key-org", IsActive: true}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("create organization: %v", err)
+	}
+
+	expiresAt := time.Now().UTC().Add(30 * time.Millisecond)
+	svc := auth.NewService(repo, nil, "", time.Minute, time.Minute)
+	key, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:     org.ID,
+		Name:      "short-lived",
+		ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("issue key: %v", err)
+	}
+	if _, err := svc.AuthenticateVirtualKey(ctx, key.RawKey); err != nil {
+		t.Fatalf("authenticate before expiration: %v", err)
+	}
+
+	time.Sleep(time.Until(expiresAt) + 5*time.Millisecond)
+	_, err = svc.AuthenticateVirtualKey(ctx, key.RawKey)
+	if err == nil {
+		t.Fatal("expected expired cached identity to be rejected")
+	}
+	gwErr, ok := err.(*domain.GatewayError)
+	if !ok || gwErr.Code != "expired_api_key" || gwErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unexpected expiration error: %+v", err)
+	}
+}
+
 func Test3StateRBACAllowlists(t *testing.T) {
 	repo := storage.NewMemoryRepository()
 	rbac := auth.NewRBACEngine(repo)
