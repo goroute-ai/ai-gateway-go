@@ -88,10 +88,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 	quotaTokens := len(req.Documents) * 20
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, quotaTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

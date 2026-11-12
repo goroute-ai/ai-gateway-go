@@ -197,8 +197,9 @@ flowchart TB
      - Verifies and increments `RPM` (+1), `TPM` (+estimated tokens), and `Concurrent Requests` (+1) across Key, Team, and Org scopes.
    - If any threshold is breached, immediately short-circuits with `HTTP 429 Too Many Requests` (`Retry-After` header + standard OpenAI error payload).
 5. **Exact-Match Response Cache Lookup (`internal/cache`)**:
-   - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over the organization, cache namespace version, and the complete canonical request (excluding only per-call `RequestID` and non-cacheable `Stream`). Unencodable requests bypass the cache.
+   - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over the organization and the complete canonical request, excluding per-call `RequestID` and non-cacheable `Stream`. Unencodable requests bypass the cache.
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
+   - L1 and Redis entries carry global, organization, and model epochs. Each hit validates those epochs against shared Redis state; Redis errors and epoch mismatches become cache misses. Invalidation atomically increments shared epochs, so stale L1 values on other replicas are rejected on their next lookup without relying on Pub/Sub delivery.
 6. **Two-Stage Model Routing (`internal/router`)**:
    - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-record catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
    - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`).
@@ -227,7 +228,7 @@ flowchart LR
     subgraph Pod["Gateway Pod Memory (L1)"]
         L1Key["L1 Key Cache\n(TTL: 15s)"]
         L1Model["L1 Model/Routing Cache\n(TTL: 30s)"]
-        LocalRL["Fallback Local Token Bucket\n(Active only if Redis Down)"]
+        LocalRL["No Local Quota Fallback\n(HTTP 503 for governed requests)"]
     end
 
     subgraph RedisCluster["Redis Cluster (L2 Shared Fabric)"]
@@ -242,13 +243,13 @@ flowchart LR
 
     L1Key -->|Miss| L2Key -->|Miss| PG
     PubSub -.->|"Evict on Key/Policy Update"| L1Key & L1Model
-    LuaRL -.->|"Circuit Breaker Open"| LocalRL
+    LuaRL -.->|"Redis unavailable"| LocalRL
 ```
 
 1. **Zero-State Pod Scaling**: Any number of Gateway instances can run concurrently. No sticky sessions are required.
 2. **Redis Circuit Breaker (`sony/gobreaker`)**:
    - Every Redis operation is wrapped in a fast timeout (`50ms`) and circuit breaker (trips after 5 consecutive network failures, resets after `10s`).
-   - When the circuit breaker is open, the Rate Limiter automatically switches to an in-process token bucket (`internal/ratelimit/limiter.go`) so client inference traffic continues safely during Redis maintenance.
+   - When Redis is unavailable, requests with configured limits fail with HTTP 503. The gateway does not switch to per-process counters because replica-local state cannot preserve tenant-wide limits.
 3. **Outbound Connection Pooling**:
    - Each provider adapter uses a dedicated, tuned `*http.Client` with `MaxIdleConns: 1000`, `MaxIdleConnsPerHost: 256`, `IdleConnTimeout: 90s`, and `ForceAttemptHTTP2: true`, avoiding ephemeral port exhaustion and TLS handshake latency under high load.
 4. **Multi-Pod Real-Time Cache Invalidation**:
