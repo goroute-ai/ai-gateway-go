@@ -38,9 +38,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) =>
   ];
 
   return (
-    <aside className="w-56 border-r border-border-subtle bg-surface-base/90 flex flex-col shrink-0 min-h-[calc(100vh-3.5rem)] select-none">
-      <div className="p-3 space-y-1 flex-1">
-        <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+    <aside className="w-60 border-r border-border bg-surface-base flex flex-col shrink-0 min-h-[calc(100vh-4rem)] select-none">
+      <div className="p-3 space-y-1.5 flex-1">
+        <div className="px-3 py-2 text-[10px] font-mono font-semibold uppercase tracking-wider text-[#9696a4]">
           Control Plane
         </div>
         {navItems.map((item) => {
@@ -50,22 +50,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) =>
             <button
               key={item.id}
               onClick={() => onSelectView(item.id)}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 ${
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-[0.55rem] text-xs font-medium transition-all duration-150 ${
                 isActive
-                  ? 'bg-accent-primary/10 text-accent-glow border border-accent-primary/20 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-surface-elevated/50 border border-transparent'
+                  ? 'bg-[rgba(124,58,237,0.09)] text-accent-primary border border-accent-primary/30 font-semibold shadow-[0_2px_12px_rgba(124,58,237,0.1)]'
+                  : 'text-[#9696a4] hover:text-[#f5f3ff] hover:bg-surface-elevated/80 border border-transparent hover:border-border'
               }`}
             >
               <div className="flex items-center gap-2.5">
-                <Icon className={`w-4 h-4 ${isActive ? 'text-accent-primary' : 'text-slate-500'}`} />
+                <Icon className={`w-4 h-4 ${isActive ? 'text-accent-primary' : 'text-[#9696a4]'}`} />
                 <span>{item.label}</span>
               </div>
               {item.badge && (
                 <span
                   className={`text-[9px] font-mono uppercase px-1.5 py-0.2 rounded border ${
                     isActive
-                      ? 'bg-accent-primary/20 text-accent-glow border-accent-primary/30'
-                      : 'bg-surface-elevated text-slate-400 border-border-subtle'
+                      ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/30 font-bold'
+                      : 'bg-surface-elevated text-[#9696a4] border-border'
                   }`}
                 >
                   {item.badge}
@@ -77,10 +77,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) =>
       </div>
 
       {/* Footer Info */}
-      <div className="p-3 border-t border-border-subtle/60 text-[11px] text-slate-500 flex items-center justify-between">
-        <span className="font-mono text-[10px]">GoRoute v1.3.0</span>
-        <span className="flex items-center gap-1 text-[10px] text-emerald-400">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+      <div className="p-3 border-t border-border text-[11px] text-[#9696a4] flex items-center justify-between font-mono">
+        <span className="text-[10px]">GoRoute v1.4.0</span>
+        <span className="flex items-center gap-1.5 text-[10px] text-accent-primary">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse" />
           Pure Go
         </span>
       </div>

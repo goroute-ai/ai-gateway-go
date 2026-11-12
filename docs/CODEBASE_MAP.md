@@ -23,11 +23,11 @@ Use this page to find the implementation and the source of truth for a change. P
 | Usage cost calculation and spend processing | `internal/finops/` | `internal/finops/*_test.go` |
 | Public embeddable Go SDK | `pkg/gateway/` | `pkg/gateway/*_test.go` |
 | Embedded Operator Web UI & Playground | `internal/ui/` (HTTP embed handler), `web/` (React SPA) | `internal/ui/*_test.go`, `web/scripts/check-budget.mjs` |
-| Executables | `cmd/gateway/`, `cmd/specgen/`, `cmd/catalog-sync/` | Check each command's `main.go` and the Makefile |
+| Executables and contract generation | `cmd/gateway/`, `cmd/specgen/`, `cmd/catalog-sync/`, `internal/openapi/` | Check each command's `main.go`, generation directives, and the Makefile |
 
 ## Sources of truth
 
-- **HTTP API shapes:** `docs/openapi/*.yaml`; the gateway contract is `docs/openapi/gateway.openapi.yaml`. Verify route behavior in `internal/server/` and handlers because the specification may not describe every operational detail.
+- **HTTP API shapes:** `docs/openapi/*.yaml`; gateway DTOs and standard/strict server interfaces are generated from `docs/openapi/gateway.openapi.yaml`. `make specgen` validates contracts and checks primary `/v1` route parity. Runtime handlers are still partly handwritten, and admin, alias, MCP, and A2A route parity is not yet enforced.
 - **MCP and A2A protocol schemas:** pinned files under `docs/specs/`. For A2A generated Go code, see `docs/specs/a2a/v1.0/generate.go` and its `go:generate` command.
 - **Configuration keys and defaults:** `internal/config/config.go` and `configs/config.example.yaml`. The deployed sample `configs/config.yaml` may contain local/demo secrets; do not copy credentials into documentation.
 - **Database shape and evolution:** ordered SQL migrations in `migrations/`, paired with repository behavior in `internal/storage/`. Migration `0005_add_model_capabilities.up.sql` establishes persistent tri-state model capabilities and pricing provenance history; `0006_add_supports_inference.up.sql` establishes persistent inference support flags; `0007_add_modality_pricing_and_spend.up.sql` establishes modality pricing rates, modality spend units, and stateful `files` and `batches` tables.
@@ -44,7 +44,7 @@ Use this page to find the implementation and the source of truth for a change. P
   - Add the provider enum and aliases to `internal/config/config.go` (`NormalizeProvider`).
   - Register the provider in `internal/server/server.go` (`adapter.Registry`).
   - Route all network egress through `internal/security/network`.
-- **Change an endpoint or wire type:** update the gateway OpenAPI contract, server handler, domain conversion as needed, and handler/contract tests; run `go run ./cmd/specgen`.
+- **Change an endpoint or wire type:** update the gateway OpenAPI contract, regenerate DTOs/interfaces with `make specgen`, update the server handler and explicit domain conversion as needed, and add focused handler/contract tests.
 - **Change configuration:** update the config struct, defaults/loading/validation, example config, configuration guide, and config tests together.
 - **Change persisted state:** update repository interfaces/implementations, add forward and rollback migrations in `migrations/`, and test both schema-dependent repository behavior and in-memory behavior where applicable.
 - **Modify or extend the Operator Web UI:**

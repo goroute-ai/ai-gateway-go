@@ -3,7 +3,7 @@
 > **Document Status**: Production Reference Architecture (v1.0)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
 > **Provider Integrations**: Dedicated adapters and OpenAI-compatible dialect profiles under `internal/adapter/`; consult those packages for the current implementation set.  
-> **Contract Architecture**: OpenAPI contracts are maintained under `docs/openapi/`; `go run ./cmd/specgen` validates the checked-in contracts. A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
+> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway DTOs/interfaces, validates contracts, and checks primary `/v1` route parity. A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -44,7 +44,7 @@ Modern production AI systems interact with multiple frontier and local LLM provi
 The design aims for low-overhead routing, resilient streaming, typed contracts, and single-binary deployment. Treat this document as architectural intent; use the current code and [codebase map](./CODEBASE_MAP.md) to confirm runtime behavior.
 
 This gateway implements the complete **Tier-1 Enterprise AI Gateway stack in pure Go**, combining:
-1. **Contract-Guided Engineering**: A unified OpenAI-compatible public OpenAPI specification and provider/protocol contracts live under `docs/openapi/`. `cmd/specgen` validates the checked-in OpenAPI documents and verifies that generated A2A code exists; it does not generate OpenAPI Go types.
+1. **OpenAPI-First Foundation (in progress)**: Gateway and selected provider/protocol contracts live under `docs/openapi/`. The gateway contract generates DTOs and standard-library/strict server interfaces through pinned `oapi-codegen` v2.8.0. `GatewayServer` still registers chi routes by hand and does not yet implement or register the generated interface for all operations. `cmd/specgen` validates the remaining documents and verifies that generated A2A code exists.
 2. **Sub-2ms Hot-Path Data Plane**: Zero synchronous PostgreSQL queries on the inference path using a 2-tier cache (L1 In-Memory + L2 Redis with Pub/Sub invalidation), single-roundtrip Redis Lua rate limiting, and asynchronous batched PostgreSQL `COPY`/`INSERT` spend logging.
 
 ---
@@ -92,7 +92,7 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (21 multi-modal data-plane routes), two-stage intelligent & modality routing, retries, fallbacks, SSE streaming translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (23 primary data-plane paths / 26 HTTP operations), two-stage intelligent & modality routing, retries, fallbacks, SSE streaming translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ User $\rightarrow$ Key), 4-layer model access control, AES-256-GCM provider credential vault. | `internal/auth`, `internal/modelmgmt` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), real-time budget enforcement, hierarchical RPM/TPM rate limiting, automated budget reset schedules. | `internal/finops`, `internal/ratelimit` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -147,7 +147,7 @@ flowchart TB
         Native["Dedicated Native Adapters\n- OpenAI & Azure OpenAI\n- Anthropic Claude (Messages API)\n- Google Gemini (AI Studio)\n- AWS Bedrock (Pure Go SigV4 + EventStream)\n- Google Cloud Vertex AI (OAuth2 JWT)\n- Cohere v2 (Chat & Embed v2)\n- Mistral AI & Ollama (Local/Self-Hosted)"]
         CompatProfiles["Certified OpenAI-Compatible Profiles (30+ Engines)\n- Cerebras · SambaNova · xAI (Grok)\n- Fireworks AI · Together AI · Groq · DeepSeek\n- Perplexity · Cloudflare · Databricks · Snowflake\n- DashScope (Qwen) · Volcengine · BigModel · Moonshot\n- Voyage AI · Jina AI · Replicate · Nvidia NIM · Scaleway"]
         CustomDialect["Custom Dialects & Self-Hosted\n- vLLM / TGI / Ollama / LocalAI\n- Custom base_url, headers, and query params"]
-        CatalogEngine["Embedded Model Catalogue Engine\n- 4,627 curated models\n- Tri-state capabilities & micro-dollar pricing\n- Sub-70ns in-memory lookup"]
+        CatalogEngine["Embedded Model Catalogue Engine\n- 4,627 curated records\n- Tri-state capabilities & micro-dollar pricing\n- Sub-70ns in-memory lookup"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nAuthorization: Bearer sk-gw-..."| LB
@@ -200,7 +200,7 @@ flowchart TB
    - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over `(OrgID, Model, Messages, Tools, Temperature, ResponseFormat)`.
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
 6. **Two-Stage Model Routing (`internal/router`)**:
-   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-model catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
+   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-record catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
    - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`).
 7. **Reliability Loop & Provider OpenAPI Translation (`internal/router/reliability.go` + `internal/adapter`)**:
    - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`).
@@ -268,7 +268,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `/admin/v1/*` |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | 23 primary `/v1` paths; selected admin operations (control-plane contract coverage remains incomplete) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
@@ -276,13 +276,17 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 | `docs/openapi/ollama.openapi.yaml` | `3.1.0` | **Ollama** | `POST /api/chat`, `POST /api/embed`, `GET /api/tags` |
 
 #### 3.1.2 Build-Time Code Generation (`cmd/specgen` + `go generate`)
-Executing `go generate ./...` invokes `cmd/specgen/main.go` (alongside `oapi-codegen` configs), which validates the OpenAPI YAML files in the repository and generates deterministic, zero-reflection Go data structures in:
-- `internal/openapi/gateway_types.gen.go`
+Executing `go generate ./...` generates the gateway types and interfaces from `docs/openapi/gateway.openapi.yaml`, then runs `cmd/specgen` to validate the other selected contracts and check generated A2A code. The generated gateway output is:
+- `internal/openapi/gateway.gen.go` (generated with pinned `oapi-codegen` v2.8.0)
+
+Selected provider data structures are checked in under:
 - `internal/openapi/providers/openai_types.gen.go`
 - `internal/openapi/providers/anthropic_types.gen.go`
 - `internal/openapi/providers/gemini_types.gen.go`
 - `internal/openapi/providers/mistral_types.gen.go`
 - `internal/openapi/providers/ollama_types.gen.go`
+
+Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Runtime route registration, gateway request decoding, and response writing remain handwritten in `internal/server/`; the generated server interface is not yet wired to those handlers. The gateway contract also does not yet cover every registered admin, alias, MCP, or A2A route.
 
 #### 3.1.3 Semantic Translation Deep-Dive
 
@@ -665,7 +669,7 @@ ai-gateway-go/
 ├── LICENSE                           # Apache-2.0 License
 ├── cmd/
 │   ├── gateway/main.go               # Main AI Gateway server & background workers entry point
-│   └── specgen/main.go               # Build-time OpenAPI specification validator & Go type generator
+│   └── specgen/main.go               # Build-time OpenAPI/protocol contract validator
 ├── pkg/
 │   └── gateway/                      # Public Go SDK (gateway.New, gateway.NewClient, Chat, StreamChat)
 ├── docs/

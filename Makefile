@@ -35,8 +35,8 @@ lint: vet
 	fi
 
 specgen:
-	@echo "==> Validating OpenAPI, JSON Schema & Protobuf contracts..."
-	@go run ./cmd/specgen
+	@echo "==> Regenerating gateway OpenAPI types and validating contracts..."
+	@go generate ./internal/openapi
 
 # ------------------------------------------------------------------------------
 # Testing Suites
@@ -59,7 +59,7 @@ test-e2e:
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.3.0 -f deployments/Dockerfile .
+	docker build -t goroute/ai-gateway:v1.4.0 -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build
@@ -101,5 +101,5 @@ clean:
 
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.3.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway v1.4.0 — All Release Checks Passed Successfully! "
 	@echo "======================================================================"

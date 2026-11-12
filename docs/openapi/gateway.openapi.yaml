@@ -725,6 +725,19 @@ components:
           format: int64
         discovered_models:
           type: integer
+  parameters:
+    FileID:
+      name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+    BatchID:
+      name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
 paths:
   /v1/chat/completions:
     post:
@@ -834,6 +847,19 @@ paths:
       responses:
         '200':
           description: Anthropic message response or event-stream
+  /v1/messages/count_tokens:
+    post:
+      operationId: countAnthropicMessageTokens
+      summary: Count input tokens for an Anthropic Messages request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Anthropic token count response
   /v1/tokenize:
     post:
       operationId: countTokens
@@ -870,6 +896,25 @@ paths:
       responses:
         '200':
           description: Transcribed text
+  /v1/audio/translations:
+    post:
+      operationId: createAudioTranslation
+      summary: Translate spoken audio into English text
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                model:
+                  type: string
+      responses:
+        '200':
+          description: Translated text
   /v1/audio/speech:
     post:
       operationId: createAudioSpeech
@@ -938,12 +983,16 @@ paths:
     get:
       operationId: getFile
       summary: Retrieve file metadata
+      parameters:
+        - $ref: '#/components/parameters/FileID'
       responses:
         '200':
           description: File object
     delete:
       operationId: deleteFile
       summary: Delete file
+      parameters:
+        - $ref: '#/components/parameters/FileID'
       responses:
         '200':
           description: Deletion confirmation
@@ -951,6 +1000,8 @@ paths:
     get:
       operationId: getFileContent
       summary: Stream file raw content bytes
+      parameters:
+        - $ref: '#/components/parameters/FileID'
       responses:
         '200':
           description: Binary file stream
@@ -975,6 +1026,8 @@ paths:
     get:
       operationId: getBatch
       summary: Retrieve batch status and progress counts
+      parameters:
+        - $ref: '#/components/parameters/BatchID'
       responses:
         '200':
           description: Batch object
@@ -982,6 +1035,8 @@ paths:
     post:
       operationId: cancelBatch
       summary: Cancel in-progress batch
+      parameters:
+        - $ref: '#/components/parameters/BatchID'
       responses:
         '200':
           description: Cancelled batch object

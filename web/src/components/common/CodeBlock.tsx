@@ -17,18 +17,18 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language = 'bash', c
   };
 
   return (
-    <div className={`relative group rounded-lg bg-black/60 border border-border-subtle overflow-hidden font-mono text-xs ${className}`}>
-      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-base/80 border-b border-border-subtle/40 text-slate-400">
-        <span className="uppercase text-[10px] tracking-wider font-semibold">{language}</span>
+    <div className={`relative group rounded-[0.65rem] bg-[#0d0d12] border border-border overflow-hidden font-mono text-xs ${className}`}>
+      <div className="flex items-center justify-between px-3.5 py-2 bg-surface-elevated/70 border-b border-border text-[#9696a4]">
+        <span className="uppercase text-[10px] tracking-wider font-semibold text-accent-primary">{language}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 hover:text-slate-200 transition-colors py-0.5 px-1.5 rounded hover:bg-surface-elevated"
+          className="flex items-center gap-1.5 hover:text-white transition-colors py-1 px-2 rounded-md hover:bg-surface-hover hover:text-accent-primary"
           title="Copy code"
         >
           {copied ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-[10px] text-emerald-400">Copied</span>
+              <Check className="w-3.5 h-3.5 text-accent-primary" />
+              <span className="text-[10px] text-accent-primary font-semibold">Copied</span>
             </>
           ) : (
             <>
@@ -38,7 +38,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language = 'bash', c
           )}
         </button>
       </div>
-      <pre className="p-3 overflow-x-auto text-slate-300 leading-relaxed whitespace-pre-wrap break-all">
+      <pre className="p-3.5 overflow-x-auto text-[#d2d0dc] leading-relaxed whitespace-pre-wrap break-all font-mono">
         <code>{code}</code>
       </pre>
     </div>

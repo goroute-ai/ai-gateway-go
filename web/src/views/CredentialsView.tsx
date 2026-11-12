@@ -189,7 +189,7 @@ export const CredentialsView: React.FC = () => {
                 <button
                   onClick={() => validateMutation.mutate(c.id)}
                   disabled={validateMutation.isPending}
-                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-cyan-400 p-1 rounded hover:bg-surface-elevated transition-colors"
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-accent-primary p-1 rounded hover:bg-surface-elevated transition-colors"
                   title="Validate connection against upstream provider API"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${validateMutation.isPending ? 'animate-spin' : ''}`} />
@@ -369,7 +369,7 @@ export const CredentialsView: React.FC = () => {
               type="button"
               onClick={handlePreflightTest}
               disabled={preflightTesting || (!apiKey.trim() && provider !== 'ollama')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/30 hover:bg-cyan-900/40 text-xs font-medium text-cyan-300 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
             >
               <Zap className={`w-3.5 h-3.5 ${preflightTesting ? 'animate-spin' : ''}`} />
               <span>{preflightTesting ? 'Testing connection...' : 'Test Upstream Before Saving'}</span>

@@ -269,7 +269,7 @@ func (s *GatewayServer) setupRoutes() {
 		v1.Get("/realtime", s.handleRealtimeWebSocket)
 	})
 
-	// Unversioned and multi-spec aliases for broad SDK / LiteLLM parity
+	// Unversioned and protocol-specific aliases for SDK compatibility
 	r.Group(func(unv chi.Router) {
 		unv.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
 		unv.Post("/chat/completions", s.handleChatCompletions)

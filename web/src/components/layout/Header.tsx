@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, Unlock, ShieldAlert, Zap, Building2, KeyRound } from 'lucide-react';
+import { Lock, Unlock, ShieldAlert, Building2, KeyRound } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Modal } from '../common/Modal';
 import { useQuery } from '@tanstack/react-query';
@@ -33,34 +33,44 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
 
   return (
     <>
-      <header className="h-14 border-b border-border-subtle bg-surface-base/80 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent-primary to-accent-secondary flex items-center justify-center shadow-lg shadow-accent-primary/20">
-              <Zap className="w-4 h-4 text-black fill-black" />
+      <header className="h-16 border-b border-border bg-black/85 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
+        <div className="flex items-center gap-5">
+          <div className="flex items-center gap-3">
+            <img
+              src="./logo-dark.png"
+              alt="GoRoute AI Gateway Logo"
+              className="h-8 w-auto object-contain drop-shadow-[0_2px_8px_rgba(179,154,255,0.35)]"
+            />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1.5 leading-none">
+                <span className="font-bold text-sm tracking-tight text-[#f5f3ff]">
+                  GoRoute
+                </span>
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[rgba(124,58,237,0.12)] text-accent-primary border border-accent-primary/25 font-semibold">
+                  AI Gateway
+                </span>
+              </div>
+              <span className="text-[10px] font-mono text-[#9696a4] tracking-wider mt-0.5">Control Plane</span>
             </div>
-            <span className="font-semibold text-sm tracking-tight text-white flex items-center gap-1.5">
-              GoRoute <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary border border-accent-primary/20">AI Gateway</span>
-            </span>
           </div>
 
-          <div className="h-4 w-[1px] bg-border-strong hidden sm:block" />
+          <div className="h-5 w-[1px] bg-border hidden sm:block" />
 
-          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="capitalize text-slate-200 font-medium">{currentView.replace('-', ' ')}</span>
+          <div className="hidden sm:flex items-center gap-2 text-xs text-[#9696a4]">
+            <span className="w-2 h-2 rounded-full bg-accent-primary animate-pulse" />
+            <span className="capitalize text-[#f5f3ff] font-medium">{currentView.replace('-', ' ')}</span>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
           {/* Org Selector */}
           {isUnlocked && (
-            <div className="flex items-center gap-1.5 bg-surface-elevated/70 border border-border-subtle rounded-md px-2.5 py-1 text-xs">
-              <Building2 className="w-3.5 h-3.5 text-slate-400" />
+            <div className="flex items-center gap-1.5 bg-surface-elevated border border-border rounded-md px-2.5 py-1 text-xs">
+              <Building2 className="w-3.5 h-3.5 text-[#9696a4]" />
               <select
                 value={activeOrgId}
                 onChange={(e) => setActiveOrgId(e.target.value)}
-                className="bg-transparent text-slate-200 focus:outline-none cursor-pointer text-xs"
+                className="bg-transparent text-[#f5f3ff] focus:outline-none cursor-pointer text-xs font-medium"
               >
                 {orgsData?.data && orgsData.data.length > 0 ? (
                   orgsData.data.map((org) => (
@@ -81,7 +91,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
           {isUnlocked ? (
             <button
               onClick={lock}
-              className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-rose-400 bg-emerald-950/40 hover:bg-rose-950/30 border border-emerald-500/30 hover:border-rose-500/30 px-2.5 py-1 rounded-md transition-colors"
+              className="flex items-center gap-1.5 text-xs text-accent-primary hover:text-rose-400 bg-[rgba(124,58,237,0.1)] hover:bg-rose-950/30 border border-accent-primary/30 hover:border-rose-500/30 px-2.5 py-1 rounded-md transition-colors font-mono"
               title="Master Admin Key is held in browser memory only. Click to lock session immediately."
             >
               <Unlock className="w-3.5 h-3.5" />
@@ -90,7 +100,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
           ) : (
             <button
               onClick={() => setShowKeyModal(true)}
-              className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-950/40 border border-amber-500/30 px-2.5 py-1 rounded-md hover:bg-amber-900/30 transition-colors animate-pulse"
+              className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-950/40 border border-amber-500/30 px-2.5 py-1 rounded-md hover:bg-amber-900/30 transition-colors animate-pulse font-mono"
             >
               <Lock className="w-3.5 h-3.5" />
               <span>Unlock Admin Key</span>

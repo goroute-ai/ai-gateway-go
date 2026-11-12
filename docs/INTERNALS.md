@@ -347,7 +347,7 @@ GoRoute implements native protocol signers and binary decoders without external 
    - Ingests reasoning content tokens across both standard non-streaming responses and real-time streaming deltas (`reasoning_content`, `thought`, `reasoning`).
 
 ### 6.5 Embedded Model Catalogue Engine (`internal/catalog/`)
-- Curates 4,627 production LLM models derived from verified model registry datasets, compressed into a 164 KB embedded binary (`catalog.json.gz`).
+- Curates 4,627 model/provider records derived from versioned registry datasets, compressed into a 164 KB embedded binary (`catalog.json.gz`).
 - Unpacks at initialization using a single `sync.Once` into lock-free in-memory lookup hash tables (`modelsByID`, `modelsByPN`, `modelsByName`).
 - Distinguishes **callable inference routes** (`catalog.IsCallableProvider(prov)`) from metadata-only catalogue entries.
 - Lookup benchmark latency: **66.41 ns/op** with zero heap allocations on the hit path.

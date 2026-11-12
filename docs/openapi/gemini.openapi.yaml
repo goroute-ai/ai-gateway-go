@@ -8478,7 +8478,11 @@ paths:
       - $ref: '#/components/parameters/callback'
       - $ref: '#/components/parameters/prettyPrint'
       - $ref: '#/components/parameters/_.xgafv'
-  /v1beta/environments/{environment}/files/{path=**}:
+  /v1beta/environments/{environment}/files/{path}:
+    description: >
+      Google Discovery expresses this wildcard as {path=**}; the OpenAPI path
+      template uses {path} while retaining the multi-segment wildcard semantics
+      in the request description.
     get:
       description: |-
         Retrieves file metadata or directory contents from an environment's
@@ -8494,7 +8498,7 @@ paths:
             type: string
         - description: Resource ID segment making up resource `name`. It identifies the resource within its parent collection as described in https://google.aip.dev/122.
           in: path
-          name: path=**
+          name: path
           required: true
           schema:
             type: string
@@ -8548,7 +8552,7 @@ paths:
             type: string
         - description: Resource ID segment making up resource `name`. It identifies the resource within its parent collection as described in https://google.aip.dev/122.
           in: path
-          name: path=**
+          name: path
           required: true
           schema:
             type: string

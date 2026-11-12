@@ -188,7 +188,7 @@ export const ModelsView: React.FC = () => {
               <button
                 onClick={() => syncMutation.mutate()}
                 disabled={syncMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/40 hover:bg-cyan-900/50 text-xs font-medium text-cyan-300 transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
                 <span>Sync Discovery</span>
@@ -346,7 +346,7 @@ export const ModelsView: React.FC = () => {
                           <td className="px-6 py-3 text-right">
                             <button
                               onClick={() => handleOpenPricingModal(m)}
-                              className="text-slate-400 hover:text-cyan-400 p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                              className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
                               title="Update model pricing rates"
                             >
                               <DollarSign className="w-3.5 h-3.5" />

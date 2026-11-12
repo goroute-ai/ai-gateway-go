@@ -102,7 +102,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           <button
             onClick={() => probeMutation.mutate()}
             disabled={probeMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/40 hover:bg-cyan-900/50 text-xs font-medium text-cyan-300 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
           >
             <Zap className={`w-3.5 h-3.5 ${probeMutation.isPending ? 'animate-spin' : ''}`} />
             <span>{probeMutation.isPending ? 'Probing...' : 'Probe Upstreams'}</span>
@@ -133,7 +133,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-xs font-medium">Total Inferences</span>
-            <Activity className="w-4 h-4 text-cyan-400" />
+            <Activity className="w-4 h-4 text-accent-primary" />
           </div>
           <div className="text-2xl font-bold font-mono text-white tracking-tight">
             {isTelemetryLoading ? '...' : telemetry?.total_requests?.toLocaleString() ?? 0}

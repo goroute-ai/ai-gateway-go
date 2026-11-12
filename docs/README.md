@@ -15,6 +15,7 @@ docs/
 ├── CONFIGURATION_GUIDE.md     # Configuration & developer reference (YAML, Go SDK & REST APIs)
 ├── openapi/                   # Formal OpenAPI 3.0/3.1 contracts (Gateway + MCP + A2A + 5 providers)
 │   ├── gateway.openapi.yaml
+│   ├── gateway.codegen.yaml
 │   ├── mcp.openapi.yaml
 │   ├── a2a.openapi.yaml
 │   └── README.md
@@ -32,7 +33,7 @@ docs/
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
    *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces:*
-   - Unified Multi-Modal Data Plane (21 endpoints: `/v1/chat/completions`, `/v1/embeddings`, `/v1/models`, `/v1/rerank`, `/v1/moderations`, `/v1/completions`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/tokenize`, `/v1/audio/*`, `/v1/images/*`, `/v1/files/*`, `/v1/batches/*`, `/v1/responses`, `/v1/realtime`).
+   - Unified Multi-Modal Data Plane (23 primary paths / 26 HTTP operations, including chat, embeddings, audio, images, files, batches, responses, and realtime).
    - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
