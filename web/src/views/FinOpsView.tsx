@@ -185,6 +185,18 @@ export const FinOpsView: React.FC = () => {
         </div>
       </div>
 
+      {!!summary?.unpriced_requests && (
+        <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-700/50 bg-amber-950/30 p-4 text-amber-100">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="text-sm font-medium">Some usage has no verified price</p>
+            <p className="mt-1 text-xs text-amber-200/80">
+              {summary.unpriced_requests.toLocaleString()} requests covering {summary.unpriced_tokens.toLocaleString()} tokens are excluded from the cost total. Review model pricing before using this total for billing.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Spend Breakdowns (Provider & Model) */}
       {summary && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

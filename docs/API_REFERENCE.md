@@ -858,7 +858,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
   Returns `{ "allowed": true, "applied_action": "redact", "violations": ["secret_detected", "pii_detected"], "redacted": true, "redacted_prompt": "Here is my secret [REDACTED_SECRET] and SSN [REDACTED_SSN]" }`. PII checks currently cover email addresses, SSNs, and payment card patterns; replacement tags identify the detected type (for example, `[REDACTED_SSN]`).
 
 ### 5.10 FinOps Spend & Governance Audit Ledgers
-- `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars.
+- `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars. `unpriced_requests` and `unpriced_tokens` identify usage whose price is unknown or unrecorded and is not represented by the cost total.
 - `GET /admin/v1/spend/logs?org_id={orgID}&limit={limit}&offset={offset}`: Paginated raw spend ledger records including prompt, completion, cached, reasoning tokens, and modality units.
 - `GET /admin/v1/audit/logs?org_id={orgID}&limit={limit}`: Immutable governance audit trail of administrative changes (key provisioning, policy updates, credential rotations).
 

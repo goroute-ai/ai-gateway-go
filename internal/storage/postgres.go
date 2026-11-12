@@ -873,8 +873,11 @@ func (p *PostgresRepository) GetSpendSummary(ctx context.Context, orgID string) 
 		args = append(args, orgID)
 	}
 
-	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0) FROM spend_logs ` + whereClause
-	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros); err != nil {
+	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0),
+		COUNT(*) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')),
+		COALESCE(SUM(total_tokens) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')), 0)
+		FROM spend_logs ` + whereClause
+	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros, &sum.UnpricedRequests, &sum.UnpricedTokens); err != nil {
 		return p.mem.GetSpendSummary(ctx, orgID)
 	}
 	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0
