@@ -418,11 +418,8 @@ Once the upstream provider returns actual token usage, the gateway reconciles th
 $$\Delta\text{Tokens} = \text{ActualTotalTokens} - \text{EstimatedPromptTokens}$$
 The minute's TPM counter is adjusted by $\Delta\text{Tokens}$, and the in-flight concurrency counter is decremented via `DECR gw:rl:conc:{key_id}`.
 
-### 8.4 Redis Circuit Breaker Fallback
-If Redis becomes unreachable, the rate limiter falls back according to its configured mode:
-- **`local_divided_by_replicas` (Default)**: Automatically divides configured limits by expected cluster pods (`limit / replicas`), preventing quota overshoots during a Redis maintenance window.
-- **`local_per_pod`**: Applies full limits locally per pod.
-- **`fail_closed`**: Rejects requests with `HTTP 503 Service Unavailable`.
+### 8.4 Redis Availability
+Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters. If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error. It does not fall back to per-process counters, because those cannot preserve tenant-wide limits across replicas. Requests without configured limits do not require Redis for quota admission.
 
 ---
 

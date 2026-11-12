@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,18 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
+
+func admissionFailureObservation(err error) observability.RequestObservation {
+	statusCode := http.StatusTooManyRequests
+	var gatewayErr *domain.GatewayError
+	if errors.As(err, &gatewayErr) && gatewayErr.StatusCode >= http.StatusBadRequest {
+		statusCode = gatewayErr.StatusCode
+	}
+	return observability.RequestObservation{
+		StatusCode:  statusCode,
+		RateLimited: statusCode == http.StatusTooManyRequests,
+	}
+}
 
 // handleChatCompletions serves `POST /v1/chat/completions` (both synchronous JSON and SSE streaming).
 func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -129,10 +142,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	// 2. Atomic Rate Limit / Budget Check
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -574,10 +584,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*16)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}

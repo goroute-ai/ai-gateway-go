@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
@@ -54,7 +55,8 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	repo := storage.NewMemoryRepository()
-	gw, err := server.New(cfg, repo, nil, nil)
+	redisServer := miniredis.RunT(t)
+	gw, err := server.New(cfg, repo, storage.NewRedisFabric(redisServer.Addr(), "", 0), nil)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
