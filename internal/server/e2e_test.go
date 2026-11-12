@@ -326,8 +326,12 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	}
 
 	resp, promRaw := doJSON(http.MethodGet, "/metrics", nil, nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated Prometheus scrape to be rejected, got %d: %s", resp.StatusCode, string(promRaw))
+	}
+	resp, promRaw = doJSON(http.MethodGet, "/metrics", adminHeaders, nil, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(promRaw), "gateway_requests_total") {
-		t.Fatalf("expected Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
+		t.Fatalf("expected authenticated Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
 	}
 
 	// 16. Test Versioned Model Pricing Update (`POST /admin/v1/catalogue/pricing`) & Cache Invalidation (`POST /admin/v1/cache/invalidate`)
