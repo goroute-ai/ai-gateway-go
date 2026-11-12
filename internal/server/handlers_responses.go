@@ -184,25 +184,25 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros := finops.CalculateCostMicros(gm, resp.Usage)
-		if s.spendWorker != nil {
-			s.spendWorker.Enqueue(domain.SpendEvent{
-				ID:             "sp_" + uuid.NewString(),
-				RequestID:      respID,
-				OrgID:          idCtx.OrgID,
-				TeamID:         idCtx.TeamID,
-				UserID:         idCtx.UserID,
-				VirtualKeyID:   idCtx.VirtualKeyID,
-				Endpoint:       "/v1/responses",
-				Modality:       domain.ModalityResponse,
-				RequestedModel: req.Model,
-				ResolvedModel:  resp.Model,
-				DeploymentID:   depID,
-				PricingVersion: pricingVer,
-				Usage:          resp.Usage,
-				CostMicros:     costMicros,
-				StatusCode:     http.StatusOK,
-				CreatedAt:      time.Now().UTC(),
-			})
+		if !s.persistSpendEvent(w, r, domain.SpendEvent{
+			ID:             "sp_" + uuid.NewString(),
+			RequestID:      respID,
+			OrgID:          idCtx.OrgID,
+			TeamID:         idCtx.TeamID,
+			UserID:         idCtx.UserID,
+			VirtualKeyID:   idCtx.VirtualKeyID,
+			Endpoint:       "/v1/responses",
+			Modality:       domain.ModalityResponse,
+			RequestedModel: req.Model,
+			ResolvedModel:  resp.Model,
+			DeploymentID:   depID,
+			PricingVersion: pricingVer,
+			Usage:          resp.Usage,
+			CostMicros:     costMicros,
+			StatusCode:     http.StatusOK,
+			CreatedAt:      time.Now().UTC(),
+		}) {
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -331,7 +331,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	}
 	costMicros := finops.CalculateCostMicros(gm, streamUsage)
 	if s.spendWorker != nil {
-		s.spendWorker.Enqueue(domain.SpendEvent{
+		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
 			RequestID:      respID,
 			OrgID:          idCtx.OrgID,
@@ -349,7 +349,13 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			StatusCode:     http.StatusOK,
 			IsStream:       true,
 			CreatedAt:      time.Now().UTC(),
-		})
+		}); err != nil {
+			failure := map[string]any{"error": map[string]any{"code": "spend_persistence_unavailable", "message": "unable to persist request accounting"}}
+			failedBytes, _ := json.Marshal(failure)
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(failedBytes))
+			flusher.Flush()
+			return
+		}
 	}
 
 	// 4. response.output_text.done

@@ -81,6 +81,10 @@ type Repository interface {
 	GetGuardrailPolicy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error)
 
 	// FinOps Spend & Audit Logging
+	EnqueueSpendEvent(ctx context.Context, event domain.SpendEvent) error
+	ClaimSpendEvents(ctx context.Context, limit int, lease time.Duration) ([]domain.SpendEvent, error)
+	MarkSpendEventDelivered(ctx context.Context, id string) error
+	RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error
 	RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error
 	GetSpendSummary(ctx context.Context, orgID string) (*SpendSummary, error)
 	ListSpendLogs(ctx context.Context, orgID string, limit int) ([]domain.SpendEvent, error)

@@ -281,9 +281,10 @@ const (
 	ModalityRealtime   ModalityType = "realtime"
 )
 
-// SpendEvent is pushed asynchronously to the FinOps worker pool after each inference call.
+// SpendEvent is durably enqueued before an inference call reports success, then delivered by the FinOps worker.
 type SpendEvent struct {
 	ID                      string         `json:"id"`
+	OutboxAttempt           int            `json:"-"`
 	RequestID               string         `json:"request_id"`
 	TraceID                 string         `json:"trace_id,omitempty"`
 	Protocol                string         `json:"protocol,omitempty"`        // "inference", "mcp", "a2a"
