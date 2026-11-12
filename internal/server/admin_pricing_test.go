@@ -51,7 +51,9 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	}))
 	defer upstreamSrv.Close()
 
-	gw, err := server.New(cfg, repo, storage.NewRedisFabric(redisServer.Addr(), "", 0), upstreamSrv.Client())
+	redisFabric := storage.NewRedisFabric(redisServer.Addr(), "", 0)
+	defer redisFabric.Client().Close()
+	gw, err := server.New(cfg, repo, redisFabric, upstreamSrv.Client())
 	require.NoError(t, err)
 
 	router := gw.Handler()

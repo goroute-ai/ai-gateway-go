@@ -147,7 +147,16 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	// 3. Rate Limiting Quota
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	budgetInputTokens := estTokens
+	if identityHasBudget(idCtx) {
+		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
+			return
+		} else if len(encoded) > budgetInputTokens {
+			budgetInputTokens = len(encoded)
+		}
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -162,7 +171,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, &chatReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
@@ -259,7 +268,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		releaseQuota(0)
+		releaseQuota(-1)
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       domain.ErrorTypeServer,
@@ -309,7 +318,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	})
 
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		errBytes, _ := json.Marshal(map[string]any{
 			"type": "error",
 			"error": map[string]string{

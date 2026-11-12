@@ -108,7 +108,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	resp, meta, err := s.reliability.ExecuteModeration(r.Context(), idCtx, modReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})

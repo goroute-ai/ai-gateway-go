@@ -78,7 +78,15 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 
 	// Estimate each prompt with the model-family tokenizer profile and framing.
 	estTokens := ratelimit.EstimateTextInputsTokens(req.Model, req.Prompt.Strings, 4)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	totalPromptChars := 0
+	for _, prompt := range req.Prompt.Strings {
+		totalPromptChars += len(prompt)
+	}
+	maxOutput := 0
+	if req.MaxTokens != nil {
+		maxOutput = *req.MaxTokens
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, req.Model, estTokens, totalPromptChars, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -87,7 +95,7 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 
 	resp, meta, err := s.reliability.ExecuteCompletion(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
