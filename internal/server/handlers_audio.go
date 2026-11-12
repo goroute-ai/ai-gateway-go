@@ -132,10 +132,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -189,27 +186,12 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 
-	if sttReq.ResponseFormat == "text" {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte(resp.Text))
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		if resp.Raw != nil {
-			_ = json.NewEncoder(w).Encode(resp.Raw)
-		} else {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"text":        resp.Text,
-				"duration_ms": resp.DurationMs,
-			})
-		}
-	}
-
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -230,7 +212,20 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		Modality:                domain.ModalityAudioSTT,
 		ModalityUnits:           map[string]any{"duration_ms": resp.DurationMs},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	if sttReq.ResponseFormat == "text" {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(resp.Text))
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		if resp.Raw != nil {
+			_ = json.NewEncoder(w).Encode(resp.Raw)
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"text": resp.Text, "duration_ms": resp.DurationMs})
+		}
+	}
 
 	logger.InfoContext(r.Context(), "Audio transcription completed",
 		slog.String("component", "audio"),
@@ -301,10 +296,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -350,14 +342,18 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 
-	_, _ = io.Copy(w, stream)
+	streamBytes, readErr := io.ReadAll(stream)
+	if readErr != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeUpstream, Code: "audio_stream_read_failed", Message: "unable to read upstream audio response"})
+		return
+	}
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -378,7 +374,10 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		Modality:                domain.ModalityAudioTTS,
 		ModalityUnits:           map[string]any{"character_count": len(raw.Input)},
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_, _ = w.Write(streamBytes)
 
 	logger.InfoContext(r.Context(), "Audio speech synthesis completed",
 		slog.String("component", "audio"),

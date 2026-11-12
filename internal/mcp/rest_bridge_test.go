@@ -22,8 +22,9 @@ type mockSpendRecorder struct {
 	events []domain.SpendEvent
 }
 
-func (m *mockSpendRecorder) Enqueue(ev domain.SpendEvent) {
+func (m *mockSpendRecorder) Record(_ context.Context, ev domain.SpendEvent) error {
 	m.events = append(m.events, ev)
+	return nil
 }
 
 func setupRESTBridgeTest(t *testing.T) (*mcp.Hub, *mcp.RESTBridge, storage.Repository, *mockSpendRecorder, *httptest.Server) {

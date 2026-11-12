@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,7 @@ import (
 
 // SpendRecorder allows Hub to emit FinOps spend events for tool invocations.
 type SpendRecorder interface {
-	Enqueue(ev domain.SpendEvent)
+	Record(ctx context.Context, ev domain.SpendEvent) error
 }
 
 // ToolContent represents a single content item returned by an MCP tool.
