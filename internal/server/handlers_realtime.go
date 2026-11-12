@@ -30,6 +30,9 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 
 	model := r.URL.Query().Get("model")
 	if model == "" {

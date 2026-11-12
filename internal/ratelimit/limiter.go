@@ -20,6 +20,9 @@ var checkAndIncrementLua string
 //go:embed scripts/reconcile.lua
 var reconcileLua string
 
+//go:embed scripts/record_spend.lua
+var recordSpendLua string
+
 // FallbackMode governs how the rate limiter behaves when Redis is unreachable or unconfigured.
 type FallbackMode string
 
@@ -46,6 +49,7 @@ type Limiter struct {
 	redis            *storage.RedisFabric
 	checkScript      *redis.Script
 	reconcileScr     *redis.Script
+	spendScr         *redis.Script
 	windowSec        int
 	concTTLSec       int
 	fallbackMode     FallbackMode
@@ -66,6 +70,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		redis:            redisFabric,
 		checkScript:      redis.NewScript(checkAndIncrementLua),
 		reconcileScr:     redis.NewScript(reconcileLua),
+		spendScr:         redis.NewScript(recordSpendLua),
 		windowSec:        windowSec,
 		concTTLSec:       concTTLSec,
 		fallbackMode:     FallbackLocalDividedByReplicas,
@@ -95,11 +100,32 @@ func (l *Limiter) FallbackPolicy() (FallbackMode, int) {
 	return l.fallbackMode, l.expectedPodCount
 }
 
-// Acquire checks budgets and rate limits and increments pre-flight counters.
+// Acquire checks rate limits and, for backward compatibility, only admits requests
+// without an enforced budget. Budgeted requests must use AcquireWithBudget so the
+// maximum spend is reserved atomically before dispatch.
 // Returns a release function that MUST be called after the request finishes to decrement concurrency and reconcile token deltas.
 func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int) (func(actualTokens int), error) {
+	release, err := l.acquire(ctx, idCtx, estimatedTokens, 0, "")
+	if err != nil {
+		return nil, err
+	}
+	return func(actualTokens int) { release(actualTokens, 0) }, nil
+}
+
+// AcquireWithBudget atomically reserves a conservative upper-bound cost in
+// micro-dollars alongside rate-limit admission. Call release with actual usage
+// and cost after dispatch; a negative token count releases the reservation
+// without charging spend.
+func (l *Limiter) AcquireWithBudget(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), error) {
+	if reserveMicros < 0 || requestID == "" {
+		return nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
+	}
+	return l.acquire(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+}
+
+func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
 	if idCtx == nil {
-		return func(int) {}, nil
+		return func(int, int64) {}, nil
 	}
 	if estimatedTokens < 1 {
 		estimatedTokens = 1
@@ -120,12 +146,15 @@ func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 			fmt.Sprintf("gw:rl:rpm:org:%s:%d", idCtx.OrgID, nowMin),
 			fmt.Sprintf("gw:rl:tpm:org:%s:%d", idCtx.OrgID, nowMin),
 			fmt.Sprintf("gw:spend:org:%s", idCtx.OrgID),
+			fmt.Sprintf("gw:budget:reservations:key:%s", idCtx.VirtualKeyID),
+			fmt.Sprintf("gw:budget:reservations:team:%s", idCtx.TeamID),
+			fmt.Sprintf("gw:budget:reservations:org:%s", idCtx.OrgID),
 		}
 		argv := []any{
 			idCtx.KeyRPMLimit, idCtx.KeyTPMLimit, idCtx.KeyMaxConcurrent, idCtx.KeyMaxBudgetMicros,
 			idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxBudgetMicros,
 			idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxBudgetMicros,
-			estimatedTokens, l.windowSec * 2, l.concTTLSec,
+			estimatedTokens, l.windowSec * 2, l.concTTLSec, reserveMicros, requestID, 3600,
 		}
 
 		res, err := l.redis.Execute(func(rdb *redis.Client) (any, error) {
@@ -138,7 +167,7 @@ func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 				if allowed == 0 {
 					return nil, toQuotaError(reason)
 				}
-				return func(actualTokens int) {
+				return func(actualTokens int, actualCostMicros int64) {
 					delta := actualTokens - estimatedTokens
 					recKeys := []string{
 						keys[2], // key_conc
@@ -146,8 +175,17 @@ func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						keys[5], // team_tpm
 						keys[8], // org_tpm
 					}
+					resKeys := append(recKeys, keys[10], keys[11], keys[12], keys[3], keys[6], keys[9])
+					settle := []any{delta, l.windowSec * 2, requestID, actualCostMicros, reserveMicros}
+					if actualTokens < 0 {
+						settle[3] = int64(-1)
+					} else {
+						// Successful requests settle the reservation with their SpendEvent,
+						// which atomically swaps reserved cost for actual spend.
+						settle[3] = int64(-2)
+					}
 					_, _ = l.redis.Execute(func(rdb *redis.Client) (any, error) {
-						return l.reconcileScr.Run(context.Background(), rdb, recKeys, delta, l.windowSec*2).Result()
+						return l.reconcileScr.Run(context.Background(), rdb, resKeys, settle...).Result()
 					})
 				}, nil
 			}
@@ -155,7 +193,22 @@ func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 	}
 
 	// Fallback: In-Process Atomic Check & Increment governed by FallbackMode
-	return l.acquireLocal(idCtx, estimatedTokens, nowMin)
+	if hasBudget(idCtx) {
+		return nil, budgetUnavailableError()
+	}
+	release, err := l.acquireLocal(idCtx, estimatedTokens, nowMin)
+	if err != nil {
+		return nil, err
+	}
+	return func(tokens int, _ int64) { release(tokens) }, nil
+}
+
+func hasBudget(idCtx *domain.IdentityContext) bool {
+	return idCtx != nil && (idCtx.KeyMaxBudgetMicros > 0 || idCtx.TeamMaxBudgetMicros > 0 || idCtx.OrgMaxBudgetMicros > 0)
+}
+
+func budgetUnavailableError() *domain.GatewayError {
+	return &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_reservation_unavailable", Message: "A safe distributed budget reservation could not be made before dispatch", RetryAfterSec: 5}
 }
 
 func (l *Limiter) scaleLimit(limit int) int {
@@ -283,8 +336,16 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 
 // RecordSpendIncrement updates real-time spend counters in Redis and local memory so concurrent calls immediately enforce budgets.
 func (l *Limiter) RecordSpendIncrement(ctx context.Context, keyID, teamID, orgID string, costMicros int64) {
+	l.RecordSpendIncrementForRequest(ctx, "", keyID, teamID, orgID, costMicros)
+}
+
+// RecordSpendIncrementForRequest atomically replaces a matching request's
+// outstanding reservations with its actual cost and updates all spend scopes.
+func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID, keyID, teamID, orgID string, costMicros int64) {
 	if costMicros <= 0 {
-		return
+		if requestID == "" {
+			return
+		}
 	}
 	l.mu.Lock()
 	if keyID != "" {
@@ -300,22 +361,19 @@ func (l *Limiter) RecordSpendIncrement(ctx context.Context, keyID, teamID, orgID
 
 	if l.redis != nil && l.redis.Client() != nil {
 		_, _ = l.redis.Execute(func(rdb *redis.Client) (any, error) {
-			pipe := rdb.Pipeline()
-			if keyID != "" {
-				pipe.IncrBy(ctx, "gw:spend:key:"+keyID, costMicros)
+			keys := []string{
+				"gw:spend:key:" + keyID, "gw:spend:team:" + teamID, "gw:spend:org:" + orgID,
+				"gw:budget:reservations:key:" + keyID, "gw:budget:reservations:team:" + teamID, "gw:budget:reservations:org:" + orgID,
 			}
-			if teamID != "" {
-				pipe.IncrBy(ctx, "gw:spend:team:"+teamID, costMicros)
-			}
-			if orgID != "" {
-				pipe.IncrBy(ctx, "gw:spend:org:"+orgID, costMicros)
-			}
-			return pipe.Exec(ctx)
+			return l.spendScr.Run(ctx, rdb, keys, requestID, costMicros).Result()
 		})
 	}
 }
 
 func toQuotaError(code string) *domain.GatewayError {
+	if code == "BUDGET_ESTIMATE_REQUIRED" {
+		return budgetUnavailableError()
+	}
 	if strings.Contains(code, "BUDGET") {
 		return &domain.GatewayError{
 			StatusCode:    http.StatusTooManyRequests,

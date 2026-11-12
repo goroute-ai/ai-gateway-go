@@ -98,7 +98,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	resp, meta, err := s.reliability.ExecuteRerank(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})

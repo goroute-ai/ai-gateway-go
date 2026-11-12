@@ -2,12 +2,17 @@ package ratelimit_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 func TestRateLimiterRPMTPMConcurrencyBudgetAndResponseCache(t *testing.T) {
@@ -15,12 +20,11 @@ func TestRateLimiterRPMTPMConcurrencyBudgetAndResponseCache(t *testing.T) {
 	limiter := ratelimit.NewLimiter(nil, 60, 300)
 
 	idCtx := &domain.IdentityContext{
-		VirtualKeyID:       "vk-1",
-		OrgID:              "org-1",
-		KeyRPMLimit:        2,
-		KeyTPMLimit:        100,
-		KeyMaxConcurrent:   1,
-		KeyMaxBudgetMicros: 500,
+		VirtualKeyID:     "vk-1",
+		OrgID:            "org-1",
+		KeyRPMLimit:      2,
+		KeyTPMLimit:      100,
+		KeyMaxConcurrent: 1,
 	}
 
 	req := &domain.CanonicalChatRequest{
@@ -131,5 +135,57 @@ func TestRateLimiterRPMTPMConcurrencyBudgetAndResponseCache(t *testing.T) {
 	}
 	if _, hitAfter := rc.Get(ctx, ck); hitAfter {
 		t.Fatalf("expected cache miss after org invalidation")
+	}
+}
+
+func TestBudgetReservationsAreAtomicAcrossLimiterInstances(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	first := ratelimit.NewLimiter(redisFabric, 60, 300)
+	second := ratelimit.NewLimiter(redisFabric, 60, 300)
+	identity := &domain.IdentityContext{VirtualKeyID: "budget-key", OrgID: "budget-org", KeyMaxBudgetMicros: 100}
+
+	r1, err := first.AcquireWithBudget(context.Background(), identity, 10, 60, "request-1")
+	if err != nil {
+		t.Fatalf("first reservation: %v", err)
+	}
+	if _, err := second.AcquireWithBudget(context.Background(), identity, 10, 60, "request-2"); err == nil {
+		t.Fatal("expected concurrent reservation to be rejected when total upper bounds exceed budget")
+	}
+	r1(-1, 0) // failed request releases its reservation
+	if members, _ := mr.ZMembers("gw:budget:reservations:key:budget-key"); len(members) != 0 {
+		t.Fatalf("reservation should be released, remain: %v", members)
+	}
+	r2, err := second.AcquireWithBudget(context.Background(), identity, 10, 60, "request-3")
+	if err != nil {
+		t.Fatalf("reservation after release: %v", err)
+	}
+	r2(10, -2)
+	second.RecordSpendIncrementForRequest(context.Background(), "request-3", "budget-key", "", "budget-org", 45)
+	if got, _ := mr.Get("gw:spend:key:budget-key"); got != "45" {
+		t.Fatalf("actual spend = %q, want 45", got)
+	}
+
+	// Concurrent calls on independent limiter instances must not oversubscribe.
+	identity.KeyMaxBudgetMicros = 100
+	var wg sync.WaitGroup
+	var admitted atomic.Int32
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			lim := first
+			if i%2 == 1 {
+				lim = second
+			}
+			if _, err := lim.AcquireWithBudget(context.Background(), identity, 1, 30, fmt.Sprintf("concurrent-%d", i)); err == nil {
+				admitted.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := admitted.Load(); got != 1 {
+		t.Fatalf("admitted %d concurrent reservations, want 1 after 45 micros spent", got)
 	}
 }

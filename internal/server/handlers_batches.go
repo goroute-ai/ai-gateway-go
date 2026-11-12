@@ -44,6 +44,9 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 
 	var payload createBatchPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

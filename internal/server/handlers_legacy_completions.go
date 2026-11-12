@@ -84,7 +84,11 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	if estTokens < 10 {
 		estTokens = 10
 	}
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	maxOutput := 0
+	if req.MaxTokens != nil {
+		maxOutput = *req.MaxTokens
+	}
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, req.Model, estTokens, totalPromptChars, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{
 			StatusCode:  http.StatusTooManyRequests,
@@ -96,7 +100,7 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 
 	resp, meta, err := s.reliability.ExecuteCompletion(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})

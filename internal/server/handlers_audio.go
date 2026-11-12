@@ -149,7 +149,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 
 	resp, meta, err := s.reliability.ExecuteAudioTranscription(r.Context(), idCtx, &sttReq)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
@@ -311,7 +311,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 
 	stream, contentType, meta, err := s.reliability.ExecuteAudioSpeech(r.Context(), idCtx, &raw)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return

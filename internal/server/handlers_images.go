@@ -141,7 +141,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
