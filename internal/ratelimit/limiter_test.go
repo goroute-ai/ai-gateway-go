@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -104,5 +105,37 @@ func TestTokenizerProfilesAndRequestEstimate(t *testing.T) {
 		if got := ratelimit.ResolveTokenizerProfile(model); got != want {
 			t.Errorf("ResolveTokenizerProfile(%q) = %s, want %s", model, got, want)
 		}
+	}
+}
+
+func TestModalityTokenEstimatesScaleWithRequestSizeAndTPMBoundary(t *testing.T) {
+	smallText := ratelimit.EstimateTextInputsTokens("text-embedding-3-small", []string{"short"}, 4)
+	largeText := ratelimit.EstimateTextInputsTokens("text-embedding-3-small", []string{strings.Repeat("x", 12000)}, 4)
+	if largeText <= smallText {
+		t.Fatalf("expected large embedding input estimate %d to exceed small input %d", largeText, smallText)
+	}
+
+	smallAudio := ratelimit.EstimateAudioUploadTokens("whisper-1", 1024, "")
+	largeAudio := ratelimit.EstimateAudioUploadTokens("whisper-1", 1024*1024, "")
+	if largeAudio <= smallAudio {
+		t.Fatalf("expected large audio estimate %d to exceed small upload %d", largeAudio, smallAudio)
+	}
+
+	smallRerank := ratelimit.EstimateRerankTokens("rerank-model", "q", []domain.RerankDocument{{Text: "short"}})
+	largeRerank := ratelimit.EstimateRerankTokens("rerank-model", "q", []domain.RerankDocument{{Text: strings.Repeat("x", 12000)}})
+	if largeRerank <= smallRerank {
+		t.Fatalf("expected large rerank estimate %d to exceed small request %d", largeRerank, smallRerank)
+	}
+
+	shortImage := ratelimit.EstimateImageGenerationTokens("dall-e-3", "a cat", 1)
+	longImage := ratelimit.EstimateImageGenerationTokens("dall-e-3", strings.Repeat("x", 12000), 1)
+	if longImage <= shortImage {
+		t.Fatalf("expected longer image prompt estimate %d to exceed short prompt %d", longImage, shortImage)
+	}
+
+	largeLimiter := ratelimit.NewLimiter(nil, 60, 300)
+	id := &domain.IdentityContext{VirtualKeyID: "large", KeyTPMLimit: smallText}
+	if _, err := largeLimiter.Acquire(context.Background(), id, largeText); err == nil {
+		t.Fatal("expected the size-aware estimate to reject a request above the TPM limit")
 	}
 }

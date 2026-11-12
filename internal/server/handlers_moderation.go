@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 // handleModerations serves `POST /v1/moderations` and `POST /moderations`.
@@ -90,8 +91,9 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 2. Rate Limiting Quota Acquire (minimal quota for moderation)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*10)
+	// Estimate the actual text volume, not only the number of input elements.
+	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -113,7 +115,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(len(inputs) * 10)
+	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string

@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 // handleRerank serves `POST /v1/rerank`, `POST /rerank`, and `POST /v2/rerank`.
@@ -84,8 +85,8 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Rate Limiting Quota Acquire (1 search unit per ~100 docs or min 1)
-	quotaTokens := len(req.Documents) * 20
+	// Account for query and document lengths, including structured documents.
+	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, quotaTokens)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
