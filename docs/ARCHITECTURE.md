@@ -22,7 +22,7 @@
    - [3.4 Component 4: Reliability Manager (Retries, Fallbacks & Circuit Breakers)](#34-component-4-reliability-manager-retries-fallbacks--circuit-breakers)
    - [3.5 Component 5: Dual-Boundary Authentication, Identity, RBAC & Credential Vault](#35-component-5-dual-boundary-authentication-identity-rbac--credential-vault)
    - [3.6 Component 6: Distributed Rate Limiting & Quota Engine (Redis Lua)](#36-component-6-distributed-rate-limiting--quota-engine-redis-lua)
-   - [3.7 Component 7: FinOps Cost Calculation & Asynchronous Spend Pipeline](#37-component-7-finops-cost-calculation--asynchronous-spend-pipeline)
+   - [3.7 Component 7: FinOps Cost Calculation & Durable Spend Pipeline](#37-component-7-finops-cost-calculation--durable-spend-pipeline)
    - [3.8 Component 8: Exact-Match Response Caching](#38-component-8-exact-match-response-caching)
    - [3.9 Component 9: Embedded Operator Web UI & Streaming Chat Playground](#39-component-9-embedded-operator-web-ui--streaming-chat-playground)
 4. [Storage Architecture: PostgreSQL Schema & Redis Keyspace](#4-storage-architecture-postgresql-schema--redis-keyspace)
@@ -45,7 +45,7 @@ The design aims for low-overhead routing, resilient streaming, typed contracts, 
 
 This gateway implements the complete **Tier-1 Enterprise AI Gateway stack in pure Go**, combining:
 1. **OpenAPI-First Foundation (in progress)**: Gateway and selected provider/protocol contracts live under `docs/openapi/`. The gateway contract generates DTOs and standard-library/strict server interfaces through pinned `oapi-codegen` v2.8.0. `GatewayServer` still registers chi routes by hand and does not yet implement or register the generated interface for all operations. `cmd/specgen` validates the remaining documents and verifies that generated A2A code exists.
-2. **Sub-2ms Hot-Path Data Plane**: Zero synchronous PostgreSQL queries on the inference path using a 2-tier cache (L1 In-Memory + L2 Redis with Pub/Sub invalidation), single-roundtrip Redis Lua rate limiting, and asynchronous batched PostgreSQL `COPY`/`INSERT` spend logging.
+2. **Low-Overhead Data Plane**: Redis and in-memory caches keep policy lookups fast. Spend accounting synchronously commits a compact event to a PostgreSQL outbox before the gateway reports success; a background worker delivers each event idempotently to the spend ledger.
 
 ---
 
@@ -133,7 +133,7 @@ flowchart TB
         subgraph ControlPlane["Control Plane (/admin/v1/* & Background Daemons)"]
             AdminAPI["Admin REST API\n(Orgs, Teams, Keys, Vault, Routing, Spend)"]
             DiscoveryWorker["Automated Model Discovery Worker\n(Redis Leader-Locked 6h Polling)"]
-            SpendWorker["Async Spend & Audit Batch Writer\n(Buffered Channel -> Redis + Postgres Batch)"]
+            SpendWorker["Durable Spend Outbox Worker\n(Postgres Outbox -> Idempotent Spend Ledger)"]
             PubSubInvalidator["Redis Pub/Sub Cache Invalidator\n(Instant Cross-Pod L1 Eviction)"]
         end
     end
@@ -156,7 +156,7 @@ flowchart TB
     LB --> AdminAPI
 
     AuthMW --> RateLimitMW --> RespCache --> Stage1Router --> Stage2LB --> Reliability --> AdapterLayer
-    AdapterLayer -.->|"Non-blocking chan push"| SpendWorker
+    AdapterLayer ==>|"Commit outbox before success"| SpendWorker
 
     AuthMW <-->|"L2 Cache"| Redis
     RateLimitMW <-->|"Lua Eval"| Redis
@@ -165,7 +165,7 @@ flowchart TB
     AdminAPI ==>|"CRUD + Publish Invalidation"| Postgres
     AdminAPI -.->|"PUBLISH"| Redis
     DiscoveryWorker ==>|"Upsert Global Catalogue"| Postgres
-    SpendWorker ==>|"Batch Insert + Spend Update"| Postgres
+    SpendWorker ==>|"Claim outbox + idempotent ledger insert"| Postgres
     SpendWorker -.->|"INCRBY Spend"| Redis
 
     AdapterLayer --> Native & CompatProfiles & CustomDialect
@@ -209,14 +209,14 @@ flowchart TB
      - On transient upstream failure (`429`, `500`, `502`, `503`, `529`, or dial/headers timeout before the first streamed byte), records the failure in the sliding window counter, triggers a deployment cooldown if the threshold is reached, waits for full-jitter backoff, and **retries another deployment in the same group**.
      - If all healthy deployments in the primary `ModelGroup` are exhausted, walks the configured **`fallback_group_ids` chain** (e.g., failing over seamlessly across providers).
 
-#### Asynchronous Post-Processing Path (Steps 8–9)
+#### Post-Processing Path (Steps 8–9)
 8. **Quota Reconciliation**:
    - Decrements the in-flight concurrency counter (`DECR gw:rl:conc:<key_id>`).
    - Adjusts the current minute's TPM counter by `(ActualTotalTokens - EstimatedPromptTokens)`.
-9. **FinOps Cost Calculation & Batch Persistence (`internal/finops`)**:
+9. **FinOps Cost Calculation & Durable Outbox (`internal/finops`)**:
    - Computes exact micro-dollar cost from `(PromptTokens, CachedTokens, CompletionTokens, ReasoningTokens)` using the model's pricing rates.
-   - Enqueues a `SpendEvent` onto the non-blocking buffered channel (`spendChan`).
-   - Background workers immediately increment Redis spend counters (`INCRBY gw:spend:...`) and flush batched records into PostgreSQL `spend_logs` and entity `spent_micros` columns every 250 events or 500ms.
+   - Commits each `SpendEvent` to `spend_event_outbox` before the request reports success. A persistence failure is returned to the request handler.
+   - Background workers claim outbox rows using `FOR UPDATE SKIP LOCKED`, insert into `spend_logs` idempotently by event ID, and mark rows delivered. Bounded retries use backoff; exhausted rows enter `dead_letter`. Expired processing leases are reclaimed after restart.
 
 ---
 
@@ -448,16 +448,17 @@ All checks execute inside `internal/ratelimit/scripts/check_and_increment.lua` i
 
 ---
 
-### 3.7 Component 7: FinOps Cost Calculation & Asynchronous Spend Pipeline
+### 3.7 Component 7: FinOps Cost Calculation & Durable Spend Pipeline
 
 - **Micro-Dollar Ledger Arithmetic (`int64`)**:
   - $1.00 USD = `1,000,000` micro-dollars (`1 µ$ = $10^{-6}`).
   - Pricing rates in `global_models` are stored as micro-dollars per 1,000,000 tokens (which numerically equals **nano-dollars per token**, or **$USD per 1M tokens $\times 1,000,000$**).
   - Example: If GPT-4.1 input costs $\$2.00$ per 1M tokens (`2,000,000` micros/1M) and output costs $\$8.00$ per 1M tokens (`8,000,000` micros/1M), then a call with `1,500` prompt tokens and `500` completion tokens costs:
     $$\text{Cost}_{\mu\$} = \left\lceil \frac{1500 \times 2{,}000{,}000 + 500 \times 8{,}000{,}000}{1{,}000{,}000} \right\rceil = 3 + 4 = 7\ \mu\$\ (\$0.000007)$$
-- **Asynchronous Batch Writer (`internal/finops/spend_worker.go`)**:
-  - Decouples database I/O from the HTTP response lifecycle via a buffered channel (`capacity: 16,384`).
-  - Flushes in batches of `250` events or every `500ms`, updating `virtual_keys.spent_micros`, `teams.spent_micros`, `organizations.spent_micros`, and inserting detailed rows into `spend_logs`.
+- **Durable Outbox Worker (`internal/finops/spend_worker.go`)**:
+  - Commits each event to `spend_event_outbox` before success. The worker claims batches, retries failed ledger writes with bounded backoff, and acknowledges delivery only after a successful ledger write.
+  - Stable event IDs and `ON CONFLICT DO NOTHING` make replay safe if the process crashes between ledger insertion and outbox acknowledgment.
+  - Processing rows carry a lease and are reclaimed after expiry. After 12 failed delivery attempts, a row moves to `dead_letter` for operator inspection.
 
 ---
 
@@ -542,7 +543,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0007`):
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0008`):
 
 #### 1. Multi-Tenant Identity & RBAC
 - **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
@@ -561,6 +562,7 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 - **`global_models`** (`0001`, `0004`, `0005`, `0006`, `0007`): Verified model registry. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `model_name` (VARCHAR), `context_window` (INT), `max_output_tokens` (INT), `supports_streaming` (BOOL), `supports_tools` (BOOL), `supports_vision` (BOOL), `supports_reasoning` (BOOL), `supports_inference` (BOOL), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `rerank_cost_micros_per_search_unit` (INT8), `image_cost_micros_base` (INT8), `image_cost_micros_hd` (INT8), `audio_stt_cost_micros_per_second` (INT8), `audio_tts_cost_micros_per_1k_chars` (INT8), `modality_pricing_json` (JSONB), `pricing_status` (`provisional`, `verified`), `pricing_provenance_source` (VARCHAR), `pricing_effective_date` (DATE), timestamps.
 - **`model_capabilities`** (`0005`): Tri-state capability matrix (`supported`, `unsupported`, `unknown`). Columns: `global_model_id` (FK PK), `supports_streaming`, `supports_tools`, `supports_structured_outputs`, `supports_vision`, `supports_audio_input`, `supports_audio_output`, `supports_reasoning`, timestamps.
 - **`model_pricing_history`** (`0005`): Immutable pricing audit revision log. Columns: `id` (VARCHAR PK), `global_model_id` (FK), `version` (INT), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `pricing_status` (VARCHAR), `provenance_source` (VARCHAR), `effective_date` (DATE), `created_at`.
+- **`spend_event_outbox`** (`0008`): Durable inference/MCP event queue. Columns: stable `id`, `payload_json`, status (`pending`, `processing`, `delivered`, `dead_letter`), `attempt_count`, `next_attempt_at`, `locked_at`, `last_error`, and timestamps. A successful inference event is committed here before the request returns success.
 
 #### 4. Audit, Security & FinOps Ledgers
 - **`spend_logs`** (`0001`, `0007`): Append-only inference accounting ledger. Columns: `id` (VARCHAR PK), `request_id` (VARCHAR), `trace_id` (VARCHAR), `protocol` (VARCHAR), `protocol_target` (VARCHAR), `org_id` (FK), `team_id` (VARCHAR), `user_id` (VARCHAR), `virtual_key_id` (VARCHAR), `endpoint` (VARCHAR), `modality` (VARCHAR), `modality_units` (JSONB), `requested_model` (VARCHAR), `resolved_model` (VARCHAR), `provider` (VARCHAR), `deployment_id` (VARCHAR), `prompt_tokens` (INT), `completion_tokens` (INT), `total_tokens` (INT), `cached_prompt_tokens` (INT), `reasoning_tokens` (INT), `cost_micros` (INT8), `latency_ms` (INT8), `ttft_ms` (INT8), `status_code` (INT), `is_stream` (BOOL), `cache_hit` (BOOL), `fallback_attempted` (BOOL), `retry_count` (INT), `error_message` (TEXT), `created_at` (TIMESTAMPTZ, partitioned/indexed).

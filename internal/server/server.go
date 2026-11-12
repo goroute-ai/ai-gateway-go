@@ -445,6 +445,17 @@ func (s *GatewayServer) Handler() http.Handler {
 	return s.router
 }
 
+func (s *GatewayServer) persistSpendEvent(w http.ResponseWriter, r *http.Request, ev domain.SpendEvent) bool {
+	if s.spendWorker == nil {
+		return true
+	}
+	if err := s.spendWorker.Record(r.Context(), ev); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
+		return false
+	}
+	return true
+}
+
 func (s *GatewayServer) Limiter() *ratelimit.Limiter {
 	return s.limiter
 }

@@ -207,14 +207,13 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	// Convert CanonicalChatResponse to Anthropic JSON response
 	anthropicResp := toAnthropicResponse(resp, reqID)
-	_ = json.NewEncoder(w).Encode(anthropicResp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -235,7 +234,10 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		StatusCode:              http.StatusOK,
 		Modality:                domain.ModalityChat,
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(anthropicResp)
 
 	logger.InfoContext(r.Context(), "Anthropic Messages request completed",
 		slog.String("component", "messages_bridge"),
@@ -330,14 +332,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 	}
 	releaseQuota(totalTokens)
 
-	// Send content_block_stop
-	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-	// Send message_delta
-	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-	// Send message_stop
-	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-	flusher.Flush()
-
 	var gm *domain.GlobalModel
 	var depID string
 	var pricingVer int
@@ -355,7 +349,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	}
 	costMicros := finops.CalculateCostMicros(gm, finalUsage)
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
 		RequestID:      reqID,
 		TraceID:        traceID,
 		OrgID:          idCtx.OrgID,
@@ -373,7 +367,15 @@ func (s *GatewayServer) streamAnthropicMessages(
 		StatusCode:     http.StatusOK,
 		Modality:       domain.ModalityChat,
 		CreatedAt:      time.Now().UTC(),
-	})
+	}); err != nil {
+		fmt.Fprintf(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"unable to persist request accounting\"}}\n\n")
+		flusher.Flush()
+		return
+	}
+	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	flusher.Flush()
 }
 
 func parseAnthropicSystem(sys any) string {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
@@ -13,168 +14,128 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-// SpendWorker processes inference SpendEvents asynchronously off the hot path.
-// It updates Redis spend counters immediately and batches durable writes to the repository.
+// SpendWorker commits events to the repository outbox before callers report success,
+// then retries ledger delivery from that durable queue.
 type SpendWorker struct {
-	repo       storage.Repository
-	limiter    *ratelimit.Limiter
-	cfg        config.FinOpsConfig
-	ch         chan domain.SpendEvent
-	flushReqCh chan chan error
-	wg         sync.WaitGroup
-	stopOnce   sync.Once
-	stopCh     chan struct{}
+	repo     storage.Repository
+	limiter  *ratelimit.Limiter
+	cfg      config.FinOpsConfig
+	notify   chan struct{}
+	wg       sync.WaitGroup
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
 func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg config.FinOpsConfig) *SpendWorker {
-	if cfg.ChannelBufferSize <= 0 {
-		cfg.ChannelBufferSize = 16384
-	}
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 250
 	}
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 500 * time.Millisecond
 	}
-	return &SpendWorker{
-		repo:       repo,
-		limiter:    limiter,
-		cfg:        cfg,
-		ch:         make(chan domain.SpendEvent, cfg.ChannelBufferSize),
-		flushReqCh: make(chan chan error),
-		stopCh:     make(chan struct{}),
+	return &SpendWorker{repo: repo, limiter: limiter, cfg: cfg, notify: make(chan struct{}, 1), stopCh: make(chan struct{})}
+}
+
+func (sw *SpendWorker) Start(ctx context.Context) { sw.wg.Add(1); go sw.runBatchLoop(ctx) }
+
+// Record durably commits the event to the repository outbox before returning nil.
+func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
+	if ev.ID == "" {
+		ev.ID = uuid.NewString()
 	}
-}
-
-// Start launches the background batch writer and budget reset loop.
-func (sw *SpendWorker) Start(ctx context.Context) {
-	sw.wg.Add(1)
-	go sw.runBatchLoop(ctx)
-}
-
-// Enqueue pushes a SpendEvent without blocking the HTTP response path.
-func (sw *SpendWorker) Enqueue(ev domain.SpendEvent) {
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	if err := sw.repo.EnqueueSpendEvent(ctx, ev); err != nil {
+		logger.Error("Failed to persist FinOps spend outbox event", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+		return err
+	}
 	if sw.limiter != nil && ev.CostMicros > 0 {
-		sw.limiter.RecordSpendIncrement(context.Background(), ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros)
+		sw.limiter.RecordSpendIncrement(ctx, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros)
 	}
 	select {
-	case sw.ch <- ev:
+	case sw.notify <- struct{}{}:
 	default:
-		// If channel is full under extreme backpressure, flush synchronously to prevent financial data loss
-		logger.Warn("FinOps spend channel queue saturated; synchronous fallback write executed",
-			slog.String("component", "finops"),
-			slog.String("virtual_key_id", ev.VirtualKeyID),
-			slog.String("org_id", ev.OrgID),
-			slog.Int64("cost_micros", ev.CostMicros),
-		)
-		_ = sw.repo.RecordSpendBatch(context.Background(), []domain.SpendEvent{ev})
 	}
+	return nil
 }
 
-// FlushNow signals the background batch loop to drain both the channel and its in-memory batch buffer synchronously.
-func (sw *SpendWorker) FlushNow(ctx context.Context) error {
-	done := make(chan error, 1)
-	select {
-	case sw.flushReqCh <- done:
-		select {
-		case err := <-done:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	case <-sw.stopCh:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
+func (sw *SpendWorker) FlushNow(ctx context.Context) error { return sw.process(ctx) }
 
-// Stop signals the background worker to drain remaining events and wait for completion.
 func (sw *SpendWorker) Stop(ctx context.Context) {
-	sw.stopOnce.Do(func() {
-		close(sw.stopCh)
-	})
-	sw.wg.Wait()
+	sw.stopOnce.Do(func() { close(sw.stopCh) })
+	done := make(chan struct{})
+	go func() { sw.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 	defer sw.wg.Done()
-
-	flushTicker := time.NewTicker(sw.cfg.FlushInterval)
-	defer flushTicker.Stop()
-
-	resetTicker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(sw.cfg.FlushInterval)
+	defer ticker.Stop()
+	resetTicker := time.NewTicker(time.Minute)
 	defer resetTicker.Stop()
-
-	batch := make([]domain.SpendEvent, 0, sw.cfg.BatchSize)
-
-	drainAndFlush := func() error {
-		for {
-			select {
-			case ev := <-sw.ch:
-				batch = append(batch, ev)
-			default:
-				if len(batch) == 0 {
-					return nil
-				}
-				err := sw.repo.RecordSpendBatch(context.Background(), batch)
-				if err != nil {
-					logger.Error("Failed to persist FinOps spend batch",
-						slog.String("component", "finops"),
-						slog.Int("batch_size", len(batch)),
-						slog.String("error", err.Error()),
-					)
-				}
-				batch = batch[:0]
-				return err
-			}
-		}
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
-			_ = drainAndFlush()
+			_ = sw.process(context.Background())
 			return
 		case <-sw.stopCh:
-			_ = drainAndFlush()
+			_ = sw.process(context.Background())
 			return
-		case done := <-sw.flushReqCh:
-			done <- drainAndFlush()
-		case ev := <-sw.ch:
-			batch = append(batch, ev)
-			if len(batch) >= sw.cfg.BatchSize {
-				if err := sw.repo.RecordSpendBatch(context.Background(), batch); err != nil {
-					logger.Error("Failed to persist FinOps spend batch",
-						slog.String("component", "finops"),
-						slog.Int("batch_size", len(batch)),
-						slog.String("error", err.Error()),
-					)
-				}
-				batch = batch[:0]
+		case <-sw.notify:
+			if err := sw.process(ctx); err != nil {
+				logger.Warn("FinOps outbox delivery will retry", slog.String("component", "finops"), slog.String("error", err.Error()))
 			}
-		case <-flushTicker.C:
-			if len(batch) > 0 {
-				if err := sw.repo.RecordSpendBatch(context.Background(), batch); err != nil {
-					logger.Error("Failed to persist FinOps spend batch",
-						slog.String("component", "finops"),
-						slog.Int("batch_size", len(batch)),
-						slog.String("error", err.Error()),
-					)
-				}
-				batch = batch[:0]
+		case <-ticker.C:
+			if err := sw.process(ctx); err != nil {
+				logger.Warn("FinOps outbox delivery will retry", slog.String("component", "finops"), slog.String("error", err.Error()))
 			}
 		case <-resetTicker.C:
-			if count, err := sw.repo.ResetExpiredBudgets(context.Background(), time.Now().UTC()); err != nil {
-				logger.Error("FinOps budget reset cycle failed",
-					slog.String("component", "finops"),
-					slog.String("error", err.Error()),
-				)
+			if count, err := sw.repo.ResetExpiredBudgets(ctx, time.Now().UTC()); err != nil {
+				logger.Error("FinOps budget reset cycle failed", slog.String("component", "finops"), slog.String("error", err.Error()))
 			} else if count > 0 {
-				logger.Info("FinOps expired budgets reset",
-					slog.String("component", "finops"),
-					slog.Int("count", count),
-				)
+				logger.Info("FinOps expired budgets reset", slog.String("component", "finops"), slog.Int("count", count))
+			}
+		}
+	}
+}
+
+func (sw *SpendWorker) process(ctx context.Context) error {
+	var firstErr error
+	for {
+		events, err := sw.repo.ClaimSpendEvents(ctx, sw.cfg.BatchSize, time.Minute)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return firstErr
+		}
+		if err := sw.repo.RecordSpendBatch(ctx, events); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			for _, ev := range events {
+				attempt := ev.OutboxAttempt
+				delay := time.Second << min(attempt, 8)
+				if retryErr := sw.repo.RetrySpendEvent(ctx, ev.ID, err, time.Now().Add(delay), 12); retryErr != nil && firstErr == nil {
+					firstErr = retryErr
+				}
+				if attempt >= 12 {
+					logger.Error("FinOps spend event moved to dead-letter state", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.Int("attempts", attempt), slog.String("error", err.Error()))
+				}
+			}
+			return firstErr
+		}
+		for _, ev := range events {
+			if err := sw.repo.MarkSpendEventDelivered(ctx, ev.ID); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				logger.Error("Failed to acknowledge delivered FinOps event", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
 			}
 		}
 	}
