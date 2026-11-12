@@ -315,7 +315,7 @@ curl -X POST http://localhost:8080/admin/v1/credentials/{credID}/validate \
 3. **3-State Circuit Breaker (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`)**:
    - Trips from `CLOSED` to `OPEN` when failures reach `failure_threshold` (default `3`) within `failure_window` (`30s`).
    - Remains `OPEN` for `default_cooldown` (`60s`), removing the deployment from the candidate pool.
-   - Transitions to `HALF_OPEN` after cooldown and admits **strictly 1 trial recovery probe** while blocking concurrent callers; a successful probe resets to `CLOSED`, while a failure re-trips to `OPEN`.
+   - With Redis configured, an atomic shared lease admits one `HALF_OPEN` probe across replicas. The lease expires after five minutes if a process exits during the probe. A successful request clears shared circuit state; a failed probe restores the cooldown. Without Redis, probe coordination is process-local.
 4. **Cross-Provider Fallback Chains (`fallbacks`)**:
    - When all deployments in the primary `ModelGroup` are exhausted or in cooldown, `ReliabilityManager` automatically walks `Fallbacks` (e.g., failing over from Google Gemini to Anthropic Claude) and sets `X-Gateway-Fallback-Attempted: true`.
 
