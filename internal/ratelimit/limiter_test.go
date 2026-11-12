@@ -125,7 +125,10 @@ func TestRateLimiterRPMTPMConcurrencyBudgetAndResponseCache(t *testing.T) {
 		t.Fatalf("expected cache hit for key %s", ck)
 	}
 
-	purged, _ := rc.Invalidate(ctx, "org-1", "")
+	purged, _, err := rc.Invalidate(ctx, "org-1", "")
+	if err != nil {
+		t.Fatalf("invalidate response cache: %v", err)
+	}
 	if purged != 1 {
 		t.Fatalf("expected 1 purged cache entry for org-1, got %d", purged)
 	}
