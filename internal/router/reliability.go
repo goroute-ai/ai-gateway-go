@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -38,6 +39,7 @@ type cooldownState struct {
 	cooldownUntil         time.Time
 	tripped               bool
 	halfOpenProbeInFlight bool
+	probeToken            string
 }
 
 // ExecutionMeta captures telemetry about retries, fallbacks, TTFT, routing overhead, and the winning deployment.
@@ -257,7 +259,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -283,7 +285,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 				if attempt+1 < maxAttempts {
 					sleepDur := CalculateBackoff(attempt, gwErr.RetryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
 					select {
@@ -433,7 +435,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 					totalTok = usage.TotalTokens
 				}
 				rm.loadBalancer.OnRequestEnd(dep.ID, meta.TTFTMs, totalTok)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
 				return usage, meta, nil
@@ -456,7 +458,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 		}
 	}
@@ -672,7 +674,7 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -697,7 +699,7 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 
 			if attempt < maxAttempts-1 {
@@ -862,7 +864,7 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -887,7 +889,7 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 
 			if attempt < maxAttempts-1 {
@@ -1079,7 +1081,7 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -1104,7 +1106,7 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 
 			if attempt < maxAttempts-1 {
@@ -1270,7 +1272,7 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -1295,7 +1297,7 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 
 			if attempt < maxAttempts-1 {
@@ -1451,7 +1453,7 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 
 			if err == nil && stream != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -1476,7 +1478,7 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 				if !gwErr.Retryable {
 					return nil, "", meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			}
 
 			if attempt < maxAttempts-1 {
@@ -1632,7 +1634,7 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 
 			if err == nil && resp != nil {
 				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(dep.ID)
+				rm.recordSuccess(ctx, dep)
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 				}
@@ -1658,7 +1660,7 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 				if !gwErr.Retryable {
 					return nil, meta, gwErr
 				}
-				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
 			} else {
 				// Ambiguous network errors on image generation should not retry blindly without caller idempotency
 				return nil, meta, err
@@ -1742,14 +1744,19 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 		if rm.healthMon != nil && !rm.healthMon.IsHealthy(d.ID) {
 			continue
 		}
-		// 3-State Circuit Breaker check (CLOSED -> allowed, OPEN -> blocked, HALF_OPEN -> admits 1 trial request)
-		if !rm.allowDeploymentRequest(ctx, d.ID) {
-			continue
-		}
 		if rm.rbac != nil && orgID != "" {
 			if err := rm.rbac.AuthorizeDeployment(ctx, orgID, d); err != nil {
 				continue
 			}
+		}
+		// 3-State Circuit Breaker check (CLOSED -> allowed, OPEN -> blocked, HALF_OPEN -> admits 1 trial request)
+		allowed, probeToken := rm.allowDeploymentRequest(ctx, d.ID)
+		if !allowed {
+			continue
+		}
+		d.CircuitProbeToken = probeToken
+		if probeToken != "" {
+			return []*domain.Deployment{d}, nil
 		}
 		healthy = append(healthy, d)
 	}
@@ -1768,11 +1775,28 @@ func (rm *ReliabilityManager) hydrateCredential(dep *domain.Deployment) {
 func (rm *ReliabilityManager) GetCircuitState(ctx context.Context, depID string) CircuitState {
 	if rm.redis != nil && rm.redis.Client() != nil {
 		res, err := rm.redis.Execute(func(rdb *redis.Client) (any, error) {
-			return rdb.Exists(ctx, "gw:router:cooldown:"+depID).Result()
+			state, err := rdb.Get(ctx, circuitStateKey(depID)).Result()
+			if err == redis.Nil {
+				return CircuitClosed, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			if state != "open" {
+				return CircuitClosed, nil
+			}
+			open, err := rdb.Exists(ctx, circuitCooldownKey(depID)).Result()
+			if err != nil {
+				return nil, err
+			}
+			if open > 0 {
+				return CircuitOpen, nil
+			}
+			return CircuitHalfOpen, nil
 		})
 		if err == nil {
-			if cnt, ok := res.(int64); ok && cnt > 0 {
-				return CircuitOpen
+			if state, ok := res.(CircuitState); ok {
+				return state
 			}
 		}
 	}
@@ -1798,14 +1822,15 @@ func (rm *ReliabilityManager) IsInCooldown(ctx context.Context, depID string) bo
 // - CLOSED: allowed
 // - OPEN: blocked
 // - HALF_OPEN: admits exactly 1 trial recovery probe; blocks concurrent callers until the probe resolves.
-func (rm *ReliabilityManager) allowDeploymentRequest(ctx context.Context, depID string) bool {
+func (rm *ReliabilityManager) allowDeploymentRequest(ctx context.Context, depID string) (bool, string) {
 	if rm.redis != nil && rm.redis.Client() != nil {
+		token := uuid.NewString()
 		res, err := rm.redis.Execute(func(rdb *redis.Client) (any, error) {
-			return rdb.Exists(ctx, "gw:router:cooldown:"+depID).Result()
+			return allowCircuitProbeScript.Run(ctx, rdb, circuitKeys(depID), token, circuitProbeLeaseTTL.Milliseconds()).Int64()
 		})
 		if err == nil {
-			if cnt, ok := res.(int64); ok && cnt > 0 {
-				return false
+			if code, ok := res.(int64); ok {
+				return code == 1 || code == 2, tokenIfProbe(code, token)
 			}
 		}
 	}
@@ -1814,24 +1839,29 @@ func (rm *ReliabilityManager) allowDeploymentRequest(ctx context.Context, depID 
 	defer rm.mu.Unlock()
 	st, ok := rm.cooldowns[depID]
 	if !ok || !st.tripped {
-		return true
+		return true, ""
 	}
 	if time.Now().Before(st.cooldownUntil) {
-		return false
+		return false, ""
 	}
 	// Cooldown elapsed -> Circuit is HALF_OPEN; allow a single recovery probe
 	if st.halfOpenProbeInFlight {
-		return false
+		return false, ""
 	}
 	st.halfOpenProbeInFlight = true
+	st.probeToken = uuid.NewString()
 	logger.InfoContext(ctx, "Circuit breaker entering HALF_OPEN probe state",
 		slog.String("component", "circuit_breaker"),
 		slog.String("deployment_id", depID),
 	)
-	return true
+	return true, st.probeToken
 }
 
-func (rm *ReliabilityManager) recordFailure(ctx context.Context, depID string, threshold, cooldownSec int) {
+func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Deployment, threshold, cooldownSec int) {
+	if dep == nil {
+		return
+	}
+	depID := dep.ID
 	if threshold <= 0 {
 		threshold = rm.cfg.FailureThreshold
 	}
@@ -1843,8 +1873,9 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, depID string, t
 	rm.mu.Lock()
 	st, ok := rm.cooldowns[depID]
 	// If failing during a HALF_OPEN probe, immediately re-trip to OPEN
-	if ok && st.tripped && !now.Before(st.cooldownUntil) {
+	if ok && st.tripped && !now.Before(st.cooldownUntil) && dep.CircuitProbeToken != "" && st.probeToken == dep.CircuitProbeToken {
 		st.halfOpenProbeInFlight = false
+		st.probeToken = ""
 		st.cooldownUntil = now.Add(time.Duration(cooldownSec) * time.Second)
 		rm.mu.Unlock()
 		rm.tripCooldown(ctx, depID, cooldownSec)
@@ -1865,6 +1896,8 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, depID string, t
 
 	if shouldTrip {
 		rm.tripCooldown(ctx, depID, cooldownSec)
+	} else {
+		rm.reopenHalfOpen(ctx, depID, dep.CircuitProbeToken, cooldownSec)
 	}
 }
 
@@ -1881,12 +1914,13 @@ func (rm *ReliabilityManager) tripCooldown(ctx context.Context, depID string, co
 	}
 	st.tripped = true
 	st.halfOpenProbeInFlight = false
+	st.probeToken = ""
 	st.cooldownUntil = time.Now().Add(dur)
 	rm.mu.Unlock()
 
 	if rm.redis != nil && rm.redis.Client() != nil {
 		_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
-			return rdb.Set(ctx, "gw:router:cooldown:"+depID, "open", dur).Result()
+			return tripCircuitScript.Run(ctx, rdb, circuitKeys(depID), dur.Milliseconds()).Result()
 		})
 	}
 
@@ -1897,16 +1931,68 @@ func (rm *ReliabilityManager) tripCooldown(ctx context.Context, depID string, co
 	)
 }
 
-func (rm *ReliabilityManager) recordSuccess(depID string) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	if st, ok := rm.cooldowns[depID]; ok && st.tripped {
-		logger.Info("Circuit breaker reset to CLOSED",
-			slog.String("component", "circuit_breaker"),
-			slog.String("deployment_id", depID),
-		)
+func (rm *ReliabilityManager) recordSuccess(ctx context.Context, dep *domain.Deployment) {
+	if dep == nil {
+		return
 	}
-	delete(rm.cooldowns, depID)
+	depID := dep.ID
+	rm.mu.Lock()
+	st, ok := rm.cooldowns[depID]
+	if ok && st.tripped && (dep.CircuitProbeToken == "" || (rm.redis == nil || rm.redis.Client() == nil) && dep.CircuitProbeToken != st.probeToken) {
+		rm.mu.Unlock()
+		return
+	}
+	if ok {
+		if st.tripped {
+			logger.Info("Circuit breaker reset to CLOSED",
+				slog.String("component", "circuit_breaker"),
+				slog.String("deployment_id", depID),
+			)
+		}
+		delete(rm.cooldowns, depID)
+	}
+	rm.mu.Unlock()
+
+	if dep.CircuitProbeToken != "" && rm.redis != nil && rm.redis.Client() != nil {
+		_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+			return closeCircuitScript.Run(ctx, rdb, circuitKeys(depID), dep.CircuitProbeToken).Result()
+		})
+	}
+}
+
+func (rm *ReliabilityManager) reopenHalfOpen(ctx context.Context, depID, probeToken string, cooldownSec int) {
+	if probeToken == "" || rm.redis == nil || rm.redis.Client() == nil {
+		return
+	}
+	if cooldownSec <= 0 {
+		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
+	}
+	_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		return reopenHalfOpenScript.Run(ctx, rdb, circuitKeys(depID), (time.Duration(cooldownSec) * time.Second).Milliseconds(), probeToken).Result()
+	})
+}
+
+func tokenIfProbe(code int64, token string) string {
+	if code == 2 {
+		return token
+	}
+	return ""
+}
+
+func circuitKeys(depID string) []string {
+	return []string{circuitStateKey(depID), circuitCooldownKey(depID), circuitProbeKey(depID)}
+}
+
+func circuitStateKey(depID string) string {
+	return "gw:router:circuit:" + depID + ":state"
+}
+
+func circuitCooldownKey(depID string) string {
+	return "gw:router:cooldown:" + depID
+}
+
+func circuitProbeKey(depID string) string {
+	return "gw:router:circuit:" + depID + ":probe"
 }
 
 func filterUntried(all []*domain.Deployment, tried []string) []*domain.Deployment {

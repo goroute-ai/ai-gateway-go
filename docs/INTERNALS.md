@@ -317,8 +317,8 @@ stateDiagram-v2
     CLOSED --> [*]
 ```
 
-- **Distributed Cooldown**: Stored in Redis (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods immediately cease routing traffic to it.
-- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, the circuit enters `HALF_OPEN` and admits **strictly one probe request** while locking out concurrent requests. If the probe succeeds, the circuit resets to `CLOSED`.
+- **Distributed Cooldown**: Redis stores an open-state marker and the expiring cooldown (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods cease routing traffic to it.
+- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, an atomic Redis script grants one 5-minute probe lease across pods. A failed probe restores the cooldown; a successful request clears the shared state and lease. If Redis is unavailable, the manager uses local circuit state and cannot coordinate probes across replicas.
 
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
