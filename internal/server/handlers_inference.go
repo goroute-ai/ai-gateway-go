@@ -118,8 +118,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 	}
 	if err != nil {
+		status := http.StatusBadRequest
+		if ge, ok := err.(*domain.GatewayError); ok && ge.StatusCode != 0 {
+			status = ge.StatusCode
+		}
 		s.collector.Record(observability.RequestObservation{
-			StatusCode:       http.StatusBadRequest,
+			StatusCode:       status,
 			GuardrailBlocked: true,
 		})
 		domain.WriteHTTPError(w, err)
@@ -415,7 +419,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	releaseQuota(resp.Usage.TotalTokens)
 
 	// Output Guardrail PII sanitization (if enabled on the organization)
-	if s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp) {
+	outputRedacted, guardrailOutputErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
+	if outputRedacted {
 		guardrailRedacted = true
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
@@ -436,8 +441,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
 
-	if cacheKey != "" {
+	if cacheKey != "" && guardrailOutputErr == nil {
 		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+	}
+	responseStatus := http.StatusOK
+	if guardrailOutputErr != nil {
+		responseStatus = http.StatusServiceUnavailable
 	}
 
 	s.collector.Record(observability.RequestObservation{
@@ -445,7 +454,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		DeploymentID:      depID,
 		DeploymentName:    depName,
 		Model:             resp.Model,
-		StatusCode:        http.StatusOK,
+		StatusCode:        responseStatus,
 		LatencyMs:         meta.LatencyMs,
 		TTFTMs:            meta.TTFTMs,
 		RoutingMicros:     meta.RoutingMicros,
@@ -472,9 +481,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			w.Header().Set("X-Gateway-Route-Reason", meta.RouteDecision.Reason)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
@@ -505,6 +511,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		RetryCount:              meta.RetryCount,
 		CreatedAt:               time.Now().UTC(),
 	})
+	if guardrailOutputErr != nil {
+		domain.WriteHTTPError(w, guardrailOutputErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Inference completed",
 		slog.String("component", "inference"),
 		slog.String("request_id", reqID),

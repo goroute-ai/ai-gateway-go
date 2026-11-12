@@ -113,11 +113,14 @@ func (e *Engine) EvaluateMCPToolCall(
 ) (*CheckOutcome, error) {
 	outcome := &CheckOutcome{}
 	if e == nil || e.repo == nil || orgID == "" {
-		return outcome, nil
+		return nil, policyUnavailableError()
 	}
 
 	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil {
+	if err != nil {
+		return nil, policyUnavailableError()
+	}
+	if pol == nil {
 		return outcome, nil
 	}
 
@@ -152,12 +155,18 @@ func (e *Engine) EvaluateMCPToolResult(
 	result any,
 ) (*CheckOutcome, any, error) {
 	outcome := &CheckOutcome{}
-	if e == nil || e.repo == nil || orgID == "" || result == nil {
+	if result == nil {
 		return outcome, result, nil
+	}
+	if e == nil || e.repo == nil || orgID == "" {
+		return nil, nil, policyUnavailableError()
 	}
 
 	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil {
+	if err != nil {
+		return nil, nil, policyUnavailableError()
+	}
+	if pol == nil {
 		return outcome, result, nil
 	}
 
