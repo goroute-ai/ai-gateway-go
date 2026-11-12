@@ -305,6 +305,15 @@ func (s *GatewayServer) processBatchAsync(
 			}
 			continue
 		}
+		if _, err := s.guardrails.EvaluateInput(ctx, idCtx.OrgID, &item.Body); err != nil {
+			counts.Failed++
+			errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Request rejected by organization guardrail policy", "code": "guardrail_rejected"}}
+			eb, _ := json.Marshal(errItem)
+			if !appendOutput(eb) {
+				break
+			}
+			continue
+		}
 
 		// Execute chat request through gateway reliability pipeline
 		resp, meta, err := s.reliability.ExecuteChat(ctx, idCtx, &item.Body)
@@ -324,6 +333,19 @@ func (s *GatewayServer) processBatchAsync(
 				break
 			}
 		} else {
+			guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
+			redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(ctx, idCtx.OrgID, guardrailResp)
+			if sanitizeErr != nil {
+				counts.Failed++
+				errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Response withheld by organization guardrail policy", "code": "guardrail_policy_unavailable"}}
+				eb, _ := json.Marshal(errItem)
+				if !appendOutput(eb) {
+					break
+				}
+				continue
+			}
+			resp.Choices = guardrailResp.Choices
+			_ = redacted
 			counts.Completed++
 			succItem := map[string]any{
 				"id":        "batch_req_" + uuid.NewString(),

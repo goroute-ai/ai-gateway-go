@@ -74,6 +74,12 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedPrompts, err := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt.Strings...)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	req.Prompt.Strings = guardedPrompts
 
 	// 2. Rate Limiting Quota Acquire (rough estimate from prompt)
 	totalPromptChars := 0
@@ -104,6 +110,13 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
+	for i := range resp.Choices {
+		resp.Choices[i].Text, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Choices[i].Text)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string

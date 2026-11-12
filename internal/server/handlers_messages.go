@@ -144,6 +144,10 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			},
 		})
 	}
+	if _, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, &chatReq); err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
 
 	// 3. Rate Limiting Quota
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
@@ -171,6 +175,16 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
+	guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
+	redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, guardrailResp)
+	if sanitizeErr != nil {
+		domain.WriteHTTPError(w, sanitizeErr)
+		return
+	}
+	resp.Choices = guardrailResp.Choices
+	if redacted {
+		w.Header().Set("X-Gateway-Output-Redacted", "true")
+	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -258,6 +272,17 @@ func (s *GatewayServer) streamAnthropicMessages(
 	releaseQuota func(int),
 	traceID, reqID string,
 ) {
+	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
+	if policyErr != nil {
+		domain.WriteHTTPError(w, policyErr)
+		releaseQuota(0)
+		return
+	}
+	if policy != nil && policy.RedactOutputPII {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
+		releaseQuota(0)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		releaseQuota(0)

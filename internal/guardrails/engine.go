@@ -47,14 +47,30 @@ func NewEngine(repo storage.Repository) *Engine {
 	return &Engine{repo: repo}
 }
 
+// Policy resolves organization policy. A missing policy is an explicit allow;
+// storage failures are returned so callers can fail closed before egress.
+func (e *Engine) Policy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error) {
+	if e == nil || e.repo == nil || orgID == "" {
+		return nil, nil
+	}
+	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	if err != nil {
+		return nil, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_policy_unavailable", Message: "Organization guardrail policy could not be loaded"}
+	}
+	return pol, nil
+}
+
 // EvaluateInput inspects and optionally mutates (redacts) or blocks a CanonicalChatRequest before upstream execution.
 func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
 	if e == nil || e.repo == nil || orgID == "" || req == nil {
 		return &CheckOutcome{}, nil
 	}
 
-	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil {
+	pol, err := e.Policy(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if pol == nil {
 		return &CheckOutcome{}, nil
 	}
 
@@ -66,6 +82,70 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	outcome := &CheckOutcome{}
 	if pol == nil || req == nil {
 		return outcome, nil
+	}
+	// Canonical multimodal requests may carry text beside image parts. Scan and
+	// redact each text part in place while leaving image payloads untouched.
+	for mi := range req.Messages {
+		msg := &req.Messages[mi]
+		if msg.Role != "user" {
+			continue
+		}
+		for _, text := range []*string{&msg.ReasoningContent} {
+			if *text == "" {
+				continue
+			}
+			probe := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: *text}}}
+			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
+			if partOutcome != nil {
+				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)
+				if partOutcome.AppliedAction != "" {
+					outcome.AppliedAction = partOutcome.AppliedAction
+				}
+				outcome.Redacted = outcome.Redacted || partOutcome.Redacted
+			}
+			if err != nil {
+				return outcome, err
+			}
+			*text = probe.Messages[0].Content
+		}
+		for ci := range msg.ToolCalls {
+			text := &msg.ToolCalls[ci].Function.Arguments
+			if *text == "" {
+				continue
+			}
+			probe := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: *text}}}
+			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
+			if partOutcome != nil {
+				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)
+				if partOutcome.AppliedAction != "" {
+					outcome.AppliedAction = partOutcome.AppliedAction
+				}
+				outcome.Redacted = outcome.Redacted || partOutcome.Redacted
+			}
+			if err != nil {
+				return outcome, err
+			}
+			*text = probe.Messages[0].Content
+		}
+		for pi := range msg.Parts {
+			part := &msg.Parts[pi]
+			if part.Type != "text" || part.Text == "" {
+				continue
+			}
+			probe := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: part.Text}}}
+			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
+			if partOutcome != nil {
+				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)
+				if partOutcome.AppliedAction != "" {
+					outcome.AppliedAction = partOutcome.AppliedAction
+				}
+				outcome.Redacted = outcome.Redacted || partOutcome.Redacted
+			}
+			if err != nil {
+				return outcome, err
+			}
+			part.Text = probe.Messages[0].Content
+		}
 	}
 
 	for idx := range req.Messages {
@@ -176,25 +256,54 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 
 // SanitizeOutput redacts PII and secrets from model output completions if configured on the Organization's GuardrailPolicy.
 func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) bool {
+	redacted, _ := e.SanitizeOutputStrict(ctx, orgID, resp)
+	return redacted
+}
+
+// SanitizeOutputStrict applies configured output redaction and surfaces policy
+// lookup failures so handlers can withhold output instead of returning it raw.
+func (e *Engine) SanitizeOutputStrict(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
 	if e == nil || e.repo == nil || orgID == "" || resp == nil {
-		return false
+		return false, nil
 	}
-	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
-	if err != nil || pol == nil || !pol.RedactOutputPII {
-		return false
+	pol, err := e.Policy(ctx, orgID)
+	if err != nil {
+		return false, err
+	}
+	if pol == nil || !pol.RedactOutputPII {
+		return false, nil
 	}
 
 	redacted := false
-	for i := range resp.Choices {
-		c := &resp.Choices[i].Message.Content
-		orig := *c
-		updated := reEmail.ReplaceAllString(orig, "[REDACTED_EMAIL]")
+	sanitize := func(text string) string {
+		updated := reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
 		updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
 		updated = reCard.ReplaceAllString(updated, "[REDACTED_CARD]")
-		updated = reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
-		if updated != orig {
-			*c = updated
-			redacted = true
+		return reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
+	}
+	for i := range resp.Choices {
+		msg := &resp.Choices[i].Message
+		for _, text := range []*string{&msg.Content, &msg.ReasoningContent} {
+			updated := sanitize(*text)
+			if updated != *text {
+				*text = updated
+				redacted = true
+			}
+		}
+		for partIndex := range msg.Parts {
+			updated := sanitize(msg.Parts[partIndex].Text)
+			if updated != msg.Parts[partIndex].Text {
+				msg.Parts[partIndex].Text = updated
+				redacted = true
+			}
+		}
+		for callIndex := range msg.ToolCalls {
+			args := &msg.ToolCalls[callIndex].Function.Arguments
+			updated := sanitize(*args)
+			if updated != *args {
+				*args = updated
+				redacted = true
+			}
 		}
 	}
 
@@ -205,5 +314,24 @@ func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.
 		)
 	}
 
-	return redacted
+	return redacted, nil
+}
+
+// SanitizeTextOutput redacts supported PII and secrets from a text result.
+func (e *Engine) SanitizeTextOutput(ctx context.Context, orgID, text string) (string, bool, error) {
+	if e == nil || e.repo == nil || orgID == "" {
+		return text, false, nil
+	}
+	pol, err := e.Policy(ctx, orgID)
+	if err != nil {
+		return "", false, err
+	}
+	if pol == nil || !pol.RedactOutputPII {
+		return text, false, nil
+	}
+	updated := reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
+	updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
+	updated = reCard.ReplaceAllString(updated, "[REDACTED_CARD]")
+	updated = reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
+	return updated, updated != text, nil
 }

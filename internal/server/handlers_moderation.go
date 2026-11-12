@@ -89,6 +89,12 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	inputs = guardedInputs
 
 	// 2. Rate Limiting Quota Acquire (minimal quota for moderation)
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*10)

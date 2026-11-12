@@ -266,6 +266,10 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				Messages:    reqMsgs,
 				Temperature: temp,
 			}
+			if _, guardrailErr := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, chatReq); guardrailErr != nil {
+				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Request rejected by organization guardrail policy"}})
+				continue
+			}
 
 			respID := "resp_" + uuid.NewString()
 			itemMsgID := "msg_" + uuid.NewString()
@@ -335,6 +339,11 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 			replyContent := ""
 			if len(resp.Choices) > 0 {
 				replyContent = resp.Choices[0].Message.Content
+			}
+			replyContent, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, replyContent)
+			if err != nil {
+				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Response withheld by organization guardrail policy"}})
+				continue
 			}
 
 			// response.text.delta

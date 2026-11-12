@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -785,6 +786,9 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 		&pol.OrgID, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
 		&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
 	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	pol.PromptInjectionAction = domain.GuardrailAction(injAct)

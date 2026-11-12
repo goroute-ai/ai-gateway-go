@@ -133,12 +133,26 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxOutputTokens,
 	}
+	if _, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, chatReq); err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
 
 	if !req.Stream {
 		resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, chatReq)
 		if err != nil {
 			domain.WriteHTTPError(w, err)
 			return
+		}
+		guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
+		redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, guardrailResp)
+		if sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		resp.Choices = guardrailResp.Choices
+		if redacted {
+			w.Header().Set("X-Gateway-Output-Redacted", "true")
 		}
 
 		respID := "resp_" + uuid.NewString()
@@ -219,6 +233,15 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Code:       "streaming_unsupported",
 			Message:    "Streaming unsupported by HTTP connection",
 		})
+		return
+	}
+	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
+	if policyErr != nil {
+		domain.WriteHTTPError(w, policyErr)
+		return
+	}
+	if policy != nil && policy.RedactOutputPII {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
 		return
 	}
 
