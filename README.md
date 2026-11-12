@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.3.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.3.0)
+[![Release](https://img.shields.io/badge/Release-v1.4.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.4.0)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
 [![Claude Code Ready](<https://img.shields.io/badge/Claude%20Code-Best%20Practices-8A2BE2?logo=anthropic>)](./CLAUDE.md)
@@ -37,7 +37,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.3.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.4.0
 ```
 
 ```go
@@ -96,7 +96,7 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.3.0).*
+*Precompiled static binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.4.0).*
 
 ### Path 3: Production Multi-Tenant Stack (Docker Compose)
 
@@ -363,19 +363,23 @@ Returns:
 
 ---
 
-### 6. 21 Unified Multi-Modal Data Plane Routes
+### 6. Unified Multi-Modal Data Plane (23 Paths, 26 Operations)
 
-GoRoute provides full schema parity across every standard AI data plane route:
+The gateway registers the following primary `/v1` operations. The OpenAPI contract and CI currently enforce route parity for this group. Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
-| Modality / Category          | Endpoints                                                                             | Supported Providers                                                                   |
-| :--------------------------- | :------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------ |
-| **Chat Completions**   | `POST /v1/chat/completions`                                                         | OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Ollama, Groq, Mistral, DeepSeek |
-| **Anthropic Messages** | `POST /v1/messagesPOST /v1/messages/count_tokens`                                   | Native Anthropic Claude & cross-translated OpenAI models                              |
-| **Legacy Completions** | `POST /v1/completions`                                                              | OpenAI, Mistral, Ollama                                                               |
-| **Audio (STT & TTS)**  | `POST /v1/audio/transcriptionsPOST /v1/audio/translations``POST /v1/audio/speech` | OpenAI Whisper/TTS, Gemini Audio                                                      |
-| **Vision & Creative**  | `POST /v1/images/generationsPOST /v1/images/edits``POST /v1/images/variations`    | OpenAI DALL-E 2/3, Gemini Imagen                                                      |
-| **Semantics & Search** | `POST /v1/embeddingsPOST /v1/rerank``POST /v1/moderationsPOST /v1/tokenize`       | OpenAI, Cohere v2, Voyage AI, Mistral                                                 |
-| **Enterprise Scale**   | `POST /v1/filesPOST /v1/batches``GET /v1/realtime` *(WebSocket)*                | OpenAI, Azure, Gemini Live                                                            |
+| Operation group | Routes |
+| :--- | :--- |
+| Chat and text | `POST /v1/chat/completions`, `POST /v1/completions` |
+| Embeddings and model inventory | `POST /v1/embeddings`, `GET /v1/models` |
+| Anthropic Messages ingress | `POST /v1/messages`, `POST /v1/messages/count_tokens` |
+| Audio | `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`, `POST /v1/audio/speech` |
+| Images | `POST /v1/images/generations`, `POST /v1/images/edits`, `POST /v1/images/variations` |
+| Rerank, moderation, and tokenization | `POST /v1/rerank`, `POST /v1/moderations`, `POST /v1/tokenize` |
+| Files | `POST /v1/files`, `GET /v1/files`, `GET /v1/files/{file_id}`, `GET /v1/files/{file_id}/content`, `DELETE /v1/files/{file_id}` |
+| Batches | `POST /v1/batches`, `GET /v1/batches`, `GET /v1/batches/{batch_id}`, `POST /v1/batches/{batch_id}/cancel` |
+| Responses and realtime | `POST /v1/responses`, `GET /v1/realtime` (WebSocket upgrade) |
+
+The generated OpenAPI interfaces exist as contract artifacts. Live handlers and route registration are still partly handwritten; see the [OpenAPI workflow and known gaps](./docs/openapi/README.md).
 
 #### Audio Transcription (Whisper STT with Disk Spooling)
 
@@ -543,7 +547,7 @@ GoRoute AI Gateway is engineered to be 100% compatible with [Claude Code Best Pr
 
 - **`CLAUDE.md`**: Concise, high-density root guide (< 100 lines) with common commands, invariants, and verification steps.
 - **Scoped Rules (`.claude/rules/`)**: Path-specific modular rules for Go backend (`go-backend.md`), React Operator UI (`frontend-web.md`), and API contracts (`api-contracts.md`).
-- **Rapid Verification Loop**: Standardized commands for formatting (`gofmt`), static analysis (`go vet`), contract verification (`go run ./cmd/specgen`), race-detector tests, and frontend bundle budgets.
+- **Rapid Verification Loop**: Standardized commands for formatting (`gofmt`), static analysis (`go vet`), contract generation and verification (`make specgen`), race-detector tests, and frontend bundle budgets.
 - **Cross-Agent Standards**: Fully compatible with [AGENTS.md](./AGENTS.md) for Cursor, Zed, Antigravity, and autonomous pair-programming tools.
 
 ---
@@ -555,7 +559,7 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Complete reference for all 21 data plane routes, 12 Admin Control Plane groups, and UI.         |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 23 primary data-plane paths, Admin Control Plane groups, and UI; see documented contract gaps.         |
 | **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all 70+ YAML options and environment variables.                    |
 | **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas.         |
 | **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all 19 subsystems. |

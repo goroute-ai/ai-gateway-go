@@ -621,12 +621,12 @@ func main() {
                   }}
                   className={`px-2.5 py-1.5 rounded text-xs font-mono capitalize transition text-left flex items-center justify-between ${
                     selectedModel === alias && !customModelInput
-                      ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/50 font-bold'
+                      ? 'bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold'
                       : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
                   }`}
                 >
                   <span>{alias}</span>
-                  {selectedModel === alias && !customModelInput && <Zap className="w-3 h-3 text-indigo-400" />}
+                  {selectedModel === alias && !customModelInput && <Zap className="w-3 h-3 text-accent-primary" />}
                 </button>
               ))}
             </div>

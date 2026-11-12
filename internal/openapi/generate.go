@@ -1,7 +1,6 @@
-// Package openapi contains build-time go:generate directives that validate the
-// repository OpenAPI specifications in docs/openapi/ (gateway.openapi.yaml,
-// openai.openapi.yaml, anthropic.openapi.yaml, gemini.openapi.yaml,
-// mistral.openapi.yaml, and ollama.openapi.yaml) and provide strongly-typed Go DTOs.
+// Package openapi contains generated gateway and provider contract types.
 package openapi
 
-//go:generate go run ../../cmd/specgen/main.go -root ../..
+// Keep the generator version pinned so generated output is reproducible.
+//go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ../../docs/openapi/gateway.codegen.yaml ../../docs/openapi/gateway.openapi.yaml
+//go:generate go run ../../cmd/specgen -root ../..

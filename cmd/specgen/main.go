@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,6 +58,28 @@ func main() {
 		if doc.OpenAPI == "" || len(doc.Paths) == 0 {
 			fmt.Fprintf(os.Stderr, "specgen invalid OpenAPI document %s: version=%q paths=%d\n", s.Name, doc.OpenAPI, len(doc.Paths))
 			os.Exit(1)
+		}
+		loader := openapi3.NewLoader()
+		semanticDoc, err := loader.LoadFromFile(s.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "specgen error loading OpenAPI document %s: %v\n", s.Name, err)
+			os.Exit(1)
+		}
+		if err := semanticDoc.Validate(
+			context.Background(),
+			openapi3.DisableExamplesValidation(),
+			openapi3.DisableSchemaDefaultsValidation(),
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "specgen semantic validation failed for %s: %v\n", s.Name, err)
+			os.Exit(1)
+		}
+		if s.Name == "Gateway Unified Spec" {
+			serverFile := filepath.Join(*rootDir, "internal", "server", "server.go")
+			if err := checkDataPlaneRouteCoverage(serverFile, doc.Paths); err != nil {
+				fmt.Fprintf(os.Stderr, "specgen route coverage failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("[specgen] Verified primary /v1 route/spec parity")
 		}
 		pathList := make([]string, 0, len(doc.Paths))
 		for k := range doc.Paths {

@@ -13,7 +13,7 @@ This guide provides persistent instructions and invariants for Claude Code sessi
 | **Format Go** | `gofmt -w <changed-go-files>` |
 | **Check Go formatting** | `gofmt -l .` |
 | **Static analysis** | `go vet ./...` |
-| **Validate API & protocol specs** | `go run ./cmd/specgen` |
+| **Generate and validate API & protocol specs** | `make specgen` |
 | **Run unit tests (race detector)** | `go test -race -count=1 ./internal/... ./pkg/...` |
 | **Run focused package test** | `go test -v -race -run <TestName> ./internal/<pkg>/...` |
 | **Run E2E tests** | `go test -race -count=1 ./tests/e2e` *(requires Postgres & Redis)* |
@@ -33,7 +33,7 @@ These invariants must be preserved without exception:
 2. **SSRF & Egress Protection**: Outbound network requests must use `internal/security/network` safe HTTP transport (`SafeTransport`, `DialContext`). Never use raw unvalidated `http.DefaultClient` or unpinned IPs for provider egress.
 3. **Fail-Closed RBAC & Auth**: Multi-tenant authorization (`internal/auth/rbac.go`) is strictly fail-closed across all 4 tiers (Organization $\rightarrow$ Team $\rightarrow$ User $\rightarrow$ Virtual Key).
 4. **Credential Vault**: Upstream provider API keys and secrets must remain encrypted via AES-256-GCM (`internal/storage/vault.go`) at rest and in transit.
-5. **Contract-Guided Architecture**: API and wire contracts are defined in `docs/openapi/gateway.openapi.yaml`, `docs/specs/mcp/`, and `docs/specs/a2a/`. Verify contracts with `go run ./cmd/specgen`.
+5. **OpenAPI-First Workflow (in progress)**: API and wire contracts are defined in `docs/openapi/gateway.openapi.yaml`, `docs/specs/mcp/`, and `docs/specs/a2a/`. Gateway DTOs and server interfaces are generated from OpenAPI, and primary `/v1` route parity is checked. Runtime routes and handlers are still partly handwritten. Verify and regenerate contracts with `make specgen`.
 6. **Single-Binary Web UI Embedding**: The Operator UI in `web/` compiles into `internal/ui/dist/` and is embedded via Go `embed.FS` (`//go:embed all:dist`). Total frontend bundle size must strictly respect budget constraints (< 400 KB total; verified via `web/scripts/check-budget.mjs`).
 7. **Immutable Pricing History**: Model pricing updates must append an immutable audit record to `model_pricing_history`.
 
@@ -63,6 +63,6 @@ Before declaring any coding task complete:
 1. Run `gofmt -l .` to ensure formatting is pristine.
 2. Run `go vet ./...` to ensure zero static analysis warnings.
 3. Run targeted unit tests for the modified packages: `go test -race -count=1 ./internal/<modified-pkg>/...`.
-4. If contracts changed, run `go run ./cmd/specgen`.
+4. If contracts changed, run `make specgen`.
 5. If frontend code in `web/` changed, run `make ui-build` to verify the bundle budget and sync `internal/ui/dist`.
 6. Build the binary with `go build ./cmd/gateway`.

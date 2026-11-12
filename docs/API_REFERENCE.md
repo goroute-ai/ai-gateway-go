@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.3.0`  
+> **Version**: `v1.4.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -142,7 +142,7 @@ When an upstream provider blocks a prompt or candidate, GoRoute returns standard
 ### 2.3 Model Inventory
 `GET /v1/models`
 
-Returns 4-layer tenant-filtered model inventory accessible to the caller's Virtual API Key, including rich tri-state capabilities and integer micro-dollar pricing metadata.
+Returns a 4-layer tenant-filtered inventory accessible to the caller's Virtual API Key, including tri-state capabilities and integer micro-dollar pricing metadata. Catalogue inclusion describes known metadata; it does not guarantee that the selected provider, operation, credentials, or account can call a model.
 
 #### Response (HTTP 200 OK)
 ```json
@@ -187,7 +187,7 @@ GoRoute supports direct model execution using `provider/model` notation (e.g. `c
 - **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
 - **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
 - **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
-- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute dynamically imports it from the embedded 4,627-model catalogue with active lifecycle status and provisions the route on the fly.
+- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute can import its metadata from the embedded 4,627-record catalogue and provision a route when a matching provider adapter/profile and tenant credential are available.
 - **Fail-Closed Boundary**: If repository queries fail, or if the model is unconfigured/unauthorized, GoRoute fails closed and returns `HTTP 404 model_group_not_found` (explicit model requests never silently fall back to unrelated tenant model groups).
 
 ### 2.5 Document Reranking
@@ -815,7 +815,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 ### 5.7 Model Catalogue & Pricing Provenance
 - `GET /admin/v1/catalogue?provider={provider}&search={query}`: Queries the global model catalogue.
 - `POST /admin/v1/catalogue/sync`: Polls active upstream provider credentials for new models.
-- `POST /admin/v1/catalogue/import?provider={provider}`: Imports models from the embedded 4,627-model catalogue dataset.
+- `POST /admin/v1/catalogue/import?provider={provider}`: Imports metadata from the embedded 4,627-record catalogue dataset.
 - `POST /admin/v1/catalogue/pricing`: Updates model pricing rates and promotes pricing status to `"verified"`.
   ```json
   {

@@ -112,4 +112,17 @@ func TestUI_StaticAssetMimeAndCaching(t *testing.T) {
 
 	assert.True(t, testedCSS, "at least one CSS bundle was tested")
 	assert.True(t, testedJS, "at least one JS bundle was tested")
+
+	// 3. Verify brand assets logo-dark.png and favicon.png
+	reqLogo := httptest.NewRequest(http.MethodGet, "/ui/logo-dark.png", nil)
+	recLogo := httptest.NewRecorder()
+	r.ServeHTTP(recLogo, reqLogo)
+	assert.Equal(t, http.StatusOK, recLogo.Code)
+	assert.True(t, strings.HasPrefix(recLogo.Header().Get("Content-Type"), "image/png"), "logo should have image/png MIME, got %q", recLogo.Header().Get("Content-Type"))
+
+	reqFav := httptest.NewRequest(http.MethodGet, "/ui/favicon.png", nil)
+	recFav := httptest.NewRecorder()
+	r.ServeHTTP(recFav, reqFav)
+	assert.Equal(t, http.StatusOK, recFav.Code)
+	assert.True(t, strings.HasPrefix(recFav.Header().Get("Content-Type"), "image/png"), "favicon should have image/png MIME, got %q", recFav.Header().Get("Content-Type"))
 }

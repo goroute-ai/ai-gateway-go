@@ -31,7 +31,7 @@ body:
       value: |
         - [ ] Code follows repository invariants (Pure Go, 64-bit micro-dollar FinOps, SSRF-guarded egress).
         - [ ] Unit tests added and passing (`go test -race ./...`).
-        - [ ] OpenAPI spec validated (`go run ./cmd/specgen`).
+        - [ ] OpenAPI contracts generated and validated (`make specgen`).
         - [ ] Code formatted (`gofmt -l .` and `go vet ./...`).
     validations:
       required: true

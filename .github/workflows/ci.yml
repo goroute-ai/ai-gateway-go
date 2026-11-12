@@ -37,7 +37,9 @@ jobs:
         run: go vet ./...
 
       - name: Validate OpenAPI & Protobuf Contracts (cmd/specgen)
-        run: go run ./cmd/specgen
+        run: |
+          go generate ./internal/openapi
+          git diff --exit-code -- internal/openapi/gateway.gen.go
 
   test:
     name: Test Suite (Race Detector)

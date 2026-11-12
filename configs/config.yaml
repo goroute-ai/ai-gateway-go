@@ -133,9 +133,3 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
       weight: 100
-  - model_name: failover-primary
-    fallbacks: ["llama3.2:1b"]
-    model_params:
-      model: ollama/llama3.2:1b
-      api_base: http://127.0.0.1:59999
-      weight: 100

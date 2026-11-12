@@ -161,7 +161,7 @@ export const FinOpsView: React.FC = () => {
         <div className="bg-surface-base border border-subtle rounded-lg p-4">
           <div className="flex items-center justify-between text-zinc-400 mb-1">
             <span className="text-xs font-mono uppercase tracking-wider">Total Tokens</span>
-            <Layers className="w-4 h-4 text-indigo-400" />
+            <Layers className="w-4 h-4 text-accent-glow" />
           </div>
           <div className="text-2xl font-bold font-mono text-zinc-100">
             {isSummaryLoading ? '...' : totalTokens.toLocaleString()}
@@ -224,7 +224,7 @@ export const FinOpsView: React.FC = () => {
           {/* Model Breakdown */}
           <div className="bg-surface-base border border-subtle rounded-lg p-4">
             <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
-              <Layers className="w-4 h-4 text-indigo-400" />
+              <Layers className="w-4 h-4 text-accent-glow" />
               Top Models by Spend
             </h3>
             {summary.spend_by_model && Object.keys(summary.spend_by_model).length > 0 ? (
@@ -242,7 +242,7 @@ export const FinOpsView: React.FC = () => {
                         </div>
                         <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
                           <div
-                            className="bg-indigo-500 h-1.5 rounded-full"
+                            className="bg-accent-violet h-1.5 rounded-full"
                             style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
                           />
                         </div>

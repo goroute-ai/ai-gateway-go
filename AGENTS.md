@@ -24,7 +24,7 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 | Format Go | `gofmt -w <changed-go-files>` |
 | Check formatting | `gofmt -l .` |
 | Static analysis | `go vet ./...` |
-| Validate API and protocol specs | `go run ./cmd/specgen` |
+| Generate gateway contracts and validate API/protocol specs | `make specgen` |
 | Unit tests (race detector) | `go test -race -count=1 ./internal/... ./pkg/...` |
 | End-to-end tests | `go test -race -count=1 ./tests/e2e` (requires PostgreSQL and Redis; see `.github/workflows/ci.yml`) |
 | Build | `go build ./cmd/gateway` |

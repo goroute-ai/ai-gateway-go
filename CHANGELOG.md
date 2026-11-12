@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-11-12
+
+### Modern Operator UI Redesign, OpenAPI Contract Parity & Production Refinements
+
+#### Modern Operator Web UI & Brand Identity (`web/`, `internal/ui/`)
+- Redesigned Operator UI with an OLED Pure Black (`#000000`) canvas and Royal Violet & Lavender (`#b39aff` / `#6d28d9`) brand palette meeting WCAG AAA contrast standards.
+- Integrated high-contrast dark brand logo in the sticky navigation header and Control Plane lock screen.
+- Added dedicated PNG browser favicon and asset MIME-type delivery tests (`internal/ui/ui_test.go`).
+- Streamlined Guardrails Simulator defaults and cleaned sample failover configurations (`configs/config.yaml`) so new installations start with a clean deployment state.
+
+#### OpenAPI-Driven Contract Generation & Route Parity (`internal/openapi/`, `cmd/specgen/`)
+- Added OpenAPI 3.1 contract semantic validation via `kin-openapi` in `cmd/specgen`.
+- Added automated `/v1` data-plane route parity verification (`cmd/specgen/routes.go`) ensuring registered server routes stay synchronized with `docs/openapi/gateway.openapi.yaml`.
+- Added generated gateway DTOs and server contract interfaces (`internal/openapi/gateway.gen.go`) via `make specgen`.
+
+---
+
 ## [1.3.0] - 2026-11-11
 
 ### Embedded Operator Web UI, Admin Control Plane Extensions & Claude Code Alignment
@@ -47,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.0] - 2026-11-10
 
-### Full API Breadth Parity with API-compatible providers, Multi-Modal Ingress & Production Hardening
+### Expanded Multi-Modal API, Ingress & Production Hardening
 
 #### Expanded Unified Data Plane (21 Routes)
 - **Document Reranking (`POST /v1/rerank`, `POST /rerank`, `POST /v2/rerank`)**:

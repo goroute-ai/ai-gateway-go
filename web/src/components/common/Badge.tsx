@@ -37,14 +37,14 @@ export const Badge: React.FC<BadgeProps> = ({
   }
 
   const variantStyles = {
-    default: 'bg-surface-elevated text-slate-300 border-border-subtle',
-    neutral: 'bg-zinc-800/80 text-zinc-300 border-border-subtle',
-    primary: 'bg-accent-primary/10 text-accent-primary border-accent-primary/30',
+    default: 'bg-surface-elevated text-[#d2d0dc] border-border',
+    neutral: 'bg-surface-elevated text-[#9696a4] border-border',
+    primary: 'bg-[rgba(124,58,237,0.12)] text-accent-primary border-accent-primary/30 font-semibold',
     success: 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30',
     warning: 'bg-amber-950/60 text-amber-400 border-amber-500/30',
     danger: 'bg-rose-950/60 text-rose-400 border-rose-500/30',
-    info: 'bg-cyan-950/60 text-cyan-400 border-cyan-500/30',
-    provider: 'bg-surface-elevated text-slate-300 border-border-subtle',
+    info: 'bg-[rgba(124,58,237,0.12)] text-accent-glow border-accent-primary/30',
+    provider: 'bg-surface-elevated text-[#d2d0dc] border-border',
   };
 
   return (
