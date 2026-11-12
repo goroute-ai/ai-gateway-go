@@ -74,35 +74,24 @@ func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheContr
 // ComputeKey generates a collision-resistant SHA-256 cache key scoped to the organization and request.
 func (c *ResponseCache) ComputeKey(orgID string, req *domain.CanonicalChatRequest) string {
 	type keyPayload struct {
-		OrgID           string                    `json:"org_id"`
-		Model           string                    `json:"model"`
-		ResolvedModel   string                    `json:"resolved_model,omitempty"`
-		Messages        []domain.CanonicalMessage `json:"messages"`
-		Tools           []domain.CanonicalTool    `json:"tools,omitempty"`
-		ToolChoice      any                       `json:"tool_choice,omitempty"`
-		ResponseFormat  *domain.ResponseFormat    `json:"response_format,omitempty"`
-		MaxTokens       *int                      `json:"max_tokens,omitempty"`
-		Stop            []string                  `json:"stop,omitempty"`
-		Temperature     *float64                  `json:"temperature,omitempty"`
-		TopP            *float64                  `json:"top_p,omitempty"`
-		ReasoningEffort string                    `json:"reasoning_effort,omitempty"`
-		User            string                    `json:"user,omitempty"`
+		OrgID   string                       `json:"org_id"`
+		Request *domain.CanonicalChatRequest `json:"request"`
 	}
-	b, _ := json.Marshal(keyPayload{
-		OrgID:           orgID,
-		Model:           req.Model,
-		ResolvedModel:   req.ResolvedModel,
-		Messages:        req.Messages,
-		Tools:           req.Tools,
-		ToolChoice:      req.ToolChoice,
-		ResponseFormat:  req.ResponseFormat,
-		MaxTokens:       req.MaxTokens,
-		Stop:            req.Stop,
-		Temperature:     req.Temperature,
-		TopP:            req.TopP,
-		ReasoningEffort: req.ReasoningEffort,
-		User:            req.User,
-	})
+	if req == nil {
+		return ""
+	}
+	// RequestID is per-call observability metadata. Stream requests are not
+	// cacheable, so omitting it avoids irrelevant key differences. All other
+	// canonical fields participate, including provider and modality extensions.
+	canonical := *req
+	canonical.RequestID = ""
+	canonical.Stream = false
+	b, err := json.Marshal(keyPayload{OrgID: orgID, Request: &canonical})
+	if err != nil {
+		// An unencodable extension value must disable caching, never collapse to
+		// the same empty-payload digest as another request.
+		return ""
+	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

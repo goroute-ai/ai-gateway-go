@@ -438,31 +438,7 @@ A request is cached if:
 3. Client did NOT specify `X-Gateway-Cache-Control: no-cache`.
 
 ### Cache Key Computation
-The cache key is computed deterministically using SHA-256 over canonical JSON fields:
-$$\text{Key} = \text{SHA256}(\text{CanonicalPayload including OrgID})$$
-
-To prevent collisions between different models, parameters, reasoning settings, or user sessions, `ComputeKey` incorporates all execution variables:
-
-```go
-hash := sha256.New()
-hash.Write([]byte(orgID))
-hash.Write([]byte(resolvedModel)) // Target model after routing
-hash.Write(canonicalJSON(req.Messages))
-hash.Write(canonicalJSON(req.Tools))
-hash.Write(canonicalJSON(req.ResponseFormat))
-if req.Temperature != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.Temperature)))
-}
-if req.TopP != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.TopP)))
-}
-if req.ReasoningEffort != "" {
-    hash.Write([]byte(req.ReasoningEffort))
-}
-if req.User != "" {
-    hash.Write([]byte(req.User))
-}
-```
+`ComputeKey` hashes canonical JSON containing the organization and the complete `CanonicalChatRequest`. It omits only `RequestID` (per-call observability metadata) and `Stream` (streaming requests are not cacheable). This includes extra provider parameters, metadata, multimodal message parts, response format, tool settings, and gateway extensions, so a newly added canonical field participates automatically. If a request contains a value that cannot be encoded as JSON, the cache key is empty and the request bypasses lookup and storage.
 
 On cache hit, the gateway returns `X-Gateway-Cache: HIT` and the cached response body without calling an upstream API. Entries in both L1 and Redis include the organization, model, and the shared invalidation epochs at write time. Before returning any hit, each replica reads the global, organization, and model epoch values from Redis and compares them with the entry. A mismatch is a miss.
 

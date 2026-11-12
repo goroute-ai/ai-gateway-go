@@ -197,7 +197,8 @@ flowchart TB
      - Verifies and increments `RPM` (+1), `TPM` (+estimated tokens), and `Concurrent Requests` (+1) across Key, Team, and Org scopes.
    - If any threshold is breached, immediately short-circuits with `HTTP 429 Too Many Requests` (`Retry-After` header + standard OpenAI error payload).
 5. **Exact-Match Response Cache Lookup (`internal/cache`)**:
-   - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over `(OrgID, Model, Messages, Tools, Temperature, ResponseFormat)`.
+   - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over the organization and the complete canonical request, excluding per-call `RequestID` and non-cacheable `Stream`. Unencodable requests bypass the cache.
+   - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
    - L1 and Redis entries carry global, organization, and model epochs. Each hit validates those epochs against shared Redis state; Redis errors and epoch mismatches become cache misses. Invalidation atomically increments shared epochs, so stale L1 values on other replicas are rejected on their next lookup without relying on Pub/Sub delivery.
 6. **Two-Stage Model Routing (`internal/router`)**:
    - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-record catalogue (`internal/catalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
