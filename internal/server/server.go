@@ -136,7 +136,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		_, err := reg.Get(provider)
 		return err == nil
 	})
-	lb := router.NewLoadBalancer()
+	lb := router.NewLoadBalancer(redisFabric)
 	relMgr := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, redisFabric, cfg.Router)
 	relMgr.SetCollector(collector)
 	relMgr.SetHealthMonitor(healthMon)
