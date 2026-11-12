@@ -178,6 +178,84 @@ func TestAuthenticateVirtualKeyRejectsExpiredL1Identity(t *testing.T) {
 	}
 }
 
+func TestExtractGatewayCredentialsQueryAndSubprotocolOnlyOnRealtimeWebSocket(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		target      string
+		upgrade     bool
+		subprotocol string
+		want        string
+	}{
+		{
+			name:   "query api key is ignored on chat endpoint",
+			method: http.MethodPost,
+			target: "/v1/chat/completions?api_key=query-secret",
+		},
+		{
+			name:   "query token is ignored on models endpoint",
+			method: http.MethodGet,
+			target: "/v1/models?token=query-secret",
+		},
+		{
+			name:   "query credential is ignored without websocket upgrade",
+			method: http.MethodGet,
+			target: "/v1/realtime?api_key=query-secret",
+		},
+		{
+			name:        "subprotocol credential is ignored on ordinary endpoint",
+			method:      http.MethodGet,
+			target:      "/v1/models",
+			subprotocol: "realtime, openai-insecure-api-key.protocol-secret",
+		},
+		{
+			name:    "query api key works on realtime websocket",
+			method:  http.MethodGet,
+			target:  "/v1/realtime?api_key=query-secret",
+			upgrade: true,
+			want:    "query-secret",
+		},
+		{
+			name:    "query token works on realtime websocket alias",
+			method:  http.MethodGet,
+			target:  "/openai/v1/realtime?token=query-secret",
+			upgrade: true,
+			want:    "query-secret",
+		},
+		{
+			name:        "subprotocol credential works on realtime websocket",
+			method:      http.MethodGet,
+			target:      "/realtime",
+			upgrade:     true,
+			subprotocol: "realtime, openai-insecure-api-key.protocol-secret",
+			want:        "protocol-secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, tt.target, nil)
+			if err != nil {
+				t.Fatalf("create request: %v", err)
+			}
+			if tt.upgrade {
+				req.Header.Set("Upgrade", "websocket")
+				req.Header.Set("Connection", "keep-alive, Upgrade")
+			}
+			if tt.subprotocol != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", tt.subprotocol)
+			}
+			got, err := auth.ExtractGatewayCredentials(req)
+			if err != nil {
+				t.Fatalf("extract credentials: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("credential = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func Test3StateRBACAllowlists(t *testing.T) {
 	repo := storage.NewMemoryRepository()
 	rbac := auth.NewRBACEngine(repo)

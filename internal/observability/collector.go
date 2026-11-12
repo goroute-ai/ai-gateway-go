@@ -443,11 +443,6 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 			b.WriteString(fmt.Sprintf("gateway_provider_spend_micros_total{provider=%q} %d\n", prov, pm.TotalCostMicros))
 		}
 
-		for id, dm := range snap.Deployments {
-			b.WriteString(fmt.Sprintf("gateway_deployment_requests_total{deployment_id=%q,name=%q,provider=%q} %d\n", id, dm.DeploymentName, dm.Provider, dm.TotalRequests))
-			b.WriteString(fmt.Sprintf("gateway_deployment_errors_total{deployment_id=%q,name=%q,provider=%q} %d\n", id, dm.DeploymentName, dm.Provider, dm.ErrorCount))
-		}
-
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(b.String()))

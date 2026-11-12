@@ -58,8 +58,11 @@ func ExtractGatewayCredentials(r *http.Request) (string, error) {
 	if apiKey != "" {
 		return apiKey, nil
 	}
+	if !isRealtimeWebSocketRequest(r) {
+		return "", nil
+	}
 
-	// Check Sec-WebSocket-Protocol for websocket connections
+	// Browser WebSocket clients can use the OpenAI-compatible subprotocol or query authentication.
 	for _, proto := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
 		proto = strings.TrimSpace(proto)
 		if strings.HasPrefix(proto, "openai-insecure-api-key.") {
@@ -76,6 +79,26 @@ func ExtractGatewayCredentials(r *http.Request) (string, error) {
 	}
 
 	return "", nil
+}
+
+func isRealtimeWebSocketRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/v1/realtime", "/realtime", "/openai/v1/realtime":
+	default:
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
+		return false
+	}
+	for _, token := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+			return true
+		}
+	}
+	return false
 }
 
 // DataPlaneMiddleware authenticates `/v1/*` requests using Virtual API Keys (`sk-gw-...`) and checks endpoint RBAC.

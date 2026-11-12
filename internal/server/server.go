@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -227,7 +228,7 @@ func (s *GatewayServer) setupRoutes() {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 	})
-	r.Method(http.MethodGet, "/metrics", s.collector.PrometheusHandler())
+	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
 
 	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
 	ui.RegisterRoutes(r)
@@ -439,6 +440,29 @@ func (s *GatewayServer) setupRoutes() {
 	})
 
 	s.router = r
+}
+
+func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		var token string
+		if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+			token = strings.TrimSpace(header[len("Bearer "):])
+		}
+		if token == "" {
+			token = strings.TrimSpace(r.Header.Get("x-api-key"))
+		}
+		if !s.authSvc.ValidateAdminKey(token) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_admin_key",
+				Message:    "Valid Master Admin Key is required to access /metrics",
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *GatewayServer) Handler() http.Handler {

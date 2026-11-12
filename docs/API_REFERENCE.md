@@ -384,7 +384,7 @@ Stateless translation bridge conforming to the OpenAI Responses API schema (`inp
 ### 2.15 OpenAI Realtime WebSocket Protocol
 `GET /v1/realtime`, `GET /realtime`, `GET /openai/v1/realtime`
 
-Full-duplex bidirectional WebSocket session handler supporting real-time speech and text streaming over WebSockets. Authenticates via standard Bearer headers, `Sec-WebSocket-Protocol` (`openai-insecure-api-key.<key>`), and query parameters (`?api_key=`), backed by `responseRecorder.Hijack()`.
+Full-duplex bidirectional WebSocket session handler supporting real-time speech and text streaming over WebSockets. Authenticates via standard Bearer or `x-api-key` headers. Browser WebSocket clients can use `Sec-WebSocket-Protocol` (`openai-insecure-api-key.<key>`) or query parameters (`?api_key=` or `?token=`) on a valid WebSocket upgrade to a realtime route. Query and subprotocol credentials are ignored on ordinary HTTP routes. Prefer headers where the client supports them because URLs can be recorded by proxies and browser history.
 
 ---
 
