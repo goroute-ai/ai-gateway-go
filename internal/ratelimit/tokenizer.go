@@ -134,3 +134,70 @@ func EstimateRequestTokens(req *domain.CanonicalChatRequest) int {
 	}
 	return totalTokens
 }
+
+// EstimateTextInputsTokens estimates the combined size of text inputs whose
+// endpoint does not use a chat message envelope (for example embeddings and
+// moderation). The perInputOverhead accounts for provider framing.
+func EstimateTextInputsTokens(model string, inputs []string, perInputOverhead int) int {
+	profile := ResolveTokenizerProfile(model)
+	total := 0
+	for _, input := range inputs {
+		total += perInputOverhead + EstimateTextTokens(input, profile)
+	}
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
+// EstimateRerankTokens includes the query and the serialized size of every
+// document, including structured document fields.
+func EstimateRerankTokens(model, query string, docs []domain.RerankDocument) int {
+	profile := ResolveTokenizerProfile(model)
+	total := 8 + EstimateTextTokens(query, profile)
+	for _, doc := range docs {
+		text := doc.Text
+		if len(doc.Raw) > 0 {
+			if b, err := json.Marshal(doc.Raw); err == nil {
+				text += string(b)
+			}
+		}
+		total += 4 + EstimateTextTokens(text, profile)
+	}
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
+// EstimateAudioUploadTokens is a size-based preflight estimate for uploaded
+// audio. Audio tokenization is provider-specific and duration is not reliably
+// available before dispatch, so it charges a bounded byte-derived estimate
+// plus the optional transcription prompt. The result is deliberately marked
+// approximate in operational documentation.
+func EstimateAudioUploadTokens(model string, uploadBytes int64, prompt string) int {
+	if uploadBytes < 0 {
+		uploadBytes = 0
+	}
+	profile := ResolveTokenizerProfile(model)
+	const bytesPerEstimatedToken = 32
+	audioTokens := int((uploadBytes + bytesPerEstimatedToken - 1) / bytesPerEstimatedToken)
+	total := audioTokens + EstimateTextTokens(prompt, profile) + 50
+	if total < 50 {
+		return 50
+	}
+	return total
+}
+
+// EstimateImageGenerationTokens combines prompt size with a stable per-image
+// work allowance, replacing the previous prompt-blind fixed reservation.
+func EstimateImageGenerationTokens(model, prompt string, imageCount int) int {
+	if imageCount < 1 {
+		imageCount = 1
+	}
+	total := EstimateTextTokens(prompt, ResolveTokenizerProfile(model)) + imageCount*100
+	if total < 1 {
+		return 1
+	}
+	return total
+}

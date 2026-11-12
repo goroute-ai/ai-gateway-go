@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 // handleLegacyCompletions serves `POST /v1/completions` and `POST /completions`.
@@ -75,15 +76,8 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 2. Rate Limiting Quota Acquire (rough estimate from prompt)
-	totalPromptChars := 0
-	for _, p := range req.Prompt.Strings {
-		totalPromptChars += len(p)
-	}
-	estTokens := totalPromptChars / 4
-	if estTokens < 10 {
-		estTokens = 10
-	}
+	// Estimate each prompt with the model-family tokenizer profile and framing.
+	estTokens := ratelimit.EstimateTextInputsTokens(req.Model, req.Prompt.Strings, 4)
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{

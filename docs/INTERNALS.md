@@ -397,12 +397,10 @@ CostMicros = floor((picos + 500000) / 1000000)
 
 Rate limiting is enforced atomically across **Virtual Key**, **Team**, and **Organization** scopes for Requests Per Minute (RPM), Tokens Per Minute (TPM), and Max Concurrent In-Flight Connections.
 
-### 8.1 Model-Specific BPE Token Estimation
-Before forwarding a request, the gateway estimates prompt tokens using model-family heuristic ratios:
-- **Anthropic Claude**: `3.2` characters per token
-- **OpenAI GPT-4o / GPT-4.1 / o3**: `3.5` characters per token
-- **Google Gemini / Mistral / Llama**: `3.8` characters per token
-- **Framing Overhead**: Adds per-message overhead + `1024` reserve tokens when `reasoning_effort` is active.
+### 8.1 Model-Specific Preflight Estimation
+Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 32)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
+
+These are quota-admission estimates, not provider billing tokenizers. Audio, image-generation, and provider-specific multimodal accounting remain approximate; returned provider usage is reconciled where the endpoint exposes it. Operators should size TPM limits with that limitation in mind.
 
 ### 8.2 Single-Roundtrip Atomic Redis Lua Script
 The complete check and increment runs in `internal/ratelimit/scripts/check_and_increment.lua` in a single network roundtrip:

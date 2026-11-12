@@ -572,7 +572,8 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, len(inputs)*16)
+	estTokens := ratelimit.EstimateTextInputsTokens(raw.Model, inputs, 4)
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{
 			StatusCode:  http.StatusTooManyRequests,

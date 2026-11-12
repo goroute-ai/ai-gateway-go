@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const maxAudioUploadBytes = 25 * 1024 * 1024 // 25 MB
@@ -126,8 +127,10 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	}
 	_ = tmpFile.Close() // Close so readers can open concurrently
 
-	// 3. Rate Limit Quota
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, 50)
+	// Audio tokenization varies by provider. Use the upload size and optional
+	// prompt for a conservative preflight estimate rather than a fixed allowance.
+	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{
 			StatusCode:  http.StatusTooManyRequests,
@@ -154,7 +157,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(50)
+	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -294,11 +297,8 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 2. Rate Limit Quota (estimate 1 token per 4 chars)
-	estTokens := len(raw.Input) / 4
-	if estTokens < 10 {
-		estTokens = 10
-	}
+	// TTS quota follows the target model's text token profile.
+	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
 	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{
