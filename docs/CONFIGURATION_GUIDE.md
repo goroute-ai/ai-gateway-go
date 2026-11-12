@@ -417,6 +417,8 @@ r2, _ := gw.Chat(ctx, "fast", "What is 2 + 2?", gateway.WithTemperature(0.0)) //
 ## Cross-Cutting Platform Modules (Guardrails, Validation & Observability)
 
 ### Module A: Security Guardrails Engine (`POST /admin/v1/organizations/{orgID}/guardrails`)
+
+When policy storage confirms that an organization has no guardrail policy, inference continues without organization-level guardrails. If policy storage is unavailable, requests are rejected with `503 Service Unavailable`; chat and MCP output is withheld rather than returned without policy evaluation.
 Inspects prompts pre-flight and completions post-response with zero external ML dependencies:
 - **Prompt Injection & Jailbreak Detection**: Checks user prompts against a fixed set of known text signatures, such as `ignore previous instructions`, `disregard your system prompt`, and `you are now dan`.
 - **PII & Secret Detection/Redaction**: Detects email addresses, SSNs, payment card patterns, and selected API key patterns. Redaction uses type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, and `[REDACTED_SECRET]`.
