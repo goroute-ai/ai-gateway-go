@@ -13,6 +13,8 @@ type SpendSummary struct {
 	TotalTokens       int64            `json:"total_tokens"`
 	TotalCostMicros   int64            `json:"total_cost_micros"`
 	TotalCostUSD      float64          `json:"total_cost_usd"`
+	UnpricedRequests  int64            `json:"unpriced_requests"`
+	UnpricedTokens    int64            `json:"unpriced_tokens"`
 	SpendByProvider   map[string]int64 `json:"spend_by_provider"`
 	SpendByModel      map[string]int64 `json:"spend_by_model"`
 	SpendByTeam       map[string]int64 `json:"spend_by_team"`
