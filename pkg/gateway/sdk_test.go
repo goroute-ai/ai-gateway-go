@@ -140,7 +140,6 @@ func TestSDKHelpersAndFailover(t *testing.T) {
 	vk, err := gw.IssueVirtualKey(ctx, domain.VirtualKey{
 		Name:          "test-scoped-key",
 		AllowedModels: []string{"backup-claude"},
-		RPMLimit:      5,
 	})
 	if err != nil || vk.RawKey == "" {
 		t.Fatalf("IssueVirtualKey failed: %v", err)
