@@ -29,6 +29,8 @@ type MemoryRepository struct {
 	pricingHistory map[string][]*domain.ModelPricingHistory
 	guardrails     map[string]*domain.GuardrailPolicy
 	spendLogs      []domain.SpendEvent
+	spendOutbox    map[string]*spendOutboxEntry
+	spendLogIDs    map[string]struct{}
 	auditLogs      []*domain.AuditLog
 
 	mcpServers     map[string]*domain.MCPServer
@@ -43,6 +45,15 @@ type MemoryRepository struct {
 	a2aPushConfigs map[string]*domain.A2APushNotificationConfig
 	files          map[string]*domain.CanonicalFile
 	batches        map[string]*domain.CanonicalBatch
+}
+
+type spendOutboxEntry struct {
+	event       domain.SpendEvent
+	status      string
+	attempts    int
+	nextAttempt time.Time
+	lockedAt    time.Time
+	lastError   string
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -60,6 +71,8 @@ func NewMemoryRepository() *MemoryRepository {
 		deployments:    make(map[string]*domain.Deployment),
 		pricingHistory: make(map[string][]*domain.ModelPricingHistory),
 		guardrails:     make(map[string]*domain.GuardrailPolicy),
+		spendOutbox:    make(map[string]*spendOutboxEntry),
+		spendLogIDs:    make(map[string]struct{}),
 		files:          make(map[string]*domain.CanonicalFile),
 		batches:        make(map[string]*domain.CanonicalBatch),
 		mcpServers:     make(map[string]*domain.MCPServer),
@@ -772,6 +785,97 @@ func (r *MemoryRepository) UpdateDeploymentStatus(ctx context.Context, depID str
 	return nil
 }
 
+func (r *MemoryRepository) EnqueueSpendEvent(ctx context.Context, ev domain.SpendEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ev.ID == "" {
+		ev.ID = uuid.NewString()
+	}
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	if ev.PricingStatus == "" {
+		ev.PricingStatus = domain.PricingStatusUnrecorded
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.spendOutbox[ev.ID]; !exists {
+		r.spendOutbox[ev.ID] = &spendOutboxEntry{event: ev, status: "pending", nextAttempt: time.Now().UTC()}
+	}
+	return nil
+}
+
+func (r *MemoryRepository) ClaimSpendEvents(ctx context.Context, limit int, lease time.Duration) ([]domain.SpendEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	now := time.Now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.spendOutbox))
+	for id, e := range r.spendOutbox {
+		if e.status == "pending" && !e.nextAttempt.After(now) || e.status == "processing" && e.lockedAt.Add(lease).Before(now) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	out := make([]domain.SpendEvent, 0, len(ids))
+	for _, id := range ids {
+		e := r.spendOutbox[id]
+		e.status = "processing"
+		e.lockedAt = now
+		e.attempts++
+		ev := e.event
+		ev.OutboxAttempt = e.attempts
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) MarkSpendEventDelivered(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e := r.spendOutbox[id]; e != nil {
+		e.status = "delivered"
+		e.lastError = ""
+	}
+	return nil
+}
+
+func (r *MemoryRepository) RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e := r.spendOutbox[id]; e != nil {
+		if maxAttempts > 0 && e.attempts >= maxAttempts {
+			e.status = "dead_letter"
+		} else {
+			e.status = "pending"
+			e.nextAttempt = retryAt
+		}
+		e.lockedAt = time.Time{}
+		if cause != nil {
+			e.lastError = cause.Error()
+		}
+	}
+	return nil
+}
+
 func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -785,6 +889,10 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 		if ev.PricingStatus == "" {
 			ev.PricingStatus = domain.PricingStatusUnrecorded
 		}
+		if _, exists := r.spendLogIDs[ev.ID]; exists {
+			continue
+		}
+		r.spendLogIDs[ev.ID] = struct{}{}
 		r.spendLogs = append(r.spendLogs, ev)
 
 		if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
@@ -820,6 +928,10 @@ func (r *MemoryRepository) GetSpendSummary(ctx context.Context, orgID string) (*
 		sum.TotalRequests++
 		sum.TotalTokens += int64(ev.Usage.TotalTokens)
 		sum.TotalCostMicros += ev.CostMicros
+		if ev.PricingStatus == domain.PricingStatusUnknown || ev.PricingStatus == domain.PricingStatusUnrecorded {
+			sum.UnpricedRequests++
+			sum.UnpricedTokens += int64(ev.Usage.TotalTokens)
+		}
 		sum.SpendByProvider[string(ev.Provider)] += ev.CostMicros
 		sum.SpendByModel[ev.ResolvedModel] += ev.CostMicros
 		if ev.TeamID != "" {

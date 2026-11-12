@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -37,6 +38,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/goroute-ai/ai-gateway-go/internal/ui"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
@@ -55,6 +57,8 @@ type GatewayServer struct {
 	reliability     *router.ReliabilityManager
 	spendWorker     *finops.SpendWorker
 	collector       *observability.Collector
+	tracer          trace.Tracer
+	tracerShutdown  func(context.Context) error
 	healthMon       *health.Monitor
 	validator       *validation.Validator
 	guardrails      *guardrails.Engine
@@ -86,6 +90,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	netPolicy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
 	if err != nil {
 		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
+	}
+	tracer, tracerShutdown, err := observability.NewOTLPTracer(context.Background(), cfg.Tracing, netPolicy)
+	if err != nil {
+		return nil, err
 	}
 
 	adapterClient := httpClient
@@ -128,7 +136,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		_, err := reg.Get(provider)
 		return err == nil
 	})
-	lb := router.NewLoadBalancer()
+	lb := router.NewLoadBalancer(redisFabric)
 	relMgr := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, redisFabric, cfg.Router)
 	relMgr.SetCollector(collector)
 	relMgr.SetHealthMonitor(healthMon)
@@ -173,6 +181,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reliability:     relMgr,
 		spendWorker:     spendWorker,
 		collector:       collector,
+		tracer:          tracer,
+		tracerShutdown:  tracerShutdown,
 		healthMon:       healthMon,
 		validator:       validator,
 		guardrails:      guardrailsEng,
@@ -187,6 +197,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
+		if s.tracerShutdown != nil {
+			_ = s.tracerShutdown(context.Background())
+		}
 		return nil, err
 	}
 	return s, nil
@@ -196,7 +209,7 @@ func (s *GatewayServer) setupRoutes() {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
-	r.Use(observability.TraceMiddleware)
+	r.Use(observability.TraceMiddlewareWithTracer(s.tracer))
 	r.Use(logger.HTTPMiddleware(nil))
 
 	// Health, Readiness & Prometheus Metrics endpoints
@@ -227,7 +240,7 @@ func (s *GatewayServer) setupRoutes() {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 	})
-	r.Method(http.MethodGet, "/metrics", s.collector.PrometheusHandler())
+	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
 
 	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
 	ui.RegisterRoutes(r)
@@ -441,8 +454,42 @@ func (s *GatewayServer) setupRoutes() {
 	s.router = r
 }
 
+func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		var token string
+		if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+			token = strings.TrimSpace(header[len("Bearer "):])
+		}
+		if token == "" {
+			token = strings.TrimSpace(r.Header.Get("x-api-key"))
+		}
+		if !s.authSvc.ValidateAdminKey(token) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_admin_key",
+				Message:    "Valid Master Admin Key is required to access /metrics",
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *GatewayServer) Handler() http.Handler {
 	return s.router
+}
+
+func (s *GatewayServer) persistSpendEvent(w http.ResponseWriter, r *http.Request, ev domain.SpendEvent) bool {
+	if s.spendWorker == nil {
+		return true
+	}
+	if err := s.spendWorker.Record(r.Context(), ev); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
+		return false
+	}
+	return true
 }
 
 func (s *GatewayServer) Limiter() *ratelimit.Limiter {
@@ -455,6 +502,16 @@ func (s *GatewayServer) Collector() *observability.Collector {
 
 func (s *GatewayServer) HealthMonitor() *health.Monitor {
 	return s.healthMon
+}
+
+// ConfigureGuardrailScanners injects optional scanners before serving traffic.
+// Scanners are disabled by default; network-backed implementations must use the
+// configured outbound network security policy. Call only during startup, before
+// the server begins handling requests.
+func (s *GatewayServer) ConfigureGuardrailScanners(timeout time.Duration, failClosed bool, scanners ...guardrails.Scanner) {
+	if s != nil && s.guardrails != nil {
+		s.guardrails.ConfigureScanners(timeout, failClosed, scanners...)
+	}
 }
 
 func (s *GatewayServer) Reliability() *router.ReliabilityManager {
@@ -471,6 +528,7 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 
 // StartWorkers starts background daemons (Async Spend Batch Writer, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
 func (s *GatewayServer) StartWorkers(ctx context.Context) {
+	s.authSvc.StartInvalidationListener(ctx)
 	s.spendWorker.Start(ctx)
 	s.healthMon.Start(ctx)
 	if s.cfg.Discovery.Enabled {
@@ -486,6 +544,7 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 
 // Shutdown drains background workers cleanly.
 func (s *GatewayServer) Shutdown(ctx context.Context) {
+	s.authSvc.StopInvalidationListener()
 	if s.a2aPublisher != nil {
 		s.a2aPublisher.Stop()
 	}
@@ -495,4 +554,7 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.healthMon.Stop()
 	s.discovery.Stop()
 	s.spendWorker.Stop(ctx)
+	if s.tracerShutdown != nil {
+		_ = s.tracerShutdown(ctx)
+	}
 }

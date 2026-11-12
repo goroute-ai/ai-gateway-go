@@ -423,12 +423,12 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		INSERT INTO virtual_keys (
 			id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints,
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-			max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+			max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, string(vk.Role), vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
-		vk.MaxBudgetMicros, vk.SpentMicros, vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.IsActive,
+		vk.MaxBudgetMicros, vk.SpentMicros, vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
 	); err != nil {
 		return err
 	}
@@ -436,13 +436,13 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 }
 
 func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE key_hash = $1`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE key_hash = $1`
 	var k domain.VirtualKey
 	var role string
 	if err := p.pool.QueryRow(ctx, q, keyHash).Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
@@ -451,13 +451,13 @@ func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash st
 }
 
 func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE id = $1`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE id = $1`
 	var k domain.VirtualKey
 	var role string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
@@ -466,7 +466,7 @@ func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (
 }
 
 func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`
+	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`
 	rows, err := p.pool.Query(ctx, q, orgID)
 	if err != nil {
 		return nil, err
@@ -479,7 +479,7 @@ func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) 
 		if err := rows.Scan(
 			&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
 			&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-			&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.IsActive,
+			&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 		); err != nil {
 			return nil, err
 		}
@@ -805,10 +805,92 @@ func (p *PostgresRepository) UpdateDeploymentStatus(ctx context.Context, depID s
 	return p.mem.UpdateDeploymentStatus(ctx, depID, status)
 }
 
-func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error {
-	if err := p.mem.RecordSpendBatch(ctx, events); err != nil {
-		return err
+func (p *PostgresRepository) EnqueueSpendEvent(ctx context.Context, ev domain.SpendEvent) error {
+	if ev.ID == "" {
+		ev.ID = uuid.NewString()
 	}
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	if ev.PricingStatus == "" {
+		ev.PricingStatus = domain.PricingStatusUnrecorded
+	}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("marshal spend event: %w", err)
+	}
+	_, err = p.pool.Exec(ctx, `INSERT INTO spend_event_outbox (id, payload_json) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, ev.ID, payload)
+	if err != nil {
+		return fmt.Errorf("persist spend event outbox: %w", err)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) ClaimSpendEvents(ctx context.Context, limit int, lease time.Duration) ([]domain.SpendEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		WITH candidates AS (
+			SELECT id FROM spend_event_outbox
+			WHERE (status = 'pending' AND next_attempt_at <= NOW())
+			   OR (status = 'processing' AND locked_at < NOW() - ($2 * INTERVAL '1 second'))
+			ORDER BY created_at
+			LIMIT $1 FOR UPDATE SKIP LOCKED
+		)
+		UPDATE spend_event_outbox o SET status='processing', locked_at=NOW(), attempt_count=o.attempt_count+1, updated_at=NOW()
+		FROM candidates c WHERE o.id=c.id RETURNING o.payload_json, o.attempt_count`, limit, lease.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []domain.SpendEvent
+	for rows.Next() {
+		var raw []byte
+		var attempt int
+		if err := rows.Scan(&raw, &attempt); err != nil {
+			return nil, err
+		}
+		var ev domain.SpendEvent
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			return nil, fmt.Errorf("decode spend outbox payload: %w", err)
+		}
+		ev.OutboxAttempt = attempt
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func (p *PostgresRepository) MarkSpendEventDelivered(ctx context.Context, id string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE spend_event_outbox SET status='delivered', locked_at=NULL, last_error=NULL, updated_at=NOW() WHERE id=$1`, id)
+	return err
+}
+
+func (p *PostgresRepository) RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE spend_event_outbox SET status=CASE WHEN attempt_count >= $4 THEN 'dead_letter' ELSE 'pending' END, next_attempt_at=$3, locked_at=NULL, last_error=$2, updated_at=NOW() WHERE id=$1`, id, message, retryAt, maxAttempts)
+	return err
+}
+
+func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -817,7 +899,8 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			id, request_id, trace_id, org_id, endpoint, modality, modality_units, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 			cost_micros, pricing_version, pricing_status, pricing_provenance_source, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+		ON CONFLICT (id) DO NOTHING`
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -857,6 +940,9 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			return fmt.Errorf("execute spend batch: %w", err)
 		}
 	}
+	if err := p.mem.RecordSpendBatch(ctx, events); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -874,8 +960,11 @@ func (p *PostgresRepository) GetSpendSummary(ctx context.Context, orgID string) 
 		args = append(args, orgID)
 	}
 
-	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0) FROM spend_logs ` + whereClause
-	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros); err != nil {
+	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0),
+		COUNT(*) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')),
+		COALESCE(SUM(total_tokens) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')), 0)
+		FROM spend_logs ` + whereClause
+	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros, &sum.UnpricedRequests, &sum.UnpricedTokens); err != nil {
 		return p.mem.GetSpendSummary(ctx, orgID)
 	}
 	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0

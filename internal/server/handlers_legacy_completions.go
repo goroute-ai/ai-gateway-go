@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 // handleLegacyCompletions serves `POST /v1/completions` and `POST /completions`.
@@ -81,28 +82,26 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	}
 	req.Prompt.Strings = guardedPrompts
 
-	// 2. Rate Limiting Quota Acquire (rough estimate from prompt)
+	// Estimate each prompt with the model-family tokenizer profile and framing.
+	estTokens := ratelimit.EstimateTextInputsTokens(req.Model, req.Prompt.Strings, 4)
 	totalPromptChars := 0
-	for _, p := range req.Prompt.Strings {
-		totalPromptChars += len(p)
+	for _, prompt := range req.Prompt.Strings {
+		totalPromptChars += len(prompt)
 	}
-	estTokens := totalPromptChars / 4
-	if estTokens < 10 {
-		estTokens = 10
+	maxOutput := 0
+	if req.MaxTokens != nil {
+		maxOutput = *req.MaxTokens
 	}
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, req.Model, estTokens, totalPromptChars, maxOutput, reqID)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
 
 	resp, meta, err := s.reliability.ExecuteCompletion(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
@@ -150,14 +149,13 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -178,7 +176,10 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		StatusCode:              http.StatusOK,
 		Modality:                domain.ModalityCompletion,
 		CreatedAt:               time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 
 	logger.InfoContext(r.Context(), "Completion request completed",
 		slog.String("component", "inference"),

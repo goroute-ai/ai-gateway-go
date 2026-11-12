@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Server    ServerConfig     `yaml:"server"`
 	Logging   LogConfig        `yaml:"logging"`
+	Tracing   TracingConfig    `yaml:"tracing"`
 	Security  SecurityConfig   `yaml:"security"`
 	Storage   StorageConfig    `yaml:"storage"`
 	Auth      AuthConfig       `yaml:"auth"`
@@ -94,6 +95,12 @@ type LogConfig struct {
 	Level     string `yaml:"level"`      // "debug", "info", "warn", "error"
 	Format    string `yaml:"format"`     // "text" (human readable) or "json" (cloud-native structured)
 	AddSource bool   `yaml:"add_source"` // include file:line source location in log entries
+}
+
+type TracingConfig struct {
+	OTLPEndpoint string            `yaml:"otlp_endpoint"`
+	ServiceName  string            `yaml:"service_name"`
+	Headers      map[string]string `yaml:"headers,omitempty"`
 }
 
 // ModelListEntry defines a declarative model list entry in config.yaml,
@@ -219,6 +226,7 @@ func Default() *Config {
 			Format:    "text",
 			AddSource: false,
 		},
+		Tracing: TracingConfig{ServiceName: "ai-gateway-go"},
 		Storage: StorageConfig{
 			Mode:        "memory",
 			PostgresDSN: "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable",
@@ -424,6 +432,9 @@ func Load(path string) (*Config, error) {
 
 // Validate checks configuration invariants.
 func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
+		c.Tracing.ServiceName = "ai-gateway-go"
+	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server.port: %d", c.Server.Port)
 	}

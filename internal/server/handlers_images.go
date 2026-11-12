@@ -18,6 +18,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const maxImageUploadBytes = 20 << 20
@@ -134,27 +135,26 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	}
 	req.Prompt = guardedPrompt[0]
 
-	// 2. Rate Limiting Quota Acquire (100 tokens estimate per generated image)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, req.N*100)
+	// Include the prompt size as well as each generated image's work allowance.
+	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:  http.StatusTooManyRequests,
-			RateLimited: true,
-		})
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
 
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(0)
+		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(req.N * 100)
+
+	releaseQuota(estTokens)
 	for i := range resp.Data {
 		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
 		if err != nil {
@@ -197,14 +197,13 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 
 	var provenance string
 	if gm != nil {
 		provenance = gm.PricingProvenanceSource
 	}
 
-	s.spendWorker.Enqueue(domain.SpendEvent{
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
 		RequestID:               reqID,
 		TraceID:                 traceID,
 		OrgID:                   idCtx.OrgID,
@@ -229,7 +228,10 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 			"size":         req.Size,
 		},
 		CreatedAt: time.Now().UTC(),
-	})
+	}) {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 
 	logger.InfoContext(r.Context(), "Image generation completed",
 		slog.String("component", "images"),
@@ -348,24 +350,24 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	}
 
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
-	if s.spendWorker != nil {
-		s.spendWorker.Enqueue(domain.SpendEvent{
-			ID:             "sp_" + uuid.NewString(),
-			RequestID:      reqID,
-			OrgID:          idCtx.OrgID,
-			TeamID:         idCtx.TeamID,
-			UserID:         idCtx.UserID,
-			VirtualKeyID:   idCtx.VirtualKeyID,
-			Endpoint:       "/v1/images/edits",
-			Modality:       domain.ModalityImage,
-			RequestedModel: model,
-			ResolvedModel:  resp.Model,
-			DeploymentID:   depID,
-			PricingVersion: pricingVer,
-			CostMicros:     costMicros,
-			StatusCode:     http.StatusOK,
-			CreatedAt:      time.Now().UTC(),
-		})
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
+		ID:             "sp_" + uuid.NewString(),
+		RequestID:      reqID,
+		OrgID:          idCtx.OrgID,
+		TeamID:         idCtx.TeamID,
+		UserID:         idCtx.UserID,
+		VirtualKeyID:   idCtx.VirtualKeyID,
+		Endpoint:       "/v1/images/edits",
+		Modality:       domain.ModalityImage,
+		RequestedModel: model,
+		ResolvedModel:  resp.Model,
+		DeploymentID:   depID,
+		PricingVersion: pricingVer,
+		CostMicros:     costMicros,
+		StatusCode:     http.StatusOK,
+		CreatedAt:      time.Now().UTC(),
+	}) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -460,24 +462,24 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	}
 
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
-	if s.spendWorker != nil {
-		s.spendWorker.Enqueue(domain.SpendEvent{
-			ID:             "sp_" + uuid.NewString(),
-			RequestID:      reqID,
-			OrgID:          idCtx.OrgID,
-			TeamID:         idCtx.TeamID,
-			UserID:         idCtx.UserID,
-			VirtualKeyID:   idCtx.VirtualKeyID,
-			Endpoint:       "/v1/images/variations",
-			Modality:       domain.ModalityImage,
-			RequestedModel: model,
-			ResolvedModel:  resp.Model,
-			DeploymentID:   depID,
-			PricingVersion: pricingVer,
-			CostMicros:     costMicros,
-			StatusCode:     http.StatusOK,
-			CreatedAt:      time.Now().UTC(),
-		})
+	if !s.persistSpendEvent(w, r, domain.SpendEvent{
+		ID:             "sp_" + uuid.NewString(),
+		RequestID:      reqID,
+		OrgID:          idCtx.OrgID,
+		TeamID:         idCtx.TeamID,
+		UserID:         idCtx.UserID,
+		VirtualKeyID:   idCtx.VirtualKeyID,
+		Endpoint:       "/v1/images/variations",
+		Modality:       domain.ModalityImage,
+		RequestedModel: model,
+		ResolvedModel:  resp.Model,
+		DeploymentID:   depID,
+		PricingVersion: pricingVer,
+		CostMicros:     costMicros,
+		StatusCode:     http.StatusOK,
+		CreatedAt:      time.Now().UTC(),
+	}) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
