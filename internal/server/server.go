@@ -504,6 +504,16 @@ func (s *GatewayServer) HealthMonitor() *health.Monitor {
 	return s.healthMon
 }
 
+// ConfigureGuardrailScanners injects optional scanners before serving traffic.
+// Scanners are disabled by default; network-backed implementations must use the
+// configured outbound network security policy. Call only during startup, before
+// the server begins handling requests.
+func (s *GatewayServer) ConfigureGuardrailScanners(timeout time.Duration, failClosed bool, scanners ...guardrails.Scanner) {
+	if s != nil && s.guardrails != nil {
+		s.guardrails.ConfigureScanners(timeout, failClosed, scanners...)
+	}
+}
+
 func (s *GatewayServer) Reliability() *router.ReliabilityManager {
 	return s.reliability
 }

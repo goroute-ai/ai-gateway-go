@@ -438,6 +438,13 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails
   }'
 ```
 
+Optional provider-neutral scanners are injected in Go before the server starts; no scanner implementation or outbound network call is enabled by default. A configured scanner receives a per-scan context with a two-second default timeout and can inspect user input and model output. The caller can set fail-closed or fail-open handling for scanner errors. Scanner implementations must honor context cancellation, avoid retaining submitted content, and route any network egress through the gateway network security policy.
+
+```go
+scanner := mySecurityScanner{}
+gatewayServer.ConfigureGuardrailScanners(1500*time.Millisecond, true, scanner)
+```
+
 ### Module B: Pre-Flight Request Validator
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
 
