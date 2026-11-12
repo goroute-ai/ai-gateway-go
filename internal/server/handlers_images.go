@@ -18,6 +18,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const maxImageUploadBytes = 20 << 20
@@ -128,8 +129,9 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 2. Rate Limiting Quota Acquire (100 tokens estimate per generated image)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, req.N*100)
+	// Include the prompt size as well as each generated image's work allowance.
+	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -145,7 +147,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(req.N * 100)
+	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
