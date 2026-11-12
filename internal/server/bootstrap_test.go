@@ -114,3 +114,34 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 		t.Fatalf("expected 'auto' complex prompt to route to Anthropic, got status=%d provider=%s", resp.StatusCode, out.Provider)
 	}
 }
+
+func TestMetricsRequiresMasterAdminCredential(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "sk-gw-metrics-test-master"
+	gateway, err := server.New(cfg, storage.NewMemoryRepository(), nil, nil)
+	if err != nil {
+		t.Fatalf("create gateway: %v", err)
+	}
+
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	unauthenticatedRecorder := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(unauthenticatedRecorder, unauthenticated)
+	if unauthenticatedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without credentials, got %d", unauthenticatedRecorder.Code)
+	}
+
+	queryCredential := httptest.NewRequest(http.MethodGet, "/metrics?token=sk-gw-metrics-test-master", nil)
+	queryRecorder := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(queryRecorder, queryCredential)
+	if queryRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected query credentials to be rejected, got %d", queryRecorder.Code)
+	}
+
+	authenticated := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	authenticated.Header.Set("Authorization", "Bearer sk-gw-metrics-test-master")
+	authenticatedRecorder := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(authenticatedRecorder, authenticated)
+	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(authenticatedRecorder.Body.String(), "gateway_requests_total") {
+		t.Fatalf("expected 200 with metrics for admin credential, got %d: %s", authenticatedRecorder.Code, authenticatedRecorder.Body.String())
+	}
+}
