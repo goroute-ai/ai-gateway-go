@@ -448,6 +448,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 			}
 
 			gwErr, isGwErr := err.(*domain.GatewayError)
+			retryAfterSec := 0
 			if isGwErr {
 				if gwErr.AuthFailure {
 					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
@@ -457,6 +458,18 @@ func (rm *ReliabilityManager) ExecuteStream(
 					return nil, meta, gwErr
 				}
 				rm.recordFailure(ctx, dep.ID, group.FailureThreshold, group.CooldownSeconds)
+				retryAfterSec = gwErr.RetryAfterSec
+			}
+
+			if attempt+1 < maxAttempts {
+				sleepDur := CalculateBackoff(attempt, retryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+				timer := time.NewTimer(sleepDur)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, meta, ctx.Err()
+				case <-timer.C:
+				}
 			}
 		}
 	}

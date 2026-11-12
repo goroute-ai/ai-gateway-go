@@ -319,6 +319,7 @@ stateDiagram-v2
 
 - **Distributed Cooldown**: Stored in Redis (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods immediately cease routing traffic to it.
 - **Trial Recovery (HALF_OPEN)**: After cooldown expiration, the circuit enters `HALF_OPEN` and admits **strictly one probe request** while locking out concurrent requests. If the probe succeeds, the circuit resets to `CLOSED`.
+- **Streaming Retry Safety**: Before the first output chunk, retryable failures use the same bounded full-jitter backoff and in-range upstream `Retry-After` handling as non-streaming calls. Once a chunk is emitted, the gateway returns the stream error without replaying the request.
 
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
