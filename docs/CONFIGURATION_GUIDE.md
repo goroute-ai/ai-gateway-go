@@ -441,6 +441,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 
 ### Module C: Observability, W3C Tracing & Active Health Monitor
 - **Prometheus Metrics (`GET /metrics`)**: Exposes `ai_gateway_requests_total`, `ai_gateway_tokens_total`, `ai_gateway_spend_micros_total`, `ai_gateway_cache_hits_total`, `ai_gateway_rate_limited_total`, `ai_gateway_guardrail_blocks_total`, and `ai_gateway_latency_ms_{p50,p95,p99}`.
+- **Distributed Tracing**: Set `tracing.otlp_endpoint` to an OTLP/HTTP traces URL such as `https://collector.example:4318/v1/traces`. Tracing is disabled when the endpoint is empty. The exporter uses the outbound SSRF/network policy and supports optional `tracing.headers` for collector authentication.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Real-time P50/P95/P99 latency and per-provider/per-deployment health breakdown.
 - **Active Health Monitor (`GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials and preemptively marks failing deployments unhealthy before user traffic hits them.
 

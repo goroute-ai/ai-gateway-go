@@ -37,6 +37,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/goroute-ai/ai-gateway-go/internal/ui"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
@@ -55,6 +56,8 @@ type GatewayServer struct {
 	reliability     *router.ReliabilityManager
 	spendWorker     *finops.SpendWorker
 	collector       *observability.Collector
+	tracer          trace.Tracer
+	tracerShutdown  func(context.Context) error
 	healthMon       *health.Monitor
 	validator       *validation.Validator
 	guardrails      *guardrails.Engine
@@ -86,6 +89,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	netPolicy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
 	if err != nil {
 		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
+	}
+	tracer, tracerShutdown, err := observability.NewOTLPTracer(context.Background(), cfg.Tracing, netPolicy)
+	if err != nil {
+		return nil, err
 	}
 
 	adapterClient := httpClient
@@ -173,6 +180,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reliability:     relMgr,
 		spendWorker:     spendWorker,
 		collector:       collector,
+		tracer:          tracer,
+		tracerShutdown:  tracerShutdown,
 		healthMon:       healthMon,
 		validator:       validator,
 		guardrails:      guardrailsEng,
@@ -187,6 +196,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
+		if s.tracerShutdown != nil {
+			_ = s.tracerShutdown(context.Background())
+		}
 		return nil, err
 	}
 	return s, nil
@@ -196,7 +208,7 @@ func (s *GatewayServer) setupRoutes() {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
-	r.Use(observability.TraceMiddleware)
+	r.Use(observability.TraceMiddlewareWithTracer(s.tracer))
 	r.Use(logger.HTTPMiddleware(nil))
 
 	// Health, Readiness & Prometheus Metrics endpoints
@@ -495,4 +507,7 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.healthMon.Stop()
 	s.discovery.Stop()
 	s.spendWorker.Stop(ctx)
+	if s.tracerShutdown != nil {
+		_ = s.tracerShutdown(ctx)
+	}
 }
