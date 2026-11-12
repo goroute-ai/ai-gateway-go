@@ -437,31 +437,7 @@ A request is cached if:
 3. Client did NOT specify `X-Gateway-Cache-Control: no-cache`.
 
 ### Cache Key Computation
-The cache key is computed deterministically using SHA-256 over canonical JSON fields:
-$$\text{Key} = \text{"gw:cache:v2:"} + \text{NamespaceVersion} + \text{":org:"} + \text{OrgID} + \text{":"} + \text{SHA256}(\text{CanonicalPayload})$$
-
-To prevent collisions between different models, parameters, reasoning settings, or user sessions, `ComputeKey` incorporates all execution variables:
-
-```go
-hash := sha256.New()
-hash.Write([]byte(orgID))
-hash.Write([]byte(resolvedModel)) // Target model after routing
-hash.Write(canonicalJSON(req.Messages))
-hash.Write(canonicalJSON(req.Tools))
-hash.Write(canonicalJSON(req.ResponseFormat))
-if req.Temperature != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.Temperature)))
-}
-if req.TopP != nil {
-    hash.Write([]byte(fmt.Sprintf("%.4f", *req.TopP)))
-}
-if req.ReasoningEffort != "" {
-    hash.Write([]byte(req.ReasoningEffort))
-}
-if req.User != "" {
-    hash.Write([]byte(req.User))
-}
-```
+`ComputeKey` hashes canonical JSON containing the organization, cache namespace version, and the complete `CanonicalChatRequest`. It omits only `RequestID` (per-call observability metadata) and `Stream` (streaming requests are not cacheable). This includes extra provider parameters, metadata, multimodal message parts, response format, tool settings, and gateway extensions, so a newly added canonical field participates automatically. If a request contains a value that cannot be encoded as JSON, the cache key is empty and the request bypasses lookup and storage.
 
 On cache hit, the gateway immediately returns `X-Gateway-Cache: HIT`, `X-Gateway-Cost-Micros: 0`, and the cached response body, bypassing upstream APIs entirely.
 

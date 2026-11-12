@@ -69,3 +69,46 @@ func TestResponseCache_ComputeKeyCollisionResistance(t *testing.T) {
 		t.Fatalf("expected different cache key for different orgID")
 	}
 }
+
+func TestResponseCache_ComputeKeyIncludesAllCanonicalOutputFields(t *testing.T) {
+	rc := NewResponseCache(true, 100, nil)
+	temp := 0.0
+	base := &domain.CanonicalChatRequest{
+		Model: "model-a", Temperature: &temp,
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	}
+	baseKey := rc.ComputeKey("org-1", base)
+	cases := map[string]func(*domain.CanonicalChatRequest){
+		"metadata":       func(r *domain.CanonicalChatRequest) { r.Metadata = map[string]string{"tenant_mode": "strict"} },
+		"extra_params":   func(r *domain.CanonicalChatRequest) { r.ExtraParams = map[string]any{"seed": 41} },
+		"stream_options": func(r *domain.CanonicalChatRequest) { r.StreamOptions = &domain.StreamOptions{IncludeUsage: true} },
+		"gateway_extensions": func(r *domain.CanonicalChatRequest) {
+			r.GoRouteExtensions = &domain.GoRouteExtensions{TaskID: "task-1"}
+		},
+		"request_id_is_ignored": func(r *domain.CanonicalChatRequest) { r.RequestID = "request-2" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			copy := *base
+			mutate(&copy)
+			key := rc.ComputeKey("org-1", &copy)
+			if name == "request_id_is_ignored" {
+				if key != baseKey {
+					t.Fatal("request ID should not fragment equivalent cache entries")
+				}
+				return
+			}
+			if key == baseKey {
+				t.Fatalf("expected %s to change the response cache key", name)
+			}
+		})
+	}
+}
+
+func TestResponseCache_ComputeKeyDisablesCachingForUnencodableRequest(t *testing.T) {
+	rc := NewResponseCache(true, 100, nil)
+	key := rc.ComputeKey("org-1", &domain.CanonicalChatRequest{Model: "model-a", ExtraParams: map[string]any{"invalid": func() {}}})
+	if key != "" {
+		t.Fatalf("expected unencodable request to disable caching, got key %q", key)
+	}
+}

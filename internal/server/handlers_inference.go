@@ -148,61 +148,63 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	var cacheKey string
 	if s.respCache.IsCacheable(&chatReq, cacheHeader) {
 		cacheKey = s.respCache.ComputeKey(idCtx.OrgID, &chatReq)
-		if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-			actualTokensReconciled = true
-			releaseQuota(0)
-			s.collector.Record(observability.RequestObservation{
-				Provider:          string(cachedResp.Provider),
-				Model:             cachedResp.Model,
-				StatusCode:        http.StatusOK,
-				CacheHit:          true,
-				GuardrailRedacted: guardrailRedacted,
-			})
-			cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
-			if cachedGM == nil {
-				cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
-			}
-			cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
-			var cacheProvenance string
-			if cachedGM != nil {
-				cacheProvenance = cachedGM.PricingProvenanceSource
-			}
+		if cacheKey != "" {
+			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
+				actualTokensReconciled = true
+				releaseQuota(0)
+				s.collector.Record(observability.RequestObservation{
+					Provider:          string(cachedResp.Provider),
+					Model:             cachedResp.Model,
+					StatusCode:        http.StatusOK,
+					CacheHit:          true,
+					GuardrailRedacted: guardrailRedacted,
+				})
+				cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
+				if cachedGM == nil {
+					cachedGM, _ = s.repo.GetGlobalModel(r.Context(), cachedResp.Model)
+				}
+				cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
+				var cacheProvenance string
+				if cachedGM != nil {
+					cacheProvenance = cachedGM.PricingProvenanceSource
+				}
 
-			w.Header().Set("X-Gateway-Cache", "HIT")
-			w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
-			w.Header().Set("X-Gateway-Model", cachedResp.Model)
-			w.Header().Set("X-Gateway-Cost-Micros", "0")
-			w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(cachedResp)
+				w.Header().Set("X-Gateway-Cache", "HIT")
+				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
+				w.Header().Set("X-Gateway-Model", cachedResp.Model)
+				w.Header().Set("X-Gateway-Cost-Micros", "0")
+				w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(cachedResp)
 
-			s.spendWorker.Enqueue(domain.SpendEvent{
-				RequestID:               reqID,
-				TraceID:                 traceID,
-				OrgID:                   idCtx.OrgID,
-				TeamID:                  idCtx.TeamID,
-				UserID:                  idCtx.UserID,
-				VirtualKeyID:            idCtx.VirtualKeyID,
-				Endpoint:                "/v1/chat/completions",
-				RequestedModel:          chatReq.Model,
-				ResolvedModel:           cachedResp.Model,
-				Provider:                cachedResp.Provider,
-				PricingStatus:           cachePricingStatus,
-				PricingProvenanceSource: cacheProvenance,
-				Usage:                   cachedResp.Usage,
-				CostMicros:              0,
-				StatusCode:              http.StatusOK,
-				CacheHit:                true,
-				CreatedAt:               time.Now().UTC(),
-			})
-			logger.InfoContext(r.Context(), "Inference request served from cache",
-				slog.String("component", "inference"),
-				slog.String("request_id", reqID),
-				slog.String("provider", string(cachedResp.Provider)),
-				slog.String("model", cachedResp.Model),
-				slog.Bool("cache_hit", true),
-			)
-			return
+				s.spendWorker.Enqueue(domain.SpendEvent{
+					RequestID:               reqID,
+					TraceID:                 traceID,
+					OrgID:                   idCtx.OrgID,
+					TeamID:                  idCtx.TeamID,
+					UserID:                  idCtx.UserID,
+					VirtualKeyID:            idCtx.VirtualKeyID,
+					Endpoint:                "/v1/chat/completions",
+					RequestedModel:          chatReq.Model,
+					ResolvedModel:           cachedResp.Model,
+					Provider:                cachedResp.Provider,
+					PricingStatus:           cachePricingStatus,
+					PricingProvenanceSource: cacheProvenance,
+					Usage:                   cachedResp.Usage,
+					CostMicros:              0,
+					StatusCode:              http.StatusOK,
+					CacheHit:                true,
+					CreatedAt:               time.Now().UTC(),
+				})
+				logger.InfoContext(r.Context(), "Inference request served from cache",
+					slog.String("component", "inference"),
+					slog.String("request_id", reqID),
+					slog.String("provider", string(cachedResp.Provider)),
+					slog.String("model", cachedResp.Model),
+					slog.Bool("cache_hit", true),
+				)
+				return
+			}
 		}
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
