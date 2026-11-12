@@ -322,7 +322,7 @@ stateDiagram-v2
 
 ### 6.3 Two-Level Failover Hierarchy
 - **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
-- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` chain (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`), transparently re-translating the request across providers and setting header `X-Gateway-Fallback-Attempted: true`.
+- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` graph in declaration order (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`). Traversal is limited to 16 edges, skips cycles and duplicate groups, and remains within the primary organization. The gateway re-translates the request across providers and sets `X-Gateway-Fallback-Attempted: true`.
 
 ### 6.4 Pure Go Dedicated Protocol Engines
 GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
