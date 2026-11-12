@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -24,6 +25,7 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	cfg.Auth.MasterAdminKey = "admin_secret_key"
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	redisServer := miniredis.RunT(t)
 
 	// Mock upstream server for Cerebras
 	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +51,9 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	}))
 	defer upstreamSrv.Close()
 
-	gw, err := server.New(cfg, repo, nil, upstreamSrv.Client())
+	redisFabric := storage.NewRedisFabric(redisServer.Addr(), "", 0)
+	defer redisFabric.Client().Close()
+	gw, err := server.New(cfg, repo, redisFabric, upstreamSrv.Client())
 	require.NoError(t, err)
 
 	router := gw.Handler()

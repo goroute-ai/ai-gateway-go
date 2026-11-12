@@ -91,6 +91,9 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 			t.Fatalf("expected Prometheus output to contain %q, got:\n%s", metric, body)
 		}
 	}
+	if strings.Contains(body, "deployment_id=") || strings.Contains(body, "name=") {
+		t.Fatalf("Prometheus labels must not expose unbounded deployment identifiers: %s", body)
+	}
 
 	// Verify W3C traceparent middleware
 	handler := TraceMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
