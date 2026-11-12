@@ -241,10 +241,12 @@ Once Stage 1 resolves a target `ModelGroup`, Stage 2 filters out any deployments
 | Strategy | Selection Algorithm & Mathematical Model | Primary Use Case |
 | :--- | :--- | :--- |
 | **`weighted-shuffle`** | Probability proportional to deployment weight:<br>$$P(d_i) = \frac{w_i}{\sum_{j} w_j}$$ | Traffic splitting across accounts or providers (e.g., 80% Gemini / 20% OpenAI). |
-| **`least-busy`** | Selects deployment minimizing atomic in-flight requests:<br>$$d^* = \arg\min_{d} (\text{InFlight}_d)$$ | Long-running streaming and deep reasoning workloads. |
-| **`latency-based`** | Lock-free EWMA Time-To-First-Token tracking with 5% $\varepsilon$-exploration:<br>$$\text{EWMA}_{\text{new}} = 0.2 \cdot L + 0.8 \cdot \text{EWMA}_{\text{old}}$$ | Interactive chat requiring minimum perceived latency. |
-| **`usage-based-headroom`**| Selects deployment with highest remaining capacity ratio over a 1-minute window:<br>$$\text{Headroom} = \min\left(1 - \frac{\text{RPM}_{1\text{m}}}{\text{RPM}_{\text{cap}}},\ 1 - \frac{\text{TPM}_{1\text{m}}}{\text{TPM}_{\text{cap}}}\right)$$<br>Counters reset automatically every 60s. If all deployments exceed capacity ($\text{Headroom} \le 0$), gracefully falls back to the deployment with the highest headroom (lowest relative utilization). | Multi-region deployments to prevent reaching rate limits while avoiding deadlocks. |
+| **`least-busy`** | Selects deployment minimizing shared in-flight requests:<br>$$d^* = \arg\min_{d} (\text{InFlight}_d)$$ | Long-running streaming and deep reasoning workloads. |
+| **`latency-based`** | Selects the lowest shared time-to-first-token EWMA, using 250 ms for deployments without a sample. EWMA uses alpha 0.3:<br>$$\text{EWMA}_{\text{new}} = 0.3 \cdot L + 0.7 \cdot \text{EWMA}_{\text{old}}$$ | Interactive chat requiring minimum perceived latency. |
+| **`usage-based-headroom`**| Selects deployment with highest remaining TPM capacity over a 1-minute window:<br>$$\text{Headroom} = 1 - \frac{\text{TPM}_{1\text{m}}}{\text{TPM}_{\text{cap}}}$$<br>TPM counters reset when the minute window expires. | Multi-region deployments to avoid approaching provider token limits. |
 | **`lowest-cost`** | Selects deployment with lowest combined micro-dollar token rate:<br>$$d^* = \arg\min_{d} (\text{InCost} + \text{OutCost})$$ | High-volume offline batch processing and background pipelines. |
+
+Adaptive strategies (`least-busy`, `latency-based`, and `usage-based-headroom`) share their deployment observations through Redis hashes keyed by a digest of deployment ID. Each hash expires after 10 minutes without a signal update, so retired deployments do not leave permanent keys. Lua scripts update in-flight counts, minute-window usage, and latency EWMA atomically. When Redis cannot be read or updated, the load balancer uses its process-local observations and emits a structured `routing_signal_store_unavailable` warning; routing then has only process-local accuracy until shared reads recover. `LoadBalancer.SharedSignalsAvailable()` exposes the last observed health of this signal path.
 
 ---
 
