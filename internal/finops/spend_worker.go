@@ -98,13 +98,52 @@ func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 				logger.Warn("FinOps outbox delivery will retry", slog.String("component", "finops"), slog.String("error", err.Error()))
 			}
 		case <-resetTicker.C:
-			if count, err := sw.repo.ResetExpiredBudgets(ctx, time.Now().UTC()); err != nil {
+			if count, err := sw.ResetExpiredBudgetsNow(ctx, time.Now().UTC()); err != nil {
 				logger.Error("FinOps budget reset cycle failed", slog.String("component", "finops"), slog.String("error", err.Error()))
 			} else if count > 0 {
 				logger.Info("FinOps expired budgets reset", slog.String("component", "finops"), slog.Int("count", count))
 			}
 		}
 	}
+}
+
+// ResetExpiredBudgetsNow resets expired budgets in the repository and clears
+// the corresponding live Redis spend counters when a limiter is configured.
+func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time) (int, error) {
+	resetCount := 0
+	if withIDs, ok := sw.repo.(storage.BudgetResetWithIDsRepository); ok {
+		res, err := withIDs.ResetExpiredBudgetsWithIDs(ctx, now)
+		if err != nil {
+			return 0, err
+		}
+		resetCount = res.Total()
+	} else {
+		count, err := sw.repo.ResetExpiredBudgets(ctx, now)
+		if err != nil {
+			return 0, err
+		}
+		resetCount = count
+	}
+	if outbox, ok := sw.repo.(storage.BudgetResetOutboxRepository); ok {
+		pending, err := outbox.ListPendingBudgetResets(ctx, sw.cfg.BatchSize)
+		if err != nil {
+			return resetCount, err
+		}
+		if sw.limiter != nil {
+			if err := sw.limiter.ResetSpendCounters(ctx, pending); err != nil {
+				logger.Warn("Redis budget counter reset remains pending", slog.String("component", "finops"), slog.String("error", err.Error()))
+				return resetCount, err
+			}
+		}
+		ids := make([]string, 0, len(pending))
+		for _, event := range pending {
+			ids = append(ids, event.ID)
+		}
+		if err := outbox.MarkBudgetResetsDelivered(ctx, ids); err != nil {
+			return resetCount, err
+		}
+	}
+	return resetCount, nil
 }
 
 func (sw *SpendWorker) process(ctx context.Context) error {

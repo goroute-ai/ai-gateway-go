@@ -22,15 +22,19 @@ var reconcileLua string
 //go:embed scripts/record_spend.lua
 var recordSpendLua string
 
+//go:embed scripts/reset_budget_spend.lua
+var resetBudgetSpendLua string
+
 // Limiter enforces RPM, TPM, Concurrency, and Budget limits across Virtual Key, Team, and Organization scopes.
 // Uses atomic Redis Lua scripts; configured quotas fail closed when Redis is unavailable.
 type Limiter struct {
-	redis        *storage.RedisFabric
-	checkScript  *redis.Script
-	reconcileScr *redis.Script
-	spendScr     *redis.Script
-	windowSec    int
-	concTTLSec   int
+	redis          *storage.RedisFabric
+	checkScript    *redis.Script
+	reconcileScr   *redis.Script
+	spendScr       *redis.Script
+	resetBudgetScr *redis.Script
+	windowSec      int
+	concTTLSec     int
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -41,12 +45,13 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		concTTLSec = 300
 	}
 	return &Limiter{
-		redis:        redisFabric,
-		checkScript:  redis.NewScript(checkAndIncrementLua),
-		reconcileScr: redis.NewScript(reconcileLua),
-		spendScr:     redis.NewScript(recordSpendLua),
-		windowSec:    windowSec,
-		concTTLSec:   concTTLSec,
+		redis:          redisFabric,
+		checkScript:    redis.NewScript(checkAndIncrementLua),
+		reconcileScr:   redis.NewScript(reconcileLua),
+		spendScr:       redis.NewScript(recordSpendLua),
+		resetBudgetScr: redis.NewScript(resetBudgetSpendLua),
+		windowSec:      windowSec,
+		concTTLSec:     concTTLSec,
 	}
 }
 
@@ -219,6 +224,36 @@ func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID,
 			return l.spendScr.Run(ctx, rdb, keys, requestID, costMicros).Result()
 		})
 	}
+}
+
+// ResetSpendCounters deletes live Redis spend counters for the given entity IDs
+// after their budget reset period rolls over.
+func (l *Limiter) ResetSpendCounters(ctx context.Context, events []storage.BudgetResetEvent) error {
+	if l == nil || l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		for _, event := range events {
+			if event.ID == "" || event.EntityID == "" || event.OrgID == "" {
+				return nil, fmt.Errorf("invalid budget reset event")
+			}
+			scope := event.Scope
+			if scope != "org" && scope != "team" && scope != "key" {
+				return nil, fmt.Errorf("invalid budget reset scope %q", scope)
+			}
+			tag := orgHashTag(event.OrgID)
+			spendKey := fmt.Sprintf("gw:spend:%s:%s:%s", tag, scope, event.EntityID)
+			markerKey := fmt.Sprintf("gw:spend-reset:%s:%s:%s:%s", tag, scope, event.EntityID, event.ID)
+			if _, err := l.resetBudgetScr.Run(ctx, rdb, []string{spendKey, markerKey}, event.ID, 7776000).Result(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
 }
 
 func toQuotaError(code string) *domain.GatewayError {

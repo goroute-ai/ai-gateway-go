@@ -15,24 +15,25 @@ import (
 // MemoryRepository provides a thread-safe, high-performance in-memory implementation of Repository
 // seeded with the default Global Model Catalogue, suitable for standalone execution and fast integration testing.
 type MemoryRepository struct {
-	mu             sync.RWMutex
-	globalModels   map[string]*domain.GlobalModel
-	orgs           map[string]*domain.Organization
-	orgSubs        map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
-	orgPolicies    map[string]map[string]*domain.OrgModelPolicy
-	teams          map[string]*domain.Team
-	users          map[string]*domain.User
-	keysByID       map[string]*domain.VirtualKey
-	keysByHash     map[string]*domain.VirtualKey
-	credentials    map[string]*domain.ProviderCredential
-	groupsByID     map[string]*domain.ModelGroup
-	deployments    map[string]*domain.Deployment
-	pricingHistory map[string][]*domain.ModelPricingHistory
-	guardrails     map[string]*domain.GuardrailPolicy
-	spendLogs      []domain.SpendEvent
-	spendOutbox    map[string]*spendOutboxEntry
-	spendLogIDs    map[string]struct{}
-	auditLogs      []*domain.AuditLog
+	mu                sync.RWMutex
+	globalModels      map[string]*domain.GlobalModel
+	orgs              map[string]*domain.Organization
+	orgSubs           map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
+	orgPolicies       map[string]map[string]*domain.OrgModelPolicy
+	teams             map[string]*domain.Team
+	users             map[string]*domain.User
+	keysByID          map[string]*domain.VirtualKey
+	keysByHash        map[string]*domain.VirtualKey
+	credentials       map[string]*domain.ProviderCredential
+	groupsByID        map[string]*domain.ModelGroup
+	deployments       map[string]*domain.Deployment
+	pricingHistory    map[string][]*domain.ModelPricingHistory
+	guardrails        map[string]*domain.GuardrailPolicy
+	spendLogs         []domain.SpendEvent
+	spendOutbox       map[string]*spendOutboxEntry
+	spendLogIDs       map[string]struct{}
+	budgetResetOutbox map[string]BudgetResetEvent
+	auditLogs         []*domain.AuditLog
 
 	mcpServers     map[string]*domain.MCPServer
 	mcpTools       map[string]*domain.MCPTool
@@ -59,31 +60,32 @@ type spendOutboxEntry struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	r := &MemoryRepository{
-		globalModels:   make(map[string]*domain.GlobalModel),
-		orgs:           make(map[string]*domain.Organization),
-		orgSubs:        make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
-		orgPolicies:    make(map[string]map[string]*domain.OrgModelPolicy),
-		teams:          make(map[string]*domain.Team),
-		users:          make(map[string]*domain.User),
-		keysByID:       make(map[string]*domain.VirtualKey),
-		keysByHash:     make(map[string]*domain.VirtualKey),
-		credentials:    make(map[string]*domain.ProviderCredential),
-		groupsByID:     make(map[string]*domain.ModelGroup),
-		deployments:    make(map[string]*domain.Deployment),
-		pricingHistory: make(map[string][]*domain.ModelPricingHistory),
-		guardrails:     make(map[string]*domain.GuardrailPolicy),
-		spendOutbox:    make(map[string]*spendOutboxEntry),
-		spendLogIDs:    make(map[string]struct{}),
-		files:          make(map[string]*domain.CanonicalFile),
-		batches:        make(map[string]*domain.CanonicalBatch),
-		mcpServers:     make(map[string]*domain.MCPServer),
-		mcpTools:       make(map[string]*domain.MCPTool),
-		mcpToolsets:    make(map[string]*domain.MCPToolset),
-		mcpUserCreds:   make(map[string]*domain.MCPUserCredential),
-		a2aAgents:      make(map[string]*domain.A2AAgent),
-		a2aTasks:       make(map[string]*domain.A2ATask),
-		a2aTaskEvents:  make(map[string][]*domain.A2ATaskEvent),
-		a2aPushConfigs: make(map[string]*domain.A2APushNotificationConfig),
+		globalModels:      make(map[string]*domain.GlobalModel),
+		orgs:              make(map[string]*domain.Organization),
+		orgSubs:           make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
+		orgPolicies:       make(map[string]map[string]*domain.OrgModelPolicy),
+		teams:             make(map[string]*domain.Team),
+		users:             make(map[string]*domain.User),
+		keysByID:          make(map[string]*domain.VirtualKey),
+		keysByHash:        make(map[string]*domain.VirtualKey),
+		credentials:       make(map[string]*domain.ProviderCredential),
+		groupsByID:        make(map[string]*domain.ModelGroup),
+		deployments:       make(map[string]*domain.Deployment),
+		pricingHistory:    make(map[string][]*domain.ModelPricingHistory),
+		guardrails:        make(map[string]*domain.GuardrailPolicy),
+		spendOutbox:       make(map[string]*spendOutboxEntry),
+		spendLogIDs:       make(map[string]struct{}),
+		budgetResetOutbox: make(map[string]BudgetResetEvent),
+		files:             make(map[string]*domain.CanonicalFile),
+		batches:           make(map[string]*domain.CanonicalBatch),
+		mcpServers:        make(map[string]*domain.MCPServer),
+		mcpTools:          make(map[string]*domain.MCPTool),
+		mcpToolsets:       make(map[string]*domain.MCPToolset),
+		mcpUserCreds:      make(map[string]*domain.MCPUserCredential),
+		a2aAgents:         make(map[string]*domain.A2AAgent),
+		a2aTasks:          make(map[string]*domain.A2ATask),
+		a2aTaskEvents:     make(map[string][]*domain.A2ATaskEvent),
+		a2aPushConfigs:    make(map[string]*domain.A2APushNotificationConfig),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -982,9 +984,14 @@ func (r *MemoryRepository) ListSpendLogs(ctx context.Context, orgID string, limi
 }
 
 func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Time) (int, error) {
+	res, err := r.ResetExpiredBudgetsWithIDs(ctx, now)
+	return res.Total(), err
+}
+
+func (r *MemoryRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	resetCount := 0
+	var res BudgetResetResult
 
 	advance := func(period domain.BudgetResetPeriod, from time.Time) time.Time {
 		if period == domain.BudgetResetDaily {
@@ -998,7 +1005,10 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			o.SpentMicros = 0
 			next := advance(o.BudgetResetPeriod, now)
 			o.BudgetResetAt = &next
-			resetCount++
+			res.OrgIDs = append(res.OrgIDs, o.ID)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "org", EntityID: o.ID, OrgID: o.ID, ResetAt: now.UTC()}
+			res.Events = append(res.Events, event)
+			r.budgetResetOutbox[event.ID] = event
 		}
 	}
 	for _, t := range r.teams {
@@ -1006,7 +1016,10 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			t.SpentMicros = 0
 			next := advance(t.BudgetResetPeriod, now)
 			t.BudgetResetAt = &next
-			resetCount++
+			res.TeamIDs = append(res.TeamIDs, t.ID)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "team", EntityID: t.ID, OrgID: t.OrgID, ResetAt: now.UTC()}
+			res.Events = append(res.Events, event)
+			r.budgetResetOutbox[event.ID] = event
 		}
 	}
 	for _, vk := range r.keysByID {
@@ -1014,10 +1027,38 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			vk.SpentMicros = 0
 			next := advance(vk.BudgetResetPeriod, now)
 			vk.BudgetResetAt = &next
-			resetCount++
+			res.VirtualKeyIDs = append(res.VirtualKeyIDs, vk.ID)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "key", EntityID: vk.ID, OrgID: vk.OrgID, ResetAt: now.UTC()}
+			res.Events = append(res.Events, event)
+			r.budgetResetOutbox[event.ID] = event
 		}
 	}
-	return resetCount, nil
+	return res, nil
+}
+
+func (r *MemoryRepository) ListPendingBudgetResets(ctx context.Context, limit int) ([]BudgetResetEvent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if limit <= 0 {
+		limit = 250
+	}
+	out := make([]BudgetResetEvent, 0, min(limit, len(r.budgetResetOutbox)))
+	for _, ev := range r.budgetResetOutbox {
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) MarkBudgetResetsDelivered(ctx context.Context, ids []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range ids {
+		delete(r.budgetResetOutbox, id)
+	}
+	return nil
 }
 
 func (r *MemoryRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {

@@ -194,3 +194,77 @@ func TestBudgetReservationsAreAtomicAcrossLimiterInstances(t *testing.T) {
 		t.Fatalf("admitted %d concurrent reservations, want 1 after 45 micros spent", got)
 	}
 }
+
+func TestResetSpendCountersClearsRedisSpendKeys(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := ratelimit.NewLimiter(redisFabric, 60, 300)
+
+	id := &domain.IdentityContext{
+		VirtualKeyID:        "vk-reset",
+		TeamID:              "team-reset",
+		OrgID:               "org-reset",
+		KeyMaxBudgetMicros:  100,
+		TeamMaxBudgetMicros: 100,
+		OrgMaxBudgetMicros:  100,
+	}
+
+	limiter.RecordSpendIncrement(ctx, id.VirtualKeyID, id.TeamID, id.OrgID, 100)
+	if _, err := limiter.AcquireWithBudget(ctx, id, 1, 10, "req-blocked"); err == nil {
+		t.Fatal("expected budget to be exhausted before reset")
+	}
+
+	events := []storage.BudgetResetEvent{
+		{ID: "reset-org-1", Scope: "org", EntityID: id.OrgID, OrgID: id.OrgID},
+		{ID: "reset-team-1", Scope: "team", EntityID: id.TeamID, OrgID: id.OrgID},
+		{ID: "reset-key-1", Scope: "key", EntityID: id.VirtualKeyID, OrgID: id.OrgID},
+	}
+	if err := limiter.ResetSpendCounters(ctx, events); err != nil {
+		t.Fatalf("ResetSpendCounters: %v", err)
+	}
+
+	for _, key := range []string{
+		"gw:spend:{org:org-reset}:org:org-reset",
+		"gw:spend:{org:org-reset}:team:team-reset",
+		"gw:spend:{org:org-reset}:key:vk-reset",
+	} {
+		if mr.Exists(key) {
+			t.Fatalf("expected Redis key %q to be deleted", key)
+		}
+	}
+	limiter.RecordSpendIncrement(ctx, id.VirtualKeyID, id.TeamID, id.OrgID, 1)
+	if err := limiter.ResetSpendCounters(ctx, events); err != nil {
+		t.Fatalf("replay same ResetSpendCounters events: %v", err)
+	}
+	if !mr.Exists("gw:spend:{org:org-reset}:key:vk-reset") {
+		t.Fatal("replaying a delivered reset must not erase spend recorded after the reset")
+	}
+
+	// A new event for a later budget period clears the new period's spend.
+	for i := range events {
+		events[i].ID += "-next"
+	}
+	if err := limiter.ResetSpendCounters(ctx, events); err != nil {
+		t.Fatalf("ResetSpendCounters next period: %v", err)
+	}
+	if mr.Exists("gw:spend:{org:org-reset}:key:vk-reset") {
+		t.Fatal("new reset event should clear the current spend counter")
+	}
+
+	release, err := limiter.AcquireWithBudget(ctx, id, 1, 10, "req-after-reset")
+	if err != nil {
+		t.Fatalf("expected budget to be admitted after reset, got %v", err)
+	}
+	release(1, 10)
+
+	// Nil limiter / empty slices should be no-ops without error.
+	var nilLimiter *ratelimit.Limiter
+	if err := nilLimiter.ResetSpendCounters(ctx, events); err != nil {
+		t.Fatalf("nil limiter ResetSpendCounters: %v", err)
+	}
+	if err := limiter.ResetSpendCounters(ctx, nil); err != nil {
+		t.Fatalf("empty ResetSpendCounters: %v", err)
+	}
+}

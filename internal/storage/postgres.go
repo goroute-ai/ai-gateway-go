@@ -943,12 +943,46 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		return nil
 	}
 	const q = `
-		INSERT INTO spend_logs (
-			id, request_id, trace_id, org_id, endpoint, modality, modality_units, requested_model, resolved_model, provider,
-			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
-			cost_micros, pricing_version, pricing_status, pricing_provenance_source, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-		ON CONFLICT (id) DO NOTHING`
+		WITH inserted AS (
+			INSERT INTO spend_logs (
+				id, request_id, trace_id, org_id, team_id, user_id, virtual_key_id,
+				endpoint, modality, modality_units, requested_model, resolved_model, provider,
+				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
+				cost_micros, pricing_version, pricing_status, pricing_provenance_source,
+				latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+			) VALUES (
+				$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
+				$8,$9,$10,$11,$12,$13,
+				$14,$15,$16,$17,$18,
+				$19,$20,$21,$22,
+				$23,$24,$25,$26,$27,$28,$29
+			)
+			ON CONFLICT (id) DO NOTHING
+			RETURNING org_id, team_id, virtual_key_id, cost_micros
+		),
+		upd_org AS (
+			UPDATE organizations o
+			SET spent_micros = o.spent_micros + i.cost_micros, updated_at = NOW()
+			FROM inserted i
+			WHERE o.id = i.org_id AND i.cost_micros > 0
+		),
+		upd_team AS (
+			UPDATE teams t
+			SET spent_micros = t.spent_micros + i.cost_micros, updated_at = NOW()
+			FROM inserted i
+			WHERE i.team_id IS NOT NULL AND i.team_id <> '' AND t.id = i.team_id AND i.cost_micros > 0
+		)
+		UPDATE virtual_keys vk
+		SET spent_micros = vk.spent_micros + i.cost_micros, updated_at = NOW()
+		FROM inserted i
+		WHERE i.virtual_key_id IS NOT NULL AND i.virtual_key_id <> '' AND vk.id = i.virtual_key_id AND i.cost_micros > 0`
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin spend batch tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -964,7 +998,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			pricingStatus = string(domain.PricingStatusUnrecorded)
 		}
 		orgID := ev.OrgID
-		if _, err := uuid.Parse(orgID); err != nil {
+		if orgID == "" {
 			orgID = "00000000-0000-0000-0000-000000000000"
 		}
 		modality := string(ev.Modality)
@@ -976,17 +1010,25 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			modUnitsJSON = []byte("{}")
 		}
 		batch.Queue(q,
-			id, ev.RequestID, ev.TraceID, orgID, ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
+			id, ev.RequestID, ev.TraceID, orgID, ev.TeamID, ev.UserID, ev.VirtualKeyID,
+			ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
-			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource, ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
+			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource,
+			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
 		)
 	}
-	br := p.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	br := tx.SendBatch(ctx, batch)
 	for range events {
 		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
 			return fmt.Errorf("execute spend batch: %w", err)
 		}
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("close spend batch: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit spend batch: %w", err)
 	}
 	if err := p.mem.RecordSpendBatch(ctx, events); err != nil {
 		return err
@@ -1093,20 +1135,124 @@ func (p *PostgresRepository) ListSpendLogs(ctx context.Context, orgID string, li
 }
 
 func (p *PostgresRepository) ResetExpiredBudgets(ctx context.Context, now time.Time) (int, error) {
-	tag1, err1 := p.pool.Exec(ctx, `UPDATE teams SET spent_micros = 0, budget_reset_at = $1 WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1`, now)
-	tag2, err2 := p.pool.Exec(ctx, `UPDATE virtual_keys SET spent_micros = 0, budget_reset_at = $1 WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1`, now)
-	var total int64
-	if err1 == nil {
-		total += tag1.RowsAffected()
+	res, err := p.ResetExpiredBudgetsWithIDs(ctx, now)
+	return res.Total(), err
+}
+
+func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return BudgetResetResult{}, fmt.Errorf("begin reset budgets tx: %w", err)
 	}
-	if err2 == nil {
-		total += tag2.RowsAffected()
+	defer tx.Rollback(ctx)
+
+	var res BudgetResetResult
+	queries := []struct {
+		sql   string
+		scope string
+		dest  *[]string
+	}{
+		{
+			sql: `UPDATE organizations
+				SET spent_micros = 0,
+				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    updated_at = NOW()
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				RETURNING id, id`,
+			scope: "org",
+			dest:  &res.OrgIDs,
+		},
+		{
+			sql: `UPDATE teams
+				SET spent_micros = 0,
+				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    updated_at = NOW()
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				RETURNING id, org_id`,
+			scope: "team",
+			dest:  &res.TeamIDs,
+		},
+		{
+			sql: `UPDATE virtual_keys
+				SET spent_micros = 0,
+				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    updated_at = NOW()
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				RETURNING id, org_id`,
+			scope: "key",
+			dest:  &res.VirtualKeyIDs,
+		},
 	}
-	memCount, _ := p.mem.ResetExpiredBudgets(ctx, now)
-	if total == 0 {
-		return memCount, nil
+
+	for _, q := range queries {
+		rows, err := tx.Query(ctx, q.sql, now)
+		if err != nil {
+			return BudgetResetResult{}, fmt.Errorf("reset expired budgets: %w", err)
+		}
+		var queryEvents []BudgetResetEvent
+		for rows.Next() {
+			var id, orgID string
+			if err := rows.Scan(&id, &orgID); err != nil {
+				rows.Close()
+				return BudgetResetResult{}, fmt.Errorf("scan reset budget id: %w", err)
+			}
+			*q.dest = append(*q.dest, id)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: q.scope, EntityID: id, OrgID: orgID, ResetAt: now.UTC()}
+			queryEvents = append(queryEvents, event)
+			res.Events = append(res.Events, event)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return BudgetResetResult{}, fmt.Errorf("iterate reset budget ids: %w", err)
+		}
+		rows.Close()
+		for _, event := range queryEvents {
+			if _, err := tx.Exec(ctx, `INSERT INTO budget_reset_outbox (id, scope, entity_id, org_id, reset_at) VALUES ($1,$2,$3,$4,$5)`, event.ID, event.Scope, event.EntityID, event.OrgID, event.ResetAt); err != nil {
+				return BudgetResetResult{}, fmt.Errorf("enqueue Redis budget reset: %w", err)
+			}
+		}
 	}
-	return int(total), nil
+
+	if err := tx.Commit(ctx); err != nil {
+		return BudgetResetResult{}, fmt.Errorf("commit reset budgets tx: %w", err)
+	}
+
+	memRes, _ := p.mem.ResetExpiredBudgetsWithIDs(ctx, now)
+	if res.Total() == 0 {
+		return memRes, nil
+	}
+	return res, nil
+}
+
+func (p *PostgresRepository) ListPendingBudgetResets(ctx context.Context, limit int) ([]BudgetResetEvent, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	rows, err := p.pool.Query(ctx, `SELECT id::text, scope, entity_id, org_id, reset_at FROM budget_reset_outbox WHERE delivered_at IS NULL ORDER BY created_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending budget resets: %w", err)
+	}
+	defer rows.Close()
+	var out []BudgetResetEvent
+	for rows.Next() {
+		var ev BudgetResetEvent
+		if err := rows.Scan(&ev.ID, &ev.Scope, &ev.EntityID, &ev.OrgID, &ev.ResetAt); err != nil {
+			return nil, fmt.Errorf("scan pending budget reset: %w", err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) MarkBudgetResetsDelivered(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE budget_reset_outbox SET delivered_at = NOW() WHERE id::text = ANY($1) AND delivered_at IS NULL`, ids)
+	if err != nil {
+		return fmt.Errorf("mark budget resets delivered: %w", err)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
