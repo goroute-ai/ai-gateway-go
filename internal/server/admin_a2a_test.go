@@ -60,6 +60,12 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 		Name:     "Default Organization",
 		IsActive: true,
 	}))
+	require.NoError(t, repo.CreateTeam(context.Background(), &domain.Team{
+		ID:       "team_alpha",
+		OrgID:    "org_default",
+		Name:     "Alpha Team",
+		IsActive: true,
+	}))
 
 	// Issue a virtual key for data-plane client calls
 	vKey := &domain.VirtualKey{

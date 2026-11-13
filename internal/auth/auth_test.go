@@ -326,8 +326,18 @@ func Test3StateRBACAllowlists(t *testing.T) {
 
 type failingAuthRepo struct {
 	storage.Repository
-	failSubs bool
-	failPols bool
+	failSubs     bool
+	failPols     bool
+	failTeam     bool
+	getTeamCalls int
+}
+
+func (f *failingAuthRepo) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
+	f.getTeamCalls++
+	if f.failTeam {
+		return nil, fmt.Errorf("simulated db connection timeout")
+	}
+	return f.Repository.GetTeam(ctx, id)
 }
 
 func (f *failingAuthRepo) GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
@@ -381,4 +391,133 @@ func TestRBACEngine_AuthorizeDeploymentFailClosed(t *testing.T) {
 	if !ok || gwErr.StatusCode != http.StatusInternalServerError || gwErr.Code != "auth_repository_error" {
 		t.Fatalf("expected 500 auth_repository_error, got %+v", err)
 	}
+}
+
+func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DB failure on GetTeam rejects 503 and does not cache", func(t *testing.T) {
+		memRepo := storage.NewMemoryRepository()
+		org := &domain.Organization{ID: "org-team-fc", Name: "Team Fail Closed Org", Slug: "team-fc", IsActive: true}
+		if err := memRepo.CreateOrganization(ctx, org); err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		team := &domain.Team{
+			ID:                "team-fc-1",
+			OrgID:             org.ID,
+			Name:              "eng",
+			AllowedModels:     []string{"gpt-4.1"},
+			AllowedMCPServers: []string{}, // DenyAll
+			AllowedA2AAgents:  []string{"agent-1"},
+			AllowedClientApps: nil, // Inherit
+			RPMLimit:          42,
+			IsActive:          true,
+		}
+		if err := memRepo.CreateTeam(ctx, team); err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+
+		repo := &failingAuthRepo{Repository: memRepo, failTeam: true}
+		svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
+		vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+			OrgID:  org.ID,
+			TeamID: team.ID,
+			Name:   "team-key",
+		})
+		if err != nil {
+			t.Fatalf("issue virtual key: %v", err)
+		}
+
+		// 1. Transient DB error on GetTeam must fail closed with 503 team_policy_unavailable.
+		_, err = svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+		if err == nil {
+			t.Fatal("expected AuthenticateVirtualKey to fail closed on GetTeam DB error")
+		}
+		gwErr, ok := err.(*domain.GatewayError)
+		if !ok || gwErr.StatusCode != http.StatusServiceUnavailable || gwErr.Code != "team_policy_unavailable" {
+			t.Fatalf("expected 503 team_policy_unavailable, got %+v", err)
+		}
+
+		// 2. Identity must NOT have been cached: recovering DB must re-query GetTeam and resolve team policy.
+		repo.failTeam = false
+		idCtx, err := svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+		if err != nil {
+			t.Fatalf("expected auth to succeed after DB recovery, got: %v", err)
+		}
+		if repo.getTeamCalls != 2 {
+			t.Fatalf("expected GetTeam to be called twice (no caching on failure), got %d", repo.getTeamCalls)
+		}
+		if idCtx.TeamRPMLimit != 42 || len(idCtx.TeamAllowedModels) != 1 || idCtx.TeamAllowedModels[0] != "gpt-4.1" {
+			t.Fatalf("expected resolved team policy on identity, got %+v", idCtx)
+		}
+		if idCtx.TeamAllowedMCPServers == nil || len(idCtx.TeamAllowedMCPServers) != 0 {
+			t.Fatalf("expected non-nil empty TeamAllowedMCPServers (DenyAll), got %#v", idCtx.TeamAllowedMCPServers)
+		}
+		if idCtx.TeamAllowedClientApps != nil {
+			t.Fatalf("expected nil TeamAllowedClientApps (Inherit), got %#v", idCtx.TeamAllowedClientApps)
+		}
+	})
+
+	t.Run("Missing team rejects 403 team_not_found", func(t *testing.T) {
+		memRepo := storage.NewMemoryRepository()
+		org := &domain.Organization{ID: "org-team-missing", Name: "Missing Team Org", Slug: "team-missing", IsActive: true}
+		if err := memRepo.CreateOrganization(ctx, org); err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+
+		svc := auth.NewService(memRepo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
+		vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+			OrgID:  org.ID,
+			TeamID: "nonexistent-team-id",
+			Name:   "orphan-team-key",
+		})
+		if err != nil {
+			t.Fatalf("issue virtual key: %v", err)
+		}
+
+		_, err = svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+		if err == nil {
+			t.Fatal("expected AuthenticateVirtualKey to reject missing team")
+		}
+		gwErr, ok := err.(*domain.GatewayError)
+		if !ok || gwErr.StatusCode != http.StatusForbidden || gwErr.Code != "team_not_found" {
+			t.Fatalf("expected 403 team_not_found, got %+v", err)
+		}
+	})
+
+	t.Run("Inactive team rejects 403 team_inactive", func(t *testing.T) {
+		memRepo := storage.NewMemoryRepository()
+		org := &domain.Organization{ID: "org-team-inactive", Name: "Inactive Team Org", Slug: "team-inactive", IsActive: true}
+		if err := memRepo.CreateOrganization(ctx, org); err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		team := &domain.Team{
+			ID:       "team-inactive-1",
+			OrgID:    org.ID,
+			Name:     "disabled-team",
+			IsActive: false,
+		}
+		if err := memRepo.CreateTeam(ctx, team); err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+
+		svc := auth.NewService(memRepo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
+		vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+			OrgID:  org.ID,
+			TeamID: team.ID,
+			Name:   "inactive-team-key",
+		})
+		if err != nil {
+			t.Fatalf("issue virtual key: %v", err)
+		}
+
+		_, err = svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+		if err == nil {
+			t.Fatal("expected AuthenticateVirtualKey to reject inactive team")
+		}
+		gwErr, ok := err.(*domain.GatewayError)
+		if !ok || gwErr.StatusCode != http.StatusForbidden || gwErr.Code != "team_inactive" {
+			t.Fatalf("expected 403 team_inactive, got %+v", err)
+		}
+	})
 }

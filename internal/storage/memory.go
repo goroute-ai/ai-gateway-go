@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -451,6 +452,15 @@ func (r *MemoryRepository) GetOrgModelPolicies(ctx context.Context, orgID string
 	return out, nil
 }
 
+func cloneTeam(team *domain.Team) *domain.Team {
+	cp := *team
+	cp.AllowedModels = slices.Clone(team.AllowedModels)
+	cp.AllowedMCPServers = slices.Clone(team.AllowedMCPServers)
+	cp.AllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
+	cp.AllowedClientApps = slices.Clone(team.AllowedClientApps)
+	return &cp
+}
+
 func (r *MemoryRepository) CreateTeam(ctx context.Context, team *domain.Team) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -460,8 +470,8 @@ func (r *MemoryRepository) CreateTeam(ctx context.Context, team *domain.Team) er
 	now := time.Now().UTC()
 	team.CreatedAt = now
 	team.UpdatedAt = now
-	cp := *team
-	r.teams[cp.ID] = &cp
+	cp := cloneTeam(team)
+	r.teams[cp.ID] = cp
 	return nil
 }
 
@@ -470,10 +480,9 @@ func (r *MemoryRepository) GetTeam(ctx context.Context, id string) (*domain.Team
 	defer r.mu.RUnlock()
 	t, ok := r.teams[id]
 	if !ok {
-		return nil, fmt.Errorf("team %q not found", id)
+		return nil, fmt.Errorf("team %q %w", id, ErrNotFound)
 	}
-	cp := *t
-	return &cp, nil
+	return cloneTeam(t), nil
 }
 
 func (r *MemoryRepository) ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error) {
@@ -482,8 +491,7 @@ func (r *MemoryRepository) ListTeams(ctx context.Context, orgID string) ([]*doma
 	var out []*domain.Team
 	for _, t := range r.teams {
 		if orgID == "" || t.OrgID == orgID {
-			cp := *t
-			out = append(out, &cp)
+			out = append(out, cloneTeam(t))
 		}
 	}
 	return out, nil
