@@ -5,16 +5,19 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -100,7 +103,7 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		l.Info("GoRoute AI Gateway listening",
 			slog.String("addr", addr),
@@ -113,12 +116,30 @@ func main() {
 		}
 	}()
 
+	var grpcSrv *grpc.Server
+	if cfg.Server.GRPCPort > 0 {
+		grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.GRPCPort)
+		lis, err := net.Listen("tcp", grpcAddr)
+		if err != nil {
+			logger.Error("Failed to listen for A2A gRPC server", slog.String("addr", grpcAddr), slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		grpcSrv = grpc.NewServer()
+		a2a.NewGRPCServer(gw.A2ARouter(), gw.AuthService(), gw.RBAC()).Register(grpcSrv)
+		go func() {
+			l.Info("A2A gRPC server listening", slog.String("addr", grpcAddr))
+			if err := grpcSrv.Serve(lis); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case err := <-errCh:
-		logger.Error("HTTP server runtime error", slog.String("error", err.Error()))
+		logger.Error("Gateway server runtime error", slog.String("error", err.Error()))
 		os.Exit(1)
 	case sig := <-sigCh:
 		logger.Info("Received OS termination signal; gracefully draining connections and flushing spend logs...",
@@ -129,6 +150,18 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer shutdownCancel()
 
+	if grpcSrv != nil {
+		grpcDone := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(grpcDone)
+		}()
+		select {
+		case <-grpcDone:
+		case <-shutdownCtx.Done():
+			grpcSrv.Stop()
+		}
+	}
 	_ = httpSrv.Shutdown(shutdownCtx)
 	gw.Shutdown(shutdownCtx)
 	logger.Info("GoRoute AI Gateway shutdown complete")
