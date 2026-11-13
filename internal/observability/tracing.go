@@ -1,15 +1,19 @@
 package observability
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -77,6 +81,45 @@ func TraceMiddleware(next http.Handler) http.Handler {
 	return TraceMiddlewareWithTracer(trace.NewNoopTracerProvider().Tracer("ai-gateway-go"))(next)
 }
 
+type statusResponseWriter struct {
+	http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
+}
+
+func (w *statusResponseWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.statusCode = code
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.statusCode = http.StatusOK
+		w.wroteHeader = true
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Handler {
 	if tracer == nil {
 		tracer = trace.NewNoopTracerProvider().Tracer("ai-gateway-go")
@@ -88,7 +131,17 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.path", r.URL.Path)),
 			)
-			defer span.End()
+			sw := &statusResponseWriter{
+				ResponseWriter: w,
+				statusCode:     http.StatusOK,
+			}
+			defer func() {
+				span.SetAttributes(attribute.Int("http.response.status_code", sw.statusCode))
+				if sw.statusCode >= http.StatusInternalServerError {
+					span.SetStatus(codes.Error, http.StatusText(sw.statusCode))
+				}
+				span.End()
+			}()
 			tc := ParseOrGenerateTrace(r)
 			if spanContext := span.SpanContext(); span.IsRecording() && spanContext.IsValid() {
 				tc = TraceContext{
@@ -97,13 +150,13 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 					TraceParent: fmt.Sprintf("00-%s-%s-01", spanContext.TraceID(), spanContext.SpanID()),
 				}
 			}
-			w.Header().Set("X-Trace-Id", tc.TraceID)
-			w.Header().Set("traceparent", tc.TraceParent)
+			sw.Header().Set("X-Trace-Id", tc.TraceID)
+			sw.Header().Set("traceparent", tc.TraceParent)
 			if reqID := r.Header.Get("X-Request-Id"); reqID != "" {
-				w.Header().Set("X-Request-Id", reqID)
+				sw.Header().Set("X-Request-Id", reqID)
 			}
 			ctx = WithTraceContext(ctx, tc)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(sw, r.WithContext(ctx))
 		})
 	}
 }
