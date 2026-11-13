@@ -58,6 +58,14 @@ func TestUI_RouteDeliveryAndSPAFallback(t *testing.T) {
 
 	// 6. Test Cache-Control headers
 	assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
+
+	// 7. Test security headers on /ui/
+	assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
+	csp := rec.Header().Get("Content-Security-Policy")
+	assert.Contains(t, csp, "default-src 'self'")
+	assert.Contains(t, csp, "frame-ancestors 'none'")
 }
 
 func TestUI_StaticAssetMimeAndCaching(t *testing.T) {
