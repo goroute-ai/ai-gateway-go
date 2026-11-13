@@ -78,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) =>
 
       {/* Footer Info */}
       <div className="p-3 border-t border-border text-[11px] text-[#9696a4] flex items-center justify-between font-mono">
-        <span className="text-[10px]">GoRoute v1.5.0</span>
+        <span className="text-[10px]">GoRoute v1.6.0</span>
         <span className="flex items-center gap-1.5 text-[10px] text-accent-primary">
           <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse" />
           Pure Go

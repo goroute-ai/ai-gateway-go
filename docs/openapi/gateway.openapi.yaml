@@ -66,7 +66,7 @@ components:
               enum: [text, json_object, json_schema]
         reasoning_effort:
           type: string
-          enum: [low, medium, high]
+          enum: [none, minimal, low, medium, high, xhigh, max]
         user:
           type: string
         metadata:
@@ -82,17 +82,103 @@ components:
           type: string
           enum: [system, developer, user, assistant, tool]
         content:
-          type: string
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/ContentPart'
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentPart'
         name:
           type: string
         tool_call_id:
           type: string
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
+        annotations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Annotation'
         tool_calls:
           type: array
           items:
             $ref: '#/components/schemas/ToolCall'
         reasoning_content:
           type: string
+    ContentPart:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text, input_text, image_url, input_image, document]
+        text:
+          type: string
+        image_url:
+          oneOf:
+            - type: string
+              format: uri
+            - type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                detail:
+                  type: string
+        document:
+          $ref: '#/components/schemas/DocumentPart'
+        file_data:
+          type: string
+          description: Base64-encoded file bytes for input_file parts.
+        file_url:
+          type: string
+          description: HTTPS file URL for input_file parts.
+        filename:
+          type: string
+        mime_type:
+          type: string
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
+    DocumentPart:
+      type: object
+      properties:
+        mime_type:
+          type: string
+        data:
+          type: string
+          description: Base64-encoded document bytes.
+        url:
+          type: string
+          description: HTTPS or gs:// document URI.
+        filename:
+          type: string
+    CacheControl:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [ephemeral]
+        ttl:
+          type: string
+    Annotation:
+      type: object
+      properties:
+        type:
+          type: string
+        url_citation:
+          type: object
+          properties:
+            url:
+              type: string
+            title:
+              type: string
+            start_index:
+              type: integer
+            end_index:
+              type: integer
     Tool:
       type: object
       required:
@@ -113,6 +199,10 @@ components:
               type: string
             parameters:
               type: object
+            strict:
+              type: boolean
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
     ToolCall:
       type: object
       required:
@@ -190,14 +280,19 @@ components:
         model:
           type: string
         input:
-          type: array
-          items:
-            type: string
+          anyOf:
+            - type: string
+            - type: array
+              items:
+                type: string
         encoding_format:
           type: string
           enum: [float, base64]
         dimensions:
           type: integer
+        input_type:
+          type: string
+          description: Optional provider-specific embedding intent such as search_query or search_document.
     EmbeddingResponse:
       type: object
       required:
@@ -486,11 +581,105 @@ components:
         model:
           type: string
         input:
-          description: Input text or conversation sequence
+          description: Input text or an ordered sequence of messages and function-call items.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                oneOf:
+                  - $ref: '#/components/schemas/ResponsesMessageInputItem'
+                  - $ref: '#/components/schemas/ResponsesFunctionCallInputItem'
+                  - $ref: '#/components/schemas/ResponsesFunctionCallOutputInputItem'
         instructions:
           type: string
         stream:
           type: boolean
+        temperature:
+          type: number
+        max_output_tokens:
+          type: integer
+        tools:
+          type: array
+          items:
+            type: object
+        tool_choice:
+          description: Tool choice policy ("auto", "required", "none", or function selector)
+        reasoning:
+          type: object
+          properties:
+            effort:
+              type: string
+              enum: [none, minimal, low, medium, high, xhigh, max]
+        text:
+          type: object
+          properties:
+            format:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [text, json_object, json_schema]
+                json_schema:
+                  type: object
+        metadata:
+          type: object
+          additionalProperties: true
+    ResponsesMessageInputItem:
+      type: object
+      required: [role]
+      properties:
+        type:
+          type: string
+          enum: [message]
+        role:
+          type: string
+          enum: [system, developer, user, assistant, tool]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/ContentPart'
+            - type: 'null'
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+    ResponsesFunctionCallInputItem:
+      type: object
+      required: [type, call_id, name, arguments]
+      properties:
+        type:
+          type: string
+          const: function_call
+        call_id:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+    ResponsesFunctionCallOutputInputItem:
+      type: object
+      required: [type, call_id, output]
+      properties:
+        type:
+          type: string
+          const: function_call_output
+        call_id:
+          type: string
+        output:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  text:
+                    type: string
     ResponsesAPIResponse:
       type: object
       required:
@@ -1048,8 +1237,8 @@ paths:
   /v1/responses:
     post:
       operationId: createResponse
-      summary: Create a text response
-      description: Supports text input and streamed or non-streamed text output. Tool calling, response retrieval, and persisted conversation state are not currently supported.
+      summary: Create a text or tool-calling response
+      description: Supports text input, tool calling, reasoning effort, structured outputs, and streamed or non-streamed responses. Persisted conversation state and response retrieval are not currently supported.
       requestBody:
         required: true
         content:

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,10 +11,18 @@ import (
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 // StreamChunkHandler is invoked for each normalized OpenAI-compatible SSE chunk received from an upstream provider.
 type StreamChunkHandler func(chunk *domain.CanonicalStreamChunk) error
+
+// StreamingContext marks upstream requests made by direct adapter callers as
+// streams so the shared network client applies an idle timeout without a total
+// request deadline.
+func StreamingContext(ctx context.Context) context.Context {
+	return network.WithStreamingRequest(ctx)
+}
 
 // ProviderAdapter defines the unified contract every upstream LLM provider adapter implements.
 type ProviderAdapter interface {
@@ -52,28 +59,20 @@ type CompletionAdapter interface {
 	TextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, error)
 }
 
+// OperationSupportChecker is optionally implemented by adapters that declare
+// explicit per-operation wire support (e.g. OpenAI-compatible dialect profiles).
+type OperationSupportChecker interface {
+	SupportsOperation(op domain.OperationType) bool
+}
+
 // NewPooledHTTPClient returns a high-concurrency HTTP client tuned for upstream LLM API connections.
 func NewPooledHTTPClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 60 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          1024,
-		MaxIdleConnsPerHost:   256,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
-	}
+	// Adapter fallbacks must obey the same SSRF and streaming rules as the
+	// gateway's configured provider client.
+	return network.NewHTTPClientWithTimeouts(nil, timeout, 2*time.Minute, 2*time.Minute, nil)
 }
 
 // ParseRetryAfter extracts a retry delay in seconds from an HTTP Retry-After or x-ratelimit-reset header.

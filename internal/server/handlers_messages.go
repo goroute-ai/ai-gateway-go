@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
@@ -40,17 +39,15 @@ type anthropicMsg struct {
 }
 
 type anthropicToolDef struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string               `json:"name"`
+	Description  string               `json:"description,omitempty"`
+	InputSchema  map[string]any       `json:"input_schema"`
+	CacheControl *domain.CacheControl `json:"cache_control,omitempty"`
 }
 
 // handleAnthropicMessages serves `POST /v1/messages` and `POST /anthropic/v1/messages`.
 func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "msg_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -119,11 +116,12 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	// Translate System
 	if payload.System != nil {
-		sysText := parseAnthropicSystem(payload.System)
+		sysText, sysCC := parseAnthropicSystemWithCache(payload.System)
 		if sysText != "" {
 			chatReq.Messages = append(chatReq.Messages, domain.CanonicalMessage{
-				Role:    "system",
-				Content: sysText,
+				Role:         "system",
+				Content:      sysText,
+				CacheControl: sysCC,
 			})
 		}
 	}
@@ -137,7 +135,8 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	// Translate Tools
 	for _, t := range payload.Tools {
 		chatReq.Tools = append(chatReq.Tools, domain.CanonicalTool{
-			Type: "function",
+			Type:         "function",
+			CacheControl: t.CacheControl,
 			Function: domain.CanonicalFunction{
 				Name:        t.Name,
 				Description: t.Description,
@@ -332,6 +331,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		flusher.Flush()
 	}
 
+	streamStarted := time.Now()
 	usage, meta, err := s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil {
 			return nil
@@ -349,6 +349,11 @@ func (s *GatewayServer) streamAnthropicMessages(
 	}, func(dep *domain.Deployment) {
 		winningDep = dep
 	})
+	var streamTTFT time.Duration
+	if meta != nil && meta.TTFTMs > 0 {
+		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
+	}
+	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
 
 	if err != nil {
 		releaseQuota(-1)
@@ -420,12 +425,31 @@ func (s *GatewayServer) streamAnthropicMessages(
 	flusher.Flush()
 }
 
+func parseCacheControlBlock(block map[string]any) *domain.CacheControl {
+	raw, ok := block["cache_control"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	ccType, _ := raw["type"].(string)
+	if ccType == "" {
+		return nil
+	}
+	ttl, _ := raw["ttl"].(string)
+	return &domain.CacheControl{Type: ccType, TTL: ttl}
+}
+
 func parseAnthropicSystem(sys any) string {
+	txt, _ := parseAnthropicSystemWithCache(sys)
+	return txt
+}
+
+func parseAnthropicSystemWithCache(sys any) (string, *domain.CacheControl) {
 	switch v := sys.(type) {
 	case string:
-		return v
+		return v, nil
 	case []any:
 		var sb strings.Builder
+		var lastCC *domain.CacheControl
 		for _, item := range v {
 			if m, ok := item.(map[string]any); ok {
 				if t, ok := m["text"].(string); ok {
@@ -434,11 +458,14 @@ func parseAnthropicSystem(sys any) string {
 					}
 					sb.WriteString(t)
 				}
+				if cc := parseCacheControlBlock(m); cc != nil {
+					lastCC = cc
+				}
 			}
 		}
-		return sb.String()
+		return sb.String(), lastCC
 	default:
-		return ""
+		return "", nil
 	}
 }
 
@@ -454,28 +481,66 @@ func parseAnthropicMessage(m anthropicMsg) []domain.CanonicalMessage {
 		var parts []domain.ContentPart
 		var toolCalls []domain.CanonicalToolCall
 		var separateToolResults []domain.CanonicalMessage
+		var msgCC *domain.CacheControl
 
 		for _, item := range v {
 			block, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
+			cc := parseCacheControlBlock(block)
+			if cc != nil {
+				msgCC = cc
+			}
 			blockType, _ := block["type"].(string)
 			switch blockType {
 			case "text":
 				if txt, ok := block["text"].(string); ok {
 					textParts = append(textParts, txt)
-					parts = append(parts, domain.ContentPart{Type: "text", Text: txt})
+					parts = append(parts, domain.ContentPart{Type: "text", Text: txt, CacheControl: cc})
 				}
 			case "image":
 				if src, ok := block["source"].(map[string]any); ok {
+					srcType, _ := src["type"].(string)
+					if srcType == "url" {
+						if u, _ := src["url"].(string); u != "" {
+							parts = append(parts, domain.ContentPart{
+								Type:         "image_url",
+								ImageURL:     &domain.ImageURL{URL: u},
+								CacheControl: cc,
+							})
+						}
+					} else {
+						mediaType, _ := src["media_type"].(string)
+						data, _ := src["data"].(string)
+						url := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+						parts = append(parts, domain.ContentPart{
+							Type:         "image_url",
+							ImageURL:     &domain.ImageURL{URL: url},
+							CacheControl: cc,
+						})
+					}
+				}
+			case "document":
+				if src, ok := block["source"].(map[string]any); ok {
+					srcType, _ := src["type"].(string)
 					mediaType, _ := src["media_type"].(string)
-					data, _ := src["data"].(string)
-					url := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
-					parts = append(parts, domain.ContentPart{
-						Type:     "image_url",
-						ImageURL: &domain.ImageURL{URL: url},
-					})
+					if mediaType == "" {
+						mediaType = "application/pdf"
+					}
+					doc := &domain.DocumentPart{MimeType: mediaType}
+					if srcType == "url" {
+						doc.URL, _ = src["url"].(string)
+					} else {
+						doc.Data, _ = src["data"].(string)
+					}
+					if doc.Data != "" || doc.URL != "" {
+						parts = append(parts, domain.ContentPart{
+							Type:         "document",
+							Document:     doc,
+							CacheControl: cc,
+						})
+					}
 				}
 			case "tool_use":
 				callID, _ := block["id"].(string)
@@ -502,9 +567,10 @@ func parseAnthropicMessage(m anthropicMsg) []domain.CanonicalMessage {
 					contentStr = string(b)
 				}
 				separateToolResults = append(separateToolResults, domain.CanonicalMessage{
-					Role:       "tool",
-					ToolCallID: toolUseID,
-					Content:    contentStr,
+					Role:         "tool",
+					ToolCallID:   toolUseID,
+					Content:      contentStr,
+					CacheControl: cc,
 				})
 			}
 		}
@@ -515,10 +581,11 @@ func parseAnthropicMessage(m anthropicMsg) []domain.CanonicalMessage {
 		}
 		if len(textParts) > 0 || len(parts) > 0 || len(toolCalls) > 0 {
 			out = append(out, domain.CanonicalMessage{
-				Role:      m.Role,
-				Content:   strings.Join(textParts, "\n\n"),
-				Parts:     parts,
-				ToolCalls: toolCalls,
+				Role:         m.Role,
+				Content:      strings.Join(textParts, "\n\n"),
+				Parts:        parts,
+				ToolCalls:    toolCalls,
+				CacheControl: msgCC,
 			})
 		}
 		return out

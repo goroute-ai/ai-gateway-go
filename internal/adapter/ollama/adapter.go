@@ -40,17 +40,101 @@ func resolveBaseURL(cred *domain.ProviderCredential) string {
 	return defaultBaseURL
 }
 
-func toOllamaRequest(model string, req *domain.CanonicalChatRequest, stream bool) providers.OllamaChatRequest {
-	msgs := make([]providers.OllamaMessage, 0, len(req.Messages))
+type wireOllamaToolCall struct {
+	Function struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	} `json:"function"`
+}
+
+type wireOllamaMessage struct {
+	Role      string               `json:"role"`
+	Content   string               `json:"content"`
+	Images    []string             `json:"images,omitempty"`
+	ToolCalls []wireOllamaToolCall `json:"tool_calls,omitempty"`
+}
+
+type wireOllamaChatRequest struct {
+	Model    string              `json:"model"`
+	Messages []wireOllamaMessage `json:"messages"`
+	Stream   bool                `json:"stream"`
+	Think    any                 `json:"think,omitempty"`
+	Tools    []map[string]any    `json:"tools,omitempty"`
+	Options  map[string]any      `json:"options,omitempty"`
+	Format   any                 `json:"format,omitempty"`
+}
+
+type wireOllamaChatResponse struct {
+	Model   string `json:"model"`
+	Message struct {
+		Role      string               `json:"role"`
+		Content   string               `json:"content"`
+		Thinking  string               `json:"thinking,omitempty"`
+		ToolCalls []wireOllamaToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+	Done            bool   `json:"done"`
+	DoneReason      string `json:"done_reason,omitempty"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
+}
+
+func parseDataURI(uri string) (b64 string, ok bool) {
+	if !strings.HasPrefix(uri, "data:") {
+		return "", false
+	}
+	idx := strings.Index(uri, ";base64,")
+	if idx < 0 {
+		return "", false
+	}
+	return uri[idx+len(";base64,"):], true
+}
+
+func toOllamaRequest(model string, req *domain.CanonicalChatRequest, stream bool) wireOllamaChatRequest {
+	msgs := make([]wireOllamaMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		role := m.Role
 		if role == "developer" {
 			role = "system"
 		}
-		msgs = append(msgs, providers.OllamaMessage{
+		content := m.Content
+		var images []string
+		if len(m.Parts) > 0 {
+			var textSB strings.Builder
+			for _, p := range m.Parts {
+				switch p.Type {
+				case "text":
+					textSB.WriteString(p.Text)
+				case "image_url":
+					if p.ImageURL != nil && p.ImageURL.URL != "" {
+						if b64, ok := parseDataURI(p.ImageURL.URL); ok {
+							images = append(images, b64)
+						}
+					}
+				}
+			}
+			if textSB.Len() > 0 {
+				content = textSB.String()
+			}
+		}
+		om := wireOllamaMessage{
 			Role:    role,
-			Content: m.Content,
-		})
+			Content: content,
+			Images:  images,
+		}
+		for _, tc := range m.ToolCalls {
+			var args map[string]any
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			}
+			if args == nil {
+				args = map[string]any{}
+			}
+			var otc wireOllamaToolCall
+			otc.Function.Name = tc.Function.Name
+			otc.Function.Arguments = args
+			om.ToolCalls = append(om.ToolCalls, otc)
+		}
+		msgs = append(msgs, om)
 	}
 
 	opts := map[string]any{}
@@ -60,23 +144,114 @@ func toOllamaRequest(model string, req *domain.CanonicalChatRequest, stream bool
 	if req.TopP != nil {
 		opts["top_p"] = *req.TopP
 	}
-	if req.MaxTokens != nil {
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		opts["num_predict"] = *req.MaxTokens
 	}
 	if len(req.Stop) > 0 {
 		opts["stop"] = req.Stop
 	}
 
-	out := providers.OllamaChatRequest{
+	out := wireOllamaChatRequest{
 		Model:    model,
 		Messages: msgs,
 		Stream:   stream,
 	}
+	if effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort)); effort != "" {
+		switch effort {
+		case "none":
+			out.Think = false
+		case "minimal", "low":
+			out.Think = "low"
+		case "medium":
+			out.Think = "medium"
+		case "high", "xhigh", "max":
+			out.Think = "high"
+		default:
+			out.Think = effort
+		}
+	}
+	if len(req.Tools) > 0 {
+		for _, t := range req.Tools {
+			out.Tools = append(out.Tools, map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        t.Function.Name,
+					"description": t.Function.Description,
+					"parameters":  t.Function.Parameters,
+				},
+			})
+		}
+	}
 	if len(opts) > 0 {
 		out.Options = opts
 	}
-	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
-		out.Format = "json"
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
+		case "json_object":
+			out.Format = "json"
+		case "json_schema":
+			if len(req.ResponseFormat.JSONSchema) > 0 {
+				schema := any(req.ResponseFormat.JSONSchema)
+				if inner, ok := req.ResponseFormat.JSONSchema["schema"]; ok {
+					schema = inner
+				}
+				out.Format = schema
+			} else {
+				out.Format = "json"
+			}
+		}
+	}
+	return out
+}
+
+func (a *Adapter) materializeImageURLs(ctx context.Context, req *domain.CanonicalChatRequest) (*domain.CanonicalChatRequest, error) {
+	copyReq := *req
+	copyReq.Messages = append([]domain.CanonicalMessage(nil), req.Messages...)
+	for i := range copyReq.Messages {
+		copyReq.Messages[i].Parts = append([]domain.ContentPart(nil), req.Messages[i].Parts...)
+		for j := range copyReq.Messages[i].Parts {
+			part := &copyReq.Messages[i].Parts[j]
+			if part.Type != "image_url" || part.ImageURL == nil || part.ImageURL.URL == "" {
+				continue
+			}
+			if _, isDataURI := parseDataURI(part.ImageURL.URL); isDataURI {
+				continue
+			}
+			dataURI, err := adapter.FetchRemoteDataURI(ctx, a.client, part.ImageURL.URL, 20<<20, "image/")
+			if err != nil {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_image_url",
+					Message:    err.Error(),
+					Provider:   domain.ProviderOllama,
+				}
+			}
+			imageURLCopy := *part.ImageURL
+			imageURLCopy.URL = dataURI
+			part.ImageURL = &imageURLCopy
+		}
+	}
+	return &copyReq, nil
+}
+
+func mapOllamaToolCalls(raw []wireOllamaToolCall) []domain.CanonicalToolCall {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]domain.CanonicalToolCall, 0, len(raw))
+	for i, tc := range raw {
+		idx := i
+		argsBytes, _ := json.Marshal(tc.Function.Arguments)
+		out = append(out, domain.CanonicalToolCall{
+			Index: &idx,
+			ID:    fmt.Sprintf("call_ollama_%d_%d", time.Now().UnixNano(), i),
+			Type:  "function",
+			Function: domain.CanonicalFunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: string(argsBytes),
+			},
+		})
 	}
 	return out
 }
@@ -90,7 +265,11 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		model = req.Model
 	}
 
-	payload := toOllamaRequest(model, req, false)
+	preparedReq, err := a.materializeImageURLs(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	payload := toOllamaRequest(model, preparedReq, false)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -121,13 +300,16 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOllama, resp.StatusCode, string(respBody), 0)
 	}
 
-	var ollResp providers.OllamaChatResponse
+	var ollResp wireOllamaChatResponse
 	if err := json.Unmarshal(respBody, &ollResp); err != nil {
 		return nil, fmt.Errorf("decode ollama response: %w", err)
 	}
 
+	toolCalls := mapOllamaToolCalls(ollResp.Message.ToolCalls)
 	finishReason := "stop"
-	if ollResp.DoneReason == "length" {
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	} else if ollResp.DoneReason == "length" {
 		finishReason = "length"
 	}
 
@@ -141,8 +323,10 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 			{
 				Index: 0,
 				Message: domain.CanonicalMessage{
-					Role:    "assistant",
-					Content: ollResp.Message.Content,
+					Role:             "assistant",
+					Content:          ollResp.Message.Content,
+					ReasoningContent: ollResp.Message.Thinking,
+					ToolCalls:        toolCalls,
 				},
 				FinishReason: finishReason,
 			},
@@ -157,6 +341,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 
 // StreamChatCompletion reads Ollama's NDJSON stream line-by-line and emits standard OpenAI SSE chunks.
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
 		model = dep.GlobalModel.ModelName
@@ -165,7 +350,11 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		model = req.Model
 	}
 
-	payload := toOllamaRequest(model, req, true)
+	preparedReq, err := a.materializeImageURLs(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	payload := toOllamaRequest(model, preparedReq, true)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -201,14 +390,18 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	usage := &domain.TokenUsage{}
 
 	err = sse.ReadNDJSON(resp.Body, func(line []byte) error {
-		var ollChunk providers.OllamaChatResponse
+		var ollChunk wireOllamaChatResponse
 		if err := json.Unmarshal(line, &ollChunk); err != nil {
 			return nil
 		}
+		toolCalls := mapOllamaToolCalls(ollChunk.Message.ToolCalls)
 		var finishPtr *string
 		var chunkUsage *domain.TokenUsage
 		if ollChunk.Done {
 			fr := "stop"
+			if len(toolCalls) > 0 {
+				fr = "tool_calls"
+			}
 			finishPtr = &fr
 			usage.PromptTokens = ollChunk.PromptEvalCount
 			usage.CompletionTokens = ollChunk.EvalCount
@@ -225,7 +418,9 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 				{
 					Index: 0,
 					Delta: domain.CanonicalStreamDelta{
-						Content: ollChunk.Message.Content,
+						Content:          ollChunk.Message.Content,
+						ReasoningContent: ollChunk.Message.Thinking,
+						ToolCalls:        toolCalls,
 					},
 					FinishReason: finishPtr,
 				},

@@ -45,6 +45,51 @@ type BudgetResetOutboxRepository interface {
 	MarkBudgetResetsDelivered(ctx context.Context, ids []string) error
 }
 
+// GlobalModelNameLookup is an optional indexed lookup for hot inference paths.
+// Implementations must return every matching provider model when provider is
+// empty so callers can retain conservative cross-provider pricing bounds.
+type GlobalModelNameLookup interface {
+	ListGlobalModelsByName(ctx context.Context, provider domain.ProviderType, modelName string) ([]*domain.GlobalModel, error)
+}
+
+// GlobalModelPricingSummary is a conservative maximum across all priced models.
+// It lets alias budgets avoid rescanning the catalog on every request.
+type GlobalModelPricingSummary struct {
+	CatalogSize                int
+	PricedModelCount           int
+	InputCostMicrosPer1M       int64
+	CachedInputCostMicrosPer1M int64
+	CacheWriteCostMicrosPer1M  int64
+	OutputCostMicrosPer1M      int64
+	ReasoningCostMicrosPer1M   int64
+	MaxOutputTokens            int
+	HasPricedModels            bool
+	Rebuilt                    bool
+}
+
+// GlobalModelPricingSummaryLookup returns a lazily refreshed pricing maximum.
+// Implementations must invalidate it on every catalog or pricing mutation.
+type GlobalModelPricingSummaryLookup interface {
+	GetGlobalModelPricingSummary(ctx context.Context) (GlobalModelPricingSummary, error)
+}
+
+// GlobalModelCatalogSize provides an O(1) model count for operational metrics.
+type GlobalModelCatalogSize interface {
+	GlobalModelCatalogSize() int
+}
+
+// GlobalModelPricingSummaryMetrics exposes how often full pricing summaries
+// were rebuilt after catalog changes.
+type GlobalModelPricingSummaryMetrics interface {
+	PricingSummaryRebuilds() uint64
+}
+
+// PostgresLookupMetrics exposes low-cardinality counters for read-through
+// fallback queries that occur when the in-memory projection has no value.
+type PostgresLookupMetrics interface {
+	LookupQueryStats() (subscriptionQueries, emptySubscriptionQueries, guardrailQueries, missingGuardrailQueries uint64)
+}
+
 // SpendSummary aggregates financial metrics per organization, team, model, or provider.
 type SpendSummary struct {
 	TotalRequests     int64            `json:"total_requests"`

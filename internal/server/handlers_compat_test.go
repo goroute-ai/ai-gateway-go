@@ -156,6 +156,21 @@ func TestChatCompletions_ExtraBodyAndUnknownFieldsForwarded(t *testing.T) {
 	assert.Equal(t, float64(50), capturedBody["top_k"])
 }
 
+func TestChatCompletions_OversizedBodyReturns413BeforeDispatch(t *testing.T) {
+	gw, _, apiKey := setupCompatTestGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("oversized request must be rejected before upstream dispatch")
+	})
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("x", 10<<20) + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAnthropicRoutes_ReturnAnthropicErrorEnvelope(t *testing.T) {
 	gw, _, apiKey := setupCompatTestGateway(t, func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

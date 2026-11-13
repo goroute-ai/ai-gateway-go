@@ -109,6 +109,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 }
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	apiKey, err := a.getAPIKey(dep)
 	if err != nil {
 		return nil, err
@@ -277,8 +278,11 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 	embedPayload := map[string]any{
 		"model":           model,
 		"texts":           req.Input,
-		"input_type":      "search_document",
+		"input_type":      req.InputType,
 		"embedding_types": []string{"float"},
+	}
+	if req.InputType == "" {
+		embedPayload["input_type"] = "search_document"
 	}
 	bodyBytes, _ := json.Marshal(embedPayload)
 
@@ -409,6 +413,57 @@ func buildChatPayload(req *domain.CanonicalChatRequest, model string, stream boo
 		payload["tools"] = tools
 	}
 
+	if req.ToolChoice != nil {
+		switch tc := req.ToolChoice.(type) {
+		case string:
+			switch strings.ToLower(strings.TrimSpace(tc)) {
+			case "required", "any":
+				payload["tool_choice"] = "REQUIRED"
+			case "none":
+				payload["tool_choice"] = "NONE"
+			case "auto":
+				payload["tool_choice"] = "AUTO"
+			}
+		case map[string]any:
+			payload["tool_choice"] = "REQUIRED"
+		}
+	}
+
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
+		case "json_object":
+			payload["response_format"] = map[string]any{"type": "json_object"}
+		case "json_schema":
+			rf := map[string]any{"type": "json_object"}
+			if len(req.ResponseFormat.JSONSchema) > 0 {
+				schema := any(req.ResponseFormat.JSONSchema)
+				if inner, ok := req.ResponseFormat.JSONSchema["schema"]; ok {
+					schema = inner
+				}
+				rf["schema"] = schema
+			}
+			payload["response_format"] = rf
+		}
+	}
+
+	if req.ReasoningEffort != "" {
+		budget := 4096
+		switch strings.ToLower(strings.TrimSpace(req.ReasoningEffort)) {
+		case "minimal":
+			budget = 512
+		case "low":
+			budget = 1024
+		case "high":
+			budget = 8192
+		case "xhigh", "max":
+			budget = 16384
+		}
+		payload["thinking"] = map[string]any{
+			"type":         "enabled",
+			"token_budget": budget,
+		}
+	}
+
 	return json.Marshal(payload)
 }
 
@@ -418,9 +473,19 @@ func parseChatResponse(data []byte, model string) (*domain.CanonicalChatResponse
 		Message struct {
 			Role    string `json:"role"`
 			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
 			} `json:"content"`
+			Citations []struct {
+				Start   int `json:"start"`
+				End     int `json:"end"`
+				Sources []struct {
+					Type     string         `json:"type"`
+					ID       string         `json:"id"`
+					Document map[string]any `json:"document"`
+				} `json:"sources"`
+			} `json:"citations"`
 			ToolCalls []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -448,8 +513,36 @@ func parseChatResponse(data []byte, model string) (*domain.CanonicalChatResponse
 	}
 
 	var sb strings.Builder
+	var thinkSB strings.Builder
 	for _, c := range resp.Message.Content {
+		if c.Type == "thinking" {
+			if c.Thinking != "" {
+				thinkSB.WriteString(c.Thinking)
+			} else if c.Text != "" {
+				thinkSB.WriteString(c.Text)
+			}
+			continue
+		}
 		sb.WriteString(c.Text)
+	}
+
+	var annotations []domain.Annotation
+	for _, cit := range resp.Message.Citations {
+		for _, src := range cit.Sources {
+			urlStr, _ := src.Document["url"].(string)
+			titleStr, _ := src.Document["title"].(string)
+			if urlStr != "" || titleStr != "" {
+				annotations = append(annotations, domain.Annotation{
+					Type: "url_citation",
+					URLCitation: &domain.URLCitation{
+						URL:        urlStr,
+						Title:      titleStr,
+						StartIndex: cit.Start,
+						EndIndex:   cit.End,
+					},
+				})
+			}
+		}
 	}
 
 	var toolCalls []domain.CanonicalToolCall
@@ -481,9 +574,11 @@ func parseChatResponse(data []byte, model string) (*domain.CanonicalChatResponse
 			{
 				Index: 0,
 				Message: domain.CanonicalMessage{
-					Role:      resp.Message.Role,
-					Content:   sb.String(),
-					ToolCalls: toolCalls,
+					Role:             resp.Message.Role,
+					Content:          sb.String(),
+					ReasoningContent: thinkSB.String(),
+					ToolCalls:        toolCalls,
+					Annotations:      annotations,
 				},
 				FinishReason: mapCohereFinishReason(resp.FinishReason),
 			},

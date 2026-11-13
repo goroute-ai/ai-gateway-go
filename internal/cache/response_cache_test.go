@@ -1,7 +1,9 @@
 package cache
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
@@ -70,6 +72,22 @@ func TestResponseCache_ComputeKeyCollisionResistance(t *testing.T) {
 	}
 }
 
+func TestResponseCacheMetricsTrackL1HitsAndEpochLookups(t *testing.T) {
+	rc := NewResponseCache(true, time.Hour, nil)
+	response := &domain.CanonicalChatResponse{Model: "model-a"}
+	rc.SetWithMeta(context.Background(), "key-a", "org-a", response)
+	if _, hit := rc.Get(context.Background(), "key-a"); !hit {
+		t.Fatal("expected L1 cache hit")
+	}
+	metrics := rc.Metrics()
+	if metrics.L1Hits != 1 || metrics.L1Misses != 0 {
+		t.Fatalf("L1 hit metrics = %+v", metrics)
+	}
+	if metrics.EpochChecks != 2 {
+		t.Fatalf("epoch checks = %d, want Set and Get checks", metrics.EpochChecks)
+	}
+}
+
 func TestResponseCache_ComputeKeyIncludesAllCanonicalOutputFields(t *testing.T) {
 	rc := NewResponseCache(true, 100, nil)
 	temp := 0.0
@@ -110,5 +128,26 @@ func TestResponseCache_ComputeKeyDisablesCachingForUnencodableRequest(t *testing
 	key := rc.ComputeKey("org-1", &domain.CanonicalChatRequest{Model: "model-a", ExtraParams: map[string]any{"invalid": func() {}}})
 	if key != "" {
 		t.Fatalf("expected unencodable request to disable caching, got key %q", key)
+	}
+}
+
+func TestResponseCache_L1CapacityEvictsLeastRecentlyUsedEntry(t *testing.T) {
+	rc := NewResponseCacheWithL1Capacity(true, time.Hour, 2, nil)
+	entry := cacheEntry{ExpiresAt: time.Now().Add(time.Hour)}
+	rc.l1.store("a", entry)
+	rc.l1.store("b", entry)
+	if _, ok := rc.l1.load("a"); !ok { // Make a the most recently used entry.
+		t.Fatal("expected a to be cached")
+	}
+	rc.l1.store("c", entry)
+	if _, ok := rc.l1.load("a"); !ok {
+		t.Fatal("least-recently-used eviction removed a")
+	}
+	if _, ok := rc.l1.load("b"); ok {
+		t.Fatal("expected b to be evicted")
+	}
+	size, capacity, evicted := rc.L1Stats()
+	if size != 2 || capacity != 2 || evicted != 1 {
+		t.Fatalf("L1 stats = (%d,%d,%d), want (2,2,1)", size, capacity, evicted)
 	}
 }

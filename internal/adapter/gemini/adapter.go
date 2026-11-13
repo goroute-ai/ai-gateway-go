@@ -64,28 +64,171 @@ func normalizeModelName(model string) string {
 	return model
 }
 
-// toGeminiRequest translates CanonicalChatRequest into GenerateContentRequest (gemini_api_v1.1.0.yaml).
-func toGeminiRequest(model string, req *domain.CanonicalChatRequest) providers.GeminiGenerateContentRequest {
-	var sysParts []providers.GeminiPart
-	var contents []providers.GeminiContent
+type wireInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+type wireFileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri"`
+}
+
+type wirePart struct {
+	Text             string                            `json:"text,omitempty"`
+	Thought          bool                              `json:"thought,omitempty"`
+	InlineData       *wireInlineData                   `json:"inlineData,omitempty"`
+	FileData         *wireFileData                     `json:"fileData,omitempty"`
+	FunctionCall     *providers.GeminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *providers.GeminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type wireContent struct {
+	Role  string     `json:"role,omitempty"`
+	Parts []wirePart `json:"parts"`
+}
+
+type wireThinkingConfig struct {
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+}
+
+type wireGenerationConfig struct {
+	Temperature        *float64            `json:"temperature,omitempty"`
+	TopP               *float64            `json:"topP,omitempty"`
+	MaxOutputTokens    *int                `json:"maxOutputTokens,omitempty"`
+	StopSequences      []string            `json:"stopSequences,omitempty"`
+	ResponseMimeType   string              `json:"responseMimeType,omitempty"`
+	ResponseJsonSchema any                 `json:"responseJsonSchema,omitempty"`
+	ThinkingConfig     *wireThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type wireFunctionCallingConfig struct {
+	Mode                 string   `json:"mode"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
+type wireToolConfig struct {
+	FunctionCallingConfig *wireFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+type wireGenerateContentRequest struct {
+	Contents          []wireContent          `json:"contents"`
+	SystemInstruction *wireContent           `json:"systemInstruction,omitempty"`
+	Tools             []providers.GeminiTool `json:"tools,omitempty"`
+	ToolConfig        *wireToolConfig        `json:"toolConfig,omitempty"`
+	GenerationConfig  *wireGenerationConfig  `json:"generationConfig,omitempty"`
+}
+
+func parseDataURI(uri string) (mime string, b64 string, ok bool) {
+	if !strings.HasPrefix(uri, "data:") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(uri, "data:")
+	idx := strings.Index(rest, ";base64,")
+	if idx < 0 {
+		return "", "", false
+	}
+	return rest[:idx], rest[idx+len(";base64,"):], true
+}
+
+func translateUserParts(m domain.CanonicalMessage) []wirePart {
+	var parts []wirePart
+	if len(m.Parts) > 0 {
+		for _, p := range m.Parts {
+			switch p.Type {
+			case "text":
+				parts = append(parts, wirePart{Text: p.Text})
+			case "image_url":
+				if p.ImageURL != nil && p.ImageURL.URL != "" {
+					if mime, b64, ok := parseDataURI(p.ImageURL.URL); ok {
+						parts = append(parts, wirePart{
+							InlineData: &wireInlineData{MimeType: mime, Data: b64},
+						})
+					} else {
+						parts = append(parts, wirePart{
+							FileData: &wireFileData{MimeType: "image/jpeg", FileURI: p.ImageURL.URL},
+						})
+					}
+				}
+			case "document":
+				if p.Document != nil {
+					mime := p.Document.MimeType
+					if mime == "" {
+						mime = "application/pdf"
+					}
+					if p.Document.Data != "" {
+						parts = append(parts, wirePart{
+							InlineData: &wireInlineData{MimeType: mime, Data: p.Document.Data},
+						})
+					} else if p.Document.URL != "" {
+						parts = append(parts, wirePart{
+							FileData: &wireFileData{MimeType: mime, FileURI: p.Document.URL},
+						})
+					}
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, wirePart{Text: m.Content})
+	}
+	return parts
+}
+
+func buildGeminiToolConfig(tc any) *wireToolConfig {
+	if tc == nil {
+		return nil
+	}
+	switch v := tc.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "auto":
+			return &wireToolConfig{FunctionCallingConfig: &wireFunctionCallingConfig{Mode: "AUTO"}}
+		case "required", "any":
+			return &wireToolConfig{FunctionCallingConfig: &wireFunctionCallingConfig{Mode: "ANY"}}
+		case "none":
+			return &wireToolConfig{FunctionCallingConfig: &wireFunctionCallingConfig{Mode: "NONE"}}
+		}
+	case map[string]any:
+		if t, _ := v["type"].(string); t == "function" {
+			if fn, ok := v["function"].(map[string]any); ok {
+				if name, _ := fn["name"].(string); name != "" {
+					return &wireToolConfig{
+						FunctionCallingConfig: &wireFunctionCallingConfig{
+							Mode:                 "ANY",
+							AllowedFunctionNames: []string{name},
+						},
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// toGeminiRequest translates CanonicalChatRequest into GenerateContentRequest.
+func toGeminiRequest(model string, req *domain.CanonicalChatRequest) wireGenerateContentRequest {
+	var sysParts []wirePart
+	var contents []wireContent
 
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system", "developer":
 			if strings.TrimSpace(m.Content) != "" {
-				sysParts = append(sysParts, providers.GeminiPart{Text: m.Content})
+				sysParts = append(sysParts, wirePart{Text: m.Content})
 			}
 		case "assistant":
-			var parts []providers.GeminiPart
+			var parts []wirePart
 			if m.Content != "" {
-				parts = append(parts, providers.GeminiPart{Text: m.Content})
+				parts = append(parts, wirePart{Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
 				var args map[string]any
 				if tc.Function.Arguments != "" {
 					_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 				}
-				parts = append(parts, providers.GeminiPart{
+				parts = append(parts, wirePart{
 					FunctionCall: &providers.GeminiFunctionCall{
 						Name: tc.Function.Name,
 						Args: args,
@@ -93,7 +236,7 @@ func toGeminiRequest(model string, req *domain.CanonicalChatRequest) providers.G
 				})
 			}
 			if len(parts) > 0 {
-				contents = append(contents, providers.GeminiContent{
+				contents = append(contents, wireContent{
 					Role:  "model",
 					Parts: parts,
 				})
@@ -107,9 +250,9 @@ func toGeminiRequest(model string, req *domain.CanonicalChatRequest) providers.G
 			if funcName == "" {
 				funcName = m.ToolCallID
 			}
-			contents = append(contents, providers.GeminiContent{
+			contents = append(contents, wireContent{
 				Role: "function",
-				Parts: []providers.GeminiPart{
+				Parts: []wirePart{
 					{
 						FunctionResponse: &providers.GeminiFunctionResponse{
 							Name:     funcName,
@@ -119,18 +262,19 @@ func toGeminiRequest(model string, req *domain.CanonicalChatRequest) providers.G
 				},
 			})
 		default: // "user"
-			contents = append(contents, providers.GeminiContent{
+			contents = append(contents, wireContent{
 				Role:  "user",
-				Parts: []providers.GeminiPart{{Text: m.Content}},
+				Parts: translateUserParts(m),
 			})
 		}
 	}
 
-	out := providers.GeminiGenerateContentRequest{
-		Contents: contents,
+	out := wireGenerateContentRequest{
+		Contents:   contents,
+		ToolConfig: buildGeminiToolConfig(req.ToolChoice),
 	}
 	if len(sysParts) > 0 {
-		out.SystemInstruction = &providers.GeminiContent{
+		out.SystemInstruction = &wireContent{
 			Role:  "user",
 			Parts: sysParts,
 		}
@@ -147,19 +291,57 @@ func toGeminiRequest(model string, req *domain.CanonicalChatRequest) providers.G
 		out.Tools = []providers.GeminiTool{{FunctionDeclarations: decls}}
 	}
 
-	genCfg := &providers.GeminiGenerationConfig{
+	genCfg := &wireGenerationConfig{
 		Temperature:     req.Temperature,
 		TopP:            req.TopP,
 		MaxOutputTokens: req.MaxTokens,
 		StopSequences:   req.Stop,
 	}
-	// When max_tokens is small (<= 16) on Gemini 2.5 Flash without explicit reasoning effort,
-	// set thinkingBudget: 0 so all output tokens go to visible response text rather than internal thought tokens.
-	if req.MaxTokens != nil && *req.MaxTokens <= 16 && req.ReasoningEffort == "" && model == "gemini-2.5-flash" {
-		genCfg.ThinkingConfig = &providers.GeminiThinkingConfig{ThinkingBudget: 0}
+	if req.ReasoningEffort != "" {
+		lowerModel := strings.ToLower(model)
+		effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+		if strings.Contains(lowerModel, "gemini-3") {
+			level := "MEDIUM"
+			switch effort {
+			case "none":
+				level = "MINIMAL"
+			case "minimal", "low":
+				level = "LOW"
+			case "high", "xhigh", "max":
+				level = "HIGH"
+			}
+			genCfg.ThinkingConfig = &wireThinkingConfig{ThinkingLevel: level}
+		} else {
+			budget := 4096
+			switch effort {
+			case "none":
+				budget = 0
+			case "minimal":
+				budget = 512
+			case "low":
+				budget = 1024
+			case "high":
+				budget = 8192
+			case "xhigh", "max":
+				budget = 16384
+			}
+			genCfg.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: &budget}
+		}
+	} else if req.MaxTokens != nil && *req.MaxTokens <= 16 && model == "gemini-2.5-flash" {
+		// When max_tokens is small (<= 16) on Gemini 2.5 Flash without explicit reasoning effort,
+		// set thinkingBudget: 0 so all output tokens go to visible response text rather than internal thought tokens.
+		zero := 0
+		genCfg.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: &zero}
 	}
 	if req.ResponseFormat != nil && (req.ResponseFormat.Type == "json_object" || req.ResponseFormat.Type == "json_schema") {
 		genCfg.ResponseMimeType = "application/json"
+		if req.ResponseFormat.Type == "json_schema" && len(req.ResponseFormat.JSONSchema) > 0 {
+			schema := any(req.ResponseFormat.JSONSchema)
+			if inner, ok := req.ResponseFormat.JSONSchema["schema"]; ok {
+				schema = inner
+			}
+			genCfg.ResponseJsonSchema = schema
+		}
 	}
 	out.GenerationConfig = genCfg
 	return out
@@ -301,6 +483,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 }
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
 		model = dep.GlobalModel.ModelName

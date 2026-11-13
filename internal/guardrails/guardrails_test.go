@@ -534,3 +534,34 @@ func TestEvaluateMCPToolResultHardening(t *testing.T) {
 		t.Fatalf("expected scanner block on tool result with nil result, out=%v err=%v", out, err)
 	}
 }
+
+func BenchmarkEvaluateInputWithPolicyMultimodal(b *testing.B) {
+	eng := &Engine{}
+	pol := &domain.GuardrailPolicy{
+		OrgID:                 "benchmark-org",
+		ScanAllRoles:          false,
+		EnablePromptInjection: true,
+		EnableSecretDetection: true,
+		EnablePIIDetection:    true,
+	}
+	base := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{
+		Role:             "user",
+		Content:          "Please answer with a concise explanation.",
+		ReasoningContent: "private reasoning without sensitive values",
+		Parts:            []domain.ContentPart{{Type: "text", Text: "A second text segment."}},
+		ToolCalls: []domain.CanonicalToolCall{{Function: domain.CanonicalFunctionCall{
+			Name: "search", Arguments: `{"query":"sample records"}`,
+		}}},
+	}}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		request := *base
+		messages := append([]domain.CanonicalMessage(nil), base.Messages...)
+		messages[0].Parts = append([]domain.ContentPart(nil), base.Messages[0].Parts...)
+		messages[0].ToolCalls = append([]domain.CanonicalToolCall(nil), base.Messages[0].ToolCalls...)
+		request.Messages = messages
+		if _, err := eng.EvaluateInputWithPolicy(context.Background(), pol, &request); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

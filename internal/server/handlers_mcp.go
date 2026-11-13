@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
@@ -86,10 +85,7 @@ func (s *GatewayServer) handleMCPDispatch(
 	r *http.Request,
 	dispatchFn func(idCtx *domain.IdentityContext, body []byte) (*mcp.JSONRPCResponse, http.Header, error),
 ) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "req_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 
 	// Validate HTTP transport layer constraints

@@ -22,6 +22,7 @@ import (
 )
 
 const maxImageUploadBytes = 20 << 20
+const maxImagesPerRequest = 10
 
 func readImageMultipart(w http.ResponseWriter, r *http.Request, requirePrompt bool) (imageData []byte, imageName string, maskData []byte, maskName string, err error) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2*maxImageUploadBytes+(1<<20))
@@ -75,10 +76,7 @@ func readImageMultipart(w http.ResponseWriter, r *http.Request, requirePrompt bo
 
 // handleImageGenerations serves `POST /v1/images/generations` and `POST /images/generations`.
 func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "img_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -121,14 +119,15 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	if req.N <= 0 {
 		req.N = 1
 	}
+	if req.N > maxImagesPerRequest {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_image_count", Message: fmt.Sprintf("n must be between 1 and %d", maxImagesPerRequest)})
+		return
+	}
 
 	// 1. RBAC Model Allowlist Check
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, req.Model); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
-		return
-	}
-	if rejectBudgetedUnsupported(w, idCtx) {
 		return
 	}
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt)
@@ -140,7 +139,9 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 	// Include the prompt size as well as each generated image's work allowance.
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateImageCostUpperBound(gm, req.Quality, req.Size, req.N)
+	})
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -248,10 +249,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 // handleImageEdits serves `POST /v1/images/edits` and `POST /images/edits`.
 func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "img_edit_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 
 	idCtx := auth.IdentityFromContext(r.Context())
@@ -296,9 +294,6 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
-		return
-	}
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, prompt)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
@@ -308,9 +303,12 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 
 	n := 1
 	if nStr := r.FormValue("n"); nStr != "" {
-		if parsed, err := strconv.Atoi(nStr); err == nil && parsed > 0 {
-			n = parsed
+		parsed, parseErr := strconv.Atoi(nStr)
+		if parseErr != nil || parsed < 1 || parsed > maxImagesPerRequest {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_image_count", Message: fmt.Sprintf("n must be between 1 and %d", maxImagesPerRequest)})
+			return
 		}
+		n = parsed
 	}
 
 	size := r.FormValue("size")
@@ -330,12 +328,23 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		MaskData:      maskData,
 		MaskFilename:  maskName,
 	}
-
-	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
+	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
+	})
 	if err != nil {
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+
+	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
+	if err != nil {
+		releaseQuota(-1)
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	releaseQuota(estTokens)
 	for i := range resp.Data {
 		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
 		if err != nil {
@@ -355,23 +364,36 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
+	numImages := len(resp.Data)
+	if numImages <= 0 {
+		numImages = n
+	}
+	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, numImages)
+	pricingStatus := domain.ResolvePricingStatus(gm)
+	var provenance string
+	if gm != nil {
+		provenance = gm.PricingProvenanceSource
+	}
 	if !s.persistSpendEvent(w, r, domain.SpendEvent{
-		ID:             "sp_" + uuid.NewString(),
-		RequestID:      reqID,
-		OrgID:          idCtx.OrgID,
-		TeamID:         idCtx.TeamID,
-		UserID:         idCtx.UserID,
-		VirtualKeyID:   idCtx.VirtualKeyID,
-		Endpoint:       "/v1/images/edits",
-		Modality:       domain.ModalityImage,
-		RequestedModel: model,
-		ResolvedModel:  resp.Model,
-		DeploymentID:   depID,
-		PricingVersion: pricingVer,
-		CostMicros:     costMicros,
-		StatusCode:     http.StatusOK,
-		CreatedAt:      time.Now().UTC(),
+		ID:                      "sp_" + uuid.NewString(),
+		RequestID:               reqID,
+		OrgID:                   idCtx.OrgID,
+		TeamID:                  idCtx.TeamID,
+		UserID:                  idCtx.UserID,
+		VirtualKeyID:            idCtx.VirtualKeyID,
+		Endpoint:                "/v1/images/edits",
+		Provider:                resp.Provider,
+		RequestedModel:          model,
+		ResolvedModel:           resp.Model,
+		DeploymentID:            depID,
+		PricingVersion:          pricingVer,
+		PricingStatus:           pricingStatus,
+		PricingProvenanceSource: provenance,
+		CostMicros:              costMicros,
+		StatusCode:              http.StatusOK,
+		Modality:                domain.ModalityImage,
+		ModalityUnits:           map[string]any{"images_count": numImages, "quality": "standard", "size": size},
+		CreatedAt:               time.Now().UTC(),
 	}) {
 		return
 	}
@@ -382,10 +404,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 
 // handleImageVariations serves `POST /v1/images/variations` and `POST /images/variations`.
 func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "img_var_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 
 	idCtx := auth.IdentityFromContext(r.Context())
@@ -419,15 +438,14 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
-		return
-	}
-
 	n := 1
 	if nStr := r.FormValue("n"); nStr != "" {
-		if parsed, err := strconv.Atoi(nStr); err == nil && parsed > 0 {
-			n = parsed
+		parsed, parseErr := strconv.Atoi(nStr)
+		if parseErr != nil || parsed < 1 || parsed > maxImagesPerRequest {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_image_count", Message: fmt.Sprintf("n must be between 1 and %d", maxImagesPerRequest)})
+			return
 		}
+		n = parsed
 	}
 
 	size := r.FormValue("size")
@@ -445,12 +463,23 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		ImageData:     imageData,
 		ImageFilename: imageName,
 	}
-
-	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
+	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
+	})
 	if err != nil {
+		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+
+	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
+	if err != nil {
+		releaseQuota(-1)
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	releaseQuota(estTokens)
 	for i := range resp.Data {
 		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
 		if err != nil {
@@ -470,23 +499,36 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, n)
+	numImages := len(resp.Data)
+	if numImages <= 0 {
+		numImages = n
+	}
+	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, numImages)
+	pricingStatus := domain.ResolvePricingStatus(gm)
+	var provenance string
+	if gm != nil {
+		provenance = gm.PricingProvenanceSource
+	}
 	if !s.persistSpendEvent(w, r, domain.SpendEvent{
-		ID:             "sp_" + uuid.NewString(),
-		RequestID:      reqID,
-		OrgID:          idCtx.OrgID,
-		TeamID:         idCtx.TeamID,
-		UserID:         idCtx.UserID,
-		VirtualKeyID:   idCtx.VirtualKeyID,
-		Endpoint:       "/v1/images/variations",
-		Modality:       domain.ModalityImage,
-		RequestedModel: model,
-		ResolvedModel:  resp.Model,
-		DeploymentID:   depID,
-		PricingVersion: pricingVer,
-		CostMicros:     costMicros,
-		StatusCode:     http.StatusOK,
-		CreatedAt:      time.Now().UTC(),
+		ID:                      "sp_" + uuid.NewString(),
+		RequestID:               reqID,
+		OrgID:                   idCtx.OrgID,
+		TeamID:                  idCtx.TeamID,
+		UserID:                  idCtx.UserID,
+		VirtualKeyID:            idCtx.VirtualKeyID,
+		Endpoint:                "/v1/images/variations",
+		Provider:                resp.Provider,
+		RequestedModel:          model,
+		ResolvedModel:           resp.Model,
+		DeploymentID:            depID,
+		PricingVersion:          pricingVer,
+		PricingStatus:           pricingStatus,
+		PricingProvenanceSource: provenance,
+		CostMicros:              costMicros,
+		StatusCode:              http.StatusOK,
+		Modality:                domain.ModalityImage,
+		ModalityUnits:           map[string]any{"images_count": numImages, "quality": "standard", "size": size},
+		CreatedAt:               time.Now().UTC(),
 	}) {
 		return
 	}

@@ -47,7 +47,19 @@ func resolveBaseURL(cred *domain.ProviderCredential) string {
 
 func isReasoningModel(model string) bool {
 	m := strings.ToLower(model)
-	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3")
+	return strings.HasPrefix(m, "o1") ||
+		strings.HasPrefix(m, "o3") ||
+		strings.HasPrefix(m, "o4") ||
+		strings.HasPrefix(m, "gpt-5")
+}
+
+func mapOpenAIReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "max":
+		return "xhigh"
+	default:
+		return effort
+	}
 }
 
 func toOpenAIRequest(model string, req *domain.CanonicalChatRequest, stream bool) providers.OpenAIChatCompletionRequest {
@@ -109,7 +121,7 @@ func toOpenAIRequest(model string, req *domain.CanonicalChatRequest, stream bool
 		MaxTokens:       req.MaxTokens,
 		Stop:            req.Stop,
 		Stream:          stream,
-		ReasoningEffort: req.ReasoningEffort,
+		ReasoningEffort: mapOpenAIReasoningEffort(req.ReasoningEffort),
 		User:            req.User,
 	}
 
@@ -258,6 +270,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 }
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
 		model = dep.GlobalModel.ModelName

@@ -147,7 +147,7 @@ flowchart TB
         Native["Dedicated Native Adapters\n- OpenAI & Azure OpenAI\n- Anthropic Claude (Messages API)\n- Google Gemini (AI Studio)\n- AWS Bedrock (Pure Go SigV4 + EventStream)\n- Google Cloud Vertex AI (OAuth2 JWT)\n- Cohere v2 (Chat & Embed v2)\n- Mistral AI & Ollama (Local/Self-Hosted)"]
         CompatProfiles["Certified OpenAI-Compatible Profiles (30+ Engines)\n- Cerebras · SambaNova · xAI (Grok)\n- Fireworks AI · Together AI · Groq · DeepSeek\n- Perplexity · Cloudflare · Databricks · Snowflake\n- DashScope (Qwen) · Volcengine · BigModel · Moonshot\n- Voyage AI · Jina AI · Replicate · Nvidia NIM · Scaleway"]
         CustomDialect["Custom Dialects & Self-Hosted\n- vLLM / TGI / Ollama / LocalAI\n- Custom base_url, headers, and query params"]
-        CatalogEngine["Embedded Model Catalogue Engine\n- 4,627 curated records\n- Tri-state capabilities & micro-dollar pricing\n- Sub-70ns in-memory lookup"]
+        CatalogEngine["Embedded Model Catalogue Engine\n- 5,493 model/provider records\n- Tri-state capabilities & micro-dollar pricing\n- In-memory lookup"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nAuthorization: Bearer sk-gw-..."| LB
@@ -201,7 +201,7 @@ flowchart TB
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
    - L1 and Redis entries carry global, organization, and model epochs. Each hit validates those epochs against shared Redis state; Redis errors and epoch mismatches become cache misses. Invalidation atomically increments shared epochs, so stale L1 values on other replicas are rejected on their next lookup without relying on Pub/Sub delivery.
 6. **Two-Stage Model Routing (`internal/router`)**:
-   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 4,627-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
+   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 5,493-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
    - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`). Adaptive strategies read and atomically update expiring shared Redis deployment signals; if Redis is unavailable, they use process-local estimates and log that cluster-wide accuracy is unavailable.
 7. **Reliability Loop & Provider OpenAPI Translation (`internal/router/reliability.go` + `internal/adapter`)**:
    - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`).

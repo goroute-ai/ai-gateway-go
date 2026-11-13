@@ -87,53 +87,12 @@ func Count() int {
 // for the given provider.
 func IsCallableProvider(prov domain.ProviderType) bool {
 	norm := config.NormalizeProvider(string(prov))
-	switch norm {
-	case domain.ProviderOpenAI,
-		domain.ProviderAnthropic,
-		domain.ProviderGemini,
-		domain.ProviderMistral,
-		domain.ProviderOllama,
-		domain.ProviderAzure,
-		domain.ProviderBedrock,
-		domain.ProviderVertex,
-		domain.ProviderCohere,
-		domain.ProviderCerebras,
-		domain.ProviderSambaNova,
-		domain.ProviderXAI,
-		domain.ProviderTogether,
-		domain.ProviderFireworks,
-		domain.ProviderGroq,
-		domain.ProviderDeepSeek,
-		domain.ProviderPerplexity,
-		domain.ProviderAnyscale,
-		domain.ProviderDeepInfra,
-		domain.ProviderNovita,
-		domain.ProviderNebius,
-		domain.ProviderHyperbolic,
-		domain.ProviderLambda,
-		domain.ProviderFriendli,
-		domain.ProviderOpenRouter,
-		domain.ProviderVLLM,
-		domain.ProviderCloudflare,
-		domain.ProviderDatabricks,
-		domain.ProviderSnowflake,
-		domain.ProviderDashScope,
-		domain.ProviderVolcengine,
-		domain.ProviderBigModel,
-		domain.ProviderMoonshot,
-		domain.ProviderMiniMax,
-		domain.ProviderSiliconFlow,
-		domain.ProviderVoyage,
-		domain.ProviderJina,
-		domain.ProviderReplicate,
-		domain.ProviderAI21,
-		domain.ProviderBaseten,
-		domain.ProviderNvidia,
-		domain.ProviderScaleway:
-		return true
-	default:
-		return false
+	for _, p := range domain.AllProviders() {
+		if norm == p {
+			return true
+		}
 	}
+	return false
 }
 
 // All returns all models in the curated catalogue.
@@ -179,7 +138,8 @@ func Lookup(globalModelID string) (*domain.GlobalModel, bool) {
 }
 
 // LookupByProviderAndModel finds a model by its provider and model name,
-// automatically normalizing provider aliases (e.g. "vertex_ai" -> "vertex", "bedrock_converse" -> "bedrock").
+// automatically normalizing provider aliases (e.g. "vertex_ai" -> "vertex", "bedrock_converse" -> "bedrock")
+// and stripping regional prefixes (e.g. "us.", "eu.", "apac.", "global.") on fallback.
 func LookupByProviderAndModel(prov domain.ProviderType, modelName string) (*domain.GlobalModel, bool) {
 	EnsureLoaded()
 	normProv := config.NormalizeProvider(string(prov))
@@ -187,10 +147,78 @@ func LookupByProviderAndModel(prov domain.ProviderType, modelName string) (*doma
 	pnKey := fmt.Sprintf("%s/%s", strings.ToLower(string(normProv)), strings.ToLower(cleanModel))
 	if m, ok := modelsByPN[pnKey]; ok {
 		cp := *m
+		backfillInferredModelFields(&cp, cleanModel)
 		return &cp, true
 	}
+	if stripped := StripRegionalModelPrefix(cleanModel); stripped != cleanModel {
+		pnStripped := fmt.Sprintf("%s/%s", strings.ToLower(string(normProv)), strings.ToLower(stripped))
+		if m, ok := modelsByPN[pnStripped]; ok {
+			cp := *m
+			backfillInferredModelFields(&cp, cleanModel)
+			return &cp, true
+		}
+	}
 	// Try direct lookup with normalized provider
-	return Lookup(fmt.Sprintf("%s/%s", normProv, cleanModel))
+	if m, ok := Lookup(fmt.Sprintf("%s/%s", normProv, cleanModel)); ok {
+		backfillInferredModelFields(m, cleanModel)
+		return m, true
+	}
+	return ApplyGeneralizations(normProv, cleanModel)
+}
+
+// ApplyGeneralizations synthesizes conservative model metadata for a recognized
+// family when its exact model ID is absent from the embedded catalog. It never
+// infers pricing; unknown pricing remains fail-closed for budgeted requests.
+func ApplyGeneralizations(prov domain.ProviderType, modelName string) (*domain.GlobalModel, bool) {
+	normProv := domain.ProviderType(config.NormalizeProvider(string(prov)))
+	cleanName := strings.TrimSpace(modelName)
+	inf := InferFamilyCapabilities(cleanName)
+	if normProv == "" || cleanName == "" || !inf.Inferred || !IsCallableProvider(normProv) {
+		return nil, false
+	}
+	if stripped := StripRegionalModelPrefix(cleanName); stripped != "" {
+		cleanName = stripped
+	}
+	return &domain.GlobalModel{
+		ID:                fmt.Sprintf("%s/%s", normProv, cleanName),
+		Provider:          normProv,
+		ModelName:         cleanName,
+		DisplayName:       cleanName,
+		MaxInputTokens:    inf.MaxInputTokens,
+		MaxOutputTokens:   inf.MaxOutputTokens,
+		Capabilities:      inf.Capabilities,
+		SupportsInference: true,
+		SupportsStreaming: inf.Capabilities.Streaming == domain.CapabilitySupported,
+		SupportsTools:     inf.Capabilities.Tools == domain.CapabilitySupported,
+		SupportsVision:    inf.Capabilities.Vision == domain.CapabilitySupported,
+		SupportsReasoning: inf.Capabilities.Reasoning == domain.CapabilitySupported,
+		SupportedOperations: []domain.OperationType{
+			domain.OperationChat,
+		},
+		PricingStatus:           domain.PricingStatusUnknown,
+		PricingProvenanceSource: inf.Source,
+		LifecycleStatus:         domain.ModelStatusActive,
+	}, true
+}
+
+func backfillInferredModelFields(model *domain.GlobalModel, modelName string) {
+	if model == nil {
+		return
+	}
+	model.Capabilities, _ = BackfillCapabilities(model.Capabilities, modelName)
+	if inf := InferFamilyCapabilities(modelName); inf.Inferred {
+		if model.MaxInputTokens <= 0 {
+			model.MaxInputTokens = inf.MaxInputTokens
+		}
+		if model.MaxOutputTokens <= 0 {
+			model.MaxOutputTokens = inf.MaxOutputTokens
+		}
+	}
+	resolved := model.ResolveCapabilities()
+	model.SupportsStreaming = resolved.Streaming == domain.CapabilitySupported
+	model.SupportsTools = resolved.Tools == domain.CapabilitySupported
+	model.SupportsVision = resolved.Vision == domain.CapabilitySupported
+	model.SupportsReasoning = resolved.Reasoning == domain.CapabilitySupported
 }
 
 // Search returns all models matching provider and optional query substring.
