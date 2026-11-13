@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -31,6 +32,7 @@ type RouterService struct {
 	redisFabric *storage.RedisFabric
 	signer      *GatewayCardSigner
 	verifier    *UpstreamCardVerifier
+	guardrails  *guardrails.Engine
 }
 
 // NewRouterService constructs a new A2A RouterService.
@@ -55,6 +57,13 @@ func NewRouterService(
 		redisFabric: redisFabric,
 		signer:      signer,
 		verifier:    verifier,
+	}
+}
+
+// SetGuardrails attaches a guardrails engine to evaluate inbound and outbound A2A messages.
+func (s *RouterService) SetGuardrails(g *guardrails.Engine) {
+	if s != nil {
+		s.guardrails = g
 	}
 }
 
@@ -102,6 +111,13 @@ func (s *RouterService) SendMessage(
 		return nil, &A2AError{
 			Code:    CodeAgentKilled,
 			Message: fmt.Sprintf("Agent %q is disabled by administrator emergency kill-switch", agentSlug),
+		}
+	}
+
+	// 3b. Inbound Guardrails Evaluation on text parts
+	if s.guardrails != nil {
+		if err := s.evaluateInboundMessage(ctx, orgID, req.Message); err != nil {
+			return nil, err
 		}
 	}
 
@@ -190,6 +206,16 @@ func (s *RouterService) SendMessage(
 		task.UpdatedAt = time.Now().UTC()
 		_ = s.repo.UpdateA2ATaskState(ctx, task.ID, task.State, task.OutputMessageJSON, task.TotalCostMicros)
 		return nil, err
+	}
+
+	// 6b. Outbound Guardrails Sanitization on text parts
+	if s.guardrails != nil && upstreamResp != nil {
+		if err := s.sanitizeOutboundResponse(ctx, orgID, upstreamResp); err != nil {
+			task.State = domain.A2ATaskStateFailed
+			task.UpdatedAt = time.Now().UTC()
+			_ = s.repo.UpdateA2ATaskState(ctx, task.ID, task.State, task.OutputMessageJSON, task.TotalCostMicros)
+			return nil, err
+		}
 	}
 
 	// 7. Record upstream response event & update task state
@@ -549,4 +575,98 @@ func (s *RouterService) domainTaskToProto(ctx context.Context, t *domain.A2ATask
 	}
 
 	return protoTask
+}
+
+func (s *RouterService) evaluateInboundMessage(ctx context.Context, orgID string, msg *pb.Message) error {
+	if msg == nil {
+		return nil
+	}
+	var textRefs []*pb.Part_Text
+	var contentParts []domain.ContentPart
+	for _, p := range msg.Parts {
+		if tp, ok := p.Content.(*pb.Part_Text); ok && tp.Text != "" {
+			textRefs = append(textRefs, tp)
+			contentParts = append(contentParts, domain.ContentPart{Type: "text", Text: tp.Text})
+		}
+	}
+	if len(textRefs) == 0 {
+		return nil
+	}
+
+	chatReq := &domain.CanonicalChatRequest{
+		Messages: []domain.CanonicalMessage{{
+			Role:  "user",
+			Parts: contentParts,
+		}},
+	}
+	if _, err := s.guardrails.EvaluateInput(ctx, orgID, chatReq); err != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(err, &gwErr) {
+			if gwErr.StatusCode >= 500 {
+				return gwErr
+			}
+			return &A2AError{
+				Code:    CodeInvalidTaskPayload,
+				Message: gwErr.Message,
+			}
+		}
+		return &A2AError{
+			Code:    CodeInvalidTaskPayload,
+			Message: err.Error(),
+		}
+	}
+
+	for i, tp := range textRefs {
+		tp.Text = chatReq.Messages[0].Parts[i].Text
+	}
+	return nil
+}
+
+func (s *RouterService) sanitizeOutboundResponse(ctx context.Context, orgID string, resp *pb.SendMessageResponse) error {
+	if resp == nil {
+		return nil
+	}
+	if msg := resp.GetMessage(); msg != nil {
+		if err := s.sanitizeParts(ctx, orgID, msg.Parts); err != nil {
+			return err
+		}
+	}
+	if task := resp.GetTask(); task != nil {
+		if status := task.GetStatus(); status != nil && status.GetMessage() != nil {
+			if err := s.sanitizeParts(ctx, orgID, status.GetMessage().Parts); err != nil {
+				return err
+			}
+		}
+		for _, histMsg := range task.GetHistory() {
+			if histMsg != nil {
+				if err := s.sanitizeParts(ctx, orgID, histMsg.Parts); err != nil {
+					return err
+				}
+			}
+		}
+		for _, art := range task.GetArtifacts() {
+			if art != nil {
+				if err := s.sanitizeParts(ctx, orgID, art.Parts); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *RouterService) sanitizeParts(ctx context.Context, orgID string, parts []*pb.Part) error {
+	for _, p := range parts {
+		if p == nil {
+			continue
+		}
+		if tp, ok := p.Content.(*pb.Part_Text); ok && tp.Text != "" {
+			sanitized, _, err := s.guardrails.SanitizeTextOutput(ctx, orgID, tp.Text)
+			if err != nil {
+				return err
+			}
+			tp.Text = sanitized
+		}
+	}
+	return nil
 }

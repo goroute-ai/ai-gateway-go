@@ -78,6 +78,11 @@ func (b *OpenAIBridge) HandleChatCompletion(
 	// 3. Dispatch to RouterService
 	resp, err := b.router.SendMessage(ctx, idCtx, agentSlug, sendReq)
 	if err != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(err, &gwErr) {
+			domain.WriteHTTPError(w, gwErr)
+			return
+		}
 		var a2aErr *A2AError
 		if errors.As(err, &a2aErr) {
 			statusCode := http.StatusInternalServerError

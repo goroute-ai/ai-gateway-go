@@ -195,6 +195,12 @@ func (s *GatewayServer) handleA2ASubscribeTask(w http.ResponseWriter, r *http.Re
 }
 
 func (s *GatewayServer) writeA2AError(w http.ResponseWriter, err error) {
+	var gwErr *domain.GatewayError
+	if errors.As(err, &gwErr) {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+
 	var a2aErr *a2a.A2AError
 	statusCode := http.StatusInternalServerError
 	errCode := "internal_error"
