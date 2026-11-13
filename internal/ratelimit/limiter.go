@@ -25,6 +25,9 @@ var recordSpendLua string
 //go:embed scripts/reset_budget_spend.lua
 var resetBudgetSpendLua string
 
+//go:embed scripts/renew_reservation.lua
+var renewReservationLua string
+
 // Limiter enforces RPM, TPM, Concurrency, and Budget limits across Virtual Key, Team, and Organization scopes.
 // Uses atomic Redis Lua scripts; configured quotas fail closed when Redis is unavailable.
 type Limiter struct {
@@ -33,6 +36,7 @@ type Limiter struct {
 	reconcileScr   *redis.Script
 	spendScr       *redis.Script
 	resetBudgetScr *redis.Script
+	renewScr       *redis.Script
 	windowSec      int
 	concTTLSec     int
 }
@@ -50,6 +54,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		reconcileScr:   redis.NewScript(reconcileLua),
 		spendScr:       redis.NewScript(recordSpendLua),
 		resetBudgetScr: redis.NewScript(resetBudgetSpendLua),
+		renewScr:       redis.NewScript(renewReservationLua),
 		windowSec:      windowSec,
 		concTTLSec:     concTTLSec,
 	}
@@ -206,24 +211,64 @@ func budgetUnavailableError() *domain.GatewayError {
 
 // RecordSpendIncrement updates real-time spend counters in Redis so subsequent admissions observe completed spend.
 func (l *Limiter) RecordSpendIncrement(ctx context.Context, keyID, teamID, orgID string, costMicros int64) {
-	l.RecordSpendIncrementForRequest(ctx, "", keyID, teamID, orgID, costMicros)
+	_ = l.RecordSpendIncrementForEvent(ctx, "", "", keyID, teamID, orgID, costMicros)
 }
 
 // RecordSpendIncrementForRequest atomically replaces a matching request's
 // outstanding reservations with its actual cost and updates all spend scopes.
-func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID, keyID, teamID, orgID string, costMicros int64) {
-	if costMicros <= 0 {
-		if requestID == "" {
-			return
-		}
-	}
+func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID, keyID, teamID, orgID string, costMicros int64) error {
+	return l.RecordSpendIncrementForEvent(ctx, "", requestID, keyID, teamID, orgID, costMicros)
+}
 
-	if l.redis != nil && l.redis.Client() != nil {
-		_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			keys := spendKeys(keyID, teamID, orgID)
-			return l.spendScr.Run(ctx, rdb, keys, requestID, costMicros).Result()
-		})
+// RecordSpendIncrementForEvent idempotently applies spend for eventID (falling back to requestID)
+// and atomically removes any matching request reservations across all scopes.
+func (l *Limiter) RecordSpendIncrementForEvent(ctx context.Context, eventID, requestID, keyID, teamID, orgID string, costMicros int64) error {
+	if costMicros <= 0 && requestID == "" {
+		return nil
 	}
+	if l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	effectiveEventID := eventID
+	if effectiveEventID == "" {
+		effectiveEventID = requestID
+	}
+	keys := spendKeys(keyID, teamID, orgID)
+	if effectiveEventID != "" {
+		tag := orgHashTag(orgID)
+		keys = append(keys, fmt.Sprintf("gw:spend:applied:%s:%s", tag, effectiveEventID))
+	}
+	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return l.spendScr.Run(ctx, rdb, keys, requestID, costMicros, effectiveEventID).Result()
+	})
+	return err
+}
+
+// RenewReservationLease extends the expiration of active budget reservations
+// matching requestID across key, team, and org reservation sorted sets.
+func (l *Limiter) RenewReservationLease(ctx context.Context, idCtx *domain.IdentityContext, requestID string, ttlSec int) error {
+	if idCtx == nil || requestID == "" {
+		return nil
+	}
+	if ttlSec <= 0 {
+		ttlSec = 3600
+	}
+	if l.redis == nil || l.redis.Client() == nil {
+		if hasBudget(idCtx) {
+			return limiterUnavailableError()
+		}
+		return nil
+	}
+	tag := orgHashTag(idCtx.OrgID)
+	keys := []string{
+		fmt.Sprintf("gw:budget:%s:reservations:key:%s", tag, idCtx.VirtualKeyID),
+		fmt.Sprintf("gw:budget:%s:reservations:team:%s", tag, idCtx.TeamID),
+		fmt.Sprintf("gw:budget:%s:reservations:org:%s", tag, idCtx.OrgID),
+	}
+	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return l.renewScr.Run(ctx, rdb, keys, requestID, ttlSec).Result()
+	})
+	return err
 }
 
 // ResetSpendCounters deletes live Redis spend counters for the given entity IDs

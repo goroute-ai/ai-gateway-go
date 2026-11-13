@@ -128,6 +128,9 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
@@ -293,6 +296,9 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, prompt)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
@@ -411,6 +417,9 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
 		domain.WriteHTTPError(w, err)
+		return
+	}
+	if rejectBudgetedUnsupported(w, idCtx) {
 		return
 	}
 

@@ -151,6 +151,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	relMgr.SetHealthMonitor(healthMon)
 
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
+	spendWorker.SetCollector(collector)
 
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)

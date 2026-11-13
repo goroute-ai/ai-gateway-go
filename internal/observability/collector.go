@@ -101,6 +101,7 @@ type TelemetrySnapshot struct {
 	RateLimitRejections      int64                          `json:"rate_limit_rejections"`
 	GuardrailBlocks          int64                          `json:"guardrail_blocks"`
 	GuardrailRedactions      int64                          `json:"guardrail_redactions"`
+	SpendRedisDriftTotal     int64                          `json:"spend_redis_drift_total"`
 	SlowestProvider          string                         `json:"slowest_provider,omitempty"`
 	HighestFailureDeployment string                         `json:"highest_failure_deployment,omitempty"`
 	Providers                map[string]ProviderTelemetry   `json:"providers"`
@@ -160,6 +161,7 @@ type Collector struct {
 	rateLimitRejections int64
 	guardrailBlocks     int64
 	guardrailRedactions int64
+	spendRedisDrift     int64
 	globalLatency       reservoir
 	globalTTFT          reservoir
 	routingMicros       reservoir
@@ -172,6 +174,17 @@ func NewCollector() *Collector {
 		providers:   make(map[string]*providerInternal),
 		deployments: make(map[string]*deploymentInternal),
 	}
+}
+
+// RecordSpendRedisDrift increments the counter for FinOps outbox events whose
+// Redis spend reconciliation could not be completed within max retries.
+func (c *Collector) RecordSpendRedisDrift() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.spendRedisDrift++
 }
 
 // Record ingests telemetry from a single inference request.
@@ -381,6 +394,7 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		RateLimitRejections:      c.rateLimitRejections,
 		GuardrailBlocks:          c.guardrailBlocks,
 		GuardrailRedactions:      c.guardrailRedactions,
+		SpendRedisDriftTotal:     c.spendRedisDrift,
 		SlowestProvider:          slowestProv,
 		HighestFailureDeployment: highestFailDep,
 		Providers:                provMap,
@@ -435,6 +449,10 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 		b.WriteString("# HELP gateway_guardrail_blocks_total Total requests blocked by security guardrails.\n")
 		b.WriteString("# TYPE gateway_guardrail_blocks_total counter\n")
 		b.WriteString(fmt.Sprintf("gateway_guardrail_blocks_total %d\n", snap.GuardrailBlocks))
+
+		b.WriteString("# HELP gateway_finops_redis_drift_total Total FinOps spend events that exhausted Redis reconciliation retries.\n")
+		b.WriteString("# TYPE gateway_finops_redis_drift_total counter\n")
+		b.WriteString(fmt.Sprintf("gateway_finops_redis_drift_total %d\n", snap.SpendRedisDriftTotal))
 
 		for prov, pm := range snap.Providers {
 			b.WriteString(fmt.Sprintf("gateway_provider_requests_total{provider=%q} %d\n", prov, pm.TotalRequests))

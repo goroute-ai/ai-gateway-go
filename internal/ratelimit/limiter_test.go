@@ -4,17 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
-	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 func TestLimiterFailsClosedWithoutRedisForConfiguredLimits(t *testing.T) {
@@ -266,5 +265,108 @@ func TestResetSpendCountersClearsRedisSpendKeys(t *testing.T) {
 	}
 	if err := limiter.ResetSpendCounters(ctx, nil); err != nil {
 		t.Fatalf("empty ResetSpendCounters: %v", err)
+	}
+}
+
+func TestRecordSpendIncrementForEventIsIdempotent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := ratelimit.NewLimiter(redisFabric, 60, 300)
+	ctx := context.Background()
+
+	id := &domain.IdentityContext{
+		VirtualKeyID:       "vk-idem",
+		TeamID:             "team-idem",
+		OrgID:              "org-idem",
+		KeyMaxBudgetMicros: 500,
+	}
+	release, err := limiter.AcquireWithBudget(ctx, id, 10, 100, "req-idem-1")
+	if err != nil {
+		t.Fatalf("acquire with budget: %v", err)
+	}
+	release(10, -2)
+
+	if err := limiter.RecordSpendIncrementForEvent(ctx, "ev-idem-1", "req-idem-1", "vk-idem", "team-idem", "org-idem", 75); err != nil {
+		t.Fatalf("first event spend increment: %v", err)
+	}
+	// Replay with the same event ID must be a strict no-op on spend counters.
+	if err := limiter.RecordSpendIncrementForEvent(ctx, "ev-idem-1", "req-idem-1", "vk-idem", "team-idem", "org-idem", 75); err != nil {
+		t.Fatalf("replay event spend increment: %v", err)
+	}
+
+	for _, scopeKey := range []string{"gw:spend:{org:org-idem}:key:vk-idem", "gw:spend:{org:org-idem}:team:team-idem", "gw:spend:{org:org-idem}:org:org-idem"} {
+		if got, _ := mr.Get(scopeKey); got != "75" {
+			t.Fatalf("%s = %q, want 75", scopeKey, got)
+		}
+	}
+	if members, _ := mr.ZMembers("gw:budget:{org:org-idem}:reservations:key:vk-idem"); len(members) != 0 {
+		t.Fatalf("expected reservation to be removed, remaining: %v", members)
+	}
+
+	// Empty event_id falls back to request_id for idempotency.
+	if err := limiter.RecordSpendIncrementForRequest(ctx, "req-fallback-1", "vk-idem", "team-idem", "org-idem", 25); err != nil {
+		t.Fatalf("first request fallback increment: %v", err)
+	}
+	if err := limiter.RecordSpendIncrementForRequest(ctx, "req-fallback-1", "vk-idem", "team-idem", "org-idem", 25); err != nil {
+		t.Fatalf("replay request fallback increment: %v", err)
+	}
+	if got, _ := mr.Get("gw:spend:{org:org-idem}:key:vk-idem"); got != "100" {
+		t.Fatalf("gw:spend:key:vk-idem = %q, want 100", got)
+	}
+
+	// Unreachable Redis returns an error so SpendWorker can retry via outbox.
+	mr.Close()
+	if err := limiter.RecordSpendIncrementForEvent(ctx, "ev-fail", "req-fail", "vk-idem", "team-idem", "org-idem", 10); err == nil {
+		t.Fatal("expected error when Redis is unreachable")
+	}
+}
+
+func TestRenewReservationLeaseExtendsScoreAndTTL(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := ratelimit.NewLimiter(redisFabric, 60, 300)
+	ctx := context.Background()
+
+	id := &domain.IdentityContext{
+		VirtualKeyID:        "vk-lease",
+		TeamID:              "team-lease",
+		OrgID:               "org-lease",
+		KeyMaxBudgetMicros:  500,
+		TeamMaxBudgetMicros: 500,
+		OrgMaxBudgetMicros:  500,
+	}
+	release, err := limiter.AcquireWithBudget(ctx, id, 10, 100, "req-lease-1")
+	if err != nil {
+		t.Fatalf("acquire with budget: %v", err)
+	}
+	defer release(10, -2)
+
+	resKey := "gw:budget:{org:org-lease}:reservations:key:vk-lease"
+	initialScore, err := mr.ZScore(resKey, "req-lease-1|100")
+	if err != nil {
+		t.Fatalf("initial ZScore: %v", err)
+	}
+
+	if err := limiter.RenewReservationLease(ctx, id, "req-lease-1", 7200); err != nil {
+		t.Fatalf("RenewReservationLease: %v", err)
+	}
+
+	for _, key := range []string{
+		"gw:budget:{org:org-lease}:reservations:key:vk-lease",
+		"gw:budget:{org:org-lease}:reservations:team:team-lease",
+		"gw:budget:{org:org-lease}:reservations:org:org-lease",
+	} {
+		renewedScore, err := mr.ZScore(key, "req-lease-1|100")
+		if err != nil {
+			t.Fatalf("renewed ZScore for %s: %v", key, err)
+		}
+		if renewedScore <= initialScore {
+			t.Fatalf("%s score = %v, want > initial %v", key, renewedScore, initialScore)
+		}
+		if ttl := mr.TTL(key); ttl <= 3660 {
+			t.Fatalf("%s TTL = %v, want > 3660s", key, ttl)
+		}
 	}
 }
