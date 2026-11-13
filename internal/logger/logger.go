@@ -120,8 +120,9 @@ func New(cfg Config) *slog.Logger {
 
 	level := ParseLevel(cfg.Level)
 	opts := &slog.HandlerOptions{
-		Level:     level,
-		AddSource: cfg.AddSource,
+		Level:       level,
+		AddSource:   cfg.AddSource,
+		ReplaceAttr: scrubAttr,
 	}
 
 	var baseHandler slog.Handler
