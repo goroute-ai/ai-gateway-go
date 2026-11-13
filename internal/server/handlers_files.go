@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,69 @@ import (
 )
 
 const maxFileUploadBytes = 512 * 1024 * 1024 // 512 MB
+
+func (s *GatewayServer) maxFileStorageBytesPerOrg() int64 {
+	if s.cfg == nil {
+		return 0
+	}
+	return s.cfg.Server.MaxFileStorageBytesPerOrg
+}
+
+func (s *GatewayServer) orgUsedFileBytes(ctx context.Context, orgID string) (int64, error) {
+	files, err := s.repo.ListFiles(ctx, orgID, "")
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, f := range files {
+		if f != nil && f.Bytes > 0 {
+			total += f.Bytes
+		}
+	}
+	return total, nil
+}
+
+func (s *GatewayServer) reserveOrgUploadBytes(ctx context.Context, orgID string, expectedBytes int64) (int64, error) {
+	maxBytes := s.maxFileStorageBytesPerOrg()
+	if maxBytes <= 0 {
+		return 0, nil
+	}
+	if expectedBytes < 0 {
+		expectedBytes = 0
+	}
+
+	used, err := s.orgUsedFileBytes(ctx, orgID)
+	if err != nil {
+		return 0, err
+	}
+
+	s.uploadInFlightMu.Lock()
+	defer s.uploadInFlightMu.Unlock()
+	if s.uploadInFlight == nil {
+		s.uploadInFlight = make(map[string]int64)
+	}
+	inFlight := s.uploadInFlight[orgID]
+	if used+inFlight+expectedBytes > maxBytes {
+		return 0, fmt.Errorf("organization file storage quota exceeded (%d / %d bytes)", used+inFlight+expectedBytes, maxBytes)
+	}
+	if expectedBytes > 0 {
+		s.uploadInFlight[orgID] = inFlight + expectedBytes
+	}
+	return expectedBytes, nil
+}
+
+func (s *GatewayServer) releaseOrgUploadBytes(orgID string, reserved int64) {
+	if reserved <= 0 {
+		return
+	}
+	s.uploadInFlightMu.Lock()
+	defer s.uploadInFlightMu.Unlock()
+	if cur := s.uploadInFlight[orgID] - reserved; cur > 0 {
+		s.uploadInFlight[orgID] = cur
+	} else {
+		delete(s.uploadInFlight, orgID)
+	}
+}
 
 func getStorageDir() string {
 	dir := os.Getenv("GOROUTE_FILES_DIR")
@@ -43,6 +107,21 @@ func (s *GatewayServer) handleUploadFile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if s.uploadSem != nil {
+		select {
+		case s.uploadSem <- struct{}{}:
+			defer func() { <-s.uploadSem }()
+		default:
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusTooManyRequests,
+				Type:       domain.ErrorTypeRateLimit,
+				Code:       "upload_concurrency_limit",
+				Message:    "Too many concurrent file uploads; please retry shortly",
+			})
+			return
+		}
+	}
+
 	if r.ContentLength > maxFileUploadBytes {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusRequestEntityTooLarge,
@@ -52,6 +131,28 @@ func (s *GatewayServer) handleUploadFile(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
+
+	reservedBytes, err := s.reserveOrgUploadBytes(r.Context(), idCtx.OrgID, r.ContentLength)
+	if err != nil {
+		status := http.StatusRequestEntityTooLarge
+		errType := domain.ErrorTypeInvalidRequest
+		code := "storage_quota_exceeded"
+		if !strings.Contains(err.Error(), "quota exceeded") {
+			status = http.StatusInternalServerError
+			errType = domain.ErrorTypeServer
+			code = "db_error"
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: status,
+			Type:       errType,
+			Code:       code,
+			Message:    err.Error(),
+		})
+		return
+	}
+	defer func() {
+		s.releaseOrgUploadBytes(idCtx.OrgID, reservedBytes)
+	}()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxFileUploadBytes)
 	if err := r.ParseMultipartForm(32 * 1024 * 1024); err != nil {
@@ -82,6 +183,29 @@ func (s *GatewayServer) handleUploadFile(w http.ResponseWriter, r *http.Request)
 	purpose := strings.TrimSpace(r.FormValue("purpose"))
 	if purpose == "" {
 		purpose = "batch"
+	}
+
+	// Re-check quota with actual part size when Content-Length was unknown/chunked.
+	if reservedBytes == 0 && header.Size > 0 {
+		extraReserved, qErr := s.reserveOrgUploadBytes(r.Context(), idCtx.OrgID, header.Size)
+		if qErr != nil {
+			status := http.StatusRequestEntityTooLarge
+			errType := domain.ErrorTypeInvalidRequest
+			code := "storage_quota_exceeded"
+			if !strings.Contains(qErr.Error(), "quota exceeded") {
+				status = http.StatusInternalServerError
+				errType = domain.ErrorTypeServer
+				code = "db_error"
+			}
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: status,
+				Type:       errType,
+				Code:       code,
+				Message:    qErr.Error(),
+			})
+			return
+		}
+		reservedBytes += extraReserved
 	}
 
 	fileID := "file-" + uuid.NewString()

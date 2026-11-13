@@ -1,0 +1,22 @@
+title = "GoRoute AI Gateway Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Narrow allowlist for synthetic test fixtures, dev defaults, and guardrail UI examples"
+paths = [
+  '''^internal/config/config_test\.go$''',
+  '''^internal/logger/scrub_test\.go$''',
+  '''^internal/guardrails/.*_test\.go$''',
+  '''^tests/e2e/.*_test\.go$''',
+  '''^web/src/views/GuardrailsView\.tsx$''',
+  '''^web/dist/assets/GuardrailsView-.*\.js$''',
+  '''^internal/ui/dist/assets/GuardrailsView-.*\.js$''',
+]
+regexes = [
+  '''sk-gw-master-admin-default-key-change-me''',
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  '''gateway-jwt-hmac-secret-change-me''',
+  '''\$\{GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\}''',
+]

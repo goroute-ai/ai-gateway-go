@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,34 +44,37 @@ import (
 
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
 type GatewayServer struct {
-	cfg             *config.Config
-	repo            storage.Repository
-	redisFabric     *storage.RedisFabric
-	reg             *adapter.Registry
-	vault           *auth.Vault
-	authSvc         *auth.Service
-	rbac            *auth.RBACEngine
-	limiter         *ratelimit.Limiter
-	respCache       *cache.ResponseCache
-	modelMgmt       *modelmgmt.Service
-	discovery       *modelmgmt.DiscoveryWorker
-	reliability     *router.ReliabilityManager
-	spendWorker     *finops.SpendWorker
-	collector       *observability.Collector
-	tracer          trace.Tracer
-	tracerShutdown  func(context.Context) error
-	healthMon       *health.Monitor
-	validator       *validation.Validator
-	guardrails      *guardrails.Engine
-	mcpHub          *mcp.Hub
-	a2aRouter       *a2a.RouterService
-	a2aSigner       *a2a.GatewayCardSigner
-	a2aStreamSub    *a2a.StreamSubscriber
-	a2aPublisher    *a2a.StreamPublisher
-	a2aOutboxWorker *a2a.OutboxWorker
-	a2aBridge       *a2a.OpenAIBridge
-	orchestrator    *orchestrator.ToolLoopOrchestrator
-	router          chi.Router
+	cfg              *config.Config
+	repo             storage.Repository
+	redisFabric      *storage.RedisFabric
+	reg              *adapter.Registry
+	vault            *auth.Vault
+	authSvc          *auth.Service
+	rbac             *auth.RBACEngine
+	limiter          *ratelimit.Limiter
+	respCache        *cache.ResponseCache
+	modelMgmt        *modelmgmt.Service
+	discovery        *modelmgmt.DiscoveryWorker
+	reliability      *router.ReliabilityManager
+	spendWorker      *finops.SpendWorker
+	collector        *observability.Collector
+	tracer           trace.Tracer
+	tracerShutdown   func(context.Context) error
+	healthMon        *health.Monitor
+	validator        *validation.Validator
+	guardrails       *guardrails.Engine
+	mcpHub           *mcp.Hub
+	a2aRouter        *a2a.RouterService
+	a2aSigner        *a2a.GatewayCardSigner
+	a2aStreamSub     *a2a.StreamSubscriber
+	a2aPublisher     *a2a.StreamPublisher
+	a2aOutboxWorker  *a2a.OutboxWorker
+	a2aBridge        *a2a.OpenAIBridge
+	orchestrator     *orchestrator.ToolLoopOrchestrator
+	router           chi.Router
+	uploadSem        chan struct{}
+	uploadInFlightMu sync.Mutex
+	uploadInFlight   map[string]int64
 }
 
 // New constructs a fully wired GatewayServer ready to serve requests.
@@ -177,6 +181,11 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	a2aBridge := a2a.NewOpenAIBridge(a2aRouter, a2aStreamSub, repo, rbac)
 	toolOrchestrator := orchestrator.NewToolLoopOrchestrator(relMgr, mcpHub, orchestrator.DefaultBudgetPolicy())
 
+	var uploadSem chan struct{}
+	if cfg.Server.MaxConcurrentFileUploads > 0 {
+		uploadSem = make(chan struct{}, cfg.Server.MaxConcurrentFileUploads)
+	}
+
 	s := &GatewayServer{
 		cfg:             cfg,
 		repo:            repo,
@@ -205,6 +214,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		a2aOutboxWorker: a2aOutboxWorker,
 		a2aBridge:       a2aBridge,
 		orchestrator:    toolOrchestrator,
+		uploadSem:       uploadSem,
+		uploadInFlight:  make(map[string]int64),
 	}
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
