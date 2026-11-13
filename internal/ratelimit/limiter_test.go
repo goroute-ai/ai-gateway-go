@@ -295,12 +295,12 @@ func TestRecordSpendIncrementForEventIsIdempotent(t *testing.T) {
 		t.Fatalf("replay event spend increment: %v", err)
 	}
 
-	for _, scopeKey := range []string{"gw:spend:key:vk-idem", "gw:spend:team:team-idem", "gw:spend:org:org-idem"} {
+	for _, scopeKey := range []string{"gw:spend:{org:org-idem}:key:vk-idem", "gw:spend:{org:org-idem}:team:team-idem", "gw:spend:{org:org-idem}:org:org-idem"} {
 		if got, _ := mr.Get(scopeKey); got != "75" {
 			t.Fatalf("%s = %q, want 75", scopeKey, got)
 		}
 	}
-	if members, _ := mr.ZMembers("gw:budget:reservations:key:vk-idem"); len(members) != 0 {
+	if members, _ := mr.ZMembers("gw:budget:{org:org-idem}:reservations:key:vk-idem"); len(members) != 0 {
 		t.Fatalf("expected reservation to be removed, remaining: %v", members)
 	}
 
@@ -311,7 +311,7 @@ func TestRecordSpendIncrementForEventIsIdempotent(t *testing.T) {
 	if err := limiter.RecordSpendIncrementForRequest(ctx, "req-fallback-1", "vk-idem", "team-idem", "org-idem", 25); err != nil {
 		t.Fatalf("replay request fallback increment: %v", err)
 	}
-	if got, _ := mr.Get("gw:spend:key:vk-idem"); got != "100" {
+	if got, _ := mr.Get("gw:spend:{org:org-idem}:key:vk-idem"); got != "100" {
 		t.Fatalf("gw:spend:key:vk-idem = %q, want 100", got)
 	}
 
@@ -343,7 +343,7 @@ func TestRenewReservationLeaseExtendsScoreAndTTL(t *testing.T) {
 	}
 	defer release(10, -2)
 
-	resKey := "gw:budget:reservations:key:vk-lease"
+	resKey := "gw:budget:{org:org-lease}:reservations:key:vk-lease"
 	initialScore, err := mr.ZScore(resKey, "req-lease-1|100")
 	if err != nil {
 		t.Fatalf("initial ZScore: %v", err)
@@ -354,9 +354,9 @@ func TestRenewReservationLeaseExtendsScoreAndTTL(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"gw:budget:reservations:key:vk-lease",
-		"gw:budget:reservations:team:team-lease",
-		"gw:budget:reservations:org:org-lease",
+		"gw:budget:{org:org-lease}:reservations:key:vk-lease",
+		"gw:budget:{org:org-lease}:reservations:team:team-lease",
+		"gw:budget:{org:org-lease}:reservations:org:org-lease",
 	} {
 		renewedScore, err := mr.ZScore(key, "req-lease-1|100")
 		if err != nil {

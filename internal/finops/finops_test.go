@@ -302,8 +302,8 @@ func TestSpendWorkerRetriesRedisAndRecordsDriftMetric(t *testing.T) {
 	if err := recovered.FlushNow(ctx); err != nil {
 		t.Fatalf("recovered FlushNow failed: %v", err)
 	}
-	if got, _ := mr.Get("gw:spend:key:vk-retry"); got != "120" {
-		t.Fatalf("gw:spend:key:vk-retry = %q, want 120", got)
+	if got, _ := mr.Get("gw:spend:{org:org-retry}:key:vk-retry"); got != "120" {
+		t.Fatalf("tagged spend key = %q, want 120", got)
 	}
 	summary, err := repo.GetSpendSummary(ctx, "")
 	if err != nil {
