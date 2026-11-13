@@ -19,11 +19,15 @@ var closeCircuitLua string
 //go:embed scripts/reopen_half_open.lua
 var reopenHalfOpenLua string
 
+//go:embed scripts/record_circuit_failure.lua
+var recordCircuitFailureLua string
+
 var (
-	allowCircuitProbeScript = redis.NewScript(allowCircuitProbeLua)
-	tripCircuitScript       = redis.NewScript(tripCircuitLua)
-	closeCircuitScript      = redis.NewScript(closeCircuitLua)
-	reopenHalfOpenScript    = redis.NewScript(reopenHalfOpenLua)
+	allowCircuitProbeScript    = redis.NewScript(allowCircuitProbeLua)
+	tripCircuitScript          = redis.NewScript(tripCircuitLua)
+	closeCircuitScript         = redis.NewScript(closeCircuitLua)
+	reopenHalfOpenScript       = redis.NewScript(reopenHalfOpenLua)
+	recordCircuitFailureScript = redis.NewScript(recordCircuitFailureLua)
 )
 
 const circuitProbeLeaseTTL = 5 * time.Minute

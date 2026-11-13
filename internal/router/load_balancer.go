@@ -13,12 +13,41 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const leastBusyReservationTTL = 2 * time.Second
+
 type deploymentTelemetry struct {
-	inFlight    int
-	ewmaTTFTMs  float64
-	usedRPM     int
-	usedTPM     int
-	windowStart time.Time
+	inFlight      int
+	ewmaLatencyMs float64
+	ewmaTTFTMs    float64
+	usedRPM       int
+	usedTPM       int
+	windowStart   time.Time
+	reservations  []time.Time
+}
+
+func (m *deploymentTelemetry) pruneReservations(now time.Time) int {
+	if len(m.reservations) == 0 {
+		return 0
+	}
+	n := 0
+	for _, exp := range m.reservations {
+		if exp.After(now) {
+			m.reservations[n] = exp
+			n++
+		}
+	}
+	m.reservations = m.reservations[:n]
+	return n
+}
+
+func (m *deploymentTelemetry) addReservation(now time.Time, ttl time.Duration) {
+	m.reservations = append(m.reservations, now.Add(ttl))
+}
+
+func (m *deploymentTelemetry) consumeReservation(now time.Time) {
+	if m.pruneReservations(now) > 0 {
+		m.reservations = m.reservations[1:]
+	}
 }
 
 func (m *deploymentTelemetry) checkWindow(now time.Time) {
@@ -110,10 +139,7 @@ func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, cand
 		var best *domain.Deployment
 		minLatency := math.MaxFloat64
 		for _, d := range candidates {
-			lat := signals[d.ID].ewmaTTFTMs
-			if lat <= 0 {
-				lat = 250
-			}
+			lat := effectiveLatencySignal(signals[d.ID])
 			if lat < minLatency {
 				minLatency = lat
 				best = d
@@ -170,21 +196,35 @@ func (lb *LoadBalancer) selectWeightedRandom(candidates []*domain.Deployment) *d
 	return candidates[0]
 }
 
-func (lb *LoadBalancer) selectLeastBusy(candidates []*domain.Deployment) *domain.Deployment {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
+func effectiveLatencySignal(m deploymentTelemetry) float64 {
+	if m.ewmaTTFTMs > 0 {
+		return m.ewmaTTFTMs
+	}
+	if m.ewmaLatencyMs > 0 {
+		return m.ewmaLatencyMs
+	}
+	return 250.0 // Default baseline 250ms for unexplored deployments
+}
 
+func (lb *LoadBalancer) selectLeastBusy(candidates []*domain.Deployment) *domain.Deployment {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	now := time.Now()
 	var best *domain.Deployment
 	minInFlight := math.MaxInt
 	for _, d := range candidates {
 		inFlight := 0
 		if m, ok := lb.metrics[d.ID]; ok {
-			inFlight = m.inFlight
+			inFlight = m.inFlight + m.pruneReservations(now)
 		}
 		if inFlight < minInFlight {
 			minInFlight = inFlight
 			best = d
 		}
+	}
+	if best != nil {
+		lb.getOrCreate(best.ID).addReservation(now, leastBusyReservationTTL)
 	}
 	return best
 }
@@ -197,8 +237,8 @@ func (lb *LoadBalancer) selectLowestLatency(candidates []*domain.Deployment) *do
 	minLatency := math.MaxFloat64
 	for _, d := range candidates {
 		lat := 250.0 // Default baseline 250ms for unexplored deployments
-		if m, ok := lb.metrics[d.ID]; ok && m.ewmaTTFTMs > 0 {
-			lat = m.ewmaTTFTMs
+		if m, ok := lb.metrics[d.ID]; ok {
+			lat = effectiveLatencySignal(*m)
 		}
 		if lat < minLatency {
 			minLatency = lat
@@ -256,9 +296,11 @@ func (lb *LoadBalancer) selectLowestCost(candidates []*domain.Deployment) *domai
 
 // OnRequestStart increments in-flight counters for a deployment.
 func (lb *LoadBalancer) OnRequestStart(depID string) {
+	now := time.Now()
 	lb.mu.Lock()
 	m := lb.getOrCreate(depID)
-	m.checkWindow(time.Now())
+	m.checkWindow(now)
+	m.consumeReservation(now)
 	m.inFlight++
 	m.usedRPM++
 	lb.mu.Unlock()
@@ -266,28 +308,45 @@ func (lb *LoadBalancer) OnRequestStart(depID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), routingSignalTTLSeconds).Result()
+			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), routingSignalTTLSeconds).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")
 		}
 	}
 }
 
-// OnRequestEnd decrements in-flight counters and updates EWMA latency and token usage.
+// OnRequestEnd decrements in-flight counters and updates EWMA total latency and token usage.
 func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens int) {
+	lb.recordRequestEnd(depID, latencyMs, 0, totalTokens)
+}
+
+// OnStreamRequestEnd decrements in-flight counters and updates EWMA total latency, TTFT, and token usage.
+func (lb *LoadBalancer) OnStreamRequestEnd(depID string, latencyMs, ttftMs int64, totalTokens int) {
+	lb.recordRequestEnd(depID, latencyMs, ttftMs, totalTokens)
+}
+
+func (lb *LoadBalancer) recordRequestEnd(depID string, latencyMs, ttftMs int64, totalTokens int) {
+	now := time.Now()
 	lb.mu.Lock()
 	m := lb.getOrCreate(depID)
-	m.checkWindow(time.Now())
+	m.checkWindow(now)
 	if m.inFlight > 0 {
 		m.inFlight--
 	}
 	m.usedTPM += totalTokens
+	const alpha = 0.3
 	if latencyMs > 0 {
-		const alpha = 0.3
-		if m.ewmaTTFTMs == 0 {
-			m.ewmaTTFTMs = float64(latencyMs)
+		if m.ewmaLatencyMs == 0 {
+			m.ewmaLatencyMs = float64(latencyMs)
 		} else {
-			m.ewmaTTFTMs = alpha*float64(latencyMs) + (1-alpha)*m.ewmaTTFTMs
+			m.ewmaLatencyMs = alpha*float64(latencyMs) + (1-alpha)*m.ewmaLatencyMs
+		}
+	}
+	if ttftMs > 0 {
+		if m.ewmaTTFTMs == 0 {
+			m.ewmaTTFTMs = float64(ttftMs)
+		} else {
+			m.ewmaTTFTMs = alpha*float64(ttftMs) + (1-alpha)*m.ewmaTTFTMs
 		}
 	}
 	lb.mu.Unlock()
@@ -295,7 +354,7 @@ func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens 
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), totalTokens, latencyMs, routingSignalTTLSeconds).Result()
+			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), totalTokens, latencyMs, ttftMs, routingSignalTTLSeconds).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")
 		}
