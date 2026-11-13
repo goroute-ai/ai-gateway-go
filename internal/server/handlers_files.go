@@ -63,6 +63,9 @@ func (s *GatewayServer) handleUploadFile(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
