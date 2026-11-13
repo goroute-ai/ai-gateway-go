@@ -90,6 +90,12 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	inputs = guardedInputs
 
 	// Estimate the actual text volume, not only the number of input elements.
 	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)

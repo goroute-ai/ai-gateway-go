@@ -217,3 +217,51 @@ func TestOutputScannerFailureFailsClosedOrOpenAsConfigured(t *testing.T) {
 		t.Fatalf("output scanner error should be ignored in fail-open mode: %v", err)
 	}
 }
+
+func TestSanitizeTextOutputAppliesConfiguredPIIRedaction(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	policy := &domain.GuardrailPolicy{OrgID: "org", RedactOutputPII: true}
+	if err := repo.SetGuardrailPolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	got, changed, err := NewEngine(repo).SanitizeTextOutput(context.Background(), "org", "contact user@example.com")
+	if err != nil || !changed || got != "contact [REDACTED_EMAIL]" {
+		t.Fatalf("sanitized output = %q, changed=%v, err=%v", got, changed, err)
+	}
+}
+
+func TestEvaluateInputScansAndRedactsTextParts(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	_ = repo.SetGuardrailPolicy(context.Background(), &domain.GuardrailPolicy{OrgID: "org", EnablePIIDetection: true, PIIAction: domain.GuardrailActionRedact})
+	req := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Parts: []domain.ContentPart{{Type: "text", Text: "email me at part@example.com"}, {Type: "image_url", ImageURL: &domain.ImageURL{URL: "https://example.test/image.png"}}}}}}
+	_, err := NewEngine(repo).EvaluateInput(context.Background(), "org", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Messages[0].Parts[0].Text != "email me at [REDACTED_EMAIL]" {
+		t.Fatalf("text part was not redacted: %q", req.Messages[0].Parts[0].Text)
+	}
+	if req.Messages[0].Parts[1].ImageURL.URL != "https://example.test/image.png" {
+		t.Fatal("non-text image part should be preserved")
+	}
+}
+
+func TestSanitizeOutputStrictCoversReasoningPartsAndToolArguments(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	_ = repo.SetGuardrailPolicy(context.Background(), &domain.GuardrailPolicy{OrgID: "org", RedactOutputPII: true})
+	resp := &domain.CanonicalChatResponse{Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{
+		Content: "user@example.com", ReasoningContent: "reasoning@example.com",
+		Parts:     []domain.ContentPart{{Type: "text", Text: "part@example.com"}},
+		ToolCalls: []domain.CanonicalToolCall{{Function: domain.CanonicalFunctionCall{Arguments: `{"email":"tool@example.com"}`}}},
+	}}}}
+	changed, err := NewEngine(repo).SanitizeOutputStrict(context.Background(), "org", resp)
+	if err != nil || !changed {
+		t.Fatalf("sanitize output changed=%v err=%v", changed, err)
+	}
+	msg := resp.Choices[0].Message
+	for _, text := range []string{msg.Content, msg.ReasoningContent, msg.Parts[0].Text, msg.ToolCalls[0].Function.Arguments} {
+		if strings.Contains(text, "@example.com") {
+			t.Fatalf("output field leaked an email: %q", text)
+		}
+	}
+}

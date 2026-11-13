@@ -75,6 +75,12 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedPrompts, err := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt.Strings...)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	req.Prompt.Strings = guardedPrompts
 
 	// Estimate each prompt with the model-family tokenizer profile and framing.
 	estTokens := ratelimit.EstimateTextInputsTokens(req.Model, req.Prompt.Strings, 4)
@@ -103,6 +109,13 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
+	for i := range resp.Choices {
+		resp.Choices[i].Text, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Choices[i].Text)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string

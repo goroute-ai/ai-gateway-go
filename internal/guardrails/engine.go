@@ -67,6 +67,17 @@ func (e *Engine) ConfigureScanners(timeout time.Duration, failClosed bool, scann
 	e.scanners = append([]Scanner(nil), scanners...)
 }
 
+func (e *Engine) Policy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error) {
+	if e == nil || e.repo == nil || orgID == "" {
+		return nil, policyUnavailableError()
+	}
+	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	if err != nil {
+		return nil, policyUnavailableError()
+	}
+	return pol, nil
+}
+
 func policyUnavailableError() error {
 	return &domain.GatewayError{
 		StatusCode: http.StatusServiceUnavailable,
@@ -84,9 +95,9 @@ func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.Ca
 	if e == nil || e.repo == nil || orgID == "" {
 		return nil, policyUnavailableError()
 	}
-	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	pol, err := e.Policy(ctx, orgID)
 	if err != nil {
-		return nil, policyUnavailableError()
+		return nil, err
 	}
 	if pol == nil && len(e.scanners) == 0 {
 		return &CheckOutcome{}, nil
@@ -102,6 +113,42 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	outcome := &CheckOutcome{}
 	if e == nil || pol == nil || req == nil {
 		return outcome, nil
+	}
+
+	// Apply the same policy to text carried in multimodal fields and tool arguments.
+	// Images and other binary payloads remain untouched.
+	for mi := range req.Messages {
+		msg := &req.Messages[mi]
+		if msg.Role != "user" {
+			continue
+		}
+		texts := []*string{&msg.ReasoningContent}
+		for ci := range msg.ToolCalls {
+			texts = append(texts, &msg.ToolCalls[ci].Function.Arguments)
+		}
+		for pi := range msg.Parts {
+			if msg.Parts[pi].Type == "text" {
+				texts = append(texts, &msg.Parts[pi].Text)
+			}
+		}
+		for _, field := range texts {
+			if *field == "" {
+				continue
+			}
+			probe := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: *field}}}
+			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
+			if partOutcome != nil {
+				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)
+				if partOutcome.AppliedAction != "" {
+					outcome.AppliedAction = partOutcome.AppliedAction
+				}
+				outcome.Redacted = outcome.Redacted || partOutcome.Redacted
+			}
+			if err != nil {
+				return outcome, err
+			}
+			*field = probe.Messages[0].Content
+		}
 	}
 
 	for idx := range req.Messages {
@@ -244,18 +291,15 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	return outcome, nil
 }
 
-// SanitizeOutput redacts sensitive data and invokes configured optional scanners.
+// SanitizeOutput redacts sensitive data and scans every textual output field.
 // Callers must withhold output when this method returns an error.
 func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
 	if resp == nil {
 		return false, nil
 	}
-	if e == nil || e.repo == nil || orgID == "" {
-		return false, policyUnavailableError()
-	}
-	pol, err := e.repo.GetGuardrailPolicy(ctx, orgID)
+	pol, err := e.Policy(ctx, orgID)
 	if err != nil {
-		return false, policyUnavailableError()
+		return false, err
 	}
 	if pol == nil && len(e.scanners) == 0 {
 		return false, nil
@@ -263,52 +307,99 @@ func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.
 	if pol == nil {
 		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
-
 	redacted := false
 	for i := range resp.Choices {
-		c := &resp.Choices[i].Message.Content
-		orig := *c
-		if pol != nil && pol.RedactOutputPII {
-			updated := reEmail.ReplaceAllString(orig, "[REDACTED_EMAIL]")
-			updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
-			updated = reCard.ReplaceAllString(updated, "[REDACTED_CARD]")
-			updated = reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
-			if updated != orig {
-				*c = updated
-				redacted = true
+		msg := &resp.Choices[i].Message
+		fields := []*string{&msg.Content, &msg.ReasoningContent}
+		for pi := range msg.Parts {
+			if msg.Parts[pi].Type == "text" {
+				fields = append(fields, &msg.Parts[pi].Text)
 			}
 		}
-		for _, scanner := range e.scanners {
-			scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
-			result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: orgID, Direction: ScanOutput, Content: *c})
-			cancel()
-			if err != nil {
-				logger.WarnContext(ctx, "Optional guardrail output scanner failed", slog.String("component", "guardrails"), slog.String("org_id", orgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
-				if e.scannerFailClosed {
-					return redacted, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "response could not be scanned by the configured security scanner"}
+		for ci := range msg.ToolCalls {
+			fields = append(fields, &msg.ToolCalls[ci].Function.Arguments)
+		}
+		for _, field := range fields {
+			if pol.RedactOutputPII {
+				updated := sanitizeText(*field)
+				if updated != *field {
+					*field = updated
+					redacted = true
 				}
-				continue
 			}
-			if result.Decision == ScannerDecisionBlock {
-				return redacted, &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_blocked", Message: "response withheld by configured security scanner"}
-			}
-			if result.Decision != ScannerDecisionAllow {
-				logger.WarnContext(ctx, "Optional guardrail output scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", orgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
-				if e.scannerFailClosed {
-					return redacted, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "response could not be scanned by the configured security scanner"}
-				}
+			if err := e.scanText(ctx, orgID, ScanOutput, *field); err != nil {
+				return redacted, err
 			}
 		}
 	}
-
 	if redacted {
-		logger.WarnContext(ctx, "Output guardrail redacted sensitive content from completion",
-			slog.String("component", "guardrails"),
-			slog.String("org_id", orgID),
-		)
+		logger.WarnContext(ctx, "Output guardrail redacted sensitive content from completion", slog.String("component", "guardrails"), slog.String("org_id", orgID))
 	}
-
 	return redacted, nil
+}
+
+// SanitizeOutputStrict is retained for callers that require the policy error explicitly.
+func (e *Engine) SanitizeOutputStrict(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
+	return e.SanitizeOutput(ctx, orgID, resp)
+}
+
+func (e *Engine) SanitizeTextOutput(ctx context.Context, orgID, text string) (string, bool, error) {
+	pol, err := e.Policy(ctx, orgID)
+	if err != nil {
+		return "", false, err
+	}
+	if pol == nil && len(e.scanners) == 0 {
+		return text, false, nil
+	}
+	redacted := false
+	if pol != nil && pol.RedactOutputPII {
+		updated := sanitizeText(text)
+		redacted = updated != text
+		text = updated
+	}
+	if err := e.scanText(ctx, orgID, ScanOutput, text); err != nil {
+		return "", redacted, err
+	}
+	return text, redacted, nil
+}
+
+func sanitizeText(text string) string {
+	updated := reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
+	updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
+	updated = reCard.ReplaceAllString(updated, "[REDACTED_CARD]")
+	return reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
+}
+
+func (e *Engine) scanText(ctx context.Context, orgID string, direction ScanDirection, content string) error {
+	for _, scanner := range e.scanners {
+		scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
+		result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: orgID, Direction: direction, Content: content})
+		cancel()
+		if err != nil {
+			logger.WarnContext(ctx, "Optional guardrail scanner failed", slog.String("component", "guardrails"), slog.String("org_id", orgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
+			if e.scannerFailClosed {
+				return &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "content could not be scanned by the configured security scanner"}
+			}
+			continue
+		}
+		if result.Decision == ScannerDecisionBlock {
+			status := http.StatusBadRequest
+			message := "content blocked by configured security scanner"
+			code := "guardrail_scanner_blocked"
+			if direction == ScanOutput {
+				status = http.StatusBadGateway
+				message = "response withheld by configured security scanner"
+			}
+			return &domain.GatewayError{StatusCode: status, Type: domain.ErrorTypeServer, Code: code, Message: message}
+		}
+		if result.Decision != ScannerDecisionAllow {
+			logger.WarnContext(ctx, "Optional guardrail scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", orgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
+			if e.scannerFailClosed {
+				return &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "content could not be scanned by the configured security scanner"}
+			}
+		}
+	}
+	return nil
 }
 
 func scannerErrorKind(err error) string {

@@ -177,6 +177,14 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		cacheKey = s.respCache.ComputeKey(idCtx.OrgID, &chatReq)
 		if cacheKey != "" {
 			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
+				redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+				if sanitizeErr != nil {
+					domain.WriteHTTPError(w, sanitizeErr)
+					return
+				}
+				if redacted {
+					w.Header().Set("X-Gateway-Output-Redacted", "true")
+				}
 				actualTokensReconciled = true
 				releaseQuota(0)
 				s.collector.Record(observability.RequestObservation{
@@ -184,7 +192,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 					Model:             cachedResp.Model,
 					StatusCode:        http.StatusOK,
 					CacheHit:          true,
-					GuardrailRedacted: guardrailRedacted,
+					GuardrailRedacted: guardrailRedacted || redacted,
 				})
 				cachedGM, _ := s.repo.GetGlobalModel(r.Context(), string(cachedResp.Provider)+"/"+cachedResp.Model)
 				if cachedGM == nil {
@@ -241,6 +249,15 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	// 4. Streaming SSE Execution Path
 	if chatReq.Stream {
+		policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
+		if policyErr != nil {
+			domain.WriteHTTPError(w, policyErr)
+			return
+		}
+		if policy != nil && policy.RedactOutputPII {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
+			return
+		}
 		sseWriter, err := sse.NewWriter(w)
 		if err != nil {
 			domain.WriteHTTPError(w, err)
@@ -451,8 +468,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	releaseQuota(resp.Usage.TotalTokens)
 
 	// Output Guardrail PII sanitization (if enabled on the organization)
-	outputRedacted, guardrailOutputErr := s.guardrails.SanitizeOutput(r.Context(), idCtx.OrgID, resp)
-	if outputRedacted {
+	redacted, guardrailOutputErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, resp)
+	if redacted {
 		guardrailRedacted = true
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
@@ -612,11 +629,16 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, raw.Model); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	inputs = guardedInputs
 
 	estTokens := ratelimit.EstimateTextInputsTokens(raw.Model, inputs, 4)
 	inputByteBound := 0

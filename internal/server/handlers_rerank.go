@@ -77,12 +77,33 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
 	// 1. RBAC Model Allowlist Check
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, req.Model); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	guardedQuery, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Query)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	req.Query = guardedQuery[0]
+	for i := range req.Documents {
+		guardedText, err := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Documents[i].Text)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		req.Documents[i].Text = guardedText[0]
+		if req.Documents[i].Raw != nil {
+			updated, err := s.guardrailInputValue(r.Context(), idCtx.OrgID, req.Documents[i].Raw)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			req.Documents[i].Raw = updated.(map[string]any)
+		}
 	}
 
 	// Account for query and document lengths, including structured documents.
@@ -104,6 +125,17 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
+	for i := range resp.Results {
+		if resp.Results[i].Document == nil {
+			continue
+		}
+		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Results[i].Document)
+		if sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		resp.Results[i].Document = updated.(map[string]any)
+	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string
