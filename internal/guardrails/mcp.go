@@ -279,7 +279,7 @@ func (e *Engine) EvaluateMCPToolResult(
 	}
 
 	// 4. Optional external scanners
-	if err := e.scanText(ctx, orgID, ScanOutput, resultStr); err != nil {
+	if err := e.scanOutputField(ctx, pol, pol.EffectiveMode() == domain.GuardrailModeLoggingOnly, resultStr, outcome); err != nil {
 		return outcome, nil, err
 	}
 

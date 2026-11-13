@@ -785,11 +785,13 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 	}
 	const q = `
 		INSERT INTO guardrail_policies (
-			org_id, enable_prompt_injection, prompt_injection_action,
+			org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action,
 			enable_pii_detection, pii_action, enable_secret_detection,
 			secret_action, blocked_keywords, redact_output_pii, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
 		ON CONFLICT (org_id) DO UPDATE SET
+			mode = EXCLUDED.mode,
+			scan_all_roles = EXCLUDED.scan_all_roles,
 			enable_prompt_injection = EXCLUDED.enable_prompt_injection,
 			prompt_injection_action = EXCLUDED.prompt_injection_action,
 			enable_pii_detection = EXCLUDED.enable_pii_detection,
@@ -799,6 +801,7 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 			blocked_keywords = EXCLUDED.blocked_keywords,
 			redact_output_pii = EXCLUDED.redact_output_pii,
 			updated_at = NOW()`
+	mode := pol.EffectiveMode()
 	act := pol.PromptInjectionAction
 	if act == "" {
 		act = domain.GuardrailActionBlock
@@ -812,7 +815,7 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 		secAct = domain.GuardrailActionRedact
 	}
 	_, err := p.pool.Exec(ctx, q,
-		pol.OrgID, pol.EnablePromptInjection, string(act),
+		pol.OrgID, string(mode), pol.ScanAllRoles, pol.EnablePromptInjection, string(act),
 		pol.EnablePIIDetection, string(piiAct), pol.EnableSecretDetection,
 		string(secAct), pol.BlockedKeywords, pol.RedactOutputPII,
 	)
@@ -823,11 +826,11 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 	if pol, err := p.mem.GetGuardrailPolicy(ctx, orgID); err == nil && pol != nil {
 		return pol, nil
 	}
-	const q = `SELECT org_id, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
+	const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
 	var pol domain.GuardrailPolicy
-	var injAct, piiAct, secAct string
+	var modeStr, injAct, piiAct, secAct string
 	if err := p.pool.QueryRow(ctx, q, orgID).Scan(
-		&pol.OrgID, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
+		&pol.OrgID, &modeStr, &pol.ScanAllRoles, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
 		&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -835,6 +838,7 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 		}
 		return nil, err
 	}
+	pol.Mode = domain.GuardrailMode(modeStr)
 	pol.PromptInjectionAction = domain.GuardrailAction(injAct)
 	pol.PIIAction = domain.GuardrailAction(piiAct)
 	pol.SecretAction = domain.GuardrailAction(secAct)

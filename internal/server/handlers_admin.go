@@ -178,7 +178,10 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 	if _, ok := s.authorizeAdmin(w, r, orgID, true); !ok {
 		return
 	}
-	var pol domain.GuardrailPolicy
+	pol := domain.GuardrailPolicy{
+		Mode:         domain.GuardrailModeEnforce,
+		ScanAllRoles: true,
+	}
 	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
