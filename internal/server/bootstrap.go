@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
-	"github.com/goroute-ai/ai-gateway-go/internal/catalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
 )
 

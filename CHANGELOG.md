@@ -126,7 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Built-in profiles for Cerebras, SambaNova, xAI (Grok), Together AI, Fireworks AI, Groq, DeepSeek, Perplexity AI, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda Labs, Friendli AI, OpenRouter, vLLM, Cloudflare Workers AI, Databricks, Snowflake Cortex, DashScope (Qwen), Volcengine, BigModel (GLM), Moonshot (Kimi), MiniMax, SiliconFlow, Voyage AI, Jina AI, Replicate, AI21 Labs, Baseten, NVIDIA NIM, and Scaleway.
   - Reasoning delta extraction across `reasoning_content`, `thought`, and `reasoning` fields.
 
-#### Embedded Model Catalogue Engine & Admin APIs (`internal/catalog`, `internal/server`)
+#### Embedded Model Catalogue Engine & Admin APIs (`internal/modelcatalog`, `internal/server`)
 - **4,627 Curated Models**: Embedded gzip-compressed model catalogue (`catalog.json.gz`) with integer micro-USD pricing per 1M tokens ($10^{-6}\text{ USD}$) and tri-state capability flags (`supported`, `unsupported`, `unknown`).
 - **Sub-70ns Lookup**: Thread-safe in-memory index (`Lookup`, `LookupByProviderAndModel`, `Search`) benchmarked at **66.41 ns/op**.
 - **Inference Route Distinction**: Distinguishes callable inference providers (`IsCallableProvider`) from non-inference metadata entries, enforced via live adapter registry checks in `IntelligentRouter`.

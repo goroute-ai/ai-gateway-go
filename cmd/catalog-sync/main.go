@@ -59,7 +59,7 @@ func (e *seedModelEntry) UnmarshalJSON(b []byte) error {
 
 func main() {
 	sourcePath := flag.String("source", "model_prices_and_context_window.json", "Path to source model definitions JSON")
-	outPath := flag.String("out", "internal/catalog/catalog.json.gz", "Path to output catalog.json.gz")
+	outPath := flag.String("out", "internal/modelcatalog/catalog.json.gz", "Path to output catalog.json.gz")
 	flag.Parse()
 
 	data, err := os.ReadFile(*sourcePath)

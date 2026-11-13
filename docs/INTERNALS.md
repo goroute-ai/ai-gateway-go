@@ -352,7 +352,7 @@ GoRoute implements native protocol signers and binary decoders without external 
    - Maintains explicit profiles for 30+ production providers (Cerebras, SambaNova, xAI, Together, Fireworks, Groq, DeepSeek, Perplexity, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda, Friendli, OpenRouter, vLLM, Cloudflare, Databricks, Snowflake, DashScope, Volcengine, BigModel, Moonshot, MiniMax, SiliconFlow, Voyage, Jina, Replicate, AI21, Baseten, Nvidia, Scaleway).
    - Ingests reasoning content tokens across both standard non-streaming responses and real-time streaming deltas (`reasoning_content`, `thought`, `reasoning`).
 
-### 6.5 Embedded Model Catalogue Engine (`internal/catalog/`)
+### 6.5 Embedded Model Catalogue Engine (`internal/modelcatalog/`)
 - Curates 4,627 model/provider records derived from versioned registry datasets, compressed into a 164 KB embedded binary (`catalog.json.gz`).
 - Unpacks at initialization using a single `sync.Once` into lock-free in-memory lookup hash tables (`modelsByID`, `modelsByPN`, `modelsByName`).
 - Distinguishes **callable inference routes** (`catalog.IsCallableProvider(prov)`) from metadata-only catalogue entries.
