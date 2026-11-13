@@ -143,17 +143,19 @@ type CustomProviderConfig struct {
 }
 
 type ServerConfig struct {
-	Environment          string        `yaml:"environment"` // "development", "staging", "production"
-	Host                 string        `yaml:"host"`
-	Port                 int           `yaml:"port"`
-	GRPCPort             int           `yaml:"grpc_port"` // 0 = disabled; >0 enables A2A gRPC server
-	ReadTimeout          time.Duration `yaml:"read_timeout"`
-	WriteTimeout         time.Duration `yaml:"write_timeout"`
-	IdleTimeout          time.Duration `yaml:"idle_timeout"`
-	ShutdownTimeout      time.Duration `yaml:"shutdown_timeout"`
-	CORSAllowedOrigins   []string      `yaml:"cors_allowed_origins"`
-	CORSAllowCredentials bool          `yaml:"cors_allow_credentials"`
-	EnableHSTS           bool          `yaml:"enable_hsts"`
+	Environment               string        `yaml:"environment"` // "development", "staging", "production"
+	Host                      string        `yaml:"host"`
+	Port                      int           `yaml:"port"`
+	GRPCPort                  int           `yaml:"grpc_port"` // 0 = disabled; >0 enables A2A gRPC server
+	ReadTimeout               time.Duration `yaml:"read_timeout"`
+	WriteTimeout              time.Duration `yaml:"write_timeout"`
+	IdleTimeout               time.Duration `yaml:"idle_timeout"`
+	ShutdownTimeout           time.Duration `yaml:"shutdown_timeout"`
+	CORSAllowedOrigins        []string      `yaml:"cors_allowed_origins"`
+	CORSAllowCredentials      bool          `yaml:"cors_allow_credentials"`
+	EnableHSTS                bool          `yaml:"enable_hsts"`
+	MaxFileStorageBytesPerOrg int64         `yaml:"max_file_storage_bytes_per_org"` // 0 = unlimited
+	MaxConcurrentFileUploads  int           `yaml:"max_concurrent_file_uploads"`    // 0 = unlimited
 }
 
 type StorageConfig struct {
@@ -224,12 +226,14 @@ type CacheConfig struct {
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:            "0.0.0.0",
-			Port:            8080,
-			ReadTimeout:     30 * time.Second,
-			WriteTimeout:    300 * time.Second, // High write timeout for long SSE reasoning streams
-			IdleTimeout:     120 * time.Second,
-			ShutdownTimeout: 15 * time.Second,
+			Host:                      "0.0.0.0",
+			Port:                      8080,
+			ReadTimeout:               30 * time.Second,
+			WriteTimeout:              300 * time.Second, // High write timeout for long SSE reasoning streams
+			IdleTimeout:               120 * time.Second,
+			ShutdownTimeout:           15 * time.Second,
+			MaxFileStorageBytesPerOrg: 5 * 1024 * 1024 * 1024, // 5 GiB per org
+			MaxConcurrentFileUploads:  8,
 		},
 		Logging: LogConfig{
 			Level:     "info",
@@ -352,6 +356,16 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("GATEWAY_GRPC_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			cfg.Server.GRPCPort = p
+		}
+	}
+	if v := os.Getenv("GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Server.MaxFileStorageBytesPerOrg = n
+		}
+	}
+	if v := os.Getenv("GATEWAY_MAX_CONCURRENT_FILE_UPLOADS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Server.MaxConcurrentFileUploads = n
 		}
 	}
 	if v := os.Getenv("GATEWAY_LOG_LEVEL"); v != "" {
@@ -491,6 +505,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.GRPCPort < 0 || c.Server.GRPCPort > 65535 {
 		return fmt.Errorf("invalid server.grpc_port: %d", c.Server.GRPCPort)
+	}
+	if c.Server.MaxFileStorageBytesPerOrg < 0 {
+		return fmt.Errorf("invalid server.max_file_storage_bytes_per_org: %d", c.Server.MaxFileStorageBytesPerOrg)
+	}
+	if c.Server.MaxConcurrentFileUploads < 0 {
+		return fmt.Errorf("invalid server.max_concurrent_file_uploads: %d", c.Server.MaxConcurrentFileUploads)
 	}
 	if len(c.Auth.MasterAdminKey) < 12 {
 		return fmt.Errorf("auth.master_admin_key must be at least 12 characters")
