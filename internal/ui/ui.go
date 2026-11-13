@@ -18,6 +18,16 @@ func DistFS() (fs.FS, error) {
 	return fs.Sub(embeddedDist, "dist")
 }
 
+const uiContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+
+func setUISecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Content-Security-Policy", uiContentSecurityPolicy)
+}
+
 // RegisterRoutes mounts the embedded operator dashboard on the Chi router at /ui.
 func RegisterRoutes(r chi.Router) {
 	distFS, err := fs.Sub(embeddedDist, "dist")
@@ -29,11 +39,13 @@ func RegisterRoutes(r chi.Router) {
 
 	// Redirect /ui to /ui/ with trailing slash for proper relative asset resolution
 	r.Get("/ui", func(w http.ResponseWriter, r *http.Request) {
+		setUISecurityHeaders(w)
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
 
 	// Serve static assets or fallback to index.html for SPA client-side routing
 	r.Get("/ui/*", func(w http.ResponseWriter, r *http.Request) {
+		setUISecurityHeaders(w)
 		trimmedPath := strings.TrimPrefix(r.URL.Path, "/ui")
 		if trimmedPath == "" || trimmedPath == "/" {
 			trimmedPath = "/index.html"
