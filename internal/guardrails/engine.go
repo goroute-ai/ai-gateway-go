@@ -130,6 +130,8 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 		if !shouldScanRole(pol, msg.Role) {
 			continue
 		}
+		probe := &domain.CanonicalChatRequest{Messages: make([]domain.CanonicalMessage, 1)}
+		probe.Messages[0].Role = msg.Role
 		texts := []*string{&msg.ReasoningContent}
 		for ci := range msg.ToolCalls {
 			texts = append(texts, &msg.ToolCalls[ci].Function.Arguments)
@@ -143,7 +145,7 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 			if *field == "" {
 				continue
 			}
-			probe := &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: msg.Role, Content: *field}}}
+			probe.Messages[0].Content = *field
 			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
 			if partOutcome != nil {
 				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)

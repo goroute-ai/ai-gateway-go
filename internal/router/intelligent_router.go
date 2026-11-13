@@ -181,15 +181,38 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 // resolveDynamicProviderModel handles direct model requests (e.g. "gemini/gemini-2.5-flash"
 // or "gemini-2.5-flash") by validating Layer 2 Provider Subscriptions, Layer 3 Org Model Policies,
 // and active tenant credentials before dynamically provisioning or referencing the route.
+func (ir *IntelligentRouter) groupMatchesProvider(ctx context.Context, groupID string, prov domain.ProviderType) bool {
+	deps, err := ir.repo.ListDeploymentsByGroup(ctx, groupID)
+	if err != nil {
+		return false
+	}
+	for _, d := range deps {
+		if d != nil && d.GlobalModel != nil && d.GlobalModel.Provider == prov {
+			return true
+		}
+	}
+	return false
+}
+
 func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, orgID, requested string) *domain.ModelGroup {
 	prov, bareModel, globalModelID := config.ParseProviderModel(requested)
-	if bareModel != "" && bareModel != requested {
-		if mg, err := ir.repo.GetModelGroupByAlias(ctx, orgID, bareModel); err == nil && mg != nil {
+	if prov == "" || globalModelID == "" {
+		return nil
+	}
+	aliasKey := bareModel
+	if strings.Contains(requested, "/") {
+		if mg, err := ir.repo.GetModelGroupByAlias(ctx, orgID, globalModelID); err == nil && mg != nil {
 			return mg
 		}
 	}
-	if prov == "" || globalModelID == "" {
-		return nil
+	if bareModel != "" && bareModel != requested {
+		if mg, err := ir.repo.GetModelGroupByAlias(ctx, orgID, bareModel); err == nil && mg != nil {
+			if ir.groupMatchesProvider(ctx, mg.ID, prov) {
+				return mg
+			}
+			// bareModel alias is already claimed by another provider; use provider-qualified alias
+			aliasKey = globalModelID
+		}
 	}
 
 	// 1. Layer 2 Check: Org Provider Subscriptions (fail-closed if subscriptions are configured or repository fails)
@@ -276,7 +299,7 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 	// 5. Auto-provision ModelGroup & Deployment for this tenant
 	mg := &domain.ModelGroup{
 		OrgID:            orgID,
-		Alias:            bareModel,
+		Alias:            aliasKey,
 		RoutingStrategy:  domain.StrategyWeightedShuffle,
 		MaxRetries:       ir.cfg.DefaultMaxRetries,
 		CooldownSeconds:  int(ir.cfg.DefaultCooldown.Seconds()),
@@ -284,7 +307,7 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 		IsActive:         true,
 	}
 	if err := ir.repo.CreateModelGroup(ctx, mg); err != nil {
-		if existing, err2 := ir.repo.GetModelGroupByAlias(ctx, orgID, bareModel); err2 == nil && existing != nil {
+		if existing, err2 := ir.repo.GetModelGroupByAlias(ctx, orgID, aliasKey); err2 == nil && existing != nil {
 			return existing
 		}
 		return nil

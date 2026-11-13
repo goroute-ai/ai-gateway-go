@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -40,16 +42,66 @@ func resolveBaseURL(cred *domain.ProviderCredential) string {
 	return defaultBaseURL
 }
 
-func toMistralRequest(model string, req *domain.CanonicalChatRequest, stream bool) providers.MistralChatCompletionRequest {
-	msgs := make([]providers.MistralMessage, 0, len(req.Messages))
+type wireMistralMessage struct {
+	Role       string                     `json:"role"`
+	Content    any                        `json:"content"`
+	Name       string                     `json:"name,omitempty"`
+	ToolCallID string                     `json:"tool_call_id,omitempty"`
+	ToolCalls  []providers.OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type wireMistralChatRequest struct {
+	Model          string                          `json:"model"`
+	Messages       []wireMistralMessage            `json:"messages"`
+	Temperature    *float64                        `json:"temperature,omitempty"`
+	TopP           *float64                        `json:"top_p,omitempty"`
+	MaxTokens      *int                            `json:"max_tokens,omitempty"`
+	Stream         bool                            `json:"stream,omitempty"`
+	Stop           []string                        `json:"stop,omitempty"`
+	Tools          []providers.OpenAITool          `json:"tools,omitempty"`
+	ToolChoice     any                             `json:"tool_choice,omitempty"`
+	ResponseFormat *providers.OpenAIResponseFormat `json:"response_format,omitempty"`
+}
+
+func (a *Adapter) SupportsOperation(op domain.OperationType) bool {
+	switch op {
+	case domain.OperationChat, domain.OperationEmbedding, domain.OperationModeration, domain.OperationAudioSTT:
+		return true
+	default:
+		return false
+	}
+}
+
+func toMistralRequest(model string, req *domain.CanonicalChatRequest, stream bool) wireMistralChatRequest {
+	msgs := make([]wireMistralMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		role := m.Role
 		if role == "developer" {
 			role = "system"
 		}
-		mm := providers.MistralMessage{
+		var content any = m.Content
+		if len(m.Parts) > 0 {
+			var parts []map[string]any
+			for _, p := range m.Parts {
+				switch p.Type {
+				case "text":
+					parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+				case "image_url":
+					if p.ImageURL != nil && p.ImageURL.URL != "" {
+						parts = append(parts, map[string]any{
+							"type":      "image_url",
+							"image_url": map[string]any{"url": p.ImageURL.URL},
+						})
+					}
+				}
+			}
+			if len(parts) > 0 {
+				content = parts
+			}
+		}
+		mm := wireMistralMessage{
 			Role:       role,
-			Content:    m.Content,
+			Content:    content,
 			Name:       m.Name,
 			ToolCallID: m.ToolCallID,
 		}
@@ -79,7 +131,7 @@ func toMistralRequest(model string, req *domain.CanonicalChatRequest, stream boo
 		})
 	}
 
-	out := providers.MistralChatCompletionRequest{
+	out := wireMistralChatRequest{
 		Model:       model,
 		Messages:    msgs,
 		Temperature: req.Temperature,
@@ -185,6 +237,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 }
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
 		model = dep.GlobalModel.ModelName
@@ -358,5 +411,189 @@ func setHeaders(req *http.Request, cred *domain.ProviderCredential) {
 		for k, v := range cred.Headers {
 			req.Header.Set(k, v)
 		}
+	}
+}
+
+// Moderate implements adapter.ModerationAdapter for Mistral's /v1/moderations endpoint.
+func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error) {
+	model := req.ResolvedModel
+	if model == "" && dep != nil && dep.GlobalModel != nil {
+		model = dep.GlobalModel.ModelName
+	}
+	if model == "" {
+		model = req.Model
+	}
+
+	payload := map[string]any{
+		"model": model,
+		"input": req.Input,
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
+	}
+	endpoint := resolveBaseURL(cred) + "/moderations"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, cred)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_network_error",
+			Message:    err.Error(),
+			Provider:   domain.ProviderMistral,
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderMistral, resp.StatusCode, string(respBody), adapter.ParseRetryAfter(resp.Header))
+	}
+
+	var raw struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Results []struct {
+			Categories     map[string]bool    `json:"categories"`
+			CategoryScores map[string]float64 `json:"category_scores"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &raw); err != nil {
+		return nil, fmt.Errorf("decode mistral moderation response: %w", err)
+	}
+
+	results := make([]domain.ModerationResultItem, len(raw.Results))
+	for i, r := range raw.Results {
+		flagged := false
+		for _, v := range r.Categories {
+			if v {
+				flagged = true
+				break
+			}
+		}
+		results[i] = domain.ModerationResultItem{
+			Flagged:        flagged,
+			Categories:     r.Categories,
+			CategoryScores: r.CategoryScores,
+		}
+	}
+	return &domain.CanonicalModerationResponse{
+		ID:       raw.ID,
+		Model:    raw.Model,
+		Provider: domain.ProviderMistral,
+		Results:  results,
+	}, nil
+}
+
+// TranscribeAudio implements adapter.AudioAdapter for Mistral's /v1/audio/transcriptions endpoint.
+func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
+	model := req.ResolvedModel
+	if model == "" && dep != nil && dep.GlobalModel != nil {
+		model = dep.GlobalModel.ModelName
+	}
+	if model == "" {
+		model = req.Model
+	}
+
+	var reader io.Reader = req.FileReader
+	if reader == nil && req.SpoolFilePath != "" {
+		f, err := os.Open(req.SpoolFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("open audio spool file: %w", err)
+		}
+		defer f.Close()
+		reader = f
+	}
+	if reader == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_audio_file",
+			Message:    "audio file reader is required",
+			Provider:   domain.ProviderMistral,
+		}
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", model)
+	if req.Language != "" {
+		_ = mw.WriteField("language", req.Language)
+	}
+	if req.Prompt != "" {
+		_ = mw.WriteField("prompt", req.Prompt)
+	}
+	filename := req.FileName
+	if filename == "" {
+		filename = "audio.mp3"
+	}
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(fw, reader); err != nil {
+		return nil, err
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
+	}
+	endpoint := resolveBaseURL(cred) + "/audio/transcriptions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, cred)
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_network_error",
+			Message:    err.Error(),
+			Provider:   domain.ProviderMistral,
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderMistral, resp.StatusCode, string(respBody), adapter.ParseRetryAfter(resp.Header))
+	}
+
+	var out domain.CanonicalAudioResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode mistral transcription response: %w", err)
+	}
+	return &out, nil
+}
+
+// GenerateSpeech implements adapter.AudioAdapter; Mistral does not expose a native TTS endpoint.
+func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioSpeechRequest) (io.ReadCloser, string, error) {
+	return nil, "", &domain.GatewayError{
+		StatusCode: http.StatusBadRequest,
+		Type:       domain.ErrorTypeInvalidRequest,
+		Code:       "unsupported_capability",
+		Message:    "Mistral does not expose a text-to-speech endpoint",
+		Provider:   domain.ProviderMistral,
 	}
 }

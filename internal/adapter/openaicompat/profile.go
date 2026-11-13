@@ -21,6 +21,22 @@ type ModelDialectOverride struct {
 	ParamMappings map[string]string        `json:"param_mappings,omitempty"`
 }
 
+// ProviderOperations declares which wire operations an OpenAI-compatible provider
+// actually implements on its upstream HTTP API, independent of per-model capabilities.
+type ProviderOperations struct {
+	Chat           bool `json:"chat"`
+	Completion     bool `json:"completion"`
+	Embeddings     bool `json:"embeddings"`
+	Rerank         bool `json:"rerank"`
+	Moderations    bool `json:"moderations"`
+	ImageGen       bool `json:"image_gen"`
+	ImageEdit      bool `json:"image_edit"`
+	ImageVariation bool `json:"image_variation"`
+	AudioSTT       bool `json:"audio_stt"`
+	AudioTTS       bool `json:"audio_tts"`
+	Responses      bool `json:"responses"`
+}
+
 // DialectProfile encapsulates all configuration, mapping rules, transport, and capabilities for an OpenAI-compatible provider.
 type DialectProfile struct {
 	ID                         domain.ProviderType      `json:"id"`
@@ -29,11 +45,25 @@ type DialectProfile struct {
 	EndpointStrategy           adapter.EndpointStrategy `json:"-"`
 	AuthStrategy               adapter.AuthStrategy     `json:"-"`
 	DefaultHeaders             map[string]string        `json:"default_headers,omitempty"`
-	SupportsListModels         bool                     `json:"supports_list_models"`     // true if upstream implements GET /models
-	ParamMappings              map[string]string        `json:"param_mappings,omitempty"` // e.g. "max_completion_tokens" -> "max_tokens"
+	SupportsListModels         bool                     `json:"supports_list_models"`              // true if upstream implements GET /models
+	SupportsStreamOptions      *bool                    `json:"supports_stream_options,omitempty"` // defaults to true when nil
+	DropUnsupportedParams      bool                     `json:"drop_unsupported_params,omitempty"` // opt-in stripping of constrained sampling params
+	StrippedParams             []string                 `json:"stripped_params,omitempty"`         // parameter keys removed before upstream dispatch
+	ExtraBodyFields            map[string]any           `json:"extra_body_fields,omitempty"`       // low-precedence provider defaults
+	ReasoningMapping           string                   `json:"reasoning_mapping,omitempty"`       // "passthrough", "openrouter_reasoning", "dashscope_thinking", "chat_template_thinking", "strip"
+	SupportedOperations        *ProviderOperations      `json:"supported_operations,omitempty"`    // explicit provider x operation support
+	ParamMappings              map[string]string        `json:"param_mappings,omitempty"`          // e.g. "max_completion_tokens" -> "max_tokens"
 	Constraints                DialectConstraints       `json:"constraints"`
 	ModelOverrides             []ModelDialectOverride   `json:"model_overrides,omitempty"`
 	DefaultCapabilities        domain.ModelCapabilities `json:"default_capabilities"`
 	ExtractReasoningDelta      bool                     `json:"extract_reasoning_delta"`        // e.g. true for DeepSeek R1 delta.reasoning_content
 	ConvertContentListToString bool                     `json:"convert_content_list_to_string"` // e.g. true if provider requires flat string messages
+}
+
+// StreamOptionsSupported reports whether the profile accepts stream_options.include_usage.
+func (p *DialectProfile) StreamOptionsSupported() bool {
+	if p == nil || p.SupportsStreamOptions == nil {
+		return true
+	}
+	return *p.SupportsStreamOptions
 }
