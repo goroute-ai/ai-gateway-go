@@ -72,6 +72,7 @@ export const PlaygroundView: React.FC = () => {
   // Code Export Modal
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportLanguage, setExportLanguage] = useState<'curl' | 'python' | 'ts' | 'go'>('curl');
+  const [includeKeyInExport, setIncludeKeyInExport] = useState<boolean>(false);
   const [copiedSnippet, setCopiedSnippet] = useState<boolean>(false);
 
   // Streaming Controller Ref
@@ -232,7 +233,7 @@ export const PlaygroundView: React.FC = () => {
 
   // Generate code export snippets
   const getCodeSnippet = (lang: 'curl' | 'python' | 'ts' | 'go') => {
-    const key = virtualKey.trim() || 'sk-gw-YOUR_KEY';
+    const key = includeKeyInExport && virtualKey.trim() ? virtualKey.trim() : '$GOROUTE_API_KEY';
     const endpoint = `${window.location.origin}/v1/chat/completions`;
     const msgs = [
       ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
@@ -773,7 +774,10 @@ func main() {
         <Modal
           title="Export Inference Request Code"
           isOpen={showExportModal}
-          onClose={() => setShowExportModal(false)}
+          onClose={() => {
+            setShowExportModal(false);
+            setIncludeKeyInExport(false);
+          }}
           size="lg"
         >
           <div className="space-y-4">
@@ -802,6 +806,19 @@ func main() {
                 {copiedSnippet ? 'Copied' : 'Copy'}
               </button>
             </div>
+
+            <label className="flex items-center gap-2 text-xs font-mono text-zinc-400 select-none cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeKeyInExport}
+                disabled={!virtualKey.trim()}
+                onChange={(e) => setIncludeKeyInExport(e.target.checked)}
+                className="rounded border-subtle bg-canvas text-accent-primary focus:ring-accent-primary disabled:opacity-40"
+              />
+              <span className={!virtualKey.trim() ? 'opacity-50' : ''}>
+                Embed current session virtual key instead of <code className="text-zinc-300">$GOROUTE_API_KEY</code>
+              </span>
+            </label>
 
             <CodeBlock code={getCodeSnippet(exportLanguage)} language={exportLanguage} />
           </div>

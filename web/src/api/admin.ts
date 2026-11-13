@@ -144,7 +144,7 @@ export const adminApi = {
   syncMCPServer: (key: string, serverId: string) =>
     apiFetch<any>(`/admin/v1/mcp/servers/${serverId}/sync`, { method: 'POST' }, key),
   listMCPTools: (key: string) =>
-    apiFetch<{ tools: any[] }>('/mcp-rest/tools/list', {}, key),
+    apiFetch<{ tools: any[] }>('/admin/v1/mcp/tools', {}, key),
   listA2AAgents: (key: string) =>
     apiFetch<{ data: A2AAgent[] }>('/admin/v1/a2a/agents', {}, key),
   setA2AKillSwitch: (key: string, agentId: string, killed: boolean) =>
