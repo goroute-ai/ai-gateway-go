@@ -194,3 +194,50 @@ func TestBudgetReservationsAreAtomicAcrossLimiterInstances(t *testing.T) {
 		t.Fatalf("admitted %d concurrent reservations, want 1 after 45 micros spent", got)
 	}
 }
+
+func TestResetSpendCountersClearsRedisSpendKeys(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := ratelimit.NewLimiter(redisFabric, 60, 300)
+
+	id := &domain.IdentityContext{
+		VirtualKeyID:        "vk-reset",
+		TeamID:              "team-reset",
+		OrgID:               "org-reset",
+		KeyMaxBudgetMicros:  100,
+		TeamMaxBudgetMicros: 100,
+		OrgMaxBudgetMicros:  100,
+	}
+
+	limiter.RecordSpendIncrement(ctx, id.VirtualKeyID, id.TeamID, id.OrgID, 100)
+	if _, err := limiter.AcquireWithBudget(ctx, id, 1, 10, "req-blocked"); err == nil {
+		t.Fatal("expected budget to be exhausted before reset")
+	}
+
+	if err := limiter.ResetSpendCounters(ctx, []string{id.OrgID}, []string{id.TeamID}, []string{id.VirtualKeyID}); err != nil {
+		t.Fatalf("ResetSpendCounters: %v", err)
+	}
+
+	for _, key := range []string{"gw:spend:org:org-reset", "gw:spend:team:team-reset", "gw:spend:key:vk-reset"} {
+		if mr.Exists(key) {
+			t.Fatalf("expected Redis key %q to be deleted", key)
+		}
+	}
+
+	release, err := limiter.AcquireWithBudget(ctx, id, 1, 10, "req-after-reset")
+	if err != nil {
+		t.Fatalf("expected budget to be admitted after reset, got %v", err)
+	}
+	release(1, 10)
+
+	// Nil limiter / empty slices should be no-ops without error.
+	var nilLimiter *ratelimit.Limiter
+	if err := nilLimiter.ResetSpendCounters(ctx, []string{"org"}, nil, nil); err != nil {
+		t.Fatalf("nil limiter ResetSpendCounters: %v", err)
+	}
+	if err := limiter.ResetSpendCounters(ctx, nil, nil, nil); err != nil {
+		t.Fatalf("empty ResetSpendCounters: %v", err)
+	}
+}

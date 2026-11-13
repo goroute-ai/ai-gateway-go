@@ -221,6 +221,41 @@ func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID,
 	}
 }
 
+// ResetSpendCounters deletes live Redis spend counters for the given entity IDs
+// after their budget reset period rolls over.
+func (l *Limiter) ResetSpendCounters(ctx context.Context, orgIDs, teamIDs, keyIDs []string) error {
+	if l == nil || l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(orgIDs)+len(teamIDs)+len(keyIDs))
+	for _, id := range orgIDs {
+		if id != "" {
+			keys = append(keys, "gw:spend:org:"+id)
+		}
+	}
+	for _, id := range teamIDs {
+		if id != "" {
+			keys = append(keys, "gw:spend:team:"+id)
+		}
+	}
+	for _, id := range keyIDs {
+		if id != "" {
+			keys = append(keys, "gw:spend:key:"+id)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	_, err := l.redis.Execute(func(rdb *redis.Client) (any, error) {
+		pipe := rdb.Pipeline()
+		for _, k := range keys {
+			pipe.Del(ctx, k)
+		}
+		return pipe.Exec(ctx)
+	})
+	return err
+}
+
 func toQuotaError(code string) *domain.GatewayError {
 	if code == "BUDGET_ESTIMATE_REQUIRED" {
 		return budgetUnavailableError()

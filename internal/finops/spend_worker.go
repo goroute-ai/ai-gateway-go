@@ -98,13 +98,31 @@ func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 				logger.Warn("FinOps outbox delivery will retry", slog.String("component", "finops"), slog.String("error", err.Error()))
 			}
 		case <-resetTicker.C:
-			if count, err := sw.repo.ResetExpiredBudgets(ctx, time.Now().UTC()); err != nil {
+			if count, err := sw.ResetExpiredBudgetsNow(ctx, time.Now().UTC()); err != nil {
 				logger.Error("FinOps budget reset cycle failed", slog.String("component", "finops"), slog.String("error", err.Error()))
 			} else if count > 0 {
 				logger.Info("FinOps expired budgets reset", slog.String("component", "finops"), slog.Int("count", count))
 			}
 		}
 	}
+}
+
+// ResetExpiredBudgetsNow resets expired budgets in the repository and clears
+// the corresponding live Redis spend counters when a limiter is configured.
+func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time) (int, error) {
+	if withIDs, ok := sw.repo.(storage.BudgetResetWithIDsRepository); ok {
+		res, err := withIDs.ResetExpiredBudgetsWithIDs(ctx, now)
+		if err != nil {
+			return 0, err
+		}
+		if sw.limiter != nil && res.Total() > 0 {
+			if err := sw.limiter.ResetSpendCounters(ctx, res.OrgIDs, res.TeamIDs, res.VirtualKeyIDs); err != nil {
+				logger.Warn("Failed to reset Redis spend counters after budget reset", slog.String("component", "finops"), slog.String("error", err.Error()))
+			}
+		}
+		return res.Total(), nil
+	}
+	return sw.repo.ResetExpiredBudgets(ctx, now)
 }
 
 func (sw *SpendWorker) process(ctx context.Context) error {

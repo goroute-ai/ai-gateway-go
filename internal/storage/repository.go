@@ -11,6 +11,24 @@ import (
 // ErrNotFound is returned when a requested entity does not exist in the repository.
 var ErrNotFound = errors.New("not found")
 
+// BudgetResetResult lists the entity IDs whose budgets were reset.
+type BudgetResetResult struct {
+	OrgIDs        []string
+	TeamIDs       []string
+	VirtualKeyIDs []string
+}
+
+// Total returns the total number of entities reset across all scopes.
+func (r BudgetResetResult) Total() int {
+	return len(r.OrgIDs) + len(r.TeamIDs) + len(r.VirtualKeyIDs)
+}
+
+// BudgetResetWithIDsRepository is an optional extension of Repository that returns
+// the IDs of organizations, teams, and virtual keys reset during a budget cycle.
+type BudgetResetWithIDsRepository interface {
+	ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error)
+}
+
 // SpendSummary aggregates financial metrics per organization, team, model, or provider.
 type SpendSummary struct {
 	TotalRequests     int64            `json:"total_requests"`

@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
@@ -148,4 +150,99 @@ func TestRecordReturnsPersistenceFailure(t *testing.T) {
 	if err := worker.Record(context.Background(), domain.SpendEvent{RequestID: "request-1"}); !errors.Is(err, want) {
 		t.Fatalf("Record error = %v, want %v", err, want)
 	}
+}
+
+func TestSpendWorkerResetExpiredBudgetsClearsRedisAndAdvancesPeriod(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := ratelimit.NewLimiter(redisFabric, 60, 300)
+
+	repo := storage.NewMemoryRepository()
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	expired := now.Add(-time.Minute)
+
+	org := &domain.Organization{
+		ID:                "org-sw-reset",
+		Name:              "SW Org",
+		Slug:              "sw-org",
+		MaxBudgetMicros:   500,
+		SpentMicros:       500,
+		BudgetResetPeriod: domain.BudgetResetDaily,
+		BudgetResetAt:     &expired,
+		IsActive:          true,
+	}
+	team := &domain.Team{
+		ID:                "team-sw-reset",
+		OrgID:             org.ID,
+		Name:              "SW Team",
+		MaxBudgetMicros:   500,
+		SpentMicros:       500,
+		BudgetResetPeriod: domain.BudgetResetMonthly,
+		BudgetResetAt:     &expired,
+		IsActive:          true,
+	}
+	vk := &domain.VirtualKey{
+		ID:                "vk-sw-reset",
+		OrgID:             org.ID,
+		TeamID:            team.ID,
+		Name:              "SW Key",
+		KeyHash:           "hash-sw-reset",
+		MaxBudgetMicros:   500,
+		SpentMicros:       500,
+		BudgetResetPeriod: domain.BudgetResetDaily,
+		BudgetResetAt:     &expired,
+		IsActive:          true,
+	}
+	_ = repo.CreateOrganization(ctx, org)
+	_ = repo.CreateTeam(ctx, team)
+	_ = repo.CreateVirtualKey(ctx, vk)
+
+	limiter.RecordSpendIncrement(ctx, vk.ID, team.ID, org.ID, 500)
+	idCtx := &domain.IdentityContext{
+		VirtualKeyID:        vk.ID,
+		TeamID:              team.ID,
+		OrgID:               org.ID,
+		KeyMaxBudgetMicros:  500,
+		TeamMaxBudgetMicros: 500,
+		OrgMaxBudgetMicros:  500,
+	}
+	if _, err := limiter.AcquireWithBudget(ctx, idCtx, 1, 50, "req-exhausted"); err == nil {
+		t.Fatal("expected request to be rejected while budget is exhausted")
+	}
+
+	sw := finops.NewSpendWorker(repo, limiter, config.FinOpsConfig{})
+	count, err := sw.ResetExpiredBudgetsNow(ctx, now)
+	if err != nil {
+		t.Fatalf("ResetExpiredBudgetsNow: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 reset entities, got %d", count)
+	}
+
+	gotOrg, _ := repo.GetOrganization(ctx, org.ID)
+	if gotOrg.SpentMicros != 0 || gotOrg.BudgetResetAt == nil || !gotOrg.BudgetResetAt.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("org not properly reset: %+v", gotOrg)
+	}
+	gotTeam, _ := repo.GetTeam(ctx, team.ID)
+	if gotTeam.SpentMicros != 0 || gotTeam.BudgetResetAt == nil || !gotTeam.BudgetResetAt.Equal(now.AddDate(0, 1, 0)) {
+		t.Fatalf("team not properly reset: %+v", gotTeam)
+	}
+	gotVK, _ := repo.GetVirtualKeyByID(ctx, vk.ID)
+	if gotVK.SpentMicros != 0 || gotVK.BudgetResetAt == nil || !gotVK.BudgetResetAt.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("vk not properly reset: %+v", gotVK)
+	}
+
+	for _, key := range []string{"gw:spend:org:org-sw-reset", "gw:spend:team:team-sw-reset", "gw:spend:key:vk-sw-reset"} {
+		if mr.Exists(key) {
+			t.Fatalf("expected Redis key %q to be deleted", key)
+		}
+	}
+
+	release, err := limiter.AcquireWithBudget(ctx, idCtx, 1, 50, "req-reset-ok")
+	if err != nil {
+		t.Fatalf("expected request to be admitted after budget reset, got %v", err)
+	}
+	release(1, 50)
 }

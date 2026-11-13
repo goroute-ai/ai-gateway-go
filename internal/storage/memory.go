@@ -982,9 +982,14 @@ func (r *MemoryRepository) ListSpendLogs(ctx context.Context, orgID string, limi
 }
 
 func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Time) (int, error) {
+	res, err := r.ResetExpiredBudgetsWithIDs(ctx, now)
+	return res.Total(), err
+}
+
+func (r *MemoryRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	resetCount := 0
+	var res BudgetResetResult
 
 	advance := func(period domain.BudgetResetPeriod, from time.Time) time.Time {
 		if period == domain.BudgetResetDaily {
@@ -998,7 +1003,7 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			o.SpentMicros = 0
 			next := advance(o.BudgetResetPeriod, now)
 			o.BudgetResetAt = &next
-			resetCount++
+			res.OrgIDs = append(res.OrgIDs, o.ID)
 		}
 	}
 	for _, t := range r.teams {
@@ -1006,7 +1011,7 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			t.SpentMicros = 0
 			next := advance(t.BudgetResetPeriod, now)
 			t.BudgetResetAt = &next
-			resetCount++
+			res.TeamIDs = append(res.TeamIDs, t.ID)
 		}
 	}
 	for _, vk := range r.keysByID {
@@ -1014,10 +1019,10 @@ func (r *MemoryRepository) ResetExpiredBudgets(ctx context.Context, now time.Tim
 			vk.SpentMicros = 0
 			next := advance(vk.BudgetResetPeriod, now)
 			vk.BudgetResetAt = &next
-			resetCount++
+			res.VirtualKeyIDs = append(res.VirtualKeyIDs, vk.ID)
 		}
 	}
-	return resetCount, nil
+	return res, nil
 }
 
 func (r *MemoryRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
