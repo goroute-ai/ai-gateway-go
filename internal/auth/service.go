@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -337,24 +338,40 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	}
 
 	if vk.TeamID != "" {
-		if team, err := s.repo.GetTeam(ctx, vk.TeamID); err == nil {
-			if !team.IsActive {
+		team, err := s.repo.GetTeam(ctx, vk.TeamID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
 				return nil, &domain.GatewayError{
 					StatusCode: http.StatusForbidden,
 					Type:       domain.ErrorTypePermission,
-					Code:       "team_inactive",
-					Message:    "Team associated with this virtual key is inactive",
+					Code:       "team_not_found",
+					Message:    "Team associated with this virtual key was not found",
 				}
 			}
-			idCtx.TeamAllowedModels = team.AllowedModels
-			idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
-			idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
-			idCtx.TeamAllowedClientApps = team.AllowedClientApps
-			idCtx.TeamRPMLimit = team.RPMLimit
-			idCtx.TeamTPMLimit = team.TPMLimit
-			idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
-			idCtx.TeamSpentMicros = team.SpentMicros
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "team_policy_unavailable",
+				Message:    "Unable to resolve team policy for this virtual key",
+				Retryable:  true,
+			}
 		}
+		if !team.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_inactive",
+				Message:    "Team associated with this virtual key is inactive",
+			}
+		}
+		idCtx.TeamAllowedModels = team.AllowedModels
+		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
+		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
+		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamRPMLimit = team.RPMLimit
+		idCtx.TeamTPMLimit = team.TPMLimit
+		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamSpentMicros = team.SpentMicros
 	}
 
 	// Hydrate L2 Redis + L1 Memory

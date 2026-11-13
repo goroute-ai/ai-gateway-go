@@ -310,62 +310,88 @@ func (p *PostgresRepository) GetOrgModelPolicies(ctx context.Context, orgID stri
 	return p.mem.GetOrgModelPolicies(ctx, orgID)
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTeam(row rowScanner) (*domain.Team, error) {
+	var t domain.Team
+	var period string
+	if err := row.Scan(
+		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SpentMicros, &period, &t.BudgetResetAt,
+		&t.RPMLimit, &t.TPMLimit, &t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	t.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	return &t, nil
+}
+
 func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) error {
 	if team.ID == "" {
 		team.ID = uuid.NewString()
 	}
+	allowedModels := team.AllowedModels
+	if allowedModels == nil {
+		allowedModels = []string{}
+	}
 	const q = `
-		INSERT INTO teams (id, org_id, name, max_budget_micros, spent_micros, rpm_limit, tpm_limit, allowed_models, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`
-	if _, err := p.pool.Exec(ctx, q, team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, team.RPMLimit, team.TPMLimit, team.AllowedModels, team.IsActive); err != nil {
+		INSERT INTO teams (
+			id, org_id, name, max_budget_micros, spent_micros, rpm_limit, tpm_limit,
+			allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
+	if _, err := p.pool.Exec(ctx, q,
+		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, team.RPMLimit, team.TPMLimit,
+		allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+	); err != nil {
 		return err
 	}
 	return p.mem.CreateTeam(ctx, team)
 }
 
 func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
-	row := p.pool.QueryRow(ctx, `
-		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, allowed_models, is_active, created_at, updated_at
-		FROM teams WHERE id = $1`, id)
-	var t domain.Team
-	var period string
-	if err := row.Scan(
-		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SpentMicros, &period, &t.BudgetResetAt,
-		&t.RPMLimit, &t.TPMLimit, &t.AllowedModels, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
-	); err != nil {
-		return p.mem.GetTeam(ctx, id)
+	const q = `
+		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+		       rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
+		       is_active, created_at, updated_at
+		FROM teams WHERE id = $1`
+	t, err := scanTeam(p.pool.QueryRow(ctx, q, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("team %q %w", id, ErrNotFound)
+		}
+		return nil, err
 	}
-	t.BudgetResetPeriod = domain.BudgetResetPeriod(period)
-	_ = p.mem.CreateTeam(ctx, &t)
-	return &t, nil
+	cp := cloneTeam(t)
+	_ = p.mem.CreateTeam(ctx, cp)
+	return t, nil
 }
 
 func (p *PostgresRepository) ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error) {
-	rows, err := p.pool.Query(ctx, `
-		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, allowed_models, is_active, created_at, updated_at
-		FROM teams WHERE org_id = $1 ORDER BY created_at ASC`, orgID)
+	const q = `
+		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+		       rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
+		       is_active, created_at, updated_at
+		FROM teams WHERE org_id = $1 ORDER BY created_at ASC`
+	rows, err := p.pool.Query(ctx, q, orgID)
 	if err != nil {
-		return p.mem.ListTeams(ctx, orgID)
+		return nil, err
 	}
 	defer rows.Close()
 
 	var teams []*domain.Team
 	for rows.Next() {
-		var t domain.Team
-		var period string
-		if err := rows.Scan(
-			&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SpentMicros, &period, &t.BudgetResetAt,
-			&t.RPMLimit, &t.TPMLimit, &t.AllowedModels, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTeam(rows)
+		if err != nil {
 			return nil, err
 		}
-		t.BudgetResetPeriod = domain.BudgetResetPeriod(period)
-		teams = append(teams, &t)
+		teams = append(teams, t)
 	}
-	if len(teams) == 0 {
-		return p.mem.ListTeams(ctx, orgID)
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	return teams, rows.Err()
+	return teams, nil
 }
 
 func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) error {

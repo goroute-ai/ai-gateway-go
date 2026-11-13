@@ -2,10 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
+
+// ErrNotFound is returned when a requested entity does not exist in the repository.
+var ErrNotFound = errors.New("not found")
 
 // SpendSummary aggregates financial metrics per organization, team, model, or provider.
 type SpendSummary struct {
