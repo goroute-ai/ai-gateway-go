@@ -99,6 +99,25 @@ func TestConfigValidationMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("GATEWAY_ENV production rejects default keys even when YAML says development", func(t *testing.T) {
+		t.Setenv("ENV", "")
+		t.Setenv("GATEWAY_ENV", "production")
+		cfg := config.Default()
+		cfg.Server.Environment = "development"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected GATEWAY_ENV=production to reject default keys")
+		}
+	})
+
+	t.Run("ENV production rejects default keys", func(t *testing.T) {
+		t.Setenv("ENV", "production")
+		t.Setenv("GATEWAY_ENV", "")
+		cfg := config.Default()
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected ENV=production to reject default keys")
+		}
+	})
+
 	t.Run("Invalid CIDR in OutboundSSRF fails", func(t *testing.T) {
 		cfg := config.Default()
 		cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{"not-a-cidr"}
