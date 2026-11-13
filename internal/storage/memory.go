@@ -503,6 +503,18 @@ func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) er
 	return nil
 }
 
+func (r *MemoryRepository) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, u := range r.users {
+		if u.OIDCSubject != "" && u.OIDCSubject == subject {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("user with oidc_subject %q not found", subject)
+}
+
 func (r *MemoryRepository) ListUsers(ctx context.Context, orgID string) ([]*domain.User, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

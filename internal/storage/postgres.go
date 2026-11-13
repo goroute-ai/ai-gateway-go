@@ -372,11 +372,29 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 	if user.ID == "" {
 		user.ID = uuid.NewString()
 	}
-	const q = `INSERT INTO users (id, org_id, email, name, role, is_active) VALUES ($1,$2,$3,$4,$5,$6)`
-	if _, err := p.pool.Exec(ctx, q, user.ID, user.OrgID, user.Email, user.Name, string(user.Role), user.IsActive); err != nil {
+	const q = `INSERT INTO users (id, org_id, team_id, email, name, role, oidc_subject, is_active) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8)`
+	if _, err := p.pool.Exec(ctx, q, user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.IsActive); err != nil {
 		return err
 	}
 	return p.mem.CreateUser(ctx, user)
+}
+
+func (p *PostgresRepository) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
+	if subject == "" {
+		return nil, fmt.Errorf("user with oidc_subject %q not found", subject)
+	}
+	var u domain.User
+	var role string
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), is_active, created_at, updated_at
+		FROM users WHERE oidc_subject = $1 LIMIT 1`, subject).Scan(
+		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
+	)
+	if err != nil {
+		return p.mem.GetUserByOIDCSubject(ctx, subject)
+	}
+	u.Role = domain.Role(role)
+	return &u, nil
 }
 
 func (p *PostgresRepository) ListUsers(ctx context.Context, orgID string) ([]*domain.User, error) {

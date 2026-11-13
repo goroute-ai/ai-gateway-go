@@ -10,7 +10,10 @@ import (
 
 type ctxKey int
 
-const identityContextKey ctxKey = 1
+const (
+	identityContextKey ctxKey = 1
+	operatorContextKey ctxKey = 2
+)
 
 // WithIdentity attaches IdentityContext to a context.Context.
 func WithIdentity(ctx context.Context, id *domain.IdentityContext) context.Context {
@@ -20,6 +23,19 @@ func WithIdentity(ctx context.Context, id *domain.IdentityContext) context.Conte
 // IdentityFromContext retrieves the authenticated IdentityContext from context.Context.
 func IdentityFromContext(ctx context.Context) *domain.IdentityContext {
 	if v, ok := ctx.Value(identityContextKey).(*domain.IdentityContext); ok {
+		return v
+	}
+	return nil
+}
+
+// WithOperator attaches OperatorContext to a context.Context.
+func WithOperator(ctx context.Context, op *domain.OperatorContext) context.Context {
+	return context.WithValue(ctx, operatorContextKey, op)
+}
+
+// OperatorFromContext retrieves the authenticated OperatorContext from context.Context.
+func OperatorFromContext(ctx context.Context) *domain.OperatorContext {
+	if v, ok := ctx.Value(operatorContextKey).(*domain.OperatorContext); ok {
 		return v
 	}
 	return nil
@@ -126,21 +142,22 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 	}
 }
 
-// AdminControlPlaneMiddleware protects `/admin/v1/*` routes using the Master Admin Key.
+// AdminControlPlaneMiddleware protects `/admin/v1/*` routes and resolves OperatorContext from
+// MasterAdminKey, admin-role VirtualKey, or validated inbound JWT/OIDC.
 func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := ExtractBearerToken(r)
-			if !svc.ValidateAdminKey(token) {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusUnauthorized,
-					Type:       domain.ErrorTypeAuthentication,
-					Code:       "invalid_admin_key",
-					Message:    "Valid Master Admin Key is required to access /admin/v1/* endpoints",
-				})
+			token, err := ExtractGatewayCredentials(r)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
 				return
 			}
-			next.ServeHTTP(w, r)
+			op, err := svc.AuthenticateOperator(r.Context(), token)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithOperator(r.Context(), op)))
 		})
 	}
 }

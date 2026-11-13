@@ -37,7 +37,11 @@ auth:
   # Master keys must be securely generated (e.g. openssl rand -hex 32)
   master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
   master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
+  allow_master_key_data_plane: false
   jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
+  jwt_issuer: ""
+  jwt_audience: ""
+  oidc_jwks_url: ""
   default_org_id: "org_default"
   default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
   l1_cache_ttl: 15s

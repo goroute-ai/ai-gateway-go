@@ -51,6 +51,7 @@ type Repository interface {
 	GetTeam(ctx context.Context, id string) (*domain.Team, error)
 	ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error)
 	CreateUser(ctx context.Context, user *domain.User) error
+	GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error)
 	ListUsers(ctx context.Context, orgID string) ([]*domain.User, error)
 
 	// Boundary 1 Auth: Virtual API Keys

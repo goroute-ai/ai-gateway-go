@@ -49,7 +49,13 @@ func (s *GatewayServer) handleAdminCreateA2AAgent(w http.ResponseWriter, r *http
 	}
 
 	if input.OrgID == "" {
+		input.OrgID = resolveScopedOrgID(r, "")
+	}
+	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+		return
 	}
 	if input.TaskVisibilityMode == "" {
 		input.TaskVisibilityMode = domain.TaskVisibilityKeyStrict
@@ -110,9 +116,12 @@ func (s *GatewayServer) handleAdminCreateA2AAgent(w http.ResponseWriter, r *http
 
 // handleAdminListA2AAgents lists registered A2A agents for an organization.
 func (s *GatewayServer) handleAdminListA2AAgents(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
 	if orgID == "" {
 		orgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
 	}
 
 	agents, err := s.repo.ListA2AAgents(r.Context(), orgID)
@@ -144,6 +153,9 @@ func (s *GatewayServer) handleAdminGetA2AAgent(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	if _, ok := s.authorizeAdmin(w, r, agent.OrgID, false); !ok {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agent": agent,
@@ -164,6 +176,20 @@ func (s *GatewayServer) handleAdminSetA2AKillSwitch(w http.ResponseWriter, r *ht
 			Code:       "invalid_json",
 			Message:    err.Error(),
 		})
+		return
+	}
+
+	agent, err := s.repo.GetA2AAgent(r.Context(), agentID)
+	if err != nil || agent == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "agent_not_found",
+			Message:    fmt.Sprintf("Agent %q not found", agentID),
+		})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, agent.OrgID, true); !ok {
 		return
 	}
 
@@ -209,6 +235,16 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 			Code:       "missing_required_fields",
 			Message:    "task_id and target_url are required",
 		})
+		return
+	}
+	targetOrgID := resolveScopedOrgID(r, "")
+	if task, err := s.repo.GetA2ATask(r.Context(), input.TaskID); err == nil && task != nil && task.OrgID != "" {
+		targetOrgID = task.OrgID
+	}
+	if targetOrgID == "" {
+		targetOrgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
 		return
 	}
 
