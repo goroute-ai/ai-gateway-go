@@ -77,22 +77,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// A2A OpenAI Compatibility Bridge (BL-06): route model: "a2a/{slug}" directly to A2A bridge
-	if strings.HasPrefix(chatReq.Model, "a2a/") {
-		agentSlug := strings.TrimPrefix(chatReq.Model, "a2a/")
-		if s.a2aBridge != nil {
-			s.a2aBridge.HandleChatCompletion(w, r, idCtx, agentSlug, &chatReq)
-			return
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeServer,
-			Code:       "a2a_bridge_disabled",
-			Message:    "A2A OpenAI compatibility bridge is disabled",
-		})
-		return
-	}
-
 	// 1. RBAC Model Allowlist Check (Key & Team level)
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
@@ -140,6 +124,23 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			GuardrailBlocked: true,
 		})
 		domain.WriteHTTPError(w, err)
+		return
+	}
+
+	// A2A OpenAI Compatibility Bridge (BL-06): route model: "a2a/{slug}" directly to A2A bridge
+	// after RBAC, request validation, and input guardrails have been enforced.
+	if strings.HasPrefix(chatReq.Model, "a2a/") {
+		agentSlug := strings.TrimPrefix(chatReq.Model, "a2a/")
+		if s.a2aBridge != nil {
+			s.a2aBridge.HandleChatCompletion(w, r, idCtx, agentSlug, &chatReq)
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusServiceUnavailable,
+			Type:       domain.ErrorTypeServer,
+			Code:       "a2a_bridge_disabled",
+			Message:    "A2A OpenAI compatibility bridge is disabled",
+		})
 		return
 	}
 

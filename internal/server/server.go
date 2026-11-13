@@ -169,6 +169,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	a2aSigner := a2a.NewGatewayCardSigner(cfg.A2A.SigningKeyID, "ES256", nil, vault)
 	a2aVerifier := a2a.NewUpstreamCardVerifier(nil)
 	a2aRouter := a2a.NewRouterService(repo, vault, rbac, netPolicy, redisFabric, a2aSigner, a2aVerifier)
+	a2aRouter.SetGuardrails(guardrailsEng)
 	a2aStreamSub := a2a.NewStreamSubscriber(repo, redisFabric)
 	a2aPublisher := a2a.NewStreamPublisher(repo, redisFabric, cfg.A2A.StreamPublishInterval)
 	a2aOutboxWorker := a2a.NewOutboxWorker(repo, netPolicy, cfg.A2A.MaxPushRetries, 200*time.Millisecond)
