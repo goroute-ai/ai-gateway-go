@@ -101,5 +101,5 @@ clean:
 
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.4.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway v1.5.0 — All Release Checks Passed Successfully! "
 	@echo "======================================================================"
