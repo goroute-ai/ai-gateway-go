@@ -76,3 +76,24 @@ func (s *BearerAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderC
 	}
 	return nil
 }
+
+// HeaderAuthStrategy applies a custom header (e.g. `api-subscription-key: <token>`) using `cred.DecryptedAPIKey`.
+type HeaderAuthStrategy struct {
+	HeaderName string
+}
+
+func (s *HeaderAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderCredential) error {
+	if cred == nil {
+		return fmt.Errorf("nil provider credential")
+	}
+	apiKey := strings.TrimSpace(cred.DecryptedAPIKey)
+	if apiKey != "" && strings.TrimSpace(s.HeaderName) != "" {
+		req.Header.Set(s.HeaderName, apiKey)
+	}
+	for k, v := range cred.Headers {
+		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	return nil
+}

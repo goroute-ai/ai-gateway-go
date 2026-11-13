@@ -188,6 +188,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 }
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+	ctx = adapter.StreamingContext(ctx)
 	creds, err := parseCredentials(dep.Credential)
 	if err != nil {
 		return nil, err
@@ -245,6 +246,8 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 
 	var finalUsage domain.TokenUsage
 	chunkID := fmt.Sprintf("bedrock-%d", time.Now().UnixNano())
+	toolCallIndexes := make(map[int]int)
+	nextToolCallIndex := 0
 
 	for {
 		msg, err := DecodeEventStreamMessage(resp.Body)
@@ -270,7 +273,49 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 			Model:   model,
 		}
 
-		if deltaBlock, ok := chunkData["contentBlockDelta"].(map[string]any); ok {
+		if startBlock, ok := chunkData["contentBlockStart"].(map[string]any); ok {
+			blockIdx := 0
+			if idxVal, ok := startBlock["contentBlockIndex"].(float64); ok {
+				blockIdx = int(idxVal)
+			}
+			if start, ok := startBlock["start"].(map[string]any); ok {
+				if toolUse, ok := start["toolUse"].(map[string]any); ok {
+					toolIndex, exists := toolCallIndexes[blockIdx]
+					if !exists {
+						toolIndex = nextToolCallIndex
+						toolCallIndexes[blockIdx] = toolIndex
+						nextToolCallIndex++
+					}
+					idStr, _ := toolUse["toolUseId"].(string)
+					nameStr, _ := toolUse["name"].(string)
+					idxCopy := toolIndex
+					canonicalChunk.Choices = []domain.CanonicalStreamChoice{
+						{
+							Index: 0,
+							Delta: domain.CanonicalStreamDelta{
+								ToolCalls: []domain.CanonicalToolCall{
+									{
+										Index: &idxCopy,
+										ID:    idStr,
+										Type:  "function",
+										Function: domain.CanonicalFunctionCall{
+											Name: nameStr,
+										},
+									},
+								},
+							},
+						},
+					}
+					if err := onChunk(canonicalChunk); err != nil {
+						return &finalUsage, err
+					}
+				}
+			}
+		} else if deltaBlock, ok := chunkData["contentBlockDelta"].(map[string]any); ok {
+			blockIdx := 0
+			if idxVal, ok := deltaBlock["contentBlockIndex"].(float64); ok {
+				blockIdx = int(idxVal)
+			}
 			if delta, ok := deltaBlock["delta"].(map[string]any); ok {
 				if text, ok := delta["text"].(string); ok {
 					canonicalChunk.Choices = []domain.CanonicalStreamChoice{
@@ -284,14 +329,36 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 					if err := onChunk(canonicalChunk); err != nil {
 						return &finalUsage, err
 					}
+				} else if rc, ok := delta["reasoningContent"].(map[string]any); ok {
+					if rText, ok := rc["text"].(string); ok && rText != "" {
+						canonicalChunk.Choices = []domain.CanonicalStreamChoice{
+							{
+								Index: 0,
+								Delta: domain.CanonicalStreamDelta{
+									ReasoningContent: rText,
+								},
+							},
+						}
+						if err := onChunk(canonicalChunk); err != nil {
+							return &finalUsage, err
+						}
+					}
 				} else if toolUse, ok := delta["toolUse"].(map[string]any); ok {
 					if inputStr, ok := toolUse["input"].(string); ok {
+						toolIndex, exists := toolCallIndexes[blockIdx]
+						if !exists {
+							toolIndex = nextToolCallIndex
+							toolCallIndexes[blockIdx] = toolIndex
+							nextToolCallIndex++
+						}
+						idxCopy := toolIndex
 						canonicalChunk.Choices = []domain.CanonicalStreamChoice{
 							{
 								Index: 0,
 								Delta: domain.CanonicalStreamDelta{
 									ToolCalls: []domain.CanonicalToolCall{
 										{
+											Index: &idxCopy,
 											Function: domain.CanonicalFunctionCall{
 												Arguments: inputStr,
 											},
@@ -332,6 +399,12 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 				if tot, ok := usageMap["totalTokens"].(float64); ok {
 					finalUsage.TotalTokens = int(tot)
 				}
+				if cr, ok := usageMap["cacheReadInputTokens"].(float64); ok {
+					finalUsage.CachedPromptTokens = int(cr)
+				}
+				if cw, ok := usageMap["cacheWriteInputTokens"].(float64); ok {
+					finalUsage.CacheCreationTokens = int(cw)
+				}
 			}
 		}
 	}
@@ -350,82 +423,154 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		model = req.Model
 	}
 
-	inputText := ""
-	if len(req.Input) > 0 {
-		inputText = req.Input[0]
-	}
-
-	reqPayload := map[string]any{
-		"inputText": inputText,
-	}
-	body, _ := json.Marshal(reqPayload)
-
-	path := fmt.Sprintf("/model/%s/invoke", url.PathEscape(model))
-	targetURL, err := a.getEndpointURL(dep, creds, path)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	signer := &SigV4Signer{
-		AccessKeyID:     creds.AccessKeyID,
-		SecretAccessKey: creds.SecretAccessKey,
-		SessionToken:    creds.SessionToken,
-		Region:          creds.Region,
-		Service:         "bedrock",
-	}
-	if err := signer.Sign(httpReq, body, time.Now()); err != nil {
-		return nil, err
-	}
-
-	resp, err := a.httpClient.Do(httpReq)
-	if err != nil {
+	if len(req.Input) == 0 {
 		return nil, &domain.GatewayError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeUpstream,
-			Code:       "bedrock_embeddings_failed",
-			Message:    err.Error(),
-			Retryable:  true,
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_embedding_request",
+			Message:    "at least one input is required",
+			Provider:   domain.ProviderBedrock,
 		}
 	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	lowerModel := strings.ToLower(model)
+	isCohere := strings.Contains(lowerModel, "cohere.embed")
+	isCohereV4 := isCohere && strings.Contains(lowerModel, "v4")
+	isTitanV2 := strings.Contains(lowerModel, "titan-embed-text-v2")
+	if req.Dimensions != nil && *req.Dimensions > 0 && !isTitanV2 && !isCohereV4 {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_embedding_dimensions",
+			Message:    "requested embedding dimensions are unsupported by this Bedrock model",
+			Provider:   domain.ProviderBedrock,
+		}
+	}
+	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_embedding_format",
+			Message:    "Bedrock embedding adapter currently returns float vectors only",
+			Provider:   domain.ProviderBedrock,
+		}
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseBedrockError(resp.StatusCode, respBytes)
+	invoke := func(payload map[string]any) ([]byte, error) {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal bedrock embedding request: %w", err)
+		}
+		path := fmt.Sprintf("/model/%s/invoke", url.PathEscape(model))
+		targetURL, err := a.getEndpointURL(dep, creds, path)
+		if err != nil {
+			return nil, err
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		signer := &SigV4Signer{
+			AccessKeyID:     creds.AccessKeyID,
+			SecretAccessKey: creds.SecretAccessKey,
+			SessionToken:    creds.SessionToken,
+			Region:          creds.Region,
+			Service:         "bedrock",
+		}
+		if err := signer.Sign(httpReq, body, time.Now()); err != nil {
+			return nil, err
+		}
+		resp, err := a.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "bedrock_embeddings_failed",
+				Message:    err.Error(),
+				Retryable:  true,
+			}
+		}
+		defer resp.Body.Close()
+		respBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, parseBedrockError(resp.StatusCode, respBytes)
+		}
+		return respBytes, nil
 	}
 
-	var invokeResp struct {
-		Embedding           []float64 `json:"embedding"`
-		InputTextTokenCount int       `json:"inputTextTokenCount"`
+	var data []domain.EmbeddingData
+	totalTokens := 0
+	if isCohere {
+		inputType := req.InputType
+		if inputType == "" {
+			inputType = "search_document"
+		}
+		payload := map[string]any{"texts": req.Input, "input_type": inputType, "truncate": "END"}
+		if req.Dimensions != nil && *req.Dimensions > 0 && isCohereV4 {
+			payload["output_dimension"] = *req.Dimensions
+		}
+		payload["embedding_types"] = []string{"float"}
+		respBytes, err := invoke(payload)
+		if err != nil {
+			return nil, err
+		}
+		var wire struct {
+			Embeddings          json.RawMessage `json:"embeddings"`
+			InputTextTokenCount int             `json:"inputTextTokenCount"`
+		}
+		if err := json.Unmarshal(respBytes, &wire); err != nil {
+			return nil, fmt.Errorf("decode bedrock Cohere embedding response: %w", err)
+		}
+		var vectors [][]float64
+		if err := json.Unmarshal(wire.Embeddings, &vectors); err != nil {
+			var typed struct {
+				Float [][]float64 `json:"float"`
+			}
+			if typedErr := json.Unmarshal(wire.Embeddings, &typed); typedErr != nil {
+				return nil, fmt.Errorf("decode bedrock Cohere embedding vectors: %w", typedErr)
+			}
+			vectors = typed.Float
+		}
+		for i, vector := range vectors {
+			data = append(data, domain.EmbeddingData{Index: i, Embedding: vector, Object: "embedding"})
+		}
+		totalTokens = wire.InputTextTokenCount
+	} else {
+		for i, inputText := range req.Input {
+			payload := map[string]any{"inputText": inputText}
+			if strings.Contains(strings.ToLower(model), "titan-embed-text-v2") {
+				if req.Dimensions != nil && *req.Dimensions > 0 {
+					payload["dimensions"] = *req.Dimensions
+				}
+				payload["normalize"] = true
+			}
+			respBytes, err := invoke(payload)
+			if err != nil {
+				return nil, err
+			}
+			var wire struct {
+				Embedding           []float64 `json:"embedding"`
+				InputTextTokenCount int       `json:"inputTextTokenCount"`
+			}
+			if err := json.Unmarshal(respBytes, &wire); err != nil {
+				return nil, fmt.Errorf("decode bedrock embedding response: %w", err)
+			}
+			data = append(data, domain.EmbeddingData{Index: i, Embedding: wire.Embedding, Object: "embedding"})
+			totalTokens += wire.InputTextTokenCount
+		}
 	}
-	if err := json.Unmarshal(respBytes, &invokeResp); err != nil {
-		return nil, fmt.Errorf("decode bedrock embedding response: %w", err)
+	if len(data) != len(req.Input) {
+		return nil, fmt.Errorf("bedrock returned %d embeddings for %d inputs", len(data), len(req.Input))
 	}
-
 	return &domain.CanonicalEmbeddingResponse{
-		Object: "list",
-		Data: []domain.EmbeddingData{
-			{
-				Index:     0,
-				Embedding: invokeResp.Embedding,
-				Object:    "embedding",
-			},
-		},
-		Model: model,
-		Usage: domain.TokenUsage{
-			PromptTokens: invokeResp.InputTextTokenCount,
-			TotalTokens:  invokeResp.InputTextTokenCount,
-		},
+		Object:   "list",
+		Data:     data,
+		Model:    model,
+		Provider: domain.ProviderBedrock,
+		Usage:    domain.TokenUsage{PromptTokens: totalTokens, TotalTokens: totalTokens},
 	}, nil
 }
 
@@ -438,6 +583,149 @@ func (a *Adapter) ValidateCredential(ctx context.Context, cred *domain.ProviderC
 		return fmt.Errorf("missing aws access key or secret key")
 	}
 	return nil
+}
+
+// Rerank translates the shared rerank contract to the Bedrock Agent Runtime API.
+func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
+	creds, err := parseCredentials(dep.Credential)
+	if err != nil {
+		return nil, err
+	}
+	model := req.ResolvedModel
+	if model == "" {
+		model = req.Model
+	}
+	if model == "" || len(req.Documents) == 0 || strings.TrimSpace(req.Query) == "" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_rerank_request",
+			Message:    "model, query, and at least one document are required",
+			Provider:   domain.ProviderBedrock,
+		}
+	}
+
+	sources := make([]map[string]any, 0, len(req.Documents))
+	for _, document := range req.Documents {
+		if document.Raw != nil {
+			sources = append(sources, map[string]any{
+				"type": "INLINE",
+				"inlineDocumentSource": map[string]any{
+					"type":         "JSON",
+					"jsonDocument": document.Raw,
+				},
+			})
+			continue
+		}
+		sources = append(sources, map[string]any{
+			"type": "INLINE",
+			"inlineDocumentSource": map[string]any{
+				"type":         "TEXT",
+				"textDocument": map[string]any{"text": document.Text},
+			},
+		})
+	}
+	resultCount := len(req.Documents)
+	if req.TopN != nil && *req.TopN > 0 {
+		resultCount = *req.TopN
+	}
+	payload := map[string]any{
+		"queries": []map[string]any{{
+			"type":      "TEXT",
+			"textQuery": map[string]any{"text": req.Query},
+		}},
+		"rerankingConfiguration": map[string]any{
+			"type": "BEDROCK_RERANKING_MODEL",
+			"bedrockRerankingConfiguration": map[string]any{
+				"modelConfiguration": map[string]any{"modelArn": model},
+				"numberOfResults":    resultCount,
+			},
+		},
+		"sources": sources,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal bedrock rerank request: %w", err)
+	}
+
+	targetURL := ""
+	if dep.Credential.BaseURL != "" {
+		targetURL = strings.TrimRight(dep.Credential.BaseURL, "/") + "/rerank"
+	} else {
+		runtimeURL, err := a.getEndpointURL(dep, creds, "/rerank")
+		if err != nil {
+			return nil, err
+		}
+		targetURL = strings.Replace(runtimeURL, "bedrock-runtime.", "bedrock-agent-runtime.", 1)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create bedrock rerank request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	signer := &SigV4Signer{
+		AccessKeyID:     creds.AccessKeyID,
+		SecretAccessKey: creds.SecretAccessKey,
+		SessionToken:    creds.SessionToken,
+		Region:          creds.Region,
+		Service:         "bedrock-agent-runtime",
+	}
+	if err := signer.Sign(httpReq, body, time.Now()); err != nil {
+		return nil, fmt.Errorf("sign bedrock rerank request: %w", err)
+	}
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "bedrock_rerank_connection_failed",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	defer resp.Body.Close()
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read bedrock rerank response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, parseBedrockError(resp.StatusCode, respBytes)
+	}
+	var wire struct {
+		ID      string `json:"id"`
+		Results []struct {
+			Index               int     `json:"index"`
+			RelevanceScore      float64 `json:"relevanceScore"`
+			SnakeRelevanceScore float64 `json:"relevance_score"`
+		} `json:"results"`
+		Usage struct {
+			SearchUnits      int `json:"search_units"`
+			CamelSearchUnits int `json:"searchUnits"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(respBytes, &wire); err != nil {
+		return nil, fmt.Errorf("decode bedrock rerank response: %w", err)
+	}
+	results := make([]domain.RerankResultItem, len(wire.Results))
+	for i, result := range wire.Results {
+		score := result.RelevanceScore
+		if score == 0 {
+			score = result.SnakeRelevanceScore
+		}
+		results[i] = domain.RerankResultItem{Index: result.Index, RelevanceScore: score}
+	}
+	searchUnits := wire.Usage.SearchUnits
+	if searchUnits == 0 {
+		searchUnits = wire.Usage.CamelSearchUnits
+	}
+	return &domain.CanonicalRerankResponse{
+		ID:       wire.ID,
+		Model:    model,
+		Provider: domain.ProviderBedrock,
+		Results:  results,
+		Usage:    domain.RerankUsage{SearchUnits: searchUnits},
+	}, nil
 }
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
@@ -453,11 +741,21 @@ func buildConversePayload(req *domain.CanonicalChatRequest) ([]byte, error) {
 	payload := make(map[string]any)
 
 	var messages []map[string]any
-	var systemList []map[string]string
+	var systemList []map[string]any
 
 	for _, m := range req.Messages {
-		if m.Role == "system" {
-			systemList = append(systemList, map[string]string{"text": m.Content})
+		if m.Role == "system" || m.Role == "developer" {
+			if m.Content != "" {
+				systemList = append(systemList, map[string]any{"text": m.Content})
+			}
+			for _, p := range m.Parts {
+				if p.Type == "text" && p.Text != "" {
+					systemList = append(systemList, map[string]any{"text": p.Text})
+				}
+			}
+			if m.CacheControl != nil {
+				systemList = append(systemList, map[string]any{"cachePoint": map[string]any{"type": "default"}})
+			}
 			continue
 		}
 
@@ -467,9 +765,6 @@ func buildConversePayload(req *domain.CanonicalChatRequest) ([]byte, error) {
 		}
 
 		var content []map[string]any
-		if m.Content != "" {
-			content = append(content, map[string]any{"text": m.Content})
-		}
 		if m.ToolCallID != "" {
 			content = append(content, map[string]any{
 				"toolResult": map[string]any{
@@ -478,6 +773,58 @@ func buildConversePayload(req *domain.CanonicalChatRequest) ([]byte, error) {
 					"status":    "success",
 				},
 			})
+		} else if len(m.Parts) > 0 {
+			for _, p := range m.Parts {
+				switch p.Type {
+				case "text":
+					if p.Text != "" {
+						content = append(content, map[string]any{"text": p.Text})
+					}
+				case "image_url":
+					if p.ImageURL != nil {
+						if fmtName, b64Data, ok := parseDataURI(p.ImageURL.URL); ok {
+							content = append(content, map[string]any{
+								"image": map[string]any{
+									"format": strings.TrimPrefix(fmtName, "image/"),
+									"source": map[string]any{"bytes": b64Data},
+								},
+							})
+						}
+					}
+				case "document":
+					if p.Document != nil && p.Document.Data != "" {
+						docName := p.Document.Filename
+						if docName == "" {
+							docName = "document"
+						}
+						docFmt := "pdf"
+						if strings.Contains(p.Document.MimeType, "csv") {
+							docFmt = "csv"
+						} else if strings.Contains(p.Document.MimeType, "html") {
+							docFmt = "html"
+						} else if strings.Contains(p.Document.MimeType, "markdown") {
+							docFmt = "md"
+						} else if strings.Contains(p.Document.MimeType, "plain") {
+							docFmt = "txt"
+						}
+						content = append(content, map[string]any{
+							"document": map[string]any{
+								"format": docFmt,
+								"name":   docName,
+								"source": map[string]any{"bytes": p.Document.Data},
+							},
+						})
+					}
+				}
+				if p.CacheControl != nil {
+					content = append(content, map[string]any{"cachePoint": map[string]any{"type": "default"}})
+				}
+			}
+		} else if m.Content != "" {
+			content = append(content, map[string]any{"text": m.Content})
+		}
+		if m.CacheControl != nil {
+			content = append(content, map[string]any{"cachePoint": map[string]any{"type": "default"}})
 		}
 		for _, tc := range m.ToolCalls {
 			var inputMap map[string]any
@@ -495,6 +842,13 @@ func buildConversePayload(req *domain.CanonicalChatRequest) ([]byte, error) {
 		}
 
 		if len(content) > 0 {
+			// Merge consecutive tool-result user turns into a single Bedrock user message
+			if m.Role == "tool" && len(messages) > 0 && messages[len(messages)-1]["role"] == "user" {
+				if prevContent, ok := messages[len(messages)-1]["content"].([]map[string]any); ok {
+					messages[len(messages)-1]["content"] = append(prevContent, content...)
+					continue
+				}
+			}
 			messages = append(messages, map[string]any{
 				"role":    bedrockRole,
 				"content": content,
@@ -537,13 +891,81 @@ func buildConversePayload(req *domain.CanonicalChatRequest) ([]byte, error) {
 				},
 			}
 			tools = append(tools, map[string]any{"toolSpec": spec})
+			if t.CacheControl != nil {
+				tools = append(tools, map[string]any{"cachePoint": map[string]any{"type": "default"}})
+			}
 		}
-		payload["toolConfig"] = map[string]any{
-			"tools": tools,
+		tcMap := map[string]any{"tools": tools}
+		if req.ToolChoice != nil {
+			switch tc := req.ToolChoice.(type) {
+			case string:
+				switch tc {
+				case "auto":
+					tcMap["toolChoice"] = map[string]any{"auto": map[string]any{}}
+				case "required":
+					tcMap["toolChoice"] = map[string]any{"any": map[string]any{}}
+				}
+			case map[string]any:
+				if fn, ok := tc["function"].(map[string]any); ok {
+					if name, ok := fn["name"].(string); ok && name != "" {
+						tcMap["toolChoice"] = map[string]any{"tool": map[string]any{"name": name}}
+					}
+				}
+			}
+		}
+		payload["toolConfig"] = tcMap
+	}
+
+	// Structured Outputs (Converse outputConfig)
+	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_schema" && len(req.ResponseFormat.JSONSchema) > 0 {
+		schemaBytes, _ := json.Marshal(req.ResponseFormat.JSONSchema)
+		payload["outputConfig"] = map[string]any{
+			"textFormat": map[string]any{
+				"type": "json_schema",
+				"structure": map[string]any{
+					"jsonSchema": map[string]any{
+						"schema": string(schemaBytes),
+					},
+				},
+			},
+		}
+	}
+
+	// Reasoning Effort (additionalModelRequestFields)
+	if req.ReasoningEffort != "" && !strings.EqualFold(req.ReasoningEffort, "none") {
+		modelLower := strings.ToLower(req.ResolvedModel + " " + req.Model)
+		switch {
+		case strings.Contains(modelLower, "claude"):
+			budget := 4096
+			switch strings.ToLower(req.ReasoningEffort) {
+			case "minimal", "low":
+				budget = 2048
+			case "high", "xhigh", "max":
+				budget = 8192
+			}
+			payload["additionalModelRequestFields"] = map[string]any{
+				"thinking": map[string]any{"type": "enabled", "budget_tokens": budget},
+			}
+		case strings.Contains(modelLower, "nova"):
+			payload["additionalModelRequestFields"] = map[string]any{
+				"reasoningConfig": map[string]any{"type": "enabled", "maxReasoningEffort": strings.ToLower(req.ReasoningEffort)},
+			}
 		}
 	}
 
 	return json.Marshal(payload)
+}
+
+func parseDataURI(uri string) (mime string, b64 string, ok bool) {
+	if !strings.HasPrefix(uri, "data:") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(uri, "data:")
+	semi := strings.Index(rest, ";base64,")
+	if semi <= 0 {
+		return "", "", false
+	}
+	return rest[:semi], rest[semi+len(";base64,"):], true
 }
 
 func parseConverseResponse(data []byte, model string) (*domain.CanonicalChatResponse, error) {
@@ -552,7 +974,12 @@ func parseConverseResponse(data []byte, model string) (*domain.CanonicalChatResp
 			Message struct {
 				Role    string `json:"role"`
 				Content []struct {
-					Text    string `json:"text,omitempty"`
+					Text             string `json:"text,omitempty"`
+					ReasoningContent *struct {
+						ReasoningText *struct {
+							Text string `json:"text"`
+						} `json:"reasoningText,omitempty"`
+					} `json:"reasoningContent,omitempty"`
 					ToolUse *struct {
 						ToolUseID string         `json:"toolUseId"`
 						Name      string         `json:"name"`
@@ -563,9 +990,11 @@ func parseConverseResponse(data []byte, model string) (*domain.CanonicalChatResp
 		} `json:"output"`
 		StopReason string `json:"stopReason"`
 		Usage      struct {
-			InputTokens  int `json:"inputTokens"`
-			OutputTokens int `json:"outputTokens"`
-			TotalTokens  int `json:"totalTokens"`
+			InputTokens           int `json:"inputTokens"`
+			OutputTokens          int `json:"outputTokens"`
+			TotalTokens           int `json:"totalTokens"`
+			CacheReadInputTokens  int `json:"cacheReadInputTokens"`
+			CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
 		} `json:"usage"`
 	}
 
@@ -574,11 +1003,15 @@ func parseConverseResponse(data []byte, model string) (*domain.CanonicalChatResp
 	}
 
 	var sb strings.Builder
+	var rsb strings.Builder
 	var toolCalls []domain.CanonicalToolCall
 
 	for i, c := range resp.Output.Message.Content {
 		if c.Text != "" {
 			sb.WriteString(c.Text)
+		}
+		if c.ReasoningContent != nil && c.ReasoningContent.ReasoningText != nil {
+			rsb.WriteString(c.ReasoningContent.ReasoningText.Text)
 		}
 		if c.ToolUse != nil {
 			args, _ := json.Marshal(c.ToolUse.Input)
@@ -603,17 +1036,20 @@ func parseConverseResponse(data []byte, model string) (*domain.CanonicalChatResp
 			{
 				Index: 0,
 				Message: domain.CanonicalMessage{
-					Role:      "assistant",
-					Content:   sb.String(),
-					ToolCalls: toolCalls,
+					Role:             "assistant",
+					Content:          sb.String(),
+					ReasoningContent: rsb.String(),
+					ToolCalls:        toolCalls,
 				},
 				FinishReason: mapBedrockStopReason(resp.StopReason),
 			},
 		},
 		Usage: domain.TokenUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
+			PromptTokens:        resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens,
+			CompletionTokens:    resp.Usage.OutputTokens,
+			TotalTokens:         resp.Usage.TotalTokens,
+			CachedPromptTokens:  resp.Usage.CacheReadInputTokens,
+			CacheCreationTokens: resp.Usage.CacheWriteInputTokens,
 		},
 	}
 

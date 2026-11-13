@@ -521,4 +521,6 @@ func (r *ProfileRegistry) registerBuiltinProfiles() {
 			Streaming: domain.CapabilitySupported,
 		},
 	}
+
+	r.registerExtendedProfiles()
 }
