@@ -74,10 +74,10 @@ export interface VirtualKey {
   user_id?: string;
   name: string;
   key_prefix: string;
-  key_secret?: string; // Only returned on creation
+  raw_key?: string; // Only returned on creation
   role?: string;
   max_budget_micros?: number;
-  current_spend_micros?: number;
+  spent_micros?: number;
   rpm_limit?: number;
   tpm_limit?: number;
   allowed_models?: string[];
@@ -225,6 +225,14 @@ export interface SpendSummary {
   spend_by_virtual_key?: Record<string, number>;
 }
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_prompt_tokens?: number;
+  reasoning_tokens?: number;
+}
+
 export interface SpendEvent {
   id: string;
   request_id: string;
@@ -233,9 +241,7 @@ export interface SpendEvent {
   provider: string;
   requested_model: string;
   resolved_model: string;
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
+  usage?: TokenUsage;
   cost_micros: number;
   cost_usd: number;
   modality?: string;

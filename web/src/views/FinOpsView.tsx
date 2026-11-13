@@ -376,9 +376,9 @@ export const FinOpsView: React.FC = () => {
                         <Badge variant="neutral">{evt.provider || 'unknown'}</Badge>
                       </td>
                       <td className="px-4 py-3 text-zinc-300 whitespace-nowrap">
-                        {evt.prompt_tokens ?? 0} / {evt.completion_tokens ?? 0}
+                        {evt.usage?.prompt_tokens ?? 0} / {evt.usage?.completion_tokens ?? 0}
                         <span className="block text-[10px] text-zinc-500 font-bold">
-                          {(evt.total_tokens ?? 0).toLocaleString()} tot
+                          {(evt.usage?.total_tokens ?? 0).toLocaleString()} tot
                         </span>
                       </td>
                       <td className="px-4 py-3 text-emerald-400 whitespace-nowrap">
@@ -495,7 +495,7 @@ export const FinOpsView: React.FC = () => {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-canvas border border-subtle rounded p-3 text-xs font-mono">
               <div>
                 <span className="text-zinc-500 block">Total Tokens:</span>
-                <span className="text-zinc-200 font-semibold">{(selectedSpendEvent.total_tokens ?? 0).toLocaleString()}</span>
+                <span className="text-zinc-200 font-semibold">{(selectedSpendEvent.usage?.total_tokens ?? 0).toLocaleString()}</span>
               </div>
               <div>
                 <span className="text-zinc-500 block">Cost (Micros):</span>
