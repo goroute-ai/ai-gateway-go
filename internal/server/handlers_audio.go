@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
@@ -33,14 +32,7 @@ func (s *GatewayServer) handleAudioTranslations(w http.ResponseWriter, r *http.R
 }
 
 func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, isTranslation bool) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		prefix := "stt_"
-		if isTranslation {
-			prefix = "stt_translation_"
-		}
-		reqID = prefix + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -100,7 +92,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
+	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
 
@@ -278,10 +270,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 
 // handleAudioSpeech serves `POST /v1/audio/speech` and `POST /audio/speech`.
 func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "tts_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -330,13 +319,12 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
-		return
-	}
 
 	// TTS quota follows the target model's text token profile.
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateAudioTTSCostUpperBound(gm, len([]rune(raw.Input)))
+	})
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -376,7 +364,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	costMicros := finops.CalculateAudioTTSCostMicros(gm, len(raw.Input))
+	costMicros := finops.CalculateAudioTTSCostMicros(gm, len([]rune(raw.Input)))
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
 	var latencyMs, routingMicros int64

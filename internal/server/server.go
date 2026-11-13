@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,8 @@ type GatewayServer struct {
 	reliability      *router.ReliabilityManager
 	spendWorker      *finops.SpendWorker
 	collector        *observability.Collector
+	outboundMetrics  *network.HTTPClientMetrics
+	budgetStats      *budgetLookupStats
 	tracer           trace.Tracer
 	tracerShutdown   func(context.Context) error
 	healthMon        *health.Monitor
@@ -100,9 +103,18 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		return nil, err
 	}
 
+	outboundMetrics := network.NewHTTPClientMetrics()
 	adapterClient := httpClient
 	if adapterClient == nil {
-		adapterClient = network.NewHTTPClient(netPolicy)
+		adapterClient = network.NewHTTPClientWithOptions(netPolicy, network.HTTPClientOptions{
+			RequestTimeout:        cfg.Providers.RequestTimeout,
+			ResponseHeaderTimeout: cfg.Providers.ResponseHeaderTimeout,
+			StreamIdleTimeout:     cfg.Providers.StreamIdleTimeout,
+			MaxIdleConns:          cfg.Providers.MaxIdleConns,
+			MaxIdleConnsPerHost:   cfg.Providers.MaxIdleConnsPerHost,
+		}, outboundMetrics)
+	} else {
+		outboundMetrics = nil
 	}
 
 	reg := adapter.NewRegistry()
@@ -135,11 +147,67 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}))
 	rbac := auth.NewRBACEngine(repo)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
-	respCache := cache.NewResponseCache(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, redisFabric)
+	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
 
 	collector := observability.NewCollector()
+	budgetStats := &budgetLookupStats{}
+	collector.SetAdditionalMetricsProvider(func() map[string]float64 {
+		l1Size, l1Capacity, l1Evictions := respCache.L1Stats()
+		cacheMetrics := respCache.Metrics()
+		metrics := map[string]float64{
+			"gateway_response_cache_l1_entries":               float64(l1Size),
+			"gateway_response_cache_l1_capacity":              float64(l1Capacity),
+			"gateway_response_cache_l1_evictions_total":       float64(l1Evictions),
+			"gateway_response_cache_l1_hits_total":            float64(cacheMetrics.L1Hits),
+			"gateway_response_cache_l1_misses_total":          float64(cacheMetrics.L1Misses),
+			"gateway_response_cache_l2_hits_total":            float64(cacheMetrics.L2Hits),
+			"gateway_response_cache_epoch_lookups_total":      float64(cacheMetrics.EpochChecks),
+			"gateway_response_cache_epoch_lookup_seconds_sum": float64(cacheMetrics.EpochNanos) / float64(time.Second),
+		}
+		if outboundMetrics != nil {
+			snapshot := outboundMetrics.Snapshot()
+			metrics["gateway_upstream_http_requests_total"] = float64(snapshot.Requests)
+			metrics["gateway_upstream_dial_attempts_total"] = float64(snapshot.DialAttempts)
+			metrics["gateway_upstream_tls_handshakes_total"] = float64(snapshot.TLSHandshakes)
+			metrics["gateway_upstream_connections_fresh_total"] = float64(snapshot.FreshConnections)
+			metrics["gateway_upstream_connections_reused_total"] = float64(snapshot.ReusedConnections)
+			metrics["gateway_upstream_responses_http1_total"] = float64(snapshot.HTTP1Responses)
+			metrics["gateway_upstream_responses_http2_total"] = float64(snapshot.HTTP2Responses)
+			metrics["gateway_upstream_first_byte_wait_seconds_sum"] = float64(snapshot.FirstByteWaitNanos) / float64(time.Second)
+			metrics["gateway_upstream_first_byte_wait_count"] = float64(snapshot.FirstByteWaitCount)
+			metrics["gateway_upstream_idle_timeouts_total"] = float64(snapshot.IdleTimeouts)
+		}
+		metrics["gateway_budget_indexed_model_lookups_total"] = float64(budgetStats.indexedLookups.Load())
+		metrics["gateway_budget_catalog_scans_total"] = float64(budgetStats.catalogScans.Load())
+		metrics["gateway_budgeted_reservation_checks_total"] = float64(budgetStats.budgetedChecks.Load())
+		metrics["gateway_budget_pricing_summary_lookups_total"] = float64(budgetStats.pricingSummaries.Load())
+		if recordedRequests := collector.Snapshot().TotalRequests; recordedRequests > 0 {
+			metrics["gateway_budgeted_request_share"] = float64(budgetStats.budgetedChecks.Load()) / float64(recordedRequests)
+		}
+		if catalog, ok := repo.(storage.GlobalModelCatalogSize); ok {
+			metrics["gateway_model_catalog_size"] = float64(catalog.GlobalModelCatalogSize())
+		}
+		if summaryStats, ok := repo.(storage.GlobalModelPricingSummaryMetrics); ok {
+			metrics["gateway_budget_pricing_summary_rebuilds_total"] = float64(summaryStats.PricingSummaryRebuilds())
+		}
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		metrics["gateway_go_heap_alloc_bytes"] = float64(mem.HeapAlloc)
+		metrics["gateway_go_heap_inuse_bytes"] = float64(mem.HeapInuse)
+		metrics["gateway_go_heap_objects"] = float64(mem.HeapObjects)
+		metrics["gateway_go_gc_cycles_total"] = float64(mem.NumGC)
+		metrics["gateway_go_gc_pause_seconds_total"] = float64(mem.PauseTotalNs) / float64(time.Second)
+		if lookupStats, ok := repo.(storage.PostgresLookupMetrics); ok {
+			subscriptionQueries, emptySubscriptionQueries, guardrailQueries, missingGuardrailQueries := lookupStats.LookupQueryStats()
+			metrics["gateway_storage_subscription_fallback_queries_total"] = float64(subscriptionQueries)
+			metrics["gateway_storage_empty_subscription_queries_total"] = float64(emptySubscriptionQueries)
+			metrics["gateway_storage_guardrail_fallback_queries_total"] = float64(guardrailQueries)
+			metrics["gateway_storage_missing_guardrail_queries_total"] = float64(missingGuardrailQueries)
+		}
+		return metrics
+	})
 	healthMon := health.NewMonitor(repo, reg, vault, 60*time.Second, 5*time.Second)
 	validator := validation.NewValidator(repo)
 	guardrailsEng := guardrails.NewEngine(repo)
@@ -201,6 +269,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reliability:     relMgr,
 		spendWorker:     spendWorker,
 		collector:       collector,
+		outboundMetrics: outboundMetrics,
+		budgetStats:     budgetStats,
 		tracer:          tracer,
 		tracerShutdown:  tracerShutdown,
 		healthMon:       healthMon,

@@ -142,7 +142,13 @@ func TestMetricsRequiresMasterAdminCredential(t *testing.T) {
 	authenticated.Header.Set("Authorization", "Bearer sk-gw-metrics-test-master")
 	authenticatedRecorder := httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(authenticatedRecorder, authenticated)
-	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(authenticatedRecorder.Body.String(), "gateway_requests_total") {
+	metricsBody := authenticatedRecorder.Body.String()
+	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(metricsBody, "gateway_requests_total") {
 		t.Fatalf("expected 200 with metrics for admin credential, got %d: %s", authenticatedRecorder.Code, authenticatedRecorder.Body.String())
+	}
+	for _, metric := range []string{"gateway_go_heap_alloc_bytes", "gateway_go_gc_cycles_total", "gateway_model_catalog_size", "gateway_response_cache_epoch_lookup_seconds_sum"} {
+		if !strings.Contains(metricsBody, metric) {
+			t.Fatalf("expected runtime metric %q, got: %s", metric, metricsBody)
+		}
 	}
 }

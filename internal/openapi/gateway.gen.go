@@ -98,21 +98,48 @@ func (e AudioSpeechRequestResponseFormat) Valid() bool {
 	}
 }
 
+// Defines values for CacheControlType.
+const (
+	Ephemeral CacheControlType = "ephemeral"
+)
+
+// Valid indicates whether the value is a known member of the CacheControlType enum.
+func (e CacheControlType) Valid() bool {
+	switch e {
+	case Ephemeral:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChatCompletionRequestReasoningEffort.
 const (
-	High   ChatCompletionRequestReasoningEffort = "high"
-	Low    ChatCompletionRequestReasoningEffort = "low"
-	Medium ChatCompletionRequestReasoningEffort = "medium"
+	ChatCompletionRequestReasoningEffortHigh    ChatCompletionRequestReasoningEffort = "high"
+	ChatCompletionRequestReasoningEffortLow     ChatCompletionRequestReasoningEffort = "low"
+	ChatCompletionRequestReasoningEffortMax     ChatCompletionRequestReasoningEffort = "max"
+	ChatCompletionRequestReasoningEffortMedium  ChatCompletionRequestReasoningEffort = "medium"
+	ChatCompletionRequestReasoningEffortMinimal ChatCompletionRequestReasoningEffort = "minimal"
+	ChatCompletionRequestReasoningEffortNone    ChatCompletionRequestReasoningEffort = "none"
+	ChatCompletionRequestReasoningEffortXhigh   ChatCompletionRequestReasoningEffort = "xhigh"
 )
 
 // Valid indicates whether the value is a known member of the ChatCompletionRequestReasoningEffort enum.
 func (e ChatCompletionRequestReasoningEffort) Valid() bool {
 	switch e {
-	case High:
+	case ChatCompletionRequestReasoningEffortHigh:
 		return true
-	case Low:
+	case ChatCompletionRequestReasoningEffortLow:
 		return true
-	case Medium:
+	case ChatCompletionRequestReasoningEffortMax:
+		return true
+	case ChatCompletionRequestReasoningEffortMedium:
+		return true
+	case ChatCompletionRequestReasoningEffortMinimal:
+		return true
+	case ChatCompletionRequestReasoningEffortNone:
+		return true
+	case ChatCompletionRequestReasoningEffortXhigh:
 		return true
 	default:
 		return false
@@ -121,19 +148,19 @@ func (e ChatCompletionRequestReasoningEffort) Valid() bool {
 
 // Defines values for ChatCompletionRequestResponseFormatType.
 const (
-	JsonObject ChatCompletionRequestResponseFormatType = "json_object"
-	JsonSchema ChatCompletionRequestResponseFormatType = "json_schema"
-	Text       ChatCompletionRequestResponseFormatType = "text"
+	ChatCompletionRequestResponseFormatTypeJsonObject ChatCompletionRequestResponseFormatType = "json_object"
+	ChatCompletionRequestResponseFormatTypeJsonSchema ChatCompletionRequestResponseFormatType = "json_schema"
+	ChatCompletionRequestResponseFormatTypeText       ChatCompletionRequestResponseFormatType = "text"
 )
 
 // Valid indicates whether the value is a known member of the ChatCompletionRequestResponseFormatType enum.
 func (e ChatCompletionRequestResponseFormatType) Valid() bool {
 	switch e {
-	case JsonObject:
+	case ChatCompletionRequestResponseFormatTypeJsonObject:
 		return true
-	case JsonSchema:
+	case ChatCompletionRequestResponseFormatTypeJsonSchema:
 		return true
-	case Text:
+	case ChatCompletionRequestResponseFormatTypeText:
 		return true
 	default:
 		return false
@@ -176,6 +203,33 @@ func (e ChatMessageRole) Valid() bool {
 	case ChatMessageRoleTool:
 		return true
 	case ChatMessageRoleUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ContentPartType.
+const (
+	ContentPartTypeDocument   ContentPartType = "document"
+	ContentPartTypeImageUrl   ContentPartType = "image_url"
+	ContentPartTypeInputImage ContentPartType = "input_image"
+	ContentPartTypeInputText  ContentPartType = "input_text"
+	ContentPartTypeText       ContentPartType = "text"
+)
+
+// Valid indicates whether the value is a known member of the ContentPartType enum.
+func (e ContentPartType) Valid() bool {
+	switch e {
+	case ContentPartTypeDocument:
+		return true
+	case ContentPartTypeImageUrl:
+		return true
+	case ContentPartTypeInputImage:
+		return true
+	case ContentPartTypeInputText:
+		return true
+	case ContentPartTypeText:
 		return true
 	default:
 		return false
@@ -332,6 +386,132 @@ func (e ImageGenerationRequestResponseFormat) Valid() bool {
 	}
 }
 
+// Defines values for ResponsesAPIRequestReasoningEffort.
+const (
+	ResponsesAPIRequestReasoningEffortHigh    ResponsesAPIRequestReasoningEffort = "high"
+	ResponsesAPIRequestReasoningEffortLow     ResponsesAPIRequestReasoningEffort = "low"
+	ResponsesAPIRequestReasoningEffortMax     ResponsesAPIRequestReasoningEffort = "max"
+	ResponsesAPIRequestReasoningEffortMedium  ResponsesAPIRequestReasoningEffort = "medium"
+	ResponsesAPIRequestReasoningEffortMinimal ResponsesAPIRequestReasoningEffort = "minimal"
+	ResponsesAPIRequestReasoningEffortNone    ResponsesAPIRequestReasoningEffort = "none"
+	ResponsesAPIRequestReasoningEffortXhigh   ResponsesAPIRequestReasoningEffort = "xhigh"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesAPIRequestReasoningEffort enum.
+func (e ResponsesAPIRequestReasoningEffort) Valid() bool {
+	switch e {
+	case ResponsesAPIRequestReasoningEffortHigh:
+		return true
+	case ResponsesAPIRequestReasoningEffortLow:
+		return true
+	case ResponsesAPIRequestReasoningEffortMax:
+		return true
+	case ResponsesAPIRequestReasoningEffortMedium:
+		return true
+	case ResponsesAPIRequestReasoningEffortMinimal:
+		return true
+	case ResponsesAPIRequestReasoningEffortNone:
+		return true
+	case ResponsesAPIRequestReasoningEffortXhigh:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesAPIRequestTextFormatType.
+const (
+	ResponsesAPIRequestTextFormatTypeJsonObject ResponsesAPIRequestTextFormatType = "json_object"
+	ResponsesAPIRequestTextFormatTypeJsonSchema ResponsesAPIRequestTextFormatType = "json_schema"
+	ResponsesAPIRequestTextFormatTypeText       ResponsesAPIRequestTextFormatType = "text"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesAPIRequestTextFormatType enum.
+func (e ResponsesAPIRequestTextFormatType) Valid() bool {
+	switch e {
+	case ResponsesAPIRequestTextFormatTypeJsonObject:
+		return true
+	case ResponsesAPIRequestTextFormatTypeJsonSchema:
+		return true
+	case ResponsesAPIRequestTextFormatTypeText:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesFunctionCallInputItemType.
+const (
+	FunctionCall ResponsesFunctionCallInputItemType = "function_call"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesFunctionCallInputItemType enum.
+func (e ResponsesFunctionCallInputItemType) Valid() bool {
+	switch e {
+	case FunctionCall:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesFunctionCallOutputInputItemType.
+const (
+	FunctionCallOutput ResponsesFunctionCallOutputInputItemType = "function_call_output"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesFunctionCallOutputInputItemType enum.
+func (e ResponsesFunctionCallOutputInputItemType) Valid() bool {
+	switch e {
+	case FunctionCallOutput:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesMessageInputItemRole.
+const (
+	ResponsesMessageInputItemRoleAssistant ResponsesMessageInputItemRole = "assistant"
+	ResponsesMessageInputItemRoleDeveloper ResponsesMessageInputItemRole = "developer"
+	ResponsesMessageInputItemRoleSystem    ResponsesMessageInputItemRole = "system"
+	ResponsesMessageInputItemRoleTool      ResponsesMessageInputItemRole = "tool"
+	ResponsesMessageInputItemRoleUser      ResponsesMessageInputItemRole = "user"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesMessageInputItemRole enum.
+func (e ResponsesMessageInputItemRole) Valid() bool {
+	switch e {
+	case ResponsesMessageInputItemRoleAssistant:
+		return true
+	case ResponsesMessageInputItemRoleDeveloper:
+		return true
+	case ResponsesMessageInputItemRoleSystem:
+		return true
+	case ResponsesMessageInputItemRoleTool:
+		return true
+	case ResponsesMessageInputItemRoleUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesMessageInputItemType.
+const (
+	Message ResponsesMessageInputItemType = "message"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesMessageInputItemType enum.
+func (e ResponsesMessageInputItemType) Valid() bool {
+	switch e {
+	case Message:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ToolType.
 const (
 	ToolTypeFunction ToolType = "function"
@@ -400,6 +580,17 @@ type AdminUser struct {
 // AdminUserRole defines model for AdminUser.Role.
 type AdminUserRole string
 
+// Annotation defines model for Annotation.
+type Annotation struct {
+	Type        *string `json:"type,omitempty"`
+	UrlCitation *struct {
+		EndIndex   *int    `json:"end_index,omitempty"`
+		StartIndex *int    `json:"start_index,omitempty"`
+		Title      *string `json:"title,omitempty"`
+		Url        *string `json:"url,omitempty"`
+	} `json:"url_citation,omitempty"`
+}
+
 // AudioSpeechRequest defines model for AudioSpeechRequest.
 type AudioSpeechRequest struct {
 	Input          string                            `json:"input"`
@@ -425,6 +616,15 @@ type BatchObject struct {
 	} `json:"request_counts,omitempty"`
 	Status string `json:"status"`
 }
+
+// CacheControl defines model for CacheControl.
+type CacheControl struct {
+	Ttl  *string           `json:"ttl,omitempty"`
+	Type *CacheControlType `json:"type,omitempty"`
+}
+
+// CacheControlType defines model for CacheControl.Type.
+type CacheControlType string
 
 // ChatCompletionRequest defines model for ChatCompletionRequest.
 type ChatCompletionRequest struct {
@@ -477,16 +677,64 @@ type ChatCompletionResponseObject string
 
 // ChatMessage defines model for ChatMessage.
 type ChatMessage struct {
-	Content          *string         `json:"content,omitempty"`
-	Name             *string         `json:"name,omitempty"`
-	ReasoningContent *string         `json:"reasoning_content,omitempty"`
-	Role             ChatMessageRole `json:"role"`
-	ToolCallId       *string         `json:"tool_call_id,omitempty"`
-	ToolCalls        *[]ToolCall     `json:"tool_calls,omitempty"`
+	Annotations      *[]Annotation        `json:"annotations,omitempty"`
+	CacheControl     *CacheControl        `json:"cache_control,omitempty"`
+	Content          *ChatMessage_Content `json:"content,omitempty"`
+	Name             *string              `json:"name,omitempty"`
+	Parts            *[]ContentPart       `json:"parts,omitempty"`
+	ReasoningContent *string              `json:"reasoning_content,omitempty"`
+	Role             ChatMessageRole      `json:"role"`
+	ToolCallId       *string              `json:"tool_call_id,omitempty"`
+	ToolCalls        *[]ToolCall          `json:"tool_calls,omitempty"`
+}
+
+// ChatMessageContent0 defines model for ChatMessage.Content.0.
+type ChatMessageContent0 = string
+
+// ChatMessageContent1 defines model for ChatMessage.Content.1.
+type ChatMessageContent1 = []ContentPart
+
+// ChatMessage_Content defines model for ChatMessage.Content.
+type ChatMessage_Content struct {
+	union json.RawMessage
 }
 
 // ChatMessageRole defines model for ChatMessage.Role.
 type ChatMessageRole string
+
+// ContentPart defines model for ContentPart.
+type ContentPart struct {
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Document     *DocumentPart `json:"document,omitempty"`
+
+	// FileData Base64-encoded file bytes for input_file parts.
+	FileData *string `json:"file_data,omitempty"`
+
+	// FileUrl HTTPS file URL for input_file parts.
+	FileUrl  *string               `json:"file_url,omitempty"`
+	Filename *string               `json:"filename,omitempty"`
+	ImageUrl *ContentPart_ImageUrl `json:"image_url,omitempty"`
+	MimeType *string               `json:"mime_type,omitempty"`
+	Text     *string               `json:"text,omitempty"`
+	Type     ContentPartType       `json:"type"`
+}
+
+// ContentPartImageUrl0 defines model for ContentPart.ImageUrl.0.
+type ContentPartImageUrl0 = string
+
+// ContentPartImageUrl1 defines model for ContentPart.ImageUrl.1.
+type ContentPartImageUrl1 struct {
+	Detail *string `json:"detail,omitempty"`
+	Url    string  `json:"url"`
+}
+
+// ContentPart_ImageUrl defines model for ContentPart.ImageUrl.
+type ContentPart_ImageUrl struct {
+	union json.RawMessage
+}
+
+// ContentPartType defines model for ContentPart.Type.
+type ContentPartType string
 
 // CredentialValidateRequest defines model for CredentialValidateRequest.
 type CredentialValidateRequest struct {
@@ -509,16 +757,41 @@ type CredentialValidateResponse struct {
 	ValidationStatus *string `json:"validation_status,omitempty"`
 }
 
+// DocumentPart defines model for DocumentPart.
+type DocumentPart struct {
+	// Data Base64-encoded document bytes.
+	Data     *string `json:"data,omitempty"`
+	Filename *string `json:"filename,omitempty"`
+	MimeType *string `json:"mime_type,omitempty"`
+
+	// Url HTTPS or gs:// document URI.
+	Url *string `json:"url,omitempty"`
+}
+
 // EmbeddingRequest defines model for EmbeddingRequest.
 type EmbeddingRequest struct {
 	Dimensions     *int                            `json:"dimensions,omitempty"`
 	EncodingFormat *EmbeddingRequestEncodingFormat `json:"encoding_format,omitempty"`
-	Input          []string                        `json:"input"`
-	Model          string                          `json:"model"`
+	Input          EmbeddingRequest_Input          `json:"input"`
+
+	// InputType Optional provider-specific embedding intent such as search_query or search_document.
+	InputType *string `json:"input_type,omitempty"`
+	Model     string  `json:"model"`
 }
 
 // EmbeddingRequestEncodingFormat defines model for EmbeddingRequest.EncodingFormat.
 type EmbeddingRequestEncodingFormat string
+
+// EmbeddingRequestInput0 defines model for EmbeddingRequest.Input.0.
+type EmbeddingRequestInput0 = string
+
+// EmbeddingRequestInput1 defines model for EmbeddingRequest.Input.1.
+type EmbeddingRequestInput1 = []string
+
+// EmbeddingRequest_Input defines model for EmbeddingRequest.Input.
+type EmbeddingRequest_Input struct {
+	union json.RawMessage
+}
 
 // EmbeddingResponse defines model for EmbeddingResponse.
 type EmbeddingResponse struct {
@@ -735,12 +1008,50 @@ type RerankResponse struct {
 
 // ResponsesAPIRequest defines model for ResponsesAPIRequest.
 type ResponsesAPIRequest struct {
-	// Input Input text or conversation sequence
-	Input        interface{} `json:"input"`
-	Instructions *string     `json:"instructions,omitempty"`
-	Model        string      `json:"model"`
-	Stream       *bool       `json:"stream,omitempty"`
+	// Input Input text or an ordered sequence of messages and function-call items.
+	Input           ResponsesAPIRequest_Input `json:"input"`
+	Instructions    *string                   `json:"instructions,omitempty"`
+	MaxOutputTokens *int                      `json:"max_output_tokens,omitempty"`
+	Metadata        *map[string]interface{}   `json:"metadata,omitempty"`
+	Model           string                    `json:"model"`
+	Reasoning       *struct {
+		Effort *ResponsesAPIRequestReasoningEffort `json:"effort,omitempty"`
+	} `json:"reasoning,omitempty"`
+	Stream      *bool    `json:"stream,omitempty"`
+	Temperature *float32 `json:"temperature,omitempty"`
+	Text        *struct {
+		Format *struct {
+			JsonSchema *map[string]interface{}            `json:"json_schema,omitempty"`
+			Type       *ResponsesAPIRequestTextFormatType `json:"type,omitempty"`
+		} `json:"format,omitempty"`
+	} `json:"text,omitempty"`
+
+	// ToolChoice Tool choice policy ("auto", "required", "none", or function selector)
+	ToolChoice interface{}               `json:"tool_choice,omitempty"`
+	Tools      *[]map[string]interface{} `json:"tools,omitempty"`
 }
+
+// ResponsesAPIRequestInput0 defines model for ResponsesAPIRequest.Input.0.
+type ResponsesAPIRequestInput0 = string
+
+// ResponsesAPIRequestInput1 defines model for ResponsesAPIRequest.Input.1.
+type ResponsesAPIRequestInput1 = []ResponsesAPIRequest_Input_1_Item
+
+// ResponsesAPIRequest_Input_1_Item defines model for ResponsesAPIRequest.Input.1.Item.
+type ResponsesAPIRequest_Input_1_Item struct {
+	union json.RawMessage
+}
+
+// ResponsesAPIRequest_Input Input text or an ordered sequence of messages and function-call items.
+type ResponsesAPIRequest_Input struct {
+	union json.RawMessage
+}
+
+// ResponsesAPIRequestReasoningEffort defines model for ResponsesAPIRequest.Reasoning.Effort.
+type ResponsesAPIRequestReasoningEffort string
+
+// ResponsesAPIRequestTextFormatType defines model for ResponsesAPIRequest.Text.Format.Type.
+type ResponsesAPIRequestTextFormatType string
 
 // ResponsesAPIResponse defines model for ResponsesAPIResponse.
 type ResponsesAPIResponse struct {
@@ -750,6 +1061,67 @@ type ResponsesAPIResponse struct {
 	Output []map[string]interface{} `json:"output"`
 	Status string                   `json:"status"`
 }
+
+// ResponsesFunctionCallInputItem defines model for ResponsesFunctionCallInputItem.
+type ResponsesFunctionCallInputItem struct {
+	Arguments string                             `json:"arguments"`
+	CallId    string                             `json:"call_id"`
+	Name      string                             `json:"name"`
+	Type      ResponsesFunctionCallInputItemType `json:"type"`
+}
+
+// ResponsesFunctionCallInputItemType defines model for ResponsesFunctionCallInputItem.Type.
+type ResponsesFunctionCallInputItemType string
+
+// ResponsesFunctionCallOutputInputItem defines model for ResponsesFunctionCallOutputInputItem.
+type ResponsesFunctionCallOutputInputItem struct {
+	CallId string                                      `json:"call_id"`
+	Output ResponsesFunctionCallOutputInputItem_Output `json:"output"`
+	Type   ResponsesFunctionCallOutputInputItemType    `json:"type"`
+}
+
+// ResponsesFunctionCallOutputInputItemOutput0 defines model for ResponsesFunctionCallOutputInputItem.Output.0.
+type ResponsesFunctionCallOutputInputItemOutput0 = string
+
+// ResponsesFunctionCallOutputInputItemOutput1 defines model for ResponsesFunctionCallOutputInputItem.Output.1.
+type ResponsesFunctionCallOutputInputItemOutput1 = []struct {
+	Text *string `json:"text,omitempty"`
+	Type *string `json:"type,omitempty"`
+}
+
+// ResponsesFunctionCallOutputInputItem_Output defines model for ResponsesFunctionCallOutputInputItem.Output.
+type ResponsesFunctionCallOutputInputItem_Output struct {
+	union json.RawMessage
+}
+
+// ResponsesFunctionCallOutputInputItemType defines model for ResponsesFunctionCallOutputInputItem.Type.
+type ResponsesFunctionCallOutputInputItemType string
+
+// ResponsesMessageInputItem defines model for ResponsesMessageInputItem.
+type ResponsesMessageInputItem struct {
+	Content    *ResponsesMessageInputItem_Content `json:"content,omitempty"`
+	Role       ResponsesMessageInputItemRole      `json:"role"`
+	ToolCallId *string                            `json:"tool_call_id,omitempty"`
+	ToolCalls  *[]ToolCall                        `json:"tool_calls,omitempty"`
+	Type       *ResponsesMessageInputItemType     `json:"type,omitempty"`
+}
+
+// ResponsesMessageInputItemContent0 defines model for ResponsesMessageInputItem.Content.0.
+type ResponsesMessageInputItemContent0 = string
+
+// ResponsesMessageInputItemContent1 defines model for ResponsesMessageInputItem.Content.1.
+type ResponsesMessageInputItemContent1 = []ContentPart
+
+// ResponsesMessageInputItem_Content defines model for ResponsesMessageInputItem.Content.
+type ResponsesMessageInputItem_Content struct {
+	union json.RawMessage
+}
+
+// ResponsesMessageInputItemRole defines model for ResponsesMessageInputItem.Role.
+type ResponsesMessageInputItemRole string
+
+// ResponsesMessageInputItemType defines model for ResponsesMessageInputItem.Type.
+type ResponsesMessageInputItemType string
 
 // TokenUsage defines model for TokenUsage.
 type TokenUsage struct {
@@ -776,10 +1148,12 @@ type TokenizeResponse struct {
 
 // Tool defines model for Tool.
 type Tool struct {
-	Function struct {
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Function     struct {
 		Description *string                 `json:"description,omitempty"`
 		Name        string                  `json:"name"`
 		Parameters  *map[string]interface{} `json:"parameters,omitempty"`
+		Strict      *bool                   `json:"strict,omitempty"`
 	} `json:"function"`
 	Type ToolType `json:"type"`
 }
@@ -878,6 +1252,192 @@ type CreateResponseJSONRequestBody = ResponsesAPIRequest
 
 // CountTokensJSONRequestBody defines body for CountTokens for application/json ContentType.
 type CountTokensJSONRequestBody = TokenizeRequest
+
+// AsChatMessageContent0 returns the union data inside the ChatMessage_Content as a ChatMessageContent0
+func (t ChatMessage_Content) AsChatMessageContent0() (ChatMessageContent0, error) {
+	var body ChatMessageContent0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromChatMessageContent0 overwrites any union data inside the ChatMessage_Content as the provided ChatMessageContent0
+func (t *ChatMessage_Content) FromChatMessageContent0(v ChatMessageContent0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeChatMessageContent0 performs a merge with any union data inside the ChatMessage_Content, using the provided ChatMessageContent0
+func (t *ChatMessage_Content) MergeChatMessageContent0(v ChatMessageContent0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsChatMessageContent1 returns the union data inside the ChatMessage_Content as a ChatMessageContent1
+func (t ChatMessage_Content) AsChatMessageContent1() (ChatMessageContent1, error) {
+	var body ChatMessageContent1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromChatMessageContent1 overwrites any union data inside the ChatMessage_Content as the provided ChatMessageContent1
+func (t *ChatMessage_Content) FromChatMessageContent1(v ChatMessageContent1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeChatMessageContent1 performs a merge with any union data inside the ChatMessage_Content, using the provided ChatMessageContent1
+func (t *ChatMessage_Content) MergeChatMessageContent1(v ChatMessageContent1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ChatMessage_Content) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ChatMessage_Content) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsContentPartImageUrl0 returns the union data inside the ContentPart_ImageUrl as a ContentPartImageUrl0
+func (t ContentPart_ImageUrl) AsContentPartImageUrl0() (ContentPartImageUrl0, error) {
+	var body ContentPartImageUrl0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromContentPartImageUrl0 overwrites any union data inside the ContentPart_ImageUrl as the provided ContentPartImageUrl0
+func (t *ContentPart_ImageUrl) FromContentPartImageUrl0(v ContentPartImageUrl0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeContentPartImageUrl0 performs a merge with any union data inside the ContentPart_ImageUrl, using the provided ContentPartImageUrl0
+func (t *ContentPart_ImageUrl) MergeContentPartImageUrl0(v ContentPartImageUrl0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsContentPartImageUrl1 returns the union data inside the ContentPart_ImageUrl as a ContentPartImageUrl1
+func (t ContentPart_ImageUrl) AsContentPartImageUrl1() (ContentPartImageUrl1, error) {
+	var body ContentPartImageUrl1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromContentPartImageUrl1 overwrites any union data inside the ContentPart_ImageUrl as the provided ContentPartImageUrl1
+func (t *ContentPart_ImageUrl) FromContentPartImageUrl1(v ContentPartImageUrl1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeContentPartImageUrl1 performs a merge with any union data inside the ContentPart_ImageUrl, using the provided ContentPartImageUrl1
+func (t *ContentPart_ImageUrl) MergeContentPartImageUrl1(v ContentPartImageUrl1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ContentPart_ImageUrl) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ContentPart_ImageUrl) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsEmbeddingRequestInput0 returns the union data inside the EmbeddingRequest_Input as a EmbeddingRequestInput0
+func (t EmbeddingRequest_Input) AsEmbeddingRequestInput0() (EmbeddingRequestInput0, error) {
+	var body EmbeddingRequestInput0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromEmbeddingRequestInput0 overwrites any union data inside the EmbeddingRequest_Input as the provided EmbeddingRequestInput0
+func (t *EmbeddingRequest_Input) FromEmbeddingRequestInput0(v EmbeddingRequestInput0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeEmbeddingRequestInput0 performs a merge with any union data inside the EmbeddingRequest_Input, using the provided EmbeddingRequestInput0
+func (t *EmbeddingRequest_Input) MergeEmbeddingRequestInput0(v EmbeddingRequestInput0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsEmbeddingRequestInput1 returns the union data inside the EmbeddingRequest_Input as a EmbeddingRequestInput1
+func (t EmbeddingRequest_Input) AsEmbeddingRequestInput1() (EmbeddingRequestInput1, error) {
+	var body EmbeddingRequestInput1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromEmbeddingRequestInput1 overwrites any union data inside the EmbeddingRequest_Input as the provided EmbeddingRequestInput1
+func (t *EmbeddingRequest_Input) FromEmbeddingRequestInput1(v EmbeddingRequestInput1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeEmbeddingRequestInput1 performs a merge with any union data inside the EmbeddingRequest_Input, using the provided EmbeddingRequestInput1
+func (t *EmbeddingRequest_Input) MergeEmbeddingRequestInput1(v EmbeddingRequestInput1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t EmbeddingRequest_Input) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *EmbeddingRequest_Input) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // AsLegacyCompletionRequestPrompt0 returns the union data inside the LegacyCompletionRequest_Prompt as a LegacyCompletionRequestPrompt0
 func (t LegacyCompletionRequest_Prompt) AsLegacyCompletionRequestPrompt0() (LegacyCompletionRequestPrompt0, error) {
@@ -1065,6 +1625,280 @@ func (t *RerankRequest_Documents_Item) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsResponsesMessageInputItem returns the union data inside the ResponsesAPIRequest_Input_1_Item as a ResponsesMessageInputItem
+func (t ResponsesAPIRequest_Input_1_Item) AsResponsesMessageInputItem() (ResponsesMessageInputItem, error) {
+	var body ResponsesMessageInputItem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesMessageInputItem overwrites any union data inside the ResponsesAPIRequest_Input_1_Item as the provided ResponsesMessageInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) FromResponsesMessageInputItem(v ResponsesMessageInputItem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesMessageInputItem performs a merge with any union data inside the ResponsesAPIRequest_Input_1_Item, using the provided ResponsesMessageInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) MergeResponsesMessageInputItem(v ResponsesMessageInputItem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsResponsesFunctionCallInputItem returns the union data inside the ResponsesAPIRequest_Input_1_Item as a ResponsesFunctionCallInputItem
+func (t ResponsesAPIRequest_Input_1_Item) AsResponsesFunctionCallInputItem() (ResponsesFunctionCallInputItem, error) {
+	var body ResponsesFunctionCallInputItem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesFunctionCallInputItem overwrites any union data inside the ResponsesAPIRequest_Input_1_Item as the provided ResponsesFunctionCallInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) FromResponsesFunctionCallInputItem(v ResponsesFunctionCallInputItem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesFunctionCallInputItem performs a merge with any union data inside the ResponsesAPIRequest_Input_1_Item, using the provided ResponsesFunctionCallInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) MergeResponsesFunctionCallInputItem(v ResponsesFunctionCallInputItem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsResponsesFunctionCallOutputInputItem returns the union data inside the ResponsesAPIRequest_Input_1_Item as a ResponsesFunctionCallOutputInputItem
+func (t ResponsesAPIRequest_Input_1_Item) AsResponsesFunctionCallOutputInputItem() (ResponsesFunctionCallOutputInputItem, error) {
+	var body ResponsesFunctionCallOutputInputItem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesFunctionCallOutputInputItem overwrites any union data inside the ResponsesAPIRequest_Input_1_Item as the provided ResponsesFunctionCallOutputInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) FromResponsesFunctionCallOutputInputItem(v ResponsesFunctionCallOutputInputItem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesFunctionCallOutputInputItem performs a merge with any union data inside the ResponsesAPIRequest_Input_1_Item, using the provided ResponsesFunctionCallOutputInputItem
+func (t *ResponsesAPIRequest_Input_1_Item) MergeResponsesFunctionCallOutputInputItem(v ResponsesFunctionCallOutputInputItem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ResponsesAPIRequest_Input_1_Item) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ResponsesAPIRequest_Input_1_Item) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsResponsesAPIRequestInput0 returns the union data inside the ResponsesAPIRequest_Input as a ResponsesAPIRequestInput0
+func (t ResponsesAPIRequest_Input) AsResponsesAPIRequestInput0() (ResponsesAPIRequestInput0, error) {
+	var body ResponsesAPIRequestInput0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesAPIRequestInput0 overwrites any union data inside the ResponsesAPIRequest_Input as the provided ResponsesAPIRequestInput0
+func (t *ResponsesAPIRequest_Input) FromResponsesAPIRequestInput0(v ResponsesAPIRequestInput0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesAPIRequestInput0 performs a merge with any union data inside the ResponsesAPIRequest_Input, using the provided ResponsesAPIRequestInput0
+func (t *ResponsesAPIRequest_Input) MergeResponsesAPIRequestInput0(v ResponsesAPIRequestInput0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsResponsesAPIRequestInput1 returns the union data inside the ResponsesAPIRequest_Input as a ResponsesAPIRequestInput1
+func (t ResponsesAPIRequest_Input) AsResponsesAPIRequestInput1() (ResponsesAPIRequestInput1, error) {
+	var body ResponsesAPIRequestInput1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesAPIRequestInput1 overwrites any union data inside the ResponsesAPIRequest_Input as the provided ResponsesAPIRequestInput1
+func (t *ResponsesAPIRequest_Input) FromResponsesAPIRequestInput1(v ResponsesAPIRequestInput1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesAPIRequestInput1 performs a merge with any union data inside the ResponsesAPIRequest_Input, using the provided ResponsesAPIRequestInput1
+func (t *ResponsesAPIRequest_Input) MergeResponsesAPIRequestInput1(v ResponsesAPIRequestInput1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ResponsesAPIRequest_Input) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ResponsesAPIRequest_Input) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsResponsesFunctionCallOutputInputItemOutput0 returns the union data inside the ResponsesFunctionCallOutputInputItem_Output as a ResponsesFunctionCallOutputInputItemOutput0
+func (t ResponsesFunctionCallOutputInputItem_Output) AsResponsesFunctionCallOutputInputItemOutput0() (ResponsesFunctionCallOutputInputItemOutput0, error) {
+	var body ResponsesFunctionCallOutputInputItemOutput0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesFunctionCallOutputInputItemOutput0 overwrites any union data inside the ResponsesFunctionCallOutputInputItem_Output as the provided ResponsesFunctionCallOutputInputItemOutput0
+func (t *ResponsesFunctionCallOutputInputItem_Output) FromResponsesFunctionCallOutputInputItemOutput0(v ResponsesFunctionCallOutputInputItemOutput0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesFunctionCallOutputInputItemOutput0 performs a merge with any union data inside the ResponsesFunctionCallOutputInputItem_Output, using the provided ResponsesFunctionCallOutputInputItemOutput0
+func (t *ResponsesFunctionCallOutputInputItem_Output) MergeResponsesFunctionCallOutputInputItemOutput0(v ResponsesFunctionCallOutputInputItemOutput0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsResponsesFunctionCallOutputInputItemOutput1 returns the union data inside the ResponsesFunctionCallOutputInputItem_Output as a ResponsesFunctionCallOutputInputItemOutput1
+func (t ResponsesFunctionCallOutputInputItem_Output) AsResponsesFunctionCallOutputInputItemOutput1() (ResponsesFunctionCallOutputInputItemOutput1, error) {
+	var body ResponsesFunctionCallOutputInputItemOutput1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesFunctionCallOutputInputItemOutput1 overwrites any union data inside the ResponsesFunctionCallOutputInputItem_Output as the provided ResponsesFunctionCallOutputInputItemOutput1
+func (t *ResponsesFunctionCallOutputInputItem_Output) FromResponsesFunctionCallOutputInputItemOutput1(v ResponsesFunctionCallOutputInputItemOutput1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesFunctionCallOutputInputItemOutput1 performs a merge with any union data inside the ResponsesFunctionCallOutputInputItem_Output, using the provided ResponsesFunctionCallOutputInputItemOutput1
+func (t *ResponsesFunctionCallOutputInputItem_Output) MergeResponsesFunctionCallOutputInputItemOutput1(v ResponsesFunctionCallOutputInputItemOutput1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ResponsesFunctionCallOutputInputItem_Output) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ResponsesFunctionCallOutputInputItem_Output) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsResponsesMessageInputItemContent0 returns the union data inside the ResponsesMessageInputItem_Content as a ResponsesMessageInputItemContent0
+func (t ResponsesMessageInputItem_Content) AsResponsesMessageInputItemContent0() (ResponsesMessageInputItemContent0, error) {
+	var body ResponsesMessageInputItemContent0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesMessageInputItemContent0 overwrites any union data inside the ResponsesMessageInputItem_Content as the provided ResponsesMessageInputItemContent0
+func (t *ResponsesMessageInputItem_Content) FromResponsesMessageInputItemContent0(v ResponsesMessageInputItemContent0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesMessageInputItemContent0 performs a merge with any union data inside the ResponsesMessageInputItem_Content, using the provided ResponsesMessageInputItemContent0
+func (t *ResponsesMessageInputItem_Content) MergeResponsesMessageInputItemContent0(v ResponsesMessageInputItemContent0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsResponsesMessageInputItemContent1 returns the union data inside the ResponsesMessageInputItem_Content as a ResponsesMessageInputItemContent1
+func (t ResponsesMessageInputItem_Content) AsResponsesMessageInputItemContent1() (ResponsesMessageInputItemContent1, error) {
+	var body ResponsesMessageInputItemContent1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResponsesMessageInputItemContent1 overwrites any union data inside the ResponsesMessageInputItem_Content as the provided ResponsesMessageInputItemContent1
+func (t *ResponsesMessageInputItem_Content) FromResponsesMessageInputItemContent1(v ResponsesMessageInputItemContent1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResponsesMessageInputItemContent1 performs a merge with any union data inside the ResponsesMessageInputItem_Content, using the provided ResponsesMessageInputItemContent1
+func (t *ResponsesMessageInputItem_Content) MergeResponsesMessageInputItemContent1(v ResponsesMessageInputItemContent1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ResponsesMessageInputItem_Content) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ResponsesMessageInputItem_Content) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// PreflightValidateCredential Preflight upstream validation of credentials before saving
@@ -1157,7 +1991,7 @@ type ServerInterface interface {
 	// CreateRerank Cross-encoder document reranking via Cohere, Jina, or Voyage
 	// (POST /v1/rerank)
 	CreateRerank(w http.ResponseWriter, r *http.Request)
-	// CreateResponse Create a text response
+	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(w http.ResponseWriter, r *http.Request)
 	// CountTokens Precise token counting and prompt breakdown
@@ -2656,7 +3490,7 @@ type StrictServerInterface interface {
 	// CreateRerank Cross-encoder document reranking via Cohere, Jina, or Voyage
 	// (POST /v1/rerank)
 	CreateRerank(ctx context.Context, request CreateRerankRequestObject) (CreateRerankResponseObject, error)
-	// CreateResponse Create a text response
+	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(ctx context.Context, request CreateResponseRequestObject) (CreateResponseResponseObject, error)
 	// CountTokens Precise token counting and prompt breakdown

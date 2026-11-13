@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,48 @@ func TestBudgetQuoteUsesKnownRatesAndFailsUnknownModels(t *testing.T) {
 	}
 	if _, err := s.tokenBudgetUpperBound(context.Background(), "", "custom/unpriced-model", 100, 200); err == nil {
 		t.Fatal("expected unknown pricing to fail closed")
+	}
+}
+
+func TestBudgetAliasUsesCachedPricingSummaryAndRefreshes(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	stats := &budgetLookupStats{}
+	s := &GatewayServer{repo: repo, budgetStats: stats}
+	for i := 0; i < 2; i++ {
+		if _, err := s.tokenBudgetUpperBound(context.Background(), "", "auto", 100, 100); err != nil {
+			t.Fatalf("alias quote %d: %v", i+1, err)
+		}
+	}
+	if got := stats.catalogScans.Load(); got != 1 {
+		t.Fatalf("catalog summary scans = %d, want 1 across repeated alias requests", got)
+	}
+
+	if _, err := repo.UpdateModelPricing(context.Background(), "openai/gpt-4.1", 777777777, 666666666, -1, -1, domain.PricingStatusVerified, "test", "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.tokenBudgetUpperBound(context.Background(), "", "auto", 100, 100); err != nil {
+		t.Fatalf("alias quote after pricing update: %v", err)
+	}
+	if got := stats.catalogScans.Load(); got != 2 {
+		t.Fatalf("catalog summary scans after pricing update = %d, want 2", got)
+	}
+}
+
+func TestUnverifiedBudgetLookupDoesNotRescanCatalog(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	if err := repo.UpsertGlobalModel(context.Background(), &domain.GlobalModel{
+		ID: "custom/unpriced-budget-model", Provider: domain.ProviderOpenAI, ModelName: "unpriced-budget-model", PricingStatus: domain.PricingStatusUnknown,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats := &budgetLookupStats{}
+	s := &GatewayServer{repo: repo, budgetStats: stats}
+	_, err := s.tokenBudgetUpperBound(context.Background(), "", "unpriced-budget-model", 100, 100)
+	if !errors.Is(err, errBudgetPricingUnverified) {
+		t.Fatalf("unpriced model error = %v, want unverified pricing", err)
+	}
+	if got := stats.catalogScans.Load(); got != 0 {
+		t.Fatalf("unverified model lookup performed %d catalog scans, want 0", got)
 	}
 }
 

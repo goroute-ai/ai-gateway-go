@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"slices"
@@ -118,6 +119,22 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 					Message:    fmt.Sprintf("Model %q does not support multimodal vision inputs", gm.ModelName),
 				}
 			}
+			if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_schema" && caps.StructuredOutputs == domain.CapabilityUnsupported {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "capability_not_supported",
+					Message:    fmt.Sprintf("Model %q does not support structured outputs (json_schema)", gm.ModelName),
+				}
+			}
+			if req.ReasoningEffort != "" && caps.Reasoning == domain.CapabilityUnsupported {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "capability_not_supported",
+					Message:    fmt.Sprintf("Model %q does not support reasoning_effort", gm.ModelName),
+				}
+			}
 			if gm.MaxInputTokens > 0 && estimatedPromptTokens > gm.MaxInputTokens {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
@@ -132,6 +149,31 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "max_output_tokens_exceeded",
 					Message:    fmt.Sprintf("Requested max_tokens (%d) exceeds model %q maximum output tokens (%d)", *req.MaxTokens, gm.ModelName, gm.MaxOutputTokens),
+				}
+			}
+		}
+	}
+
+	for _, m := range req.Messages {
+		for _, p := range m.Parts {
+			if p.Type == "document" && p.Document != nil {
+				switch strings.ToLower(strings.TrimSpace(p.Document.MimeType)) {
+				case "application/pdf", "text/plain", "text/csv", "text/markdown", "text/html":
+				default:
+					return &domain.GatewayError{
+						StatusCode: http.StatusBadRequest,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "unsupported_document_mime_type",
+						Message:    fmt.Sprintf("Document MIME type %q is not supported", p.Document.MimeType),
+					}
+				}
+				if p.Document.Data != "" && base64.StdEncoding.DecodedLen(len(p.Document.Data)) > 25*1024*1024 {
+					return &domain.GatewayError{
+						StatusCode: http.StatusRequestEntityTooLarge,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "document_too_large",
+						Message:    "Document payload exceeds 25 MiB limit",
+					}
 				}
 			}
 		}
