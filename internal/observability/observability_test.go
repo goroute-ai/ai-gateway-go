@@ -5,10 +5,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 	col := NewCollector()
+	col.SetAdditionalMetricsProvider(func() map[string]float64 {
+		return map[string]float64{"gateway_test_runtime_counter_total": 7, "gateway_test_runtime_gauge": 2}
+	})
 
 	col.RecordDeploymentAttempt("dep-bad", "primary-dead", "openai", "gpt-4.1-mini", 40, true)
 	col.Record(RequestObservation{
@@ -53,6 +57,8 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 		StatusCode:       400,
 		GuardrailBlocked: true,
 	})
+	col.RecordStream(2*time.Second, 250*time.Millisecond, false)
+	col.RecordStream(3*time.Second, 0, true)
 
 	snap := col.Snapshot()
 	if snap.TotalRequests != 5 {
@@ -70,6 +76,9 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 	if snap.CacheHits != 1 || snap.RateLimitRejections != 1 || snap.GuardrailBlocks != 1 {
 		t.Fatalf("unexpected cache/rl/guardrail counters: %+v", snap)
 	}
+	if snap.StreamRequests != 2 || snap.StreamErrors != 1 || snap.StreamDurationCount != 2 || snap.StreamTTFTCount != 1 {
+		t.Fatalf("unexpected stream counters: %+v", snap)
+	}
 
 	// Verify Prometheus /metrics exposition
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -86,6 +95,12 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 		"gateway_cache_hits_total 1",
 		"gateway_ratelimit_rejections_total 1",
 		"gateway_guardrail_blocks_total 1",
+		"gateway_test_runtime_counter_total 7",
+		"gateway_test_runtime_gauge 2",
+		"gateway_streams_total 2",
+		"gateway_stream_errors_total 1",
+		"gateway_stream_duration_seconds_count 2",
+		"gateway_stream_ttft_seconds_count 1",
 	} {
 		if !strings.Contains(body, metric) {
 			t.Fatalf("expected Prometheus output to contain %q, got:\n%s", metric, body)

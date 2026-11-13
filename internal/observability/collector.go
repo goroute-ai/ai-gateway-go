@@ -108,6 +108,12 @@ type TelemetrySnapshot struct {
 	GuardrailBlocks          int64                          `json:"guardrail_blocks"`
 	GuardrailRedactions      int64                          `json:"guardrail_redactions"`
 	SpendRedisDriftTotal     int64                          `json:"spend_redis_drift_total"`
+	StreamRequests           int64                          `json:"stream_requests"`
+	StreamErrors             int64                          `json:"stream_errors"`
+	StreamDurationSumMs      int64                          `json:"stream_duration_sum_ms"`
+	StreamDurationCount      int64                          `json:"stream_duration_count"`
+	StreamTTFTSumMs          int64                          `json:"stream_ttft_sum_ms"`
+	StreamTTFTCount          int64                          `json:"stream_ttft_count"`
 	SlowestProvider          string                         `json:"slowest_provider,omitempty"`
 	HighestFailureDeployment string                         `json:"highest_failure_deployment,omitempty"`
 	Providers                map[string]ProviderTelemetry   `json:"providers"`
@@ -169,6 +175,10 @@ type Collector struct {
 	guardrailBlocks     int64
 	guardrailRedactions int64
 	spendRedisDrift     int64
+	streamRequests      int64
+	streamErrors        int64
+	streamDuration      reservoir
+	streamTTFT          reservoir
 	globalLatency       reservoir
 	globalTTFT          reservoir
 	routingMicros       reservoir
@@ -176,6 +186,7 @@ type Collector struct {
 	deployments         map[string]*deploymentInternal
 	maxDeployments      int
 	accessSeq           uint64
+	additionalMetrics   func() map[string]float64
 }
 
 func NewCollector() *Collector {
@@ -184,6 +195,17 @@ func NewCollector() *Collector {
 		deployments:    make(map[string]*deploymentInternal),
 		maxDeployments: maxDeploymentEntries,
 	}
+}
+
+// SetAdditionalMetricsProvider attaches low-cardinality runtime gauges and
+// counters from subsystems whose measurements are maintained outside Collector.
+func (c *Collector) SetAdditionalMetricsProvider(provider func() map[string]float64) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.additionalMetrics = provider
+	c.mu.Unlock()
 }
 
 // RecordSpendRedisDrift increments the counter for FinOps outbox events whose
@@ -195,6 +217,26 @@ func (c *Collector) RecordSpendRedisDrift() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.spendRedisDrift++
+}
+
+// RecordStream adds low-cardinality timing and failure measurements for one
+// completed streaming inference response.
+func (c *Collector) RecordStream(duration, ttft time.Duration, failed bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.streamRequests++
+	if failed {
+		c.streamErrors++
+	}
+	if duration >= 0 {
+		c.streamDuration.add(duration.Milliseconds())
+	}
+	if ttft > 0 {
+		c.streamTTFT.add(ttft.Milliseconds())
+	}
 }
 
 // getOrCreateDeployment returns an existing deploymentInternal or creates a new one,
@@ -425,6 +467,12 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		GuardrailBlocks:          c.guardrailBlocks,
 		GuardrailRedactions:      c.guardrailRedactions,
 		SpendRedisDriftTotal:     c.spendRedisDrift,
+		StreamRequests:           c.streamRequests,
+		StreamErrors:             c.streamErrors,
+		StreamDurationSumMs:      c.streamDuration.sum,
+		StreamDurationCount:      c.streamDuration.count,
+		StreamTTFTSumMs:          c.streamTTFT.sum,
+		StreamTTFTCount:          c.streamTTFT.count,
 		SlowestProvider:          slowestProv,
 		HighestFailureDeployment: highestFailDep,
 		Providers:                provMap,
@@ -436,6 +484,13 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 func (c *Collector) PrometheusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		snap := c.Snapshot()
+		c.mu.RLock()
+		additionalMetrics := c.additionalMetrics
+		c.mu.RUnlock()
+		var extra map[string]float64
+		if additionalMetrics != nil {
+			extra = additionalMetrics()
+		}
 		var b strings.Builder
 
 		b.WriteString("# HELP gateway_requests_total Total inference requests processed by the AI Gateway.\n")
@@ -455,6 +510,25 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 		b.WriteString("# HELP gateway_ttft_ms Time-To-First-Token in milliseconds.\n")
 		b.WriteString("# TYPE gateway_ttft_ms gauge\n")
 		b.WriteString(fmt.Sprintf("gateway_ttft_ms{quantile=\"0.95\"} %d\n", snap.P95TTFTMs))
+
+		b.WriteString("# HELP gateway_streams_total Total completed streaming inference calls.\n")
+		b.WriteString("# TYPE gateway_streams_total counter\n")
+		b.WriteString(fmt.Sprintf("gateway_streams_total %d\n", snap.StreamRequests))
+		b.WriteString("# HELP gateway_stream_errors_total Streaming inference calls that ended with an upstream or handler error.\n")
+		b.WriteString("# TYPE gateway_stream_errors_total counter\n")
+		b.WriteString(fmt.Sprintf("gateway_stream_errors_total %d\n", snap.StreamErrors))
+		b.WriteString("# HELP gateway_stream_duration_seconds_sum Total upstream stream execution duration in seconds.\n")
+		b.WriteString("# TYPE gateway_stream_duration_seconds_sum counter\n")
+		b.WriteString(fmt.Sprintf("gateway_stream_duration_seconds_sum %g\n", float64(snap.StreamDurationSumMs)/1000))
+		b.WriteString("# HELP gateway_stream_duration_seconds_count Number of measured streaming inference calls.\n")
+		b.WriteString("# TYPE gateway_stream_duration_seconds_count counter\n")
+		b.WriteString(fmt.Sprintf("gateway_stream_duration_seconds_count %d\n", snap.StreamDurationCount))
+		b.WriteString("# HELP gateway_stream_ttft_seconds_sum Total time-to-first-token for streaming inference calls.\n")
+		b.WriteString("# TYPE gateway_stream_ttft_seconds_sum counter\n")
+		b.WriteString(fmt.Sprintf("gateway_stream_ttft_seconds_sum %g\n", float64(snap.StreamTTFTSumMs)/1000))
+		b.WriteString("# HELP gateway_stream_ttft_seconds_count Number of streaming calls with a measured first token.\n")
+		b.WriteString("# TYPE gateway_stream_ttft_seconds_count counter\n")
+		b.WriteString(fmt.Sprintf("gateway_stream_ttft_seconds_count %d\n", snap.StreamTTFTCount))
 
 		b.WriteString("# HELP gateway_routing_overhead_micros Stage 1 + Stage 2 routing decision overhead in microseconds.\n")
 		b.WriteString("# TYPE gateway_routing_overhead_micros gauge\n")
@@ -489,6 +563,14 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 			b.WriteString(fmt.Sprintf("gateway_provider_errors_total{provider=%q} %d\n", prov, pm.ErrorCount))
 			b.WriteString(fmt.Sprintf("gateway_provider_latency_p95_ms{provider=%q} %d\n", prov, pm.P95LatencyMs))
 			b.WriteString(fmt.Sprintf("gateway_provider_spend_micros_total{provider=%q} %d\n", prov, pm.TotalCostMicros))
+		}
+		for name, value := range extra {
+			metricType := "gauge"
+			if strings.HasSuffix(name, "_total") || strings.HasSuffix(name, "_count") || strings.HasSuffix(name, "_sum") {
+				metricType = "counter"
+			}
+			b.WriteString(fmt.Sprintf("# TYPE %s %s\n", name, metricType))
+			b.WriteString(fmt.Sprintf("%s %g\n", name, value))
 		}
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
