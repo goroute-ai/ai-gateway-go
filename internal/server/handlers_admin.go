@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
-	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
