@@ -36,12 +36,18 @@ local in_flight = redis.call('HINCRBY', KEYS[1], 'in_flight', -1)
 if in_flight < 0 then redis.call('HSET', KEYS[1], 'in_flight', 0) end
 redis.call('HINCRBY', KEYS[1], 'used_tpm', ARGV[2])
 local latency = tonumber(ARGV[3])
-if latency > 0 then
-  local ewma = tonumber(redis.call('HGET', KEYS[1], 'ewma_ttft_ms') or '0')
-  if ewma == 0 then ewma = latency else ewma = 0.3 * latency + 0.7 * ewma end
-  redis.call('HSET', KEYS[1], 'ewma_ttft_ms', ewma)
+if latency and latency > 0 then
+  local ewma_lat = tonumber(redis.call('HGET', KEYS[1], 'ewma_latency_ms') or '0')
+  if ewma_lat == 0 then ewma_lat = latency else ewma_lat = 0.3 * latency + 0.7 * ewma_lat end
+  redis.call('HSET', KEYS[1], 'ewma_latency_ms', ewma_lat)
 end
-redis.call('EXPIRE', KEYS[1], ARGV[4])
+local ttft = tonumber(ARGV[4])
+if ttft and ttft > 0 then
+  local ewma_ttft = tonumber(redis.call('HGET', KEYS[1], 'ewma_ttft_ms') or '0')
+  if ewma_ttft == 0 then ewma_ttft = ttft else ewma_ttft = 0.3 * ttft + 0.7 * ewma_ttft end
+  redis.call('HSET', KEYS[1], 'ewma_ttft_ms', ewma_ttft)
+end
+redis.call('EXPIRE', KEYS[1], ARGV[5])
 return 1
 `)
 
@@ -111,6 +117,12 @@ func parseRoutingSignal(fields map[string]string) (deploymentTelemetry, error) {
 	}
 	if metric.windowStart, err = parseSignalTime(fields["window_start"]); err != nil {
 		return metric, err
+	}
+	if value := fields["ewma_latency_ms"]; value != "" {
+		metric.ewmaLatencyMs, err = strconv.ParseFloat(value, 64)
+		if err != nil {
+			return metric, fmt.Errorf("parse ewma_latency_ms: %w", err)
+		}
 	}
 	if value := fields["ewma_ttft_ms"]; value != "" {
 		metric.ewmaTTFTMs, err = strconv.ParseFloat(value, 64)

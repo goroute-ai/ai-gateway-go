@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -266,7 +267,6 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
@@ -274,27 +274,10 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-			lastErr = err
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					// Immediately trip cooldown on upstream 401/403 and move to next deployment/fallback
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-				if attempt+1 < maxAttempts {
-					sleepDur := CalculateBackoff(attempt, gwErr.RetryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -431,11 +414,12 @@ func (rm *ReliabilityManager) ExecuteStream(
 			})
 
 			if err == nil {
+				depLatency := time.Since(depStart).Milliseconds()
 				totalTok := 0
 				if usage != nil {
 					totalTok = usage.TotalTokens
 				}
-				rm.loadBalancer.OnRequestEnd(dep.ID, meta.TTFTMs, totalTok)
+				rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, totalTok)
 				rm.recordSuccess(ctx, dep)
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
@@ -443,36 +427,16 @@ func (rm *ReliabilityManager) ExecuteStream(
 			}
 
 			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			lastErr = err
 
 			// If bytes were already flushed to the client, we cannot retry on another deployment
 			if firstChunkRecorded {
 				return usage, meta, err
 			}
 
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			retryAfterSec := 0
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-				retryAfterSec = gwErr.RetryAfterSec
-			}
-
-			if attempt+1 < maxAttempts {
-				sleepDur := CalculateBackoff(attempt, retryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				timer := time.NewTimer(sleepDur)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return nil, meta, ctx.Err()
-				case <-timer.C:
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -505,7 +469,8 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 		orgID = idCtx.OrgID
 	}
 
-	mg, err := rm.repo.GetModelGroupByAlias(ctx, orgID, req.Model)
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
 	if err != nil {
 		return nil, nil, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
@@ -515,52 +480,140 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 		}
 	}
 
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
 	meta := &ExecutionMeta{
-		RouteDecision: &RouteDecision{
-			RequestedModel:   req.Model,
-			TargetGroupAlias: mg.Alias,
-			ModelGroup:       mg,
-		},
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
 	}
 
-	deployments, err := rm.getHealthyDeployments(ctx, orgID, mg)
-	if err != nil || len(deployments) == 0 {
-		return nil, meta, &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeUpstream,
-			Code:       "no_healthy_embedding_deployments",
-			Message:    "No healthy deployments available for embedding model " + req.Model,
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for embeddings",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		deployments = filterByCapability(deployments, func(caps domain.ModelCapabilities) domain.CapabilityState {
+			return caps.Embeddings
+		})
+		if len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group embeddings retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			resp, err := adp.Embeddings(ctx, dep, &reqCopy)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && resp != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+				rm.recordSuccess(ctx, dep)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return resp, meta, nil
+			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
+			}
 		}
 	}
 
-	if isBudgetConstrained(idCtx) {
-		filtered := filterKnownPricing(deployments)
-		if len(filtered) == 0 {
-			return nil, meta, &domain.GatewayError{
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
 				Type:       domain.ErrorTypePermission,
 				Code:       "pricing_unknown_budget_restricted",
 				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
 			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "no_healthy_embedding_deployments",
+				Message:    "No healthy deployments available for embedding model " + req.Model,
+			}
 		}
-		deployments = filtered
 	}
-
-	dep := rm.loadBalancer.Select(mg.RoutingStrategy, deployments)
-	rm.hydrateCredential(dep)
-	adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-	if err != nil {
-		return nil, meta, err
-	}
-	reqCopy := *req
-	reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-	resp, err := adp.Embeddings(ctx, dep, &reqCopy)
-	if err != nil {
-		return nil, meta, err
-	}
-	meta.WinningDeployment = dep
-	meta.LatencyMs = time.Since(start).Milliseconds()
-	return resp, meta, nil
+	return nil, meta, lastErr
 }
 
 // ExecuteRerank routes and executes a rerank request with automated retries and fallbacks.
@@ -694,41 +747,17 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			}
-
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
-				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -884,41 +913,17 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			}
-
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
-				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -1101,41 +1106,17 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			}
-
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
-				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -1292,41 +1273,17 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			}
-
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
-				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
 			}
 		}
 	}
@@ -1473,41 +1430,17 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return stream, contentType, meta, nil
 			}
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
 				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 			}
-
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
-					continue
-				}
-				if !gwErr.Retryable {
-					return nil, "", meta, gwErr
-				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			}
-
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
-				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, "", meta, ctx.Err()
-					case <-time.After(sleepDur):
-					}
-				}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, "", meta, termErr
 			}
 		}
 	}
@@ -1654,7 +1587,6 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				meta.TTFTMs = depLatency
 				return resp, meta, nil
 			}
 
@@ -1885,6 +1817,58 @@ func (rm *ReliabilityManager) allowDeploymentRequest(ctx context.Context, depID 
 	return true, st.probeToken
 }
 
+// handleAttemptError normalizes an upstream attempt error, updates circuit-breaker state,
+// and waits for backoff if another attempt remains.
+// It returns (terminalErr, normalizedErr):
+// - If terminalErr != nil, the caller must abort immediately and return terminalErr.
+// - Otherwise, normalizedErr is the error to record as lastErr and the caller should continue.
+func (rm *ReliabilityManager) handleAttemptError(
+	ctx context.Context,
+	dep *domain.Deployment,
+	group *domain.ModelGroup,
+	err error,
+	attempt, maxAttempts int,
+) (terminalErr error, normalizedErr error) {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return err, err
+	}
+
+	var gwErr *domain.GatewayError
+	if errors.As(err, &gwErr) {
+		if gwErr.AuthFailure {
+			rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+			return nil, gwErr
+		}
+		if !gwErr.Retryable {
+			return gwErr, gwErr
+		}
+	} else {
+		gwErr = &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_transport_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+
+	rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+
+	if attempt+1 < maxAttempts {
+		sleepDur := CalculateBackoff(attempt, gwErr.RetryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+		if sleepDur > 0 {
+			timer := time.NewTimer(sleepDur)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err(), ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, gwErr
+}
+
 func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Deployment, threshold, cooldownSec int) {
 	if dep == nil {
 		return
@@ -1893,8 +1877,49 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 	if threshold <= 0 {
 		threshold = rm.cfg.FailureThreshold
 	}
+	if threshold <= 0 {
+		threshold = 3
+	}
 	if cooldownSec <= 0 {
 		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
+	}
+	if cooldownSec <= 0 {
+		cooldownSec = 30
+	}
+	cooldownDur := time.Duration(cooldownSec) * time.Second
+	windowMs := rm.cfg.FailureWindow.Milliseconds()
+	if windowMs <= 0 {
+		windowMs = 60_000
+	}
+
+	if rm.redis != nil && rm.redis.Client() != nil {
+		res, err := rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return recordCircuitFailureScript.Run(ctx, rdb, circuitKeys(depID), threshold, windowMs, cooldownDur.Milliseconds(), dep.CircuitProbeToken).Int64()
+		})
+		if err == nil {
+			if code, ok := res.(int64); ok {
+				if code == 1 || code == 2 {
+					now := time.Now()
+					rm.mu.Lock()
+					st, ok := rm.cooldowns[depID]
+					if !ok {
+						st = &cooldownState{windowStart: now}
+						rm.cooldowns[depID] = st
+					}
+					st.tripped = true
+					st.halfOpenProbeInFlight = false
+					st.probeToken = ""
+					st.cooldownUntil = now.Add(cooldownDur)
+					rm.mu.Unlock()
+					logger.ErrorContext(ctx, "Circuit breaker tripped to OPEN",
+						slog.String("component", "circuit_breaker"),
+						slog.String("deployment_id", depID),
+						slog.Duration("cooldown", cooldownDur),
+					)
+				}
+				return
+			}
+		}
 	}
 
 	now := time.Now()
@@ -1904,12 +1929,12 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 	if ok && st.tripped && !now.Before(st.cooldownUntil) && dep.CircuitProbeToken != "" && st.probeToken == dep.CircuitProbeToken {
 		st.halfOpenProbeInFlight = false
 		st.probeToken = ""
-		st.cooldownUntil = now.Add(time.Duration(cooldownSec) * time.Second)
+		st.cooldownUntil = now.Add(cooldownDur)
 		rm.mu.Unlock()
 		rm.tripCooldown(ctx, depID, cooldownSec)
 		return
 	}
-	if !ok || now.Sub(st.windowStart) > rm.cfg.FailureWindow {
+	if !ok || now.Sub(st.windowStart) > time.Duration(windowMs)*time.Millisecond {
 		st = &cooldownState{windowStart: now}
 		rm.cooldowns[depID] = st
 	}
@@ -1918,7 +1943,7 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 	if shouldTrip {
 		st.tripped = true
 		st.halfOpenProbeInFlight = false
-		st.cooldownUntil = now.Add(time.Duration(cooldownSec) * time.Second)
+		st.cooldownUntil = now.Add(cooldownDur)
 	}
 	rm.mu.Unlock()
 
@@ -1981,9 +2006,12 @@ func (rm *ReliabilityManager) recordSuccess(ctx context.Context, dep *domain.Dep
 	}
 	rm.mu.Unlock()
 
-	if dep.CircuitProbeToken != "" && rm.redis != nil && rm.redis.Client() != nil {
+	if rm.redis != nil && rm.redis.Client() != nil {
 		_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return closeCircuitScript.Run(ctx, rdb, circuitKeys(depID), dep.CircuitProbeToken).Result()
+			if dep.CircuitProbeToken != "" {
+				return closeCircuitScript.Run(ctx, rdb, circuitKeys(depID), dep.CircuitProbeToken).Result()
+			}
+			return rdb.Del(ctx, circuitFailureKey(depID)).Result()
 		})
 	}
 }
@@ -2015,7 +2043,7 @@ func depHashTag(depID string) string {
 }
 
 func circuitKeys(depID string) []string {
-	return []string{circuitStateKey(depID), circuitCooldownKey(depID), circuitProbeKey(depID)}
+	return []string{circuitStateKey(depID), circuitCooldownKey(depID), circuitProbeKey(depID), circuitFailureKey(depID)}
 }
 
 func circuitStateKey(depID string) string {
@@ -2028,6 +2056,10 @@ func circuitCooldownKey(depID string) string {
 
 func circuitProbeKey(depID string) string {
 	return "gw:router:" + depHashTag(depID) + ":probe"
+}
+
+func circuitFailureKey(depID string) string {
+	return "gw:router:" + depHashTag(depID) + ":failures"
 }
 
 func filterUntried(all []*domain.Deployment, tried []string) []*domain.Deployment {
