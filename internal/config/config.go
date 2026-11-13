@@ -153,11 +153,13 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	Mode        string `yaml:"mode"` // "memory" or "postgres"
-	PostgresDSN string `yaml:"postgres_dsn"`
-	RedisAddr   string `yaml:"redis_addr"`
-	RedisPass   string `yaml:"redis_pass"`
-	RedisDB     int    `yaml:"redis_db"`
+	Mode            string   `yaml:"mode"` // "memory" or "postgres"
+	PostgresDSN     string   `yaml:"postgres_dsn"`
+	RedisAddr       string   `yaml:"redis_addr"`
+	RedisAddrs      []string `yaml:"redis_addrs"`
+	RedisMasterName string   `yaml:"redis_master_name"`
+	RedisPass       string   `yaml:"redis_pass"`
+	RedisDB         int      `yaml:"redis_db"`
 }
 
 type AuthConfig struct {
@@ -362,6 +364,21 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("GATEWAY_REDIS_ADDR"); v != "" {
 		cfg.Storage.RedisAddr = v
+	}
+	if v := os.Getenv("GATEWAY_REDIS_ADDRS"); v != "" {
+		parts := strings.Split(v, ",")
+		addrs := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				addrs = append(addrs, trimmed)
+			}
+		}
+		if len(addrs) > 0 {
+			cfg.Storage.RedisAddrs = addrs
+		}
+	}
+	if v := os.Getenv("GATEWAY_REDIS_MASTER_NAME"); v != "" {
+		cfg.Storage.RedisMasterName = v
 	}
 	if v := os.Getenv("GATEWAY_REDIS_PASS"); v != "" {
 		cfg.Storage.RedisPass = v

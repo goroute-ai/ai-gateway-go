@@ -210,7 +210,7 @@ func (m *MRTRManager) VerifyAndConsumeToken(
 
 	isReplay := false
 	if m.redis != nil {
-		res, err := m.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := m.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.SetNX(ctx, "gw:mcp:mrtr:jti:"+claims.JTI, "used", ttl).Result()
 		})
 		if err == nil {

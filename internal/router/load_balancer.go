@@ -265,7 +265,7 @@ func (lb *LoadBalancer) OnRequestStart(depID string) {
 	if lb.redis != nil && lb.redis.Client() != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		if _, err := lb.redis.Execute(func(rdb *redis.Client) (any, error) {
+		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), routingSignalTTLSeconds).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")
@@ -294,7 +294,7 @@ func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens 
 	if lb.redis != nil && lb.redis.Client() != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		if _, err := lb.redis.Execute(func(rdb *redis.Client) (any, error) {
+		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, time.Now().Unix(), totalTokens, latencyMs, routingSignalTTLSeconds).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")

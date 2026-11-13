@@ -30,6 +30,8 @@ storage:
   mode: "postgres"           # "postgres" (recommended for production) or "memory"
   postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"
   redis_addr: "redis-host:6379"
+  redis_addrs: []            # Optional list of Redis Cluster / Sentinel seed addresses (overrides redis_addr when non-empty)
+  redis_master_name: ""      # Optional Redis Sentinel master name
   redis_pass: ""             # Optional Redis authentication password (or os.environ/REDIS_PASSWORD)
   redis_db: 0
 

@@ -53,7 +53,7 @@ func (sm *SubscriptionManager) Unsubscribe(id string) {
 // PublishNotification broadcasts a notification to local SSE subscribers and Redis Pub/Sub.
 func (sm *SubscriptionManager) PublishNotification(ctx context.Context, orgID string, payload []byte) error {
 	if sm.redis != nil {
-		_, _ = sm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = sm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Publish(ctx, "gw:mcp:notif:"+orgID, payload).Result()
 		})
 	}

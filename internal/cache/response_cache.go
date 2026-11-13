@@ -115,7 +115,7 @@ func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalC
 	if c.redis == nil || c.redis.Client() == nil {
 		return nil, false
 	}
-	res, err := c.redis.Execute(func(rdb *redis.Client) (any, error) {
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.Get(ctx, "gw:cache:resp:"+key).Result()
 	})
 	if err != nil {
@@ -165,7 +165,7 @@ func (c *ResponseCache) SetWithMeta(ctx context.Context, key, orgID string, resp
 		if err != nil {
 			return
 		}
-		if _, err := c.redis.Execute(func(rdb *redis.Client) (any, error) {
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Set(ctx, "gw:cache:resp:"+key, b, c.ttl).Result()
 		}); err != nil {
 			return
@@ -190,7 +190,7 @@ func (c *ResponseCache) Invalidate(ctx context.Context, orgID, model string) (in
 				keys = append(keys, cacheModelEpochKey(model))
 			}
 		}
-		res, err := c.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return invalidateCacheEpochsScript.Run(ctx, rdb, keys).Int64()
 		})
 		if err != nil {
@@ -240,7 +240,7 @@ func (c *ResponseCache) currentEpochs(ctx context.Context, orgID, model string) 
 		return cacheEpochs{Global: c.globalEpoch, Organization: c.orgEpochs[orgID], Model: c.modelEpochs[model]}, nil
 	}
 	keys := []string{cacheGlobalEpochKey(), cacheOrgEpochKey(orgID), cacheModelEpochKey(model)}
-	res, err := c.redis.Execute(func(rdb *redis.Client) (any, error) {
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.MGet(ctx, keys...).Result()
 	})
 	if err != nil {

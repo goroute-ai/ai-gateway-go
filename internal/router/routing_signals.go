@@ -52,7 +52,7 @@ func routingSignalKey(deploymentID string) string {
 func (lb *LoadBalancer) readSharedSignals(candidates []*domain.Deployment) (map[string]deploymentTelemetry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	res, err := lb.redis.Execute(func(rdb *redis.Client) (any, error) {
+	res, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 		pipe := rdb.Pipeline()
 		commands := make(map[string]*redis.MapStringStringCmd, len(candidates))
 		for _, deployment := range candidates {

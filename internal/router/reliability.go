@@ -1802,7 +1802,7 @@ func (rm *ReliabilityManager) hydrateCredential(dep *domain.Deployment) {
 // GetCircuitState returns the 3-state circuit breaker status (Closed, Open, or Half-Open) for a deployment.
 func (rm *ReliabilityManager) GetCircuitState(ctx context.Context, depID string) CircuitState {
 	if rm.redis != nil && rm.redis.Client() != nil {
-		res, err := rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			state, err := rdb.Get(ctx, circuitStateKey(depID)).Result()
 			if err == redis.Nil {
 				return CircuitClosed, nil
@@ -1853,7 +1853,7 @@ func (rm *ReliabilityManager) IsInCooldown(ctx context.Context, depID string) bo
 func (rm *ReliabilityManager) allowDeploymentRequest(ctx context.Context, depID string) (bool, string) {
 	if rm.redis != nil && rm.redis.Client() != nil {
 		token := uuid.NewString()
-		res, err := rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return allowCircuitProbeScript.Run(ctx, rdb, circuitKeys(depID), token, circuitProbeLeaseTTL.Milliseconds()).Int64()
 		})
 		if err == nil {
@@ -1947,7 +1947,7 @@ func (rm *ReliabilityManager) tripCooldown(ctx context.Context, depID string, co
 	rm.mu.Unlock()
 
 	if rm.redis != nil && rm.redis.Client() != nil {
-		_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return tripCircuitScript.Run(ctx, rdb, circuitKeys(depID), dur.Milliseconds()).Result()
 		})
 	}
@@ -1982,7 +1982,7 @@ func (rm *ReliabilityManager) recordSuccess(ctx context.Context, dep *domain.Dep
 	rm.mu.Unlock()
 
 	if dep.CircuitProbeToken != "" && rm.redis != nil && rm.redis.Client() != nil {
-		_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return closeCircuitScript.Run(ctx, rdb, circuitKeys(depID), dep.CircuitProbeToken).Result()
 		})
 	}
@@ -1995,7 +1995,7 @@ func (rm *ReliabilityManager) reopenHalfOpen(ctx context.Context, depID, probeTo
 	if cooldownSec <= 0 {
 		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
 	}
-	_, _ = rm.redis.Execute(func(rdb *redis.Client) (any, error) {
+	_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return reopenHalfOpenScript.Run(ctx, rdb, circuitKeys(depID), (time.Duration(cooldownSec) * time.Second).Milliseconds(), probeToken).Result()
 	})
 }
@@ -2007,20 +2007,27 @@ func tokenIfProbe(code int64, token string) string {
 	return ""
 }
 
+func depHashTag(depID string) string {
+	if depID == "" {
+		depID = "default"
+	}
+	return "{dep:" + depID + "}"
+}
+
 func circuitKeys(depID string) []string {
 	return []string{circuitStateKey(depID), circuitCooldownKey(depID), circuitProbeKey(depID)}
 }
 
 func circuitStateKey(depID string) string {
-	return "gw:router:circuit:" + depID + ":state"
+	return "gw:router:" + depHashTag(depID) + ":circuit"
 }
 
 func circuitCooldownKey(depID string) string {
-	return "gw:router:cooldown:" + depID
+	return "gw:router:" + depHashTag(depID) + ":cooldown"
 }
 
 func circuitProbeKey(depID string) string {
-	return "gw:router:circuit:" + depID + ":probe"
+	return "gw:router:" + depHashTag(depID) + ":probe"
 }
 
 func filterUntried(all []*domain.Deployment, tried []string) []*domain.Deployment {

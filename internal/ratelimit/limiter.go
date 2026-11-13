@@ -73,6 +73,59 @@ func (l *Limiter) AcquireWithBudget(ctx context.Context, idCtx *domain.IdentityC
 	return l.acquire(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
 }
 
+func orgHashTag(orgID string) string {
+	if orgID == "" {
+		orgID = "default"
+	}
+	return "{org:" + orgID + "}"
+}
+
+func acquireKeys(idCtx *domain.IdentityContext, nowMin int64) []string {
+	tag := orgHashTag(idCtx.OrgID)
+	return []string{
+		fmt.Sprintf("gw:rl:%s:rpm:key:%s:%d", tag, idCtx.VirtualKeyID, nowMin),
+		fmt.Sprintf("gw:rl:%s:tpm:key:%s:%d", tag, idCtx.VirtualKeyID, nowMin),
+		fmt.Sprintf("gw:rl:%s:conc:%s", tag, idCtx.VirtualKeyID),
+		fmt.Sprintf("gw:spend:%s:key:%s", tag, idCtx.VirtualKeyID),
+		fmt.Sprintf("gw:rl:%s:rpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
+		fmt.Sprintf("gw:rl:%s:tpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
+		fmt.Sprintf("gw:spend:%s:team:%s", tag, idCtx.TeamID),
+		fmt.Sprintf("gw:rl:%s:rpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
+		fmt.Sprintf("gw:rl:%s:tpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
+		fmt.Sprintf("gw:spend:%s:org:%s", tag, idCtx.OrgID),
+		fmt.Sprintf("gw:budget:%s:reservations:key:%s", tag, idCtx.VirtualKeyID),
+		fmt.Sprintf("gw:budget:%s:reservations:team:%s", tag, idCtx.TeamID),
+		fmt.Sprintf("gw:budget:%s:reservations:org:%s", tag, idCtx.OrgID),
+	}
+}
+
+func reconcileKeys(keys []string) []string {
+	return []string{
+		keys[2],  // key_conc
+		keys[1],  // key_tpm
+		keys[5],  // team_tpm
+		keys[8],  // org_tpm
+		keys[10], // key_reservations
+		keys[11], // team_reservations
+		keys[12], // org_reservations
+		keys[3],  // key_spend
+		keys[6],  // team_spend
+		keys[9],  // org_spend
+	}
+}
+
+func spendKeys(keyID, teamID, orgID string) []string {
+	tag := orgHashTag(orgID)
+	return []string{
+		fmt.Sprintf("gw:spend:%s:key:%s", tag, keyID),
+		fmt.Sprintf("gw:spend:%s:team:%s", tag, teamID),
+		fmt.Sprintf("gw:spend:%s:org:%s", tag, orgID),
+		fmt.Sprintf("gw:budget:%s:reservations:key:%s", tag, keyID),
+		fmt.Sprintf("gw:budget:%s:reservations:team:%s", tag, teamID),
+		fmt.Sprintf("gw:budget:%s:reservations:org:%s", tag, orgID),
+	}
+}
+
 func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
 	if idCtx == nil {
 		return func(int, int64) {}, nil
@@ -85,21 +138,7 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 
 	// Try Redis Atomic Lua script first if Redis is configured
 	if l.redis != nil && l.redis.Client() != nil {
-		keys := []string{
-			fmt.Sprintf("gw:rl:rpm:key:%s:%d", idCtx.VirtualKeyID, nowMin),
-			fmt.Sprintf("gw:rl:tpm:key:%s:%d", idCtx.VirtualKeyID, nowMin),
-			fmt.Sprintf("gw:rl:conc:%s", idCtx.VirtualKeyID),
-			fmt.Sprintf("gw:spend:key:%s", idCtx.VirtualKeyID),
-			fmt.Sprintf("gw:rl:rpm:team:%s:%d", idCtx.TeamID, nowMin),
-			fmt.Sprintf("gw:rl:tpm:team:%s:%d", idCtx.TeamID, nowMin),
-			fmt.Sprintf("gw:spend:team:%s", idCtx.TeamID),
-			fmt.Sprintf("gw:rl:rpm:org:%s:%d", idCtx.OrgID, nowMin),
-			fmt.Sprintf("gw:rl:tpm:org:%s:%d", idCtx.OrgID, nowMin),
-			fmt.Sprintf("gw:spend:org:%s", idCtx.OrgID),
-			fmt.Sprintf("gw:budget:reservations:key:%s", idCtx.VirtualKeyID),
-			fmt.Sprintf("gw:budget:reservations:team:%s", idCtx.TeamID),
-			fmt.Sprintf("gw:budget:reservations:org:%s", idCtx.OrgID),
-		}
+		keys := acquireKeys(idCtx, nowMin)
 		argv := []any{
 			idCtx.KeyRPMLimit, idCtx.KeyTPMLimit, idCtx.KeyMaxConcurrent, idCtx.KeyMaxBudgetMicros,
 			idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxBudgetMicros,
@@ -107,7 +146,7 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 			estimatedTokens, l.windowSec * 2, l.concTTLSec, reserveMicros, requestID, 3600,
 		}
 
-		res, err := l.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return l.checkScript.Run(ctx, rdb, keys, argv...).Slice()
 		})
 		if err == nil {
@@ -119,13 +158,7 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 				}
 				return func(actualTokens int, actualCostMicros int64) {
 					delta := actualTokens - estimatedTokens
-					recKeys := []string{
-						keys[2], // key_conc
-						keys[1], // key_tpm
-						keys[5], // team_tpm
-						keys[8], // org_tpm
-					}
-					resKeys := append(recKeys, keys[10], keys[11], keys[12], keys[3], keys[6], keys[9])
+					resKeys := reconcileKeys(keys)
 					settle := []any{delta, l.windowSec * 2, requestID, actualCostMicros, reserveMicros}
 					if actualTokens < 0 {
 						settle[3] = int64(-1)
@@ -134,7 +167,7 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						// which atomically swaps reserved cost for actual spend.
 						settle[3] = int64(-2)
 					}
-					_, _ = l.redis.Execute(func(rdb *redis.Client) (any, error) {
+					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 						return l.reconcileScr.Run(context.Background(), rdb, resKeys, settle...).Result()
 					})
 				}, nil
@@ -181,11 +214,8 @@ func (l *Limiter) RecordSpendIncrementForRequest(ctx context.Context, requestID,
 	}
 
 	if l.redis != nil && l.redis.Client() != nil {
-		_, _ = l.redis.Execute(func(rdb *redis.Client) (any, error) {
-			keys := []string{
-				"gw:spend:key:" + keyID, "gw:spend:team:" + teamID, "gw:spend:org:" + orgID,
-				"gw:budget:reservations:key:" + keyID, "gw:budget:reservations:team:" + teamID, "gw:budget:reservations:org:" + orgID,
-			}
+		_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			keys := spendKeys(keyID, teamID, orgID)
 			return l.spendScr.Run(ctx, rdb, keys, requestID, costMicros).Result()
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -70,8 +71,17 @@ func main() {
 	}
 
 	var redisFabric *storage.RedisFabric
-	if cfg.Storage.RedisAddr != "" {
-		redisFabric = storage.NewRedisFabric(cfg.Storage.RedisAddr, cfg.Storage.RedisPass, cfg.Storage.RedisDB)
+	if len(cfg.Storage.RedisAddrs) > 0 || cfg.Storage.RedisAddr != "" {
+		addrs := cfg.Storage.RedisAddrs
+		if len(addrs) == 0 {
+			addrs = []string{cfg.Storage.RedisAddr}
+		}
+		redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+			Addrs:      addrs,
+			MasterName: cfg.Storage.RedisMasterName,
+			Password:   cfg.Storage.RedisPass,
+			DB:         cfg.Storage.RedisDB,
+		})
 	}
 
 	gw, err := server.New(cfg, repo, redisFabric, nil)

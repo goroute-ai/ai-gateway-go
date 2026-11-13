@@ -44,7 +44,7 @@ func setupDualNodeCluster(t *testing.T) (*httptest.Server, *httptest.Server, *se
 
 	// 2. Shared Redis Fabric
 	redisFabric := storage.NewRedisFabric(redisAddr, "", 0)
-	if _, err := redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+	if _, err := redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.Ping(ctx).Result()
 	}); err != nil {
 		pool.Close()
