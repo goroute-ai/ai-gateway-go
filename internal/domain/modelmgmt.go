@@ -33,6 +33,24 @@ const (
 	DeploymentStatusDisabled DeploymentStatus = "disabled"
 )
 
+// OperationType identifies a specific data-plane operation supported by a model or adapter.
+type OperationType string
+
+const (
+	OperationChat            OperationType = "chat"
+	OperationCompletion      OperationType = "completion"
+	OperationResponses       OperationType = "responses"
+	OperationEmbedding       OperationType = "embedding"
+	OperationRerank          OperationType = "rerank"
+	OperationModeration      OperationType = "moderation"
+	OperationImageGeneration OperationType = "image_generation"
+	OperationImageEdit       OperationType = "image_edit"
+	OperationAudioSTT        OperationType = "audio_stt"
+	OperationAudioTTS        OperationType = "audio_tts"
+	OperationImageVariation  OperationType = "image_variation"
+	OperationRealtime        OperationType = "realtime"
+)
+
 // GlobalModel represents Layer 1 of Model Management: the Global Model Catalogue.
 type GlobalModel struct {
 	ID                            string               `json:"id"` // e.g. "openai/gpt-4.1"
@@ -42,6 +60,7 @@ type GlobalModel struct {
 	MaxInputTokens                int                  `json:"max_input_tokens"`
 	MaxOutputTokens               int                  `json:"max_output_tokens"`
 	Capabilities                  ModelCapabilities    `json:"capabilities"`
+	SupportedOperations           []OperationType      `json:"supported_operations,omitempty"`
 	SupportsStreaming             bool                 `json:"supports_streaming"`
 	SupportsTools                 bool                 `json:"supports_tools"`
 	SupportsVision                bool                 `json:"supports_vision"`
@@ -51,6 +70,7 @@ type GlobalModel struct {
 	InputCostMicrosPer1M          int64                `json:"input_cost_micros_per_1m"`
 	OutputCostMicrosPer1M         int64                `json:"output_cost_micros_per_1m"`
 	CachedInputCostMicrosPer1M    int64                `json:"cached_input_cost_micros_per_1m"`
+	CacheWriteCostMicrosPer1M     int64                `json:"cache_write_cost_micros_per_1m,omitempty"`
 	ReasoningCostMicrosPer1M      int64                `json:"reasoning_cost_micros_per_1m"`
 	RerankCostMicrosPerSearchUnit int64                `json:"rerank_cost_micros_per_search_unit,omitempty"`
 	ImageCostMicrosBase           int64                `json:"image_cost_micros_base,omitempty"`
@@ -66,6 +86,48 @@ type GlobalModel struct {
 	DeprecationDate               *time.Time           `json:"deprecation_date,omitempty"`
 	DiscoveredAt                  time.Time            `json:"discovered_at"`
 	UpdatedAt                     time.Time            `json:"updated_at"`
+}
+
+// SupportsOperation reports whether the model supports the requested operation.
+// When SupportedOperations is explicitly populated, it is authoritative; otherwise
+// it falls back to SupportsInference and tri-state capabilities.
+func (gm *GlobalModel) SupportsOperation(op OperationType) bool {
+	if gm == nil {
+		return false
+	}
+	if len(gm.SupportedOperations) > 0 {
+		for _, s := range gm.SupportedOperations {
+			if s == op {
+				return true
+			}
+		}
+		return false
+	}
+	caps := gm.ResolveCapabilities()
+	switch op {
+	case OperationChat, OperationResponses:
+		return gm.SupportsInference
+	case OperationCompletion:
+		return false
+	case OperationEmbedding:
+		return gm.SupportsEmbeddings || caps.Embeddings == CapabilitySupported
+	case OperationRerank:
+		return caps.Rerank == CapabilitySupported
+	case OperationModeration:
+		return caps.Moderation == CapabilitySupported
+	case OperationImageGeneration:
+		return caps.ImageGen == CapabilitySupported
+	case OperationImageEdit, OperationImageVariation:
+		return false
+	case OperationAudioSTT:
+		return caps.AudioSTT == CapabilitySupported
+	case OperationAudioTTS:
+		return caps.AudioTTS == CapabilitySupported
+	case OperationRealtime:
+		return caps.Realtime == CapabilitySupported
+	default:
+		return false
+	}
 }
 
 // ModelPricingHistory tracks versioned pricing changes for a GlobalModel over time.

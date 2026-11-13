@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,14 +79,61 @@ func RunMigrationsDir(ctx context.Context, pool *pgxpool.Pool, dir string) error
 // PostgresRepository implements Repository backed by PostgreSQL 16+ with a synchronized write-through
 // in-memory projection for ultra-fast relational joins on deployments and global models.
 type PostgresRepository struct {
-	pool *pgxpool.Pool
-	mem  *MemoryRepository
+	pool                     *pgxpool.Pool
+	mem                      *MemoryRepository
+	lookupMu                 sync.Mutex
+	lookupCalls              map[string]*postgresLookupCall
+	subscriptionQueries      atomic.Uint64
+	emptySubscriptionQueries atomic.Uint64
+	guardrailQueries         atomic.Uint64
+	missingGuardrailQueries  atomic.Uint64
+}
+
+type postgresLookupCall struct {
+	done  chan struct{}
+	value any
+	err   error
+}
+
+// coalesceLookup shares only concurrent reads; missing rows are not retained,
+// so policy changes on another replica become visible on the next lookup.
+func (p *PostgresRepository) coalesceLookup(ctx context.Context, key string, fn func(context.Context) (any, error)) (any, error) {
+	p.lookupMu.Lock()
+	if p.lookupCalls == nil {
+		p.lookupCalls = make(map[string]*postgresLookupCall)
+	}
+	if call := p.lookupCalls[key]; call != nil {
+		p.lookupMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-call.done:
+			return call.value, call.err
+		}
+	}
+	call := &postgresLookupCall{done: make(chan struct{})}
+	p.lookupCalls[key] = call
+	p.lookupMu.Unlock()
+
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	call.value, call.err = fn(lookupCtx)
+	cancel()
+	p.lookupMu.Lock()
+	delete(p.lookupCalls, key)
+	close(call.done)
+	p.lookupMu.Unlock()
+	return call.value, call.err
+}
+
+func (p *PostgresRepository) LookupQueryStats() (uint64, uint64, uint64, uint64) {
+	return p.subscriptionQueries.Load(), p.emptySubscriptionQueries.Load(), p.guardrailQueries.Load(), p.missingGuardrailQueries.Load()
 }
 
 func NewPostgresRepository(ctx context.Context, pool *pgxpool.Pool) (*PostgresRepository, error) {
 	pr := &PostgresRepository{
-		pool: pool,
-		mem:  NewMemoryRepository(),
+		pool:        pool,
+		mem:         NewMemoryRepository(),
+		lookupCalls: make(map[string]*postgresLookupCall),
 	}
 	// Seed default global catalogue into PostgreSQL
 	models, _ := pr.mem.ListGlobalModels(ctx)
@@ -110,24 +159,54 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 	if len(capsJSON) == 0 {
 		capsJSON = []byte("{}")
 	}
+	opsJSON, _ := json.Marshal(m.SupportedOperations)
+	if len(opsJSON) == 0 || string(opsJSON) == "null" {
+		opsJSON = []byte("[]")
+	}
+	modPricingJSON, _ := json.Marshal(m.ModalityPricingJSON)
+	if len(modPricingJSON) == 0 || string(modPricingJSON) == "null" {
+		modPricingJSON = []byte("{}")
+	}
 	const q = `
 		INSERT INTO global_models (
 			id, provider, model_name, display_name, max_input_tokens, max_output_tokens,
 			supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings,
 			input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m,
-			reasoning_cost_micros_per_1m, pricing_version, pricing_status, pricing_provenance_source,
-			pricing_effective_date, lifecycle_status, capabilities, supports_inference, discovered_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW(),NOW())
+			cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m,
+			rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd,
+			audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, modality_pricing_json,
+			pricing_version, pricing_status, pricing_provenance_source,
+			pricing_effective_date, lifecycle_status, deprecation_date, capabilities, supported_operations,
+			supports_inference, discovered_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
+			max_input_tokens = EXCLUDED.max_input_tokens,
+			max_output_tokens = EXCLUDED.max_output_tokens,
+			supports_streaming = EXCLUDED.supports_streaming,
+			supports_tools = EXCLUDED.supports_tools,
+			supports_vision = EXCLUDED.supports_vision,
+			supports_reasoning = EXCLUDED.supports_reasoning,
+			supports_embeddings = EXCLUDED.supports_embeddings,
 			input_cost_micros_per_1m = EXCLUDED.input_cost_micros_per_1m,
 			output_cost_micros_per_1m = EXCLUDED.output_cost_micros_per_1m,
+			cached_input_cost_micros_per_1m = EXCLUDED.cached_input_cost_micros_per_1m,
+			cache_write_cost_micros_per_1m = EXCLUDED.cache_write_cost_micros_per_1m,
+			reasoning_cost_micros_per_1m = EXCLUDED.reasoning_cost_micros_per_1m,
+			rerank_cost_micros_per_search_unit = EXCLUDED.rerank_cost_micros_per_search_unit,
+			image_cost_micros_base = EXCLUDED.image_cost_micros_base,
+			image_cost_micros_hd = EXCLUDED.image_cost_micros_hd,
+			audio_stt_cost_micros_per_second = EXCLUDED.audio_stt_cost_micros_per_second,
+			audio_tts_cost_micros_per_1k_chars = EXCLUDED.audio_tts_cost_micros_per_1k_chars,
+			modality_pricing_json = EXCLUDED.modality_pricing_json,
 			pricing_version = EXCLUDED.pricing_version,
 			pricing_status = EXCLUDED.pricing_status,
 			pricing_provenance_source = EXCLUDED.pricing_provenance_source,
 			pricing_effective_date = EXCLUDED.pricing_effective_date,
 			lifecycle_status = EXCLUDED.lifecycle_status,
+			deprecation_date = EXCLUDED.deprecation_date,
 			capabilities = EXCLUDED.capabilities,
+			supported_operations = EXCLUDED.supported_operations,
 			supports_inference = EXCLUDED.supports_inference,
 			updated_at = NOW()`
 	pv := m.PricingVersion
@@ -139,8 +218,12 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 		m.ID, string(m.Provider), m.ModelName, m.DisplayName, m.MaxInputTokens, m.MaxOutputTokens,
 		m.SupportsStreaming, m.SupportsTools, m.SupportsVision, m.SupportsReasoning, m.SupportsEmbeddings,
 		m.InputCostMicrosPer1M, m.OutputCostMicrosPer1M, m.CachedInputCostMicrosPer1M,
-		m.ReasoningCostMicrosPer1M, pv, pricingStatus, m.PricingProvenanceSource,
-		m.PricingEffectiveDate, string(m.LifecycleStatus), capsJSON, m.SupportsInference,
+		m.CacheWriteCostMicrosPer1M, m.ReasoningCostMicrosPer1M,
+		m.RerankCostMicrosPerSearchUnit, m.ImageCostMicrosBase, m.ImageCostMicrosHD,
+		m.AudioSTTCostMicrosPerSecond, m.AudioTTSCostMicrosPer1KChars, modPricingJSON,
+		pv, pricingStatus, m.PricingProvenanceSource,
+		m.PricingEffectiveDate, string(m.LifecycleStatus), m.DeprecationDate, capsJSON, opsJSON,
+		m.SupportsInference,
 	)
 	return err
 }
@@ -149,16 +232,19 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
 		return gm, nil
 	}
-	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, reasoning_cost_micros_per_1m, pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, COALESCE(capabilities, '{}'::jsonb), supports_inference FROM global_models WHERE id = $1`
+	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference FROM global_models WHERE id = $1`
 	var m domain.GlobalModel
 	var prov, status, pricingStatus string
-	var rawCaps []byte
+	var rawCaps, rawOps, rawModPricing []byte
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
 		&m.ID, &prov, &m.ModelName, &m.DisplayName, &m.MaxInputTokens, &m.MaxOutputTokens,
 		&m.SupportsStreaming, &m.SupportsTools, &m.SupportsVision, &m.SupportsReasoning, &m.SupportsEmbeddings,
 		&m.InputCostMicrosPer1M, &m.OutputCostMicrosPer1M, &m.CachedInputCostMicrosPer1M,
-		&m.ReasoningCostMicrosPer1M, &m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
-		&m.PricingEffectiveDate, &status, &rawCaps, &m.SupportsInference,
+		&m.CacheWriteCostMicrosPer1M, &m.ReasoningCostMicrosPer1M,
+		&m.RerankCostMicrosPerSearchUnit, &m.ImageCostMicrosBase, &m.ImageCostMicrosHD,
+		&m.AudioSTTCostMicrosPerSecond, &m.AudioTTSCostMicrosPer1KChars, &rawModPricing,
+		&m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
+		&m.PricingEffectiveDate, &status, &m.DeprecationDate, &rawCaps, &rawOps, &m.SupportsInference,
 	); err != nil {
 		return nil, fmt.Errorf("global model not found: %w", err)
 	}
@@ -168,12 +254,34 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 	if len(rawCaps) > 0 {
 		_ = json.Unmarshal(rawCaps, &m.Capabilities)
 	}
+	if len(rawOps) > 0 {
+		_ = json.Unmarshal(rawOps, &m.SupportedOperations)
+	}
+	if len(rawModPricing) > 0 {
+		_ = json.Unmarshal(rawModPricing, &m.ModalityPricingJSON)
+	}
 	_ = p.mem.UpsertGlobalModel(ctx, &m)
 	return &m, nil
 }
 
 func (p *PostgresRepository) ListGlobalModels(ctx context.Context) ([]*domain.GlobalModel, error) {
 	return p.mem.ListGlobalModels(ctx)
+}
+
+func (p *PostgresRepository) ListGlobalModelsByName(ctx context.Context, provider domain.ProviderType, modelName string) ([]*domain.GlobalModel, error) {
+	return p.mem.ListGlobalModelsByName(ctx, provider, modelName)
+}
+
+func (p *PostgresRepository) GlobalModelCatalogSize() int {
+	return p.mem.GlobalModelCatalogSize()
+}
+
+func (p *PostgresRepository) GetGlobalModelPricingSummary(ctx context.Context) (GlobalModelPricingSummary, error) {
+	return p.mem.GetGlobalModelPricingSummary(ctx)
+}
+
+func (p *PostgresRepository) PricingSummaryRebuilds() uint64 {
+	return p.mem.PricingSummaryRebuilds()
 }
 
 func (p *PostgresRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error) {
@@ -262,21 +370,43 @@ func (p *PostgresRepository) GetOrgProviderSubscriptions(ctx context.Context, or
 	if err == nil && len(subs) > 0 {
 		return subs, nil
 	}
-	const q = `SELECT org_id, provider, is_enabled, auto_enable_new, subscribed_at FROM org_provider_subscriptions WHERE org_id = $1`
-	rows, err := p.pool.Query(ctx, q, orgID)
+	value, err := p.coalesceLookup(ctx, "subscriptions:"+orgID, func(lookupCtx context.Context) (any, error) {
+		if cached, cacheErr := p.mem.GetOrgProviderSubscriptions(lookupCtx, orgID); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
+		p.subscriptionQueries.Add(1)
+		const q = `SELECT org_id, provider, is_enabled, auto_enable_new, subscribed_at FROM org_provider_subscriptions WHERE org_id = $1`
+		rows, queryErr := p.pool.Query(lookupCtx, q, orgID)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer rows.Close()
+		loaded := 0
+		for rows.Next() {
+			var s domain.OrgProviderSubscription
+			var prov string
+			if scanErr := rows.Scan(&s.OrgID, &prov, &s.IsEnabled, &s.AutoEnableNew, &s.SubscribedAt); scanErr != nil {
+				return nil, scanErr
+			}
+			s.Provider = domain.ProviderType(prov)
+			if setErr := p.mem.SetOrgProviderSubscription(lookupCtx, &s); setErr != nil {
+				return nil, setErr
+			}
+			loaded++
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, rowsErr
+		}
+		if loaded == 0 {
+			p.emptySubscriptionQueries.Add(1)
+		}
+		return p.mem.GetOrgProviderSubscriptions(lookupCtx, orgID)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var s domain.OrgProviderSubscription
-		var prov string
-		if err := rows.Scan(&s.OrgID, &prov, &s.IsEnabled, &s.AutoEnableNew, &s.SubscribedAt); err == nil {
-			s.Provider = domain.ProviderType(prov)
-			_ = p.mem.SetOrgProviderSubscription(ctx, &s)
-		}
-	}
-	return p.mem.GetOrgProviderSubscriptions(ctx, orgID)
+	result, _ := value.([]*domain.OrgProviderSubscription)
+	return result, nil
 }
 
 func (p *PostgresRepository) SetOrgModelPolicy(ctx context.Context, pol *domain.OrgModelPolicy) error {
@@ -826,24 +956,38 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 	if pol, err := p.mem.GetGuardrailPolicy(ctx, orgID); err == nil && pol != nil {
 		return pol, nil
 	}
-	const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
-	var pol domain.GuardrailPolicy
-	var modeStr, injAct, piiAct, secAct string
-	if err := p.pool.QueryRow(ctx, q, orgID).Scan(
-		&pol.OrgID, &modeStr, &pol.ScanAllRoles, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
-		&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+	value, err := p.coalesceLookup(ctx, "guardrail:"+orgID, func(lookupCtx context.Context) (any, error) {
+		if cached, cacheErr := p.mem.GetGuardrailPolicy(lookupCtx, orgID); cacheErr == nil && cached != nil {
+			return cached, nil
 		}
+		p.guardrailQueries.Add(1)
+		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
+		var pol domain.GuardrailPolicy
+		var modeStr, injAct, piiAct, secAct string
+		if scanErr := p.pool.QueryRow(lookupCtx, q, orgID).Scan(
+			&pol.OrgID, &modeStr, &pol.ScanAllRoles, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
+			&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
+		); scanErr != nil {
+			if errors.Is(scanErr, pgx.ErrNoRows) {
+				p.missingGuardrailQueries.Add(1)
+				return (*domain.GuardrailPolicy)(nil), nil
+			}
+			return nil, scanErr
+		}
+		pol.Mode = domain.GuardrailMode(modeStr)
+		pol.PromptInjectionAction = domain.GuardrailAction(injAct)
+		pol.PIIAction = domain.GuardrailAction(piiAct)
+		pol.SecretAction = domain.GuardrailAction(secAct)
+		if setErr := p.mem.SetGuardrailPolicy(lookupCtx, &pol); setErr != nil {
+			return nil, setErr
+		}
+		return &pol, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	pol.Mode = domain.GuardrailMode(modeStr)
-	pol.PromptInjectionAction = domain.GuardrailAction(injAct)
-	pol.PIIAction = domain.GuardrailAction(piiAct)
-	pol.SecretAction = domain.GuardrailAction(secAct)
-	_ = p.mem.SetGuardrailPolicy(ctx, &pol)
-	return &pol, nil
+	result, _ := value.(*domain.GuardrailPolicy)
+	return result, nil
 }
 
 func (p *PostgresRepository) UpdateDeploymentStatus(ctx context.Context, depID string, status domain.DeploymentStatus) error {
@@ -2028,7 +2172,7 @@ func (p *PostgresRepository) CreateFile(ctx context.Context, file *domain.Canoni
 	}
 	const q = `
 		INSERT INTO files (id, org_id, team_id, user_id, bytes, created_at, filename, purpose, status, content_sha256, storage_path, upstream_provider, upstream_id, expires_at)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 	_, err := p.pool.Exec(ctx, q, file.ID, file.OrgID, file.TeamID, file.UserID, file.Bytes, file.CreatedAt, file.Filename, file.Purpose, file.Status, file.ContentSHA256, file.StoragePath, file.UpstreamProvider, file.UpstreamID, file.ExpiresAt)
 	if err != nil {
 		return err
@@ -2042,7 +2186,7 @@ func (p *PostgresRepository) GetFile(ctx context.Context, orgID, fileID string) 
 	}
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), COALESCE(user_id::text, ''), bytes, created_at, filename, purpose, status, content_sha256, storage_path, COALESCE(upstream_provider, ''), COALESCE(upstream_id, ''), expires_at
-		FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+		FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2)`
 	var f domain.CanonicalFile
 	if err := p.pool.QueryRow(ctx, q, fileID, orgID).Scan(
 		&f.ID, &f.OrgID, &f.TeamID, &f.UserID, &f.Bytes, &f.CreatedAt, &f.Filename, &f.Purpose, &f.Status, &f.ContentSHA256, &f.StoragePath, &f.UpstreamProvider, &f.UpstreamID, &f.ExpiresAt,
@@ -2056,7 +2200,7 @@ func (p *PostgresRepository) GetFile(ctx context.Context, orgID, fileID string) 
 func (p *PostgresRepository) ListFiles(ctx context.Context, orgID string, purpose string) ([]*domain.CanonicalFile, error) {
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), COALESCE(user_id::text, ''), bytes, created_at, filename, purpose, status, content_sha256, storage_path, COALESCE(upstream_provider, ''), COALESCE(upstream_id, ''), expires_at
-		FROM files WHERE ($1 = '' OR org_id = $1::uuid) AND ($2 = '' OR purpose = $2)
+		FROM files WHERE ($1 = '' OR org_id = $1) AND ($2 = '' OR purpose = $2)
 		ORDER BY created_at DESC`
 	rows, err := p.pool.Query(ctx, q, orgID, purpose)
 	if err != nil {
@@ -2077,7 +2221,7 @@ func (p *PostgresRepository) ListFiles(ctx context.Context, orgID string, purpos
 }
 
 func (p *PostgresRepository) DeleteFile(ctx context.Context, orgID, fileID string) error {
-	const q = `DELETE FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+	const q = `DELETE FROM files WHERE id = $1 AND ($2 = '' OR org_id = $2)`
 	if _, err := p.pool.Exec(ctx, q, fileID, orgID); err != nil {
 		return err
 	}

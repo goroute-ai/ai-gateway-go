@@ -15,25 +15,31 @@ import (
 // MemoryRepository provides a thread-safe, high-performance in-memory implementation of Repository
 // seeded with the default Global Model Catalogue, suitable for standalone execution and fast integration testing.
 type MemoryRepository struct {
-	mu                sync.RWMutex
-	globalModels      map[string]*domain.GlobalModel
-	orgs              map[string]*domain.Organization
-	orgSubs           map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
-	orgPolicies       map[string]map[string]*domain.OrgModelPolicy
-	teams             map[string]*domain.Team
-	users             map[string]*domain.User
-	keysByID          map[string]*domain.VirtualKey
-	keysByHash        map[string]*domain.VirtualKey
-	credentials       map[string]*domain.ProviderCredential
-	groupsByID        map[string]*domain.ModelGroup
-	deployments       map[string]*domain.Deployment
-	pricingHistory    map[string][]*domain.ModelPricingHistory
-	guardrails        map[string]*domain.GuardrailPolicy
-	spendLogs         []domain.SpendEvent
-	spendOutbox       map[string]*spendOutboxEntry
-	spendLogIDs       map[string]struct{}
-	budgetResetOutbox map[string]BudgetResetEvent
-	auditLogs         []*domain.AuditLog
+	mu                     sync.RWMutex
+	globalModels           map[string]*domain.GlobalModel
+	globalModelsByName     map[string]map[domain.ProviderType]map[string]struct{}
+	globalModelRevision    uint64
+	pricingSummaryRevision uint64
+	pricingSummary         GlobalModelPricingSummary
+	pricingSummaryValid    bool
+	pricingSummaryRebuilds uint64
+	orgs                   map[string]*domain.Organization
+	orgSubs                map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
+	orgPolicies            map[string]map[string]*domain.OrgModelPolicy
+	teams                  map[string]*domain.Team
+	users                  map[string]*domain.User
+	keysByID               map[string]*domain.VirtualKey
+	keysByHash             map[string]*domain.VirtualKey
+	credentials            map[string]*domain.ProviderCredential
+	groupsByID             map[string]*domain.ModelGroup
+	deployments            map[string]*domain.Deployment
+	pricingHistory         map[string][]*domain.ModelPricingHistory
+	guardrails             map[string]*domain.GuardrailPolicy
+	spendLogs              []domain.SpendEvent
+	spendOutbox            map[string]*spendOutboxEntry
+	spendLogIDs            map[string]struct{}
+	budgetResetOutbox      map[string]BudgetResetEvent
+	auditLogs              []*domain.AuditLog
 
 	mcpServers     map[string]*domain.MCPServer
 	mcpTools       map[string]*domain.MCPTool
@@ -60,32 +66,33 @@ type spendOutboxEntry struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	r := &MemoryRepository{
-		globalModels:      make(map[string]*domain.GlobalModel),
-		orgs:              make(map[string]*domain.Organization),
-		orgSubs:           make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
-		orgPolicies:       make(map[string]map[string]*domain.OrgModelPolicy),
-		teams:             make(map[string]*domain.Team),
-		users:             make(map[string]*domain.User),
-		keysByID:          make(map[string]*domain.VirtualKey),
-		keysByHash:        make(map[string]*domain.VirtualKey),
-		credentials:       make(map[string]*domain.ProviderCredential),
-		groupsByID:        make(map[string]*domain.ModelGroup),
-		deployments:       make(map[string]*domain.Deployment),
-		pricingHistory:    make(map[string][]*domain.ModelPricingHistory),
-		guardrails:        make(map[string]*domain.GuardrailPolicy),
-		spendOutbox:       make(map[string]*spendOutboxEntry),
-		spendLogIDs:       make(map[string]struct{}),
-		budgetResetOutbox: make(map[string]BudgetResetEvent),
-		files:             make(map[string]*domain.CanonicalFile),
-		batches:           make(map[string]*domain.CanonicalBatch),
-		mcpServers:        make(map[string]*domain.MCPServer),
-		mcpTools:          make(map[string]*domain.MCPTool),
-		mcpToolsets:       make(map[string]*domain.MCPToolset),
-		mcpUserCreds:      make(map[string]*domain.MCPUserCredential),
-		a2aAgents:         make(map[string]*domain.A2AAgent),
-		a2aTasks:          make(map[string]*domain.A2ATask),
-		a2aTaskEvents:     make(map[string][]*domain.A2ATaskEvent),
-		a2aPushConfigs:    make(map[string]*domain.A2APushNotificationConfig),
+		globalModels:       make(map[string]*domain.GlobalModel),
+		globalModelsByName: make(map[string]map[domain.ProviderType]map[string]struct{}),
+		orgs:               make(map[string]*domain.Organization),
+		orgSubs:            make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
+		orgPolicies:        make(map[string]map[string]*domain.OrgModelPolicy),
+		teams:              make(map[string]*domain.Team),
+		users:              make(map[string]*domain.User),
+		keysByID:           make(map[string]*domain.VirtualKey),
+		keysByHash:         make(map[string]*domain.VirtualKey),
+		credentials:        make(map[string]*domain.ProviderCredential),
+		groupsByID:         make(map[string]*domain.ModelGroup),
+		deployments:        make(map[string]*domain.Deployment),
+		pricingHistory:     make(map[string][]*domain.ModelPricingHistory),
+		guardrails:         make(map[string]*domain.GuardrailPolicy),
+		spendOutbox:        make(map[string]*spendOutboxEntry),
+		spendLogIDs:        make(map[string]struct{}),
+		budgetResetOutbox:  make(map[string]BudgetResetEvent),
+		files:              make(map[string]*domain.CanonicalFile),
+		batches:            make(map[string]*domain.CanonicalBatch),
+		mcpServers:         make(map[string]*domain.MCPServer),
+		mcpTools:           make(map[string]*domain.MCPTool),
+		mcpToolsets:        make(map[string]*domain.MCPToolset),
+		mcpUserCreds:       make(map[string]*domain.MCPUserCredential),
+		a2aAgents:          make(map[string]*domain.A2AAgent),
+		a2aTasks:           make(map[string]*domain.A2ATask),
+		a2aTaskEvents:      make(map[string][]*domain.A2ATaskEvent),
+		a2aPushConfigs:     make(map[string]*domain.A2APushNotificationConfig),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -202,6 +209,7 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 		m.PricingProvenanceSource = "official-vendor-pricing-2025"
 		m.PricingEffectiveDate = "2025-05-01"
 		r.globalModels[m.ID] = m
+		r.addGlobalModelNameIndex(m)
 		r.pricingHistory[m.ID] = []*domain.ModelPricingHistory{
 			{
 				ID:                         uuid.NewString(),
@@ -238,9 +246,14 @@ func (r *MemoryRepository) UpsertGlobalModel(ctx context.Context, m *domain.Glob
 		m.DiscoveredAt = now
 	}
 	m.UpdatedAt = now
-	cp := *m
+	if previous := r.globalModels[m.ID]; previous != nil && (previous.ModelName != m.ModelName || previous.Provider != m.Provider) {
+		r.removeGlobalModelNameIndex(previous)
+	}
+	cp := cloneGlobalModel(m)
 	cp.PricingStatus = domain.ResolvePricingStatus(m)
-	r.globalModels[cp.ID] = &cp
+	r.globalModels[cp.ID] = cp
+	r.addGlobalModelNameIndex(cp)
+	r.globalModelRevision++
 	if len(r.pricingHistory[cp.ID]) == 0 {
 		r.pricingHistory[cp.ID] = []*domain.ModelPricingHistory{
 			{
@@ -257,6 +270,38 @@ func (r *MemoryRepository) UpsertGlobalModel(ctx context.Context, m *domain.Glob
 		}
 	}
 	return nil
+}
+
+func (r *MemoryRepository) addGlobalModelNameIndex(m *domain.GlobalModel) {
+	if m == nil || m.ModelName == "" {
+		return
+	}
+	byProvider := r.globalModelsByName[m.ModelName]
+	if byProvider == nil {
+		byProvider = make(map[domain.ProviderType]map[string]struct{})
+		r.globalModelsByName[m.ModelName] = byProvider
+	}
+	ids := byProvider[m.Provider]
+	if ids == nil {
+		ids = make(map[string]struct{})
+		byProvider[m.Provider] = ids
+	}
+	ids[m.ID] = struct{}{}
+}
+
+func (r *MemoryRepository) removeGlobalModelNameIndex(m *domain.GlobalModel) {
+	if m == nil {
+		return
+	}
+	byProvider := r.globalModelsByName[m.ModelName]
+	ids := byProvider[m.Provider]
+	delete(ids, m.ID)
+	if len(ids) == 0 {
+		delete(byProvider, m.Provider)
+	}
+	if len(byProvider) == 0 {
+		delete(r.globalModelsByName, m.ModelName)
+	}
 }
 
 func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error) {
@@ -297,6 +342,7 @@ func (r *MemoryRepository) UpdateModelPricing(ctx context.Context, modelID strin
 		gm.PricingEffectiveDate = effectiveDate
 	}
 	gm.UpdatedAt = now
+	r.globalModelRevision++
 	if changedBy == "" {
 		changedBy = "admin"
 	}
@@ -337,18 +383,38 @@ func (r *MemoryRepository) ListModelPricingHistory(ctx context.Context, modelID 
 	return out, nil
 }
 
+func cloneGlobalModel(m *domain.GlobalModel) *domain.GlobalModel {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	if len(m.SupportedOperations) > 0 {
+		cp.SupportedOperations = make([]domain.OperationType, len(m.SupportedOperations))
+		copy(cp.SupportedOperations, m.SupportedOperations)
+	}
+	if len(m.ModalityPricingJSON) > 0 {
+		cp.ModalityPricingJSON = make(map[string]any, len(m.ModalityPricingJSON))
+		for k, v := range m.ModalityPricingJSON {
+			cp.ModalityPricingJSON[k] = v
+		}
+	}
+	if m.DeprecationDate != nil {
+		dt := *m.DeprecationDate
+		cp.DeprecationDate = &dt
+	}
+	return &cp
+}
+
 func (r *MemoryRepository) GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if m, ok := r.globalModels[id]; ok {
-		cp := *m
-		return &cp, nil
+		return cloneGlobalModel(m), nil
 	}
 	// Also allow lookup by raw model_name
 	for _, m := range r.globalModels {
 		if m.ModelName == id {
-			cp := *m
-			return &cp, nil
+			return cloneGlobalModel(m), nil
 		}
 	}
 	return nil, fmt.Errorf("global model %q not found", id)
@@ -359,11 +425,107 @@ func (r *MemoryRepository) ListGlobalModels(ctx context.Context) ([]*domain.Glob
 	defer r.mu.RUnlock()
 	out := make([]*domain.GlobalModel, 0, len(r.globalModels))
 	for _, m := range r.globalModels {
-		cp := *m
-		out = append(out, &cp)
+		out = append(out, cloneGlobalModel(m))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// ListGlobalModelsByName returns indexed model-name matches without cloning or
+// sorting the full catalogue. An empty provider selects matches from all providers.
+func (r *MemoryRepository) ListGlobalModelsByName(ctx context.Context, provider domain.ProviderType, modelName string) ([]*domain.GlobalModel, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	byProvider := r.globalModelsByName[modelName]
+	var count int
+	if provider != "" {
+		count = len(byProvider[provider])
+	} else {
+		for _, ids := range byProvider {
+			count += len(ids)
+		}
+	}
+	out := make([]*domain.GlobalModel, 0, count)
+	appendIDs := func(ids map[string]struct{}) {
+		for id := range ids {
+			if model := r.globalModels[id]; model != nil {
+				out = append(out, cloneGlobalModel(model))
+			}
+		}
+	}
+	if provider != "" {
+		appendIDs(byProvider[provider])
+	} else {
+		for _, ids := range byProvider {
+			appendIDs(ids)
+		}
+	}
+	return out, nil
+}
+
+// GlobalModelCatalogSize returns the current projected catalog size in O(1).
+func (r *MemoryRepository) GlobalModelCatalogSize() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.globalModels)
+}
+
+// GetGlobalModelPricingSummary returns the maximum verified/custom token rates
+// across the catalog. The summary is rebuilt only after a catalog or pricing
+// mutation, and a defensive value copy is returned to callers.
+func (r *MemoryRepository) GetGlobalModelPricingSummary(ctx context.Context) (GlobalModelPricingSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return GlobalModelPricingSummary{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pricingSummaryValid && r.pricingSummaryRevision == r.globalModelRevision {
+		cached := r.pricingSummary
+		cached.Rebuilt = false
+		return cached, nil
+	}
+	summary := GlobalModelPricingSummary{CatalogSize: len(r.globalModels), Rebuilt: true}
+	for _, gm := range r.globalModels {
+		if gm == nil {
+			continue
+		}
+		status := domain.ResolvePricingStatus(gm)
+		if status != domain.PricingStatusVerified && status != domain.PricingStatusCustom {
+			continue
+		}
+		summary.PricedModelCount++
+		summary.HasPricedModels = true
+		if gm.InputCostMicrosPer1M > summary.InputCostMicrosPer1M {
+			summary.InputCostMicrosPer1M = gm.InputCostMicrosPer1M
+		}
+		if gm.CachedInputCostMicrosPer1M > summary.CachedInputCostMicrosPer1M {
+			summary.CachedInputCostMicrosPer1M = gm.CachedInputCostMicrosPer1M
+		}
+		if gm.CacheWriteCostMicrosPer1M > summary.CacheWriteCostMicrosPer1M {
+			summary.CacheWriteCostMicrosPer1M = gm.CacheWriteCostMicrosPer1M
+		}
+		if gm.OutputCostMicrosPer1M > summary.OutputCostMicrosPer1M {
+			summary.OutputCostMicrosPer1M = gm.OutputCostMicrosPer1M
+		}
+		if gm.ReasoningCostMicrosPer1M > summary.ReasoningCostMicrosPer1M {
+			summary.ReasoningCostMicrosPer1M = gm.ReasoningCostMicrosPer1M
+		}
+		if gm.MaxOutputTokens > summary.MaxOutputTokens {
+			summary.MaxOutputTokens = gm.MaxOutputTokens
+		}
+	}
+	r.pricingSummary = summary
+	r.pricingSummaryRevision = r.globalModelRevision
+	r.pricingSummaryValid = true
+	r.pricingSummaryRebuilds++
+	return summary, nil
+}
+
+// PricingSummaryRebuilds reports how many full summary scans were needed.
+func (r *MemoryRepository) PricingSummaryRebuilds() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.pricingSummaryRebuilds
 }
 
 func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.Organization) error {
@@ -822,8 +984,10 @@ func (r *MemoryRepository) EnqueueSpendEvent(ctx context.Context, ev domain.Spen
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.spendOutbox[ev.ID]; !exists {
-		r.spendOutbox[ev.ID] = &spendOutboxEntry{event: ev, status: "pending", nextAttempt: time.Now().UTC()}
+	if _, delivered := r.spendLogIDs[ev.ID]; !delivered {
+		if _, exists := r.spendOutbox[ev.ID]; !exists {
+			r.spendOutbox[ev.ID] = &spendOutboxEntry{event: ev, status: "pending", nextAttempt: time.Now().UTC()}
+		}
 	}
 	return nil
 }
@@ -870,10 +1034,7 @@ func (r *MemoryRepository) MarkSpendEventDelivered(ctx context.Context, id strin
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if e := r.spendOutbox[id]; e != nil {
-		e.status = "delivered"
-		e.lastError = ""
-	}
+	delete(r.spendOutbox, id)
 	return nil
 }
 

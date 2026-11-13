@@ -2,7 +2,9 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -10,48 +12,79 @@ import (
 type ProviderType string
 
 const (
-	ProviderOpenAI      ProviderType = "openai"
-	ProviderAnthropic   ProviderType = "anthropic"
-	ProviderGemini      ProviderType = "gemini"
-	ProviderMistral     ProviderType = "mistral"
-	ProviderOllama      ProviderType = "ollama"
-	ProviderGroq        ProviderType = "groq"
-	ProviderDeepSeek    ProviderType = "deepseek"
-	ProviderTogether    ProviderType = "together"
-	ProviderAzure       ProviderType = "azure"
-	ProviderBedrock     ProviderType = "bedrock"
-	ProviderVertex      ProviderType = "vertex"
-	ProviderCohere      ProviderType = "cohere"
-	ProviderCerebras    ProviderType = "cerebras"
-	ProviderSambaNova   ProviderType = "sambanova"
-	ProviderXAI         ProviderType = "xai"
-	ProviderFireworks   ProviderType = "fireworks"
-	ProviderPerplexity  ProviderType = "perplexity"
-	ProviderAnyscale    ProviderType = "anyscale"
-	ProviderDeepInfra   ProviderType = "deepinfra"
-	ProviderNovita      ProviderType = "novita"
-	ProviderNebius      ProviderType = "nebius"
-	ProviderHyperbolic  ProviderType = "hyperbolic"
-	ProviderLambda      ProviderType = "lambda"
-	ProviderFriendli    ProviderType = "friendli"
-	ProviderOpenRouter  ProviderType = "openrouter"
-	ProviderVLLM        ProviderType = "vllm"
-	ProviderCloudflare  ProviderType = "cloudflare"
-	ProviderDatabricks  ProviderType = "databricks"
-	ProviderSnowflake   ProviderType = "snowflake"
-	ProviderDashScope   ProviderType = "dashscope"
-	ProviderVolcengine  ProviderType = "volcengine"
-	ProviderBigModel    ProviderType = "bigmodel"
-	ProviderMoonshot    ProviderType = "moonshot"
-	ProviderMiniMax     ProviderType = "minimax"
-	ProviderSiliconFlow ProviderType = "siliconflow"
-	ProviderVoyage      ProviderType = "voyage"
-	ProviderJina        ProviderType = "jina"
-	ProviderReplicate   ProviderType = "replicate"
-	ProviderAI21        ProviderType = "ai21"
-	ProviderBaseten     ProviderType = "baseten"
-	ProviderNvidia      ProviderType = "nvidia"
-	ProviderScaleway    ProviderType = "scaleway"
+	ProviderOpenAI          ProviderType = "openai"
+	ProviderAnthropic       ProviderType = "anthropic"
+	ProviderGemini          ProviderType = "gemini"
+	ProviderMistral         ProviderType = "mistral"
+	ProviderOllama          ProviderType = "ollama"
+	ProviderGroq            ProviderType = "groq"
+	ProviderDeepSeek        ProviderType = "deepseek"
+	ProviderTogether        ProviderType = "together"
+	ProviderAzure           ProviderType = "azure"
+	ProviderBedrock         ProviderType = "bedrock"
+	ProviderVertex          ProviderType = "vertex"
+	ProviderCohere          ProviderType = "cohere"
+	ProviderCerebras        ProviderType = "cerebras"
+	ProviderSambaNova       ProviderType = "sambanova"
+	ProviderXAI             ProviderType = "xai"
+	ProviderFireworks       ProviderType = "fireworks"
+	ProviderPerplexity      ProviderType = "perplexity"
+	ProviderAnyscale        ProviderType = "anyscale"
+	ProviderDeepInfra       ProviderType = "deepinfra"
+	ProviderNovita          ProviderType = "novita"
+	ProviderNebius          ProviderType = "nebius"
+	ProviderHyperbolic      ProviderType = "hyperbolic"
+	ProviderLambda          ProviderType = "lambda"
+	ProviderFriendli        ProviderType = "friendli"
+	ProviderOpenRouter      ProviderType = "openrouter"
+	ProviderVLLM            ProviderType = "vllm"
+	ProviderCloudflare      ProviderType = "cloudflare"
+	ProviderDatabricks      ProviderType = "databricks"
+	ProviderSnowflake       ProviderType = "snowflake"
+	ProviderDashScope       ProviderType = "dashscope"
+	ProviderVolcengine      ProviderType = "volcengine"
+	ProviderBigModel        ProviderType = "bigmodel"
+	ProviderMoonshot        ProviderType = "moonshot"
+	ProviderMiniMax         ProviderType = "minimax"
+	ProviderSiliconFlow     ProviderType = "siliconflow"
+	ProviderVoyage          ProviderType = "voyage"
+	ProviderJina            ProviderType = "jina"
+	ProviderReplicate       ProviderType = "replicate"
+	ProviderAI21            ProviderType = "ai21"
+	ProviderBaseten         ProviderType = "baseten"
+	ProviderNvidia          ProviderType = "nvidia"
+	ProviderScaleway        ProviderType = "scaleway"
+	ProviderGitHubCopilot   ProviderType = "github_copilot"
+	ProviderVercelAIGateway ProviderType = "vercel_ai_gateway"
+	ProviderHuggingFace     ProviderType = "huggingface"
+	ProviderFeatherless     ProviderType = "featherless"
+	ProviderFal             ProviderType = "fal"
+	ProviderZAI             ProviderType = "zai"
+	ProviderPoe             ProviderType = "poe"
+	ProviderHelicone        ProviderType = "helicone"
+	ProviderAIHubMix        ProviderType = "aihubmix"
+	ProviderVenice          ProviderType = "venice"
+	ProviderChutes          ProviderType = "chutes"
+	ProviderGMI             ProviderType = "gmi"
+	ProviderLlamaGate       ProviderType = "llamagate"
+	ProviderSarvam          ProviderType = "sarvam"
+	ProviderCrusoe          ProviderType = "crusoe"
+	ProviderParasail        ProviderType = "parasail"
+	ProviderUpstage         ProviderType = "upstage"
+	ProviderOVHCloud        ProviderType = "ovhcloud"
+	ProviderWandB           ProviderType = "wandb"
+	ProviderNscale          ProviderType = "nscale"
+	ProviderPublicAI        ProviderType = "publicai"
+	ProviderSynthetic       ProviderType = "synthetic"
+	ProviderNanoGPT         ProviderType = "nano_gpt"
+	ProviderXiaomiMiMo      ProviderType = "xiaomi_mimo"
+	ProviderReka            ProviderType = "reka"
+	ProviderYi              ProviderType = "yi"
+	ProviderBaichuan        ProviderType = "baichuan"
+	ProviderStepFun         ProviderType = "stepfun"
+	ProviderLMStudio        ProviderType = "lm_studio"
+	ProviderLlamafile       ProviderType = "llamafile"
+	ProviderXinference      ProviderType = "xinference"
 )
 
 // AllProviders returns the list of supported upstream providers.
@@ -99,6 +132,37 @@ func AllProviders() []ProviderType {
 		ProviderBaseten,
 		ProviderNvidia,
 		ProviderScaleway,
+		ProviderGitHubCopilot,
+		ProviderVercelAIGateway,
+		ProviderHuggingFace,
+		ProviderFeatherless,
+		ProviderFal,
+		ProviderZAI,
+		ProviderPoe,
+		ProviderHelicone,
+		ProviderAIHubMix,
+		ProviderVenice,
+		ProviderChutes,
+		ProviderGMI,
+		ProviderLlamaGate,
+		ProviderSarvam,
+		ProviderCrusoe,
+		ProviderParasail,
+		ProviderUpstage,
+		ProviderOVHCloud,
+		ProviderWandB,
+		ProviderNscale,
+		ProviderPublicAI,
+		ProviderSynthetic,
+		ProviderNanoGPT,
+		ProviderXiaomiMiMo,
+		ProviderReka,
+		ProviderYi,
+		ProviderBaichuan,
+		ProviderStepFun,
+		ProviderLMStudio,
+		ProviderLlamafile,
+		ProviderXinference,
 	}
 }
 
@@ -144,17 +208,98 @@ type ResponseFormat struct {
 type CanonicalMessage struct {
 	Role             string              `json:"role"` // "system", "developer", "user", "assistant", "tool"
 	Content          string              `json:"content"`
-	Parts            []ContentPart       `json:"parts,omitempty"` // Populated for multimodal image/audio inputs
+	Parts            []ContentPart       `json:"parts,omitempty"` // Populated for multimodal image/document/audio inputs
 	Name             string              `json:"name,omitempty"`
 	ToolCallID       string              `json:"tool_call_id,omitempty"`
 	ToolCalls        []CanonicalToolCall `json:"tool_calls,omitempty"`
 	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	CacheControl     *CacheControl       `json:"cache_control,omitempty"`
+	Annotations      []Annotation        `json:"annotations,omitempty"`
+}
+
+// UnmarshalJSON accepts OpenAI chat message content as either a plain string or
+// the standard multimodal content-part array. The canonical Content string keeps
+// text available to guardrails while Parts preserve the original wire structure.
+func (m *CanonicalMessage) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Role             string              `json:"role"`
+		Content          json.RawMessage     `json:"content"`
+		Parts            []ContentPart       `json:"parts"`
+		Name             string              `json:"name"`
+		ToolCallID       string              `json:"tool_call_id"`
+		ToolCalls        []CanonicalToolCall `json:"tool_calls"`
+		ReasoningContent string              `json:"reasoning_content"`
+		CacheControl     *CacheControl       `json:"cache_control"`
+		Annotations      []Annotation        `json:"annotations"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*m = CanonicalMessage{
+		Role:             wire.Role,
+		Parts:            wire.Parts,
+		Name:             wire.Name,
+		ToolCallID:       wire.ToolCallID,
+		ToolCalls:        wire.ToolCalls,
+		ReasoningContent: wire.ReasoningContent,
+		CacheControl:     wire.CacheControl,
+		Annotations:      wire.Annotations,
+	}
+	if len(wire.Content) == 0 || string(wire.Content) == "null" {
+		return nil
+	}
+	if wire.Content[0] == '"' {
+		return json.Unmarshal(wire.Content, &m.Content)
+	}
+	if err := json.Unmarshal(wire.Content, &m.Parts); err != nil {
+		return fmt.Errorf("decode message content parts: %w", err)
+	}
+	var textParts []string
+	for i := range m.Parts {
+		switch m.Parts[i].Type {
+		case "input_text":
+			m.Parts[i].Type = "text"
+		case "input_image":
+			m.Parts[i].Type = "image_url"
+		}
+		if m.Parts[i].Type == "text" && m.Parts[i].Text != "" {
+			textParts = append(textParts, m.Parts[i].Text)
+		}
+	}
+	m.Content = strings.Join(textParts, "")
+	return nil
+}
+
+type CacheControl struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // e.g. "5m", "1h"
+}
+
+type DocumentPart struct {
+	MimeType string `json:"mime_type"`          // e.g. "application/pdf", "text/plain"
+	Data     string `json:"data,omitempty"`     // base64-encoded document payload
+	URL      string `json:"url,omitempty"`      // HTTPS or gs:// URI
+	Filename string `json:"filename,omitempty"` // optional display filename
+}
+
+type Annotation struct {
+	Type        string       `json:"type"` // "url_citation"
+	URLCitation *URLCitation `json:"url_citation,omitempty"`
+}
+
+type URLCitation struct {
+	URL        string `json:"url"`
+	Title      string `json:"title,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
 }
 
 type ContentPart struct {
-	Type     string    `json:"type"` // "text", "image_url"
-	Text     string    `json:"text,omitempty"`
-	ImageURL *ImageURL `json:"image_url,omitempty"`
+	Type         string        `json:"type"` // "text", "image_url", "document"
+	Text         string        `json:"text,omitempty"`
+	ImageURL     *ImageURL     `json:"image_url,omitempty"`
+	Document     *DocumentPart `json:"document,omitempty"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type ImageURL struct {
@@ -162,9 +307,23 @@ type ImageURL struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+func (i *ImageURL) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		return json.Unmarshal(data, &i.URL)
+	}
+	type imageURLAlias ImageURL
+	var wire imageURLAlias
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*i = ImageURL(wire)
+	return nil
+}
+
 type CanonicalTool struct {
-	Type     string            `json:"type"` // "function"
-	Function CanonicalFunction `json:"function"`
+	Type         string            `json:"type"` // "function"
+	Function     CanonicalFunction `json:"function"`
+	CacheControl *CacheControl     `json:"cache_control,omitempty"`
 }
 
 type CanonicalFunction struct {
@@ -231,11 +390,12 @@ type CanonicalStreamDelta struct {
 
 // TokenUsage tracks granular token consumption across prompt, completion, cache, and reasoning.
 type TokenUsage struct {
-	PromptTokens       int `json:"prompt_tokens"`
-	CompletionTokens   int `json:"completion_tokens"`
-	TotalTokens        int `json:"total_tokens"`
-	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
-	ReasoningTokens    int `json:"reasoning_tokens,omitempty"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	CachedPromptTokens  int `json:"cached_prompt_tokens,omitempty"`
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     int `json:"reasoning_tokens,omitempty"`
 }
 
 // CanonicalEmbeddingRequest represents a normalized `/v1/embeddings` request.
@@ -246,6 +406,7 @@ type CanonicalEmbeddingRequest struct {
 	Input          []string `json:"input"`
 	EncodingFormat string   `json:"encoding_format,omitempty"` // "float", "base64"
 	Dimensions     *int     `json:"dimensions,omitempty"`
+	InputType      string   `json:"input_type,omitempty"` // Provider-specific embedding intent, e.g. search_query.
 	User           string   `json:"user,omitempty"`
 }
 
@@ -560,16 +721,26 @@ type CanonicalBatch struct {
 
 // --- RESPONSES API ---
 
+type ResponseReasoningConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+type ResponseTextConfig struct {
+	Format *ResponseFormat `json:"format,omitempty"`
+}
+
 type CanonicalResponseRequest struct {
-	Model           string          `json:"model"`
-	Input           json.RawMessage `json:"input"` // string or []CanonicalChatMessage or []any
-	Instructions    string          `json:"instructions,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
-	Tools           []any           `json:"tools,omitempty"`
-	ToolChoice      any             `json:"tool_choice,omitempty"`
-	Metadata        map[string]any  `json:"metadata,omitempty"`
+	Model           string                   `json:"model"`
+	Input           json.RawMessage          `json:"input"` // string or []CanonicalChatMessage or []any
+	Instructions    string                   `json:"instructions,omitempty"`
+	Stream          bool                     `json:"stream,omitempty"`
+	Temperature     *float64                 `json:"temperature,omitempty"`
+	MaxOutputTokens *int                     `json:"max_output_tokens,omitempty"`
+	Tools           []any                    `json:"tools,omitempty"`
+	ToolChoice      any                      `json:"tool_choice,omitempty"`
+	Reasoning       *ResponseReasoningConfig `json:"reasoning,omitempty"`
+	Text            *ResponseTextConfig      `json:"text,omitempty"`
+	Metadata        map[string]any           `json:"metadata,omitempty"`
 }
 
 type CanonicalResponseContentPart struct {
