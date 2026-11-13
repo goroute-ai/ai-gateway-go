@@ -32,7 +32,7 @@ Reviewed authentication and tenant authorization, production configuration, secr
 3. **GitHub Actions use version tags rather than immutable commit pins.**
    Workflow permissions are read-only by default and the publishing workflow grants only package write access, but pin third-party actions to verified commit SHAs to reduce supply-chain risk.
 
-4. **Repository secret scanning reports 23 heuristic matches.**
+4. **Gitleaks reports 23 heuristic matches in the current tree.**
    Manual review located them in development defaults, test fixtures, guardrail examples, and generated UI content. No live credential was confirmed. Keep the production default-key rejection in place and consider adding narrow scanner allow rules for synthetic fixtures so future real leaks are easier to spot.
 
 ## Verified controls
