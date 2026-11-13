@@ -105,7 +105,7 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.4.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.5.0
 ```
 
 ```go
@@ -270,7 +270,7 @@ router:
   - The DEK is encrypted by the gateway's 32-byte **Master Key Encryption Key (`master_encryption_key`)** + 12-byte `DEKNonce`.
 
 > [!WARNING]
-> **Production Key Hardening**: In production environments (`ENV=production` or `GATEWAY_ENV=production`), `Config.Validate()` strictly enforces that `auth.master_admin_key`, `auth.master_encryption_key`, and `auth.jwt_secret_key` must be overridden with non-default, high-entropy secrets. Leaving default demo keys in production results in a fatal startup error.
+> **Production Key Hardening**: In production environments (`ENV=production` or `GATEWAY_ENV=production`), `Config.Validate()` strictly enforces that `auth.master_admin_key`, `auth.master_encryption_key`, and `auth.jwt_secret` must be overridden with non-default, high-entropy secrets. Leaving default demo keys in production results in a fatal startup error.
 
 ### Go SDK: Issuing, Scoping & Revoking Virtual Keys
 ```go
@@ -465,6 +465,12 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | :--- | :--- | :--- | :--- |
 | `server.host` | — | `"0.0.0.0"` | HTTP network bind address. |
 | `server.port` | `GATEWAY_PORT` | `8080` | HTTP listen port (1–65535). |
+| `server.grpc_port` | `GATEWAY_GRPC_PORT` | `0` | Optional A2A gRPC listen port (`0` disables gRPC; `1–65535` enables). |
+| `server.cors_allowed_origins` | — | `[]` | Allowed CORS origins (empty disables CORS headers; wildcard `*` disallows credentials). |
+| `server.cors_allow_credentials` | — | `false` | Allows `Access-Control-Allow-Credentials: true` (rejected if origins include `*`). |
+| `server.enable_hsts` | — | `false` | Emits `Strict-Transport-Security` header on HTTP responses. |
+| `server.max_file_storage_bytes_per_org` | `GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG` | `5368709120` | Per-organization file storage quota in bytes (`5 GiB` default; `0` = unlimited). |
+| `server.max_concurrent_file_uploads` | `GATEWAY_MAX_CONCURRENT_FILE_UPLOADS` | `8` | Maximum concurrent `/v1/files` uploads (`0` = unlimited). |
 | `server.read_timeout` | — | `30s` | Maximum duration for reading the entire request. |
 | `server.write_timeout` | — | `300s` | Maximum duration before timing out writes of the response (sized for reasoning streams). |
 | `server.idle_timeout` | — | `120s` | Maximum amount of time to wait for the next request when keep-alives are enabled. |
@@ -474,7 +480,9 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `logging.add_source` | `GATEWAY_LOG_ADD_SOURCE` | `false` | When true, annotates log records with caller `file:line`. |
 | `storage.mode` | `GATEWAY_STORAGE_MODE` | `"memory"` | Storage backend: `"memory"` (zero external dependencies) or `"postgres"`. |
 | `storage.postgres_dsn` | `GATEWAY_POSTGRES_DSN` | `postgres://...` | PostgreSQL connection string (auto-switches storage mode to `"postgres"` when present). |
-| `storage.redis_addr` | `GATEWAY_REDIS_ADDR` | `"localhost:6379"` | Redis host:port for L2 auth caching, Lua rate limiting, and response caching. |
+| `storage.redis_addr` | `GATEWAY_REDIS_ADDR` | `"localhost:6379"` | Standalone Redis host:port for L2 auth caching, Lua rate limiting, and response caching. |
+| `storage.redis_addrs` | `GATEWAY_REDIS_ADDRS` | `[]` | Comma-separated Redis Cluster or Sentinel seed nodes (takes precedence over `redis_addr`). |
+| `storage.redis_master_name` | `GATEWAY_REDIS_MASTER_NAME` | `""` | Redis Sentinel master name when using Sentinel topology. |
 | `storage.redis_pass` | `GATEWAY_REDIS_PASS` | `""` | Optional Redis authentication password. |
 | `storage.redis_db` | — | `0` | Redis logical database index. |
 | `auth.master_admin_key` | `GATEWAY_MASTER_ADMIN_KEY` | `sk-gw-master-...` | Control plane bearer token (min 12 chars; must be changed in `production`). |
