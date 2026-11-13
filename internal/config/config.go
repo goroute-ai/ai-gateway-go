@@ -505,10 +505,15 @@ func (c *Config) Validate() error {
 		defaultJWTSecret           = "gateway-jwt-hmac-secret-change-me"
 	)
 	env := strings.ToLower(strings.TrimSpace(c.Server.Environment))
-	if env == "" {
-		env = strings.ToLower(strings.TrimSpace(os.Getenv("ENV")))
+	isProduction := env == "production" || env == "prod"
+	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == "production" || candidate == "prod" {
+			env = candidate
+			isProduction = true
+		}
 	}
-	if env == "production" || env == "prod" {
+	if isProduction {
 		if c.Auth.MasterAdminKey == defaultMasterAdminKey {
 			return fmt.Errorf("security violation: auth.master_admin_key cannot be the default key in %s environment", env)
 		}
