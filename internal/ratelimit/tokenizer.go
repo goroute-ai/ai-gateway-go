@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
@@ -64,7 +65,7 @@ func EstimateTextTokens(text string, profile TokenizerProfile) int {
 
 	for _, r := range text {
 		if r > 127 {
-			nonASCIIBytes += len(string(r))
+			nonASCIIBytes += utf8.RuneLen(r)
 		} else if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			alnumChars++
 		} else if !unicode.IsSpace(r) {

@@ -178,6 +178,26 @@ func TestCatalog_LookupProviderAliases(t *testing.T) {
 	}
 }
 
+func TestCatalog_LookupAppliesFamilyGeneralizationsOnMiss(t *testing.T) {
+	m, ok := catalog.LookupByProviderAndModel(domain.ProviderOpenAI, "gpt-5.99-future")
+	if !ok || m == nil {
+		t.Fatal("expected an inferred model for an unknown supported GPT-5 family ID")
+	}
+	if m.Provider != domain.ProviderOpenAI || m.ModelName != "gpt-5.99-future" {
+		t.Fatalf("unexpected inferred identity: provider=%q model=%q", m.Provider, m.ModelName)
+	}
+	if m.PricingStatus != domain.PricingStatusUnknown || m.InputCostMicrosPer1M != 0 || m.OutputCostMicrosPer1M != 0 {
+		t.Fatalf("family inference must not invent verified pricing: %+v", m)
+	}
+	if m.MaxInputTokens <= 0 || m.MaxOutputTokens <= 0 || m.Capabilities.Reasoning != domain.CapabilitySupported {
+		t.Fatalf("expected inferred context and reasoning capability, got %+v", m)
+	}
+
+	if _, ok := catalog.LookupByProviderAndModel("unknown-provider", "gpt-5.99-future"); ok {
+		t.Fatal("family inference must not make unknown providers callable")
+	}
+}
+
 func TestCatalog_Search(t *testing.T) {
 	groqModels := catalog.Search(domain.ProviderType("groq"), "llama")
 	if len(groqModels) == 0 {
