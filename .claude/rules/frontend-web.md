@@ -1,30 +1,30 @@
-# Frontend Web & Operator UI Guidelines
+---
+paths:
+  - "web/src/**/*"
+  - "web/package.json"
+  - "web/package-lock.json"
+  - "web/vite.config.ts"
+  - "web/index.html"
+  - "web/scripts/check-budget.mjs"
+  - "internal/ui/**/*.go"
+---
+# Frontend and Embedded Operator UI Guidelines
 
-## Overview
-The Operator Web UI is an embedded Single Page Application (SPA) located under `web/`. It compiles into static HTML, JS, and CSS, which are embedded directly into the Go binary via `go:embed all:dist` in `internal/ui/ui.go`.
+## Source and embedded output
 
-## Key Technologies
-- **Framework**: React 19 + TypeScript + Vite.
-- **Styling**: Tailwind CSS v3 (dark mode enabled via slate/zinc palette).
-- **Icons**: `lucide-react` (import only required icons to preserve bundle budget).
-- **HTTP & SSE**: Fetch API + custom streaming reader in `web/src/api/sse.ts`.
+- The React 19, TypeScript, and Vite application lives in `web/`; embedded assets are generated into `internal/ui/dist/` and served by `internal/ui/`.
+- Edit frontend source under `web/`. Do not hand-edit generated `internal/ui/dist/` assets.
+- After frontend changes, run `make ui-build` to build, check the bundle budget, and synchronize embedded assets. This target writes files under `internal/ui/dist/`.
+- Run `make ui-check-dist` and `go test ./internal/ui/...` to verify asset parity and serving behavior.
 
-## Bundle Budget Invariant
-The gateway enforces a strict bundle size limit to preserve embedded binary footprint:
-- Total production bundle must remain under 400 KB uncompressed.
-- Every production build must pass:
-  ```bash
-  cd web && npm run build && node scripts/check-budget.mjs
-  ```
-- Avoid adding heavy third-party charting or utility libraries (e.g. avoid Moment.js, heavy lodash, large component frameworks).
+## UI constraints
 
-## Asset Synchronization Workflow
-When modifying frontend code:
-1. Make changes in `web/src/`.
-2. Run `make ui-build` from repository root (or `cd web && npm run build && node scripts/check-budget.mjs && rm -rf ../internal/ui/dist/* && cp -R dist/* ../internal/ui/dist/`).
-3. Verify synchronization with `make ui-check-dist`.
-4. Run `go test ./internal/ui/...` to confirm the embedded filesystem and HTTP handlers serve the new assets cleanly.
+- Keep the uncompressed production bundle under the limit enforced by `web/scripts/check-budget.mjs`.
+- Import only required icons and avoid adding large dependencies without a clear need.
+- Use the existing Fetch API and SSE reader patterns in `web/src/api/`; keep auth, tenant scope, and error handling aligned with the backend.
+- The production UI is mounted at `/ui/`; the Go embed handler provides the SPA fallback.
 
-## SPA Routing & Local Dev
-- Local development runs Vite dev server with reverse proxy to Go backend: `make ui-dev` (port 5173 proxies `/v1` and `/admin/v1` to `localhost:8080`).
-- Production route is `/ui/`. The Go server in `internal/ui/ui.go` serves files from embedded `dist/` and falls back to `index.html` for client-side routing.
+## Local development
+
+- Install dependencies with `make ui-install`.
+- Start the Vite server with `make ui-dev`; it proxies API traffic to the local gateway on port 8080.

@@ -541,14 +541,14 @@ main();
 
 ---
 
-## Claude Code & Coding Agent Ready
+## Claude Code & Coding Agent Guidance
 
-GoRoute AI Gateway is engineered to be 100% compatible with [Claude Code Best Practices](https://code.claude.com/docs/en/best-practices) and autonomous developer agents:
+The repository keeps shared coding guidance for Claude Code and other coding agents:
 
-- **`CLAUDE.md`**: Concise, high-density root guide (< 100 lines) with common commands, invariants, and verification steps.
-- **Scoped Rules (`.claude/rules/`)**: Path-specific modular rules for Go backend (`go-backend.md`), React Operator UI (`frontend-web.md`), and API contracts (`api-contracts.md`).
+- **`CLAUDE.md`**: Concise project guide that imports shared repository instructions from `AGENTS.md`.
+- **Scoped Rules (`.claude/rules/`)**: Path-specific rules for Go backend (`go-backend.md`), React Operator UI (`frontend-web.md`), and API contracts (`api-contracts.md`).
 - **Rapid Verification Loop**: Standardized commands for formatting (`gofmt`), static analysis (`go vet`), contract generation and verification (`make specgen`), race-detector tests, and frontend bundle budgets.
-- **Cross-Agent Standards**: Fully compatible with [AGENTS.md](./AGENTS.md) for Cursor, Zed, Antigravity, and autonomous pair-programming tools.
+- **Cross-Agent Standards**: Shared invariants are maintained in [AGENTS.md](./AGENTS.md), with Claude Code-specific rule loading documented in `CLAUDE.md`.
 
 ---
 

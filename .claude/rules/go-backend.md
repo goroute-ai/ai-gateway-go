@@ -1,37 +1,37 @@
-# Go Backend Guidelines for GoRoute AI Gateway
+---
+paths:
+  - "cmd/**/*.go"
+  - "internal/**/*.go"
+  - "pkg/**/*.go"
+  - "tests/**/*.go"
+  - "go.mod"
+  - "go.sum"
+---
+# Go Backend Guidelines
 
-## Architecture & Code Structure
-- **Package Hierarchy**: Keep package dependencies directed strictly inward:
-  - `cmd/`: Application entrypoints (`cmd/gateway`, `cmd/specgen`, `cmd/catalog-sync`).
-  - `pkg/`: Public, stable, embeddable SDKs (`pkg/gateway`).
-  - `internal/`: Private implementation packages (`internal/server`, `internal/router`, `internal/adapter`, etc.).
-  - `internal/domain`: Foundational domain types, interfaces, request/response models, and error codes.
-- **Routing with Chi (`go-chi/chi/v5`)**:
-  - Route groups are configured in `internal/server/server.go`.
-  - Handlers follow the `http.HandlerFunc` signature: `func (s *GatewayServer) handleX(w http.ResponseWriter, r *http.Request)`.
-  - Read path parameters using `chi.URLParam(r, "paramName")`.
-  - Read query parameters using `r.URL.Query().Get("key")`.
-  - Return JSON via `writeJSON(w, statusCode, data)` helper.
-  - Return domain errors via `domain.WriteHTTPError(w, err)`.
+## Architecture and routing
 
-## Network & SSRF Security
-- Never instantiate an unconfigured `http.Client{}` for outbound provider or webhook calls.
-- Always use the centralized network security engine:
-  - `internal/security/network.NewSafeTransport(...)`
-  - Enforce IP pinning, private subnet blocking (RFC 1918, RFC 3927, RFC 4193, loopback, link-local), and DNS rebinding protections.
+- Keep dependencies directed inward toward `internal/domain`; put public SDK interfaces under `pkg/gateway` and private implementations under `internal/`.
+- Configure Chi routes in `internal/server/server.go`. Keep handlers small, validate inputs, preserve identity and organization scope, and return structured errors with `domain.WriteHTTPError`.
+- Inspect the repository and focused tests before changing behavior. Avoid synchronous database work, unbounded locks, and unnecessary allocations on inference hot paths.
 
-## FinOps & Currency Precision
-- All monetary values are integer micro-dollars ($1\text{ USD} = 1,000,000\ \mu\$$).
-- Zero floating-point drift: Never use `float64` or `float32` for pricing or balance calculations.
-- Accumulate intermediate amounts with 64-bit integer arithmetic in `internal/finops`.
+## Network, identity, and secrets
 
-## Error Handling & Logging
-- Wrap errors with domain-level context using `fmt.Errorf("failed to do X: %w", err)`.
-- Use structured logging via `slog` (`internal/logger`):
-  - Pass the request context: `logger.InfoContext(r.Context(), "message", slog.String("key", val))`.
-  - Avoid logging raw API keys, bearer tokens, or user sensitive payloads (PII).
+- Route provider and tool egress through `internal/security/network`; use `network.NewHTTPClient` and preserve DNS/IP pinning, private-address checks, and redirect validation.
+- Preserve operator RBAC, inbound JWT/OIDC checks, virtual-key model authorization, and organization/team/user boundaries. Authorization failures must fail closed.
+- Keep provider credentials encrypted by the vault. Production config must reject default admin, encryption, and JWT secrets when `ENV` or `GATEWAY_ENV` is production.
+- MCP stdio is disabled unless its release guard and OS sandbox requirements are satisfied; do not bypass that configuration validation.
 
-## Testing Conventions
-- Use table-driven tests with standard `testing.T`.
-- Ensure tests execute cleanly under the race detector: `go test -race -count=1 ./internal/...`.
-- For mock upstream testing, use the mock adapter or `httptest.Server`.
+## Accounting, storage, and shared state
+
+- Record cost as integer micro-dollars; use the integer pico-dollar intermediate arithmetic in `internal/finops`. Never use floating point for financial calculations.
+- Preserve spend outbox delivery and idempotent reconciliation, upper-bound reservations, lease renewal, and budget reset synchronization.
+- Preserve Redis Cluster hash-tag alignment for keys used by shared Lua scripts and distributed cache, routing, and circuit-breaker state.
+- Preserve per-organization file storage quotas and bounded upload concurrency. Defaults are 5 GiB and 8 concurrent uploads; zero means unlimited. Keep multipart spill-file cleanup on every successful parse path.
+- Do not log credentials, bearer tokens, or sensitive request payloads; use contextual structured logging.
+
+## Tests and generated files
+
+- Use table-driven tests and `httptest.Server` or repository mocks for upstream behavior. Run focused race tests for changed packages.
+- Update API/protocol contracts through `make specgen`; review generated output instead of hand-editing it.
+- Run E2E tests only with PostgreSQL and Redis available, and state which checks were run.
