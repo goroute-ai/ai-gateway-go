@@ -143,13 +143,16 @@ type CustomProviderConfig struct {
 }
 
 type ServerConfig struct {
-	Environment     string        `yaml:"environment"` // "development", "staging", "production"
-	Host            string        `yaml:"host"`
-	Port            int           `yaml:"port"`
-	ReadTimeout     time.Duration `yaml:"read_timeout"`
-	WriteTimeout    time.Duration `yaml:"write_timeout"`
-	IdleTimeout     time.Duration `yaml:"idle_timeout"`
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	Environment          string        `yaml:"environment"` // "development", "staging", "production"
+	Host                 string        `yaml:"host"`
+	Port                 int           `yaml:"port"`
+	ReadTimeout          time.Duration `yaml:"read_timeout"`
+	WriteTimeout         time.Duration `yaml:"write_timeout"`
+	IdleTimeout          time.Duration `yaml:"idle_timeout"`
+	ShutdownTimeout      time.Duration `yaml:"shutdown_timeout"`
+	CORSAllowedOrigins   []string      `yaml:"cors_allowed_origins"`
+	CORSAllowCredentials bool          `yaml:"cors_allow_credentials"`
+	EnableHSTS           bool          `yaml:"enable_hsts"`
 }
 
 type StorageConfig struct {
@@ -437,6 +440,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server.port: %d", c.Server.Port)
+	}
+	if c.Server.CORSAllowCredentials {
+		for _, origin := range c.Server.CORSAllowedOrigins {
+			if strings.TrimSpace(origin) == "*" {
+				return fmt.Errorf("security violation: server.cors_allow_credentials cannot be true when server.cors_allowed_origins contains \"*\"")
+			}
+		}
 	}
 	if len(c.Auth.MasterAdminKey) < 12 {
 		return fmt.Errorf("auth.master_admin_key must be at least 12 characters")

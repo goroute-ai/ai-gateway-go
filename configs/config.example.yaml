@@ -15,6 +15,9 @@ server:
   write_timeout: 300s
   idle_timeout: 120s
   shutdown_timeout: 15s
+  cors_allowed_origins: []
+  cors_allow_credentials: false
+  enable_hsts: false
 
 logging:
   level: "info"              # "debug", "info", "warn", "error"

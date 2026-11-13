@@ -211,6 +211,8 @@ func (s *GatewayServer) setupRoutes() {
 	r.Use(middleware.RealIP)
 	r.Use(observability.TraceMiddlewareWithTracer(s.tracer))
 	r.Use(logger.HTTPMiddleware(nil))
+	r.Use(SecurityHeadersMiddleware(s.cfg.Server.EnableHSTS))
+	r.Use(CORSMiddleware(s.cfg.Server.CORSAllowedOrigins, s.cfg.Server.CORSAllowCredentials))
 
 	// Health, Readiness & Prometheus Metrics endpoints
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
