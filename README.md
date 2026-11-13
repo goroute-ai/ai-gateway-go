@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.4.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.4.0)
+[![Release](https://img.shields.io/badge/Release-v1.5.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.5.0)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
 [![Claude Code Ready](<https://img.shields.io/badge/Claude%20Code-Best%20Practices-8A2BE2?logo=anthropic>)](./CLAUDE.md)
@@ -37,7 +37,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.4.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.5.0
 ```
 
 ```go
@@ -96,7 +96,7 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.4.0).*
+*Precompiled static binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.5.0).*
 
 ### Path 3: Production Multi-Tenant Stack (Docker Compose)
 
