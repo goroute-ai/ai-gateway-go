@@ -426,7 +426,7 @@ func parseImagePriceVariant(rawKey string, provider domain.ProviderType) (modelN
 	foundQualifier := false
 	for i, part := range strings.Split(rawKey, "/") {
 		lower := strings.ToLower(part)
-		// Some Upstream image keys prefix the model path with the provider alias
+		// Some upstream image keys prefix the model path with the provider alias
 		// before the quality/size qualifiers (for example, fal_ai/low/...).
 		// Remove that namespace so the normalized model ID matches the base row.
 		if i == 0 && config.NormalizeProvider(part) == provider && config.IsKnownProviderAlias(part) {

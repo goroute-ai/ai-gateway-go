@@ -39,7 +39,7 @@ specgen:
 	@go generate ./internal/openapi
 
 catalog-sync:
-	@echo "==> Regenerating embedded model catalog from Upstream source..."
+	@echo "==> Regenerating embedded model catalog from upstream source..."
 	go run ./cmd/catalog-sync -source "$${UPSTREAM_MODEL_CATALOG:-model_prices_and_context_window.json}" -out internal/modelcatalog/catalog.json.gz
 
 # ------------------------------------------------------------------------------

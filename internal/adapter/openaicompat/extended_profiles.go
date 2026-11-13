@@ -114,7 +114,7 @@ func (r *ProfileRegistry) registerExtendedProfiles() {
 	}
 
 	// These profiles expose operation-specific OpenAI-compatible endpoints in
-	// Upstream's provider endpoint inventory and use the matching wire shape.
+	// upstream provider endpoint inventories and use the matching wire shape.
 	setOps := func(pid domain.ProviderType, update func(*ProviderOperations)) {
 		if p, ok := r.profiles[pid]; ok {
 			if p.SupportedOperations == nil {
