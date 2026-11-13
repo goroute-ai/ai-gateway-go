@@ -100,6 +100,9 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 
 	// 2. Retryable Disk Spooling
 	tmpFile, err := os.CreateTemp("", "gw-audio-*.tmp")
@@ -325,6 +328,9 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, raw.Model); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
+		return
+	}
+	if rejectBudgetedUnsupported(w, idCtx) {
 		return
 	}
 
