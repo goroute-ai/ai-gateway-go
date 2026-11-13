@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.4.0`  
+> **Version**: `v1.5.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -289,7 +289,7 @@ OpenAI-compatible legacy prompt completion endpoint supporting both single strin
 ### 2.8 Anthropic Messages & Token Counting
 `POST /v1/messages`, `POST /messages`, `POST /v1/messages/count_tokens`
 
-Native Anthropic Messages ingress bridge. Translates Anthropic messages and tool definitions to the canonical gateway schema, dispatches through intelligent routing, and returns native Anthropic response payloads.
+Native Anthropic Messages ingress bridge. Translates Anthropic messages and tool definitions to the canonical gateway schema, dispatches through intelligent routing, and returns native Anthropic response payloads and Anthropic-formatted error envelopes (`{"type":"error","error":{"type":"...","message":"..."}}`).
 
 #### Request Schema
 ```json
@@ -329,7 +329,7 @@ In-gateway token count estimator (~4 characters per token average with whitespac
 - `POST /v1/audio/translations` (STT Translation to English)
 - `POST /v1/audio/speech` (TTS Speech Synthesis)
 
-Supports multipart file uploads spooled to disk for zero-memory retryability, with micro-dollar FinOps billing based on integer duration seconds and character count.
+Supports multipart file uploads spooled to disk for zero-memory retryability, streaming TTS audio responses on `/v1/audio/speech`, and micro-dollar FinOps billing based on integer duration seconds and character count.
 
 #### Transcription Request (`multipart/form-data`)
 ```bash
@@ -366,7 +366,7 @@ Supports DALL-E 2/3 and Imagen models, returning `url` or `b64_json` payloads wi
 - `GET /v1/files/{file_id}/content` (Download file stream)
 - `DELETE /v1/files/{file_id}` (Delete file)
 
-Files are stored securely on disk (`0700` directory mode, `0600` file mode) with automated streaming SHA-256 deduplication indexing and multi-tenant isolation.
+Files are stored securely on disk (`0700` directory mode, `0600` file mode) with automated streaming SHA-256 deduplication indexing, multi-tenant isolation, explicit multipart temporary-file cleanup, per-organization storage quotas (`server.max_file_storage_bytes_per_org`, returning `413 storage_quota_exceeded` when exceeded), and bounded upload concurrency (`server.max_concurrent_file_uploads`, returning `429 upload_concurrency_limit` when saturated).
 
 ### 2.13 Asynchronous Batch Processing
 - `POST /v1/batches` (Create batch job)
@@ -379,7 +379,7 @@ Processes JSONL line items asynchronously with per-item Virtual Key model-scope 
 ### 2.14 OpenAI Responses API
 `POST /v1/responses`, `POST /responses`
 
-Stateless translation bridge conforming to the OpenAI Responses API schema (`input`, `instructions`), routing through the gateway's 7-stage reliability pipeline and returning standard Responses objects.
+Stateless translation bridge conforming to the OpenAI Responses API schema (`input`, `instructions`, `tools`, `extra_body`), routing through the gateway's 7-stage reliability pipeline and returning standard Responses objects. Unknown top-level parameters and `extra_body` fields are forwarded to compatible upstream providers without clobbering core request fields.
 
 ### 2.15 OpenAI Realtime WebSocket Protocol
 `GET /v1/realtime`, `GET /realtime`, `GET /openai/v1/realtime`
@@ -875,6 +875,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 - `POST /admin/v1/mcp/servers`: Registers an upstream MCP server endpoint.
 - `GET /admin/v1/mcp/servers`: Lists registered MCP servers.
 - `POST /admin/v1/mcp/servers/{serverID}/sync`: Synchronizes tools, runs anti-poisoning scans, and pins SHA-256 tool digests.
+- `GET /admin/v1/mcp/tools`: Lists synchronized MCP tools scoped to the operator's organization (used by the Operator Web UI).
 - `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.
 - `GET /admin/v1/mcp/toolsets`: Lists curated toolsets.
 - `POST /admin/v1/mcp/credentials`: Stores or updates per-user BYOK credentials for an MCP server.

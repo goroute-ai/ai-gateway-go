@@ -59,7 +59,7 @@ test-e2e:
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.4.0 -f deployments/Dockerfile .
+	docker build -t goroute/ai-gateway:v1.5.0 -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build

@@ -11,6 +11,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-13
+
+### Enterprise Security Hardening, Redis Cluster Support, Durable FinOps, Streaming Guardrails & API Parity
+
+#### Security & Multi-Tenant Authorization (`internal/auth/`, `internal/server/`, `internal/config/`)
+- **Operator RBAC & Inbound JWT/OIDC**: Added role-based operator authorization (`platform_admin`, `org_admin`, `org_viewer`) with organization-scoped control-plane enforcement, inbound JWT/OIDC verification, and disabled master-key data-plane fallback (`internal/server/handlers_admin.go`, `internal/auth/`).
+- **Fail-Closed Team Lookup & Allowlist Persistence**: Enforced fail-closed team lookup error handling and persisted all team allowlists (`allowed_models`, `allowed_mcp_servers`, `allowed_a2a_agents`, `allowed_client_apps`) in PostgreSQL (`internal/storage/postgres.go`).
+- **HTTP Security Headers & CORS Middleware**: Added `SecurityHeadersMiddleware` (HSTS opt-in via `server.enable_hsts`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`) and safe-by-default `CORSMiddleware` (`server.cors_allowed_origins`, `server.cors_allow_credentials`) in `internal/server/security_headers.go`.
+- **Per-Organization File Storage Quota & Upload Concurrency Limits**: Added `server.max_file_storage_bytes_per_org` (default `5 GiB`, `GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG`) and `server.max_concurrent_file_uploads` (default `8`, `GATEWAY_MAX_CONCURRENT_FILE_UPLOADS`) with atomic in-flight reservation tracking (`413 storage_quota_exceeded`), bounded upload semaphore (`429 upload_concurrency_limit`), and explicit `MultipartForm.RemoveAll()` temporary spill-file cleanup (`internal/server/handlers_files.go`).
+- **Production Environment Hardening**: Updated `Config.Validate()` to treat both `ENV=production` and `GATEWAY_ENV=production` as production signals and reject default admin, encryption, or JWT secrets (`internal/config/config.go`).
+- **Credential & Key Hygiene**: Restricted query-string credentials strictly to WebSocket upgrades (`/v1/realtime`), enforced expiry and revocation on cached virtual keys, and updated `golang.org/x/net` to `v0.62.0` to resolve known module advisories.
+- **CI & Supply-Chain Security**: Pinned all GitHub Actions workflows (`.github/workflows/ci.yml`, `.github/workflows/docker-publish.yml`) to immutable 40-character commit SHAs, added `.github/workflows/codeql.yml` for Go and JavaScript/TypeScript analysis, and added `.gitleaks.toml` for clean secret scanning.
+
+#### FinOps & Durable Micro-Dollar Accounting (`internal/finops/`, `internal/storage/`, `internal/ratelimit/`)
+- **Durable Spend Event Outbox**: Added PostgreSQL spend event outbox (`migrations/0008_add_spend_event_outbox.up.sql`) with retryable delivery and idempotent Redis spend reconciliation keyed by event ID (`gw:spend:applied:{org}`).
+- **Upper-Bound Budget Reservations & Lease Renewal**: Added pre-dispatch upper-bound budget reservation with automatic lease renewal for long-running/streaming requests and unified modality budget gating (`internal/finops/`, `internal/ratelimit/`).
+- **Budget Reset Period Advancement & PG/Redis Sync**: Fixed `PostgresRepository.ResetExpiredBudgetsWithIDs`, synchronized entity `spent_micros`, and cleared Redis spend counters on period rollover (`migrations/0011_budget_reset_outbox.up.sql`).
+- **Unpriced Usage & Modality Estimates**: Surfaced `unpriced_requests` and `unpriced_tokens` in spend summaries instead of silently recording zero cost, and improved preflight token estimates for modality requests.
+
+#### Routing, Reliability & Redis Cluster (`internal/router/`, `internal/storage/`, `internal/cache/`)
+- **Redis Cluster & Sentinel Support**: Upgraded `RedisFabric` to `go-redis` `UniversalClient` (`storage.redis_addrs`, `storage.redis_master_name`) with `{org:<id>}` hash-tagged Lua keys across rate limiting and response caching.
+- **Embeddings Reliability & Shared Circuit Breakers**: Wired `ExecuteEmbeddings` through `ReliabilityManager` retries/fallbacks, shared circuit-breaker failure counts and half-open probe leases in Redis across replicas, and fixed adaptive routing signals and least-busy reservation tracking.
+- **Bounded Fallback Traversal & Streaming Retries**: Added cycle and depth limits to fallback group traversal and exponential backoff for streaming retries before first output token.
+
+#### Guardrails, MCP & A2A (`internal/guardrails/`, `internal/mcp/`, `internal/a2a/`)
+- **All-Role Scanning, Streaming Redaction & `logging_only` Mode**: Expanded input scanning to all message roles, added output blocking and streaming chunk inspection/redaction (`internal/guardrails/stream_filter.go`), and added `logging_only` guardrail policy mode (`migrations/0010_guardrail_mode.up.sql`).
+- **Fail-Closed Policy & Full Inference Coverage**: Enforced fail-closed guardrail policy lookups, added provider-neutral scanner hooks, and extended guardrail evaluation across all supported inference endpoints.
+- **A2A & MCP Hardening**: Closed the A2A OpenAI bridge bypass, wired inbound/outbound A2A guardrails (`RouterService.SetGuardrails`), hardened MCP guardrail evaluation, and wired the native A2A gRPC server behind `server.grpc_port` (`GATEWAY_GRPC_PORT`).
+
+#### API Compatibility & Distributed Caching (`internal/adapter/`, `internal/server/`, `internal/cache/`)
+- **OpenAI & Anthropic Wire Fidelity**: Added forwarding for `extra_body` and unknown top-level parameters (`ExtraParams`), Anthropic-formatted error envelopes on `/v1/messages`, streaming TTS (`/v1/audio/speech`), and `tools` forwarding on `/v1/responses`.
+- **Canonical Response Cache Keys & Shared Invalidation**: Keyed response cache entries by full canonical output-affecting request fields and propagated cache invalidation epochs across replicas via Redis.
+
+#### Observability & Embedded Operator Web UI (`internal/observability/`, `internal/logger/`, `web/`, `internal/ui/`)
+- **OTLP Distributed Tracing & Uniform Reservoir Sampling**: Added optional OTLP/HTTP distributed tracing (`tracing.otlp_endpoint`, `gen_ai.*` span attributes) routed through the outbound SSRF policy, and replaced rolling-overwrite latency histograms with Vitter Algorithm R uniform reservoir sampling.
+- **Structured Log Scrubbing & Protected Metrics**: Added `logger.ScrubSecrets` to mask credentials in structured logs, protected `/metrics` with admin bearer authentication, and bounded Prometheus label cardinality.
+- **Operator Web UI Hardening**: Repaired JSON field bindings, cleared React Query cache on Control Plane lock, self-hosted fonts (zero external font CDN calls), decoupled Playground/Agentic secrets, added `GET /admin/v1/mcp/tools`, and enforced CI `internal/ui/dist` parity.
+
+---
+
 ## [1.4.0] - 2026-11-12
 
 ### Modern Operator UI Redesign, OpenAPI Contract Parity & Production Refinements
