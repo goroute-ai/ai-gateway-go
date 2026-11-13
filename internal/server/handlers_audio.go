@@ -146,6 +146,13 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		Prompt:         r.FormValue("prompt"),
 		ResponseFormat: r.FormValue("response_format"),
 	}
+	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, sttReq.Prompt)
+	if guardrailErr != nil {
+		releaseQuota(0)
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	sttReq.Prompt = guardedPrompt[0]
 
 	resp, meta, err := s.reliability.ExecuteAudioTranscription(r.Context(), idCtx, &sttReq)
 	if err != nil {
@@ -154,8 +161,37 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(estTokens)
 
+	releaseQuota(estTokens)
+	resp.Text, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Text)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	if resp.Raw != nil {
+		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Raw)
+		if sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		resp.Raw = updated.(map[string]any)
+	}
+	if len(resp.Segments) > 0 {
+		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Segments)
+		if sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		resp.Segments = updated.([]any)
+	}
+	if len(resp.Words) > 0 {
+		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Words)
+		if sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		resp.Words = updated.([]any)
+	}
 	var gm *domain.GlobalModel
 	var depID, depName string
 	var pricingVer int
@@ -300,6 +336,13 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedInput, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, raw.Input)
+	if guardrailErr != nil {
+		releaseQuota(0)
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	raw.Input = guardedInput[0]
 
 	stream, contentType, meta, err := s.reliability.ExecuteAudioSpeech(r.Context(), idCtx, &raw)
 	if err != nil {

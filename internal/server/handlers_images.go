@@ -128,6 +128,12 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	req.Prompt = guardedPrompt[0]
 
 	// Include the prompt size as well as each generated image's work allowance.
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
@@ -147,7 +153,15 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		domain.WriteHTTPError(w, err)
 		return
 	}
+
 	releaseQuota(estTokens)
+	for i := range resp.Data {
+		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -279,6 +293,12 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, prompt)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	prompt = guardedPrompt[0]
 
 	n := 1
 	if nStr := r.FormValue("n"); nStr != "" {
@@ -309,6 +329,13 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	for i := range resp.Data {
+		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
 	}
 
 	var gm *domain.GlobalModel
@@ -414,6 +441,13 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	for i := range resp.Data {
+		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
 	}
 
 	var gm *domain.GlobalModel
