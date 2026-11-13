@@ -322,6 +322,9 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 			if usageMap, ok := metaBlock["usage"].(map[string]any); ok {
 				if in, ok := usageMap["inputTokens"].(float64); ok {
 					finalUsage.PromptTokens = int(in)
+					if cr, ok := usageMap["cacheReadInputTokens"].(float64); ok {
+						finalUsage.PromptTokens += int(cr)
+					}
 				}
 				if out, ok := usageMap["outputTokens"].(float64); ok {
 					finalUsage.CompletionTokens = int(out)
