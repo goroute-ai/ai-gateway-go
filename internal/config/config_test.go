@@ -144,6 +144,36 @@ func TestConfigValidationMatrix(t *testing.T) {
 			t.Fatalf("expected error on symmetric 'HS256' algorithm, got nil")
 		}
 	})
+
+	t.Run("Server GRPCPort defaults to 0 and validates range", func(t *testing.T) {
+		cfg := config.Default()
+		if cfg.Server.GRPCPort != 0 {
+			t.Fatalf("expected default GRPCPort 0, got %d", cfg.Server.GRPCPort)
+		}
+		cfg.Server.GRPCPort = 9090
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected valid GRPCPort 9090, got %v", err)
+		}
+		cfg.Server.GRPCPort = -1
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected error for negative GRPCPort, got nil")
+		}
+		cfg.Server.GRPCPort = 70000
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected error for GRPCPort > 65535, got nil")
+		}
+	})
+}
+
+func TestLoadGRPCPortEnvOverride(t *testing.T) {
+	t.Setenv("GATEWAY_GRPC_PORT", "9091")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load failed: %v", err)
+	}
+	if cfg.Server.GRPCPort != 9091 {
+		t.Fatalf("expected GRPCPort 9091 from env, got %d", cfg.Server.GRPCPort)
+	}
 }
 
 func TestLoadStorageRedisClusterConfigAndEnvOverrides(t *testing.T) {

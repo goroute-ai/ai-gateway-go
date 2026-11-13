@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -34,6 +36,81 @@ func admissionFailureObservation(err error) observability.RequestObservation {
 	}
 }
 
+var knownChatRequestFields = map[string]struct{}{
+	"request_id":         {},
+	"model":              {},
+	"resolved_model":     {},
+	"messages":           {},
+	"tools":              {},
+	"tool_choice":        {},
+	"temperature":        {},
+	"top_p":              {},
+	"max_tokens":         {},
+	"stop":               {},
+	"stream":             {},
+	"stream_options":     {},
+	"response_format":    {},
+	"reasoning_effort":   {},
+	"user":               {},
+	"metadata":           {},
+	"extra_params":       {},
+	"goroute_extensions": {},
+	"extra_body":         {},
+}
+
+var protectedExtraParamFields = map[string]struct{}{
+	"request_id":     {},
+	"model":          {},
+	"resolved_model": {},
+	"messages":       {},
+	"stream":         {},
+	"stream_options": {},
+}
+
+// decodeChatCompletionRequest decodes a ChatCompletion JSON body into dst and unpacks
+// extra_body and unknown top-level fields into dst.ExtraParams without clobbering core fields.
+func decodeChatCompletionRequest(body io.Reader, dst *domain.CanonicalChatRequest) error {
+	rawBytes, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(rawBytes, dst); err != nil {
+		return err
+	}
+
+	var rawMap map[string]any
+	dec := json.NewDecoder(bytes.NewReader(rawBytes))
+	dec.UseNumber()
+	if err := dec.Decode(&rawMap); err != nil {
+		return err
+	}
+
+	mergeExtra := func(k string, v any) {
+		if _, protected := protectedExtraParamFields[k]; protected {
+			return
+		}
+		if dst.ExtraParams == nil {
+			dst.ExtraParams = make(map[string]any)
+		}
+		if _, exists := dst.ExtraParams[k]; !exists {
+			dst.ExtraParams[k] = v
+		}
+	}
+
+	if extraBody, ok := rawMap["extra_body"].(map[string]any); ok {
+		for k, v := range extraBody {
+			mergeExtra(k, v)
+		}
+	}
+	for k, v := range rawMap {
+		if _, known := knownChatRequestFields[k]; known {
+			continue
+		}
+		mergeExtra(k, v)
+	}
+	return nil
+}
+
 // handleChatCompletions serves `POST /v1/chat/completions` (both synchronous JSON and SSE streaming).
 func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := r.Header.Get("X-Request-Id")
@@ -55,7 +132,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	var chatReq domain.CanonicalChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+	if err := decodeChatCompletionRequest(r.Body, &chatReq); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,

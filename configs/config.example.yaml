@@ -11,6 +11,7 @@
 server:
   host: "0.0.0.0"
   port: 8080
+  grpc_port: 0               # Optional A2A gRPC server port (0 = disabled, e.g. 9090)
   read_timeout: 30s
   write_timeout: 300s
   idle_timeout: 120s

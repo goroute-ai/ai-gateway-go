@@ -501,6 +501,17 @@ func (a *Adapter) buildUpstreamPayload(req *domain.CanonicalChatRequest, model s
 		payload[maxTokensTargetKey] = *req.MaxTokens
 	}
 
+	for k, v := range req.ExtraParams {
+		switch k {
+		case "model", "messages", "stream", "stream_options":
+			continue
+		}
+		if _, exists := payload[k]; exists {
+			continue
+		}
+		payload[k] = v
+	}
+
 	return json.Marshal(payload)
 }
 

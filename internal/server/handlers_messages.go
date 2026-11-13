@@ -56,7 +56,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	idCtx := auth.IdentityFromContext(r.Context())
 	if idCtx == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "unauthenticated",
@@ -67,7 +67,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	var payload anthropicMessagesPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
 			Code:       "invalid_json_body",
@@ -78,7 +78,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	payload.Model = strings.TrimSpace(payload.Model)
 	if payload.Model == "" {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
 			Code:       "missing_model",
@@ -88,7 +88,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 
 	if len(payload.Messages) == 0 {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
 			Code:       "missing_messages",
@@ -100,7 +100,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	// 1. RBAC Model Allowlist Check
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, payload.Model); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
-		domain.WriteHTTPError(w, err)
+		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
 
@@ -146,7 +146,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		})
 	}
 	if _, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, &chatReq); err != nil {
-		domain.WriteHTTPError(w, err)
+		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
 
@@ -155,7 +155,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	budgetInputTokens := estTokens
 	if identityHasBudget(idCtx) {
 		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
-			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
+			domain.WriteAnthropicHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
 			return
 		} else if len(encoded) > budgetInputTokens {
 			budgetInputTokens = len(encoded)
@@ -164,7 +164,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
-		domain.WriteHTTPError(w, err)
+		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
 
@@ -178,14 +178,14 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	if err != nil {
 		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
-		domain.WriteHTTPError(w, err)
+		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
 	guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
 	redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, guardrailResp)
 	if sanitizeErr != nil {
-		domain.WriteHTTPError(w, sanitizeErr)
+		domain.WriteAnthropicHTTPError(w, sanitizeErr)
 		return
 	}
 	resp.Choices = guardrailResp.Choices
@@ -283,7 +283,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 ) {
 	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
 	if policyErr != nil {
-		domain.WriteHTTPError(w, policyErr)
+		domain.WriteAnthropicHTTPError(w, policyErr)
 		releaseQuota(0)
 		return
 	}
@@ -291,7 +291,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		releaseQuota(-1)
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       domain.ErrorTypeServer,
 			Code:       "streaming_not_supported",

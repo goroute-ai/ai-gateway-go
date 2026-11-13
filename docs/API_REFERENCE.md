@@ -658,7 +658,7 @@ data: {"seq":2,"taskId":"task_a2a_5b91a7c","state":"completed","output":{"role":
 ### 4.4 Native A2A gRPC Service
 `lf.a2a.v1.A2AService`
 
-For ultra-low latency inter-agent communication, the Gateway exposes a native gRPC server implementing the official Linux Foundation A2A Protobuf contract.
+For ultra-low latency inter-agent communication, the Gateway exposes a native gRPC server implementing the official Linux Foundation A2A Protobuf contract. Configure `server.grpc_port` (default `0`, disabled; or set `GATEWAY_GRPC_PORT`) in YAML/env to enable the gRPC listener (for example `9090`).
 
 #### gRPC Service Definition
 ```protobuf
@@ -877,10 +877,12 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 - `POST /admin/v1/mcp/servers/{serverID}/sync`: Synchronizes tools, runs anti-poisoning scans, and pins SHA-256 tool digests.
 - `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.
 - `GET /admin/v1/mcp/toolsets`: Lists curated toolsets.
+- `POST /admin/v1/mcp/credentials`: Stores or updates per-user BYOK credentials for an MCP server.
 - `POST /admin/v1/a2a/agents`: Registers an upstream Agent-to-Agent endpoint and card.
 - `GET /admin/v1/a2a/agents`: Lists registered A2A agents.
-- `POST /admin/v1/a2a/agents/{agentID}/rotate-key`: Rotates the agent cryptographic signing key.
-- `POST /admin/v1/a2a/agents/{agentID}/kill-switch`: Toggles emergency kill-switch (`{ "killed": true }`), instantly returning `HTTP 503 agent_killed` across all cluster pods.
+- `GET /admin/v1/a2a/agents/{id}`: Retrieves details for a registered A2A agent.
+- `POST /admin/v1/a2a/agents/{id}/kill-switch`: Toggles emergency kill-switch (`{ "killed": true }`), instantly returning `HTTP 503 agent_killed` across all cluster pods.
+- `POST /admin/v1/a2a/push-configs`: Configures webhook push notifications for A2A tasks.
 
 ---
 
@@ -915,7 +917,7 @@ Returns comprehensive JSON snapshot with P50/P95/P99 latencies, cache hit ratios
 GoRoute exposes production-grade Kubernetes health check probes:
 
 #### Liveness Probe
-`GET /health` or `GET /livez`
+`GET /healthz`
 
 Fast, in-memory process health check returning `HTTP 200 {"status":"ok"}`. Indicates whether the gateway HTTP server is alive and receiving traffic.
 
