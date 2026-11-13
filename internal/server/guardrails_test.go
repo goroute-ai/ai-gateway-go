@@ -380,3 +380,65 @@ func TestA2AAgentMessageEnforcesGuardrails(t *testing.T) {
 		t.Fatalf("expected outbound secret redacted in A2A response, got %s", w.Body.String())
 	}
 }
+
+func setupA2AGuardrailsTestServer(t *testing.T, upstreamHandler http.HandlerFunc) (*GatewayServer, storage.Repository, *httptest.Server) {
+	t.Helper()
+	repo := storage.NewMemoryRepository()
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rbac := auth.NewRBACEngine(repo)
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardrailsEng := guardrails.NewEngine(repo)
+	collector := observability.NewCollector()
+
+	mockUpstream := httptest.NewServer(upstreamHandler)
+	t.Cleanup(mockUpstream.Close)
+
+	if err := repo.SetGuardrailPolicy(context.Background(), &domain.GuardrailPolicy{
+		OrgID:                 "org_a2a",
+		EnablePromptInjection: true,
+		PromptInjectionAction: domain.GuardrailActionBlock,
+		EnablePIIDetection:    true,
+		PIIAction:             domain.GuardrailActionRedact,
+		RedactOutputPII:       true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.CreateA2AAgent(context.Background(), &domain.A2AAgent{
+		ID:                 "agent_1",
+		OrgID:              "org_a2a",
+		Name:               "Test Agent",
+		Slug:               "test-agent",
+		EndpointURL:        mockUpstream.URL,
+		TaskVisibilityMode: domain.TaskVisibilityKeyStrict,
+		IsActive:           true,
+		CreatedAt:          time.Now().UTC(),
+		UpdatedAt:          time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a2aRouter := a2a.NewRouterService(repo, vault, rbac, netPolicy, nil, a2a.NewGatewayCardSigner("kid1", "ES256", nil, vault), a2a.NewUpstreamCardVerifier(nil))
+	a2aRouter.SetGuardrails(guardrailsEng)
+	a2aBridge := a2a.NewOpenAIBridge(a2aRouter, nil, repo, rbac)
+
+	s := &GatewayServer{
+		repo:       repo,
+		rbac:       rbac,
+		validator:  validation.NewValidator(repo),
+		guardrails: guardrailsEng,
+		collector:  collector,
+		a2aRouter:  a2aRouter,
+		a2aBridge:  a2aBridge,
+	}
+	return s, repo, mockUpstream
+}
