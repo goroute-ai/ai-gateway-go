@@ -404,6 +404,7 @@ rate_limit:
 cache:
   enabled: true
   default_ttl: 1h
+  max_l1_entries: 4096
 ```
 
 ```go
@@ -452,7 +453,7 @@ gatewayServer.ConfigureGuardrailScanners(1500*time.Millisecond, true, scanner)
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
 
 ### Module C: Observability, W3C Tracing & Active Health Monitor
-- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway and provider aggregates; per-deployment identifiers are omitted to keep metric cardinality bounded.
+- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway/provider aggregates, stream duration/errors/TTFT, Go heap and GC counters, response-cache L1/L2 hits and epoch lookup latency, budget reservation checks and their share of recorded requests, catalog size, and Postgres read-through misses. Upstream HTTP protocol, connection reuse, dials, TLS handshakes, first-byte timing, and idle-timeout counters are included when the gateway creates its default outbound client; an injected `http.Client` owns its own transport and metrics. Per-deployment identifiers are omitted to keep metric cardinality bounded.
 - **Distributed Tracing**: Set `tracing.otlp_endpoint` to an OTLP/HTTP traces URL such as `https://collector.example:4318/v1/traces`. Tracing is disabled when the endpoint is empty. The exporter uses the outbound SSRF/network policy and supports optional `tracing.headers` for collector authentication.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Real-time P50/P95/P99 latency and per-provider/per-deployment health breakdown.
 - **Active Health Monitor (`GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials and preemptively marks failing deployments unhealthy before user traffic hits them.
@@ -475,6 +476,11 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `server.write_timeout` | — | `300s` | Maximum duration before timing out writes of the response (sized for reasoning streams). |
 | `server.idle_timeout` | — | `120s` | Maximum amount of time to wait for the next request when keep-alives are enabled. |
 | `server.shutdown_timeout` | — | `15s` | Graceful shutdown timeout before closing active connections. |
+| `providers.request_timeout` | — | `2m` | Total deadline for non-streaming upstream provider requests. |
+| `providers.response_header_timeout` | — | `2m` | Maximum wait for upstream response headers, including model prefill/TTFT. |
+| `providers.stream_idle_timeout` | — | `2m` | Maximum gap between upstream response-body chunks, including streams. |
+| `providers.max_idle_conns` | — | `256` | Maximum retained idle provider connections across all hosts. Tune using dial and connection-reuse metrics. |
+| `providers.max_idle_conns_per_host` | — | `16` | Maximum retained idle connections per host. Tune using protocol, dial, and connection-reuse metrics. |
 | `logging.level` | `GATEWAY_LOG_LEVEL` | `"info"` | Log verbosity: `"debug"`, `"info"`, `"warn"`, `"error"`. |
 | `logging.format` | `GATEWAY_LOG_FORMAT` | `"text"` | Log encoding: `"json"` (cloud structured) or `"text"` (human readable). Auto-switches to `"json"` if `ENV=production`. |
 | `logging.add_source` | `GATEWAY_LOG_ADD_SOURCE` | `false` | When true, annotates log records with caller `file:line`. |
@@ -517,6 +523,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `discovery.auto_approve` | — | `false` | When true, auto-enables newly discovered upstream models. |
 | `cache.enabled` | — | `true` | Enables deterministic exact-match response caching. |
 | `cache.default_ttl` | — | `1h` | Default TTL for exact-match response cache entries. |
+| `cache.max_l1_entries` | — | `4096` | Maximum process-local response cache entries. LRU eviction bounds memory use. |
 | `mcp.enabled` | `GATEWAY_MCP_ENABLED` | `true` | Enables Model Context Protocol (MCP) data plane & control plane. |
 | `mcp.allow_stdio_servers` | `GATEWAY_MCP_ALLOW_STDIO` | `false` | Enables local stdio subprocess MCP transport (requires explicit opt-in). |
 | `mcp.allowed_stdio_binaries` | — | `[]` | Explicit allowlist of absolute binary paths permitted for stdio transport. |
@@ -570,3 +577,8 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `model_list[].model_params.api_version` | — | `""` | API version query parameter for Azure OpenAI endpoints. |
 | `model_list[].model_params.headers` | — | `{}` | Custom HTTP headers forwarded to the upstream model provider. |
 | `files.storage_dir` | `GOROUTE_FILES_DIR` | `os.TempDir()/goroute-files` | Local disk directory for stateful tenant files and batch JSONL files (enforces `0700` directory mode and `0600` file mode). |
+
+### Provider & Dialect Profile Options
+- OpenAI-compatible profiles in `internal/adapter/openaicompat` declare explicit `SupportedOperations`, `SupportsStreamOptions`, `DropUnsupportedParams` (opt-in, default `false`), `StrippedParams`, `ExtraBodyFields`, and `ReasoningMapping`.
+- Local/self-hosted profiles (`ollama`, `vllm`, `lm_studio`, `llamafile`, `xinference`) require explicit allowlisting in `security.network` if targeting private/loopback addresses.
+- Imported catalog pricing defaults to `PricingStatusUnknown` (non-zero rates) or `PricingStatusUnrecorded` (zero rates); budgeted traffic requires `PricingStatusVerified` or `PricingStatusCustom` plus a deterministic pre-dispatch bound.

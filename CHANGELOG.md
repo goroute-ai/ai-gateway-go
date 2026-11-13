@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.0] - 2026-11-13
+
+### Maximum Provider & Model Compatibility, Modality FinOps, Production Test Suite & K8s Hardening
+
+#### Model Catalog, Provider Compatibility & Operation Enforcement (`internal/modelcatalog/`, `internal/adapter/`, `internal/router/`, `cmd/catalog-sync/`)
+- **Upstream Catalog Parity & Capability Generalizations**: Expanded `cmd/catalog-sync` and `internal/modelcatalog` with operation-level model support, modality pricing provenance, and explicit inferred capability generalizations (`internal/modelcatalog/generalizations.go`) without treating unverified catalog rates as verified for budgeted traffic.
+- **Operation-Level Routing Enforcement & Certified OpenAI-Compatible Profiles**: Added `SupportedOperations` enforcement across router dispatch (`internal/router/reliability.go`) and expanded certified provider profiles (`internal/adapter/openaicompat/extended_profiles.go`, `validator.go`).
+- **Multimodal Native Adapter & Responses API Extensions**: Expanded multimodal content, tool-only streaming, and audio/image/rerank wire handling across native adapters (`anthropic`, `bedrock`, `cohere`, `gemini`, `mistral`, `ollama`, `openai`, `vertex`) and `/v1/responses`.
+
+#### Storage, FinOps & Security Fixes (`internal/storage/`, `migrations/`, `internal/server/`)
+- **Migration `0012` & Modality Persistence**: Added `migrations/0012_add_cache_write_and_operations.{up,down}.sql` for cache-write pricing and per-model operation declarations across PostgreSQL and in-memory repositories.
+- **PostgreSQL `file_uploads` Query Fix**: Removed invalid `::uuid` casts on `VARCHAR(64)` `org_id`, `team_id`, and `user_id` columns in `CreateFile`, `GetFile`, `ListFiles`, and `DeleteFile` (`internal/storage/postgres.go`).
+- **In-Memory Spend Outbox & Redis Breaker Fixes**: Deleted delivered entries from `MemoryRepository.spendOutbox` in `MarkSpendEventDelivered` to prevent O(N^2) lock scans under sustained soak load, and treated `redis.Nil` cache misses as non-failures in `RedisFabric` circuit breakers.
+
+#### Production Testing, Docker & Kubernetes Hardening (`deployments/`, `tests/`)
+- **Hardened Kubernetes Kustomize Manifests**: Added `deployments/k8s/` with 2-replica gateway deployment, non-root `securityContext` (`runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `capabilities.drop: ["ALL"]`), `/readyz` + `/healthz` probes, and `postgres` + `redis` services.
+- **Containerized Production Suite & Load/Canary Harnesses**: Added `deployments/docker-compose.test.yml`, `tests/load/` (5-minute Go soak + `k6_gateway_smoke.js`), `tests/canary/` (`//go:build canary`), `tests/e2e/budget_concurrency_test.go`, `tests/e2e/modality_compat_test.go`, `tests/e2e/security_boundaries_test.go`, and `make test-prod-containers` (`gitleaks`, `trivy`, `govulncheck`, `k6`, `pgbench`, `redis-benchmark`).
+
+---
+
 ## [1.5.0] - 2026-11-13
 
 ### Enterprise Security Hardening, Redis Cluster Support, Durable FinOps, Streaming Guardrails & API Parity
