@@ -74,7 +74,7 @@ func (s *StreamSubscriber) SubscribeTaskStream(
 	var pubsub *redis.PubSub
 
 	if s.redis != nil {
-		_, _ = s.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			pubsub = rdb.Subscribe(ctx, channelName)
 			return nil, nil
 		})

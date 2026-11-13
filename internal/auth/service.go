@@ -153,7 +153,7 @@ func (s *Service) RevokeKey(ctx context.Context, id string) error {
 func (s *Service) InvalidateKeyHash(ctx context.Context, keyHash string) {
 	s.l1Cache.Delete(keyHash)
 	if s.redis != nil {
-		_, _ = s.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Del(ctx, authCacheKey(keyHash), "gw:auth:key:"+keyHash).Result()
 		})
 		s.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
@@ -260,7 +260,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 
 	// 2. Check L2 Redis Cache
 	if s.redis != nil {
-		res, err := s.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Get(ctx, authCacheKey(keyHash)).Result()
 		})
 		if err == nil {
@@ -395,7 +395,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	cacheEntry := cachedIdentity{Identity: *idCtx, KeyExpiresAt: keyExpiresAt}
 	if s.redis != nil {
 		if b, err := json.Marshal(cacheEntry); err == nil {
-			_, _ = s.redis.Execute(func(rdb *redis.Client) (any, error) {
+			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 				return rdb.Set(ctx, authCacheKey(keyHash), b, s.l2TTL).Result()
 			})
 		}

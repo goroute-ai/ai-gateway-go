@@ -5,7 +5,7 @@ local request_id = ARGV[1] or ""
 local actual_cost = tonumber(ARGV[2]) or 0
 for i = 1, 3 do
     local spend_key = KEYS[i]
-    if spend_key ~= "gw:spend:key:" and spend_key ~= "gw:spend:team:" and spend_key ~= "gw:spend:org:" then
+    if string.sub(spend_key, -5) ~= ":key:" and string.sub(spend_key, -6) ~= ":team:" and string.sub(spend_key, -5) ~= ":org:" then
         if actual_cost > 0 then redis.call("INCRBY", spend_key, actual_cost) end
     end
     if request_id ~= "" then

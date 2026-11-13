@@ -175,7 +175,7 @@ func (a *StreamableHTTP2025Adapter) RoundTrip(
 
 func (a *StreamableHTTP2025Adapter) getSession(ctx context.Context, gwSessionID string) (*MCP2025Session, error) {
 	if a.redis != nil {
-		res, err := a.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := a.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Get(ctx, "gw:mcp25:sess:"+gwSessionID).Result()
 		})
 		if err == nil {
@@ -200,7 +200,7 @@ func (a *StreamableHTTP2025Adapter) getSession(ctx context.Context, gwSessionID 
 func (a *StreamableHTTP2025Adapter) saveSession(ctx context.Context, sess *MCP2025Session) error {
 	data, _ := json.Marshal(sess)
 	if a.redis != nil {
-		_, _ = a.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = a.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Set(ctx, "gw:mcp25:sess:"+sess.GatewaySessionID, data, a.sessionTTL).Result()
 		})
 	}
@@ -213,7 +213,7 @@ func (a *StreamableHTTP2025Adapter) saveSession(ctx context.Context, sess *MCP20
 
 func (a *StreamableHTTP2025Adapter) deleteSession(ctx context.Context, gwSessionID string) error {
 	if a.redis != nil {
-		_, _ = a.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = a.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Del(ctx, "gw:mcp25:sess:"+gwSessionID).Result()
 		})
 	}

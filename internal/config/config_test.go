@@ -145,3 +145,19 @@ func TestConfigValidationMatrix(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadStorageRedisClusterConfigAndEnvOverrides(t *testing.T) {
+	t.Setenv("GATEWAY_REDIS_ADDRS", "redis-1:6379, redis-2:6379 ,redis-3:6379")
+	t.Setenv("GATEWAY_REDIS_MASTER_NAME", "goroute-master")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(cfg.Storage.RedisAddrs) != 3 || cfg.Storage.RedisAddrs[0] != "redis-1:6379" || cfg.Storage.RedisAddrs[1] != "redis-2:6379" || cfg.Storage.RedisAddrs[2] != "redis-3:6379" {
+		t.Fatalf("unexpected RedisAddrs: %#v", cfg.Storage.RedisAddrs)
+	}
+	if cfg.Storage.RedisMasterName != "goroute-master" {
+		t.Fatalf("unexpected RedisMasterName: %q", cfg.Storage.RedisMasterName)
+	}
+}

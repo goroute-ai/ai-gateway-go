@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,4 +128,47 @@ func managerOtherThan(first, second, selected *ReliabilityManager) *ReliabilityM
 		return second
 	}
 	return first
+}
+
+func redisClusterSlot(key string) uint16 {
+	hashKey := key
+	if s := strings.IndexByte(key, '{'); s >= 0 {
+		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
+			hashKey = key[s+1 : s+1+e]
+		}
+	}
+	var crc uint16
+	for i := 0; i < len(hashKey); i++ {
+		crc ^= uint16(hashKey[i]) << 8
+		for b := 0; b < 8; b++ {
+			if crc&0x8000 != 0 {
+				crc = (crc << 1) ^ 0x1021
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc % 16384
+}
+
+func TestCircuitKeysAlignToSameClusterSlot(t *testing.T) {
+	for _, depID := range []string{"dep-openai-1", ""} {
+		keys := circuitKeys(depID)
+		if len(keys) != 3 {
+			t.Fatalf("circuitKeys(%q) len = %d, want 3", depID, len(keys))
+		}
+		wantTag := "{dep:" + depID + "}"
+		if depID == "" {
+			wantTag = "{dep:default}"
+		}
+		wantSlot := redisClusterSlot(keys[0])
+		for i, k := range keys {
+			if !strings.Contains(k, wantTag) {
+				t.Fatalf("circuitKeys(%q)[%d] = %q, missing tag %q", depID, i, k, wantTag)
+			}
+			if got := redisClusterSlot(k); got != wantSlot {
+				t.Fatalf("circuitKeys(%q)[%d] = %q slot %d != slot %d", depID, i, k, got, wantSlot)
+			}
+		}
+	}
 }

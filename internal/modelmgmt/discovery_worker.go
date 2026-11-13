@@ -81,7 +81,7 @@ func (w *DiscoveryWorker) acquireLeaderLock(ctx context.Context) bool {
 	if w.redis == nil || w.redis.Client() == nil {
 		return true
 	}
-	res, err := w.redis.Execute(func(rdb *redis.Client) (any, error) {
+	res, err := w.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.SetNX(ctx, "gw:lock:discovery", uuid.NewString(), 60*time.Second).Result()
 	})
 	if err != nil {

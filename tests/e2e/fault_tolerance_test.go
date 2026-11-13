@@ -95,7 +95,7 @@ func TestProductionRecovery_RedisDegradationAndCircuitBreaker(t *testing.T) {
 	// Execute consecutive failing requests to trip circuit breaker
 	var lastErr error
 	for i := 0; i < 7; i++ {
-		_, err := deadFabric.Execute(func(rdb *redis.Client) (any, error) {
+		_, err := deadFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return nil, fmt.Errorf("redis: connection timeout")
 		})
 		lastErr = err
@@ -108,7 +108,7 @@ func TestProductionRecovery_RedisDegradationAndCircuitBreaker(t *testing.T) {
 
 	// Verify that healthy RedisFabric succeeds
 	liveFabric := storage.NewRedisFabric(getEnvOrDefault("GATEWAY_REDIS_ADDR", "localhost:6379"), "", 0)
-	val, err := liveFabric.Execute(func(rdb *redis.Client) (any, error) {
+	val, err := liveFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.Ping(context.Background()).Result()
 	})
 	if err != nil {

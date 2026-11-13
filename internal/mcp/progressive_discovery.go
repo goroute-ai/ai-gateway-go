@@ -94,7 +94,7 @@ func (m *ProgressiveDiscoveryManager) GenerateHandle(ctx context.Context, tool *
 
 	// Persist to Redis Fabric if available
 	if m.redisFabric != nil {
-		_, err := m.redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+		_, err := m.redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Set(ctx, RedisHdlPrefix+hdl, recordJSON, m.ttl).Result()
 		})
 		if err == nil {
@@ -121,7 +121,7 @@ func (m *ProgressiveDiscoveryManager) ResolveHandle(ctx context.Context, handle 
 
 	// 1. Try Redis
 	if m.redisFabric != nil {
-		rawVal, err := m.redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+		rawVal, err := m.redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Get(ctx, RedisHdlPrefix+handle).Result()
 		})
 		if err == nil {

@@ -578,14 +578,23 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 
 ### 4.3 Redis Keyspace & TTL Matrix
 
+`RedisFabric` (`internal/storage/redis.go`) uses `go-redis` `UniversalClient` (`redis.NewUniversalClient`), supporting standalone Redis (`storage.redis_addr`), Redis Cluster (`storage.redis_addrs` with multiple seed nodes or `GATEWAY_REDIS_ADDRS`), and Redis Sentinel (`storage.redis_master_name` or `GATEWAY_REDIS_MASTER_NAME`).
+
+All multi-key Lua scripts use Redis Cluster hash tags so every key touched in an atomic script hashes to the same CRC16 slot:
+- Rate-limiting, concurrency, budget reservation, and spend keys share `{org:<OrgID>}` (falling back to `{org:default}` when `OrgID` is empty), aligning all 13 keys in `check_and_increment.lua`, 10 keys in `reconcile.lua`, and 6 keys in `record_spend.lua`.
+- Per-deployment circuit-breaker keys share `{dep:<depID>}` (falling back to `{dep:default}` when `depID` is empty), aligning all 3 keys (`:circuit`, `:cooldown`, `:probe`) across `allow_circuit_probe`, `trip_circuit`, `close_circuit`, and `reopen_half_open`.
+
 | Redis Key Pattern | Data Type | TTL | Description |
 | :--- | :--- | :--- | :--- |
 | `gw:auth:key:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key + Team + Org quotas & permissions) |
-| `gw:rl:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Fixed/Sliding minute request counter (`scope` $\in \{\text{key},\text{team},\text{org},\text{dep}\}$) |
-| `gw:rl:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute token counter (`scope` $\in \{\text{key},\text{team},\text{org},\text{dep}\}$) |
-| `gw:rl:conc:{key_id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent request counter |
-| `gw:spend:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend in micro-dollars |
-| `gw:router:cooldown:{dep_id}` | `STRING` (JSON) | `60s` | Cooldown state for an unhealthy deployment |
+| `gw:rl:{org:<org_id>}:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Fixed/Sliding minute request counter (`scope` $\in \{\text{key},\text{team},\text{org}\}$) |
+| `gw:rl:{org:<org_id>}:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute token counter (`scope` $\in \{\text{key},\text{team},\text{org}\}$) |
+| `gw:rl:{org:<org_id>}:conc:{key_id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent request counter |
+| `gw:spend:{org:<org_id>}:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend in micro-dollars |
+| `gw:budget:{org:<org_id>}:reservations:{scope}:{id}` | `ZSET` | `3660s` | In-flight budget reservation sorted set |
+| `gw:router:{dep:<dep_id>}:circuit` | `STRING` | `60s` | Circuit breaker state (`open` / `half_open`) |
+| `gw:router:{dep:<dep_id>}:cooldown` | `STRING` | `60s` | Cooldown state for an unhealthy deployment |
+| `gw:router:{dep:<dep_id>}:probe` | `STRING` | `30s` | Half-open recovery probe lease token |
 | `gw:router:failures:{dep_id}` | `STRING` (Int64) | `30s` | Sliding window failure counter |
 | `gw:router:ttft:{dep_id}` | `STRING` (Float64)| `600s` | EWMA Time-To-First-Token latency (ms) |
 | `gw:cache:resp:{sha256}` | `STRING` (JSON) | `3600s` | Exact-match cached inference response |
