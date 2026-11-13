@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface AuthContextType {
   adminKey: string;
@@ -17,6 +18,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const queryClient = useQueryClient();
   const [adminKey, setAdminKey] = useState<string>('');
   const [activeOrgId, setActiveOrgId] = useState<string>('org_default');
   const [capturedVirtualKey, setCapturedVirtualKey] = useState<string | null>(null);
@@ -26,6 +28,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const lock = () => {
     setAdminKey('');
     setCapturedVirtualKey(null);
+    queryClient.clear();
   };
 
   return (

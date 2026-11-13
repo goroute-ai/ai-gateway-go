@@ -48,9 +48,9 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       queryClient.invalidateQueries({ queryKey: ['admin', 'keys', adminKey] });
       setShowIssueModal(false);
       // Key secret returned only on creation
-      if (newKey.key_secret) {
-        setNewKeySecret(newKey.key_secret);
-        setCapturedVirtualKey(newKey.key_secret);
+      if (newKey.raw_key) {
+        setNewKeySecret(newKey.raw_key);
+        setCapturedVirtualKey(newKey.raw_key);
       }
       resetForm();
     },
@@ -158,7 +158,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                 </tr>
               ) : keysData?.data && keysData.data.length > 0 ? (
                 keysData.data.map((k) => {
-                  const spendUSD = (k.current_spend_micros ?? 0) / 1_000_000;
+                  const spendUSD = (k.spent_micros ?? 0) / 1_000_000;
                   const budgetUSD = k.max_budget_micros ? k.max_budget_micros / 1_000_000 : null;
                   const isRevoked = !k.is_active;
 
@@ -263,7 +263,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
                 Budget Cap (USD)
@@ -288,6 +288,19 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                 value={rpmLimit}
                 onChange={(e) => setRpmLimit(e.target.value)}
                 placeholder="e.g. 600"
+                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                TPM Limit
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={tpmLimit}
+                onChange={(e) => setTpmLimit(e.target.value)}
+                placeholder="e.g. 100000"
                 className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
               />
             </div>
