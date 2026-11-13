@@ -120,6 +120,15 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	reg.SetDynamicResolver(profileReg.DynamicResolver())
 
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
+	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
+	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
+	authSvc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{
+		Secret:        cfg.Auth.JWTSecret,
+		Issuer:        cfg.Auth.JWTIssuer,
+		Audience:      cfg.Auth.JWTAudience,
+		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
+		NetworkPolicy: netPolicy,
+	}))
 	rbac := auth.NewRBACEngine(repo)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
 	respCache := cache.NewResponseCache(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, redisFabric)
@@ -435,12 +444,13 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
 		adm.Get("/audit/logs", s.handleAdminAuditLogs)
 
-		// MCP Enterprise Management: Servers, Toolsets, Tool Sync & BYOK Credentials
+		// MCP Enterprise Management: Servers, Toolsets, Tools, Tool Sync & BYOK Credentials
 		adm.Post("/mcp/servers", s.handleAdminCreateMCPServer)
 		adm.Get("/mcp/servers", s.handleAdminListMCPServers)
 		adm.Post("/mcp/servers/{serverID}/sync", s.handleAdminSyncMCPServer)
 		adm.Post("/mcp/toolsets", s.handleAdminCreateMCPToolset)
 		adm.Get("/mcp/toolsets", s.handleAdminListMCPToolsets)
+		adm.Get("/mcp/tools", s.handleAdminListMCPTools)
 		adm.Post("/mcp/credentials", s.handleAdminSetMCPUserCredential)
 
 		// A2A Enterprise Management: Agents, Kill-Switch, Push Notification Configs

@@ -8,11 +8,29 @@ type Role string
 const (
 	RolePlatformAdmin  Role = "platform_admin"
 	RoleOrgAdmin       Role = "org_admin"
+	RoleOrgViewer      Role = "org_viewer"
 	RoleTeamAdmin      Role = "team_admin"
 	RoleDeveloper      Role = "developer"
 	RoleServiceAccount Role = "service_account"
 	RoleViewer         Role = "viewer"
 )
+
+// OperatorRole defines RBAC roles for Control Plane (/admin/v1/*) operators.
+type OperatorRole string
+
+const (
+	OperatorRolePlatformAdmin OperatorRole = "platform_admin"
+	OperatorRoleOrgAdmin      OperatorRole = "org_admin"
+	OperatorRoleOrgViewer     OperatorRole = "org_viewer"
+)
+
+// OperatorContext represents an authenticated Control Plane operator attached to `r.Context()`.
+type OperatorContext struct {
+	ActorID    string       `json:"actor_id"`
+	Role       OperatorRole `json:"role"`
+	OrgID      string       `json:"org_id,omitempty"`
+	AuthMethod string       `json:"auth_method"` // "master_key", "virtual_key", "jwt"
+}
 
 // BudgetResetPeriod defines when accumulated spend counters automatically reset.
 type BudgetResetPeriod string

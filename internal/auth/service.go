@@ -33,15 +33,17 @@ type cachedIdentity struct {
 
 // Service manages Boundary 1 authentication (Virtual API Keys, L1/L2 caching, and Admin authentication).
 type Service struct {
-	repo                storage.Repository
-	redis               *storage.RedisFabric
-	masterAdminKey      string
-	masterEncryptionKey string
-	l1TTL               time.Duration
-	l2TTL               time.Duration
-	l1Cache             sync.Map // keyHash -> l1CacheEntry
-	invalidationMu      sync.Mutex
-	invalidationCancel  context.CancelFunc
+	repo                    storage.Repository
+	redis                   *storage.RedisFabric
+	masterAdminKey          string
+	masterEncryptionKey     string
+	allowMasterKeyDataPlane bool
+	jwtVerifier             *JWTVerifier
+	l1TTL                   time.Duration
+	l2TTL                   time.Duration
+	l1Cache                 sync.Map // keyHash -> l1CacheEntry
+	invalidationMu          sync.Mutex
+	invalidationCancel      context.CancelFunc
 }
 
 func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, masterAdminKey string, l1TTL, l2TTL time.Duration) *Service {
@@ -63,6 +65,16 @@ func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, maste
 // SetMasterEncryptionKey configures the master encryption key used for secret isolation and self-credential checks.
 func (s *Service) SetMasterEncryptionKey(key string) {
 	s.masterEncryptionKey = strings.TrimSpace(key)
+}
+
+// SetAllowMasterKeyDataPlane controls whether MasterAdminKey can synthesize a fallback identity on data-plane endpoints.
+func (s *Service) SetAllowMasterKeyDataPlane(allow bool) {
+	s.allowMasterKeyDataPlane = allow
+}
+
+// SetJWTVerifier configures inbound JWT/OIDC verification for Control Plane authentication.
+func (s *Service) SetJWTVerifier(v *JWTVerifier) {
+	s.jwtVerifier = v
 }
 
 // HashKey computes the hex-encoded SHA-256 digest of a raw Virtual API Key.
@@ -274,8 +286,8 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	// 3. Query Durable Repository
 	vk, err := s.repo.GetVirtualKeyByHash(ctx, keyHash)
 	if err != nil || !vk.IsActive {
-		// Admin convenience: allow MasterAdminKey on /v1/* Data Plane if an active Organization exists
-		if err != nil && s.ValidateAdminKey(rawToken) {
+		// Admin convenience: allow MasterAdminKey on /v1/* Data Plane only when explicitly enabled
+		if err != nil && s.allowMasterKeyDataPlane && s.ValidateAdminKey(rawToken) {
 			if org := s.resolveDefaultActiveOrg(ctx); org != nil {
 				idCtx := &domain.IdentityContext{
 					VirtualKeyID:         "vk_master_admin",
@@ -417,6 +429,127 @@ func (s *Service) ValidateAdminKey(rawToken string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(rawToken), []byte(s.masterAdminKey)) == 1
+}
+
+// AuthenticateOperator resolves an OperatorContext for Control Plane (/admin/v1/*) requests from:
+// (a) MasterAdminKey (platform_admin), (b) admin-role VirtualKey, or (c) validated inbound JWT mapped to an active User.
+func (s *Service) AuthenticateOperator(ctx context.Context, rawToken string) (*domain.OperatorContext, error) {
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_admin_key",
+			Message:    "Valid Master Admin Key, admin Virtual Key, or operator JWT is required to access /admin/v1/* endpoints",
+		}
+	}
+
+	if s.ValidateAdminKey(rawToken) {
+		return &domain.OperatorContext{
+			ActorID:    "master_admin",
+			Role:       domain.OperatorRolePlatformAdmin,
+			AuthMethod: "master_key",
+		}, nil
+	}
+
+	if strings.HasPrefix(rawToken, "sk-gw-") {
+		idCtx, err := s.AuthenticateVirtualKey(ctx, rawToken)
+		if err != nil {
+			return nil, err
+		}
+		opRole, ok := mapDomainRoleToOperatorRole(idCtx.Role)
+		if !ok {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    fmt.Sprintf("Virtual key role %q is not authorized for control plane access", idCtx.Role),
+			}
+		}
+		actorID := idCtx.VirtualKeyID
+		if idCtx.UserID != "" {
+			actorID = idCtx.UserID
+		}
+		return &domain.OperatorContext{
+			ActorID:    actorID,
+			Role:       opRole,
+			OrgID:      idCtx.OrgID,
+			AuthMethod: "virtual_key",
+		}, nil
+	}
+
+	if s.jwtVerifier != nil && s.jwtVerifier.Enabled() && strings.Count(rawToken, ".") == 2 {
+		claims, err := s.jwtVerifier.Verify(ctx, rawToken)
+		if err != nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_token",
+				Message:    "Invalid or expired JWT: " + err.Error(),
+			}
+		}
+		user, err := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
+		if err != nil || user == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "unknown_operator",
+				Message:    "No user mapped to JWT subject",
+			}
+		}
+		if !user.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_inactive",
+				Message:    "Operator user account is inactive",
+			}
+		}
+		org, err := s.repo.GetOrganization(ctx, user.OrgID)
+		if err != nil || !org.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "organization_inactive",
+				Message:    "Organization associated with this operator is inactive",
+			}
+		}
+		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		if !ok {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
+			}
+		}
+		return &domain.OperatorContext{
+			ActorID:    user.ID,
+			Role:       opRole,
+			OrgID:      user.OrgID,
+			AuthMethod: "jwt",
+		}, nil
+	}
+
+	return nil, &domain.GatewayError{
+		StatusCode: http.StatusUnauthorized,
+		Type:       domain.ErrorTypeAuthentication,
+		Code:       "invalid_admin_key",
+		Message:    "Valid Master Admin Key, admin Virtual Key, or operator JWT is required to access /admin/v1/* endpoints",
+	}
+}
+
+func mapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
+	switch role {
+	case domain.RolePlatformAdmin:
+		return domain.OperatorRolePlatformAdmin, true
+	case domain.RoleOrgAdmin:
+		return domain.OperatorRoleOrgAdmin, true
+	case domain.RoleViewer, domain.RoleOrgViewer:
+		return domain.OperatorRoleOrgViewer, true
+	default:
+		return "", false
+	}
 }
 
 // IsMasterCredential performs constant-time detection of any Gateway master credential (admin key or encryption key).

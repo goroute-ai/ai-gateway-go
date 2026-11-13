@@ -62,7 +62,13 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		input.TransportType = domain.MCPTransportStreamableHTTP
 	}
 	if input.OrgID == "" {
+		input.OrgID = resolveScopedOrgID(r, "")
+	}
+	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+		return
 	}
 
 	server := &domain.MCPServer{
@@ -119,9 +125,12 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 
 // handleAdminListMCPServers lists registered MCP servers for an organization.
 func (s *GatewayServer) handleAdminListMCPServers(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
 	if orgID == "" {
 		orgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
 	}
 
 	servers, err := s.repo.ListMCPServers(r.Context(), orgID)
@@ -163,6 +172,9 @@ func (s *GatewayServer) handleAdminSyncMCPServer(w http.ResponseWriter, r *http.
 			Code:       "server_not_found",
 			Message:    fmt.Sprintf("MCP server %q not found", serverID),
 		})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, server.OrgID, true); !ok {
 		return
 	}
 
@@ -403,7 +415,13 @@ func (s *GatewayServer) handleAdminCreateMCPToolset(w http.ResponseWriter, r *ht
 	}
 
 	if input.OrgID == "" {
+		input.OrgID = resolveScopedOrgID(r, "")
+	}
+	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+		return
 	}
 
 	ts := &domain.MCPToolset{
@@ -435,9 +453,12 @@ func (s *GatewayServer) handleAdminCreateMCPToolset(w http.ResponseWriter, r *ht
 
 // handleAdminListMCPToolsets lists toolsets for an organization.
 func (s *GatewayServer) handleAdminListMCPToolsets(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
 	if orgID == "" {
 		orgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
 	}
 
 	toolsets, err := s.repo.ListMCPToolsets(r.Context(), orgID)
@@ -486,7 +507,13 @@ func (s *GatewayServer) handleAdminSetMCPUserCredential(w http.ResponseWriter, r
 	}
 
 	if input.OrgID == "" {
+		input.OrgID = resolveScopedOrgID(r, "")
+	}
+	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
+	}
+	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+		return
 	}
 
 	cipher, dek, err := s.vault.EncryptString(strings.TrimSpace(input.Token))
@@ -524,5 +551,41 @@ func (s *GatewayServer) handleAdminSetMCPUserCredential(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":        "saved",
 		"credential_id": cred.ID,
+	})
+}
+
+// handleAdminListMCPTools serves `GET /admin/v1/mcp/tools` for the Operator UI under Control Plane auth.
+func (s *GatewayServer) handleAdminListMCPTools(w http.ResponseWriter, r *http.Request) {
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if orgID == "" {
+		orgID = s.cfg.Auth.DefaultOrgID
+	}
+	op, ok := s.authorizeAdmin(w, r, orgID, false)
+	if !ok {
+		return
+	}
+
+	adminIDCtx := &domain.IdentityContext{
+		VirtualKeyID:         op.ActorID,
+		OrgID:                orgID,
+		Role:                 domain.Role(op.Role),
+		KeyAllowedMCPServers: []string{"*"},
+	}
+	serverSlug := strings.TrimSpace(r.URL.Query().Get("server_slug"))
+	tools, err := s.mcpHub.ListTools(r.Context(), adminIDCtx, serverSlug)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "mcp_tools_error",
+			Message:    err.Error(),
+		})
+		return
+	}
+	if tools == nil {
+		tools = []domain.MCPTool{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tools": tools,
 	})
 }

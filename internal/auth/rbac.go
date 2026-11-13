@@ -195,6 +195,75 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 	return nil
 }
 
+// AuthorizeAdminAction enforces operator RBAC, organization isolation, and read-only viewer restrictions
+// across Control Plane (/admin/v1/*) operations.
+func AuthorizeAdminAction(op *domain.OperatorContext, targetOrgID string, write bool) error {
+	if op == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "No operator context present on request",
+		}
+	}
+
+	switch op.Role {
+	case domain.OperatorRolePlatformAdmin:
+		return nil
+	case domain.OperatorRoleOrgAdmin:
+		if targetOrgID == "" {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "platform_admin_required",
+				Message:    "Platform admin role is required for global or cross-organization operations",
+			}
+		}
+		if op.OrgID == "" || targetOrgID != op.OrgID {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_org_access_denied",
+				Message:    fmt.Sprintf("Operator in organization %q is not authorized to access organization %q", op.OrgID, targetOrgID),
+			}
+		}
+		return nil
+	case domain.OperatorRoleOrgViewer:
+		if write {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "read_only_role",
+				Message:    "Role org_viewer is read-only and cannot perform write operations",
+			}
+		}
+		if targetOrgID == "" {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "platform_admin_required",
+				Message:    "Platform admin role is required for global or cross-organization operations",
+			}
+		}
+		if op.OrgID == "" || targetOrgID != op.OrgID {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_org_access_denied",
+				Message:    fmt.Sprintf("Operator in organization %q is not authorized to access organization %q", op.OrgID, targetOrgID),
+			}
+		}
+		return nil
+	default:
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "insufficient_permissions",
+			Message:    fmt.Sprintf("Operator role %q is not authorized for control plane access", op.Role),
+		}
+	}
+}
+
 func matchesModelAllowlist(allowed []string, target string) bool {
 	for _, item := range allowed {
 		if item == "*" || item == target {
