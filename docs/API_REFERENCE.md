@@ -187,7 +187,7 @@ GoRoute supports direct model execution using `provider/model` notation (e.g. `c
 - **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
 - **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
 - **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
-- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute can import its metadata from the embedded 4,627-record catalogue and provision a route when a matching provider adapter/profile and tenant credential are available.
+- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute can import its metadata from the embedded 5,493-record catalogue and provision a route when a matching provider adapter/profile and tenant credential are available.
 - **Fail-Closed Boundary**: If repository queries fail, or if the model is unconfigured/unauthorized, GoRoute fails closed and returns `HTTP 404 model_group_not_found` (explicit model requests never silently fall back to unrelated tenant model groups).
 
 ### 2.5 Document Reranking
@@ -815,7 +815,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 ### 5.7 Model Catalogue & Pricing Provenance
 - `GET /admin/v1/catalogue?provider={provider}&search={query}`: Queries the global model catalogue.
 - `POST /admin/v1/catalogue/sync`: Polls active upstream provider credentials for new models.
-- `POST /admin/v1/catalogue/import?provider={provider}`: Imports metadata from the embedded 4,627-record catalogue dataset.
+- `POST /admin/v1/catalogue/import?provider={provider}`: Imports metadata from the embedded 5,493-record catalogue dataset.
 - `POST /admin/v1/catalogue/pricing`: Updates model pricing rates and promotes pricing status to `"verified"`.
   ```json
   {

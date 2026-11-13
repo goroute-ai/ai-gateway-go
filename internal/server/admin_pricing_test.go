@@ -75,7 +75,7 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, gm)
 	assert.Equal(t, domain.PricingStatusUnknown, gm.PricingStatus)
-	assert.Equal(t, "global-model-catalog-v1.0", gm.PricingProvenanceSource)
+	assert.Equal(t, "upstream-model-catalog-v1.1", gm.PricingProvenanceSource)
 
 	// 2. Set up tenant organization and deployment
 	org := &domain.Organization{ID: "org-pricing-test", Name: "Pricing Org", Slug: "pricing-org", IsActive: true}

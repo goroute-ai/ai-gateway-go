@@ -38,6 +38,10 @@ specgen:
 	@echo "==> Regenerating gateway OpenAPI types and validating contracts..."
 	@go generate ./internal/openapi
 
+catalog-sync:
+	@echo "==> Regenerating embedded model catalog from Upstream source..."
+	go run ./cmd/catalog-sync -source "$${UPSTREAM_MODEL_CATALOG:-model_prices_and_context_window.json}" -out internal/modelcatalog/catalog.json.gz
+
 # ------------------------------------------------------------------------------
 # Testing Suites
 # ------------------------------------------------------------------------------
