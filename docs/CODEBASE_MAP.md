@@ -6,7 +6,7 @@ Use this page to find the implementation and the source of truth for a change. P
 
 | Area | Start here | Related tests or contracts |
 | --- | --- | --- |
-| HTTP server, routes, middleware, and bootstrap | `internal/server/` (`handlers_*.go`, `security_headers.go`, `server.go`) | `internal/server/*_test.go`, `tests/e2e/` |
+| HTTP server, routes, middleware, admin RBAC, file quotas, and bootstrap | `internal/server/` (`handlers_*.go`, `security_headers.go`, `server.go`) | `internal/server/*_test.go`, `tests/e2e/` |
 | Native dedicated provider adapters | `internal/adapter/` (`anthropic/`, `azure/`, `bedrock/`, `cohere/`, `gemini/`, `mistral/`, `ollama/`, `openai/`, `vertex/`) | `internal/adapter/*/*_test.go`, `docs/openapi/` |
 | Certified OpenAI-compatible provider profiles & dialect engine | `internal/adapter/openaicompat/` (`builtin_profiles.go`, `adapter.go`, `profile.go`) | `internal/adapter/openaicompat/*_test.go` |
 | Canonical request, response, identity, and model types | `internal/domain/` | Tests colocated with consumers; gateway contract in `docs/openapi/gateway.openapi.yaml` |
@@ -14,13 +14,14 @@ Use this page to find the implementation and the source of truth for a change. P
 | Embedded model catalogue engine and normalizer CLI | `internal/modelcatalog/`, `cmd/catalog-sync/` | `internal/modelcatalog/*_test.go`, `internal/modelcatalog/catalog.json.gz` |
 | Model management, lifecycle discovery, and pricing provenance | `internal/modelmgmt/` | `internal/modelmgmt/*_test.go` |
 | Configuration loading, defaults, and provider normalization | `internal/config/` | `internal/config/config_test.go`, `configs/config.example.yaml` |
-| Persistence interfaces and PostgreSQL, Redis, and memory implementations | `internal/storage/` | `internal/storage/*_test.go`, `migrations/` |
+| Persistence interfaces, PostgreSQL, Redis Cluster/Sentinel, spend outbox, and memory implementations | `internal/storage/` | `internal/storage/*_test.go`, `migrations/` |
 | MCP transports, aggregation, and tool execution | `internal/mcp/` | `internal/mcp/*_test.go`, `docs/specs/mcp/` |
 | A2A HTTP/gRPC service, task durability, and streaming | `internal/a2a/` | `internal/a2a/*_test.go`, `docs/specs/a2a/v1.0/` |
 | Outbound URL and network policy (SSRF prevention) | `internal/security/network/` | `internal/security/network/network_test.go` |
-| Authentication and 4-tier fail-closed authorization | `internal/auth/` | `internal/auth/*_test.go` |
+| Operator RBAC, inbound JWT/OIDC, virtual-key authentication, and fail-closed authorization | `internal/auth/` | `internal/auth/*_test.go` |
 | Content, secret, and tool safety checks | `internal/guardrails/` (`engine.go`, `stream_filter.go`, `mcp.go`) | `internal/guardrails/*_test.go` |
-| Usage cost calculation and spend processing | `internal/finops/` | `internal/finops/*_test.go` |
+| Integer micro-dollar cost calculation, budget reservations, spend outbox, and reset processing | `internal/finops/`, `internal/ratelimit/` | `internal/finops/*_test.go`, `internal/ratelimit/*_test.go` |
+| OTLP tracing, structured log scrubbing, and protected metrics | `internal/observability/`, `internal/logger/`, `internal/server/` | Package tests and `tests/e2e/` |
 | Public embeddable Go SDK | `pkg/gateway/` | `pkg/gateway/*_test.go` |
 | Embedded Operator Web UI & Playground | `internal/ui/` (HTTP embed handler), `web/` (React SPA) | `internal/ui/*_test.go`, `web/scripts/check-budget.mjs` |
 | Executables and contract generation | `cmd/gateway/`, `cmd/specgen/`, `cmd/catalog-sync/`, `internal/openapi/` | Check each command's `main.go`, generation directives, and the Makefile |
@@ -29,8 +30,10 @@ Use this page to find the implementation and the source of truth for a change. P
 
 - **HTTP API shapes:** `docs/openapi/*.yaml`; gateway DTOs and standard/strict server interfaces are generated from `docs/openapi/gateway.openapi.yaml`. `make specgen` validates contracts and checks primary `/v1` route parity. Runtime handlers are still partly handwritten, and admin, alias, MCP, and A2A route parity is not yet enforced.
 - **MCP and A2A protocol schemas:** pinned files under `docs/specs/`. For A2A generated Go code, see `docs/specs/a2a/v1.0/generate.go` and its `go:generate` command.
-- **Configuration keys and defaults:** `internal/config/config.go` and `configs/config.example.yaml`. The deployed sample `configs/config.yaml` may contain local/demo secrets; do not copy credentials into documentation.
+- **Configuration keys and defaults:** `internal/config/config.go` and `configs/config.example.yaml`. This includes production key validation through `ENV` and `GATEWAY_ENV`, plus per-organization file storage and concurrent upload limits. The deployed sample `configs/config.yaml` may contain local/demo secrets; do not copy credentials into documentation.
 - **Database shape and evolution:** ordered SQL migrations in `migrations/`, paired with repository behavior in `internal/storage/`. Migration `0005_add_model_capabilities.up.sql` establishes persistent tri-state model capabilities and pricing provenance history; `0006_add_supports_inference.up.sql` establishes persistent inference support flags; `0007_add_modality_pricing_and_spend.up.sql` establishes modality pricing rates, modality spend units, and stateful `files` and `batches` tables; `0008_add_spend_event_outbox.up.sql` establishes durable spend-event delivery and retry state; `0010_guardrail_mode.up.sql` adds `logging_only` guardrail policy mode; `0011_budget_reset_outbox.up.sql` adds atomic budget-reset tracking.
+- **Shared Redis state:** Redis connection modes and repository behavior live under `internal/storage/`; Lua scripts and rate-limit integration live under `internal/ratelimit/`. Preserve organization hash tags when changing keys used together by Redis Cluster scripts.
+- **Security and observability:** outbound policy is implemented in `internal/security/network/`; operator and virtual-key authorization lives in `internal/auth/`; guardrail behavior is in `internal/guardrails/`; OTLP tracing and log scrubbing are in `internal/observability/` and `internal/logger/`.
 - **Embedded model catalogue:** `internal/modelcatalog/catalog.json.gz`, generated by `cmd/catalog-sync/` from audited upstream model datasets. Runtime access is provided via `internal/modelcatalog/catalog.go`.
 - **Operator Web UI and static assets:** `web/` is the source of truth for the frontend application. Compiled assets are copied to `internal/ui/dist/` via `make ui-build` and embedded into the Go binary. Total uncompressed bundle budget must remain under 400 KB, enforced by `web/scripts/check-budget.mjs`.
 - **Runtime behavior:** implementation and focused tests in the corresponding package. Architecture and internals guides explain intent but can drift.

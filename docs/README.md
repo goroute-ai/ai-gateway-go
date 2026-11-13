@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Documentation Hub
 
-Welcome to the **GoRoute AI Gateway** (`github.com/goroute-ai/ai-gateway-go`) documentation suite. Coding agents and new contributors should start with [CLAUDE.md](../CLAUDE.md) (Claude Code) or [AGENTS.md](../AGENTS.md) (general coding agents), then use the [codebase map](./CODEBASE_MAP.md) to find implementations and sources of truth.
+Welcome to the **GoRoute AI Gateway** (`github.com/goroute-ai/ai-gateway-go`) documentation suite. Claude Code users should start with [CLAUDE.md](../CLAUDE.md), which imports the shared [AGENTS.md](../AGENTS.md) guidance; other coding agents and contributors can start with `AGENTS.md`. Use the [codebase map](./CODEBASE_MAP.md) to find implementations and sources of truth.
 
 ---
 

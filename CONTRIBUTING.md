@@ -14,7 +14,7 @@ We are committed to providing a welcoming, inclusive, and harassment-free enviro
 
 ## Architectural Invariants
 
-Before writing code, please review the core repository invariants defined in [`CLAUDE.md`](./CLAUDE.md), [`AGENTS.md`](./AGENTS.md), and [`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md):
+Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow and shared [repository guidance in `AGENTS.md`](./AGENTS.md), which the Claude guide imports. Use the [`codebase map`](./docs/CODEBASE_MAP.md) to locate implementation and tests:
 
 1. **100% Pure Go, Zero CGO**: All adapters, protocol parsers, and utilities must compile with `CGO_ENABLED=0` across Linux, macOS, and Windows.
 2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (\$1.00 = 1,000,000 µ\$). Never use floating-point math for cost accumulation or pricing.
@@ -57,7 +57,7 @@ make ui-build
 # Build the gateway executable (with embedded UI)
 go build -o bin/ai-gateway ./cmd/gateway
 
-# Run full release verification check
+# Run release verification (rewrites Go formatting and requires PostgreSQL and Redis for E2E)
 make release-check
 ```
 
