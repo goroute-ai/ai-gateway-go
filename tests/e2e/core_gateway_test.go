@@ -42,11 +42,17 @@ func setupLiveGateway(t *testing.T) (*httptest.Server, *server.GatewayServer, *s
 	// 1. PostgreSQL Pool
 	pool, err := storage.NewPostgresPool(ctx, pgDSN)
 	if err != nil {
+		if os.Getenv("GATEWAY_REQUIRE_LIVE_DEPS") == "1" {
+			t.Fatalf("GATEWAY_REQUIRE_LIVE_DEPS=1 set, cannot connect to PostgreSQL: %v", err)
+		}
 		t.Skipf("skipping live test: cannot connect to PostgreSQL: %v", err)
 	}
 
 	// Apply migrations
-	_ = storage.RunMigrationsDir(ctx, pool, "../../migrations")
+	if err := storage.RunMigrationsDir(ctx, pool, "../../migrations"); err != nil {
+		pool.Close()
+		t.Fatalf("run migrations: %v", err)
+	}
 
 	pgRepo, err := storage.NewPostgresRepository(ctx, pool)
 	if err != nil {
@@ -60,6 +66,9 @@ func setupLiveGateway(t *testing.T) (*httptest.Server, *server.GatewayServer, *s
 		return rdb.Ping(ctx).Result()
 	}); err != nil {
 		pool.Close()
+		if os.Getenv("GATEWAY_REQUIRE_LIVE_DEPS") == "1" {
+			t.Fatalf("GATEWAY_REQUIRE_LIVE_DEPS=1 set, cannot ping Redis: %v", err)
+		}
 		t.Skipf("skipping live test: cannot ping Redis: %v", err)
 	}
 
