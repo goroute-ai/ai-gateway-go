@@ -154,8 +154,8 @@ func redisClusterSlot(key string) uint16 {
 func TestCircuitKeysAlignToSameClusterSlot(t *testing.T) {
 	for _, depID := range []string{"dep-openai-1", ""} {
 		keys := circuitKeys(depID)
-		if len(keys) != 3 {
-			t.Fatalf("circuitKeys(%q) len = %d, want 3", depID, len(keys))
+		if len(keys) != 4 {
+			t.Fatalf("circuitKeys(%q) len = %d, want 4", depID, len(keys))
 		}
 		wantTag := "{dep:" + depID + "}"
 		if depID == "" {
