@@ -648,6 +648,11 @@ components:
       properties:
         org_id:
           type: string
+        mode:
+          type: string
+          enum: [enforce, logging_only]
+        scan_all_roles:
+          type: boolean
         enable_prompt_injection:
           type: boolean
         prompt_injection_action:

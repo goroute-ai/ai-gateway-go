@@ -215,6 +215,24 @@ func (e EmbeddingResponseObject) Valid() bool {
 	}
 }
 
+// Defines values for GuardrailPolicyMode.
+const (
+	Enforce     GuardrailPolicyMode = "enforce"
+	LoggingOnly GuardrailPolicyMode = "logging_only"
+)
+
+// Valid indicates whether the value is a known member of the GuardrailPolicyMode enum.
+func (e GuardrailPolicyMode) Valid() bool {
+	switch e {
+	case Enforce:
+		return true
+	case LoggingOnly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GuardrailPolicyPiiAction.
 const (
 	GuardrailPolicyPiiActionAudit  GuardrailPolicyPiiAction = "audit"
@@ -533,13 +551,18 @@ type GuardrailPolicy struct {
 	EnablePiiDetection    *bool                                 `json:"enable_pii_detection,omitempty"`
 	EnablePromptInjection *bool                                 `json:"enable_prompt_injection,omitempty"`
 	EnableSecretDetection *bool                                 `json:"enable_secret_detection,omitempty"`
+	Mode                  *GuardrailPolicyMode                  `json:"mode,omitempty"`
 	OrgId                 *string                               `json:"org_id,omitempty"`
 	PiiAction             *GuardrailPolicyPiiAction             `json:"pii_action,omitempty"`
 	PromptInjectionAction *GuardrailPolicyPromptInjectionAction `json:"prompt_injection_action,omitempty"`
 	RedactOutputPii       *bool                                 `json:"redact_output_pii,omitempty"`
+	ScanAllRoles          *bool                                 `json:"scan_all_roles,omitempty"`
 	SecretAction          *GuardrailPolicySecretAction          `json:"secret_action,omitempty"`
 	UpdatedAt             *time.Time                            `json:"updated_at,omitempty"`
 }
+
+// GuardrailPolicyMode defines model for GuardrailPolicy.Mode.
+type GuardrailPolicyMode string
 
 // GuardrailPolicyPiiAction defines model for GuardrailPolicy.PiiAction.
 type GuardrailPolicyPiiAction string

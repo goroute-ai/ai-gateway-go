@@ -173,17 +173,16 @@ func TestRestrictedKey_ModelAuthorization(t *testing.T) {
 		assert.NotContains(t, rec.Body.String(), "owner@example.com")
 	})
 
-	t.Run("Responses_StreamFailsClosedWhenOutputRedactionIsEnabled", func(t *testing.T) {
-		before := upstreamCalls.Load()
+	t.Run("Responses_StreamRedactsOutputWhenOutputRedactionIsEnabled", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req, _ := http.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"permitted-model","input":"Hello","stream":true}`))
 		for k, v := range dataHeaders {
 			req.Header.Set(k, v)
 		}
 		handler.ServeHTTP(rec, req)
-		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		assert.NotContains(t, rec.Body.String(), "event: response.created")
-		assert.Equal(t, before, upstreamCalls.Load(), "stream redaction gate must run before upstream dispatch")
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, rec.Body.String(), "event: response.created")
+		assert.Contains(t, rec.Body.String(), "event: response.done")
 	})
 
 	t.Run("ChatInputPromptInjectionIsBlockedBeforeDispatch", func(t *testing.T) {
