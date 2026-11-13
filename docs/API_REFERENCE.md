@@ -37,6 +37,8 @@ Every response from GoRoute AI Gateway includes rich tracing and attribution met
 
 Standardized endpoint supporting Google Gemini, Anthropic Claude, OpenAI, Mistral, and local Ollama models in synchronous JSON or real-time Server-Sent Events (SSE) streaming mode.
 
+Chat request bodies are limited to 10 MiB; larger requests return `413 request_body_too_large`. The default outbound client allows two minutes for upstream response headers, applies a two-minute total deadline to non-streaming calls, and cancels a response body after two minutes without upstream data. Streaming calls have no total upstream deadline while chunks continue to arrive. These provider timeouts are configurable under `providers`; the HTTP server's configured write timeout still bounds the client connection.
+
 #### Request Schema
 ```json
 {
@@ -907,6 +909,20 @@ gateway_latency_ms{quantile="0.99"} 4.53
 # HELP gateway_cache_hits_total Total exact-match response cache hits.
 # TYPE gateway_cache_hits_total counter
 gateway_cache_hits_total 8675
+
+# TYPE gateway_response_cache_l1_entries gauge
+gateway_response_cache_l1_entries 234
+
+# TYPE gateway_response_cache_l1_evictions_total counter
+gateway_response_cache_l1_evictions_total 12
+
+# TYPE gateway_upstream_connections_reused_total counter
+gateway_upstream_connections_reused_total 891
+gateway_streams_total 122
+gateway_stream_errors_total 2
+gateway_response_cache_epoch_lookups_total 340
+gateway_go_heap_alloc_bytes 41943040
+gateway_model_catalog_size 5493
 ```
 
 ### 6.2 Administrative Metrics Snapshot
@@ -1007,3 +1023,20 @@ The Operator UI authenticates against the gateway's REST APIs:
 | Sidebar: Guardrails | `GuardrailsView` | Guardrail policy and simulation views. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials and preflight validation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP and A2A management views. |
+
+
+## 9. Provider & Modality Compatibility Matrix
+
+GoRoute separates **operation-level adapter support** (`OperationSupportChecker`), **model-level operation/capability support** (`GlobalModel.SupportsOperation` and `CapabilityState`), and **pricing trust status** (`PricingStatusVerified` / `PricingStatusCustom` vs `PricingStatusUnknown` / `PricingStatusUnrecorded`). `ReliabilityManager` enforces both adapter-level `OperationSupportChecker` and model-level `SupportsOperation` across all inference dispatch paths.
+
+| Provider Group | Providers | Operations | Notes |
+| :--- | :--- | :--- | :--- |
+| **Native Protocol Adapters** | `openai`, `anthropic`, `gemini`, `bedrock`, `vertex`, `cohere`, `mistral`, `ollama` | Chat, Streaming, Tools, Vision/Documents (provider-dependent), Embeddings, Rerank (`cohere`/`bedrock`), Moderation (`openai`/`mistral`), Audio (`openai`/`mistral`) | Vertex supports regional + `global` endpoints and Partner Claude `:rawPredict` / `:streamRawPredict`; Anthropic supports adaptive thinking (4.6/4.7), prompt caching (`cache_control`), tool-name sanitization, and `output_format`. |
+| **OpenAI-Compatible Cloud Profiles** | `azure`, `groq`, `deepseek`, `together`, `cerebras`, `sambanova`, `xai`, `fireworks`, `perplexity`, `anyscale`, `deepinfra`, `novita`, `nebius`, `hyperbolic`, `lambda`, `friendli`, `openrouter`, `cloudflare`, `databricks`, `snowflake`, `dashscope`, `volcengine`, `bigmodel`, `moonshot`, `minimax`, `siliconflow`, `voyage`, `jina`, `replicate`, `ai21`, `baseten`, `nvidia`, `scaleway`, `github_copilot`, `vercel_ai_gateway`, `huggingface`, `featherless`, `fal`, `zai`, `poe`, `helicone`, `aihubmix`, `venice`, `chutes`, `gmi`, `llamagate`, `sarvam`, `crusoe`, `parasail`, `upstage`, `ovhcloud`, `wandb`, `nscale`, `publicai`, `synthetic`, `nano_gpt`, `xiaomi_mimo`, `reka`, `yi`, `baichuan`, `stepfun` | Declared per-profile via `ProviderOperations` (`chat`, `completion`, `embedding`, `rerank`, `moderation`, `image_generation`, `image_edit`, `image_variation`, `audio_stt`, `audio_tts`, `responses`); `openaicompat.Adapter` implements these endpoint adapters where declared | Azure uses its provider-specific endpoint and auth strategies within the OpenAI-compatible adapter. Parameter dropping (`DropUnsupportedParams`) is opt-in and observable; `ExtraBodyFields` never overrides canonical fields or `StrippedParams`. |
+| **Local / Self-Hosted** | `ollama`, `vllm`, `lm_studio`, `llamafile`, `xinference` | Chat, Streaming, Embeddings, Rerank (`xinference`) | All outbound HTTP calls remain subject to `internal/security/network` SSRF/egress policy. |
+
+### Budgeted Caller Modality Coverage
+
+For callers with active budgets, GoRoute requires a verified/custom price (`PricingStatusVerified` or `PricingStatusCustom`) and a deterministic pre-dispatch upper bound:
+- **Supported with pre-dispatch reservation & settlement when verified/custom rates and an estimator are available**: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`, and `/v1/audio/speech` (TTS billed by Unicode character/rune count `len([]rune(input))` for both reservation and settlement).
+- **Fail-closed for budgeted callers (`503 budget_estimate_unavailable`)**: `/v1/audio/transcriptions`, `/v1/moderations`, `/v1/batches`, and `/v1/realtime` remain unavailable to budgeted callers until safe pre-dispatch upper-bound estimators exist.
