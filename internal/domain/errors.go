@@ -45,8 +45,19 @@ type OpenAIErrorEnvelope struct {
 	Error *GatewayError `json:"error"`
 }
 
-// WriteHTTPError serializes a GatewayError into an HTTP response with proper headers.
-func WriteHTTPError(w http.ResponseWriter, err error) {
+// AnthropicErrorBody is the inner error payload expected by Anthropic SDKs.
+type AnthropicErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// AnthropicErrorEnvelope wraps errors in the `{"type":"error","error":{"type":...,"message":...}}` format expected by Anthropic SDKs.
+type AnthropicErrorEnvelope struct {
+	Type  string              `json:"type"`
+	Error *AnthropicErrorBody `json:"error"`
+}
+
+func normalizeGatewayError(err error) *GatewayError {
 	gwErr, ok := err.(*GatewayError)
 	if !ok {
 		gwErr = &GatewayError{
@@ -59,12 +70,49 @@ func WriteHTTPError(w http.ResponseWriter, err error) {
 	if gwErr.StatusCode == 0 {
 		gwErr.StatusCode = http.StatusInternalServerError
 	}
+	return gwErr
+}
+
+func mapAnthropicErrorType(gwErr *GatewayError) string {
+	if gwErr.StatusCode == 529 || gwErr.Code == "overloaded_error" {
+		return "overloaded_error"
+	}
+	switch gwErr.Type {
+	case ErrorTypeInvalidRequest, ErrorTypeAuthentication, ErrorTypePermission, ErrorTypeNotFound, ErrorTypeRateLimit:
+		return string(gwErr.Type)
+	case ErrorTypeBudgetExceeded:
+		return string(ErrorTypeRateLimit)
+	default:
+		return "api_error"
+	}
+}
+
+// WriteHTTPError serializes a GatewayError into an HTTP response with proper headers.
+func WriteHTTPError(w http.ResponseWriter, err error) {
+	gwErr := normalizeGatewayError(err)
 	if gwErr.RetryAfterSec > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", gwErr.RetryAfterSec))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(gwErr.StatusCode)
 	_ = json.NewEncoder(w).Encode(OpenAIErrorEnvelope{Error: gwErr})
+}
+
+// WriteAnthropicHTTPError serializes a GatewayError into an Anthropic-compatible HTTP error envelope.
+func WriteAnthropicHTTPError(w http.ResponseWriter, err error) {
+	gwErr := normalizeGatewayError(err)
+	if gwErr.RetryAfterSec > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", gwErr.RetryAfterSec))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(gwErr.StatusCode)
+	_ = json.NewEncoder(w).Encode(AnthropicErrorEnvelope{
+		Type: "error",
+		Error: &AnthropicErrorBody{
+			Type:    mapAnthropicErrorType(gwErr),
+			Message: gwErr.Message,
+		},
+	})
 }
 
 // ClassifyUpstreamStatus determines whether an upstream HTTP status code is retryable within the same group or requires fallback.

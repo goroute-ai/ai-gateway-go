@@ -146,6 +146,7 @@ type ServerConfig struct {
 	Environment          string        `yaml:"environment"` // "development", "staging", "production"
 	Host                 string        `yaml:"host"`
 	Port                 int           `yaml:"port"`
+	GRPCPort             int           `yaml:"grpc_port"` // 0 = disabled; >0 enables A2A gRPC server
 	ReadTimeout          time.Duration `yaml:"read_timeout"`
 	WriteTimeout         time.Duration `yaml:"write_timeout"`
 	IdleTimeout          time.Duration `yaml:"idle_timeout"`
@@ -348,6 +349,11 @@ func Load(path string) (*Config, error) {
 			cfg.Server.Port = p
 		}
 	}
+	if v := os.Getenv("GATEWAY_GRPC_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Server.GRPCPort = p
+		}
+	}
 	if v := os.Getenv("GATEWAY_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
@@ -482,6 +488,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("security violation: server.cors_allow_credentials cannot be true when server.cors_allowed_origins contains \"*\"")
 			}
 		}
+	}
+	if c.Server.GRPCPort < 0 || c.Server.GRPCPort > 65535 {
+		return fmt.Errorf("invalid server.grpc_port: %d", c.Server.GRPCPort)
 	}
 	if len(c.Auth.MasterAdminKey) < 12 {
 		return fmt.Errorf("auth.master_admin_key must be at least 12 characters")

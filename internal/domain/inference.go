@@ -568,6 +568,7 @@ type CanonicalResponseRequest struct {
 	Temperature     *float64        `json:"temperature,omitempty"`
 	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
 	Tools           []any           `json:"tools,omitempty"`
+	ToolChoice      any             `json:"tool_choice,omitempty"`
 	Metadata        map[string]any  `json:"metadata,omitempty"`
 }
 
@@ -577,11 +578,14 @@ type CanonicalResponseContentPart struct {
 }
 
 type CanonicalResponseOutputItem struct {
-	ID      string                         `json:"id"`
-	Type    string                         `json:"type"`   // "message"
-	Status  string                         `json:"status"` // "completed"
-	Role    string                         `json:"role"`   // "assistant"
-	Content []CanonicalResponseContentPart `json:"content"`
+	ID        string                         `json:"id"`
+	Type      string                         `json:"type"`   // "message" or "function_call"
+	Status    string                         `json:"status"` // "completed"
+	Role      string                         `json:"role,omitempty"`
+	Content   []CanonicalResponseContentPart `json:"content,omitempty"`
+	CallID    string                         `json:"call_id,omitempty"`
+	Name      string                         `json:"name,omitempty"`
+	Arguments string                         `json:"arguments,omitempty"`
 }
 
 type CanonicalResponseOutput struct {

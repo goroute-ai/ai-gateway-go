@@ -362,78 +362,112 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 
 	var gm *domain.GlobalModel
 	var depID, depName string
+	var provider domain.ProviderType
 	var pricingVer int
+	var provenance string
 	if meta != nil && meta.WinningDeployment != nil {
 		depID = meta.WinningDeployment.ID
 		depName = meta.WinningDeployment.DeploymentName
 		gm = meta.WinningDeployment.GlobalModel
 		if gm != nil {
+			provider = gm.Provider
 			pricingVer = gm.PricingVersion
+			provenance = gm.PricingProvenanceSource
 		}
 	}
 
 	costMicros := finops.CalculateAudioTTSCostMicros(gm, len(raw.Input))
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
+	var latencyMs, routingMicros int64
+	if meta != nil {
+		latencyMs = meta.LatencyMs
+		routingMicros = meta.RoutingMicros
+	}
+
 	s.collector.Record(observability.RequestObservation{
-		Provider:       string(meta.WinningDeployment.GlobalModel.Provider),
+		Provider:       string(provider),
 		DeploymentID:   depID,
 		DeploymentName: depName,
 		Model:          raw.Model,
 		StatusCode:     http.StatusOK,
-		LatencyMs:      meta.LatencyMs,
-		RoutingMicros:  meta.RoutingMicros,
+		LatencyMs:      latencyMs,
+		RoutingMicros:  routingMicros,
 		CostMicros:     costMicros,
 	})
 
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("X-Gateway-Provider", string(meta.WinningDeployment.GlobalModel.Provider))
+	w.Header().Set("X-Gateway-Provider", string(provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	w.WriteHeader(http.StatusOK)
 
-	streamBytes, readErr := io.ReadAll(stream)
-	if readErr != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeUpstream, Code: "audio_stream_read_failed", Message: "unable to read upstream audio response"})
-		return
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
 	}
 
-	var provenance string
-	if gm != nil {
-		provenance = gm.PricingProvenanceSource
+	bytesWritten, copyErr := io.Copy(&flushingResponseWriter{w: w, flusher: flusher}, stream)
+	if copyErr != nil {
+		logger.WarnContext(r.Context(), "Audio speech stream interrupted",
+			slog.String("component", "audio"),
+			slog.String("request_id", reqID),
+			slog.String("error", copyErr.Error()),
+			slog.Int64("bytes_written", bytesWritten),
+		)
 	}
 
-	if !s.persistSpendEvent(w, r, domain.SpendEvent{
-		RequestID:               reqID,
-		TraceID:                 traceID,
-		OrgID:                   idCtx.OrgID,
-		TeamID:                  idCtx.TeamID,
-		UserID:                  idCtx.UserID,
-		VirtualKeyID:            idCtx.VirtualKeyID,
-		Endpoint:                r.URL.Path,
-		RequestedModel:          raw.Model,
-		ResolvedModel:           raw.ResolvedModel,
-		Provider:                meta.WinningDeployment.GlobalModel.Provider,
-		DeploymentID:            depID,
-		PricingVersion:          pricingVer,
-		PricingStatus:           pricingStatus,
-		PricingProvenanceSource: provenance,
-		CostMicros:              costMicros,
-		LatencyMs:               meta.LatencyMs,
-		StatusCode:              http.StatusOK,
-		Modality:                domain.ModalityAudioTTS,
-		ModalityUnits:           map[string]any{"character_count": len(raw.Input)},
-		CreatedAt:               time.Now().UTC(),
-	}) {
-		return
+	if s.spendWorker != nil {
+		if spendErr := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+			RequestID:               reqID,
+			TraceID:                 traceID,
+			OrgID:                   idCtx.OrgID,
+			TeamID:                  idCtx.TeamID,
+			UserID:                  idCtx.UserID,
+			VirtualKeyID:            idCtx.VirtualKeyID,
+			Endpoint:                r.URL.Path,
+			RequestedModel:          raw.Model,
+			ResolvedModel:           raw.ResolvedModel,
+			Provider:                provider,
+			DeploymentID:            depID,
+			PricingVersion:          pricingVer,
+			PricingStatus:           pricingStatus,
+			PricingProvenanceSource: provenance,
+			CostMicros:              costMicros,
+			LatencyMs:               latencyMs,
+			StatusCode:              http.StatusOK,
+			Modality:                domain.ModalityAudioTTS,
+			ModalityUnits:           map[string]any{"character_count": len(raw.Input)},
+			CreatedAt:               time.Now().UTC(),
+		}); spendErr != nil {
+			logger.WarnContext(r.Context(), "Failed to persist TTS spend event",
+				slog.String("component", "audio"),
+				slog.String("request_id", reqID),
+				slog.String("error", spendErr.Error()),
+			)
+		}
 	}
-	_, _ = w.Write(streamBytes)
 
 	logger.InfoContext(r.Context(), "Audio speech synthesis completed",
 		slog.String("component", "audio"),
 		slog.String("request_id", reqID),
 		slog.String("model", raw.Model),
 		slog.Int("character_count", len(raw.Input)),
+		slog.Int64("bytes_streamed", bytesWritten),
 		slog.Int64("cost_micros", costMicros),
-		slog.Int64("latency_ms", meta.LatencyMs),
+		slog.Int64("latency_ms", latencyMs),
 	)
+}
+
+type flushingResponseWriter struct {
+	w       io.Writer
+	flusher http.Flusher
+}
+
+func (fw *flushingResponseWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if n > 0 && fw.flusher != nil {
+		fw.flusher.Flush()
+	}
+	return n, err
 }

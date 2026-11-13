@@ -130,6 +130,34 @@ func toOpenAIRequest(model string, req *domain.CanonicalChatRequest, stream bool
 	return out
 }
 
+var protectedCoreChatFields = map[string]struct{}{
+	"model":          {},
+	"messages":       {},
+	"stream":         {},
+	"stream_options": {},
+}
+
+func marshalOpenAIRequestWithExtras(payload providers.OpenAIChatCompletionRequest, extra map[string]any) ([]byte, error) {
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil || len(extra) == 0 {
+		return bodyBytes, err
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(bodyBytes, &merged); err != nil {
+		return nil, err
+	}
+	for k, v := range extra {
+		if _, protected := protectedCoreChatFields[k]; protected {
+			continue
+		}
+		if _, exists := merged[k]; exists {
+			continue
+		}
+		merged[k] = v
+	}
+	return json.Marshal(merged)
+}
+
 func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
@@ -140,7 +168,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 
 	payload := toOpenAIRequest(model, req, false)
-	bodyBytes, err := json.Marshal(payload)
+	bodyBytes, err := marshalOpenAIRequestWithExtras(payload, req.ExtraParams)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +267,7 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	}
 
 	payload := toOpenAIRequest(model, req, true)
-	bodyBytes, err := json.Marshal(payload)
+	bodyBytes, err := marshalOpenAIRequestWithExtras(payload, req.ExtraParams)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -124,5 +125,44 @@ func TestOpenAIModeration(t *testing.T) {
 	}
 	if res.Results[0].CategoryScores["hate"] != 0.001 {
 		t.Fatalf("expected hate score 0.001, got %f", res.Results[0].CategoryScores["hate"])
+	}
+}
+
+func TestMarshalOpenAIRequestWithExtras(t *testing.T) {
+	req := &domain.CanonicalChatRequest{
+		Model: "gpt-4o",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "hello"},
+		},
+	}
+	payload := toOpenAIRequest("gpt-4o", req, false)
+	extra := map[string]any{
+		"seed":     99,
+		"logprobs": true,
+		"model":    "clobber",
+		"stream":   true,
+		"messages": "clobber",
+	}
+
+	b, err := marshalOpenAIRequestWithExtras(payload, extra)
+	if err != nil {
+		t.Fatalf("marshalOpenAIRequestWithExtras failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded["model"] != "gpt-4o" {
+		t.Fatalf("expected model gpt-4o, got %v", decoded["model"])
+	}
+	if _, hasStream := decoded["stream"]; hasStream {
+		t.Fatalf("expected stream to remain omitted when false, got %v", decoded["stream"])
+	}
+	if decoded["seed"] != float64(99) {
+		t.Fatalf("expected seed 99, got %v", decoded["seed"])
+	}
+	if decoded["logprobs"] != true {
+		t.Fatalf("expected logprobs true, got %v", decoded["logprobs"])
 	}
 }

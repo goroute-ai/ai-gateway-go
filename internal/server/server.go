@@ -540,6 +540,14 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 	return s.a2aRouter
 }
 
+func (s *GatewayServer) AuthService() *auth.Service {
+	return s.authSvc
+}
+
+func (s *GatewayServer) RBAC() *auth.RBACEngine {
+	return s.rbac
+}
+
 // StartWorkers starts background daemons (Async Spend Batch Writer, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
 func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	s.authSvc.StartInvalidationListener(ctx)

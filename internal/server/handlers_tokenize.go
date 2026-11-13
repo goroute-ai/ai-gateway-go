@@ -88,7 +88,7 @@ func (s *GatewayServer) handleTokenize(w http.ResponseWriter, r *http.Request) {
 func (s *GatewayServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
 	idCtx := auth.IdentityFromContext(r.Context())
 	if idCtx == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "unauthenticated",
@@ -99,7 +99,7 @@ func (s *GatewayServer) handleAnthropicCountTokens(w http.ResponseWriter, r *htt
 
 	var payload anthropicMessagesPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
 			Code:       "invalid_json_body",
@@ -114,7 +114,7 @@ func (s *GatewayServer) handleAnthropicCountTokens(w http.ResponseWriter, r *htt
 	}
 
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
-		domain.WriteHTTPError(w, err)
+		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
 

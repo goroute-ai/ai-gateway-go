@@ -56,15 +56,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if len(req.Tools) > 0 {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusNotImplemented,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "responses_tools_unsupported",
-			Message:    "Responses API tool calling is not supported by this gateway endpoint yet",
-		})
-		return
-	}
 	if req.MaxOutputTokens != nil && *req.MaxOutputTokens < 1 {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_max_output_tokens", Message: "max_output_tokens must be greater than zero"})
 		return
@@ -133,6 +124,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	chatReq := &domain.CanonicalChatRequest{
 		Model:       req.Model,
 		Messages:    messages,
+		Tools:       mapResponsesTools(req.Tools),
+		ToolChoice:  mapResponsesToolChoice(req.ToolChoice),
 		Stream:      req.Stream,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxOutputTokens,
@@ -176,19 +169,35 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		}
 
 		for i, choice := range resp.Choices {
-			itemID := fmt.Sprintf("msg_%s_%d", resp.ID, i)
-			out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
-				ID:     itemID,
-				Type:   "message",
-				Status: "completed",
-				Role:   choice.Message.Role,
-				Content: []domain.CanonicalResponseContentPart{
-					{
-						Type: "output_text",
-						Text: choice.Message.Content,
+			if choice.Message.Content != "" || len(choice.Message.ToolCalls) == 0 {
+				itemID := fmt.Sprintf("msg_%s_%d", resp.ID, i)
+				out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
+					ID:     itemID,
+					Type:   "message",
+					Status: "completed",
+					Role:   choice.Message.Role,
+					Content: []domain.CanonicalResponseContentPart{
+						{
+							Type: "output_text",
+							Text: choice.Message.Content,
+						},
 					},
-				},
-			})
+				})
+			}
+			for j, tc := range choice.Message.ToolCalls {
+				fcID := tc.ID
+				if fcID == "" {
+					fcID = fmt.Sprintf("fc_%s_%d_%d", resp.ID, i, j)
+				}
+				out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
+					ID:        fcID,
+					Type:      "function_call",
+					Status:    "completed",
+					CallID:    tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
+			}
 		}
 
 		var gm *domain.GlobalModel
@@ -455,4 +464,66 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	// 7. response.done
 	fmt.Fprintf(w, "event: response.done\ndata: {}\n\n")
 	flusher.Flush()
+}
+
+func mapResponsesTools(rawTools []any) []domain.CanonicalTool {
+	if len(rawTools) == 0 {
+		return nil
+	}
+	tools := make([]domain.CanonicalTool, 0, len(rawTools))
+	for _, raw := range rawTools {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType, _ := m["type"].(string)
+		if toolType == "" {
+			toolType = "function"
+		}
+		fnMap := m
+		if nested, ok := m["function"].(map[string]any); ok {
+			fnMap = nested
+		}
+		name, _ := fnMap["name"].(string)
+		if name == "" {
+			continue
+		}
+		desc, _ := fnMap["description"].(string)
+		params, _ := fnMap["parameters"].(map[string]any)
+		strict, _ := fnMap["strict"].(bool)
+		tools = append(tools, domain.CanonicalTool{
+			Type: toolType,
+			Function: domain.CanonicalFunction{
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
+				Strict:      strict,
+			},
+		})
+	}
+	return tools
+}
+
+func mapResponsesToolChoice(raw any) any {
+	if raw == nil {
+		return nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return raw
+	}
+	if _, hasFn := m["function"]; hasFn {
+		return m
+	}
+	if toolType, _ := m["type"].(string); toolType == "function" {
+		if name, _ := m["name"].(string); name != "" {
+			return map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": name,
+				},
+			}
+		}
+	}
+	return raw
 }
