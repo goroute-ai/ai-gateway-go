@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
@@ -24,10 +23,7 @@ func (s *GatewayServer) handleA2AWellKnownCard(w http.ResponseWriter, r *http.Re
 // handleA2AAgentMessage serves `POST /a2a/v1/agents/{agentSlug}`
 // (supporting both JSON-RPC 2.0 and HTTP+JSON SendMessage).
 func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "req_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 
 	agentSlug := chi.URLParam(r, "agentSlug")

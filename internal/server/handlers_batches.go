@@ -44,7 +44,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
+	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
 

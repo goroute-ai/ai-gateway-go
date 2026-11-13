@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
@@ -19,10 +18,7 @@ import (
 
 // handleRerank serves `POST /v1/rerank`, `POST /rerank`, and `POST /v2/rerank`.
 func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "req_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -83,9 +79,6 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
-		return
-	}
 	guardedQuery, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Query)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
@@ -111,7 +104,9 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	// Account for query and document lengths, including structured documents.
 	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, quotaTokens)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateRerankCostUpperBound(gm, len(req.Documents))
+	})
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)

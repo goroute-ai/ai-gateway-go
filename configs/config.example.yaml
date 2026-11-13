@@ -87,6 +87,7 @@ discovery:
 cache:
   enabled: true
   default_ttl: 1h
+  max_l1_entries: 4096
 
 # ------------------------------------------------------------------------------
 # Security & Network Egress (SSRF Hardening)
@@ -147,6 +148,11 @@ a2a:
 # Certified Custom OpenAI-Compatible Upstream Providers
 # ------------------------------------------------------------------------------
 providers:
+  request_timeout: 2m          # Total deadline for non-streaming upstream requests
+  response_header_timeout: 2m  # Maximum wait for upstream response headers / TTFT
+  stream_idle_timeout: 2m      # Maximum gap between upstream stream chunks
+  max_idle_conns: 256          # Retained idle provider connections across all hosts
+  max_idle_conns_per_host: 16  # Retained idle connections per provider host
   custom_openai_compatible:
     - id: "custom-vllm"
       display_name: "Self-Hosted vLLM In-House Cluster"
@@ -201,3 +207,17 @@ model_list:
       api_version: "2024-08-01-preview"
       headers:
         X-Custom-Enterprise-Tag: "production-finance"
+
+  # Example OpenAI-compatible extended cloud provider
+  - model_name: openrouter-sonnet
+    model_params:
+      model: openrouter/anthropic/claude-sonnet-4-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      weight: 100
+
+  # Example local runtime (ensure security.network permits your local host/port)
+  - model_name: local-lm-studio
+    model_params:
+      model: lm_studio/qwen2.5-coder-32b-instruct
+      api_base: "http://127.0.0.1:1234/v1"
+      weight: 100

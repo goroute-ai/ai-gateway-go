@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
@@ -19,10 +18,7 @@ import (
 
 // handleModerations serves `POST /v1/moderations` and `POST /moderations`.
 func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "req_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -90,7 +86,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
+	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
 	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)

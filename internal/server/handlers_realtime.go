@@ -30,7 +30,7 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx) {
+	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
 
