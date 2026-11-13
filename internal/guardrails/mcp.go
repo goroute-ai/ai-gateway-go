@@ -120,28 +120,49 @@ func (e *Engine) EvaluateMCPToolCall(
 	if err != nil {
 		return nil, policyUnavailableError()
 	}
-	if pol == nil {
+	if pol == nil && len(e.scanners) == 0 {
 		return outcome, nil
 	}
+	if pol == nil {
+		pol = &domain.GuardrailPolicy{OrgID: orgID}
+	}
 
-	argsBytes, _ := json.Marshal(arguments)
-	argsStr := string(argsBytes)
+	argsBytes, err := json.Marshal(arguments)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "guardrail_invalid_payload",
+			Message:    fmt.Sprintf("Failed to serialize arguments for tool %q for guardrail evaluation", toolName),
+		}
+	}
 
-	// Check prompt injection in tool arguments
-	if pol.EnablePromptInjection {
-		lower := strings.ToLower(argsStr)
-		for _, sig := range promptInjectionSignatures {
-			if strings.Contains(lower, sig) {
-				outcome.Violations = append(outcome.Violations, "prompt_injection_in_tool_args:"+sig)
-				if pol.PromptInjectionAction == domain.GuardrailActionBlock {
-					return outcome, &domain.GatewayError{
-						StatusCode: http.StatusBadRequest,
-						Type:       domain.ErrorTypeInvalidRequest,
-						Code:       "guardrail_violation",
-						Message:    fmt.Sprintf("Prompt injection detected in arguments for tool %q", toolName),
-					}
-				}
+	probe := &domain.CanonicalChatRequest{
+		Messages: []domain.CanonicalMessage{{
+			Role:    "user",
+			Content: string(argsBytes),
+		}},
+	}
+	outcome, err = e.EvaluateInputWithPolicy(ctx, pol, probe)
+	if err != nil {
+		return outcome, err
+	}
+
+	if outcome != nil && outcome.Redacted && arguments != nil {
+		var redactedMap map[string]any
+		if err := json.Unmarshal([]byte(probe.Messages[0].Content), &redactedMap); err != nil {
+			return outcome, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "guardrail_redaction_failed",
+				Message:    fmt.Sprintf("Failed to apply guardrail redaction to arguments for tool %q", toolName),
 			}
+		}
+		for k := range arguments {
+			delete(arguments, k)
+		}
+		for k, v := range redactedMap {
+			arguments[k] = v
 		}
 	}
 
@@ -166,47 +187,115 @@ func (e *Engine) EvaluateMCPToolResult(
 	if err != nil {
 		return nil, nil, policyUnavailableError()
 	}
-	if pol == nil {
+	if pol == nil && len(e.scanners) == 0 {
 		return outcome, result, nil
+	}
+	if pol == nil {
+		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
 
 	resultBytes, err := json.Marshal(result)
 	if err != nil {
-		return outcome, result, nil
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeServer,
+			Code:       "guardrail_invalid_payload",
+			Message:    "Failed to serialize tool result for guardrail evaluation",
+		}
 	}
 	resultStr := string(resultBytes)
+	lower := strings.ToLower(resultStr)
 
-	// Scan PII & Secrets
-	if pol.RedactOutputPII || pol.EnablePIIDetection || pol.EnableSecretDetection {
-		mutated := false
-		if reEmail.MatchString(resultStr) {
-			resultStr = reEmail.ReplaceAllString(resultStr, "[REDACTED_EMAIL]")
-			outcome.Violations = append(outcome.Violations, "pii:email")
-			mutated = true
-		}
-		if reSSN.MatchString(resultStr) {
-			resultStr = reSSN.ReplaceAllString(resultStr, "[REDACTED_SSN]")
-			outcome.Violations = append(outcome.Violations, "pii:ssn")
-			mutated = true
-		}
-		if reCard.MatchString(resultStr) {
-			resultStr = reCard.ReplaceAllString(resultStr, "[REDACTED_CARD]")
-			outcome.Violations = append(outcome.Violations, "pii:credit_card")
-			mutated = true
-		}
-		if reSecret.MatchString(resultStr) {
-			resultStr = reSecret.ReplaceAllString(resultStr, "[REDACTED_SECRET]")
-			outcome.Violations = append(outcome.Violations, "secret_leakage")
-			mutated = true
-		}
-		if mutated {
-			outcome.Redacted = true
-			outcome.AppliedAction = domain.GuardrailActionRedact
-			var unmarshaled any
-			if err := json.Unmarshal([]byte(resultStr), &unmarshaled); err == nil {
-				return outcome, unmarshaled, nil
+	// 1. Custom Blocked Keywords
+	for _, kw := range pol.BlockedKeywords {
+		kwTrim := strings.TrimSpace(kw)
+		if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
+			outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
+			outcome.AppliedAction = domain.GuardrailActionBlock
+			return outcome, nil, &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeServer,
+				Code:       "guardrail_blocked_keyword",
+				Message:    fmt.Sprintf("Tool result blocked by organization guardrail policy (restricted keyword: %q)", kwTrim),
 			}
 		}
+	}
+
+	mutated := false
+
+	// 2. Secret detection (block, redact, or audit)
+	if (pol.RedactOutputPII || pol.EnableSecretDetection) && reSecret.MatchString(resultStr) {
+		outcome.Violations = append(outcome.Violations, "secret_leakage")
+		if pol.EnableSecretDetection && pol.SecretAction == domain.GuardrailActionBlock {
+			outcome.AppliedAction = domain.GuardrailActionBlock
+			return outcome, nil, &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeServer,
+				Code:       "guardrail_secret_detected",
+				Message:    "Tool result blocked by security guardrail: sensitive API key or credential detected",
+			}
+		}
+		if pol.RedactOutputPII || pol.SecretAction == "" || pol.SecretAction == domain.GuardrailActionRedact {
+			resultStr = reSecret.ReplaceAllString(resultStr, "[REDACTED_SECRET]")
+			mutated = true
+		} else {
+			outcome.AppliedAction = pol.SecretAction
+		}
+	}
+
+	// 3. PII detection (block, redact, or audit)
+	if pol.RedactOutputPII || pol.EnablePIIDetection {
+		hasEmail := reEmail.MatchString(resultStr)
+		hasSSN := reSSN.MatchString(resultStr)
+		hasCard := reCard.MatchString(resultStr)
+		if hasEmail {
+			outcome.Violations = append(outcome.Violations, "pii:email")
+		}
+		if hasSSN {
+			outcome.Violations = append(outcome.Violations, "pii:ssn")
+		}
+		if hasCard {
+			outcome.Violations = append(outcome.Violations, "pii:credit_card")
+		}
+		if hasEmail || hasSSN || hasCard {
+			if pol.EnablePIIDetection && pol.PIIAction == domain.GuardrailActionBlock {
+				outcome.AppliedAction = domain.GuardrailActionBlock
+				return outcome, nil, &domain.GatewayError{
+					StatusCode: http.StatusBadGateway,
+					Type:       domain.ErrorTypeServer,
+					Code:       "guardrail_pii_detected",
+					Message:    "Tool result blocked by security guardrail: PII (email, SSN, or payment card) detected",
+				}
+			}
+			if pol.RedactOutputPII || pol.PIIAction == "" || pol.PIIAction == domain.GuardrailActionRedact {
+				resultStr = reEmail.ReplaceAllString(resultStr, "[REDACTED_EMAIL]")
+				resultStr = reSSN.ReplaceAllString(resultStr, "[REDACTED_SSN]")
+				resultStr = reCard.ReplaceAllString(resultStr, "[REDACTED_CARD]")
+				mutated = true
+			} else {
+				outcome.AppliedAction = pol.PIIAction
+			}
+		}
+	}
+
+	// 4. Optional external scanners
+	if err := e.scanText(ctx, orgID, ScanOutput, resultStr); err != nil {
+		return outcome, nil, err
+	}
+
+	if mutated {
+		outcome.Redacted = true
+		outcome.AppliedAction = domain.GuardrailActionRedact
+		var unmarshaled any
+		if err := json.Unmarshal([]byte(resultStr), &unmarshaled); err != nil {
+			return outcome, nil, &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeServer,
+				Code:       "guardrail_redaction_failed",
+				Message:    "Failed to reconstruct tool result after guardrail redaction",
+			}
+		}
+		return outcome, unmarshaled, nil
 	}
 
 	return outcome, result, nil
