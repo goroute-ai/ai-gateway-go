@@ -295,7 +295,7 @@ func (s *GRPCServer) SubscribeToTask(req *pb.SubscribeToTaskRequest, stream grpc
 		defer cancelSub()
 
 		go func() {
-			_, _ = s.router.redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+			_, _ = s.router.redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 				pubsub := rdb.Subscribe(subCtx, channel)
 				defer pubsub.Close()
 				for {

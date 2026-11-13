@@ -78,7 +78,7 @@ func (p *StreamPublisher) PublishPending(ctx context.Context) error {
 		channel := fmt.Sprintf("gw:a2a:events:%s", pub.TaskID)
 
 		if p.redis != nil {
-			_, err := p.redis.Execute(func(rdb *redis.Client) (any, error) {
+			_, err := p.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 				return rdb.Publish(ctx, channel, pub.PayloadJSON).Result()
 			})
 			if err != nil {

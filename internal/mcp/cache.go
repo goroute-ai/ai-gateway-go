@@ -101,7 +101,7 @@ func ShouldCache(method string, resp *JSONRPCResponse) bool {
 // Get retrieves a cached JSONRPCResponse if present and unexpired.
 func (c *MCPCache) Get(ctx context.Context, key string) (*JSONRPCResponse, bool) {
 	if c.redis != nil {
-		res, err := c.redis.Execute(func(rdb *redis.Client) (any, error) {
+		res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Get(ctx, key).Result()
 		})
 		if err == nil {
@@ -140,7 +140,7 @@ func (c *MCPCache) Set(ctx context.Context, key string, resp *JSONRPCResponse, t
 	}
 
 	if c.redis != nil {
-		_, _ = c.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Set(ctx, key, string(data), ttl).Result()
 		})
 	}
@@ -157,7 +157,7 @@ func (c *MCPCache) Set(ctx context.Context, key string, resp *JSONRPCResponse, t
 // InvalidateKey deletes a cache entry by key.
 func (c *MCPCache) InvalidateKey(ctx context.Context, key string) error {
 	if c.redis != nil {
-		_, _ = c.redis.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Del(ctx, key).Result()
 		})
 	}

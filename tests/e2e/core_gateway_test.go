@@ -56,7 +56,7 @@ func setupLiveGateway(t *testing.T) (*httptest.Server, *server.GatewayServer, *s
 
 	// 2. Redis Fabric
 	redisFabric := storage.NewRedisFabric(redisAddr, "", 0)
-	if _, err := redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+	if _, err := redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.Ping(ctx).Result()
 	}); err != nil {
 		pool.Close()
@@ -549,7 +549,7 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	defer cancelSub()
 
 	go func() {
-		_, _ = redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+		_, _ = redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 			pubsub := rdb.Subscribe(subCtx, channel)
 			defer pubsub.Close()
 			for {
@@ -572,7 +572,7 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 
 	// Publish test event to Redis channel
 	testPayload := `{"event_type":"TASK_PROGRESS","progress_pct":75,"task_id":"` + taskID + `"}`
-	_, _ = redisFabric.Execute(func(rdb *redis.Client) (any, error) {
+	_, _ = redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 		return rdb.Publish(context.Background(), channel, testPayload).Result()
 	})
 

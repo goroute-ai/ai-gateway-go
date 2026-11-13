@@ -159,7 +159,7 @@ func TestBudgetReservationsAreAtomicAcrossLimiterInstances(t *testing.T) {
 		t.Fatal("expected concurrent reservation to be rejected when total upper bounds exceed budget")
 	}
 	r1(-1, 0) // failed request releases its reservation
-	if members, _ := mr.ZMembers("gw:budget:reservations:key:budget-key"); len(members) != 0 {
+	if members, _ := mr.ZMembers("gw:budget:{org:budget-org}:reservations:key:budget-key"); len(members) != 0 {
 		t.Fatalf("reservation should be released, remain: %v", members)
 	}
 	r2, err := second.AcquireWithBudget(context.Background(), identity, 10, 60, "request-3")
@@ -168,7 +168,7 @@ func TestBudgetReservationsAreAtomicAcrossLimiterInstances(t *testing.T) {
 	}
 	r2(10, -2)
 	second.RecordSpendIncrementForRequest(context.Background(), "request-3", "budget-key", "", "budget-org", 45)
-	if got, _ := mr.Get("gw:spend:key:budget-key"); got != "45" {
+	if got, _ := mr.Get("gw:spend:{org:budget-org}:key:budget-key"); got != "45" {
 		t.Fatalf("actual spend = %q, want 45", got)
 	}
 
