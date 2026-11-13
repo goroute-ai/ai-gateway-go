@@ -2,6 +2,7 @@ package observability
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strings"
@@ -9,7 +10,10 @@ import (
 	"time"
 )
 
-const maxReservoirSamples = 1024
+const (
+	maxReservoirSamples  = 1024
+	maxDeploymentEntries = 4096
+)
 
 type reservoir struct {
 	samples []int64
@@ -22,8 +26,10 @@ func (r *reservoir) add(val int64) {
 	r.count++
 	if len(r.samples) < maxReservoirSamples {
 		r.samples = append(r.samples, val)
-	} else {
-		idx := int(r.count % maxReservoirSamples)
+		return
+	}
+	// Vitter's Algorithm R: uniform reservoir sampling over all r.count items seen.
+	if idx := rand.Int64N(r.count); idx < maxReservoirSamples {
 		r.samples[idx] = val
 	}
 }
@@ -126,6 +132,7 @@ type deploymentInternal struct {
 	errors      int64
 	latencyHist reservoir
 	ttftHist    reservoir
+	lastAccess  uint64
 }
 
 // RequestObservation is recorded after each inference or control-plane operation.
@@ -167,12 +174,15 @@ type Collector struct {
 	routingMicros       reservoir
 	providers           map[string]*providerInternal
 	deployments         map[string]*deploymentInternal
+	maxDeployments      int
+	accessSeq           uint64
 }
 
 func NewCollector() *Collector {
 	return &Collector{
-		providers:   make(map[string]*providerInternal),
-		deployments: make(map[string]*deploymentInternal),
+		providers:      make(map[string]*providerInternal),
+		deployments:    make(map[string]*deploymentInternal),
+		maxDeployments: maxDeploymentEntries,
 	}
 }
 
@@ -185,6 +195,44 @@ func (c *Collector) RecordSpendRedisDrift() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.spendRedisDrift++
+}
+
+// getOrCreateDeployment returns an existing deploymentInternal or creates a new one,
+// evicting the least-recently-updated entry if the bounded capacity is reached. Caller must hold c.mu.
+func (c *Collector) getOrCreateDeployment(depID, depName, provider, model string) *deploymentInternal {
+	c.accessSeq++
+	if d, ok := c.deployments[depID]; ok {
+		d.lastAccess = c.accessSeq
+		return d
+	}
+	limit := c.maxDeployments
+	if limit <= 0 {
+		limit = maxDeploymentEntries
+	}
+	if len(c.deployments) >= limit {
+		var evictID string
+		var oldest uint64
+		first := true
+		for id, entry := range c.deployments {
+			if first || entry.lastAccess < oldest {
+				oldest = entry.lastAccess
+				evictID = id
+				first = false
+			}
+		}
+		if evictID != "" {
+			delete(c.deployments, evictID)
+		}
+	}
+	d := &deploymentInternal{
+		id:         depID,
+		name:       depName,
+		provider:   provider,
+		model:      model,
+		lastAccess: c.accessSeq,
+	}
+	c.deployments[depID] = d
+	return d
 }
 
 // Record ingests telemetry from a single inference request.
@@ -248,16 +296,7 @@ func (c *Collector) Record(obs RequestObservation) {
 	}
 
 	if obs.DeploymentID != "" {
-		d, ok := c.deployments[obs.DeploymentID]
-		if !ok {
-			d = &deploymentInternal{
-				id:       obs.DeploymentID,
-				name:     obs.DeploymentName,
-				provider: obs.Provider,
-				model:    obs.Model,
-			}
-			c.deployments[obs.DeploymentID] = d
-		}
+		d := c.getOrCreateDeployment(obs.DeploymentID, obs.DeploymentName, obs.Provider, obs.Model)
 		d.totalReqs++
 		if isErr {
 			d.errors++
@@ -278,16 +317,7 @@ func (c *Collector) RecordDeploymentAttempt(depID, depName, provider, model stri
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	d, ok := c.deployments[depID]
-	if !ok {
-		d = &deploymentInternal{
-			id:       depID,
-			name:     depName,
-			provider: provider,
-			model:    model,
-		}
-		c.deployments[depID] = d
-	}
+	d := c.getOrCreateDeployment(depID, depName, provider, model)
 	d.totalReqs++
 	if failed {
 		d.errors++

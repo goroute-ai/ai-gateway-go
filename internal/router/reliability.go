@@ -23,6 +23,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // CircuitState represents the 3-state circuit breaker status for a deployment.
@@ -68,6 +72,7 @@ type ReliabilityManager struct {
 	redis             *storage.RedisFabric
 	healthMon         *health.Monitor
 	collector         *observability.Collector
+	tracer            trace.Tracer
 	cfg               config.RouterConfig
 	mu                sync.Mutex
 	cooldowns         map[string]*cooldownState
@@ -122,6 +127,57 @@ func (rm *ReliabilityManager) SetHealthMonitor(hm *health.Monitor) {
 // SetCollector attaches the observability Collector to ReliabilityManager.
 func (rm *ReliabilityManager) SetCollector(col *observability.Collector) {
 	rm.collector = col
+}
+
+// SetTracer attaches an OpenTelemetry Tracer to ReliabilityManager for upstream client spans.
+func (rm *ReliabilityManager) SetTracer(t trace.Tracer) {
+	rm.tracer = t
+}
+
+func (rm *ReliabilityManager) tracerFor(ctx context.Context) trace.Tracer {
+	if rm.tracer != nil {
+		return rm.tracer
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		return span.TracerProvider().Tracer("github.com/goroute-ai/ai-gateway-go/router")
+	}
+	return otel.Tracer("github.com/goroute-ai/ai-gateway-go/router")
+}
+
+func (rm *ReliabilityManager) startGenAIClientSpan(ctx context.Context, operation string, dep *domain.Deployment) (context.Context, trace.Span) {
+	var provider, model string
+	if dep != nil && dep.GlobalModel != nil {
+		provider = string(dep.GlobalModel.Provider)
+		model = dep.GlobalModel.ModelName
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("gen_ai.operation.name", operation),
+	}
+	if provider != "" {
+		attrs = append(attrs, attribute.String("gen_ai.system", provider))
+	}
+	if model != "" {
+		attrs = append(attrs, attribute.String("gen_ai.request.model", model))
+	}
+	return rm.tracerFor(ctx).Start(ctx, "gen_ai.client",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+}
+
+func finishGenAIClientSpan(span trace.Span, usage *domain.TokenUsage, err error) {
+	if usage != nil {
+		span.SetAttributes(
+			attribute.Int("gen_ai.usage.input_tokens", usage.PromptTokens),
+			attribute.Int("gen_ai.usage.output_tokens", usage.CompletionTokens),
+			attribute.Int("gen_ai.usage.total_tokens", usage.TotalTokens),
+		)
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 }
 
 func isBudgetConstrained(idCtx *domain.IdentityContext) bool {
@@ -256,7 +312,13 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := adp.ChatCompletion(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+			resp, err := adp.ChatCompletion(spanCtx, dep, &reqCopy)
+			var usage *domain.TokenUsage
+			if resp != nil {
+				usage = &resp.Usage
+			}
+			finishGenAIClientSpan(span, usage, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
@@ -405,13 +467,15 @@ func (rm *ReliabilityManager) ExecuteStream(
 			firstChunkRecorded := false
 			rm.loadBalancer.OnRequestStart(dep.ID)
 
-			usage, err := adp.StreamChatCompletion(ctx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+			usage, err := adp.StreamChatCompletion(spanCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
 				if !firstChunkRecorded {
 					firstChunkRecorded = true
 					meta.TTFTMs = time.Since(depStart).Milliseconds()
 				}
 				return onChunk(chunk)
 			})
+			finishGenAIClientSpan(span, usage, err)
 
 			if err == nil {
 				depLatency := time.Since(depStart).Milliseconds()
@@ -570,7 +634,13 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := adp.Embeddings(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "embeddings", dep)
+			resp, err := adp.Embeddings(spanCtx, dep, &reqCopy)
+			var usage *domain.TokenUsage
+			if resp != nil {
+				usage = &resp.Usage
+			}
+			finishGenAIClientSpan(span, usage, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
@@ -736,7 +806,13 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := rerankAdp.Rerank(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "rerank", dep)
+			resp, err := rerankAdp.Rerank(spanCtx, dep, &reqCopy)
+			var usage *domain.TokenUsage
+			if resp != nil {
+				usage = &domain.TokenUsage{TotalTokens: resp.Usage.TotalTokens}
+			}
+			finishGenAIClientSpan(span, usage, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
@@ -902,7 +978,9 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := modAdp.Moderate(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "moderation", dep)
+			resp, err := modAdp.Moderate(spanCtx, dep, &reqCopy)
+			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
@@ -1054,7 +1132,13 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 			var resp *domain.CanonicalCompletionResponse
 			// If adapter implements native CompletionAdapter, use it
 			if compAdp, ok := adp.(adapter.CompletionAdapter); ok {
-				resp, err = compAdp.TextCompletion(ctx, dep, &reqCopy)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
+				resp, err = compAdp.TextCompletion(spanCtx, dep, &reqCopy)
+				var usage *domain.TokenUsage
+				if resp != nil {
+					usage = &resp.Usage
+				}
+				finishGenAIClientSpan(span, usage, err)
 			} else {
 				// Transparent fallback: promote to ChatCompletion
 				promptText := strings.Join(req.Prompt.Strings, "\n\n")
@@ -1074,7 +1158,13 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 					Stop:        req.Stop,
 					User:        req.User,
 				}
-				chatResp, chatErr := adp.ChatCompletion(ctx, dep, chatReq)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+				chatResp, chatErr := adp.ChatCompletion(spanCtx, dep, chatReq)
+				var usage *domain.TokenUsage
+				if chatResp != nil {
+					usage = &chatResp.Usage
+				}
+				finishGenAIClientSpan(span, usage, chatErr)
 				if chatErr != nil {
 					err = chatErr
 				} else if chatResp != nil {
@@ -1262,7 +1352,9 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := audioAdp.TranscribeAudio(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_transcription", dep)
+			resp, err := audioAdp.TranscribeAudio(spanCtx, dep, &reqCopy)
+			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
@@ -1419,7 +1511,9 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			stream, contentType, err := audioAdp.GenerateSpeech(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_speech", dep)
+			stream, contentType, err := audioAdp.GenerateSpeech(spanCtx, dep, &reqCopy)
+			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && stream != nil {
@@ -1576,7 +1670,9 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
-			resp, err := imgAdp.GenerateImage(ctx, dep, &reqCopy)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "image_generation", dep)
+			resp, err := imgAdp.GenerateImage(spanCtx, dep, &reqCopy)
+			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
 			if err == nil && resp != nil {
