@@ -104,6 +104,8 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			if redisClusterSlot(sp[0]) != redisClusterSlot(acq[0]) {
 				t.Fatalf("spendKeys slot %d != acquireKeys slot %d", redisClusterSlot(sp[0]), redisClusterSlot(acq[0]))
 			}
+			idempotencyKey := "gw:spend:applied:" + orgHashTag(tc.idCtx.OrgID) + ":event_123"
+			assertSameClusterSlot(t, "spend keys plus idempotency marker", append(sp, idempotencyKey))
 		})
 	}
 }

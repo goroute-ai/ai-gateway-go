@@ -10,6 +10,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
@@ -17,13 +18,14 @@ import (
 // SpendWorker commits events to the repository outbox before callers report success,
 // then retries ledger delivery from that durable queue.
 type SpendWorker struct {
-	repo     storage.Repository
-	limiter  *ratelimit.Limiter
-	cfg      config.FinOpsConfig
-	notify   chan struct{}
-	wg       sync.WaitGroup
-	stopOnce sync.Once
-	stopCh   chan struct{}
+	repo      storage.Repository
+	limiter   *ratelimit.Limiter
+	collector *observability.Collector
+	cfg       config.FinOpsConfig
+	notify    chan struct{}
+	wg        sync.WaitGroup
+	stopOnce  sync.Once
+	stopCh    chan struct{}
 }
 
 func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg config.FinOpsConfig) *SpendWorker {
@@ -34,6 +36,11 @@ func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg con
 		cfg.FlushInterval = 500 * time.Millisecond
 	}
 	return &SpendWorker{repo: repo, limiter: limiter, cfg: cfg, notify: make(chan struct{}, 1), stopCh: make(chan struct{})}
+}
+
+// SetCollector attaches an observability collector for reporting Redis spend drift metrics.
+func (sw *SpendWorker) SetCollector(collector *observability.Collector) {
+	sw.collector = collector
 }
 
 func (sw *SpendWorker) Start(ctx context.Context) { sw.wg.Add(1); go sw.runBatchLoop(ctx) }
@@ -51,10 +58,14 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 		return err
 	}
 	if sw.limiter != nil && ev.CostMicros > 0 {
-		sw.limiter.RecordSpendIncrementForRequest(context.Background(), ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros)
+		if err := sw.limiter.RecordSpendIncrementForEvent(context.Background(), ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros); err != nil {
+			logger.Warn("Immediate Redis spend increment failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+		}
 	} else if sw.limiter != nil && ev.RequestID != "" {
 		// A zero-cost success (for example a cache hit) still releases its reservation.
-		sw.limiter.RecordSpendIncrementForRequest(context.Background(), ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, 0)
+		if err := sw.limiter.RecordSpendIncrementForEvent(context.Background(), ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, 0); err != nil {
+			logger.Warn("Immediate Redis reservation release failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+		}
 	}
 	select {
 	case sw.notify <- struct{}{}:
@@ -173,6 +184,27 @@ func (sw *SpendWorker) process(ctx context.Context) error {
 			return firstErr
 		}
 		for _, ev := range events {
+			if sw.limiter != nil && (ev.CostMicros > 0 || ev.RequestID != "") {
+				cost := ev.CostMicros
+				if cost < 0 {
+					cost = 0
+				}
+				if err := sw.limiter.RecordSpendIncrementForEvent(ctx, ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, cost); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					attempt := ev.OutboxAttempt
+					delay := time.Second << min(attempt, 8)
+					if retryErr := sw.repo.RetrySpendEvent(ctx, ev.ID, err, time.Now().Add(delay), 12); retryErr != nil && firstErr == nil {
+						firstErr = retryErr
+					}
+					if attempt >= 12 {
+						sw.collector.RecordSpendRedisDrift()
+						logger.Error("FinOps Redis spend reconciliation moved to dead-letter state", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.Int("attempts", attempt), slog.String("error", err.Error()))
+					}
+					continue
+				}
+			}
 			if err := sw.repo.MarkSpendEventDelivered(ctx, ev.ID); err != nil {
 				if firstErr == nil {
 					firstErr = err

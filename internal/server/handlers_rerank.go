@@ -83,6 +83,9 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if rejectBudgetedUnsupported(w, idCtx) {
+		return
+	}
 	guardedQuery, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Query)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)

@@ -3,15 +3,16 @@ package finops_test
 import (
 	"context"
 	"errors"
-	"testing"
-	"time"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"net"
+	"testing"
+	"time"
 )
 
 type failingOutboxRepository struct {
@@ -248,4 +249,96 @@ func TestSpendWorkerResetExpiredBudgetsClearsRedisAndAdvancesPeriod(t *testing.T
 		t.Fatalf("expected request to be admitted after budget reset, got %v", err)
 	}
 	release(1, 50)
+}
+
+func TestSpendWorkerRetriesRedisAndRecordsDriftMetric(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+
+	// Create a closed port to simulate an unreachable Redis instance.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	deadFabric := storage.NewRedisFabric(deadAddr, "", 0)
+	t.Cleanup(func() { _ = deadFabric.Client().Close() })
+	deadLimiter := ratelimit.NewLimiter(deadFabric, 60, 300)
+	collector := observability.NewCollector()
+
+	sw := finops.NewSpendWorker(repo, deadLimiter, config.FinOpsConfig{BatchSize: 10})
+	sw.SetCollector(collector)
+
+	ev := domain.SpendEvent{
+		ID:           "ev-redis-retry-1",
+		RequestID:    "req-redis-retry-1",
+		VirtualKeyID: "vk-retry",
+		OrgID:        "org-retry",
+		CostMicros:   120,
+		StatusCode:   200,
+	}
+	if err := sw.Record(ctx, ev); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	// First flush fails on Redis and schedules retry rather than marking delivered.
+	if err := sw.FlushNow(ctx); err == nil {
+		t.Fatal("expected FlushNow to return error when Redis is unreachable")
+	}
+
+	// Simulate recovery with a live Redis instance: outbox retry succeeds without double-counting SQL.
+	mr := miniredis.RunT(t)
+	liveFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = liveFabric.Client().Close() })
+	liveLimiter := ratelimit.NewLimiter(liveFabric, 60, 300)
+
+	// Re-enqueue / claim via a fresh event at attempt 12 to also verify drift metric on exhaustion,
+	// and verify live retry on a recovered worker after retry backoff.
+	if err := repo.RetrySpendEvent(ctx, ev.ID, errors.New("retry now"), time.Now().Add(-time.Second), 12); err != nil {
+		t.Fatal(err)
+	}
+	recovered := finops.NewSpendWorker(repo, liveLimiter, config.FinOpsConfig{BatchSize: 10})
+	if err := recovered.FlushNow(ctx); err != nil {
+		t.Fatalf("recovered FlushNow failed: %v", err)
+	}
+	if got, _ := mr.Get("gw:spend:{org:org-retry}:key:vk-retry"); got != "120" {
+		t.Fatalf("tagged spend key = %q, want 120", got)
+	}
+	summary, err := repo.GetSpendSummary(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalRequests != 1 || summary.TotalCostMicros != 120 {
+		t.Fatalf("unexpected SQL summary after retry: %+v", summary)
+	}
+
+	// Verify dead-lettered Redis failure increments SpendRedisDriftTotal.
+	driftEv := domain.SpendEvent{
+		ID:           "ev-redis-drift-1",
+		RequestID:    "req-redis-drift-1",
+		VirtualKeyID: "vk-drift",
+		OrgID:        "org-drift",
+		CostMicros:   50,
+		StatusCode:   200,
+	}
+	if err := repo.EnqueueSpendEvent(ctx, driftEv); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 11; i++ {
+		claimed, claimErr := repo.ClaimSpendEvents(ctx, 1, time.Minute)
+		if claimErr != nil || len(claimed) != 1 {
+			t.Fatalf("attempt %d claim: len=%d err=%v", i+1, len(claimed), claimErr)
+		}
+		if retryErr := repo.RetrySpendEvent(ctx, driftEv.ID, errors.New("still down"), time.Now().Add(-time.Second), 12); retryErr != nil {
+			t.Fatal(retryErr)
+		}
+	}
+	// 12th attempt via FlushNow moves to dead-letter and increments drift metric.
+	if err := sw.FlushNow(ctx); err == nil {
+		t.Fatal("expected FlushNow error on 12th attempt")
+	}
+	if got := collector.Snapshot().SpendRedisDriftTotal; got != 1 {
+		t.Fatalf("SpendRedisDriftTotal = %d, want 1", got)
+	}
 }
