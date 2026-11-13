@@ -13,6 +13,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
@@ -286,11 +287,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		releaseQuota(0)
 		return
 	}
-	if policy != nil && policy.RedactOutputPII {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
-		releaseQuota(0)
-		return
-	}
+	streamRedactor := guardrails.NewStreamRedactor(policy)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		releaseQuota(-1)
@@ -318,23 +315,34 @@ func (s *GatewayServer) streamAnthropicMessages(
 	var outputTokens int
 	var winningDep *domain.Deployment
 
+	emitDelta := func(txt string) {
+		if txt == "" {
+			return
+		}
+		outputTokens++
+		deltaBytes, _ := json.Marshal(map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]string{
+				"type": "text_delta",
+				"text": txt,
+			},
+		})
+		fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", string(deltaBytes))
+		flusher.Flush()
+	}
+
 	usage, meta, err := s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil {
 			return nil
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
-				outputTokens++
-				deltaBytes, _ := json.Marshal(map[string]any{
-					"type":  "content_block_delta",
-					"index": 0,
-					"delta": map[string]string{
-						"type": "text_delta",
-						"text": choice.Delta.Content,
-					},
-				})
-				fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", string(deltaBytes))
-				flusher.Flush()
+				txt := choice.Delta.Content
+				if streamRedactor != nil {
+					txt = streamRedactor.Process(txt)
+				}
+				emitDelta(txt)
 			}
 		}
 		return nil
@@ -354,6 +362,9 @@ func (s *GatewayServer) streamAnthropicMessages(
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errBytes))
 		flusher.Flush()
 		return
+	}
+	if streamRedactor != nil {
+		emitDelta(streamRedactor.Flush())
 	}
 
 	totalTokens := estTokens + outputTokens

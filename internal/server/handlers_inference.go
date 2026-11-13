@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
@@ -255,10 +256,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			domain.WriteHTTPError(w, policyErr)
 			return
 		}
-		if policy != nil && policy.RedactOutputPII {
-			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
-			return
-		}
+		streamRedactor := guardrails.NewStreamRedactor(policy)
 		sseWriter, err := sse.NewWriter(w)
 		if err != nil {
 			domain.WriteHTTPError(w, err)
@@ -275,14 +273,26 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}
 		}
 
+		writeChunk := func(chunk *domain.CanonicalStreamChunk) error {
+			if chunk == nil {
+				return nil
+			}
+			if streamRedactor != nil && len(chunk.Choices) > 0 {
+				delta := &chunk.Choices[0].Delta
+				if delta.Content != "" {
+					delta.Content = streamRedactor.Process(delta.Content)
+					if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && chunk.Choices[0].FinishReason == nil && chunk.Usage == nil {
+						return nil
+					}
+				}
+			}
+			return sseWriter.WriteChunk(chunk)
+		}
+
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
-			usage, meta, err = s.orchestrator.ExecuteStreamLoop(r.Context(), idCtx, &chatReq, func(chunk *domain.CanonicalStreamChunk) error {
-				return sseWriter.WriteChunk(chunk)
-			}, onSelected)
+			usage, meta, err = s.orchestrator.ExecuteStreamLoop(r.Context(), idCtx, &chatReq, writeChunk, onSelected)
 		} else {
-			usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, &chatReq, func(chunk *domain.CanonicalStreamChunk) error {
-				return sseWriter.WriteChunk(chunk)
-			}, onSelected)
+			usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, &chatReq, writeChunk, onSelected)
 		}
 		if err != nil {
 			statusCode := http.StatusBadGateway
@@ -327,6 +337,26 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				_ = sseWriter.WriteError(err)
 			}
 			return
+		}
+		if streamRedactor != nil {
+			if rem := streamRedactor.Flush(); rem != "" {
+				if writeErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
+					ID:      "chatcmpl-" + reqID,
+					Object:  "chat.completion.chunk",
+					Created: time.Now().Unix(),
+					Model:   chatReq.Model,
+					Choices: []domain.CanonicalStreamChoice{{
+						Index: 0,
+						Delta: domain.CanonicalStreamDelta{Role: "assistant", Content: rem},
+					}},
+				}); writeErr != nil {
+					_ = sseWriter.WriteError(writeErr)
+					return
+				}
+			}
+			if streamRedactor.Redacted() {
+				guardrailRedacted = true
+			}
 		}
 		totalTok := 0
 		var usageVal domain.TokenUsage

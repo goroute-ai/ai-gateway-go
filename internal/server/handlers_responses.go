@@ -11,6 +11,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 )
 
 // handleResponses serves `POST /v1/responses`, `POST /responses`, and `POST /openai/v1/responses`.
@@ -243,10 +244,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		domain.WriteHTTPError(w, policyErr)
 		return
 	}
-	if policy != nil && policy.RedactOutputPII {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_stream_redaction_unsupported", Message: "Streaming is unavailable while output redaction is enabled because streamed chunks cannot be withheld for inspection"})
-		return
-	}
+	streamRedactor := guardrails.NewStreamRedactor(policy)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -301,22 +299,31 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 
 	fullText := strings.Builder{}
 
+	emitDelta := func(txt string) {
+		if txt == "" {
+			return
+		}
+		fullText.WriteString(txt)
+		deltaEv := map[string]any{
+			"output_index":  0,
+			"content_index": 0,
+			"delta":         txt,
+		}
+		db, _ := json.Marshal(deltaEv)
+		fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", string(db))
+		flusher.Flush()
+	}
+
 	onChunk := func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil {
 			return nil
 		}
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			txt := chunk.Choices[0].Delta.Content
-			fullText.WriteString(txt)
-
-			deltaEv := map[string]any{
-				"output_index":  0,
-				"content_index": 0,
-				"delta":         txt,
+			if streamRedactor != nil {
+				txt = streamRedactor.Process(txt)
 			}
-			db, _ := json.Marshal(deltaEv)
-			fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", string(db))
-			flusher.Flush()
+			emitDelta(txt)
 		}
 		return nil
 	}
@@ -335,6 +342,9 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(eb))
 		flusher.Flush()
 		return
+	}
+	if streamRedactor != nil {
+		emitDelta(streamRedactor.Flush())
 	}
 
 	var streamUsage domain.TokenUsage

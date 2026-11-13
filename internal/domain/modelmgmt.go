@@ -219,9 +219,19 @@ const (
 	GuardrailActionAudit  GuardrailAction = "audit"
 )
 
+// GuardrailMode controls whether a guardrail policy enforces actions or only logs violations.
+type GuardrailMode string
+
+const (
+	GuardrailModeEnforce     GuardrailMode = "enforce"
+	GuardrailModeLoggingOnly GuardrailMode = "logging_only"
+)
+
 // GuardrailPolicy defines per-organization security, PII redaction, and prompt-injection rules.
 type GuardrailPolicy struct {
 	OrgID                 string          `json:"org_id"`
+	Mode                  GuardrailMode   `json:"mode,omitempty"`
+	ScanAllRoles          bool            `json:"scan_all_roles"`
 	EnablePromptInjection bool            `json:"enable_prompt_injection"`
 	PromptInjectionAction GuardrailAction `json:"prompt_injection_action"`
 	EnablePIIDetection    bool            `json:"enable_pii_detection"`
@@ -231,6 +241,14 @@ type GuardrailPolicy struct {
 	BlockedKeywords       []string        `json:"blocked_keywords,omitempty"`
 	RedactOutputPII       bool            `json:"redact_output_pii"`
 	UpdatedAt             time.Time       `json:"updated_at"`
+}
+
+// EffectiveMode returns the normalized GuardrailMode, defaulting to GuardrailModeEnforce.
+func (p *GuardrailPolicy) EffectiveMode() GuardrailMode {
+	if p != nil && p.Mode == GuardrailModeLoggingOnly {
+		return GuardrailModeLoggingOnly
+	}
+	return GuardrailModeEnforce
 }
 
 // ModelGroup represents a logical routing target (e.g. "gpt-4.1", "fast", "reasoning", "auto").
