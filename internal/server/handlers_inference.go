@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -67,24 +66,72 @@ var protectedExtraParamFields = map[string]struct{}{
 	"stream_options": {},
 }
 
+const maxChatCompletionBodyBytes int64 = 10 << 20
+
 // decodeChatCompletionRequest decodes a ChatCompletion JSON body into dst and unpacks
 // extra_body and unknown top-level fields into dst.ExtraParams without clobbering core fields.
 func decodeChatCompletionRequest(body io.Reader, dst *domain.CanonicalChatRequest) error {
-	rawBytes, err := io.ReadAll(body)
+	dec := json.NewDecoder(body)
+	first, err := dec.Token()
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(rawBytes, dst); err != nil {
+	fields := make(map[string]json.RawMessage)
+	if first != nil {
+		objectStart, ok := first.(json.Delim)
+		if !ok || objectStart != '{' {
+			return fmt.Errorf("ChatCompletion request must be a JSON object")
+		}
+		for dec.More() {
+			token, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("ChatCompletion request object contains a non-string key")
+			}
+			var raw json.RawMessage
+			if err := dec.Decode(&raw); err != nil {
+				return err
+			}
+			if name == "extra_body" {
+				fields[name] = raw
+				continue
+			}
+			known, err := decodeChatCanonicalField(name, raw, dst)
+			if err != nil {
+				return fmt.Errorf("decode %s: %w", name, err)
+			}
+			if !known {
+				fields[name] = raw
+			}
+		}
+		if _, err := dec.Token(); err != nil { // closing brace
+			return err
+		}
+	} else {
+		// encoding/json accepts null into a struct and leaves it unchanged.
+		// Keep that compatibility while still rejecting scalar and array bodies.
+		var trailing any
+		if err := dec.Decode(&trailing); err != io.EOF {
+			if err == nil {
+				return fmt.Errorf("request body must contain one JSON value")
+			}
+			return err
+		}
+		return nil
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body must contain one JSON value")
+		}
 		return err
 	}
 
-	var rawMap map[string]any
-	dec := json.NewDecoder(bytes.NewReader(rawBytes))
-	dec.UseNumber()
-	if err := dec.Decode(&rawMap); err != nil {
-		return err
-	}
-
+	// Unknown parameters are decoded only once into their generic
+	// representation, avoiding a second full parse into map[string]any.
 	mergeExtra := func(k string, v any) {
 		if _, protected := protectedExtraParamFields[k]; protected {
 			return
@@ -97,26 +144,96 @@ func decodeChatCompletionRequest(body io.Reader, dst *domain.CanonicalChatReques
 		}
 	}
 
-	if extraBody, ok := rawMap["extra_body"].(map[string]any); ok {
-		for k, v := range extraBody {
-			mergeExtra(k, v)
+	for k, raw := range fields {
+		if k == "extra_body" {
+			var extraBody map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &extraBody); err != nil {
+				// Match the previous decoder's behavior: non-object extra_body values
+				// are ignored, while malformed JSON is rejected by the top-level parse.
+				extraBody = nil
+			}
+			for key, rawValue := range extraBody {
+				v, err := decodeChatExtraValue(rawValue)
+				if err != nil {
+					return fmt.Errorf("decode extra_body.%s: %w", key, err)
+				}
+				mergeExtra(key, v)
+			}
+			continue
 		}
-	}
-	for k, v := range rawMap {
 		if _, known := knownChatRequestFields[k]; known {
 			continue
+		}
+		v, err := decodeChatExtraValue(raw)
+		if err != nil {
+			return fmt.Errorf("decode extra parameter %s: %w", k, err)
 		}
 		mergeExtra(k, v)
 	}
 	return nil
 }
 
+func decodeChatCanonicalField(name string, raw json.RawMessage, dst *domain.CanonicalChatRequest) (bool, error) {
+	var target any
+	switch strings.ToLower(name) {
+	case "request_id":
+		target = &dst.RequestID
+	case "model":
+		target = &dst.Model
+	case "resolved_model":
+		target = &dst.ResolvedModel
+	case "messages":
+		target = &dst.Messages
+	case "tools":
+		target = &dst.Tools
+	case "tool_choice":
+		target = &dst.ToolChoice
+	case "temperature":
+		target = &dst.Temperature
+	case "top_p":
+		target = &dst.TopP
+	case "max_tokens":
+		target = &dst.MaxTokens
+	case "stop":
+		target = &dst.Stop
+	case "stream":
+		target = &dst.Stream
+	case "stream_options":
+		target = &dst.StreamOptions
+	case "response_format":
+		target = &dst.ResponseFormat
+	case "reasoning_effort":
+		target = &dst.ReasoningEffort
+	case "user":
+		target = &dst.User
+	case "metadata":
+		target = &dst.Metadata
+	case "extra_params":
+		target = &dst.ExtraParams
+	case "goroute_extensions":
+		target = &dst.GoRouteExtensions
+	default:
+		return false, nil
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func decodeChatExtraValue(raw json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
 // handleChatCompletions serves `POST /v1/chat/completions` (both synchronous JSON and SSE streaming).
 func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	reqID := r.Header.Get("X-Request-Id")
-	if reqID == "" {
-		reqID = "req_" + uuid.NewString()
-	}
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -132,7 +249,18 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	var chatReq domain.CanonicalChatRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatCompletionBodyBytes)
 	if err := decodeChatCompletionRequest(r.Body, &chatReq); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusRequestEntityTooLarge,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "request_body_too_large",
+				Message:    fmt.Sprintf("ChatCompletion request body exceeds the %d byte limit", maxChatCompletionBodyBytes),
+			})
+			return
+		}
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -342,6 +470,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 		var usage *domain.TokenUsage
 		var meta *router.ExecutionMeta
+		streamStarted := time.Now()
 
 		onSelected := func(dep *domain.Deployment) {
 			if dep != nil && dep.GlobalModel != nil {
@@ -371,6 +500,11 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		} else {
 			usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, &chatReq, writeChunk, onSelected)
 		}
+		var streamTTFT time.Duration
+		if meta != nil && meta.TTFTMs > 0 {
+			streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
+		}
+		s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
 		if err != nil {
 			statusCode := http.StatusBadGateway
 			if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
@@ -696,7 +830,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 // handleEmbeddings serves `POST /v1/embeddings`.
 func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
-	reqID := "req_" + uuid.NewString()
+	reqID := gatewayRequestID(r)
 	w.Header().Set("X-Gateway-Request-Id", reqID)
 	traceID := observability.TraceFromContext(r.Context()).TraceID
 
@@ -707,6 +841,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		Input          any    `json:"input"`
 		EncodingFormat string `json:"encoding_format,omitempty"`
 		Dimensions     *int   `json:"dimensions,omitempty"`
+		InputType      string `json:"input_type,omitempty"`
 		User           string `json:"user,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
@@ -766,6 +901,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		Input:          inputs,
 		EncodingFormat: raw.EncodingFormat,
 		Dimensions:     raw.Dimensions,
+		InputType:      raw.InputType,
 		User:           raw.User,
 	}
 	resp, meta, err := s.reliability.ExecuteEmbeddings(r.Context(), idCtx, embReq)

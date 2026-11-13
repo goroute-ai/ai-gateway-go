@@ -128,6 +128,11 @@ type ModelParams struct {
 }
 
 type ProvidersConfig struct {
+	RequestTimeout         time.Duration          `yaml:"request_timeout" json:"request_timeout"`
+	ResponseHeaderTimeout  time.Duration          `yaml:"response_header_timeout" json:"response_header_timeout"`
+	StreamIdleTimeout      time.Duration          `yaml:"stream_idle_timeout" json:"stream_idle_timeout"`
+	MaxIdleConns           int                    `yaml:"max_idle_conns" json:"max_idle_conns"`
+	MaxIdleConnsPerHost    int                    `yaml:"max_idle_conns_per_host" json:"max_idle_conns_per_host"`
 	CustomOpenAICompatible []CustomProviderConfig `yaml:"custom_openai_compatible" json:"custom_openai_compatible"`
 }
 
@@ -218,13 +223,21 @@ type DiscoveryConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	DefaultTTL time.Duration `yaml:"default_ttl"`
+	Enabled      bool          `yaml:"enabled"`
+	DefaultTTL   time.Duration `yaml:"default_ttl"`
+	MaxL1Entries int           `yaml:"max_l1_entries"`
 }
 
 // Default returns a production-ready default configuration.
 func Default() *Config {
 	return &Config{
+		Providers: ProvidersConfig{
+			RequestTimeout:        2 * time.Minute,
+			ResponseHeaderTimeout: 2 * time.Minute,
+			StreamIdleTimeout:     2 * time.Minute,
+			MaxIdleConns:          256,
+			MaxIdleConnsPerHost:   16,
+		},
 		Server: ServerConfig{
 			Host:                      "0.0.0.0",
 			Port:                      8080,
@@ -287,8 +300,9 @@ func Default() *Config {
 			AutoApprove:  true,
 		},
 		Cache: CacheConfig{
-			Enabled:    true,
-			DefaultTTL: 1 * time.Hour,
+			Enabled:      true,
+			DefaultTTL:   1 * time.Hour,
+			MaxL1Entries: 4096,
 		},
 		Security: SecurityConfig{
 			Network: NetworkSecurityConfig{
@@ -490,6 +504,27 @@ func Load(path string) (*Config, error) {
 
 // Validate checks configuration invariants.
 func (c *Config) Validate() error {
+	if c.Providers.RequestTimeout <= 0 {
+		c.Providers.RequestTimeout = 2 * time.Minute
+	}
+	if c.Providers.ResponseHeaderTimeout <= 0 {
+		c.Providers.ResponseHeaderTimeout = 2 * time.Minute
+	}
+	if c.Providers.StreamIdleTimeout <= 0 {
+		c.Providers.StreamIdleTimeout = 2 * time.Minute
+	}
+	if c.Providers.MaxIdleConns <= 0 {
+		c.Providers.MaxIdleConns = 256
+	}
+	if c.Providers.MaxIdleConnsPerHost <= 0 {
+		c.Providers.MaxIdleConnsPerHost = 16
+	}
+	if c.Cache.MaxL1Entries <= 0 {
+		c.Cache.MaxL1Entries = 4096
+	}
+	if c.Cache.DefaultTTL <= 0 {
+		c.Cache.DefaultTTL = time.Hour
+	}
 	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
 		c.Tracing.ServiceName = "ai-gateway-go"
 	}
@@ -729,13 +764,90 @@ func NormalizeProvider(raw string) domain.ProviderType {
 		return domain.ProviderAI21
 	case lower == "baseten":
 		return domain.ProviderBaseten
-	case lower == "nvidia" || lower == "nvidia_nim":
+	case lower == "nvidia" || lower == "nvidia_nim" || lower == "nim":
 		return domain.ProviderNvidia
 	case lower == "scaleway":
 		return domain.ProviderScaleway
+	case lower == "github_copilot" || lower == "copilot":
+		return domain.ProviderGitHubCopilot
+	case lower == "vercel_ai_gateway" || lower == "vercel":
+		return domain.ProviderVercelAIGateway
+	case lower == "huggingface" || lower == "hf":
+		return domain.ProviderHuggingFace
+	case lower == "featherless" || lower == "featherless_ai":
+		return domain.ProviderFeatherless
+	case lower == "fal" || lower == "fal_ai":
+		return domain.ProviderFal
+	case lower == "zai" || lower == "z_ai":
+		return domain.ProviderZAI
+	case lower == "poe":
+		return domain.ProviderPoe
+	case lower == "helicone":
+		return domain.ProviderHelicone
+	case lower == "aihubmix":
+		return domain.ProviderAIHubMix
+	case lower == "venice" || lower == "veniceai":
+		return domain.ProviderVenice
+	case lower == "chutes":
+		return domain.ProviderChutes
+	case lower == "gmi":
+		return domain.ProviderGMI
+	case lower == "llamagate":
+		return domain.ProviderLlamaGate
+	case lower == "sarvam":
+		return domain.ProviderSarvam
+	case lower == "crusoe":
+		return domain.ProviderCrusoe
+	case lower == "parasail":
+		return domain.ProviderParasail
+	case lower == "upstage":
+		return domain.ProviderUpstage
+	case lower == "ovhcloud":
+		return domain.ProviderOVHCloud
+	case lower == "wandb":
+		return domain.ProviderWandB
+	case lower == "nscale":
+		return domain.ProviderNscale
+	case lower == "publicai":
+		return domain.ProviderPublicAI
+	case lower == "synthetic":
+		return domain.ProviderSynthetic
+	case lower == "nano_gpt" || lower == "nano-gpt":
+		return domain.ProviderNanoGPT
+	case lower == "xiaomi_mimo":
+		return domain.ProviderXiaomiMiMo
+	case lower == "reka":
+		return domain.ProviderReka
+	case lower == "yi" || lower == "01ai":
+		return domain.ProviderYi
+	case lower == "baichuan":
+		return domain.ProviderBaichuan
+	case lower == "stepfun":
+		return domain.ProviderStepFun
+	case lower == "lm_studio" || lower == "lmstudio":
+		return domain.ProviderLMStudio
+	case lower == "llamafile":
+		return domain.ProviderLlamafile
+	case lower == "xinference":
+		return domain.ProviderXinference
 	default:
 		return domain.ProviderType(lower)
 	}
+}
+
+// IsKnownProviderAlias reports whether raw matches a known canonical provider or alias.
+func IsKnownProviderAlias(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	norm := NormalizeProvider(lower)
+	for _, p := range domain.AllProviders() {
+		if norm == p {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseProviderModel parses a model string (e.g. "gemini/gemini-2.5-flash",

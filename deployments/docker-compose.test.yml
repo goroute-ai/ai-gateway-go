@@ -1,0 +1,46 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: aigateway_test
+    ports:
+      - "15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  ai-gateway-test:
+    profiles: ["fullstack"]
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "18080:8080"
+    environment:
+      GATEWAY_PORT: "8080"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres-test:5432/aigateway_test?sslmode=disable"
+      GATEWAY_REDIS_ADDR: "redis-test:6379"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-test-master-admin-key"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy

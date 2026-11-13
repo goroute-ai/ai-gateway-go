@@ -277,8 +277,8 @@ func TestIntelligentRouter_DynamicRoutingAuthorization(t *testing.T) {
 	if gmCerebras.LifecycleStatus != domain.ModelStatusActive {
 		t.Fatalf("expected active lifecycle status, got %s", gmCerebras.LifecycleStatus)
 	}
-	if gmCerebras.PricingProvenanceSource != "global-model-catalog-v1.0" {
-		t.Fatalf("expected provenance global-model-catalog-v1.0, got %s", gmCerebras.PricingProvenanceSource)
+	if gmCerebras.PricingProvenanceSource != "upstream-model-catalog-v1.1" {
+		t.Fatalf("expected provenance upstream-model-catalog-v1.1, got %s", gmCerebras.PricingProvenanceSource)
 	}
 	if gmCerebras.PricingStatus != domain.PricingStatusUnknown {
 		t.Fatalf("expected pricing status unknown, got %s", gmCerebras.PricingStatus)

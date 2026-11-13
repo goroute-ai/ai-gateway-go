@@ -337,6 +337,9 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(promRaw), "gateway_requests_total") {
 		t.Fatalf("expected authenticated Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
 	}
+	if !strings.Contains(string(promRaw), "gateway_streams_total 1") || !strings.Contains(string(promRaw), "gateway_stream_ttft_seconds_count") {
+		t.Fatalf("expected stream timing metrics after SSE request: %s", string(promRaw))
+	}
 
 	// 16. Test Versioned Model Pricing Update (`POST /admin/v1/catalogue/pricing`) & Cache Invalidation (`POST /admin/v1/cache/invalidate`)
 	resp, raw = doJSON(http.MethodPost, "/admin/v1/catalogue/pricing", adminHeaders, map[string]any{

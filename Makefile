@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-e2e specgen run docker-build docker-up docker-down clean release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint test test-unit test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers specgen catalog-sync run docker-build docker-up docker-down clean release-check ui-install ui-build ui-check-dist ui-dev
 
 all: release-check
 
@@ -38,6 +38,10 @@ specgen:
 	@echo "==> Regenerating gateway OpenAPI types and validating contracts..."
 	@go generate ./internal/openapi
 
+catalog-sync:
+	@echo "==> Regenerating embedded model catalog from Upstream source..."
+	go run ./cmd/catalog-sync -source "$${UPSTREAM_MODEL_CATALOG:-model_prices_and_context_window.json}" -out internal/modelcatalog/catalog.json.gz
+
 # ------------------------------------------------------------------------------
 # Testing Suites
 # ------------------------------------------------------------------------------
@@ -54,12 +58,60 @@ test-e2e:
 	@echo "==> Running live stack end-to-end integration tests..."
 	go test -race -v -count=1 ./tests/e2e
 
+test-live-up:
+	@echo "==> Starting isolated PostgreSQL 16 + Redis 7 test stack..."
+	docker compose -f deployments/docker-compose.test.yml up -d --wait
+
+test-live-down:
+	@echo "==> Stopping isolated test stack..."
+	docker compose -f deployments/docker-compose.test.yml --profile fullstack down -v
+
+test-postgres:
+	@echo "==> Running live PostgreSQL migration & persistence tests..."
+	GATEWAY_REQUIRE_LIVE_DEPS=1 \
+	GATEWAY_POSTGRES_DSN=$${GATEWAY_POSTGRES_DSN:-postgres://gateway:gateway@localhost:15432/aigateway_test?sslmode=disable} \
+	GATEWAY_REDIS_ADDR=$${GATEWAY_REDIS_ADDR:-localhost:16379} \
+	go test -race -v -count=1 ./internal/storage/...
+
+test-e2e-strict:
+	@echo "==> Running strict live-stack E2E tests (no skips allowed)..."
+	GATEWAY_REQUIRE_LIVE_DEPS=1 \
+	GATEWAY_POSTGRES_DSN=$${GATEWAY_POSTGRES_DSN:-postgres://gateway:gateway@localhost:15432/aigateway_test?sslmode=disable} \
+	GATEWAY_REDIS_ADDR=$${GATEWAY_REDIS_ADDR:-localhost:16379} \
+	go test -race -v -count=1 ./tests/e2e/...
+
+test-load:
+	@echo "==> Running load benchmarks & concurrency stress tests..."
+	go test -bench=. -benchmem -run=^$$ ./internal/server ./internal/router
+	GATEWAY_RUN_SOAK=$${GATEWAY_RUN_SOAK:-0} go test -v -count=1 ./tests/load/...
+
+test-security:
+	@echo "==> Running security & vulnerability checks..."
+	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "govulncheck not installed; skipping"; fi
+	go test -race -v -count=1 ./internal/security/... ./internal/auth/... ./tests/e2e -run TestSecurity
+
+test-docker-smoke:
+	@echo "==> Running full-stack Docker Compose smoke verification..."
+	./tests/scripts/verify_docker_k8s.sh docker
+
+test-k8s-smoke:
+	@echo "==> Running Kubernetes multi-replica verification..."
+	./tests/scripts/verify_docker_k8s.sh k8s
+
+test-canary:
+	@echo "==> Running key-gated live provider canary tests..."
+	go test -tags=canary -v -count=1 ./tests/canary/...
+
+test-prod-containers:
+	@echo "==> Running containerized production security, vulnerability, and k6 load suite..."
+	./tests/scripts/run_container_prod_suite.sh
+
 # ------------------------------------------------------------------------------
 # Docker & Deployment
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.5.0 -f deployments/Dockerfile .
+	docker build -t goroute/ai-gateway:v1.6.0 -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build
@@ -97,9 +149,9 @@ ui-dev:
 
 clean:
 	@echo "==> Cleaning build and test artifacts..."
-	@rm -rf bin/ *.test
+	@rm -rf gateway bin/ dist/ *.test
 
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.5.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway v1.6.0 — All Release Checks Passed Successfully! "
 	@echo "======================================================================"

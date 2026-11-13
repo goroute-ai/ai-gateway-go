@@ -93,3 +93,17 @@ func TestFourLayerModelIsolationAndAutomatedDiscovery(t *testing.T) {
 		}
 	}
 }
+
+func TestEnrichDiscoveredModel_DoesNotAssumeLegacyCompletion(t *testing.T) {
+	gm := modelmgmt.EnrichDiscoveredModel(domain.DiscoveredModel{
+		Provider:    domain.ProviderAnthropic,
+		ModelName:   "newly-listed-claude-model",
+		DisplayName: "Newly Listed Claude Model",
+	}, true)
+	if !gm.SupportsOperation(domain.OperationChat) {
+		t.Fatal("expected discovered inference model to support chat")
+	}
+	if gm.SupportsOperation(domain.OperationCompletion) {
+		t.Fatal("model discovery must not imply legacy /completions support")
+	}
+}

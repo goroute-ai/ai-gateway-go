@@ -52,6 +52,7 @@ func (r *ProfileRegistry) registerLaunchSet() {
 		EndpointStrategy:   &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: "https://api.groq.com/openai/v1"},
 		AuthStrategy:       &adapter.BearerAuthStrategy{},
 		SupportsListModels: true,
+		StrippedParams:     []string{"logprobs", "top_logprobs", "logit_bias", "service_tier"},
 		ParamMappings: map[string]string{
 			"max_completion_tokens": "max_tokens",
 		},
@@ -82,6 +83,8 @@ func (r *ProfileRegistry) registerLaunchSet() {
 		EndpointStrategy:      &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: "https://api.deepseek.com/v1"},
 		AuthStrategy:          &adapter.BearerAuthStrategy{},
 		SupportsListModels:    true,
+		StrippedParams:        []string{"service_tier"},
+		ReasoningMapping:      "thinking_enabled",
 		ExtractReasoningDelta: true,
 		DefaultCapabilities: domain.ModelCapabilities{
 			Tools:             domain.CapabilitySupported,

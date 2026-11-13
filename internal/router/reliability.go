@@ -21,6 +21,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/health"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
@@ -218,7 +219,30 @@ func filterByCapability(deployments []*domain.Deployment, check func(caps domain
 }
 
 // ExecuteChat routes and executes a synchronous chat completion with automated retries and fallbacks.
+func checkDeploymentOperation(adp adapter.ProviderAdapter, dep *domain.Deployment, op domain.OperationType) error {
+	if opChk, ok := adp.(adapter.OperationSupportChecker); ok && !opChk.SupportsOperation(op) {
+		return &domain.GatewayError{
+			StatusCode: http.StatusNotImplemented,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       string(op) + "_not_supported",
+			Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support " + string(op),
+		}
+	}
+	if dep != nil && dep.GlobalModel != nil && len(dep.GlobalModel.SupportedOperations) > 0 && !dep.GlobalModel.SupportsOperation(op) {
+		return &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_operation",
+			Message:    "Model " + dep.GlobalModel.ModelName + " does not support " + string(op),
+		}
+	}
+	return nil
+}
+
 func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *ExecutionMeta, error) {
+	if req != nil && req.Stream {
+		ctx = network.WithStreamingRequest(ctx)
+	}
 	start := time.Now()
 	orgID := ""
 	if idCtx != nil {
@@ -304,6 +328,10 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+				lastErr = opErr
 				continue
 			}
 
@@ -453,6 +481,10 @@ func (rm *ReliabilityManager) ExecuteStream(
 			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+				lastErr = opErr
 				continue
 			}
 
@@ -628,6 +660,10 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 				lastErr = err
 				continue
 			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationEmbedding); opErr != nil {
+				lastErr = opErr
+				continue
+			}
 
 			reqCopy := *req
 			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
@@ -788,6 +824,10 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationRerank); opErr != nil {
+				lastErr = opErr
 				continue
 			}
 			rerankAdp, ok := adp.(adapter.RerankAdapter)
@@ -962,6 +1002,10 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 				lastErr = err
 				continue
 			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationModeration); opErr != nil {
+				lastErr = opErr
+				continue
+			}
 			modAdp, ok := adp.(adapter.ModerationAdapter)
 			if !ok {
 				lastErr = &domain.GatewayError{
@@ -1120,6 +1164,10 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
+				lastErr = opErr
 				continue
 			}
 
@@ -1335,6 +1383,10 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 				lastErr = err
 				continue
 			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioSTT); opErr != nil {
+				lastErr = opErr
+				continue
+			}
 
 			audioAdp, ok := adp.(adapter.AudioAdapter)
 			if !ok {
@@ -1494,6 +1546,10 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 				lastErr = err
 				continue
 			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioTTS); opErr != nil {
+				lastErr = opErr
+				continue
+			}
 
 			audioAdp, ok := adp.(adapter.AudioAdapter)
 			if !ok {
@@ -1651,6 +1707,16 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			imgOp := domain.OperationImageGeneration
+			if req.Operation == "edit" {
+				imgOp = domain.OperationImageEdit
+			} else if req.Operation == "variation" {
+				imgOp = domain.OperationImageVariation
+			}
+			if opErr := checkDeploymentOperation(adp, dep, imgOp); opErr != nil {
+				lastErr = opErr
 				continue
 			}
 

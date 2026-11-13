@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -65,6 +66,9 @@ func NewRedisFabricWithOptions(opts *redis.UniversalOptions) *RedisFabric {
 		Timeout:     10 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= 5
+		},
+		IsSuccessful: func(err error) bool {
+			return err == nil || errors.Is(err, redis.Nil)
 		},
 	})
 	return &RedisFabric{client: rdb, cb: cb}

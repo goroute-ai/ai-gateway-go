@@ -6,15 +6,30 @@ import (
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 )
 
 // EnrichDiscoveredModel populates capability flags, context window sizes, and default micro-dollar pricing
-// for models discovered automatically from OpenAI, Anthropic, Gemini, Mistral, and Ollama.
+// for discovered models. It consults the embedded model catalog first, then applies explicit family
+// inference heuristics while keeping pricing status unverified (PricingStatusUnknown).
 func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.GlobalModel {
 	now := time.Now().UTC()
 	status := domain.ModelStatusDiscovered
 	if autoApprove {
 		status = domain.ModelStatusActive
+	}
+
+	if catModel, ok := catalog.LookupByProviderAndModel(dm.Provider, dm.ModelName); ok {
+		catModel.ID = fmt.Sprintf("%s/%s", dm.Provider, dm.ModelName)
+		catModel.Provider = dm.Provider
+		catModel.ModelName = dm.ModelName
+		if dm.DisplayName != "" {
+			catModel.DisplayName = dm.DisplayName
+		}
+		catModel.LifecycleStatus = status
+		catModel.DiscoveredAt = now
+		catModel.UpdatedAt = now
+		return catModel
 	}
 
 	gm := &domain.GlobalModel{
@@ -26,13 +41,27 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		MaxOutputTokens:   16384,
 		SupportsStreaming: true,
 		SupportsTools:     true,
-		PricingStatus:     domain.PricingStatusUnknown,
-		LifecycleStatus:   status,
-		DiscoveredAt:      now,
-		UpdatedAt:         now,
+		SupportsInference: true,
+		// Discovery only confirms that a provider lists the model; it does not
+		// establish legacy /completions support for that specific model.
+		SupportedOperations: []domain.OperationType{domain.OperationChat},
+		PricingStatus:       domain.PricingStatusUnknown,
+		LifecycleStatus:     status,
+		DiscoveredAt:        now,
+		UpdatedAt:           now,
 	}
 	if gm.DisplayName == "" {
 		gm.DisplayName = dm.ModelName
+	}
+
+	if inf := catalog.InferFamilyCapabilities(dm.ModelName); inf.Inferred {
+		gm.MaxInputTokens = inf.MaxInputTokens
+		gm.MaxOutputTokens = inf.MaxOutputTokens
+		gm.Capabilities = inf.Capabilities
+		gm.SupportsVision = inf.Capabilities.Vision == domain.CapabilitySupported
+		gm.SupportsReasoning = inf.Capabilities.Reasoning == domain.CapabilitySupported
+		gm.SupportsTools = inf.Capabilities.Tools == domain.CapabilitySupported
+		gm.SupportsStreaming = inf.Capabilities.Streaming == domain.CapabilitySupported
 	}
 
 	lower := strings.ToLower(dm.ModelName)
@@ -42,6 +71,7 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		gm.SupportsEmbeddings = true
 		gm.SupportsStreaming = false
 		gm.SupportsTools = false
+		gm.SupportedOperations = []domain.OperationType{domain.OperationEmbedding}
 		gm.MaxInputTokens = 8192
 		gm.MaxOutputTokens = 1536
 	}
