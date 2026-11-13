@@ -161,13 +161,17 @@ type StorageConfig struct {
 }
 
 type AuthConfig struct {
-	MasterAdminKey      string        `yaml:"master_admin_key"`
-	MasterEncryptionKey string        `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	JWTSecret           string        `yaml:"jwt_secret"`
-	DefaultOrgID        string        `yaml:"default_org_id"`
-	DefaultVirtualKey   string        `yaml:"default_virtual_key"`
-	L1CacheTTL          time.Duration `yaml:"l1_cache_ttl"`
-	L2CacheTTL          time.Duration `yaml:"l2_cache_ttl"`
+	MasterAdminKey          string        `yaml:"master_admin_key"`
+	MasterEncryptionKey     string        `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	AllowMasterKeyDataPlane bool          `yaml:"allow_master_key_data_plane"`
+	JWTSecret               string        `yaml:"jwt_secret"`
+	JWTIssuer               string        `yaml:"jwt_issuer"`
+	JWTAudience             string        `yaml:"jwt_audience"`
+	OIDCJWKSURL             string        `yaml:"oidc_jwks_url"`
+	DefaultOrgID            string        `yaml:"default_org_id"`
+	DefaultVirtualKey       string        `yaml:"default_virtual_key"`
+	L1CacheTTL              time.Duration `yaml:"l1_cache_ttl"`
+	L2CacheTTL              time.Duration `yaml:"l2_cache_ttl"`
 }
 
 type RouterConfig struct {
@@ -372,8 +376,22 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("GATEWAY_MASTER_ENCRYPTION_KEY"); v != "" {
 		cfg.Auth.MasterEncryptionKey = v
 	}
+	if v := os.Getenv("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Auth.AllowMasterKeyDataPlane = b
+		}
+	}
 	if v := os.Getenv("GATEWAY_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("GATEWAY_JWT_ISSUER"); v != "" {
+		cfg.Auth.JWTIssuer = v
+	}
+	if v := os.Getenv("GATEWAY_JWT_AUDIENCE"); v != "" {
+		cfg.Auth.JWTAudience = v
+	}
+	if v := os.Getenv("GATEWAY_OIDC_JWKS_URL"); v != "" {
+		cfg.Auth.OIDCJWKSURL = v
 	}
 	if v := os.Getenv("GATEWAY_ROUTER_DEFAULT_COOLDOWN"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

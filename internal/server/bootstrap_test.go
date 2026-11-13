@@ -41,6 +41,7 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 	// 3. Configure Gateway purely via declarative `ModelList` (ZERO /admin/v1/* calls!)
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "sk-gw-master-declarative-key"
+	cfg.Auth.DefaultVirtualKey = "sk-gw-bootstrap-default-key"
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	cfg.ModelList = []config.ModelListEntry{
@@ -78,7 +79,7 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 			Messages: []domain.CanonicalMessage{{Role: "user", Content: prompt}},
 		})
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(b))
-		req.Header.Set("Authorization", "Bearer "+cfg.Auth.MasterAdminKey)
+		req.Header.Set("Authorization", "Bearer "+cfg.Auth.DefaultVirtualKey)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

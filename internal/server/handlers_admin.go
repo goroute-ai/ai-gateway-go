@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/catalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
@@ -19,10 +20,33 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func (s *GatewayServer) authorizeAdmin(w http.ResponseWriter, r *http.Request, targetOrgID string, write bool) (*domain.OperatorContext, bool) {
+	op := auth.OperatorFromContext(r.Context())
+	if err := auth.AuthorizeAdminAction(op, targetOrgID, write); err != nil {
+		domain.WriteHTTPError(w, err)
+		return nil, false
+	}
+	return op, true
+}
+
+func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
+	if explicitOrgID != "" {
+		return explicitOrgID
+	}
+	if op := auth.OperatorFromContext(r.Context()); op != nil && op.Role != domain.OperatorRolePlatformAdmin {
+		return op.OrgID
+	}
+	return ""
+}
+
 func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, resourceID string, details map[string]any) {
+	actorID := "master_admin"
+	if op := auth.OperatorFromContext(ctx); op != nil && op.ActorID != "" {
+		actorID = op.ActorID
+	}
 	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
 		OrgID:      orgID,
-		ActorID:    "admin",
+		ActorID:    actorID,
 		Action:     action,
 		Resource:   resource,
 		ResourceID: resourceID,
@@ -33,6 +57,9 @@ func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, reso
 // --- Organizations, Layer 2 Subscriptions, Layer 3 Model Policies & Security Guardrails ---
 
 func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+		return
+	}
 	var org domain.Organization
 	if err := json.NewDecoder(r.Body).Decode(&org); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -51,6 +78,22 @@ func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *GatewayServer) handleAdminListOrgs(w http.ResponseWriter, r *http.Request) {
+	op := auth.OperatorFromContext(r.Context())
+	if op != nil && op.Role != domain.OperatorRolePlatformAdmin {
+		if _, ok := s.authorizeAdmin(w, r, op.OrgID, false); !ok {
+			return
+		}
+		org, err := s.repo.GetOrganization(r.Context(), op.OrgID)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []*domain.Organization{org}})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
 	orgs, err := s.repo.ListOrganizations(r.Context())
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -61,6 +104,9 @@ func (s *GatewayServer) handleAdminListOrgs(w http.ResponseWriter, r *http.Reque
 
 func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, true); !ok {
+		return
+	}
 	var sub domain.OrgProviderSubscription
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -81,6 +127,9 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminGetOrgSubscriptions(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	subs, err := s.repo.GetOrgProviderSubscriptions(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -91,6 +140,9 @@ func (s *GatewayServer) handleAdminGetOrgSubscriptions(w http.ResponseWriter, r 
 
 func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, true); !ok {
+		return
+	}
 	var pol domain.OrgModelPolicy
 	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -110,6 +162,9 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 
 func (s *GatewayServer) handleAdminGetOrgModelPolicies(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	pols, err := s.repo.GetOrgModelPolicies(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -120,6 +175,9 @@ func (s *GatewayServer) handleAdminGetOrgModelPolicies(w http.ResponseWriter, r 
 
 func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, true); !ok {
+		return
+	}
 	var pol domain.GuardrailPolicy
 	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -144,6 +202,9 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminGetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	pol, err := s.repo.GetGuardrailPolicy(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -157,6 +218,9 @@ func (s *GatewayServer) handleAdminGetGuardrailPolicy(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminSimulateGuardrails(w http.ResponseWriter, r *http.Request) {
 	orgID := chi.URLParam(r, "orgID")
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	var req struct {
 		Prompt string                  `json:"prompt"`
 		Policy *domain.GuardrailPolicy `json:"policy,omitempty"`
@@ -213,6 +277,10 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
+	team.OrgID = resolveScopedOrgID(r, team.OrgID)
+	if _, ok := s.authorizeAdmin(w, r, team.OrgID, true); !ok {
+		return
+	}
 	team.IsActive = true
 	if err := s.repo.CreateTeam(r.Context(), &team); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -223,7 +291,10 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 }
 
 func (s *GatewayServer) handleAdminListTeams(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	teams, err := s.repo.ListTeams(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -236,6 +307,15 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 	var user domain.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	user.OrgID = resolveScopedOrgID(r, user.OrgID)
+	op, ok := s.authorizeAdmin(w, r, user.OrgID, true)
+	if !ok {
+		return
+	}
+	if user.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can create platform_admin users"})
 		return
 	}
 	user.IsActive = true
@@ -251,7 +331,10 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 }
 
 func (s *GatewayServer) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	users, err := s.repo.ListUsers(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -268,6 +351,15 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
+	req.OrgID = resolveScopedOrgID(r, req.OrgID)
+	op, ok := s.authorizeAdmin(w, r, req.OrgID, true)
+	if !ok {
+		return
+	}
+	if req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can issue platform_admin keys"})
+		return
+	}
 	vk, err := s.authSvc.IssueVirtualKey(r.Context(), &req)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -278,7 +370,10 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *GatewayServer) handleAdminListKeys(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	keys, err := s.repo.ListVirtualKeys(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -289,11 +384,19 @@ func (s *GatewayServer) handleAdminListKeys(w http.ResponseWriter, r *http.Reque
 
 func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Request) {
 	keyID := chi.URLParam(r, "keyID")
+	vk, err := s.repo.GetVirtualKeyByID(r.Context(), keyID)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, vk.OrgID, true); !ok {
+		return
+	}
 	if err := s.authSvc.RevokeKey(r.Context(), keyID); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), "", "virtual_key.revoked", "virtual_key", keyID, nil)
+	s.audit(r.Context(), vk.OrgID, "virtual_key.revoked", "virtual_key", keyID, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "id": keyID})
 }
 
@@ -313,6 +416,10 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	req.OrgID = resolveScopedOrgID(r, req.OrgID)
+	if _, ok := s.authorizeAdmin(w, r, req.OrgID, true); !ok {
 		return
 	}
 	cred := &domain.ProviderCredential{
@@ -343,7 +450,10 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 }
 
 func (s *GatewayServer) handleAdminListCredentials(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	creds, err := s.repo.ListProviderCredentials(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -366,6 +476,9 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 	cred, err := s.repo.GetProviderCredential(r.Context(), credID)
 	if err != nil || cred == nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Message: "Credential not found"})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, cred.OrgID, true); !ok {
 		return
 	}
 	if err := s.vault.RotateCredential(cred, req.NewAPIKey); err != nil {
@@ -394,6 +507,9 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 	cred, err := s.repo.GetProviderCredential(r.Context(), credID)
 	if err != nil || cred == nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Message: "Credential not found"})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, cred.OrgID, true); !ok {
 		return
 	}
 	if cred.ExpiresAt != nil && time.Now().UTC().After(*cred.ExpiresAt) {
@@ -457,6 +573,7 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		OrgID               string              `json:"org_id,omitempty"`
 		Provider            domain.ProviderType `json:"provider"`
 		APIKey              string              `json:"api_key"`
 		BaseURL             string              `json:"base_url,omitempty"`
@@ -466,6 +583,9 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, req.OrgID), true); !ok {
 		return
 	}
 	if req.Provider == "" {
@@ -527,6 +647,10 @@ func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
+	mg.OrgID = resolveScopedOrgID(r, mg.OrgID)
+	if _, ok := s.authorizeAdmin(w, r, mg.OrgID, true); !ok {
+		return
+	}
 	mg.IsActive = true
 	if err := s.repo.CreateModelGroup(r.Context(), &mg); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -537,7 +661,10 @@ func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *ht
 }
 
 func (s *GatewayServer) handleAdminListModelGroups(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	groups, err := s.repo.ListModelGroups(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -550,6 +677,15 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 	var dep domain.Deployment
 	if err := json.NewDecoder(r.Body).Decode(&dep); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	targetOrgID := ""
+	if dep.ModelGroupID != "" {
+		if mg, err := s.repo.GetModelGroupByID(r.Context(), dep.ModelGroupID); err == nil && mg != nil {
+			targetOrgID = mg.OrgID
+		}
+	}
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
 		return
 	}
 	dep.Status = domain.DeploymentStatusActive
@@ -568,6 +704,15 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 
 func (s *GatewayServer) handleAdminListDeployments(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("model_group_id")
+	targetOrgID := ""
+	if groupID != "" {
+		if mg, err := s.repo.GetModelGroupByID(r.Context(), groupID); err == nil && mg != nil {
+			targetOrgID = mg.OrgID
+		}
+	}
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, false); !ok {
+		return
+	}
 	var deps []*domain.Deployment
 	var err error
 	if groupID != "" {
@@ -594,6 +739,9 @@ func (s *GatewayServer) handleAdminListCatalogue(w http.ResponseWriter, r *http.
 }
 
 func (s *GatewayServer) handleAdminTriggerDiscoverySync(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+		return
+	}
 	report, err := s.discovery.SyncNow(r.Context())
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -606,6 +754,9 @@ func (s *GatewayServer) handleAdminTriggerDiscoverySync(w http.ResponseWriter, r
 }
 
 func (s *GatewayServer) handleAdminImportCatalogue(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+		return
+	}
 	targetProv := domain.ProviderType(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider"))))
 	var models []*domain.GlobalModel
 	if targetProv != "" {
@@ -633,6 +784,10 @@ func (s *GatewayServer) handleAdminImportCatalogue(w http.ResponseWriter, r *htt
 }
 
 func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *http.Request) {
+	op, ok := s.authorizeAdmin(w, r, "", true)
+	if !ok {
+		return
+	}
 	var req struct {
 		GlobalModelID              string               `json:"global_model_id"`
 		InputCostMicrosPer1M       int64                `json:"input_cost_micros_per_1m"`
@@ -649,7 +804,7 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 		return
 	}
 	if req.ChangedBy == "" {
-		req.ChangedBy = "admin"
+		req.ChangedBy = op.ActorID
 	}
 	if req.PricingStatus == "" {
 		req.PricingStatus = domain.PricingStatusVerified
@@ -696,14 +851,23 @@ func (s *GatewayServer) handleAdminListModelPricingHistory(w http.ResponseWriter
 // --- Observability, Active Deployment Health & Cache Invalidation ---
 
 func (s *GatewayServer) handleAdminObservabilityMetrics(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, s.collector.Snapshot())
 }
 
 func (s *GatewayServer) handleAdminListDeploymentHealth(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": s.healthMon.GetReports()})
 }
 
 func (s *GatewayServer) handleAdminProbeDeployments(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+		return
+	}
 	reports, err := s.healthMon.ProbeAllNow(r.Context())
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -721,6 +885,10 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 		Model string `json:"model,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	req.OrgID = resolveScopedOrgID(r, req.OrgID)
+	if _, ok := s.authorizeAdmin(w, r, req.OrgID, true); !ok {
+		return
+	}
 	purged, nsVer, err := s.respCache.Invalidate(r.Context(), req.OrgID, req.Model)
 	if err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -747,8 +915,11 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 // --- FinOps Analytics & Governance Audit Logs ---
 
 func (s *GatewayServer) handleAdminSpendSummary(w http.ResponseWriter, r *http.Request) {
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	_ = s.spendWorker.FlushNow(r.Context())
-	orgID := r.URL.Query().Get("org_id")
 	sum, err := s.repo.GetSpendSummary(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -758,8 +929,11 @@ func (s *GatewayServer) handleAdminSpendSummary(w http.ResponseWriter, r *http.R
 }
 
 func (s *GatewayServer) handleAdminSpendLogs(w http.ResponseWriter, r *http.Request) {
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	_ = s.spendWorker.FlushNow(r.Context())
-	orgID := r.URL.Query().Get("org_id")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	logs, err := s.repo.ListSpendLogs(r.Context(), orgID, limit)
 	if err != nil {
@@ -770,7 +944,10 @@ func (s *GatewayServer) handleAdminSpendLogs(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *GatewayServer) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
+	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	logs, err := s.repo.ListAuditLogs(r.Context(), orgID, limit)
 	if err != nil {

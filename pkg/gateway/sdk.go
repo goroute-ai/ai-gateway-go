@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -257,6 +258,10 @@ func New(opts ...Option) (*Client, error) {
 				TPM:     e.TPM,
 			},
 		})
+	}
+
+	if cfg.Auth.DefaultVirtualKey == "" {
+		cfg.Auth.DefaultVirtualKey = "sk-gw-sdk-" + uuid.NewString()
 	}
 
 	repo := storage.NewMemoryRepository()
