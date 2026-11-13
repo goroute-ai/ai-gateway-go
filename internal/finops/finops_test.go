@@ -234,10 +234,13 @@ func TestSpendWorkerResetExpiredBudgetsClearsRedisAndAdvancesPeriod(t *testing.T
 		t.Fatalf("vk not properly reset: %+v", gotVK)
 	}
 
-	for _, key := range []string{"gw:spend:org:org-sw-reset", "gw:spend:team:team-sw-reset", "gw:spend:key:vk-sw-reset"} {
+	for _, key := range []string{"gw:spend:{org:org-sw-reset}:org:org-sw-reset", "gw:spend:{org:org-sw-reset}:team:team-sw-reset", "gw:spend:{org:org-sw-reset}:key:vk-sw-reset"} {
 		if mr.Exists(key) {
 			t.Fatalf("expected Redis key %q to be deleted", key)
 		}
+	}
+	if pending, err := repo.ListPendingBudgetResets(ctx, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("expected delivered budget-reset outbox to be empty, pending=%v err=%v", pending, err)
 	}
 
 	release, err := limiter.AcquireWithBudget(ctx, idCtx, 1, 50, "req-reset-ok")

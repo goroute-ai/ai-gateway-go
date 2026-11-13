@@ -97,6 +97,20 @@ func TestMemoryResetExpiredBudgetsWithIDs(t *testing.T) {
 	if len(res.VirtualKeyIDs) != 1 || res.VirtualKeyIDs[0] != "vk-expired" {
 		t.Fatalf("unexpected VirtualKeyIDs: %v", res.VirtualKeyIDs)
 	}
+	if len(res.Events) != 3 {
+		t.Fatalf("expected durable Redis reset events for all scopes, got %+v", res.Events)
+	}
+	pending, err := repo.ListPendingBudgetResets(ctx, 10)
+	if err != nil || len(pending) != 3 {
+		t.Fatalf("expected 3 pending Redis reset events, got %d err=%v", len(pending), err)
+	}
+	if err := repo.MarkBudgetResetsDelivered(ctx, []string{pending[0].ID}); err != nil {
+		t.Fatalf("mark reset delivered: %v", err)
+	}
+	pending, err = repo.ListPendingBudgetResets(ctx, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("expected 2 pending reset events after acknowledgement, got %d err=%v", len(pending), err)
+	}
 
 	gotOrg, _ := repo.GetOrganization(ctx, "org-expired")
 	if gotOrg.SpentMicros != 0 {

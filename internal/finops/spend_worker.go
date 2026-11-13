@@ -110,19 +110,40 @@ func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 // ResetExpiredBudgetsNow resets expired budgets in the repository and clears
 // the corresponding live Redis spend counters when a limiter is configured.
 func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time) (int, error) {
+	resetCount := 0
 	if withIDs, ok := sw.repo.(storage.BudgetResetWithIDsRepository); ok {
 		res, err := withIDs.ResetExpiredBudgetsWithIDs(ctx, now)
 		if err != nil {
 			return 0, err
 		}
-		if sw.limiter != nil && res.Total() > 0 {
-			if err := sw.limiter.ResetSpendCounters(ctx, res.OrgIDs, res.TeamIDs, res.VirtualKeyIDs); err != nil {
-				logger.Warn("Failed to reset Redis spend counters after budget reset", slog.String("component", "finops"), slog.String("error", err.Error()))
+		resetCount = res.Total()
+	} else {
+		count, err := sw.repo.ResetExpiredBudgets(ctx, now)
+		if err != nil {
+			return 0, err
+		}
+		resetCount = count
+	}
+	if outbox, ok := sw.repo.(storage.BudgetResetOutboxRepository); ok {
+		pending, err := outbox.ListPendingBudgetResets(ctx, sw.cfg.BatchSize)
+		if err != nil {
+			return resetCount, err
+		}
+		if sw.limiter != nil {
+			if err := sw.limiter.ResetSpendCounters(ctx, pending); err != nil {
+				logger.Warn("Redis budget counter reset remains pending", slog.String("component", "finops"), slog.String("error", err.Error()))
+				return resetCount, err
 			}
 		}
-		return res.Total(), nil
+		ids := make([]string, 0, len(pending))
+		for _, event := range pending {
+			ids = append(ids, event.ID)
+		}
+		if err := outbox.MarkBudgetResetsDelivered(ctx, ids); err != nil {
+			return resetCount, err
+		}
 	}
-	return sw.repo.ResetExpiredBudgets(ctx, now)
+	return resetCount, nil
 }
 
 func (sw *SpendWorker) process(ctx context.Context) error {

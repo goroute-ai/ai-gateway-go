@@ -1148,8 +1148,9 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 
 	var res BudgetResetResult
 	queries := []struct {
-		sql  string
-		dest *[]string
+		sql   string
+		scope string
+		dest  *[]string
 	}{
 		{
 			sql: `UPDATE organizations
@@ -1157,8 +1158,9 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
 				    updated_at = NOW()
 				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
-				RETURNING id`,
-			dest: &res.OrgIDs,
+				RETURNING id, id`,
+			scope: "org",
+			dest:  &res.OrgIDs,
 		},
 		{
 			sql: `UPDATE teams
@@ -1166,8 +1168,9 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
 				    updated_at = NOW()
 				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
-				RETURNING id`,
-			dest: &res.TeamIDs,
+				RETURNING id, org_id`,
+			scope: "team",
+			dest:  &res.TeamIDs,
 		},
 		{
 			sql: `UPDATE virtual_keys
@@ -1175,8 +1178,9 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
 				    updated_at = NOW()
 				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
-				RETURNING id`,
-			dest: &res.VirtualKeyIDs,
+				RETURNING id, org_id`,
+			scope: "key",
+			dest:  &res.VirtualKeyIDs,
 		},
 	}
 
@@ -1185,19 +1189,28 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 		if err != nil {
 			return BudgetResetResult{}, fmt.Errorf("reset expired budgets: %w", err)
 		}
+		var queryEvents []BudgetResetEvent
 		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
+			var id, orgID string
+			if err := rows.Scan(&id, &orgID); err != nil {
 				rows.Close()
 				return BudgetResetResult{}, fmt.Errorf("scan reset budget id: %w", err)
 			}
 			*q.dest = append(*q.dest, id)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: q.scope, EntityID: id, OrgID: orgID, ResetAt: now.UTC()}
+			queryEvents = append(queryEvents, event)
+			res.Events = append(res.Events, event)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return BudgetResetResult{}, fmt.Errorf("iterate reset budget ids: %w", err)
 		}
 		rows.Close()
+		for _, event := range queryEvents {
+			if _, err := tx.Exec(ctx, `INSERT INTO budget_reset_outbox (id, scope, entity_id, org_id, reset_at) VALUES ($1,$2,$3,$4,$5)`, event.ID, event.Scope, event.EntityID, event.OrgID, event.ResetAt); err != nil {
+				return BudgetResetResult{}, fmt.Errorf("enqueue Redis budget reset: %w", err)
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -1209,6 +1222,37 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 		return memRes, nil
 	}
 	return res, nil
+}
+
+func (p *PostgresRepository) ListPendingBudgetResets(ctx context.Context, limit int) ([]BudgetResetEvent, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	rows, err := p.pool.Query(ctx, `SELECT id::text, scope, entity_id, org_id, reset_at FROM budget_reset_outbox WHERE delivered_at IS NULL ORDER BY created_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending budget resets: %w", err)
+	}
+	defer rows.Close()
+	var out []BudgetResetEvent
+	for rows.Next() {
+		var ev BudgetResetEvent
+		if err := rows.Scan(&ev.ID, &ev.Scope, &ev.EntityID, &ev.OrgID, &ev.ResetAt); err != nil {
+			return nil, fmt.Errorf("scan pending budget reset: %w", err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) MarkBudgetResetsDelivered(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE budget_reset_outbox SET delivered_at = NOW() WHERE id::text = ANY($1) AND delivered_at IS NULL`, ids)
+	if err != nil {
+		return fmt.Errorf("mark budget resets delivered: %w", err)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
