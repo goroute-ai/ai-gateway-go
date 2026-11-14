@@ -100,9 +100,10 @@ type LogConfig struct {
 }
 
 type TracingConfig struct {
-	OTLPEndpoint string            `yaml:"otlp_endpoint"`
-	ServiceName  string            `yaml:"service_name"`
-	Headers      map[string]string `yaml:"headers,omitempty"`
+	Enabled      bool              `yaml:"enabled" json:"enabled"`
+	OTLPEndpoint string            `yaml:"otlp_endpoint" json:"otlp_endpoint"`
+	ServiceName  string            `yaml:"service_name" json:"service_name"`
+	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 // ModelListEntry defines a declarative model list entry in config.yaml,
@@ -221,14 +222,15 @@ type RouterConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled             bool          `yaml:"enabled"`
-	WindowSeconds       int           `yaml:"window_seconds"`
-	ConcurrencyTTLSec   int           `yaml:"concurrency_ttl_sec"`
-	DefaultEstimatedTPM int           `yaml:"default_estimated_tpm"`
-	RedisTimeout        time.Duration `yaml:"redis_timeout"`
-	GlobalRPMLimit      int           `yaml:"global_rpm_limit"`
-	GlobalTPMLimit      int           `yaml:"global_tpm_limit"`
-	GlobalMaxConcurrent int           `yaml:"global_max_concurrent"`
+	Enabled                 bool          `yaml:"enabled" json:"enabled"`
+	FallbackToLocalOnOutage bool          `yaml:"fallback_to_local_on_outage" json:"fallback_to_local_on_outage"`
+	WindowSeconds           int           `yaml:"window_seconds" json:"window_seconds"`
+	ConcurrencyTTLSec       int           `yaml:"concurrency_ttl_sec" json:"concurrency_ttl_sec"`
+	DefaultEstimatedTPM     int           `yaml:"default_estimated_tpm" json:"default_estimated_tpm"`
+	RedisTimeout            time.Duration `yaml:"redis_timeout" json:"redis_timeout"`
+	GlobalRPMLimit          int           `yaml:"global_rpm_limit" json:"global_rpm_limit"`
+	GlobalTPMLimit          int           `yaml:"global_tpm_limit" json:"global_tpm_limit"`
+	GlobalMaxConcurrent     int           `yaml:"global_max_concurrent" json:"global_max_concurrent"`
 }
 
 type FinOpsConfig struct {

@@ -29,6 +29,7 @@ logging:
   add_source: false          # Attach source file and line number to log entries
 
 tracing:
+  enabled: false             # Enable OpenTelemetry distributed tracing and OTLP metrics export
   otlp_endpoint: ""          # Optional OTLP/HTTP endpoint, for example https://otel-collector:4318/v1/traces
   service_name: "ai-gateway-go"
   headers: {}                # Optional exporter headers, use os.environ/NAME for secret values
@@ -71,6 +72,7 @@ router:
 
 rate_limit:
   enabled: true
+  fallback_to_local_on_outage: false # Degrade to in-memory rate-limit/budget tracking if Redis is unreachable (default false = fail-closed)
   window_seconds: 60
   concurrency_ttl_sec: 300
   default_estimated_tpm: 128

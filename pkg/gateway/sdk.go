@@ -72,6 +72,7 @@ type Client struct {
 	redisFabric *storage.RedisFabric
 	mockServers []*httptest.Server
 	closeFns    []func()
+	borrowed    bool
 }
 
 // Option configures a Gateway Client or Embedded Router.
@@ -440,11 +441,15 @@ func (c *Client) WithKey(virtualKey string) *Client {
 		redisFabric: c.redisFabric,
 		mockServers: c.mockServers,
 		closeFns:    c.closeFns,
+		borrowed:    true,
 	}
 }
 
-// Close cleanly shuts down the embedded gateway server and workers (no-op for remote clients).
+// Close cleanly shuts down the embedded gateway server and workers (no-op for remote or borrowed clients).
 func (c *Client) Close() {
+	if c == nil || c.borrowed {
+		return
+	}
 	if c.embeddedGW != nil {
 		c.embeddedGW.Shutdown(context.Background())
 	}

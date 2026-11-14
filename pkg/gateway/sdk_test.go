@@ -424,6 +424,7 @@ redis:
 	if err != nil {
 		t.Fatalf("gateway.New(WithConfigFile redis): %v", err)
 	}
+	defer gw.Close()
 
 	vk, err := gw.IssueVirtualKey(ctx, domain.VirtualKey{
 		Name:          "stream-parity-key",
@@ -485,5 +486,45 @@ redis:
 	}
 	if msgOut["text"] != "Stream parity ok" || strings.Join(msgDeltas, "") != "Stream parity ok" {
 		t.Fatalf("unexpected StreamMessages result: %+v deltas=%v", msgOut, msgDeltas)
+	}
+}
+
+func TestWithKeyCloseDoesNotShutDownParent(t *testing.T) {
+	ctx := context.Background()
+
+	parent, err := gateway.New(
+		gateway.WithDemoMocksIfEnvMissing(),
+		gateway.WithSilentLogs(),
+		gateway.WithModelList(
+			gateway.ModelEntry{
+				ModelName: "fast",
+				Model:     "gemini/gemini-2.5-flash",
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New failed: %v", err)
+	}
+	defer parent.Close()
+
+	vk, err := parent.IssueVirtualKey(ctx, domain.VirtualKey{
+		Name:          "scoped-borrowed-key",
+		AllowedModels: []string{"fast"},
+	})
+	if err != nil || vk.RawKey == "" {
+		t.Fatalf("IssueVirtualKey failed: %v", err)
+	}
+
+	child := parent.WithKey(vk.RawKey)
+	if _, err := child.Chat(ctx, "fast", "Hello from child before Close"); err != nil {
+		t.Fatalf("child.Chat failed before Close: %v", err)
+	}
+
+	// Closing a borrowed WithKey client must be a no-op and leave parent operational.
+	child.Close()
+
+	res, err := parent.Chat(ctx, "fast", "Hello from parent after child.Close")
+	if err != nil || res.Content == "" {
+		t.Fatalf("parent.Chat failed after child.Close(): res=%+v err=%v", res, err)
 	}
 }

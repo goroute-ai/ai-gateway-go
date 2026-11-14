@@ -304,6 +304,33 @@ providers:
 		t.Fatalf("unexpected custom provider config: %+v", cp)
 	}
 
+	// Verify RateLimit.FallbackToLocalOnOutage and Tracing.Enabled YAML unmarshaling
+	rlYAML := `
+server:
+  port: 8080
+  environment: "test"
+tracing:
+  enabled: true
+  otlp_endpoint: "http://localhost:4318/v1/traces"
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: true
+`
+	rlFile := filepath.Join(t.TempDir(), "rl-config.yaml")
+	if err := os.WriteFile(rlFile, []byte(rlYAML), 0600); err != nil {
+		t.Fatalf("write temp rl config: %v", err)
+	}
+	rlCfg, err := config.Load(rlFile)
+	if err != nil {
+		t.Fatalf("config.Load rl config failed: %v", err)
+	}
+	if !rlCfg.RateLimit.FallbackToLocalOnOutage {
+		t.Fatalf("expected RateLimit.FallbackToLocalOnOutage=true")
+	}
+	if !rlCfg.Tracing.Enabled || rlCfg.Tracing.OTLPEndpoint != "http://localhost:4318/v1/traces" {
+		t.Fatalf("expected Tracing.Enabled=true and endpoint set, got %+v", rlCfg.Tracing)
+	}
+
 	// Negative cases for GuardrailsConfig
 	badCfg := config.Default()
 	badCfg.Server.Environment = "test"

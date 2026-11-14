@@ -34,6 +34,20 @@ service:
   grpcPort: 0
   annotations: {}
 
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: goroute-tls
+  #    hosts:
+  #      - gateway.example.local
+
 env:
   GATEWAY_PORT: "8080"
   GATEWAY_ENV: "production"
