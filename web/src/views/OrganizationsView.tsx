@@ -6,7 +6,7 @@ import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { Organization, Team, User, OrgProviderSubscription, OrgModelPolicy } from '../types';
-import { Building2, Users, Layers, ShieldCheck, Plus } from 'lucide-react';
+import { Building2, Users, Layers, ShieldCheck, Plus, Pencil, Trash2 } from 'lucide-react';
 
 const fmtUSD = (m?: number) => (m ? `$${(m / 1e6).toFixed(2)}` : '$0.00');
 const cell = 'px-4 py-2.5';
@@ -38,7 +38,7 @@ export const OrganizationsView: React.FC = () => {
   const qc = useQueryClient();
   const [tab, setTab] = useState<'orgs' | 'teams' | 'users' | 'policies'>('orgs');
   const [modal, setModal] = useState<'org' | 'team' | 'user' | 'sub' | 'policy' | null>(null);
-  const [f, setF] = useState<Record<string, any>>({ reset: 'monthly', role: 'developer', subProv: 'openai', subOn: true, subAuto: true, polOn: true });
+  const [f, setF] = useState<Record<string, any>>({ reset: 'monthly', role: 'developer', subProv: 'openai', subOn: true, subAuto: true, polOn: true, active: true });
   const set = (k: string, v: any) => setF((p) => ({ ...p, [k]: v }));
 
   const orgsQ = useQuery({ queryKey: ['admin', 'orgs', adminKey], queryFn: () => adminApi.listOrgs(adminKey), enabled: !!adminKey });
@@ -49,8 +49,22 @@ export const OrganizationsView: React.FC = () => {
 
   const inv = (k: string) => qc.invalidateQueries({ queryKey: ['admin', k, adminKey] });
   const createOrg = useMutation({ mutationFn: (d: Partial<Organization>) => adminApi.createOrg(adminKey, d), onSuccess: (c) => { inv('orgs'); setModal(null); if (c?.id) setActiveOrgId(c.id); } });
-  const createTeam = useMutation({ mutationFn: (d: Partial<Team>) => adminApi.createTeam(adminKey, d), onSuccess: () => { inv('teams'); setModal(null); } });
-  const createUser = useMutation({ mutationFn: (d: Partial<User>) => adminApi.createUser(adminKey, d), onSuccess: () => { inv('users'); setModal(null); } });
+  const saveTeam = useMutation({
+    mutationFn: (d: Partial<Team> & { _editId?: string }) => {
+      const { _editId, ...body } = d;
+      return _editId ? adminApi.updateTeam(adminKey, _editId, body) : adminApi.createTeam(adminKey, body);
+    },
+    onSuccess: () => { inv('teams'); setModal(null); },
+  });
+  const deleteTeam = useMutation({ mutationFn: (id: string) => adminApi.deleteTeam(adminKey, id), onSuccess: () => inv('teams') });
+  const saveUser = useMutation({
+    mutationFn: (d: Partial<User> & { _editId?: string }) => {
+      const { _editId, ...body } = d;
+      return _editId ? adminApi.updateUser(adminKey, _editId, body) : adminApi.createUser(adminKey, body);
+    },
+    onSuccess: () => { inv('users'); setModal(null); },
+  });
+  const deleteUser = useMutation({ mutationFn: (id: string) => adminApi.deleteUser(adminKey, id), onSuccess: () => inv('users') });
   const setSub = useMutation({ mutationFn: (d: Partial<OrgProviderSubscription>) => adminApi.setOrgSubscription(adminKey, activeOrgId, d), onSuccess: () => { inv('org-subscriptions'); setModal(null); } });
   const setPol = useMutation({ mutationFn: (d: Partial<OrgModelPolicy>) => adminApi.setOrgModelPolicy(adminKey, activeOrgId, d), onSuccess: () => { inv('org-model-policies'); setModal(null); } });
 
@@ -69,8 +83,8 @@ export const OrganizationsView: React.FC = () => {
         </div>
         <div className="flex gap-2">
           {tab === 'orgs' && <button onClick={() => setModal('org')} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
-          {tab === 'teams' && <button onClick={() => setModal('team')} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
-          {tab === 'users' && <button onClick={() => setModal('user')} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
+          {tab === 'teams' && <button onClick={() => { setF((p) => ({ ...p, editTeamId: '', teamName: '', teamId: '', teamBudget: '', active: true })); setModal('team'); }} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
+          {tab === 'users' && <button onClick={() => { setF((p) => ({ ...p, editUserId: '', email: '', userName: '', userId: '', userTeamId: '', role: 'developer', active: true })); setModal('user'); }} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
           {tab === 'policies' && <>
             <button onClick={() => setModal('sub')} className="px-3 py-1.5 rounded-md border border-accent-primary/30 text-accent-primary text-xs font-semibold">+ Provider Sub</button>
             <button onClick={() => setModal('policy')} className={BTN_PRIMARY}>+ Model Policy</button>
@@ -88,7 +102,9 @@ export const OrganizationsView: React.FC = () => {
 
       {orgsQ.isError && <ErrorAlert error={orgsQ.error} title="Failed to load organizations" onRetry={() => orgsQ.refetch()} />}
       {tab === 'teams' && teamsQ.isError && <ErrorAlert error={teamsQ.error} title="Failed to load teams" onRetry={() => teamsQ.refetch()} />}
+      {tab === 'teams' && deleteTeam.isError && <ErrorAlert error={deleteTeam.error} title="Failed to delete team" />}
       {tab === 'users' && usersQ.isError && <ErrorAlert error={usersQ.error} title="Failed to load users" onRetry={() => usersQ.refetch()} />}
+      {tab === 'users' && deleteUser.isError && <ErrorAlert error={deleteUser.error} title="Failed to delete user" />}
       {tab === 'policies' && subsQ.isError && <ErrorAlert error={subsQ.error} title="Failed to load subscriptions" onRetry={() => subsQ.refetch()} />}
       {tab === 'policies' && polsQ.isError && <ErrorAlert error={polsQ.error} title="Failed to load model policies" onRetry={() => polsQ.refetch()} />}
 
@@ -98,8 +114,8 @@ export const OrganizationsView: React.FC = () => {
             <thead className="bg-surface-elevated border-b border-border-subtle text-slate-400 font-mono uppercase text-[10px]">
               <tr>
                 {tab === 'orgs' && ['Name', 'ID', 'Budget', 'Spend', 'Reset', 'Status', 'Scope'].map((h) => <th key={h} className={cell}>{h}</th>)}
-                {tab === 'teams' && ['Team', 'ID', 'Budget', 'Spend', 'Status'].map((h) => <th key={h} className={cell}>{h}</th>)}
-                {tab === 'users' && ['Email', 'Name', 'Team', 'Role', 'Status'].map((h) => <th key={h} className={cell}>{h}</th>)}
+                {tab === 'teams' && ['Team', 'ID', 'Budget', 'Spend', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
+                {tab === 'users' && ['Email', 'Name', 'Team', 'Role', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
@@ -107,10 +123,30 @@ export const OrganizationsView: React.FC = () => {
                 <tr key={o.id}><td className={`${cell} font-medium text-white`}>{o.name}</td><td className={`${cell} font-mono text-slate-400`}>{o.id}</td><td className={`${cell} font-mono`}>{o.max_budget_micros ? fmtUSD(o.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(o.current_spend_micros)}</td><td className={`${cell} font-mono capitalize text-slate-400`}>{o.budget_reset_period || 'monthly'}</td><td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td><td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td></tr>
               ))}
               {tab === 'teams' && teams.map((t) => (
-                <tr key={t.id}><td className={`${cell} font-medium text-white`}>{t.name}</td><td className={`${cell} font-mono text-slate-400`}>{t.id}</td><td className={`${cell} font-mono`}>{t.max_budget_micros ? fmtUSD(t.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(t.current_spend_micros)}</td><td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td></tr>
+                <tr key={t.id}>
+                  <td className={`${cell} font-medium text-white`}>{t.name}</td>
+                  <td className={`${cell} font-mono text-slate-400`}>{t.id}</td>
+                  <td className={`${cell} font-mono`}>{t.max_budget_micros ? fmtUSD(t.max_budget_micros) : 'Unlimited'}</td>
+                  <td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(t.current_spend_micros)}</td>
+                  <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
+                  <td className={`${cell} flex items-center gap-1`}>
+                    <button onClick={() => { setF((p) => ({ ...p, editTeamId: t.id, teamName: t.name, teamBudget: t.max_budget_micros ? String(t.max_budget_micros / 1e6) : '', active: t.is_active })); setModal('team'); }} className="p-1 text-slate-400 hover:text-white rounded" title="Edit team"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) deleteTeam.mutate(t.id); }} disabled={deleteTeam.isPending} className="p-1 text-slate-400 hover:text-rose-400 rounded" title="Delete team"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </td>
+                </tr>
               ))}
               {tab === 'users' && users.map((u) => (
-                <tr key={u.id}><td className={`${cell} font-medium text-white`}>{u.email}</td><td className={`${cell} text-slate-300`}>{u.name || '—'}</td><td className={`${cell} font-mono text-slate-400`}>{u.team_id || '—'}</td><td className={cell}><Badge variant="info">{u.role}</Badge></td><td className={cell}><Badge variant={u.is_active ? 'success' : 'danger'}>{u.is_active ? 'Active' : 'Inactive'}</Badge></td></tr>
+                <tr key={u.id}>
+                  <td className={`${cell} font-medium text-white`}>{u.email}</td>
+                  <td className={`${cell} text-slate-300`}>{u.name || '—'}</td>
+                  <td className={`${cell} font-mono text-slate-400`}>{u.team_id || '—'}</td>
+                  <td className={cell}><Badge variant="info">{u.role}</Badge></td>
+                  <td className={cell}><Badge variant={u.is_active ? 'success' : 'danger'}>{u.is_active ? 'Active' : 'Inactive'}</Badge></td>
+                  <td className={`${cell} flex items-center gap-1`}>
+                    <button onClick={() => { setF((p) => ({ ...p, editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', role: u.role, active: u.is_active })); setModal('user'); }} className="p-1 text-slate-400 hover:text-white rounded" title="Edit user"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) deleteUser.mutate(u.id); }} disabled={deleteUser.isPending} className="p-1 text-slate-400 hover:text-rose-400 rounded" title="Delete user"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -151,24 +187,26 @@ export const OrganizationsView: React.FC = () => {
         </div>
       </FormModal>
 
-      <FormModal open={modal === 'team'} onClose={() => setModal(null)} title={`Create Team (${activeOrgId})`} submitLabel="Create" pending={createTeam.isPending} error={createTeam.error} onSubmit={() => { const b = parseFloat(f.teamBudget || ''); createTeam.mutate({ org_id: activeOrgId, ...(f.teamId?.trim() && { id: f.teamId.trim() }), name: (f.teamName || '').trim(), ...(!isNaN(b) && b > 0 && { max_budget_micros: Math.round(b * 1e6) }) }); }}>
+      <FormModal open={modal === 'team'} onClose={() => setModal(null)} title={f.editTeamId ? `Edit Team (${f.editTeamId})` : `Create Team (${activeOrgId})`} submitLabel={f.editTeamId ? 'Save' : 'Create'} pending={saveTeam.isPending} error={saveTeam.error} onSubmit={() => { const b = parseFloat(f.teamBudget || ''); saveTeam.mutate({ _editId: f.editTeamId || undefined, org_id: activeOrgId, ...(!f.editTeamId && f.teamId?.trim() && { id: f.teamId.trim() }), name: (f.teamName || '').trim(), max_budget_micros: !isNaN(b) && b >= 0 ? Math.round(b * 1e6) : 0, is_active: !!f.active }); }}>
         <input required value={f.teamName || ''} onChange={(e) => set('teamName', e.target.value)} placeholder="Team Name *" className={INPUT_CLS} />
         <div className="grid grid-cols-2 gap-3">
-          <input value={f.teamId || ''} onChange={(e) => set('teamId', e.target.value)} placeholder="Team ID (optional)" className={INPUT_CLS} />
-          <input type="number" step="0.01" value={f.teamBudget || ''} onChange={(e) => set('teamBudget', e.target.value)} placeholder="Max Budget USD" className={INPUT_CLS} />
+          {!f.editTeamId && <input value={f.teamId || ''} onChange={(e) => set('teamId', e.target.value)} placeholder="Team ID (optional)" className={INPUT_CLS} />}
+          <input type="number" step="0.01" value={f.teamBudget || ''} onChange={(e) => set('teamBudget', e.target.value)} placeholder="Max Budget USD (0=unlimited)" className={INPUT_CLS} />
         </div>
+        {f.editTeamId && <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
       </FormModal>
 
-      <FormModal open={modal === 'user'} onClose={() => setModal(null)} title={`Create User (${activeOrgId})`} submitLabel="Create" pending={createUser.isPending} error={createUser.error} onSubmit={() => createUser.mutate({ org_id: activeOrgId, email: (f.email || '').trim(), role: f.role, ...(f.userId?.trim() && { id: f.userId.trim() }), ...(f.userName?.trim() && { name: f.userName.trim() }), ...(f.userTeamId && { team_id: f.userTeamId }) })}>
+      <FormModal open={modal === 'user'} onClose={() => setModal(null)} title={f.editUserId ? `Edit User (${f.editUserId})` : `Create User (${activeOrgId})`} submitLabel={f.editUserId ? 'Save' : 'Create'} pending={saveUser.isPending} error={saveUser.error} onSubmit={() => saveUser.mutate({ _editId: f.editUserId || undefined, org_id: activeOrgId, email: (f.email || '').trim(), role: f.role, ...(!f.editUserId && f.userId?.trim() && { id: f.userId.trim() }), name: (f.userName || '').trim(), team_id: f.userTeamId || '', is_active: !!f.active })}>
         <input type="email" required value={f.email || ''} onChange={(e) => set('email', e.target.value)} placeholder="Email *" className={INPUT_CLS} />
         <div className="grid grid-cols-2 gap-3">
           <input value={f.userName || ''} onChange={(e) => set('userName', e.target.value)} placeholder="Display Name" className={INPUT_CLS} />
-          <input value={f.userId || ''} onChange={(e) => set('userId', e.target.value)} placeholder="User ID (optional)" className={INPUT_CLS} />
+          {!f.editUserId && <input value={f.userId || ''} onChange={(e) => set('userId', e.target.value)} placeholder="User ID (optional)" className={INPUT_CLS} />}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <select value={f.userTeamId || ''} onChange={(e) => set('userTeamId', e.target.value)} className={INPUT_CLS}><option value="">No Team</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
           <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}><option value="developer">developer</option><option value="team_admin">team_admin</option><option value="org_admin">org_admin</option><option value="viewer">viewer</option></select>
         </div>
+        {f.editUserId && <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
       </FormModal>
 
       <FormModal open={modal === 'sub'} onClose={() => setModal(null)} title="Set Provider Subscription" pending={setSub.isPending} error={setSub.error} onSubmit={() => setSub.mutate({ provider: f.subProv, is_enabled: f.subOn, auto_enable_new: f.subAuto })}>

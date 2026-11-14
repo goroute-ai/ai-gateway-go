@@ -42,16 +42,28 @@ export const adminApi = {
     apiFetch<{ data: Team[] }>(`/admin/v1/teams${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
   createTeam: (key: string, data: Partial<Team>) =>
     apiFetch<Team>('/admin/v1/teams', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateTeam: (key: string, teamId: string, data: Partial<Team>) =>
+    apiFetch<Team>(`/admin/v1/teams/${teamId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteTeam: (key: string, teamId: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/teams/${teamId}`, { method: 'DELETE' }, key),
   listUsers: (key: string, orgId?: string) =>
     apiFetch<{ data: User[] }>(`/admin/v1/users${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
   createUser: (key: string, data: Partial<User>) =>
     apiFetch<User>('/admin/v1/users', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateUser: (key: string, userId: string, data: Partial<User>) =>
+    apiFetch<User>(`/admin/v1/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteUser: (key: string, userId: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/users/${userId}`, { method: 'DELETE' }, key),
 
   // Virtual Keys
   listKeys: (key: string, orgId?: string) =>
     apiFetch<{ data: VirtualKey[] }>(`/admin/v1/keys${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
   issueKey: (key: string, data: Partial<VirtualKey>) =>
     apiFetch<VirtualKey>('/admin/v1/keys', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateKey: (key: string, keyId: string, data: Partial<VirtualKey>) =>
+    apiFetch<VirtualKey>(`/admin/v1/keys/${keyId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  rotateKey: (key: string, keyId: string) =>
+    apiFetch<VirtualKey>(`/admin/v1/keys/${keyId}/rotate`, { method: 'POST' }, key),
   revokeKey: (key: string, keyId: string) =>
     apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${keyId}/revoke`, { method: 'POST' }, key),
 
