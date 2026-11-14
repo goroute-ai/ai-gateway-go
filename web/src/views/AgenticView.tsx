@@ -29,7 +29,19 @@ export const AgenticView: React.FC = () => {
   // Modal toggles
   const [showServerModal, setShowServerModal] = useState(false);
   const [showToolsetModal, setShowToolsetModal] = useState(false);
+  const [showCredModal, setShowCredModal] = useState(false);
   const [showAgentModal, setShowAgentModal] = useState(false);
+  const [showPushModal, setShowPushModal] = useState(false);
+
+  // MCP User BYOK Credential form state
+  const [credServerId, setCredServerId] = useState('');
+  const [credUserId, setCredUserId] = useState('');
+  const [credToken, setCredToken] = useState('');
+
+  // A2A Push Notification Config form state
+  const [pushTaskId, setPushTaskId] = useState('');
+  const [pushTargetUrl, setPushTargetUrl] = useState('');
+  const [pushAuthToken, setPushAuthToken] = useState('');
 
   // MCP Server form state
   const [srvName, setSrvName] = useState('');
@@ -174,6 +186,30 @@ export const AgenticView: React.FC = () => {
     },
   });
 
+  // Set MCP User BYOK Credential Mutation
+  const setUserCredMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.setMCPUserCredential>[1]) =>
+      adminApi.setMCPUserCredential(adminKey, payload),
+    onSuccess: () => {
+      setShowCredModal(false);
+      setCredServerId('');
+      setCredUserId('');
+      setCredToken('');
+    },
+  });
+
+  // Set A2A Push Config Mutation
+  const setPushConfigMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.setA2APushConfig>[1]) =>
+      adminApi.setA2APushConfig(adminKey, payload),
+    onSuccess: () => {
+      setShowPushModal(false);
+      setPushTaskId('');
+      setPushTargetUrl('');
+      setPushAuthToken('');
+    },
+  });
+
   const mcpServers = mcpServersData?.servers || mcpServersData?.data || [];
   const mcpToolsets = mcpToolsetsData?.toolsets || mcpToolsetsData?.data || [];
   const mcpTools = mcpToolsData?.tools || [];
@@ -222,6 +258,13 @@ export const AgenticView: React.FC = () => {
           {activeTab === 'mcp' ? (
             <>
               <button
+                onClick={() => setShowCredModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-200 hover:text-white rounded text-xs font-medium transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Set User BYOK
+              </button>
+              <button
                 onClick={() => setShowToolsetModal(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-200 hover:text-white rounded text-xs font-medium transition"
               >
@@ -239,15 +282,24 @@ export const AgenticView: React.FC = () => {
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setShowAgentModal(true)}
-              className={BTN_PRIMARY}
-            >
-              <span className="flex items-center gap-1.5">
+            <>
+              <button
+                onClick={() => setShowPushModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-200 hover:text-white rounded text-xs font-medium transition"
+              >
                 <Plus className="w-3.5 h-3.5" />
-                Register A2A Agent
-              </span>
-            </button>
+                Push Webhook
+              </button>
+              <button
+                onClick={() => setShowAgentModal(true)}
+                className={BTN_PRIMARY}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  Register A2A Agent
+                </span>
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -375,7 +427,17 @@ export const AgenticView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-subtle flex justify-end">
+                    <div className="pt-3 border-t border-subtle flex justify-end gap-2">
+                      <button
+                        onClick={() => {
+                          setCredServerId(srv.id);
+                          setShowCredModal(true);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition"
+                      >
+                        <Plus className="w-3 h-3" />
+                        Set BYOK
+                      </button>
                       <button
                         onClick={() => syncServerMutation.mutate(srv.id)}
                         disabled={syncServerMutation.isPending}
@@ -1003,6 +1065,168 @@ export const AgenticView: React.FC = () => {
               className={BTN_PRIMARY}
             >
               {createAgentMutation.isPending ? 'Registering...' : 'Register Agent'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Set MCP User BYOK Credential Modal */}
+      <Modal
+        isOpen={showCredModal}
+        onClose={() => setShowCredModal(false)}
+        title="Set MCP User BYOK Credential"
+        description="Store a Vault-encrypted per-user BYOK token for an upstream MCP server."
+        maxWidth="md"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!credServerId.trim() || !credUserId.trim() || !credToken.trim()) return;
+            setUserCredMutation.mutate({
+              org_id: activeOrgId || undefined,
+              server_id: credServerId.trim(),
+              user_id: credUserId.trim(),
+              token: credToken.trim(),
+            });
+          }}
+          className="space-y-4"
+        >
+          {setUserCredMutation.isError && (
+            <ErrorAlert error={setUserCredMutation.error} title="Failed to save MCP user credential" />
+          )}
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">MCP Server ID *</label>
+            {mcpServers.length > 0 ? (
+              <select
+                required
+                value={credServerId}
+                onChange={(e) => setCredServerId(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="">Select MCP Server...</option>
+                {mcpServers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.id})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                required
+                value={credServerId}
+                onChange={(e) => setCredServerId(e.target.value)}
+                placeholder="mcp_srv_..."
+                className={`${INPUT_CLS} font-mono`}
+              />
+            )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">User ID *</label>
+            <input
+              type="text"
+              required
+              value={credUserId}
+              onChange={(e) => setCredUserId(e.target.value)}
+              placeholder="usr_..."
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              User Token (Vault Encrypted) *
+            </label>
+            <input
+              type="password"
+              required
+              value={credToken}
+              onChange={(e) => setCredToken(e.target.value)}
+              placeholder="ghp_... or OAuth bearer token"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowCredModal(false)} className={BTN_CANCEL}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={setUserCredMutation.isPending || !credServerId.trim() || !credUserId.trim() || !credToken.trim()}
+              className={BTN_PRIMARY}
+            >
+              {setUserCredMutation.isPending ? 'Saving...' : 'Save Credential'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Configure A2A Push Notification Webhook Modal */}
+      <Modal
+        isOpen={showPushModal}
+        onClose={() => setShowPushModal(false)}
+        title="Configure A2A Push Notification Webhook"
+        description="Register a webhook URL to receive asynchronous A2A task state updates."
+        maxWidth="md"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!pushTaskId.trim() || !pushTargetUrl.trim()) return;
+            setPushConfigMutation.mutate({
+              task_id: pushTaskId.trim(),
+              target_url: pushTargetUrl.trim(),
+              auth_token: pushAuthToken.trim() || undefined,
+            });
+          }}
+          className="space-y-4"
+        >
+          {setPushConfigMutation.isError && (
+            <ErrorAlert error={setPushConfigMutation.error} title="Failed to configure push webhook" />
+          )}
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">A2A Task ID *</label>
+            <input
+              type="text"
+              required
+              value={pushTaskId}
+              onChange={(e) => setPushTaskId(e.target.value)}
+              placeholder="task_..."
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Webhook Target URL *</label>
+            <input
+              type="text"
+              required
+              value={pushTargetUrl}
+              onChange={(e) => setPushTargetUrl(e.target.value)}
+              placeholder="https://callbacks.internal.example.com/a2a/webhook"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              Webhook Auth Token (Vault Encrypted, optional)
+            </label>
+            <input
+              type="password"
+              value={pushAuthToken}
+              onChange={(e) => setPushAuthToken(e.target.value)}
+              placeholder="Bearer secret..."
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowPushModal(false)} className={BTN_CANCEL}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={setPushConfigMutation.isPending || !pushTaskId.trim() || !pushTargetUrl.trim()}
+              className={BTN_PRIMARY}
+            >
+              {setPushConfigMutation.isPending ? 'Saving...' : 'Save Webhook'}
             </button>
           </div>
         </form>

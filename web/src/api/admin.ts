@@ -193,6 +193,15 @@ export const adminApi = {
       {},
       key
     ),
+  setMCPUserCredential: (
+    key: string,
+    data: { org_id?: string; server_id: string; user_id: string; token: string }
+  ) =>
+    apiFetch<{ status: string; credential_id: string }>(
+      '/admin/v1/mcp/credentials',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
   listA2AAgents: (key: string, orgId?: string) =>
     apiFetch<{ agents?: A2AAgent[]; data?: A2AAgent[] }>(
       `/admin/v1/a2a/agents${orgId ? `?org_id=${orgId}` : ''}`,
@@ -222,6 +231,15 @@ export const adminApi = {
     ),
   setA2AKillSwitch: (key: string, agentId: string, killed: boolean) =>
     apiFetch<any>(`/admin/v1/a2a/agents/${agentId}/kill-switch`, { method: 'POST', body: JSON.stringify({ killed }) }, key),
+  setA2APushConfig: (
+    key: string,
+    data: { task_id: string; target_url: string; auth_token?: string }
+  ) =>
+    apiFetch<{ status: string; push_config: any }>(
+      '/admin/v1/a2a/push-configs',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
 
   // Gateway Runtime Config
   getConfig: (key: string) =>
