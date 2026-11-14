@@ -1,8 +1,8 @@
 # Contributing to GoRoute AI Gateway
 
-Thank you for your interest in contributing to **GoRoute AI Gateway**! 🎉
+Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is an enterprise-grade, high-performance Go service and embeddable SDK that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v1.7.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 
@@ -17,22 +17,23 @@ We are committed to providing a welcoming, inclusive, and harassment-free enviro
 Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow and shared [repository guidance in `AGENTS.md`](./AGENTS.md), which the Claude guide imports. Use the [`codebase map`](./docs/CODEBASE_MAP.md) to locate implementation and tests:
 
 1. **100% Pure Go, Zero CGO**: All adapters, protocol parsers, and utilities must compile with `CGO_ENABLED=0` across Linux, macOS, and Windows.
-2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (\$1.00 = 1,000,000 µ\$). Never use floating-point math for cost accumulation or pricing.
-3. **SSRF-Protected Network Egress**: All outbound HTTP traffic to upstream LLM providers or webhooks must route through the SSRF-guarded transport in `internal/security/network`.
-4. **Multi-Tenant Isolation**: Boundary 1 Virtual Key authentication and multi-tenant RBAC allowlists (`OrgID > TeamID > UserID > VirtualKeyID`) must be preserved across all endpoints.
+2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (`$1.00 = 1,000,000 µ$`). Never use floating-point math for cost accumulation or pricing.
+3. **SSRF-Protected Network Egress**: All outbound HTTP traffic to upstream LLM providers or webhooks must route through the SSRF-guarded transport in `internal/security/network`. Admin credential `BaseURL` inputs and adapter `ListModels` endpoints must validate URLs via `adapter.ValidateAndResolveBaseURL`, and remote media fetches must use the strict HTTPS-only public `mediaPolicy`.
+4. **Multi-Tenant Isolation & Security Headers**: Boundary 1 Virtual Key / JWT authentication, tri-state multi-tenant RBAC allowlists (`null` inherit vs `[]` deny all across `Org > Team > User > VirtualKey`), fail-closed quota/policy checks, Redis Pub/Sub cross-replica invalidation, and `SecurityHeadersMiddleware` ([`internal/server/security_headers.go`](./internal/server/security_headers.go)) must be preserved across all endpoints.
 5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and both primary `/v1` and `/admin/v1` routes are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
 7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 420 KB` uncompressed and `<= 125 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
+8. **Secret & CI Hygiene**: Never commit real or realistic secret/token literals—even in unit tests (construct synthetic fixtures dynamically if needed). Keep tests compatible with `.gitleaks.toml` and GitHub Push Protection.
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- **Go**: Version `1.22+` (Go `1.26` recommended)
+- **Go**: Version `1.26.0+` (matching [`go.mod`](./go.mod))
 - **Git**
-- **Node.js 18+ & npm** (required only if contributing to the Operator Web UI in `web/`)
-- **Docker** (optional, for live PostgreSQL and Redis integration tests)
+- **Node.js `20+` & npm** (required only if contributing to the Operator Web UI in `web/`)
+- **Optional Tooling**: **Docker** (live PostgreSQL 16 + Redis 7 integration tests and containerized production suite), **`gitleaks`**, **`govulncheck`**, and **`k6`**
 
 ### Local Build and Test
 Clone the repository and verify your local toolchain:
@@ -42,24 +43,32 @@ Clone the repository and verify your local toolchain:
 git clone https://github.com/goroute-ai/ai-gateway-go.git
 cd ai-gateway-go
 
-# Verify Go dependencies
+# Download Go dependencies
 go mod download
 
-# Run unit tests with the Go race detector
-go test -race -count=1 ./internal/... ./pkg/...
+# Run unit tests with the Go race detector across all packages
+go test -race -count=1 ./internal/... ./pkg/... ./cmd/...
 
 # Generate gateway DTOs and validate OpenAPI, JSON Schema & Protobuf contracts
 make specgen
 
-# (Optional) Build frontend assets and verify bundle budget
+# (Optional) Build frontend assets, check bundle budget, and sync internal/ui/dist
 make ui-build
 
 # Build the gateway executable (with embedded UI)
-go build -o bin/ai-gateway ./cmd/gateway
+make build
 
-# Run release verification (rewrites Go formatting and requires PostgreSQL and Redis for E2E)
-make release-check
+# Optional: start PostgreSQL 16 + Redis 7 and run strict live-stack E2E tests
+make test-live-up
+make test-e2e-strict
+make test-live-down
+
+# Optional: run security checks
+make test-security
 ```
+
+> [!NOTE]
+> `make release-check` runs `gofmt -s -w .` in write mode and invokes `test-e2e` (which skips live-dependency tests unless PostgreSQL and Redis are already running). Prefer the read-only `gofmt -l .` check and `make test-live-up && make test-e2e-strict` when validating changes before committing.
 
 ### Developing the Operator Web UI
 When making changes to the embedded React console in `web/`:
@@ -67,13 +76,16 @@ When making changes to the embedded React console in `web/`:
 # Install frontend dependencies
 make ui-install
 
-# Start Vite live reload dev server (proxies to http://localhost:8080)
+# Start Vite dev server on http://localhost:5173 (proxies /admin/v1, /v1, /mcp-rest to http://localhost:8080)
 make ui-dev
+
+# Typecheck TypeScript sources
+(cd web && npm run typecheck)
 
 # Compile assets, check bundle budget, and synchronize to internal/ui/dist/
 make ui-build
 
-# Verify that embedded distribution is in sync with web/
+# Verify that embedded distribution is cleanly synchronized in git
 make ui-check-dist
 ```
 
@@ -86,28 +98,34 @@ If you are new to the codebase, look for issues labeled [`good first issue`](htt
 Here are great areas to get started:
 
 ### 1. Add an OpenAI-Compatible Provider Profile
-GoRoute has a certified dialect engine in [`internal/adapter/openaicompat/builtin_profiles.go`](./internal/adapter/openaicompat/builtin_profiles.go). Adding a new OpenAI-compatible provider (e.g. specialized regional or inference clouds) takes just a few lines:
+GoRoute configures certified OpenAI-compatible dialect profiles in [`internal/adapter/openaicompat/builtin_profiles.go`](./internal/adapter/openaicompat/builtin_profiles.go). Registering a new provider inside `(r *ProfileRegistry) registerBuiltinProfiles()` takes just one `&DialectProfile` entry (alongside its `domain.Provider` constant in `internal/domain/`):
+
 ```go
-RegisterBuiltinProfile(CertifiedProfile{
-    Provider:      "myprovider",
-    DisplayName:   "My Provider Cloud",
-    DefaultBaseURL: "https://api.myprovider.com/v1",
-    HeaderAuthKey: "Authorization",
-    AuthPrefix:    "Bearer ",
-    // Configure parameter quirks and reasoning field extractions
-})
+r.profiles[domain.Provider("myprovider")] = &DialectProfile{
+    ID:                 domain.Provider("myprovider"),
+    DisplayName:        "My Provider Cloud",
+    DefaultBaseURL:     "https://api.myprovider.com/v1",
+    EndpointStrategy:   &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: "https://api.myprovider.com/v1"},
+    AuthStrategy:       &adapter.BearerAuthStrategy{},
+    SupportsListModels: true,
+    DefaultCapabilities: domain.ModelCapabilities{
+        Tools:             domain.CapabilitySupported,
+        Streaming:         domain.CapabilitySupported,
+        StructuredOutputs: domain.CapabilitySupported,
+    },
+}
 ```
 
 ### 2. Implement a Secondary Modality Adapter
-Expand modality coverage for:
+Expand modality coverage in `internal/adapter/`:
 - **Voyage AI Rerank**: Implement `adapter.RerankAdapter` calling Voyage's `/v1/rerank` endpoint.
-- **AWS Bedrock Rerank**: Implement `adapter.RerankAdapter` for Bedrock's `amazon.rerank-v1`.
+- **AWS Bedrock Rerank**: Implement `adapter.RerankAdapter` inside [`internal/adapter/bedrock/`](./internal/adapter/bedrock/).
 - **ElevenLabs Speech**: Implement `adapter.AudioAdapter` for ElevenLabs TTS.
-- **Vertex AI Imagen**: Implement `adapter.ImageAdapter` for Imagen 3.
+- **Vertex AI Imagen**: Implement `adapter.ImageAdapter` inside [`internal/adapter/vertex/`](./internal/adapter/vertex/).
 
 ### 3. Documentation & Examples
-- Add client code examples (Python, TypeScript, cURL, Go SDK).
-- Improve error troubleshooting guides in `docs/`.
+- Add client code examples (Python, TypeScript, cURL, Go SDK via `pkg/gateway`).
+- Improve configuration and troubleshooting guides in [`docs/`](./docs/).
 
 ---
 
@@ -130,32 +148,33 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/):
 - `chore(release): bump version and update changelog`
 
 ### 3. Pre-Pull Request Verification Checklist
-Before submitting a pull request, run the release verification suite:
+Run the same validation gates checked by [`.github/workflows/ci.yml`](./.github/workflows/ci.yml):
 
 ```bash
-# 1. Format code
-gofmt -s -w .
+# 1. Read-only formatting check (run `gofmt -s -w <files>` if anything is listed)
+test -z "$(gofmt -l .)"
 
-# 2. Check formatting
-gofmt -l .
-
-# 3. Static analysis
+# 2. Static analysis
 go vet ./...
 
-# 4. Contract validation
+# 3. OpenAPI / Protobuf contract regeneration & parity check
 make specgen
+git diff --exit-code -- internal/openapi/gateway.gen.go
 
-# 5. Unit tests with race detector
-go test -race -count=1 ./internal/... ./pkg/...
+# 4. Unit tests with race detector
+go test -race -count=1 ./internal/... ./pkg/... ./cmd/...
 
-# 6. Build executable
+# 5. If web/ changed: TypeScript check, bundle budget build, and dist sync check
+(cd web && npm run typecheck)
+make ui-build
+make ui-check-dist
+
+# 6. Secret scan and binary build verification
+gitleaks detect --source=. --config=.gitleaks.toml --no-git
 go build -o /dev/null ./cmd/gateway
 ```
 
-Or simply run:
-```bash
-make release-check
-```
+When changing storage, auth, caching, FinOps, or HTTP routes, also verify live PostgreSQL + Redis E2E tests (`make test-live-up && make test-e2e-strict && make test-live-down`).
 
 ---
 
@@ -166,14 +185,15 @@ make release-check
 3. In the PR description:
    - Reference any related issues (e.g., `Closes #123`).
    - Describe what changed and why.
-   - List the commands run and tests executed.
-4. Maintainers will review your PR and run CI checks.
+   - List the commands run and tests executed (noting any live-service checks skipped if PostgreSQL/Redis/k6 were unavailable).
+4. Maintainers will review your PR and verify CI (`CI` and `CodeQL`) passes before merging.
 
 ---
 
 ## Community & Questions
 
 - **Issues**: Report bugs or suggest features via [GitHub Issues](https://github.com/goroute-ai/ai-gateway-go/issues).
+- **Security Reports**: Follow the private disclosure instructions in [`SECURITY.md`](./SECURITY.md).
 - **Discussions**: Ask questions or share ideas via [GitHub Discussions](https://github.com/goroute-ai/ai-gateway-go/discussions).
 
-Thank you for helping make GoRoute AI Gateway faster, safer, and more reliable! 🚀
+Thank you for helping make GoRoute AI Gateway faster, safer, and more reliable!
