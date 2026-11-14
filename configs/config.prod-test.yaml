@@ -1,0 +1,143 @@
+# ==============================================================================
+# GoRoute AI Gateway — Production-Like Container Verification Configuration
+# ==============================================================================
+# Used by deployments/docker-compose.prod-test.yml (-config /etc/goroute/config.yaml).
+# All credentials and symmetric secrets are injected via environment variables at
+# runtime and validated under GATEWAY_ENV=production.
+
+server:
+  environment: "production"
+  host: "0.0.0.0"
+  port: 8080
+  grpc_port: 0
+  read_timeout: 30s
+  write_timeout: 300s
+  idle_timeout: 120s
+  shutdown_timeout: 15s
+  cors_allowed_origins:
+    - "https://localhost:8443"
+    - "https://localhost:28443"
+  cors_allow_credentials: false
+  enable_hsts: true
+  max_file_storage_bytes_per_org: 104857600
+  max_concurrent_file_uploads: 8
+
+logging:
+  level: "info"
+  format: "json"
+  add_source: false
+
+tracing:
+  enabled: true
+  otlp_endpoint: "https://otel-collector:4318/v1/traces"
+  service_name: "ai-gateway-prod-test"
+  headers: {}
+
+storage:
+  mode: "postgres"
+  postgres_dsn: "os.environ/GATEWAY_POSTGRES_DSN"
+  redis_addr: "redis:6379"
+  redis_pass: "os.environ/GATEWAY_REDIS_PASS"
+  redis_db: 0
+
+auth:
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
+  allow_master_key_data_plane: false
+  jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
+  jwt_issuer: "https://auth.goroute.local"
+  jwt_audience: "goroute-gateway"
+  default_org_id: "org_default"
+  default_virtual_key: ""
+  l1_cache_ttl: 15s
+  l2_cache_ttl: 5m
+
+router:
+  default_fast_alias: "fast"
+  default_reasoning_alias: "reasoning"
+  default_coding_alias: "coding"
+  complexity_threshold: 0.40
+  long_context_tokens: 32000
+  default_max_retries: 2
+  base_retry_delay: 25ms
+  max_retry_delay: 500ms
+  default_cooldown: 10s
+  failure_window: 30s
+  failure_threshold: 3
+
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: false
+  window_seconds: 60
+  concurrency_ttl_sec: 300
+  default_estimated_tpm: 64
+  redis_timeout: 100ms
+  global_rpm_limit: 0
+  global_tpm_limit: 0
+  global_max_concurrent: 0
+
+finops:
+  channel_buffer_size: 16384
+  batch_size: 10
+  flush_interval: 100ms
+  worker_count: 2
+
+discovery:
+  enabled: true
+  sync_interval: 6h
+  auto_approve: false
+
+cache:
+  enabled: true
+  default_ttl: 1h
+  max_l1_entries: 4096
+
+guardrails:
+  scanners: []
+
+security:
+  network:
+    outbound_ssrf:
+      allow_private_networks: false
+      allowed_private_cidrs:
+        - "172.29.10.0/24" # Dedicated upstream-net for mock-upstream & otel-collector only
+      allow_insecure_http: false
+      allowed_schemes:
+        - "https"
+      blocked_ips:
+        - "169.254.169.254"
+        - "fd00:ec2::254"
+      dial_timeout: 5s
+      max_redirects: 3
+    inbound_caller:
+      expose_on_public_internet: false
+      allowed_client_cidrs: []
+      trusted_proxy_cidrs:
+        - "172.28.20.0/24" # edge-net (nginx-lb)
+
+mcp:
+  enabled: true
+  allow_stdio_servers: false
+  allowed_stdio_binaries: []
+  enable_session_compat_2025: true
+  session_ttl_2025: 15m
+  max_payload_bytes: 10485760
+  default_timeout: 15s
+  subscriptions_listen_active: true
+
+a2a:
+  enabled: true
+  enable_jsonrpc: true
+  enable_http_json: true
+  enable_subscribe_post_compat: false
+  allow_legacy_card_discovery: false
+  max_task_lifespan: 24h
+  stream_buffer_capacity: 256
+  stream_publish_interval: 50ms
+  max_push_retries: 3
+  signing_key_id: "gw-a2a-signer-prod-test"
+  allowed_signing_algs:
+    - "ES256"
+    - "RS256"
+    - "EdDSA"
+  trusted_card_jwks: {}

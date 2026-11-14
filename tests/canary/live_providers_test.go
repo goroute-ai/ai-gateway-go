@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,15 +27,22 @@ type canaryTarget struct {
 	model    string
 }
 
+func resolveCanaryModel(name, defaultModel string) string {
+	if v := strings.TrimSpace(os.Getenv("CANARY_" + strings.ToUpper(name) + "_MODEL")); v != "" {
+		return v
+	}
+	return defaultModel
+}
+
 func TestCanary_LiveProviders(t *testing.T) {
 	targets := []canaryTarget{
 		// Tier 2: Single-key multi-provider & free-tier live checks
 		{name: "openrouter", envKey: "OPENROUTER_API_KEY", provider: domain.ProviderOpenRouter, model: "openai/gpt-4o-mini"},
-		{name: "gemini", envKey: "GEMINI_API_KEY", provider: domain.ProviderGemini, model: "gemini-2.5-flash"},
+		{name: "gemini", envKey: "GEMINI_API_KEY", provider: domain.ProviderGemini, model: "gemini-3.1-flash-lite"},
 		{name: "groq", envKey: "GROQ_API_KEY", provider: domain.ProviderGroq, model: "llama-3.1-8b-instant"},
 		// Tier 3: Direct provider 1-token checks
 		{name: "openai", envKey: "OPENAI_API_KEY", provider: domain.ProviderOpenAI, model: "gpt-4o-mini"},
-		{name: "anthropic", envKey: "ANTHROPIC_API_KEY", provider: domain.ProviderAnthropic, model: "claude-3-5-haiku-latest"},
+		{name: "anthropic", envKey: "ANTHROPIC_API_KEY", provider: domain.ProviderAnthropic, model: "claude-haiku-4-5-20251001"},
 	}
 
 	ctx := context.Background()
@@ -51,7 +59,8 @@ func TestCanary_LiveProviders(t *testing.T) {
 	defer ts.Close()
 
 	adminHeaders := map[string]string{"Authorization": "Bearer " + cfg.Auth.MasterAdminKey}
-	postJSON := func(path string, hdrs map[string]string, body any, out any) (int, []byte) {
+	postJSON := func(tb testing.TB, path string, hdrs map[string]string, body any, out any) (int, []byte) {
+		tb.Helper()
 		b, _ := json.Marshal(body)
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+path, bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
@@ -61,7 +70,7 @@ func TestCanary_LiveProviders(t *testing.T) {
 		client := &http.Client{Timeout: 20 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
-			t.Fatalf("post %s: %v", path, err)
+			tb.Fatalf("post %s: %v", path, err)
 		}
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -72,14 +81,14 @@ func TestCanary_LiveProviders(t *testing.T) {
 	}
 
 	var org map[string]any
-	status, raw := postJSON("/admin/v1/organizations", adminHeaders, map[string]any{"name": "CanaryOrg", "slug": "canary-org"}, &org)
+	status, raw := postJSON(t, "/admin/v1/organizations", adminHeaders, map[string]any{"name": "CanaryOrg", "slug": "canary-org"}, &org)
 	if status != http.StatusCreated {
 		t.Fatalf("create org (%d): %s", status, string(raw))
 	}
 	orgID := org["id"].(string)
 
 	var vk domain.VirtualKey
-	status, raw = postJSON("/admin/v1/keys", adminHeaders, map[string]any{"org_id": orgID, "name": "canary-key"}, &vk)
+	status, raw = postJSON(t, "/admin/v1/keys", adminHeaders, map[string]any{"org_id": orgID, "name": "canary-key"}, &vk)
 	if status != http.StatusCreated {
 		t.Fatalf("create key (%d): %s", status, string(raw))
 	}
@@ -93,25 +102,26 @@ func TestCanary_LiveProviders(t *testing.T) {
 				t.Skipf("skipping %s canary: %s not set", tgt.name, tgt.envKey)
 			}
 
-			gmID := string(tgt.provider) + "/" + tgt.model
+			model := resolveCanaryModel(tgt.name, tgt.model)
+			gmID := string(tgt.provider) + "/" + model
 			_ = repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
-				ID: gmID, Provider: tgt.provider, ModelName: tgt.model,
+				ID: gmID, Provider: tgt.provider, ModelName: model,
 				SupportsInference: true, LifecycleStatus: domain.ModelStatusActive, PricingStatus: domain.PricingStatusVerified,
 			})
 
 			var cred, grp map[string]any
-			postJSON("/admin/v1/credentials", adminHeaders, map[string]any{
+			postJSON(t, "/admin/v1/credentials", adminHeaders, map[string]any{
 				"org_id": orgID, "provider": string(tgt.provider), "name": tgt.name + "-cred", "api_key": apiKey,
 			}, &cred)
-			postJSON("/admin/v1/model-groups", adminHeaders, map[string]any{
+			postJSON(t, "/admin/v1/model-groups", adminHeaders, map[string]any{
 				"org_id": orgID, "alias": tgt.name + "-canary", "routing_strategy": "weighted_shuffle",
 			}, &grp)
-			postJSON("/admin/v1/deployments", adminHeaders, map[string]any{
+			postJSON(t, "/admin/v1/deployments", adminHeaders, map[string]any{
 				"model_group_id": grp["id"], "global_model_id": gmID,
 				"credential_id": cred["id"], "deployment_name": tgt.name + "-dep", "weight": 1,
 			}, nil)
 
-			code, body := postJSON("/v1/chat/completions", vkHeaders, map[string]any{
+			code, body := postJSON(t, "/v1/chat/completions", vkHeaders, map[string]any{
 				"model":      tgt.name + "-canary",
 				"max_tokens": 1,
 				"messages":   []map[string]any{{"role": "user", "content": "Say ok"}},

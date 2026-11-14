@@ -7,21 +7,6 @@ services:
       POSTGRES_DB: aigateway
     ports:
       - "5432:5432"
-    volumes:
-      - ./../migrations/0001_init_schema.up.sql:/docker-entrypoint-initdb.d/0001_init_schema.up.sql:ro
-      - ./../migrations/0002_add_platform_modules.up.sql:/docker-entrypoint-initdb.d/0002_add_platform_modules.up.sql:ro
-      - ./../migrations/0003_add_mcp_and_a2a.up.sql:/docker-entrypoint-initdb.d/0003_add_mcp_and_a2a.up.sql:ro
-      - ./../migrations/0004_add_pricing_status.up.sql:/docker-entrypoint-initdb.d/0004_add_pricing_status.up.sql:ro
-      - ./../migrations/0005_add_model_capabilities.up.sql:/docker-entrypoint-initdb.d/0005_add_model_capabilities.up.sql:ro
-      - ./../migrations/0006_add_supports_inference.up.sql:/docker-entrypoint-initdb.d/0006_add_supports_inference.up.sql:ro
-      - ./../migrations/0007_add_modality_pricing_and_spend.up.sql:/docker-entrypoint-initdb.d/0007_add_modality_pricing_and_spend.up.sql:ro
-      - ./../migrations/0008_add_spend_event_outbox.up.sql:/docker-entrypoint-initdb.d/0008_add_spend_event_outbox.up.sql:ro
-      - ./../migrations/0010_guardrail_mode.up.sql:/docker-entrypoint-initdb.d/0010_guardrail_mode.up.sql:ro
-      - ./../migrations/0011_budget_reset_outbox.up.sql:/docker-entrypoint-initdb.d/0011_budget_reset_outbox.up.sql:ro
-      - ./../migrations/0012_add_cache_write_and_operations.up.sql:/docker-entrypoint-initdb.d/0012_add_cache_write_and_operations.up.sql:ro
-      - ./../migrations/0013_user_limits_and_spend_indexes.up.sql:/docker-entrypoint-initdb.d/0013_user_limits_and_spend_indexes.up.sql:ro
-      - ./../migrations/0014_budget_reset_outbox_user_scope.up.sql:/docker-entrypoint-initdb.d/0014_budget_reset_outbox_user_scope.up.sql:ro
-      - ./../migrations/0015_team_org_concurrency.up.sql:/docker-entrypoint-initdb.d/0015_team_org_concurrency.up.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
       interval: 5s
@@ -39,6 +24,23 @@ services:
       timeout: 3s
       retries: 5
 
+  gateway-migrate:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    command: ["-config", "/app/configs/config.yaml", "-migrate-only"]
+    environment:
+      GATEWAY_ENV: "${GATEWAY_ENV:-development}"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   ai-gateway:
     build:
       context: ..
@@ -46,13 +48,16 @@ services:
     ports:
       - "8080:8080"
     environment:
+      GATEWAY_ENV: "${GATEWAY_ENV:-development}"
       GATEWAY_PORT: "8080"
       GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
       GATEWAY_REDIS_ADDR: "redis:6379"
-      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-master-admin-default-key-change-me"
-      GATEWAY_MASTER_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
     depends_on:
-      postgres:
-        condition: service_healthy
+      gateway-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
