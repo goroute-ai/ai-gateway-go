@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -685,5 +686,112 @@ func TestVirtualKeyIssueAndAuthUseGetUserNotListUsers(t *testing.T) {
 	}
 	if got := repo.getUserCalls.Load(); got != 5 {
 		t.Fatalf("expected 5 GetUser calls (3 IssueVirtualKey + 2 AuthenticateVirtualKey), got %d", got)
+	}
+}
+
+func TestVirtualKey_UpdateAndRotateInvalidatesL1L2PubSub(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mr := miniredis.RunT(t)
+	redis1 := storage.NewRedisFabric(mr.Addr(), "", 0)
+	redis2 := storage.NewRedisFabric(mr.Addr(), "", 0)
+	defer redis1.Client().Close()
+	defer redis2.Client().Close()
+
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-rotate", Name: "Rotate Org", Slug: "rotate-org", IsActive: true}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	svc1 := auth.NewService(repo, redis1, "master-admin", time.Minute, time.Minute)
+	svc2 := auth.NewService(repo, redis2, "master-admin", time.Minute, time.Minute)
+	svc2.StartInvalidationListener(ctx)
+	defer svc2.StopInvalidationListener()
+	time.Sleep(25 * time.Millisecond)
+
+	issued, err := svc1.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:    org.ID,
+		Name:     "rotatable-key",
+		RPMLimit: 25,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+	oldRawKey := issued.RawKey
+	oldPrefix := issued.KeyPrefix
+
+	// Warm L1 and L2 on both svc1 and svc2
+	if _, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey); err != nil {
+		t.Fatalf("svc1 AuthenticateVirtualKey(old): %v", err)
+	}
+	if _, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err != nil {
+		t.Fatalf("svc2 AuthenticateVirtualKey(old): %v", err)
+	}
+
+	// UpdateVirtualKey updates limits/models and invalidates cached identity
+	updatedVK := *issued
+	updatedVK.RPMLimit = 120
+	updatedVK.AllowedModels = []string{"gpt-4.1"}
+	if err := svc1.UpdateVirtualKey(ctx, &updatedVK); err != nil {
+		t.Fatalf("UpdateVirtualKey: %v", err)
+	}
+	idAfterUpdate, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey)
+	if err != nil {
+		t.Fatalf("svc1 AuthenticateVirtualKey after UpdateVirtualKey: %v", err)
+	}
+	if idAfterUpdate.KeyRPMLimit != 120 || len(idAfterUpdate.KeyAllowedModels) != 1 || idAfterUpdate.KeyAllowedModels[0] != "gpt-4.1" {
+		t.Fatalf("expected updated KeyRPMLimit=120 and KeyAllowedModels=[gpt-4.1], got %+v", idAfterUpdate)
+	}
+
+	// Warm svc2 again before rotation
+	if _, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err != nil {
+		t.Fatalf("svc2 AuthenticateVirtualKey before rotate: %v", err)
+	}
+
+	// RotateVirtualKey generates a new sk-gw-... key and invalidates the old hash in L1/L2/PubSub
+	rotated, err := svc1.RotateVirtualKey(ctx, issued.ID)
+	if err != nil {
+		t.Fatalf("RotateVirtualKey: %v", err)
+	}
+	if !strings.HasPrefix(rotated.RawKey, "sk-gw-") || rotated.RawKey == oldRawKey {
+		t.Fatalf("expected new sk-gw-... RawKey, got %q", rotated.RawKey)
+	}
+	if rotated.KeyPrefix == oldPrefix || !strings.HasPrefix(rotated.KeyPrefix, "sk-gw-") {
+		t.Fatalf("expected updated KeyPrefix, got %q (old %q)", rotated.KeyPrefix, oldPrefix)
+	}
+
+	// Old key must immediately fail on svc1
+	if _, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatal("expected old raw key to be rejected on svc1 after RotateVirtualKey")
+	}
+
+	// Wait briefly for Pub/Sub invalidation to reach svc2 and verify old key fails on svc2
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatal("expected old raw key to be rejected on svc2 after RotateVirtualKey Pub/Sub invalidation")
+	}
+
+	// New rotated key must authenticate on both svc1 and svc2 and preserve updated attributes
+	idNew1, err := svc1.AuthenticateVirtualKey(ctx, rotated.RawKey)
+	if err != nil {
+		t.Fatalf("svc1 AuthenticateVirtualKey(new): %v", err)
+	}
+	if idNew1.VirtualKeyID != issued.ID || idNew1.KeyPrefix != rotated.KeyPrefix || idNew1.KeyRPMLimit != 120 {
+		t.Fatalf("unexpected identity for rotated key on svc1: %+v", idNew1)
+	}
+	idNew2, err := svc2.AuthenticateVirtualKey(ctx, rotated.RawKey)
+	if err != nil {
+		t.Fatalf("svc2 AuthenticateVirtualKey(new): %v", err)
+	}
+	if idNew2.VirtualKeyID != issued.ID || idNew2.KeyPrefix != rotated.KeyPrefix {
+		t.Fatalf("unexpected identity for rotated key on svc2: %+v", idNew2)
 	}
 }

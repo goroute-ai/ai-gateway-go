@@ -149,14 +149,19 @@ type Repository interface {
 
 	// Teams & Users
 	CreateTeam(ctx context.Context, team *domain.Team) error
+	UpdateTeam(ctx context.Context, team *domain.Team) error
 	GetTeam(ctx context.Context, id string) (*domain.Team, error)
 	ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error)
+	DeleteTeam(ctx context.Context, id string) error
 	CreateUser(ctx context.Context, user *domain.User) error
+	UpdateUser(ctx context.Context, user *domain.User) error
 	GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error)
 	ListUsers(ctx context.Context, orgID string) ([]*domain.User, error)
+	DeleteUser(ctx context.Context, id string) error
 
 	// Boundary 1 Auth: Virtual API Keys
 	CreateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error
+	UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error
 	GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error)
 	GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error)
 	ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error)

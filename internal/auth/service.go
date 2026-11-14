@@ -161,6 +161,106 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 	return &vk, nil
 }
 
+// UpdateVirtualKey updates an existing Virtual Key's metadata/scopes/limits and invalidates its cached identity.
+func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
+	if vk == nil || strings.TrimSpace(vk.ID) == "" {
+		return fmt.Errorf("virtual key id is required")
+	}
+	existing, err := s.repo.GetVirtualKeyByID(ctx, vk.ID)
+	if err != nil {
+		return err
+	}
+	if vk.OrgID == "" {
+		vk.OrgID = existing.OrgID
+	}
+	if vk.KeyHash == "" {
+		vk.KeyHash = existing.KeyHash
+	}
+	if vk.KeyPrefix == "" {
+		vk.KeyPrefix = existing.KeyPrefix
+	}
+	if vk.Role == "" {
+		vk.Role = existing.Role
+	}
+	if vk.BudgetResetPeriod == "" {
+		vk.BudgetResetPeriod = existing.BudgetResetPeriod
+	}
+	if len(vk.AllowedEndpoints) == 0 {
+		vk.AllowedEndpoints = existing.AllowedEndpoints
+	}
+	if vk.CreatedAt.IsZero() {
+		vk.CreatedAt = existing.CreatedAt
+	}
+	if vk.TeamID != "" {
+		team, err := s.repo.GetTeam(ctx, vk.TeamID)
+		if err != nil {
+			return fmt.Errorf("verify team %q: %w", vk.TeamID, err)
+		}
+		if team.OrgID != vk.OrgID {
+			return fmt.Errorf("team %q does not belong to organization %q", vk.TeamID, vk.OrgID)
+		}
+	}
+	if vk.UserID != "" {
+		user, err := s.lookupUser(ctx, vk.OrgID, vk.UserID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return fmt.Errorf("user %q does not belong to organization %q", vk.UserID, vk.OrgID)
+			}
+			return fmt.Errorf("verify user %q: %w", vk.UserID, err)
+		}
+		if user == nil || user.OrgID != vk.OrgID {
+			return fmt.Errorf("user %q does not belong to organization %q", vk.UserID, vk.OrgID)
+		}
+	}
+	if err := s.repo.UpdateVirtualKey(ctx, vk); err != nil {
+		return err
+	}
+	if existing.KeyHash != "" {
+		s.InvalidateKeyHash(ctx, existing.KeyHash)
+	}
+	if vk.KeyHash != "" && vk.KeyHash != existing.KeyHash {
+		s.InvalidateKeyHash(ctx, vk.KeyHash)
+	}
+	return nil
+}
+
+// RotateVirtualKey generates a new cryptographically random `sk-gw-...` key for an existing VirtualKey,
+// updates its key hash and prefix in storage, invalidates the old key hash across L1/L2/PubSub,
+// and returns the updated VirtualKey with RawKey populated once.
+func (s *Service) RotateVirtualKey(ctx context.Context, id string) (*domain.VirtualKey, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("virtual key id is required")
+	}
+	existing, err := s.repo.GetVirtualKeyByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	randBytes := make([]byte, 22)
+	if _, err := rand.Read(randBytes); err != nil {
+		return nil, fmt.Errorf("generate random key bytes: %w", err)
+	}
+	randHex := hex.EncodeToString(randBytes)
+	shortID := randHex[:8]
+	secretPart := randHex[8:]
+	rawKey := fmt.Sprintf("sk-gw-%s-%s", shortID, secretPart)
+
+	oldHash := existing.KeyHash
+	rotated := *existing
+	rotated.KeyPrefix = fmt.Sprintf("sk-gw-%s", shortID)
+	rotated.KeyHash = HashKey(rawKey)
+	rotated.IsActive = true
+
+	if err := s.repo.UpdateVirtualKey(ctx, &rotated); err != nil {
+		return nil, err
+	}
+	if oldHash != "" {
+		s.InvalidateKeyHash(ctx, oldHash)
+	}
+	rotated.RawKey = rawKey
+	return &rotated, nil
+}
+
 // RevokeKey marks a Virtual Key inactive and immediately evicts it from L1 and L2 caches across all pods.
 func (s *Service) RevokeKey(ctx context.Context, id string) error {
 	vk, err := s.repo.GetVirtualKeyByID(ctx, id)

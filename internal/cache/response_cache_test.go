@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 func TestResponseCache_ComputeKeyCollisionResistance(t *testing.T) {
@@ -322,5 +324,134 @@ func TestResponseCache_CompletionsAndEmbeddingsScopingAndL1(t *testing.T) {
 	gotEmb2, hit := rc.GetEmbedding(ctx, ek1)
 	if !hit || gotEmb2.Data[0].Embedding[0] != 0.25 {
 		t.Fatalf("embedding cache mutated in-place: %+v", gotEmb2)
+	}
+}
+
+func TestResponseCache_StreamChunksL1L2EpochAndRace(t *testing.T) {
+	ctx := context.Background()
+	server := miniredis.RunT(t)
+	redisA := storage.NewRedisFabric(server.Addr(), "", 0)
+	redisB := storage.NewRedisFabric(server.Addr(), "", 0)
+	defer redisA.Client().Close()
+	defer redisB.Client().Close()
+
+	cacheA := NewResponseCache(true, time.Minute, redisA)
+	cacheB := NewResponseCache(true, time.Minute, redisB)
+
+	finishStop := "stop"
+	tcIdx := 0
+	chunks := []domain.CanonicalStreamChunk{
+		{
+			ID:      "chatcmpl-stream-1",
+			Object:  "chat.completion.chunk",
+			Created: 1730000000,
+			Model:   "gpt-4.1",
+			Choices: []domain.CanonicalStreamChoice{
+				{
+					Index: 0,
+					Delta: domain.CanonicalStreamDelta{
+						Role:    "assistant",
+						Content: "Hello ",
+						ToolCalls: []domain.CanonicalToolCall{
+							{
+								Index: &tcIdx,
+								ID:    "call_1",
+								Type:  "function",
+								Function: domain.CanonicalFunctionCall{
+									Name:      "lookup",
+									Arguments: `{"q":"a"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			ID:      "chatcmpl-stream-1",
+			Object:  "chat.completion.chunk",
+			Created: 1730000000,
+			Model:   "gpt-4.1",
+			Choices: []domain.CanonicalStreamChoice{
+				{
+					Index:        0,
+					Delta:        domain.CanonicalStreamDelta{Content: "world!"},
+					FinishReason: &finishStop,
+				},
+			},
+			Usage: &domain.TokenUsage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+		},
+	}
+
+	key := "stream-key-1"
+	cacheA.SetStreamChunks(ctx, key, "org-1", "gpt-4.1", chunks)
+
+	// Verify Redis key gw:cache:stream:<key> exists
+	if !server.Exists("gw:cache:stream:" + key) {
+		t.Fatalf("expected Redis key gw:cache:stream:%s to be populated", key)
+	}
+
+	// Mutate original caller slice after SetStreamChunks; cached copy must remain intact
+	chunks[0].Choices[0].Delta.Content = "MUTATED_CALLER"
+	*chunks[0].Choices[0].Delta.ToolCalls[0].Index = 99
+	*chunks[1].Choices[0].FinishReason = "length"
+	chunks[1].Usage.TotalTokens = 999
+
+	// Concurrent L1 reads + mutations on cacheA and L2->L1 reads + mutations on cacheB
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			got, ok := cacheA.GetStreamChunks(ctx, key)
+			if !ok || len(got) != 2 {
+				t.Errorf("cacheA GetStreamChunks failed: ok=%v len=%d", ok, len(got))
+				return
+			}
+			got[0].Choices[0].Delta.Content = "[REDACTED]"
+			*got[0].Choices[0].Delta.ToolCalls[0].Index = 42
+			*got[1].Choices[0].FinishReason = "content_filter"
+			got[1].Usage.TotalTokens = 0
+		}()
+		go func() {
+			defer wg.Done()
+			got, ok := cacheB.GetStreamChunks(ctx, key)
+			if !ok || len(got) != 2 {
+				t.Errorf("cacheB GetStreamChunks failed: ok=%v len=%d", ok, len(got))
+				return
+			}
+			got[0].Choices[0].Delta.Content = "[REDACTED-B]"
+			got[1].Choices[0].Delta.Content = "[REDACTED-B]"
+		}()
+	}
+	wg.Wait()
+
+	// Verify cached values on cacheB are uncorrupted after concurrent mutations
+	gotFinal, ok := cacheB.GetStreamChunks(ctx, key)
+	if !ok || len(gotFinal) != 2 {
+		t.Fatalf("expected cache hit on cacheB, got ok=%v len=%d", ok, len(gotFinal))
+	}
+	if gotFinal[0].Choices[0].Delta.Content != "Hello " {
+		t.Fatalf("expected first chunk content 'Hello ', got %q", gotFinal[0].Choices[0].Delta.Content)
+	}
+	if *gotFinal[0].Choices[0].Delta.ToolCalls[0].Index != 0 {
+		t.Fatalf("expected tool call index 0, got %d", *gotFinal[0].Choices[0].Delta.ToolCalls[0].Index)
+	}
+	if *gotFinal[1].Choices[0].FinishReason != "stop" {
+		t.Fatalf("expected finish_reason 'stop', got %q", *gotFinal[1].Choices[0].FinishReason)
+	}
+	if gotFinal[1].Usage == nil || gotFinal[1].Usage.TotalTokens != 7 {
+		t.Fatalf("expected usage total_tokens=7, got %+v", gotFinal[1].Usage)
+	}
+
+	// Verify epoch invalidation evicts stream chunks across replicas
+	if _, _, err := cacheA.Invalidate(ctx, "org-1", ""); err != nil {
+		t.Fatalf("Invalidate(org-1): %v", err)
+	}
+	if _, ok := cacheA.GetStreamChunks(ctx, key); ok {
+		t.Fatal("expected cacheA stream chunks miss after org invalidation")
+	}
+	if _, ok := cacheB.GetStreamChunks(ctx, key); ok {
+		t.Fatal("expected cacheB stream chunks miss after org invalidation")
 	}
 }

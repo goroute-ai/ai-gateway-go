@@ -699,6 +699,30 @@ func (r *MemoryRepository) CreateTeam(ctx context.Context, team *domain.Team) er
 	return nil
 }
 
+func (r *MemoryRepository) UpdateTeam(ctx context.Context, team *domain.Team) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if team == nil || team.ID == "" {
+		return fmt.Errorf("team id is required")
+	}
+	existing, ok := r.teams[team.ID]
+	if !ok {
+		return fmt.Errorf("team %q %w", team.ID, ErrNotFound)
+	}
+	now := time.Now().UTC()
+	if team.OrgID == "" {
+		team.OrgID = existing.OrgID
+	}
+	if team.CreatedAt.IsZero() {
+		team.CreatedAt = existing.CreatedAt
+	}
+	team.BudgetResetPeriod, team.BudgetResetAt = resolveBudgetResetSchedule(team.BudgetResetPeriod, team.BudgetResetAt, now)
+	team.UpdatedAt = now
+	cp := cloneTeam(team)
+	r.teams[cp.ID] = cp
+	return nil
+}
+
 func (r *MemoryRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -721,6 +745,16 @@ func (r *MemoryRepository) ListTeams(ctx context.Context, orgID string) ([]*doma
 	return out, nil
 }
 
+func (r *MemoryRepository) DeleteTeam(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.teams[id]; !ok {
+		return fmt.Errorf("team %q %w", id, ErrNotFound)
+	}
+	delete(r.teams, id)
+	return nil
+}
+
 func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -736,12 +770,36 @@ func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) er
 	return nil
 }
 
+func (r *MemoryRepository) UpdateUser(ctx context.Context, user *domain.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if user == nil || user.ID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	existing, ok := r.users[user.ID]
+	if !ok {
+		return fmt.Errorf("user %q %w", user.ID, ErrNotFound)
+	}
+	now := time.Now().UTC()
+	if user.OrgID == "" {
+		user.OrgID = existing.OrgID
+	}
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = existing.CreatedAt
+	}
+	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, now)
+	user.UpdatedAt = now
+	cp := *user
+	r.users[cp.ID] = &cp
+	return nil
+}
+
 func (r *MemoryRepository) GetUser(ctx context.Context, id string) (*domain.User, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	u, ok := r.users[id]
 	if !ok {
-		return nil, fmt.Errorf("user %q not found", id)
+		return nil, fmt.Errorf("user %q %w", id, ErrNotFound)
 	}
 	cp := *u
 	return &cp, nil
@@ -772,6 +830,44 @@ func (r *MemoryRepository) ListUsers(ctx context.Context, orgID string) ([]*doma
 	return out, nil
 }
 
+func (r *MemoryRepository) DeleteUser(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.users[id]; !ok {
+		return fmt.Errorf("user %q %w", id, ErrNotFound)
+	}
+	delete(r.users, id)
+	return nil
+}
+
+func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
+	if vk == nil {
+		return nil
+	}
+	cp := *vk
+	cp.RawKey = ""
+	cp.AllowedModels = slices.Clone(vk.AllowedModels)
+	cp.AllowedEndpoints = slices.Clone(vk.AllowedEndpoints)
+	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
+	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
+	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
+	if vk.BudgetResetAt != nil {
+		t := *vk.BudgetResetAt
+		cp.BudgetResetAt = &t
+	}
+	if vk.ExpiresAt != nil {
+		t := *vk.ExpiresAt
+		cp.ExpiresAt = &t
+	}
+	if len(vk.Metadata) > 0 {
+		cp.Metadata = make(map[string]string, len(vk.Metadata))
+		for k, v := range vk.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
 func (r *MemoryRepository) CreateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -782,10 +878,43 @@ func (r *MemoryRepository) CreateVirtualKey(ctx context.Context, vk *domain.Virt
 	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, now)
 	vk.CreatedAt = now
 	vk.UpdatedAt = now
-	cp := *vk
-	cp.RawKey = "" // Never persist raw key in storage
-	r.keysByID[cp.ID] = &cp
-	r.keysByHash[cp.KeyHash] = &cp
+	cp := cloneVirtualKey(vk)
+	r.keysByID[cp.ID] = cp
+	r.keysByHash[cp.KeyHash] = cp
+	return nil
+}
+
+func (r *MemoryRepository) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if vk == nil || vk.ID == "" {
+		return fmt.Errorf("virtual key id is required")
+	}
+	existing, ok := r.keysByID[vk.ID]
+	if !ok {
+		return fmt.Errorf("virtual key %q %w", vk.ID, ErrNotFound)
+	}
+	now := time.Now().UTC()
+	if vk.OrgID == "" {
+		vk.OrgID = existing.OrgID
+	}
+	if vk.KeyHash == "" {
+		vk.KeyHash = existing.KeyHash
+	}
+	if vk.KeyPrefix == "" {
+		vk.KeyPrefix = existing.KeyPrefix
+	}
+	if vk.CreatedAt.IsZero() {
+		vk.CreatedAt = existing.CreatedAt
+	}
+	if existing.KeyHash != "" && existing.KeyHash != vk.KeyHash {
+		delete(r.keysByHash, existing.KeyHash)
+	}
+	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, now)
+	vk.UpdatedAt = now
+	cp := cloneVirtualKey(vk)
+	r.keysByID[cp.ID] = cp
+	r.keysByHash[cp.KeyHash] = cp
 	return nil
 }
 

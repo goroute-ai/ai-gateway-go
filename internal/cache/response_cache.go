@@ -29,6 +29,7 @@ type cacheEntry struct {
 	Response           *domain.CanonicalChatResponse       `json:"response,omitempty"`
 	CompletionResponse *domain.CanonicalCompletionResponse `json:"completion_response,omitempty"`
 	EmbeddingResponse  *domain.CanonicalEmbeddingResponse  `json:"embedding_response,omitempty"`
+	StreamChunks       []domain.CanonicalStreamChunk       `json:"stream_chunks,omitempty"`
 	OrgID              string                              `json:"org_id"`
 	Model              string                              `json:"model"`
 	Epochs             cacheEpochs                         `json:"epochs"`
@@ -583,6 +584,97 @@ func (c *ResponseCache) SetEmbeddingWithMeta(ctx context.Context, key, orgID str
 	c.l1.store(key, entry)
 }
 
+// GetStreamChunks retrieves cached streaming SSE chunks from L1 or L2 Redis (`gw:cache:stream:`),
+// validating shared epochs and returning a deep copy safe for concurrent replay/redaction.
+func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]domain.CanonicalStreamChunk, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	now := time.Now()
+	if entry, ok := c.l1.load(key); ok {
+		if len(entry.StreamChunks) > 0 && now.Before(entry.ExpiresAt) {
+			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+			if err != nil {
+				c.l1Misses.Add(1)
+				return nil, false
+			}
+			if current == entry.Epochs {
+				c.l1Hits.Add(1)
+				return cloneStreamChunks(entry.StreamChunks), true
+			}
+		}
+		c.l1.delete(key)
+	}
+	c.l1Misses.Add(1)
+
+	if c.redis == nil || c.redis.Client() == nil {
+		return nil, false
+	}
+	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.Get(ctx, "gw:cache:stream:"+key).Result()
+	})
+	if err != nil {
+		return nil, false
+	}
+	raw, ok := res.(string)
+	if !ok || raw == "" {
+		return nil, false
+	}
+	var entry cacheEntry
+	if json.Unmarshal([]byte(raw), &entry) != nil || len(entry.StreamChunks) == 0 {
+		return nil, false
+	}
+	if !now.Before(entry.ExpiresAt) {
+		return nil, false
+	}
+	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
+	if err != nil || current != entry.Epochs {
+		return nil, false
+	}
+	c.l2Hits.Add(1)
+	c.l1.store(key, entry)
+	return cloneStreamChunks(entry.StreamChunks), true
+}
+
+// SetStreamChunks stores a slice of streaming SSE chunks in L1 and L2 Redis (`gw:cache:stream:`)
+// scoped by orgID and model invalidation epochs.
+func (c *ResponseCache) SetStreamChunks(ctx context.Context, key string, orgID string, model string, chunks []domain.CanonicalStreamChunk) {
+	if c == nil || key == "" || len(chunks) == 0 {
+		return
+	}
+	if model == "" {
+		for _, ch := range chunks {
+			if ch.Model != "" {
+				model = ch.Model
+				break
+			}
+		}
+	}
+	epochs, err := c.currentEpochs(ctx, orgID, model)
+	if err != nil {
+		return
+	}
+	entry := cacheEntry{
+		StreamChunks: cloneStreamChunks(chunks),
+		OrgID:        orgID,
+		Model:        model,
+		Epochs:       epochs,
+		ExpiresAt:    time.Now().Add(c.ttl),
+	}
+	if c.redis != nil && c.redis.Client() != nil {
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Set(ctx, "gw:cache:stream:"+key, b, c.ttl).Result()
+		}); err != nil {
+			return
+		}
+	}
+	c.l1.store(key, entry)
+}
+
 // Invalidate advances shared global, organization, and/or model epochs and removes matching local entries.
 // The returned revision is monotonic across all invalidation operations.
 func (c *ResponseCache) Invalidate(ctx context.Context, orgID, model string) (int, int64, error) {
@@ -737,6 +829,43 @@ func cloneEmbeddingResponse(resp *domain.CanonicalEmbeddingResponse) *domain.Can
 		}
 	}
 	return &cp
+}
+
+func cloneStreamChunks(chunks []domain.CanonicalStreamChunk) []domain.CanonicalStreamChunk {
+	if len(chunks) == 0 {
+		return nil
+	}
+	out := make([]domain.CanonicalStreamChunk, len(chunks))
+	for i, ch := range chunks {
+		out[i] = ch
+		if ch.Usage != nil {
+			u := *ch.Usage
+			out[i].Usage = &u
+		}
+		if ch.Choices != nil {
+			choices := make([]domain.CanonicalStreamChoice, len(ch.Choices))
+			for j, choice := range ch.Choices {
+				choices[j] = choice
+				if choice.FinishReason != nil {
+					fr := *choice.FinishReason
+					choices[j].FinishReason = &fr
+				}
+				if choice.Delta.ToolCalls != nil {
+					tcs := make([]domain.CanonicalToolCall, len(choice.Delta.ToolCalls))
+					for k, tc := range choice.Delta.ToolCalls {
+						tcs[k] = tc
+						if tc.Index != nil {
+							idx := *tc.Index
+							tcs[k].Index = &idx
+						}
+					}
+					choices[j].Delta.ToolCalls = tcs
+				}
+			}
+			out[i].Choices = choices
+		}
+	}
+	return out
 }
 
 func cloneMessage(msg domain.CanonicalMessage) domain.CanonicalMessage {

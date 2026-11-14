@@ -195,3 +195,101 @@ func TestMemoryRepository_TeamThreeStateAndNotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestMemoryRepository_UpdateAndDeleteTeamUserVirtualKey(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepository()
+
+	org := &domain.Organization{ID: "org-crud", Name: "CRUD Org", Slug: "crud-org", IsActive: true}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	// Team Update & Delete
+	team := &domain.Team{
+		ID:       "team-crud",
+		OrgID:    org.ID,
+		Name:     "initial-team",
+		RPMLimit: 10,
+		IsActive: true,
+	}
+	if err := repo.CreateTeam(ctx, team); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	team.Name = "updated-team"
+	team.RPMLimit = 50
+	if err := repo.UpdateTeam(ctx, team); err != nil {
+		t.Fatalf("UpdateTeam: %v", err)
+	}
+	gotTeam, err := repo.GetTeam(ctx, team.ID)
+	if err != nil || gotTeam.Name != "updated-team" || gotTeam.RPMLimit != 50 {
+		t.Fatalf("GetTeam after UpdateTeam: got=%+v err=%v", gotTeam, err)
+	}
+	if err := repo.DeleteTeam(ctx, team.ID); err != nil {
+		t.Fatalf("DeleteTeam: %v", err)
+	}
+	if _, err := repo.GetTeam(ctx, team.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after DeleteTeam, got %v", err)
+	}
+	if err := repo.DeleteTeam(ctx, team.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound on second DeleteTeam, got %v", err)
+	}
+
+	// User Update & Delete
+	user := &domain.User{
+		ID:       "user-crud",
+		OrgID:    org.ID,
+		Email:    "dev@acme.io",
+		Name:     "Dev One",
+		Role:     domain.RoleDeveloper,
+		RPMLimit: 20,
+		IsActive: true,
+	}
+	if err := repo.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	user.Name = "Dev Updated"
+	user.Role = domain.RoleTeamAdmin
+	user.RPMLimit = 100
+	if err := repo.UpdateUser(ctx, user); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	gotUser, err := repo.GetUser(ctx, user.ID)
+	if err != nil || gotUser.Name != "Dev Updated" || gotUser.Role != domain.RoleTeamAdmin || gotUser.RPMLimit != 100 {
+		t.Fatalf("GetUser after UpdateUser: got=%+v err=%v", gotUser, err)
+	}
+	if err := repo.DeleteUser(ctx, user.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	if _, err := repo.GetUser(ctx, user.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after DeleteUser, got %v", err)
+	}
+
+	// VirtualKey Update (including hash rotation)
+	vk := &domain.VirtualKey{
+		ID:        "vk-crud",
+		OrgID:     org.ID,
+		Name:      "key-1",
+		KeyPrefix: "sk-gw-11111111",
+		KeyHash:   "hash-old",
+		RPMLimit:  30,
+		IsActive:  true,
+	}
+	if err := repo.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("CreateVirtualKey: %v", err)
+	}
+	vk.Name = "key-1-rotated"
+	vk.KeyPrefix = "sk-gw-22222222"
+	vk.KeyHash = "hash-new"
+	vk.RPMLimit = 60
+	if err := repo.UpdateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("UpdateVirtualKey: %v", err)
+	}
+	if _, err := repo.GetVirtualKeyByHash(ctx, "hash-old"); err == nil {
+		t.Fatal("expected old key hash to be removed after UpdateVirtualKey")
+	}
+	gotVK, err := repo.GetVirtualKeyByHash(ctx, "hash-new")
+	if err != nil || gotVK.Name != "key-1-rotated" || gotVK.KeyPrefix != "sk-gw-22222222" || gotVK.RPMLimit != 60 {
+		t.Fatalf("GetVirtualKeyByHash(hash-new): got=%+v err=%v", gotVK, err)
+	}
+}

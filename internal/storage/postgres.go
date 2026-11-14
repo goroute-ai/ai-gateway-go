@@ -621,6 +621,44 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	return p.mem.CreateTeam(ctx, team)
 }
 
+func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) error {
+	if team == nil || team.ID == "" {
+		return fmt.Errorf("team id is required")
+	}
+	team.BudgetResetPeriod, team.BudgetResetAt = resolveBudgetResetSchedule(team.BudgetResetPeriod, team.BudgetResetAt, time.Now().UTC())
+	allowedModels := team.AllowedModels
+	if allowedModels == nil {
+		allowedModels = []string{}
+	}
+	const q = `
+		UPDATE teams SET
+			name = $2, max_budget_micros = $3, spent_micros = $4, budget_reset_period = $5, budget_reset_at = $6,
+			rpm_limit = $7, tpm_limit = $8, max_concurrent_requests = $9, allowed_models = $10,
+			allowed_mcp_servers = $11, allowed_a2a_agents = $12, allowed_client_apps = $13, is_active = $14,
+			updated_at = NOW()
+		WHERE id = $1`
+	if p.pool != nil {
+		tag, err := p.pool.Exec(ctx, q,
+			team.ID, team.Name, team.MaxBudgetMicros, team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
+			team.RPMLimit, team.TPMLimit, team.MaxConcurrentRequests, allowedModels,
+			team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("team %q %w", team.ID, ErrNotFound)
+		}
+	}
+	if err := p.mem.UpdateTeam(ctx, team); err != nil {
+		if p.pool == nil {
+			return err
+		}
+		_ = p.mem.CreateTeam(ctx, team)
+	}
+	return nil
+}
+
 func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
 	const q = `
 		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
@@ -665,6 +703,22 @@ func (p *PostgresRepository) ListTeams(ctx context.Context, orgID string) ([]*do
 	return teams, nil
 }
 
+func (p *PostgresRepository) DeleteTeam(ctx context.Context, id string) error {
+	if p.pool != nil {
+		tag, err := p.pool.Exec(ctx, `DELETE FROM teams WHERE id = $1`, id)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("team %q %w", id, ErrNotFound)
+		}
+	}
+	if err := p.mem.DeleteTeam(ctx, id); err != nil && p.pool == nil {
+		return err
+	}
+	return nil
+}
+
 const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
@@ -701,6 +755,40 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 		return err
 	}
 	return p.mem.CreateUser(ctx, user)
+}
+
+func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) error {
+	if user == nil || user.ID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, time.Now().UTC())
+	const q = `
+		UPDATE users SET
+			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''),
+			max_budget_micros = $7, spent_micros = $8, budget_reset_period = $9, budget_reset_at = $10,
+			rpm_limit = $11, tpm_limit = $12, max_concurrent_requests = $13, is_active = $14,
+			updated_at = NOW()
+		WHERE id = $1`
+	if p.pool != nil {
+		tag, err := p.pool.Exec(ctx, q,
+			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+			user.MaxBudgetMicros, user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
+			user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.IsActive,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("user %q %w", user.ID, ErrNotFound)
+		}
+	}
+	if err := p.mem.UpdateUser(ctx, user); err != nil {
+		if p.pool == nil {
+			return err
+		}
+		_ = p.mem.CreateUser(ctx, user)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) GetUser(ctx context.Context, id string) (*domain.User, error) {
@@ -745,6 +833,22 @@ func (p *PostgresRepository) ListUsers(ctx context.Context, orgID string) ([]*do
 		return p.mem.ListUsers(ctx, orgID)
 	}
 	return users, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteUser(ctx context.Context, id string) error {
+	if p.pool != nil {
+		tag, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("user %q %w", id, ErrNotFound)
+		}
+	}
+	if err := p.mem.DeleteUser(ctx, id); err != nil && p.pool == nil {
+		return err
+	}
+	return nil
 }
 
 const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active`
@@ -797,6 +901,68 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		return err
 	}
 	return p.mem.CreateVirtualKey(ctx, vk)
+}
+
+func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
+	if vk == nil || vk.ID == "" {
+		return fmt.Errorf("virtual key id is required")
+	}
+	if vk.AllowedModels == nil {
+		vk.AllowedModels = []string{}
+	}
+	if vk.AllowedEndpoints == nil {
+		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
+	}
+	if vk.Role == "" {
+		vk.Role = domain.RoleServiceAccount
+	}
+	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, time.Now().UTC())
+	const q = `
+		UPDATE virtual_keys SET
+			key_prefix = COALESCE(NULLIF($2, ''), key_prefix),
+			key_hash = COALESCE(NULLIF($3, ''), key_hash),
+			name = $4,
+			team_id = NULLIF($5, ''),
+			user_id = NULLIF($6, ''),
+			role = $7,
+			allowed_models = $8,
+			allowed_endpoints = $9,
+			allowed_mcp_servers = $10,
+			allowed_a2a_agents = $11,
+			allowed_client_apps = $12,
+			max_budget_micros = $13,
+			spent_micros = $14,
+			budget_reset_period = $15,
+			budget_reset_at = $16,
+			rpm_limit = $17,
+			tpm_limit = $18,
+			max_concurrent_requests = $19,
+			expires_at = $20,
+			is_active = $21,
+			updated_at = NOW()
+		WHERE id = $1`
+	if p.pool != nil {
+		tag, err := p.pool.Exec(ctx, q,
+			vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.TeamID, vk.UserID, string(vk.Role),
+			vk.AllowedModels, vk.AllowedEndpoints,
+			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
+			vk.MaxBudgetMicros, vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
+			vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("virtual key %q %w", vk.ID, ErrNotFound)
+		}
+	}
+	if err := p.mem.UpdateVirtualKey(ctx, vk); err != nil {
+		if p.pool == nil {
+			return err
+		}
+		_ = p.mem.CreateVirtualKey(ctx, vk)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error) {
