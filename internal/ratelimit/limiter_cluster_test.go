@@ -54,6 +54,7 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			idCtx: &domain.IdentityContext{
 				VirtualKeyID: "key_123",
 				TeamID:       "team_456",
+				UserID:       "user_789",
 				OrgID:        "org_acme",
 			},
 			tag: "{org:org_acme}",
@@ -63,6 +64,7 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			idCtx: &domain.IdentityContext{
 				VirtualKeyID: "key_123",
 				TeamID:       "",
+				UserID:       "",
 				OrgID:        "",
 			},
 			tag: "{org:default}",
@@ -72,8 +74,8 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := acquireKeys(tc.idCtx, 12345)
-			if len(acq) != 13 {
-				t.Fatalf("acquireKeys len = %d, want 13", len(acq))
+			if len(acq) != 26 {
+				t.Fatalf("acquireKeys len = %d, want 26", len(acq))
 			}
 			for i, k := range acq {
 				if !strings.Contains(k, tc.tag) {
@@ -83,17 +85,23 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			assertSameClusterSlot(t, "acquireKeys", acq)
 
 			rec := reconcileKeys(acq)
-			if len(rec) != 10 {
-				t.Fatalf("reconcileKeys len = %d, want 10", len(rec))
+			if len(rec) != 22 {
+				t.Fatalf("reconcileKeys len = %d, want 22", len(rec))
 			}
 			assertSameClusterSlot(t, "reconcileKeys", rec)
 			if redisClusterSlot(rec[0]) != redisClusterSlot(acq[0]) {
 				t.Fatalf("reconcileKeys slot %d != acquireKeys slot %d", redisClusterSlot(rec[0]), redisClusterSlot(acq[0]))
 			}
 
-			sp := spendKeys(tc.idCtx.VirtualKeyID, tc.idCtx.TeamID, tc.idCtx.OrgID)
-			if len(sp) != 6 {
-				t.Fatalf("spendKeys len = %d, want 6", len(sp))
+			rb := rollbackKeys(acq)
+			if len(rb) != 22 {
+				t.Fatalf("rollbackKeys len = %d, want 22", len(rb))
+			}
+			assertSameClusterSlot(t, "rollbackKeys", rb)
+
+			sp := spendKeys(tc.idCtx.VirtualKeyID, tc.idCtx.TeamID, tc.idCtx.UserID, tc.idCtx.OrgID)
+			if len(sp) != 16 {
+				t.Fatalf("spendKeys len = %d, want 16", len(sp))
 			}
 			for i, k := range sp {
 				if !strings.Contains(k, tc.tag) {
@@ -106,6 +114,9 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			}
 			idempotencyKey := "gw:spend:applied:" + orgHashTag(tc.idCtx.OrgID) + ":event_123"
 			assertSameClusterSlot(t, "spend keys plus idempotency marker", append(sp, idempotencyKey))
+
+			gKeys := globalAcquireKeys(12345)
+			assertSameClusterSlot(t, "globalAcquireKeys", gKeys)
 		})
 	}
 }

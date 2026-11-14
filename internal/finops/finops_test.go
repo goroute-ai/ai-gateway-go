@@ -223,15 +223,15 @@ func TestSpendWorkerResetExpiredBudgetsClearsRedisAndAdvancesPeriod(t *testing.T
 	}
 
 	gotOrg, _ := repo.GetOrganization(ctx, org.ID)
-	if gotOrg.SpentMicros != 0 || gotOrg.BudgetResetAt == nil || !gotOrg.BudgetResetAt.Equal(now.Add(24*time.Hour)) {
+	if gotOrg.SpentMicros != 0 || gotOrg.BudgetResetAt == nil || !gotOrg.BudgetResetAt.Equal(expired.Add(24*time.Hour)) {
 		t.Fatalf("org not properly reset: %+v", gotOrg)
 	}
 	gotTeam, _ := repo.GetTeam(ctx, team.ID)
-	if gotTeam.SpentMicros != 0 || gotTeam.BudgetResetAt == nil || !gotTeam.BudgetResetAt.Equal(now.AddDate(0, 1, 0)) {
+	if gotTeam.SpentMicros != 0 || gotTeam.BudgetResetAt == nil || !gotTeam.BudgetResetAt.Equal(expired.AddDate(0, 1, 0)) {
 		t.Fatalf("team not properly reset: %+v", gotTeam)
 	}
 	gotVK, _ := repo.GetVirtualKeyByID(ctx, vk.ID)
-	if gotVK.SpentMicros != 0 || gotVK.BudgetResetAt == nil || !gotVK.BudgetResetAt.Equal(now.Add(24*time.Hour)) {
+	if gotVK.SpentMicros != 0 || gotVK.BudgetResetAt == nil || !gotVK.BudgetResetAt.Equal(expired.Add(24*time.Hour)) {
 		t.Fatalf("vk not properly reset: %+v", gotVK)
 	}
 

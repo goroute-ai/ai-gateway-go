@@ -2,8 +2,10 @@ package finops
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +16,17 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
+
+const (
+	defaultRedisSettleTimeout = 2 * time.Second
+	defaultOutboxRetention    = 24 * time.Hour
+	defaultRetentionInterval  = 10 * time.Minute
+	defaultRetentionBatchSize = 1000
+)
+
+// ErrOutboxBackpressure is returned by Record when the pending spend outbox
+// exceeds the configured high-watermark.
+var ErrOutboxBackpressure = errors.New("finops spend outbox backpressure limit exceeded")
 
 // SpendWorker commits events to the repository outbox before callers report success,
 // then retries ledger delivery from that durable queue.
@@ -26,6 +39,11 @@ type SpendWorker struct {
 	wg        sync.WaitGroup
 	stopOnce  sync.Once
 	stopCh    chan struct{}
+
+	maxOutboxDepth     int64
+	pendingOutboxDepth atomic.Int64
+	deadLetterCount    atomic.Int64
+	backpressureCount  atomic.Int64
 }
 
 func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg config.FinOpsConfig) *SpendWorker {
@@ -35,7 +53,14 @@ func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg con
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 500 * time.Millisecond
 	}
-	return &SpendWorker{repo: repo, limiter: limiter, cfg: cfg, notify: make(chan struct{}, 1), stopCh: make(chan struct{})}
+	return &SpendWorker{
+		repo:           repo,
+		limiter:        limiter,
+		cfg:            cfg,
+		notify:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		maxOutboxDepth: int64(cfg.ChannelBufferSize),
+	}
 }
 
 // SetCollector attaches an observability collector for reporting Redis spend drift metrics.
@@ -43,10 +68,30 @@ func (sw *SpendWorker) SetCollector(collector *observability.Collector) {
 	sw.collector = collector
 }
 
+// SetMaxOutboxDepth configures the pending outbox high-watermark for backpressure.
+// A non-positive value disables backpressure rejection.
+func (sw *SpendWorker) SetMaxOutboxDepth(limit int64) {
+	sw.maxOutboxDepth = limit
+}
+
+// OutboxMetrics returns current pending outbox depth, cumulative dead-letter events,
+// and cumulative backpressure rejections.
+func (sw *SpendWorker) OutboxMetrics() (pendingDepth, deadLetterTotal, backpressureTotal int64) {
+	return sw.pendingOutboxDepth.Load(), sw.deadLetterCount.Load(), sw.backpressureCount.Load()
+}
+
 func (sw *SpendWorker) Start(ctx context.Context) { sw.wg.Add(1); go sw.runBatchLoop(ctx) }
 
 // Record durably commits the event to the repository outbox before returning nil.
 func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
+	if sw.maxOutboxDepth > 0 && sw.pendingOutboxDepth.Load() >= sw.maxOutboxDepth {
+		sw.backpressureCount.Add(1)
+		select {
+		case sw.notify <- struct{}{}:
+		default:
+		}
+		return ErrOutboxBackpressure
+	}
 	if ev.ID == "" {
 		ev.ID = uuid.NewString()
 	}
@@ -57,14 +102,17 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 		logger.Error("Failed to persist FinOps spend outbox event", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
 		return err
 	}
-	if sw.limiter != nil && ev.CostMicros > 0 {
-		if err := sw.limiter.RecordSpendIncrementForEvent(context.Background(), ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, ev.CostMicros); err != nil {
-			logger.Warn("Immediate Redis spend increment failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+	sw.pendingOutboxDepth.Add(1)
+
+	if sw.limiter != nil && (ev.CostMicros > 0 || ev.RequestID != "") {
+		cost := ev.CostMicros
+		if cost < 0 {
+			cost = 0
 		}
-	} else if sw.limiter != nil && ev.RequestID != "" {
-		// A zero-cost success (for example a cache hit) still releases its reservation.
-		if err := sw.limiter.RecordSpendIncrementForEvent(context.Background(), ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, 0); err != nil {
-			logger.Warn("Immediate Redis reservation release failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+		redisCtx, cancel := context.WithTimeout(context.Background(), defaultRedisSettleTimeout)
+		defer cancel()
+		if err := sw.limiter.RecordSpendIncrementForUserEvent(redisCtx, ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.UserID, ev.OrgID, cost); err != nil {
+			logger.Warn("Immediate Redis spend settlement failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
 		}
 	}
 	select {
@@ -75,6 +123,15 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 }
 
 func (sw *SpendWorker) FlushNow(ctx context.Context) error { return sw.process(ctx) }
+
+// PruneDeliveredOutbox deletes delivered outbox rows older than olderThan.
+func (sw *SpendWorker) PruneDeliveredOutbox(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	maint, ok := sw.repo.(storage.SpendOutboxMaintenanceRepository)
+	if !ok {
+		return 0, nil
+	}
+	return maint.PruneDeliveredSpendEvents(ctx, olderThan, limit)
+}
 
 func (sw *SpendWorker) Stop(ctx context.Context) {
 	sw.stopOnce.Do(func() { close(sw.stopCh) })
@@ -92,6 +149,8 @@ func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 	defer ticker.Stop()
 	resetTicker := time.NewTicker(time.Minute)
 	defer resetTicker.Stop()
+	retentionTicker := time.NewTicker(defaultRetentionInterval)
+	defer retentionTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -113,6 +172,12 @@ func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
 				logger.Error("FinOps budget reset cycle failed", slog.String("component", "finops"), slog.String("error", err.Error()))
 			} else if count > 0 {
 				logger.Info("FinOps expired budgets reset", slog.String("component", "finops"), slog.Int("count", count))
+			}
+		case <-retentionTicker.C:
+			if pruned, err := sw.PruneDeliveredOutbox(ctx, time.Now().UTC().Add(-defaultOutboxRetention), defaultRetentionBatchSize); err != nil {
+				logger.Warn("FinOps outbox retention cleanup failed", slog.String("component", "finops"), slog.String("error", err.Error()))
+			} else if pruned > 0 {
+				logger.Info("FinOps delivered outbox rows pruned", slog.String("component", "finops"), slog.Int64("pruned", pruned))
 			}
 		}
 	}
@@ -157,7 +222,32 @@ func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time
 	return resetCount, nil
 }
 
+func (sw *SpendWorker) refreshOutboxDepth(ctx context.Context) {
+	if maint, ok := sw.repo.(storage.SpendOutboxMaintenanceRepository); ok {
+		if depth, err := maint.CountPendingSpendEvents(ctx); err == nil {
+			sw.pendingOutboxDepth.Store(depth)
+		}
+	}
+}
+
+func (sw *SpendWorker) markDeliveredBatch(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if batchAck, ok := sw.repo.(storage.BatchSpendEventAckRepository); ok {
+		return batchAck.MarkSpendEventsDelivered(ctx, ids)
+	}
+	var firstErr error
+	for _, id := range ids {
+		if err := sw.repo.MarkSpendEventDelivered(ctx, id); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (sw *SpendWorker) process(ctx context.Context) error {
+	defer sw.refreshOutboxDepth(ctx)
 	var firstErr error
 	for {
 		events, err := sw.repo.ClaimSpendEvents(ctx, sw.cfg.BatchSize, time.Minute)
@@ -178,39 +268,63 @@ func (sw *SpendWorker) process(ctx context.Context) error {
 					firstErr = retryErr
 				}
 				if attempt >= 12 {
+					sw.deadLetterCount.Add(1)
 					logger.Error("FinOps spend event moved to dead-letter state", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.Int("attempts", attempt), slog.String("error", err.Error()))
 				}
 			}
 			return firstErr
 		}
-		for _, ev := range events {
-			if sw.limiter != nil && (ev.CostMicros > 0 || ev.RequestID != "") {
+
+		var redisErrs []error
+		if sw.limiter != nil {
+			batch := make([]ratelimit.SpendIncrementEvent, len(events))
+			for i, ev := range events {
 				cost := ev.CostMicros
 				if cost < 0 {
 					cost = 0
 				}
-				if err := sw.limiter.RecordSpendIncrementForEvent(ctx, ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.OrgID, cost); err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					attempt := ev.OutboxAttempt
-					delay := time.Second << min(attempt, 8)
-					if retryErr := sw.repo.RetrySpendEvent(ctx, ev.ID, err, time.Now().Add(delay), 12); retryErr != nil && firstErr == nil {
-						firstErr = retryErr
-					}
-					if attempt >= 12 {
-						sw.collector.RecordSpendRedisDrift()
-						logger.Error("FinOps Redis spend reconciliation moved to dead-letter state", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.Int("attempts", attempt), slog.String("error", err.Error()))
-					}
-					continue
+				batch[i] = ratelimit.SpendIncrementEvent{
+					EventID:      ev.ID,
+					RequestID:    ev.RequestID,
+					VirtualKeyID: ev.VirtualKeyID,
+					TeamID:       ev.TeamID,
+					UserID:       ev.UserID,
+					OrgID:        ev.OrgID,
+					CostMicros:   cost,
 				}
 			}
-			if err := sw.repo.MarkSpendEventDelivered(ctx, ev.ID); err != nil {
+			redisErrs = sw.limiter.RecordSpendIncrementsBatch(ctx, batch)
+		}
+
+		deliveredIDs := make([]string, 0, len(events))
+		for i, ev := range events {
+			if sw.limiter != nil && (ev.CostMicros > 0 || ev.RequestID != "") && i < len(redisErrs) && redisErrs[i] != nil {
+				err := redisErrs[i]
 				if firstErr == nil {
 					firstErr = err
 				}
-				logger.Error("Failed to acknowledge delivered FinOps event", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
+				attempt := ev.OutboxAttempt
+				delay := time.Second << min(attempt, 8)
+				if retryErr := sw.repo.RetrySpendEvent(ctx, ev.ID, err, time.Now().Add(delay), 12); retryErr != nil && firstErr == nil {
+					firstErr = retryErr
+				}
+				if attempt >= 12 {
+					sw.deadLetterCount.Add(1)
+					if sw.collector != nil {
+						sw.collector.RecordSpendRedisDrift()
+					}
+					logger.Error("FinOps Redis spend reconciliation moved to dead-letter state", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.Int("attempts", attempt), slog.String("error", err.Error()))
+				}
+				continue
 			}
+			deliveredIDs = append(deliveredIDs, ev.ID)
+		}
+
+		if err := sw.markDeliveredBatch(ctx, deliveredIDs); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			logger.Error("Failed to acknowledge delivered FinOps events", slog.String("component", "finops"), slog.Int("count", len(deliveredIDs)), slog.String("error", err.Error()))
 		}
 	}
 }

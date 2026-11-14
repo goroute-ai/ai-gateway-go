@@ -344,7 +344,7 @@ func TestRenewReservationLeaseExtendsScoreAndTTL(t *testing.T) {
 	defer release(10, -2)
 
 	resKey := "gw:budget:{org:org-lease}:reservations:key:vk-lease"
-	initialScore, err := mr.ZScore(resKey, "req-lease-1|100")
+	initialScore, err := mr.ZScore(resKey, "req-lease-1")
 	if err != nil {
 		t.Fatalf("initial ZScore: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestRenewReservationLeaseExtendsScoreAndTTL(t *testing.T) {
 		"gw:budget:{org:org-lease}:reservations:team:team-lease",
 		"gw:budget:{org:org-lease}:reservations:org:org-lease",
 	} {
-		renewedScore, err := mr.ZScore(key, "req-lease-1|100")
+		renewedScore, err := mr.ZScore(key, "req-lease-1")
 		if err != nil {
 			t.Fatalf("renewed ZScore for %s: %v", key, err)
 		}

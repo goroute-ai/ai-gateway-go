@@ -528,6 +528,47 @@ func (r *MemoryRepository) PricingSummaryRebuilds() uint64 {
 	return r.pricingSummaryRebuilds
 }
 
+func resolveBudgetResetSchedule(period domain.BudgetResetPeriod, existing *time.Time, now time.Time) (domain.BudgetResetPeriod, *time.Time) {
+	if period == "" {
+		period = domain.BudgetResetMonthly
+	}
+	if period == domain.BudgetResetNever {
+		return period, nil
+	}
+	if existing != nil {
+		t := existing.UTC()
+		return period, &t
+	}
+	var next time.Time
+	switch period {
+	case domain.BudgetResetDaily:
+		next = now.UTC().Add(24 * time.Hour)
+	case domain.BudgetResetMonthly:
+		next = now.UTC().AddDate(0, 1, 0)
+	default:
+		return period, nil
+	}
+	return period, &next
+}
+
+func advanceBudgetResetAt(period domain.BudgetResetPeriod, current *time.Time) *time.Time {
+	if current == nil {
+		return nil
+	}
+	switch period {
+	case domain.BudgetResetDaily:
+		next := current.UTC().Add(24 * time.Hour)
+		return &next
+	case domain.BudgetResetMonthly:
+		next := current.UTC().AddDate(0, 1, 0)
+		return &next
+	case domain.BudgetResetNever:
+		return nil
+	default:
+		return nil
+	}
+}
+
 func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.Organization) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -535,6 +576,7 @@ func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.O
 		org.ID = uuid.NewString()
 	}
 	now := time.Now().UTC()
+	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, now)
 	org.CreatedAt = now
 	org.UpdatedAt = now
 	cp := *org
@@ -632,6 +674,7 @@ func (r *MemoryRepository) CreateTeam(ctx context.Context, team *domain.Team) er
 		team.ID = uuid.NewString()
 	}
 	now := time.Now().UTC()
+	team.BudgetResetPeriod, team.BudgetResetAt = resolveBudgetResetSchedule(team.BudgetResetPeriod, team.BudgetResetAt, now)
 	team.CreatedAt = now
 	team.UpdatedAt = now
 	cp := cloneTeam(team)
@@ -668,11 +711,23 @@ func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) er
 		user.ID = uuid.NewString()
 	}
 	now := time.Now().UTC()
+	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, now)
 	user.CreatedAt = now
 	user.UpdatedAt = now
 	cp := *user
 	r.users[cp.ID] = &cp
 	return nil
+}
+
+func (r *MemoryRepository) GetUser(ctx context.Context, id string) (*domain.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	u, ok := r.users[id]
+	if !ok {
+		return nil, fmt.Errorf("user %q not found", id)
+	}
+	cp := *u
+	return &cp, nil
 }
 
 func (r *MemoryRepository) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
@@ -707,6 +762,7 @@ func (r *MemoryRepository) CreateVirtualKey(ctx context.Context, vk *domain.Virt
 		vk.ID = uuid.NewString()
 	}
 	now := time.Now().UTC()
+	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, now)
 	vk.CreatedAt = now
 	vk.UpdatedAt = now
 	cp := *vk
@@ -1029,13 +1085,42 @@ func (r *MemoryRepository) ClaimSpendEvents(ctx context.Context, limit int, leas
 }
 
 func (r *MemoryRepository) MarkSpendEventDelivered(ctx context.Context, id string) error {
+	return r.MarkSpendEventsDelivered(ctx, []string{id})
+}
+
+func (r *MemoryRepository) MarkSpendEventsDelivered(ctx context.Context, ids []string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.spendOutbox, id)
+	for _, id := range ids {
+		delete(r.spendOutbox, id)
+	}
 	return nil
+}
+
+func (r *MemoryRepository) CountPendingSpendEvents(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var count int64
+	for _, e := range r.spendOutbox {
+		if e.status == "pending" || e.status == "processing" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *MemoryRepository) PruneDeliveredSpendEvents(ctx context.Context, _ time.Time, _ int) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	// MemoryRepository deletes delivered events immediately upon acknowledgement.
+	return 0, nil
 }
 
 func (r *MemoryRepository) RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error {
@@ -1086,6 +1171,11 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 				t.SpentMicros += ev.CostMicros
 			}
 		}
+		if ev.UserID != "" {
+			if u, ok := r.users[ev.UserID]; ok {
+				u.SpentMicros += ev.CostMicros
+			}
+		}
 		if ev.OrgID != "" {
 			if o, ok := r.orgs[ev.OrgID]; ok {
 				o.SpentMicros += ev.CostMicros
@@ -1102,6 +1192,7 @@ func (r *MemoryRepository) GetSpendSummary(ctx context.Context, orgID string) (*
 		SpendByProvider:   make(map[string]int64),
 		SpendByModel:      make(map[string]int64),
 		SpendByTeam:       make(map[string]int64),
+		SpendByUser:       make(map[string]int64),
 		SpendByVirtualKey: make(map[string]int64),
 	}
 	for _, ev := range r.spendLogs {
@@ -1119,6 +1210,9 @@ func (r *MemoryRepository) GetSpendSummary(ctx context.Context, orgID string) (*
 		sum.SpendByModel[ev.ResolvedModel] += ev.CostMicros
 		if ev.TeamID != "" {
 			sum.SpendByTeam[ev.TeamID] += ev.CostMicros
+		}
+		if ev.UserID != "" {
+			sum.SpendByUser[ev.UserID] += ev.CostMicros
 		}
 		if ev.VirtualKeyID != "" {
 			sum.SpendByVirtualKey[ev.VirtualKeyID] += ev.CostMicros
@@ -1154,18 +1248,11 @@ func (r *MemoryRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now t
 	defer r.mu.Unlock()
 	var res BudgetResetResult
 
-	advance := func(period domain.BudgetResetPeriod, from time.Time) time.Time {
-		if period == domain.BudgetResetDaily {
-			return from.Add(24 * time.Hour)
-		}
-		return from.AddDate(0, 1, 0)
-	}
-
 	for _, o := range r.orgs {
-		if o.BudgetResetAt != nil && !now.Before(*o.BudgetResetAt) && o.BudgetResetPeriod != domain.BudgetResetNever {
+		if o.BudgetResetAt != nil && !now.Before(*o.BudgetResetAt) &&
+			(o.BudgetResetPeriod == domain.BudgetResetDaily || o.BudgetResetPeriod == domain.BudgetResetMonthly) {
 			o.SpentMicros = 0
-			next := advance(o.BudgetResetPeriod, now)
-			o.BudgetResetAt = &next
+			o.BudgetResetAt = advanceBudgetResetAt(o.BudgetResetPeriod, o.BudgetResetAt)
 			res.OrgIDs = append(res.OrgIDs, o.ID)
 			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "org", EntityID: o.ID, OrgID: o.ID, ResetAt: now.UTC()}
 			res.Events = append(res.Events, event)
@@ -1173,21 +1260,32 @@ func (r *MemoryRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now t
 		}
 	}
 	for _, t := range r.teams {
-		if t.BudgetResetAt != nil && !now.Before(*t.BudgetResetAt) && t.BudgetResetPeriod != domain.BudgetResetNever {
+		if t.BudgetResetAt != nil && !now.Before(*t.BudgetResetAt) &&
+			(t.BudgetResetPeriod == domain.BudgetResetDaily || t.BudgetResetPeriod == domain.BudgetResetMonthly) {
 			t.SpentMicros = 0
-			next := advance(t.BudgetResetPeriod, now)
-			t.BudgetResetAt = &next
+			t.BudgetResetAt = advanceBudgetResetAt(t.BudgetResetPeriod, t.BudgetResetAt)
 			res.TeamIDs = append(res.TeamIDs, t.ID)
 			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "team", EntityID: t.ID, OrgID: t.OrgID, ResetAt: now.UTC()}
 			res.Events = append(res.Events, event)
 			r.budgetResetOutbox[event.ID] = event
 		}
 	}
+	for _, u := range r.users {
+		if u.BudgetResetAt != nil && !now.Before(*u.BudgetResetAt) &&
+			(u.BudgetResetPeriod == domain.BudgetResetDaily || u.BudgetResetPeriod == domain.BudgetResetMonthly) {
+			u.SpentMicros = 0
+			u.BudgetResetAt = advanceBudgetResetAt(u.BudgetResetPeriod, u.BudgetResetAt)
+			res.UserIDs = append(res.UserIDs, u.ID)
+			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "user", EntityID: u.ID, OrgID: u.OrgID, ResetAt: now.UTC()}
+			res.Events = append(res.Events, event)
+			r.budgetResetOutbox[event.ID] = event
+		}
+	}
 	for _, vk := range r.keysByID {
-		if vk.BudgetResetAt != nil && !now.Before(*vk.BudgetResetAt) && vk.BudgetResetPeriod != domain.BudgetResetNever {
+		if vk.BudgetResetAt != nil && !now.Before(*vk.BudgetResetAt) &&
+			(vk.BudgetResetPeriod == domain.BudgetResetDaily || vk.BudgetResetPeriod == domain.BudgetResetMonthly) {
 			vk.SpentMicros = 0
-			next := advance(vk.BudgetResetPeriod, now)
-			vk.BudgetResetAt = &next
+			vk.BudgetResetAt = advanceBudgetResetAt(vk.BudgetResetPeriod, vk.BudgetResetAt)
 			res.VirtualKeyIDs = append(res.VirtualKeyIDs, vk.ID)
 			event := BudgetResetEvent{ID: uuid.NewString(), Scope: "key", EntityID: vk.ID, OrgID: vk.OrgID, ResetAt: now.UTC()}
 			res.Events = append(res.Events, event)

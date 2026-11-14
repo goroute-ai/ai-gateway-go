@@ -15,6 +15,7 @@ var ErrNotFound = errors.New("not found")
 type BudgetResetResult struct {
 	OrgIDs        []string
 	TeamIDs       []string
+	UserIDs       []string
 	VirtualKeyIDs []string
 	Events        []BudgetResetEvent
 }
@@ -30,11 +31,11 @@ type BudgetResetEvent struct {
 
 // Total returns the total number of entities reset across all scopes.
 func (r BudgetResetResult) Total() int {
-	return len(r.OrgIDs) + len(r.TeamIDs) + len(r.VirtualKeyIDs)
+	return len(r.OrgIDs) + len(r.TeamIDs) + len(r.UserIDs) + len(r.VirtualKeyIDs)
 }
 
 // BudgetResetWithIDsRepository is an optional extension of Repository that returns
-// the IDs of organizations, teams, and virtual keys reset during a budget cycle.
+// the IDs of organizations, teams, users, and virtual keys reset during a budget cycle.
 type BudgetResetWithIDsRepository interface {
 	ResetExpiredBudgetsWithIDs(ctx context.Context, now time.Time) (BudgetResetResult, error)
 }
@@ -43,6 +44,22 @@ type BudgetResetWithIDsRepository interface {
 type BudgetResetOutboxRepository interface {
 	ListPendingBudgetResets(ctx context.Context, limit int) ([]BudgetResetEvent, error)
 	MarkBudgetResetsDelivered(ctx context.Context, ids []string) error
+}
+
+// BatchSpendEventAckRepository acknowledges delivered spend outbox events in a single batch.
+type BatchSpendEventAckRepository interface {
+	MarkSpendEventsDelivered(ctx context.Context, ids []string) error
+}
+
+// SpendOutboxMaintenanceRepository exposes outbox depth inspection and delivered-row pruning.
+type SpendOutboxMaintenanceRepository interface {
+	CountPendingSpendEvents(ctx context.Context) (int64, error)
+	PruneDeliveredSpendEvents(ctx context.Context, olderThan time.Time, limit int) (int64, error)
+}
+
+// UserLookupRepository is an optional extension of Repository for direct user lookup by ID.
+type UserLookupRepository interface {
+	GetUser(ctx context.Context, id string) (*domain.User, error)
 }
 
 // GlobalModelNameLookup is an optional indexed lookup for hot inference paths.
@@ -101,6 +118,7 @@ type SpendSummary struct {
 	SpendByProvider   map[string]int64 `json:"spend_by_provider"`
 	SpendByModel      map[string]int64 `json:"spend_by_model"`
 	SpendByTeam       map[string]int64 `json:"spend_by_team"`
+	SpendByUser       map[string]int64 `json:"spend_by_user"`
 	SpendByVirtualKey map[string]int64 `json:"spend_by_virtual_key"`
 }
 

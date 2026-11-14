@@ -80,16 +80,23 @@ type Team struct {
 
 // User represents a human identity belonging to an Organization and optionally a Team.
 type User struct {
-	ID          string    `json:"id"`
-	OrgID       string    `json:"org_id"`
-	TeamID      string    `json:"team_id,omitempty"`
-	Email       string    `json:"email"`
-	Name        string    `json:"name"`
-	Role        Role      `json:"role"`
-	OIDCSubject string    `json:"oidc_subject,omitempty"`
-	IsActive    bool      `json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                    string            `json:"id"`
+	OrgID                 string            `json:"org_id"`
+	TeamID                string            `json:"team_id,omitempty"`
+	Email                 string            `json:"email"`
+	Name                  string            `json:"name"`
+	Role                  Role              `json:"role"`
+	OIDCSubject           string            `json:"oidc_subject,omitempty"`
+	MaxBudgetMicros       int64             `json:"max_budget_micros"`
+	SpentMicros           int64             `json:"spent_micros"`
+	BudgetResetPeriod     BudgetResetPeriod `json:"budget_reset_period"`
+	BudgetResetAt         *time.Time        `json:"budget_reset_at,omitempty"`
+	RPMLimit              int               `json:"rpm_limit"`
+	TPMLimit              int               `json:"tpm_limit"`
+	MaxConcurrentRequests int               `json:"max_concurrent_requests"`
+	IsActive              bool              `json:"is_active"`
+	CreatedAt             time.Time         `json:"created_at"`
+	UpdatedAt             time.Time         `json:"updated_at"`
 }
 
 // DefaultAllowedEndpoints contains the default data-plane endpoints permitted for newly issued Virtual Keys.
@@ -171,6 +178,11 @@ type IdentityContext struct {
 	TeamTPMLimit          int      `json:"team_tpm_limit"`
 	TeamMaxBudgetMicros   int64    `json:"team_max_budget_micros"`
 	TeamSpentMicros       int64    `json:"team_spent_micros"`
+	UserRPMLimit          int      `json:"user_rpm_limit"`
+	UserTPMLimit          int      `json:"user_tpm_limit"`
+	UserMaxConcurrent     int      `json:"user_max_concurrent"`
+	UserMaxBudgetMicros   int64    `json:"user_max_budget_micros"`
+	UserSpentMicros       int64    `json:"user_spent_micros"`
 	OrgRPMLimit           int      `json:"org_rpm_limit"`
 	OrgTPMLimit           int      `json:"org_tpm_limit"`
 	OrgMaxBudgetMicros    int64    `json:"org_max_budget_micros"`

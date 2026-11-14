@@ -19,16 +19,59 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewPostgresPool creates a configured pgxpool.Pool for PostgreSQL 16+ persistence.
-func NewPostgresPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+// PostgresPoolOptions configures pgxpool sizing and lifetimes.
+// Zero values preserve DSN parameters (e.g. pool_max_conns, pool_min_conns)
+// or fall back to production defaults when unset in the DSN.
+type PostgresPoolOptions struct {
+	MaxConns        int32
+	MinConns        int32
+	MaxConnLifetime time.Duration
+	MaxConnIdleTime time.Duration
+}
+
+func dsnHasPoolParam(dsn, param string) bool {
+	return strings.Contains(strings.ToLower(dsn), strings.ToLower(param)+"=")
+}
+
+func configurePostgresPool(dsn string, opts PostgresPoolOptions) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
-	cfg.MaxConns = 32
-	cfg.MinConns = 4
-	cfg.MaxConnLifetime = 30 * time.Minute
-	cfg.MaxConnIdleTime = 5 * time.Minute
+	if opts.MaxConns > 0 {
+		cfg.MaxConns = opts.MaxConns
+	} else if !dsnHasPoolParam(dsn, "pool_max_conns") {
+		cfg.MaxConns = 32
+	}
+	if opts.MinConns > 0 {
+		cfg.MinConns = opts.MinConns
+	} else if !dsnHasPoolParam(dsn, "pool_min_conns") {
+		cfg.MinConns = 4
+	}
+	if opts.MaxConnLifetime > 0 {
+		cfg.MaxConnLifetime = opts.MaxConnLifetime
+	} else if !dsnHasPoolParam(dsn, "pool_max_conn_lifetime") {
+		cfg.MaxConnLifetime = 30 * time.Minute
+	}
+	if opts.MaxConnIdleTime > 0 {
+		cfg.MaxConnIdleTime = opts.MaxConnIdleTime
+	} else if !dsnHasPoolParam(dsn, "pool_max_conn_idle_time") {
+		cfg.MaxConnIdleTime = 5 * time.Minute
+	}
+	return cfg, nil
+}
+
+// NewPostgresPool creates a configured pgxpool.Pool for PostgreSQL 16+ persistence.
+func NewPostgresPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	return NewPostgresPoolWithOptions(ctx, dsn, PostgresPoolOptions{})
+}
+
+// NewPostgresPoolWithOptions creates a pgxpool.Pool respecting explicit options and DSN pool parameters.
+func NewPostgresPoolWithOptions(ctx context.Context, dsn string, opts PostgresPoolOptions) (*pgxpool.Pool, error) {
+	cfg, err := configurePostgresPool(dsn, opts)
+	if err != nil {
+		return nil, err
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -228,15 +271,13 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 	return err
 }
 
-func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error) {
-	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
-		return gm, nil
-	}
-	const q = `SELECT id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference FROM global_models WHERE id = $1`
+const globalModelSelectCols = `id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference`
+
+func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 	var m domain.GlobalModel
 	var prov, status, pricingStatus string
 	var rawCaps, rawOps, rawModPricing []byte
-	if err := p.pool.QueryRow(ctx, q, id).Scan(
+	if err := row.Scan(
 		&m.ID, &prov, &m.ModelName, &m.DisplayName, &m.MaxInputTokens, &m.MaxOutputTokens,
 		&m.SupportsStreaming, &m.SupportsTools, &m.SupportsVision, &m.SupportsReasoning, &m.SupportsEmbeddings,
 		&m.InputCostMicrosPer1M, &m.OutputCostMicrosPer1M, &m.CachedInputCostMicrosPer1M,
@@ -246,7 +287,7 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 		&m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
 		&m.PricingEffectiveDate, &status, &m.DeprecationDate, &rawCaps, &rawOps, &m.SupportsInference,
 	); err != nil {
-		return nil, fmt.Errorf("global model not found: %w", err)
+		return nil, err
 	}
 	m.Provider = domain.ProviderType(prov)
 	m.PricingStatus = domain.PricingStatus(pricingStatus)
@@ -260,8 +301,40 @@ func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*do
 	if len(rawModPricing) > 0 {
 		_ = json.Unmarshal(rawModPricing, &m.ModalityPricingJSON)
 	}
-	_ = p.mem.UpsertGlobalModel(ctx, &m)
 	return &m, nil
+}
+
+func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error) {
+	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
+		return gm, nil
+	}
+	const q = `SELECT ` + globalModelSelectCols + ` FROM global_models WHERE id = $1`
+	m, err := scanGlobalModel(p.pool.QueryRow(ctx, q, id))
+	if err != nil {
+		return nil, fmt.Errorf("global model not found: %w", err)
+	}
+	_ = p.mem.UpsertGlobalModel(ctx, m)
+	return m, nil
+}
+
+func (p *PostgresRepository) hydrateGlobalModels(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	const q = `SELECT ` + globalModelSelectCols + ` FROM global_models WHERE id = ANY($1)`
+	rows, err := p.pool.Query(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		m, err := scanGlobalModel(rows)
+		if err != nil {
+			return err
+		}
+		_ = p.mem.UpsertGlobalModel(ctx, m)
+	}
+	return rows.Err()
 }
 
 func (p *PostgresRepository) ListGlobalModels(ctx context.Context) ([]*domain.GlobalModel, error) {
@@ -324,10 +397,11 @@ func (p *PostgresRepository) CreateOrganization(ctx context.Context, org *domain
 	if org.ID == "" {
 		org.ID = uuid.NewString()
 	}
+	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, time.Now().UTC())
 	const q = `
-		INSERT INTO organizations (id, name, slug, max_budget_micros, spent_micros, budget_reset_period, rpm_limit, tpm_limit, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`
-	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SpentMicros, string(org.BudgetResetPeriod), org.RPMLimit, org.TPMLimit, org.IsActive); err != nil {
+		INSERT INTO organizations (id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
+	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SpentMicros, string(org.BudgetResetPeriod), org.BudgetResetAt, org.RPMLimit, org.TPMLimit, org.IsActive); err != nil {
 		return err
 	}
 	return p.mem.CreateOrganization(ctx, org)
@@ -337,11 +411,11 @@ func (p *PostgresRepository) GetOrganization(ctx context.Context, id string) (*d
 	if org, err := p.mem.GetOrganization(ctx, id); err == nil && org != nil {
 		return org, nil
 	}
-	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, rpm_limit, tpm_limit, is_active FROM organizations WHERE id = $1`
+	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, is_active FROM organizations WHERE id = $1`
 	var o domain.Organization
 	var period string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.RPMLimit, &o.TPMLimit, &o.IsActive,
+		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("organization not found: %w", err)
 	}
@@ -462,18 +536,19 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	if team.ID == "" {
 		team.ID = uuid.NewString()
 	}
+	team.BudgetResetPeriod, team.BudgetResetAt = resolveBudgetResetSchedule(team.BudgetResetPeriod, team.BudgetResetAt, time.Now().UTC())
 	allowedModels := team.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
 	}
 	const q = `
 		INSERT INTO teams (
-			id, org_id, name, max_budget_micros, spent_micros, rpm_limit, tpm_limit,
-			allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
+			id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 	if _, err := p.pool.Exec(ctx, q,
-		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, team.RPMLimit, team.TPMLimit,
-		allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
+		team.RPMLimit, team.TPMLimit, allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
 	); err != nil {
 		return err
 	}
@@ -524,39 +599,69 @@ func (p *PostgresRepository) ListTeams(ctx context.Context, orgID string) ([]*do
 	return teams, nil
 }
 
+const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active, created_at, updated_at`
+
+func scanUser(row rowScanner) (*domain.User, error) {
+	var u domain.User
+	var role, period string
+	if err := row.Scan(
+		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject,
+		&u.MaxBudgetMicros, &u.SpentMicros, &period, &u.BudgetResetAt,
+		&u.RPMLimit, &u.TPMLimit, &u.MaxConcurrentRequests, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	u.Role = domain.Role(role)
+	u.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	return &u, nil
+}
+
 func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) error {
 	if user.ID == "" {
 		user.ID = uuid.NewString()
 	}
-	const q = `INSERT INTO users (id, org_id, team_id, email, name, role, oidc_subject, is_active) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8)`
-	if _, err := p.pool.Exec(ctx, q, user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.IsActive); err != nil {
+	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, time.Now().UTC())
+	const q = `
+		INSERT INTO users (
+			id, org_id, team_id, email, name, role, oidc_subject,
+			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			rpm_limit, tpm_limit, max_concurrent_requests, is_active
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)`
+	if _, err := p.pool.Exec(ctx, q,
+		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+		user.MaxBudgetMicros, user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
+		user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.IsActive,
+	); err != nil {
 		return err
 	}
 	return p.mem.CreateUser(ctx, user)
+}
+
+func (p *PostgresRepository) GetUser(ctx context.Context, id string) (*domain.User, error) {
+	if u, err := p.mem.GetUser(ctx, id); err == nil && u != nil {
+		return u, nil
+	}
+	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE id = $1`, id))
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+	_ = p.mem.CreateUser(ctx, u)
+	return u, nil
 }
 
 func (p *PostgresRepository) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
 	if subject == "" {
 		return nil, fmt.Errorf("user with oidc_subject %q not found", subject)
 	}
-	var u domain.User
-	var role string
-	err := p.pool.QueryRow(ctx, `
-		SELECT id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), is_active, created_at, updated_at
-		FROM users WHERE oidc_subject = $1 LIMIT 1`, subject).Scan(
-		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
-	)
+	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE oidc_subject = $1 LIMIT 1`, subject))
 	if err != nil {
 		return p.mem.GetUserByOIDCSubject(ctx, subject)
 	}
-	u.Role = domain.Role(role)
-	return &u, nil
+	return u, nil
 }
 
 func (p *PostgresRepository) ListUsers(ctx context.Context, orgID string) ([]*domain.User, error) {
-	rows, err := p.pool.Query(ctx, `
-		SELECT id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), is_active, created_at, updated_at
-		FROM users WHERE org_id = $1 ORDER BY created_at ASC`, orgID)
+	rows, err := p.pool.Query(ctx, `SELECT `+userSelectCols+` FROM users WHERE org_id = $1 ORDER BY created_at ASC`, orgID)
 	if err != nil {
 		return p.mem.ListUsers(ctx, orgID)
 	}
@@ -564,20 +669,35 @@ func (p *PostgresRepository) ListUsers(ctx context.Context, orgID string) ([]*do
 
 	var users []*domain.User
 	for rows.Next() {
-		var u domain.User
-		var role string
-		if err := rows.Scan(
-			&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
-		); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, err
 		}
-		u.Role = domain.Role(role)
-		users = append(users, &u)
+		users = append(users, u)
 	}
 	if len(users) == 0 {
 		return p.mem.ListUsers(ctx, orgID)
 	}
 	return users, rows.Err()
+}
+
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active`
+
+func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
+	var k domain.VirtualKey
+	var role, period string
+	if err := row.Scan(
+		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
+		&k.AllowedModels, &k.AllowedEndpoints,
+		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
+		&k.MaxBudgetMicros, &k.SpentMicros, &period, &k.BudgetResetAt,
+		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
+	); err != nil {
+		return nil, err
+	}
+	k.Role = domain.Role(role)
+	k.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	return &k, nil
 }
 
 func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
@@ -593,16 +713,20 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 	if vk.Role == "" {
 		vk.Role = domain.RoleServiceAccount
 	}
+	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, time.Now().UTC())
 	const q = `
 		INSERT INTO virtual_keys (
-			id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints,
+			id, key_prefix, key_hash, name, org_id, team_id, user_id, role, allowed_models, allowed_endpoints,
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-			max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
+			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`
 	if _, err := p.pool.Exec(ctx, q,
-		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, string(vk.Role), vk.AllowedModels, vk.AllowedEndpoints,
+		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
+		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
-		vk.MaxBudgetMicros, vk.SpentMicros, vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
+		vk.MaxBudgetMicros, vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
+		vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
 	); err != nil {
 		return err
 	}
@@ -610,57 +734,36 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 }
 
 func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE key_hash = $1`
-	var k domain.VirtualKey
-	var role string
-	if err := p.pool.QueryRow(ctx, q, keyHash).Scan(
-		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
-		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
-	); err != nil {
+	k, err := scanVirtualKey(p.pool.QueryRow(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE key_hash = $1`, keyHash))
+	if err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
-	k.Role = domain.Role(role)
-	return &k, nil
+	return k, nil
 }
 
 func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE id = $1`
-	var k domain.VirtualKey
-	var role string
-	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
-		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
-	); err != nil {
+	k, err := scanVirtualKey(p.pool.QueryRow(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE id = $1`, id))
+	if err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
 	}
-	k.Role = domain.Role(role)
-	return &k, nil
+	return k, nil
 }
 
 func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error) {
-	const q = `SELECT id, key_prefix, key_hash, name, org_id, role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`
-	rows, err := p.pool.Query(ctx, q, orgID)
+	rows, err := p.pool.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var list []*domain.VirtualKey
 	for rows.Next() {
-		var k domain.VirtualKey
-		var role string
-		if err := rows.Scan(
-			&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &role, &k.AllowedModels, &k.AllowedEndpoints,
-			&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-			&k.MaxBudgetMicros, &k.SpentMicros, &k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
-		); err != nil {
+		k, err := scanVirtualKey(rows)
+		if err != nil {
 			return nil, err
 		}
-		k.Role = domain.Role(role)
-		list = append(list, &k)
+		list = append(list, k)
 	}
-	return list, nil
+	return list, rows.Err()
 }
 
 func (p *PostgresRepository) RevokeVirtualKey(ctx context.Context, id string) error {
@@ -707,23 +810,53 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	return p.mem.CreateProviderCredential(ctx, cred)
 }
 
-func (p *PostgresRepository) GetProviderCredential(ctx context.Context, id string) (*domain.ProviderCredential, error) {
-	if cred, err := p.mem.GetProviderCredential(ctx, id); err == nil && cred != nil {
-		return cred, nil
-	}
-	const q = `SELECT id, org_id, provider, name, base_url, COALESCE(azure_deployment_name, ''), COALESCE(api_version, ''), encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active FROM provider_credentials WHERE id = $1`
+const providerCredentialSelectCols = `id, org_id, provider, name, base_url, COALESCE(azure_deployment_name, ''), COALESCE(api_version, ''), encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active`
+
+func scanProviderCredential(row rowScanner) (*domain.ProviderCredential, error) {
 	var c domain.ProviderCredential
 	var prov string
-	if err := p.pool.QueryRow(ctx, q, id).Scan(
+	if err := row.Scan(
 		&c.ID, &c.OrgID, &prov, &c.Name, &c.BaseURL, &c.AzureDeploymentName, &c.APIVersion,
 		&c.EncryptedAPIKey, &c.DataNonce, &c.EncryptedDEK, &c.DEKNonce,
 		&c.KeyVersion, &c.ExpiresAt, &c.LastRotatedAt, &c.LastValidatedAt, &c.IsActive,
 	); err != nil {
-		return nil, fmt.Errorf("credential not found: %w", err)
+		return nil, err
 	}
 	c.Provider = domain.ProviderType(prov)
-	_ = p.mem.CreateProviderCredential(ctx, &c)
 	return &c, nil
+}
+
+func (p *PostgresRepository) GetProviderCredential(ctx context.Context, id string) (*domain.ProviderCredential, error) {
+	if cred, err := p.mem.GetProviderCredential(ctx, id); err == nil && cred != nil {
+		return cred, nil
+	}
+	const q = `SELECT ` + providerCredentialSelectCols + ` FROM provider_credentials WHERE id = $1`
+	c, err := scanProviderCredential(p.pool.QueryRow(ctx, q, id))
+	if err != nil {
+		return nil, fmt.Errorf("credential not found: %w", err)
+	}
+	_ = p.mem.CreateProviderCredential(ctx, c)
+	return c, nil
+}
+
+func (p *PostgresRepository) hydrateProviderCredentials(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	const q = `SELECT ` + providerCredentialSelectCols + ` FROM provider_credentials WHERE id = ANY($1)`
+	rows, err := p.pool.Query(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		c, err := scanProviderCredential(rows)
+		if err != nil {
+			return err
+		}
+		_ = p.mem.CreateProviderCredential(ctx, c)
+	}
+	return rows.Err()
 }
 
 func (p *PostgresRepository) UpdateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error {
@@ -849,17 +982,15 @@ func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.D
 	return p.mem.CreateDeployment(ctx, dep)
 }
 
-func (p *PostgresRepository) ListDeploymentsByGroup(ctx context.Context, groupID string) ([]*domain.Deployment, error) {
-	deps, err := p.mem.ListDeploymentsByGroup(ctx, groupID)
-	if err == nil && len(deps) > 0 {
-		return deps, nil
-	}
-	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments WHERE model_group_id = $1`
-	rows, err := p.pool.Query(ctx, q, groupID)
+func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q string, args ...any) ([]*domain.Deployment, error) {
+	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	var deps []*domain.Deployment
+	credSeen := make(map[string]struct{})
+	modelSeen := make(map[string]struct{})
+	var missingCredIDs, missingModelIDs []string
 	for rows.Next() {
 		var d domain.Deployment
 		var status string
@@ -871,11 +1002,51 @@ func (p *PostgresRepository) ListDeploymentsByGroup(ctx context.Context, groupID
 		} else {
 			d.Status = domain.DeploymentStatus(status)
 		}
-		// Hydrate credential if needed
-		_, _ = p.GetProviderCredential(ctx, d.CredentialID)
-		// Hydrate global model if needed
-		_, _ = p.GetGlobalModel(ctx, d.GlobalModelID)
-		_ = p.mem.CreateDeployment(ctx, &d)
+		if d.CredentialID != "" {
+			if _, ok := credSeen[d.CredentialID]; !ok {
+				credSeen[d.CredentialID] = struct{}{}
+				if _, memErr := p.mem.GetProviderCredential(ctx, d.CredentialID); memErr != nil {
+					missingCredIDs = append(missingCredIDs, d.CredentialID)
+				}
+			}
+		}
+		if d.GlobalModelID != "" {
+			if _, ok := modelSeen[d.GlobalModelID]; !ok {
+				modelSeen[d.GlobalModelID] = struct{}{}
+				if _, memErr := p.mem.GetGlobalModel(ctx, d.GlobalModelID); memErr != nil {
+					missingModelIDs = append(missingModelIDs, d.GlobalModelID)
+				}
+			}
+		}
+		deps = append(deps, &d)
+	}
+	rowsErr := rows.Err()
+	// Close rows before issuing batch hydration queries to prevent pool exhaustion/deadlocks.
+	rows.Close()
+	if rowsErr != nil {
+		return nil, rowsErr
+	}
+
+	if len(missingCredIDs) > 0 {
+		_ = p.hydrateProviderCredentials(ctx, missingCredIDs)
+	}
+	if len(missingModelIDs) > 0 {
+		_ = p.hydrateGlobalModels(ctx, missingModelIDs)
+	}
+	for _, d := range deps {
+		_ = p.mem.CreateDeployment(ctx, d)
+	}
+	return deps, nil
+}
+
+func (p *PostgresRepository) ListDeploymentsByGroup(ctx context.Context, groupID string) ([]*domain.Deployment, error) {
+	deps, err := p.mem.ListDeploymentsByGroup(ctx, groupID)
+	if err == nil && len(deps) > 0 {
+		return deps, nil
+	}
+	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments WHERE model_group_id = $1`
+	if _, err := p.loadAndHydrateDeployments(ctx, q, groupID); err != nil {
+		return nil, err
 	}
 	return p.mem.ListDeploymentsByGroup(ctx, groupID)
 }
@@ -886,25 +1057,8 @@ func (p *PostgresRepository) ListAllDeployments(ctx context.Context) ([]*domain.
 		return deps, nil
 	}
 	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments`
-	rows, err := p.pool.Query(ctx, q)
-	if err != nil {
+	if _, err := p.loadAndHydrateDeployments(ctx, q); err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var d domain.Deployment
-		var status string
-		if err := rows.Scan(&d.ID, &d.ModelGroupID, &d.GlobalModelID, &d.CredentialID, &d.DeploymentName, &d.Region, &d.Weight, &d.RPMCapacity, &d.TPMCapacity, &d.TimeoutMs, &d.Priority, &status); err != nil {
-			continue
-		}
-		if status == "" {
-			d.Status = domain.DeploymentStatusActive
-		} else {
-			d.Status = domain.DeploymentStatus(status)
-		}
-		_, _ = p.GetProviderCredential(ctx, d.CredentialID)
-		_, _ = p.GetGlobalModel(ctx, d.GlobalModelID)
-		_ = p.mem.CreateDeployment(ctx, &d)
 	}
 	return p.mem.ListAllDeployments(ctx)
 }
@@ -1073,6 +1227,40 @@ func (p *PostgresRepository) MarkSpendEventDelivered(ctx context.Context, id str
 	return err
 }
 
+func (p *PostgresRepository) MarkSpendEventsDelivered(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE spend_event_outbox SET status='delivered', locked_at=NULL, last_error=NULL, updated_at=NOW() WHERE id = ANY($1)`, ids)
+	return err
+}
+
+func (p *PostgresRepository) CountPendingSpendEvents(ctx context.Context) (int64, error) {
+	var count int64
+	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM spend_event_outbox WHERE status IN ('pending', 'processing')`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (p *PostgresRepository) PruneDeliveredSpendEvents(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	tag, err := p.pool.Exec(ctx, `
+		DELETE FROM spend_event_outbox
+		WHERE id IN (
+			SELECT id FROM spend_event_outbox
+			WHERE status = 'delivered' AND updated_at < $1
+			ORDER BY updated_at ASC
+			LIMIT $2
+		)`, olderThan.UTC(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (p *PostgresRepository) RetrySpendEvent(ctx context.Context, id string, cause error, retryAt time.Time, maxAttempts int) error {
 	message := ""
 	if cause != nil {
@@ -1082,44 +1270,49 @@ func (p *PostgresRepository) RetrySpendEvent(ctx context.Context, id string, cau
 	return err
 }
 
+type spendDelta struct {
+	id         string
+	costMicros int64
+}
+
+func sortedSpendDeltas(m map[string]int64) []spendDelta {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if k != "" && v > 0 {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make([]spendDelta, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, spendDelta{id: k, costMicros: m[k]})
+	}
+	return out
+}
+
 func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []domain.SpendEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-	const q = `
-		WITH inserted AS (
-			INSERT INTO spend_logs (
-				id, request_id, trace_id, org_id, team_id, user_id, virtual_key_id,
-				endpoint, modality, modality_units, requested_model, resolved_model, provider,
-				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
-				cost_micros, pricing_version, pricing_status, pricing_provenance_source,
-				latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
-			) VALUES (
-				$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
-				$8,$9,$10,$11,$12,$13,
-				$14,$15,$16,$17,$18,
-				$19,$20,$21,$22,
-				$23,$24,$25,$26,$27,$28,$29
-			)
-			ON CONFLICT (id) DO NOTHING
-			RETURNING org_id, team_id, virtual_key_id, cost_micros
-		),
-		upd_org AS (
-			UPDATE organizations o
-			SET spent_micros = o.spent_micros + i.cost_micros, updated_at = NOW()
-			FROM inserted i
-			WHERE o.id = i.org_id AND i.cost_micros > 0
-		),
-		upd_team AS (
-			UPDATE teams t
-			SET spent_micros = t.spent_micros + i.cost_micros, updated_at = NOW()
-			FROM inserted i
-			WHERE i.team_id IS NOT NULL AND i.team_id <> '' AND t.id = i.team_id AND i.cost_micros > 0
+	const insertQ = `
+		INSERT INTO spend_logs (
+			id, request_id, trace_id, org_id, team_id, user_id, virtual_key_id,
+			endpoint, modality, modality_units, requested_model, resolved_model, provider,
+			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
+			cost_micros, pricing_version, pricing_status, pricing_provenance_source,
+			latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+		) VALUES (
+			$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
+			$8,$9,$10,$11,$12,$13,
+			$14,$15,$16,$17,$18,
+			$19,$20,$21,$22,
+			$23,$24,$25,$26,$27,$28,$29
 		)
-		UPDATE virtual_keys vk
-		SET spent_micros = vk.spent_micros + i.cost_micros, updated_at = NOW()
-		FROM inserted i
-		WHERE i.virtual_key_id IS NOT NULL AND i.virtual_key_id <> '' AND vk.id = i.virtual_key_id AND i.cost_micros > 0`
+		ON CONFLICT (id) DO NOTHING
+		RETURNING org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''), cost_micros`
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -1153,7 +1346,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		if len(ev.ModalityUnits) == 0 {
 			modUnitsJSON = []byte("{}")
 		}
-		batch.Queue(q,
+		batch.Queue(insertQ,
 			id, ev.RequestID, ev.TraceID, orgID, ev.TeamID, ev.UserID, ev.VirtualKeyID,
 			ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
@@ -1161,16 +1354,74 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
 		)
 	}
+	orgTotals := make(map[string]int64)
+	teamTotals := make(map[string]int64)
+	userTotals := make(map[string]int64)
+	keyTotals := make(map[string]int64)
+
 	br := tx.SendBatch(ctx, batch)
 	for range events {
-		if _, err := br.Exec(); err != nil {
+		var orgID, teamID, userID, keyID string
+		var costMicros int64
+		err := br.QueryRow().Scan(&orgID, &teamID, &userID, &keyID, &costMicros)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			_ = br.Close()
 			return fmt.Errorf("execute spend batch: %w", err)
+		}
+		if costMicros > 0 {
+			if orgID != "" {
+				orgTotals[orgID] += costMicros
+			}
+			if teamID != "" {
+				teamTotals[teamID] += costMicros
+			}
+			if userID != "" {
+				userTotals[userID] += costMicros
+			}
+			if keyID != "" {
+				keyTotals[keyID] += costMicros
+			}
 		}
 	}
 	if err := br.Close(); err != nil {
 		return fmt.Errorf("close spend batch: %w", err)
 	}
+
+	// Pre-aggregated updates in deterministic ID order prevent row-lock contention and deadlocks.
+	updateBatch := &pgx.Batch{}
+	updateCount := 0
+	for _, d := range sortedSpendDeltas(orgTotals) {
+		updateBatch.Queue(`UPDATE organizations SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
+	for _, d := range sortedSpendDeltas(teamTotals) {
+		updateBatch.Queue(`UPDATE teams SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
+	for _, d := range sortedSpendDeltas(userTotals) {
+		updateBatch.Queue(`UPDATE users SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
+	for _, d := range sortedSpendDeltas(keyTotals) {
+		updateBatch.Queue(`UPDATE virtual_keys SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
+	if updateCount > 0 {
+		ubr := tx.SendBatch(ctx, updateBatch)
+		for i := 0; i < updateCount; i++ {
+			if _, err := ubr.Exec(); err != nil {
+				_ = ubr.Close()
+				return fmt.Errorf("update aggregated spend: %w", err)
+			}
+		}
+		if err := ubr.Close(); err != nil {
+			return fmt.Errorf("close aggregated spend batch: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit spend batch: %w", err)
 	}
@@ -1185,6 +1436,7 @@ func (p *PostgresRepository) GetSpendSummary(ctx context.Context, orgID string) 
 		SpendByProvider:   make(map[string]int64),
 		SpendByModel:      make(map[string]int64),
 		SpendByTeam:       make(map[string]int64),
+		SpendByUser:       make(map[string]int64),
 		SpendByVirtualKey: make(map[string]int64),
 	}
 	var whereClause string
@@ -1203,26 +1455,49 @@ func (p *PostgresRepository) GetSpendSummary(ctx context.Context, orgID string) 
 	}
 	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0
 
-	qProviders := `SELECT provider, COALESCE(SUM(cost_micros), 0) FROM spend_logs ` + whereClause + ` GROUP BY provider`
-	if rows, err := p.pool.Query(ctx, qProviders, args...); err == nil {
+	qBreakdown := `
+		SELECT
+			COALESCE(provider, ''),
+			COALESCE(resolved_model, ''),
+			COALESCE(team_id, ''),
+			COALESCE(virtual_key_id, ''),
+			COALESCE(user_id, ''),
+			GROUPING(provider, resolved_model, team_id, virtual_key_id, user_id),
+			COALESCE(SUM(cost_micros), 0)
+		FROM spend_logs ` + whereClause + `
+		GROUP BY GROUPING SETS (
+			(provider),
+			(resolved_model),
+			(team_id),
+			(virtual_key_id),
+			(user_id)
+		)`
+	if rows, err := p.pool.Query(ctx, qBreakdown, args...); err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var prov string
+			var prov, model, teamID, vkID, userID string
+			var grp int
 			var cost int64
-			if err := rows.Scan(&prov, &cost); err == nil {
-				sum.SpendByProvider[prov] = cost
+			if err := rows.Scan(&prov, &model, &teamID, &vkID, &userID, &grp, &cost); err != nil {
+				continue
 			}
-		}
-	}
-
-	qModels := `SELECT resolved_model, COALESCE(SUM(cost_micros), 0) FROM spend_logs ` + whereClause + ` GROUP BY resolved_model`
-	if rows, err := p.pool.Query(ctx, qModels, args...); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var model string
-			var cost int64
-			if err := rows.Scan(&model, &cost); err == nil {
+			switch grp {
+			case 15: // 0b01111 -> provider
+				sum.SpendByProvider[prov] = cost
+			case 23: // 0b10111 -> resolved_model
 				sum.SpendByModel[model] = cost
+			case 27: // 0b11011 -> team_id
+				if teamID != "" {
+					sum.SpendByTeam[teamID] = cost
+				}
+			case 29: // 0b11101 -> virtual_key_id
+				if vkID != "" {
+					sum.SpendByVirtualKey[vkID] = cost
+				}
+			case 30: // 0b11110 -> user_id
+				if userID != "" {
+					sum.SpendByUser[userID] = cost
+				}
 			}
 		}
 	}
@@ -1299,9 +1574,13 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 		{
 			sql: `UPDATE organizations
 				SET spent_micros = 0,
-				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    budget_reset_at = CASE
+				        WHEN budget_reset_period = 'daily' THEN budget_reset_at + INTERVAL '1 day'
+				        WHEN budget_reset_period = 'monthly' THEN budget_reset_at + INTERVAL '1 month'
+				        ELSE NULL
+				    END,
 				    updated_at = NOW()
-				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period IN ('daily', 'monthly')
 				RETURNING id, id`,
 			scope: "org",
 			dest:  &res.OrgIDs,
@@ -1309,31 +1588,54 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 		{
 			sql: `UPDATE teams
 				SET spent_micros = 0,
-				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    budget_reset_at = CASE
+				        WHEN budget_reset_period = 'daily' THEN budget_reset_at + INTERVAL '1 day'
+				        WHEN budget_reset_period = 'monthly' THEN budget_reset_at + INTERVAL '1 month'
+				        ELSE NULL
+				    END,
 				    updated_at = NOW()
-				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period IN ('daily', 'monthly')
 				RETURNING id, org_id`,
 			scope: "team",
 			dest:  &res.TeamIDs,
 		},
 		{
+			sql: `UPDATE users
+				SET spent_micros = 0,
+				    budget_reset_at = CASE
+				        WHEN budget_reset_period = 'daily' THEN budget_reset_at + INTERVAL '1 day'
+				        WHEN budget_reset_period = 'monthly' THEN budget_reset_at + INTERVAL '1 month'
+				        ELSE NULL
+				    END,
+				    updated_at = NOW()
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period IN ('daily', 'monthly')
+				RETURNING id, org_id`,
+			scope: "user",
+			dest:  &res.UserIDs,
+		},
+		{
 			sql: `UPDATE virtual_keys
 				SET spent_micros = 0,
-				    budget_reset_at = CASE WHEN budget_reset_period = 'daily' THEN $1 + INTERVAL '1 day' ELSE $1 + INTERVAL '1 month' END,
+				    budget_reset_at = CASE
+				        WHEN budget_reset_period = 'daily' THEN budget_reset_at + INTERVAL '1 day'
+				        WHEN budget_reset_period = 'monthly' THEN budget_reset_at + INTERVAL '1 month'
+				        ELSE NULL
+				    END,
 				    updated_at = NOW()
-				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period <> 'never'
+				WHERE budget_reset_at IS NOT NULL AND budget_reset_at <= $1 AND budget_reset_period IN ('daily', 'monthly')
 				RETURNING id, org_id`,
 			scope: "key",
 			dest:  &res.VirtualKeyIDs,
 		},
 	}
 
+	outboxBatch := &pgx.Batch{}
+	outboxCount := 0
 	for _, q := range queries {
 		rows, err := tx.Query(ctx, q.sql, now)
 		if err != nil {
 			return BudgetResetResult{}, fmt.Errorf("reset expired budgets: %w", err)
 		}
-		var queryEvents []BudgetResetEvent
 		for rows.Next() {
 			var id, orgID string
 			if err := rows.Scan(&id, &orgID); err != nil {
@@ -1342,18 +1644,27 @@ func (p *PostgresRepository) ResetExpiredBudgetsWithIDs(ctx context.Context, now
 			}
 			*q.dest = append(*q.dest, id)
 			event := BudgetResetEvent{ID: uuid.NewString(), Scope: q.scope, EntityID: id, OrgID: orgID, ResetAt: now.UTC()}
-			queryEvents = append(queryEvents, event)
 			res.Events = append(res.Events, event)
+			outboxBatch.Queue(`INSERT INTO budget_reset_outbox (id, scope, entity_id, org_id, reset_at) VALUES ($1,$2,$3,$4,$5)`, event.ID, event.Scope, event.EntityID, event.OrgID, event.ResetAt)
+			outboxCount++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return BudgetResetResult{}, fmt.Errorf("iterate reset budget ids: %w", err)
 		}
 		rows.Close()
-		for _, event := range queryEvents {
-			if _, err := tx.Exec(ctx, `INSERT INTO budget_reset_outbox (id, scope, entity_id, org_id, reset_at) VALUES ($1,$2,$3,$4,$5)`, event.ID, event.Scope, event.EntityID, event.OrgID, event.ResetAt); err != nil {
+	}
+
+	if outboxCount > 0 {
+		br := tx.SendBatch(ctx, outboxBatch)
+		for i := 0; i < outboxCount; i++ {
+			if _, err := br.Exec(); err != nil {
+				_ = br.Close()
 				return BudgetResetResult{}, fmt.Errorf("enqueue Redis budget reset: %w", err)
 			}
+		}
+		if err := br.Close(); err != nil {
+			return BudgetResetResult{}, fmt.Errorf("close budget reset outbox batch: %w", err)
 		}
 	}
 
@@ -1595,25 +1906,36 @@ func (p *PostgresRepository) DeleteMCPServer(ctx context.Context, id string) err
 }
 
 func (p *PostgresRepository) UpsertMCPTools(ctx context.Context, serverID, orgID string, tools []*domain.MCPTool) error {
+	if len(tools) == 0 {
+		return p.mem.UpsertMCPTools(ctx, serverID, orgID, tools)
+	}
+	const q = `
+		INSERT INTO mcp_tools (id, server_id, org_id, name, description, input_schema, tool_def_hash, cost_per_call_micros, is_active, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		ON CONFLICT (server_id, name) DO UPDATE SET
+			description = EXCLUDED.description,
+			input_schema = EXCLUDED.input_schema,
+			tool_def_hash = EXCLUDED.tool_def_hash,
+			cost_per_call_micros = EXCLUDED.cost_per_call_micros,
+			is_active = EXCLUDED.is_active,
+			updated_at = NOW()`
+	batch := &pgx.Batch{}
 	for _, t := range tools {
 		if t.ID == "" {
 			t.ID = uuid.NewString()
 		}
 		schemaJSON, _ := json.Marshal(t.InputSchema)
-		const q = `
-			INSERT INTO mcp_tools (id, server_id, org_id, name, description, input_schema, tool_def_hash, cost_per_call_micros, is_active, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-			ON CONFLICT (server_id, name) DO UPDATE SET
-				description = EXCLUDED.description,
-				input_schema = EXCLUDED.input_schema,
-				tool_def_hash = EXCLUDED.tool_def_hash,
-				cost_per_call_micros = EXCLUDED.cost_per_call_micros,
-				is_active = EXCLUDED.is_active,
-				updated_at = NOW()`
-		_, err := p.pool.Exec(ctx, q, t.ID, serverID, orgID, t.Name, t.Description, schemaJSON, t.ToolDefHash, t.CostPerCallMicros, t.IsActive)
-		if err != nil {
+		batch.Queue(q, t.ID, serverID, orgID, t.Name, t.Description, schemaJSON, t.ToolDefHash, t.CostPerCallMicros, t.IsActive)
+	}
+	br := p.pool.SendBatch(ctx, batch)
+	for range tools {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
 			return err
 		}
+	}
+	if err := br.Close(); err != nil {
+		return err
 	}
 	return p.mem.UpsertMCPTools(ctx, serverID, orgID, tools)
 }

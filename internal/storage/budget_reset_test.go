@@ -68,12 +68,26 @@ func TestMemoryResetExpiredBudgetsWithIDs(t *testing.T) {
 		BudgetResetAt:     &expired,
 		IsActive:          true,
 	}
+	userExpired := &domain.User{
+		ID:                "user-expired",
+		OrgID:             orgExpired.ID,
+		TeamID:            teamExpired.ID,
+		Email:             "expired@example.com",
+		Name:              "Expired User",
+		Role:              domain.RoleDeveloper,
+		MaxBudgetMicros:   1000,
+		SpentMicros:       600,
+		BudgetResetPeriod: domain.BudgetResetDaily,
+		BudgetResetAt:     &expired,
+		IsActive:          true,
+	}
 
 	for _, err := range []error{
 		repo.CreateOrganization(ctx, orgExpired),
 		repo.CreateOrganization(ctx, orgNever),
 		repo.CreateTeam(ctx, teamExpired),
 		repo.CreateTeam(ctx, teamFuture),
+		repo.CreateUser(ctx, userExpired),
 		repo.CreateVirtualKey(ctx, vkExpired),
 	} {
 		if err != nil {
@@ -85,8 +99,8 @@ func TestMemoryResetExpiredBudgetsWithIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResetExpiredBudgetsWithIDs: %v", err)
 	}
-	if res.Total() != 3 {
-		t.Fatalf("expected 3 reset entities, got %d (%+v)", res.Total(), res)
+	if res.Total() != 4 {
+		t.Fatalf("expected 4 reset entities, got %d (%+v)", res.Total(), res)
 	}
 	if len(res.OrgIDs) != 1 || res.OrgIDs[0] != "org-expired" {
 		t.Fatalf("unexpected OrgIDs: %v", res.OrgIDs)
@@ -94,30 +108,33 @@ func TestMemoryResetExpiredBudgetsWithIDs(t *testing.T) {
 	if len(res.TeamIDs) != 1 || res.TeamIDs[0] != "team-expired" {
 		t.Fatalf("unexpected TeamIDs: %v", res.TeamIDs)
 	}
+	if len(res.UserIDs) != 1 || res.UserIDs[0] != "user-expired" {
+		t.Fatalf("unexpected UserIDs: %v", res.UserIDs)
+	}
 	if len(res.VirtualKeyIDs) != 1 || res.VirtualKeyIDs[0] != "vk-expired" {
 		t.Fatalf("unexpected VirtualKeyIDs: %v", res.VirtualKeyIDs)
 	}
-	if len(res.Events) != 3 {
+	if len(res.Events) != 4 {
 		t.Fatalf("expected durable Redis reset events for all scopes, got %+v", res.Events)
 	}
 	pending, err := repo.ListPendingBudgetResets(ctx, 10)
-	if err != nil || len(pending) != 3 {
-		t.Fatalf("expected 3 pending Redis reset events, got %d err=%v", len(pending), err)
+	if err != nil || len(pending) != 4 {
+		t.Fatalf("expected 4 pending Redis reset events, got %d err=%v", len(pending), err)
 	}
 	if err := repo.MarkBudgetResetsDelivered(ctx, []string{pending[0].ID}); err != nil {
 		t.Fatalf("mark reset delivered: %v", err)
 	}
 	pending, err = repo.ListPendingBudgetResets(ctx, 10)
-	if err != nil || len(pending) != 2 {
-		t.Fatalf("expected 2 pending reset events after acknowledgement, got %d err=%v", len(pending), err)
+	if err != nil || len(pending) != 3 {
+		t.Fatalf("expected 3 pending reset events after acknowledgement, got %d err=%v", len(pending), err)
 	}
 
 	gotOrg, _ := repo.GetOrganization(ctx, "org-expired")
 	if gotOrg.SpentMicros != 0 {
 		t.Fatalf("expected org spent_micros=0, got %d", gotOrg.SpentMicros)
 	}
-	if gotOrg.BudgetResetAt == nil || !gotOrg.BudgetResetAt.Equal(now.Add(24*time.Hour)) {
-		t.Fatalf("expected daily org budget_reset_at=%v, got %v", now.Add(24*time.Hour), gotOrg.BudgetResetAt)
+	if gotOrg.BudgetResetAt == nil || !gotOrg.BudgetResetAt.Equal(expired.Add(24*time.Hour)) {
+		t.Fatalf("expected daily org budget_reset_at=%v, got %v", expired.Add(24*time.Hour), gotOrg.BudgetResetAt)
 	}
 
 	gotOrgNever, _ := repo.GetOrganization(ctx, "org-never")
@@ -129,8 +146,16 @@ func TestMemoryResetExpiredBudgetsWithIDs(t *testing.T) {
 	if gotTeam.SpentMicros != 0 {
 		t.Fatalf("expected team spent_micros=0, got %d", gotTeam.SpentMicros)
 	}
-	if gotTeam.BudgetResetAt == nil || !gotTeam.BudgetResetAt.Equal(now.AddDate(0, 1, 0)) {
-		t.Fatalf("expected monthly team budget_reset_at=%v, got %v", now.AddDate(0, 1, 0), gotTeam.BudgetResetAt)
+	if gotTeam.BudgetResetAt == nil || !gotTeam.BudgetResetAt.Equal(expired.AddDate(0, 1, 0)) {
+		t.Fatalf("expected monthly team budget_reset_at=%v, got %v", expired.AddDate(0, 1, 0), gotTeam.BudgetResetAt)
+	}
+
+	gotUser, _ := repo.GetUser(ctx, "user-expired")
+	if gotUser.SpentMicros != 0 {
+		t.Fatalf("expected user spent_micros=0, got %d", gotUser.SpentMicros)
+	}
+	if gotUser.BudgetResetAt == nil || !gotUser.BudgetResetAt.Equal(expired.Add(24*time.Hour)) {
+		t.Fatalf("expected daily user budget_reset_at=%v, got %v", expired.Add(24*time.Hour), gotUser.BudgetResetAt)
 	}
 
 	gotTeamFuture, _ := repo.GetTeam(ctx, "team-future")
