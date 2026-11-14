@@ -192,7 +192,13 @@ release-assets:
 	done; \
 	tar -czf "dist/goroute-k8s-manifests-$${CLEAN_VER}.tar.gz" -C deployments k8s; \
 	if command -v helm >/dev/null 2>&1; then \
-	  helm package deployments/helm/goroute --app-version "$${CLEAN_VER}" -d dist/; \
+	  mkdir -p dist/helm-stage && cp -R deployments/helm/goroute dist/helm-stage/goroute && \
+	  (helm package --dependency-update dist/helm-stage/goroute --app-version "$${CLEAN_VER}" -d dist/ || ( \
+	    rm -rf dist/helm-stage/goroute/charts dist/helm-stage/goroute/Chart.lock && \
+	    sed '/^dependencies:/,$$d' dist/helm-stage/goroute/Chart.yaml > dist/helm-stage/goroute/Chart.yaml.tmp && \
+	    mv dist/helm-stage/goroute/Chart.yaml.tmp dist/helm-stage/goroute/Chart.yaml && \
+	    helm package dist/helm-stage/goroute --app-version "$${CLEAN_VER}" -d dist/)) && \
+	  rm -rf dist/helm-stage; \
 	fi; \
 	(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum *; else shasum -a 256 *; fi > checksums.txt); \
 	ls -lh dist/
