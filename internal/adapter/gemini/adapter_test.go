@@ -59,3 +59,29 @@ func TestChatCompletion_SafetyBlockReturnsError(t *testing.T) {
 		t.Fatalf("expected code 'safety_violation', got %s", gwErr.Code)
 	}
 }
+
+func TestIsVertexExpressKey_HostEquality(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{name: "nil_empty", baseURL: "", want: false},
+		{name: "canonical_vertex", baseURL: "https://aiplatform.googleapis.com/v1", want: true},
+		{name: "regional_vertex", baseURL: "https://us-central1-aiplatform.googleapis.com/v1beta1", want: true},
+		{name: "path_spoof", baseURL: "https://evil.com/aiplatform.googleapis.com/v1", want: false},
+		{name: "suffix_domain_spoof", baseURL: "https://aiplatform.googleapis.com.evil.com/v1", want: false},
+		{name: "prefix_without_dot_spoof", baseURL: "https://notaiplatform.googleapis.com/v1", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cred *domain.ProviderCredential
+			if tc.name != "nil_empty" {
+				cred = &domain.ProviderCredential{BaseURL: tc.baseURL}
+			}
+			if got := isVertexExpressKey(cred); got != tc.want {
+				t.Fatalf("isVertexExpressKey(%q) = %v, want %v", tc.baseURL, got, tc.want)
+			}
+		})
+	}
+}

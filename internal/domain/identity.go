@@ -71,10 +71,10 @@ type Team struct {
 	RPMLimit              int               `json:"rpm_limit"`
 	TPMLimit              int               `json:"tpm_limit"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests"`
-	AllowedModels         []string          `json:"allowed_models,omitempty"`      // Empty = inherit Org enabled models
-	AllowedMCPServers     []string          `json:"allowed_mcp_servers,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents      []string          `json:"allowed_a2a_agents,omitempty"`  // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps     []string          `json:"allowed_client_apps,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedModels         []string          `json:"allowed_models,omitempty"` // Empty = inherit Org enabled models
+	AllowedMCPServers     []string          `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents      []string          `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps     []string          `json:"allowed_client_apps"`      // nil = inherit, [] = DenyAll, [...] = allowlist
 	IsActive              bool              `json:"is_active"`
 	CreatedAt             time.Time         `json:"created_at"`
 	UpdatedAt             time.Time         `json:"updated_at"`
@@ -137,9 +137,9 @@ type VirtualKey struct {
 	Role                  Role              `json:"role"`
 	AllowedModels         []string          `json:"allowed_models,omitempty"`
 	AllowedEndpoints      []string          `json:"allowed_endpoints,omitempty"`
-	AllowedMCPServers     []string          `json:"allowed_mcp_servers,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents      []string          `json:"allowed_a2a_agents,omitempty"`  // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps     []string          `json:"allowed_client_apps,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPServers     []string          `json:"allowed_mcp_servers"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents      []string          `json:"allowed_a2a_agents"`  // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps     []string          `json:"allowed_client_apps"` // nil = inherit, [] = DenyAll, [...] = allowlist
 	MaxBudgetMicros       int64             `json:"max_budget_micros"`
 	SpentMicros           int64             `json:"spent_micros"`
 	BudgetResetPeriod     BudgetResetPeriod `json:"budget_reset_period"`
@@ -164,13 +164,13 @@ type IdentityContext struct {
 	Role                  Role     `json:"role"`
 	KeyAllowedModels      []string `json:"key_allowed_models,omitempty"`
 	TeamAllowedModels     []string `json:"team_allowed_models,omitempty"`
-	AllowedEndpoints      []string `json:"allowed_endpoints,omitempty"`
-	KeyAllowedMCPServers  []string `json:"key_allowed_mcp_servers,omitempty"`
-	TeamAllowedMCPServers []string `json:"team_allowed_mcp_servers,omitempty"`
-	KeyAllowedA2AAgents   []string `json:"key_allowed_a2a_agents,omitempty"`
-	TeamAllowedA2AAgents  []string `json:"team_allowed_a2a_agents,omitempty"`
-	KeyAllowedClientApps  []string `json:"key_allowed_client_apps,omitempty"`
-	TeamAllowedClientApps []string `json:"team_allowed_client_apps,omitempty"`
+	AllowedEndpoints      []string `json:"allowed_endpoints"`
+	KeyAllowedMCPServers  []string `json:"key_allowed_mcp_servers"`
+	TeamAllowedMCPServers []string `json:"team_allowed_mcp_servers"`
+	KeyAllowedA2AAgents   []string `json:"key_allowed_a2a_agents"`
+	TeamAllowedA2AAgents  []string `json:"team_allowed_a2a_agents"`
+	KeyAllowedClientApps  []string `json:"key_allowed_client_apps"`
+	TeamAllowedClientApps []string `json:"team_allowed_client_apps"`
 	KeyRPMLimit           int      `json:"key_rpm_limit"`
 	KeyTPMLimit           int      `json:"key_tpm_limit"`
 	KeyMaxConcurrent      int      `json:"key_max_concurrent"`

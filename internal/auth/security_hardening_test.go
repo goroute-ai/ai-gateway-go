@@ -315,3 +315,44 @@ func TestRBACEngine_FailClosedAndCaching(t *testing.T) {
 		t.Fatalf("expected 2 repo calls after InvalidateOrgPolicies, got subs=%d pols=%d", repo.subCalls.Load(), repo.polCalls.Load())
 	}
 }
+
+func TestIdentityCache_L2PreservesEmptyDenyAllAllowlists(t *testing.T) {
+	ctx := t.Context()
+	mr := miniredis.RunT(t)
+	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
+	defer rf.Client().Close()
+
+	repo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-l2-allow", Name: "L2 Allow", Slug: "org-l2-allow", IsActive: true}
+	_ = repo.CreateOrganization(ctx, org)
+
+	svc1 := auth.NewService(repo, rf, "master", 10*time.Second, time.Minute)
+	svc2 := auth.NewService(repo, rf, "master", 10*time.Second, time.Minute)
+
+	// Default newly issued key has []string{} (DenyAll) for MCP, A2A, and ClientApps.
+	vk, err := svc1.IssueVirtualKey(ctx, &domain.VirtualKey{OrgID: org.ID, Name: "deny-all-default"})
+	if err != nil {
+		t.Fatalf("issue key: %v", err)
+	}
+
+	// svc1 populates L2 Redis cache.
+	if _, err := svc1.AuthenticateVirtualKey(ctx, vk.RawKey); err != nil {
+		t.Fatalf("auth svc1: %v", err)
+	}
+
+	// svc2 reads from L2 Redis cache (its L1 is empty); empty slices MUST stay []string{} (DenyAll), not nil (Inherit).
+	id2, err := svc2.AuthenticateVirtualKey(ctx, vk.RawKey)
+	if err != nil {
+		t.Fatalf("auth svc2: %v", err)
+	}
+	rbac := auth.NewRBACEngine(repo)
+	if err := rbac.AuthorizeMCPServer(id2, "mock-mcp"); err == nil {
+		t.Fatalf("expected AuthorizeMCPServer to fail closed after L2 cache round-trip, got KeyAllowedMCPServers=%#v TeamAllowedMCPServers=%#v", id2.KeyAllowedMCPServers, id2.TeamAllowedMCPServers)
+	}
+	if err := rbac.AuthorizeA2AAgent(id2, "mock-a2a"); err == nil {
+		t.Fatalf("expected AuthorizeA2AAgent to fail closed after L2 cache round-trip, got KeyAllowedA2AAgents=%#v TeamAllowedA2AAgents=%#v", id2.KeyAllowedA2AAgents, id2.TeamAllowedA2AAgents)
+	}
+	if err := rbac.AuthorizeClientApp(id2, "cursor"); err == nil {
+		t.Fatalf("expected AuthorizeClientApp to fail closed after L2 cache round-trip, got KeyAllowedClientApps=%#v TeamAllowedClientApps=%#v", id2.KeyAllowedClientApps, id2.TeamAllowedClientApps)
+	}
+}

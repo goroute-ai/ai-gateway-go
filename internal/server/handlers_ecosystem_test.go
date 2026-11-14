@@ -31,6 +31,16 @@ func TestPhase2_EcosystemBridgesAndTokenize(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/completions":
+			var reqBody map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&reqBody)
+			if stream, _ := reqBody["stream"].(bool); stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, "data: {\"id\":\"cmpl-stream-1\",\"object\":\"text_completion\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\"Hello \",\"finish_reason\":null}]}\n\n")
+				fmt.Fprint(w, "data: {\"id\":\"cmpl-stream-1\",\"object\":\"text_completion\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\"world!\",\"finish_reason\":\"stop\"}]}\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				return
+			}
 			fmt.Fprint(w, `{
 				"id": "cmpl-test-123",
 				"model": "gpt-3.5-turbo-instruct",
@@ -191,6 +201,28 @@ func TestPhase2_EcosystemBridgesAndTokenize(t *testing.T) {
 		assert.Len(t, resp.Choices, 1)
 		assert.Equal(t, "This is a completed sentence.", resp.Choices[0].Text)
 		assert.Equal(t, 11, resp.Usage.TotalTokens)
+	})
+
+	t.Run("TestCompletionsStreamingEndpoint", func(t *testing.T) {
+		payload := map[string]any{
+			"model":  "gpt-3.5-turbo-instruct",
+			"prompt": "Complete this sentence:",
+			"stream": true,
+		}
+		b, _ := json.Marshal(payload)
+		req, _ := http.NewRequest(http.MethodPost, "/v1/completions", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+issuedKey.RawKey)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "Response: %s", rec.Body.String())
+		assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
+		body := rec.Body.String()
+		assert.Contains(t, body, "data: ")
+		assert.Contains(t, body, "Hello ")
+		assert.Contains(t, body, "world!")
+		assert.Contains(t, body, "data: [DONE]\n\n")
 	})
 
 	t.Run("TestAnthropicMessagesSync", func(t *testing.T) {

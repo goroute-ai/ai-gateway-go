@@ -111,7 +111,7 @@ func TestCustomProvider_EndToEndDispatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profileReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	profileReg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	mainReg := adapter.NewRegistry()
 	mainReg.SetDynamicResolver(profileReg.DynamicResolver())
 

@@ -795,3 +795,61 @@ func TestVirtualKey_UpdateAndRotateInvalidatesL1L2PubSub(t *testing.T) {
 		t.Fatalf("unexpected identity for rotated key on svc2: %+v", idNew2)
 	}
 }
+
+func TestService_UpdateVirtualKey_AllowedEndpointsNilVsEmpty(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org_1", Name: "Org 1", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+	svc := auth.NewService(repo, nil, "master-key", time.Minute, time.Minute)
+	rbac := auth.NewRBACEngine(repo)
+
+	issued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:            "org_1",
+		Name:             "scoped-key",
+		AllowedEndpoints: []string{"/v1/chat/completions"},
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+
+	// (a) nil AllowedEndpoints preserves existing endpoints
+	if err := svc.UpdateVirtualKey(ctx, &domain.VirtualKey{
+		ID:       issued.ID,
+		Name:     "scoped-key-renamed",
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("UpdateVirtualKey(nil AllowedEndpoints): %v", err)
+	}
+	idPreserve, err := svc.AuthenticateVirtualKey(ctx, issued.RawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateVirtualKey after nil AllowedEndpoints: %v", err)
+	}
+	if len(idPreserve.AllowedEndpoints) != 1 || idPreserve.AllowedEndpoints[0] != "/v1/chat/completions" {
+		t.Fatalf("expected AllowedEndpoints preserved, got %v", idPreserve.AllowedEndpoints)
+	}
+	if err := rbac.AuthorizeEndpoint(idPreserve, "/v1/chat/completions"); err != nil {
+		t.Fatalf("expected /v1/chat/completions allowed, got %v", err)
+	}
+
+	// (b) explicit empty slice []string{} clears AllowedEndpoints and fails closed
+	if err := svc.UpdateVirtualKey(ctx, &domain.VirtualKey{
+		ID:               issued.ID,
+		Name:             "scoped-key-cleared",
+		AllowedEndpoints: []string{},
+		IsActive:         true,
+	}); err != nil {
+		t.Fatalf("UpdateVirtualKey(empty AllowedEndpoints): %v", err)
+	}
+	idCleared, err := svc.AuthenticateVirtualKey(ctx, issued.RawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateVirtualKey after empty AllowedEndpoints: %v", err)
+	}
+	if len(idCleared.AllowedEndpoints) != 0 {
+		t.Fatalf("expected AllowedEndpoints cleared to [], got %v", idCleared.AllowedEndpoints)
+	}
+	if err := rbac.AuthorizeEndpoint(idCleared, "/v1/chat/completions"); err == nil {
+		t.Fatal("expected AuthorizeEndpoint to fail closed when AllowedEndpoints is []")
+	}
+}

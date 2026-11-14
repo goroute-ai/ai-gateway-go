@@ -255,6 +255,8 @@ func TestAdminExtensions_OpenAPISchemaPayloadAlignment(t *testing.T) {
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "admin_master_secret"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	gw, err := server.New(cfg, repo, nil, nil)
 	require.NoError(t, err)
 	handler := gw.Handler()

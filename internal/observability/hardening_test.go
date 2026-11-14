@@ -2,6 +2,7 @@ package observability
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -63,4 +64,35 @@ func TestOTLPSamplerConfiguration(t *testing.T) {
 	if s2.Description() != sdktrace.TraceIDRatioBased(0.25).Description() {
 		t.Fatalf("expected TraceIDRatioBased(0.25), got %q", s2.Description())
 	}
+}
+
+func TestTraceMiddleware_SanitizesRequestIDAndSetsDefaultContentType(t *testing.T) {
+	mw := TraceMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html><script>alert(1)</script></html>"))
+	}))
+
+	t.Run("drops unsafe X-Request-Id and sets octet-stream fallback", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+		req.Header.Set("X-Request-Id", "<script>alert(1)</script>")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("X-Request-Id"); got != "" {
+			t.Fatalf("expected unsafe X-Request-Id to be dropped, got %q", got)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Fatalf("expected fallback Content-Type application/octet-stream, got %q", got)
+		}
+	})
+
+	t.Run("preserves safe X-Request-Id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+		req.Header.Set("X-Request-Id", "req_safe-123.abc:45")
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("X-Request-Id"); got != "req_safe-123.abc:45" {
+			t.Fatalf("expected safe X-Request-Id to be preserved, got %q", got)
+		}
+	})
 }

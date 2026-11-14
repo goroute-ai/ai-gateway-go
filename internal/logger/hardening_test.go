@@ -93,3 +93,36 @@ func TestHTTPMiddleware_SanitizesRequestIDAndNoDuplicates(t *testing.T) {
 		t.Fatalf("invalid json log: %v", err)
 	}
 }
+
+func TestResponseRecorder_SetsOctetStreamWhenContentTypeUnset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(Config{Level: "info", Format: "json", Output: &buf})
+	mw := HTTPMiddleware(l)
+
+	t.Run("defaults unset content-type to application/octet-stream", func(t *testing.T) {
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("<html><script>alert(1)</script></html>"))
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/v1/custom", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Fatalf("expected Content-Type application/octet-stream, got %q", got)
+		}
+	})
+
+	t.Run("preserves explicit content-type", func(t *testing.T) {
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/v1/custom", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+			t.Fatalf("expected explicit Content-Type to be preserved, got %q", got)
+		}
+	})
+}

@@ -116,6 +116,10 @@ func (w *statusResponseWriter) WriteHeader(code int) {
 
 func (w *statusResponseWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
+		if w.Header().Get("Content-Type") == "" {
+			// Prevent net/http from sniffing body bytes as text/html on generic responses.
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 		w.statusCode = http.StatusOK
 		w.wroteHeader = true
 	}
@@ -171,7 +175,7 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 			}
 			sw.Header().Set("X-Trace-Id", tc.TraceID)
 			sw.Header().Set("traceparent", tc.TraceParent)
-			if reqID := r.Header.Get("X-Request-Id"); reqID != "" {
+			if reqID := sanitizeTraceRequestID(r.Header.Get("X-Request-Id")); reqID != "" {
 				sw.Header().Set("X-Request-Id", reqID)
 			}
 			ctx = WithTraceContext(ctx, tc)
@@ -190,4 +194,22 @@ func InjectTraceHeaders(ctx context.Context, req *http.Request) {
 		req.Header.Set("traceparent", tc.TraceParent)
 		req.Header.Set("X-Trace-Id", tc.TraceID)
 	}
+}
+
+func sanitizeTraceRequestID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 128 {
+		return ""
+	}
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		isValid := (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == ':'
+		if !isValid {
+			return ""
+		}
+	}
+	return raw
 }

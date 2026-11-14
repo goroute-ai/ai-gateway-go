@@ -20,8 +20,10 @@ import (
 
 // Adapter implements adapter.ProviderAdapter for Google Cloud Vertex AI.
 type Adapter struct {
-	httpClient *http.Client
-	ssrfPolicy *network.Policy
+	httpClient  *http.Client
+	ssrfPolicy  *network.Policy
+	mediaClient *http.Client
+	mediaPolicy *network.Policy
 }
 
 // NewAdapter creates a new Google Cloud Vertex AI adapter.
@@ -29,10 +31,25 @@ func NewAdapter(httpClient *http.Client, ssrfPolicy *network.Policy) *Adapter {
 	if httpClient == nil {
 		httpClient = network.NewHTTPClient(nil)
 	}
+	mediaPol := adapter.DefaultPublicMediaPolicy()
 	return &Adapter{
-		httpClient: httpClient,
-		ssrfPolicy: ssrfPolicy,
+		httpClient:  httpClient,
+		ssrfPolicy:  ssrfPolicy,
+		mediaPolicy: mediaPol,
+		mediaClient: network.NewHTTPClient(mediaPol),
 	}
+}
+
+// SetMediaFetcher overrides the HTTP client and network policy used for fetching user media URLs.
+func (a *Adapter) SetMediaFetcher(client *http.Client, policy *network.Policy) {
+	if policy == nil {
+		policy = adapter.DefaultPublicMediaPolicy()
+	}
+	if client == nil {
+		client = network.NewHTTPClient(policy)
+	}
+	a.mediaPolicy = policy
+	a.mediaClient = client
 }
 
 func (a *Adapter) Provider() domain.ProviderType {
@@ -801,7 +818,7 @@ func (a *Adapter) materializeClaudeMedia(ctx context.Context, req *domain.Canoni
 				if _, _, dataURI := parseDataURI(part.ImageURL.URL); dataURI {
 					continue
 				}
-				dataURI, err := adapter.FetchRemoteDataURI(ctx, a.httpClient, part.ImageURL.URL, 20<<20, "image/")
+				dataURI, err := adapter.FetchRemoteDataURIWithPolicy(ctx, a.mediaClient, a.mediaPolicy, part.ImageURL.URL, 20<<20, "image/")
 				if err != nil {
 					return nil, unsupportedVertexMediaInput(err)
 				}
@@ -812,7 +829,7 @@ func (a *Adapter) materializeClaudeMedia(ctx context.Context, req *domain.Canoni
 				if part.Document == nil || part.Document.Data != "" || part.Document.URL == "" {
 					continue
 				}
-				dataURI, err := adapter.FetchRemoteDataURI(ctx, a.httpClient, part.Document.URL, 20<<20,
+				dataURI, err := adapter.FetchRemoteDataURIWithPolicy(ctx, a.mediaClient, a.mediaPolicy, part.Document.URL, 20<<20,
 					"application/pdf", "text/plain", "text/csv", "text/markdown", "text/html")
 				if err != nil {
 					return nil, unsupportedVertexMediaInput(err)

@@ -177,6 +177,58 @@ func (s *GatewayServer) acquireRequestQuota(ctx context.Context, id *domain.Iden
 	return s.acquireRequestQuotaWithBound(ctx, id, model, inputTokens, inputTokens, requestedOutput, requestID)
 }
 
+func mergeVerifiedBudgetModel(match **domain.GlobalModel, sawUnverified *bool, gm *domain.GlobalModel) {
+	if gm == nil {
+		return
+	}
+	status := domain.ResolvePricingStatus(gm)
+	if status != domain.PricingStatusVerified && status != domain.PricingStatusCustom {
+		*sawUnverified = true
+		return
+	}
+	if *match == nil {
+		copyGM := *gm
+		copyGM.ModalityPricingJSON = cloneModalityPricing(gm.ModalityPricingJSON)
+		*match = &copyGM
+		return
+	}
+	m := *match
+	mergeModalityPricing(m, gm.ModalityPricingJSON)
+	if gm.InputCostMicrosPer1M > m.InputCostMicrosPer1M {
+		m.InputCostMicrosPer1M = gm.InputCostMicrosPer1M
+	}
+	if gm.CachedInputCostMicrosPer1M > m.CachedInputCostMicrosPer1M {
+		m.CachedInputCostMicrosPer1M = gm.CachedInputCostMicrosPer1M
+	}
+	if gm.CacheWriteCostMicrosPer1M > m.CacheWriteCostMicrosPer1M {
+		m.CacheWriteCostMicrosPer1M = gm.CacheWriteCostMicrosPer1M
+	}
+	if gm.OutputCostMicrosPer1M > m.OutputCostMicrosPer1M {
+		m.OutputCostMicrosPer1M = gm.OutputCostMicrosPer1M
+	}
+	if gm.ReasoningCostMicrosPer1M > m.ReasoningCostMicrosPer1M {
+		m.ReasoningCostMicrosPer1M = gm.ReasoningCostMicrosPer1M
+	}
+	if gm.ImageCostMicrosBase > m.ImageCostMicrosBase {
+		m.ImageCostMicrosBase = gm.ImageCostMicrosBase
+	}
+	if gm.ImageCostMicrosHD > m.ImageCostMicrosHD {
+		m.ImageCostMicrosHD = gm.ImageCostMicrosHD
+	}
+	if gm.AudioSTTCostMicrosPerSecond > m.AudioSTTCostMicrosPerSecond {
+		m.AudioSTTCostMicrosPerSecond = gm.AudioSTTCostMicrosPerSecond
+	}
+	if gm.AudioTTSCostMicrosPer1KChars > m.AudioTTSCostMicrosPer1KChars {
+		m.AudioTTSCostMicrosPer1KChars = gm.AudioTTSCostMicrosPer1KChars
+	}
+	if gm.RerankCostMicrosPerSearchUnit > m.RerankCostMicrosPerSearchUnit {
+		m.RerankCostMicrosPerSearchUnit = gm.RerankCostMicrosPerSearchUnit
+	}
+	if gm.MaxOutputTokens > m.MaxOutputTokens {
+		m.MaxOutputTokens = gm.MaxOutputTokens
+	}
+}
+
 func (s *GatewayServer) resolveMatchedVerifiedModel(ctx context.Context, orgID, model string) (*domain.GlobalModel, bool, error) {
 	_, bareModel, canonicalID := config.ParseProviderModel(model)
 	qualifiedProvider := domain.ProviderType("")
@@ -205,52 +257,25 @@ func (s *GatewayServer) resolveMatchedVerifiedModel(ctx context.Context, orgID, 
 		} else {
 			isMatch = gm.ID == model || gm.ID == canonicalID || gm.ModelName == model || (bareModel != "" && gm.ModelName == bareModel)
 		}
-		if !isMatch {
-			continue
+		if isMatch {
+			mergeVerifiedBudgetModel(&match, &sawUnverified, gm)
 		}
-		status := domain.ResolvePricingStatus(gm)
-		if status != domain.PricingStatusVerified && status != domain.PricingStatusCustom {
-			sawUnverified = true
-			continue
-		}
-		if match == nil {
-			copyGM := *gm
-			copyGM.ModalityPricingJSON = cloneModalityPricing(gm.ModalityPricingJSON)
-			match = &copyGM
-		} else {
-			mergeModalityPricing(match, gm.ModalityPricingJSON)
-			if gm.InputCostMicrosPer1M > match.InputCostMicrosPer1M {
-				match.InputCostMicrosPer1M = gm.InputCostMicrosPer1M
-			}
-			if gm.CachedInputCostMicrosPer1M > match.CachedInputCostMicrosPer1M {
-				match.CachedInputCostMicrosPer1M = gm.CachedInputCostMicrosPer1M
-			}
-			if gm.CacheWriteCostMicrosPer1M > match.CacheWriteCostMicrosPer1M {
-				match.CacheWriteCostMicrosPer1M = gm.CacheWriteCostMicrosPer1M
-			}
-			if gm.OutputCostMicrosPer1M > match.OutputCostMicrosPer1M {
-				match.OutputCostMicrosPer1M = gm.OutputCostMicrosPer1M
-			}
-			if gm.ReasoningCostMicrosPer1M > match.ReasoningCostMicrosPer1M {
-				match.ReasoningCostMicrosPer1M = gm.ReasoningCostMicrosPer1M
-			}
-			if gm.ImageCostMicrosBase > match.ImageCostMicrosBase {
-				match.ImageCostMicrosBase = gm.ImageCostMicrosBase
-			}
-			if gm.ImageCostMicrosHD > match.ImageCostMicrosHD {
-				match.ImageCostMicrosHD = gm.ImageCostMicrosHD
-			}
-			if gm.AudioSTTCostMicrosPerSecond > match.AudioSTTCostMicrosPerSecond {
-				match.AudioSTTCostMicrosPerSecond = gm.AudioSTTCostMicrosPerSecond
-			}
-			if gm.AudioTTSCostMicrosPer1KChars > match.AudioTTSCostMicrosPer1KChars {
-				match.AudioTTSCostMicrosPer1KChars = gm.AudioTTSCostMicrosPer1KChars
-			}
-			if gm.RerankCostMicrosPerSearchUnit > match.RerankCostMicrosPerSearchUnit {
-				match.RerankCostMicrosPerSearchUnit = gm.RerankCostMicrosPerSearchUnit
-			}
-			if gm.MaxOutputTokens > match.MaxOutputTokens {
-				match.MaxOutputTokens = gm.MaxOutputTokens
+	}
+	// Resolve model-group aliases (e.g. "prod-image", "prod-tts") to their underlying
+	// active deployment models so budgeted modality requests compute true upper-bound costs.
+	if match == nil && !sawUnverified && orgID != "" && s.repo != nil {
+		if mg, mgErr := s.repo.GetModelGroupByAlias(ctx, orgID, model); mgErr == nil && mg != nil {
+			if deps, depErr := s.repo.ListDeploymentsByGroup(ctx, mg.ID); depErr == nil {
+				for _, dep := range deps {
+					if dep == nil || dep.Status == domain.DeploymentStatusDisabled {
+						continue
+					}
+					gm := dep.GlobalModel
+					if gm == nil && dep.GlobalModelID != "" {
+						gm, _ = s.repo.GetGlobalModel(ctx, dep.GlobalModelID)
+					}
+					mergeVerifiedBudgetModel(&match, &sawUnverified, gm)
+				}
 			}
 		}
 	}

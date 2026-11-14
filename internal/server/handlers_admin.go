@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -31,6 +33,21 @@ func (s *GatewayServer) authorizeAdmin(w http.ResponseWriter, r *http.Request, t
 	return op, true
 }
 
+func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	pol := s.netPolicy
+	if pol == nil {
+		var err error
+		pol, err = network.NewPolicy(config.OutboundSSRFConfig{})
+		if err != nil {
+			return "", err
+		}
+	}
+	return adapter.ValidateAndResolveBaseURL(raw, "", pol)
+}
+
 func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
 	if explicitOrgID != "" {
 		return explicitOrgID
@@ -42,6 +59,9 @@ func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
 }
 
 func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, resourceID string, details map[string]any) {
+	if s == nil || s.repo == nil {
+		return
+	}
 	actorID := "master_admin"
 	if op := auth.OperatorFromContext(ctx); op != nil && op.ActorID != "" {
 		actorID = op.ActorID
@@ -440,11 +460,21 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 	if _, ok := s.authorizeAdmin(w, r, req.OrgID, true); !ok {
 		return
 	}
+	cleanBaseURL, err := s.validateCredentialBaseURL(req.BaseURL)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+		})
+		return
+	}
 	cred := &domain.ProviderCredential{
 		OrgID:               req.OrgID,
 		Provider:            req.Provider,
 		Name:                req.Name,
-		BaseURL:             req.BaseURL,
+		BaseURL:             cleanBaseURL,
 		AzureDeploymentName: req.AzureDeploymentName,
 		APIVersion:          req.APIVersion,
 		Headers:             req.Headers,
@@ -499,6 +529,20 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 	if _, ok := s.authorizeAdmin(w, r, cred.OrgID, true); !ok {
 		return
 	}
+	var cleanBaseURL string
+	if strings.TrimSpace(req.BaseURL) != "" {
+		var err error
+		cleanBaseURL, err = s.validateCredentialBaseURL(req.BaseURL)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_base_url",
+				Message:    err.Error(),
+			})
+			return
+		}
+	}
 	if err := s.vault.RotateCredential(cred, req.NewAPIKey); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
@@ -506,8 +550,8 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 	if req.ExpiresAt != nil {
 		cred.ExpiresAt = req.ExpiresAt
 	}
-	if req.BaseURL != "" {
-		cred.BaseURL = req.BaseURL
+	if cleanBaseURL != "" {
+		cred.BaseURL = cleanBaseURL
 	}
 	if err := s.repo.UpdateProviderCredential(r.Context(), cred); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -549,7 +593,18 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	cleanBaseURL, err := s.validateCredentialBaseURL(cred.BaseURL)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+		})
+		return
+	}
 	credCopy := *cred
+	credCopy.BaseURL = cleanBaseURL
 	credCopy.DecryptedAPIKey = rawKey
 	start := time.Now()
 	models, discErr := adp.ListModels(r.Context(), &credCopy)
@@ -603,7 +658,28 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
-	if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, req.OrgID), true); !ok {
+	op, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, req.OrgID), true)
+	if !ok {
+		return
+	}
+	cleanBaseURL, err := s.validateCredentialBaseURL(req.BaseURL)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+		})
+		return
+	}
+	if cleanBaseURL != "" && s.cfg != nil && (s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks || len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
+		op.Role != domain.OperatorRolePlatformAdmin {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "platform_admin_required",
+			Message:    "Custom BaseURL preflight validation with private network access requires platform_admin role",
+		})
 		return
 	}
 	if req.Provider == "" {
@@ -624,7 +700,7 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 	credCopy := domain.ProviderCredential{
 		Provider:            req.Provider,
 		DecryptedAPIKey:     req.APIKey,
-		BaseURL:             req.BaseURL,
+		BaseURL:             cleanBaseURL,
 		AzureDeploymentName: req.AzureDeploymentName,
 		APIVersion:          req.APIVersion,
 		Headers:             req.Headers,
@@ -1126,6 +1202,7 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"add_source": cfg.Logging.AddSource,
 		},
 		"tracing": map[string]any{
+			"enabled":       cfg.Tracing.Enabled,
 			"otlp_endpoint": redactURLPassword(cfg.Tracing.OTLPEndpoint),
 			"service_name":  cfg.Tracing.ServiceName,
 			"headers":       redactHeaders(cfg.Tracing.Headers),
@@ -1183,14 +1260,15 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"failure_threshold":       cfg.Router.FailureThreshold,
 		},
 		"rate_limit": map[string]any{
-			"enabled":               cfg.RateLimit.Enabled,
-			"window_seconds":        cfg.RateLimit.WindowSeconds,
-			"concurrency_ttl_sec":   cfg.RateLimit.ConcurrencyTTLSec,
-			"default_estimated_tpm": cfg.RateLimit.DefaultEstimatedTPM,
-			"redis_timeout":         cfg.RateLimit.RedisTimeout.String(),
-			"global_rpm_limit":      cfg.RateLimit.GlobalRPMLimit,
-			"global_tpm_limit":      cfg.RateLimit.GlobalTPMLimit,
-			"global_max_concurrent": cfg.RateLimit.GlobalMaxConcurrent,
+			"enabled":                     cfg.RateLimit.Enabled,
+			"fallback_to_local_on_outage": cfg.RateLimit.FallbackToLocalOnOutage,
+			"window_seconds":              cfg.RateLimit.WindowSeconds,
+			"concurrency_ttl_sec":         cfg.RateLimit.ConcurrencyTTLSec,
+			"default_estimated_tpm":       cfg.RateLimit.DefaultEstimatedTPM,
+			"redis_timeout":               cfg.RateLimit.RedisTimeout.String(),
+			"global_rpm_limit":            cfg.RateLimit.GlobalRPMLimit,
+			"global_tpm_limit":            cfg.RateLimit.GlobalTPMLimit,
+			"global_max_concurrent":       cfg.RateLimit.GlobalMaxConcurrent,
 		},
 		"finops": map[string]any{
 			"channel_buffer_size": cfg.FinOps.ChannelBufferSize,

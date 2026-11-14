@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -141,8 +142,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		Prompt:         r.FormValue("prompt"),
 		ResponseFormat: r.FormValue("response_format"),
 	}
-	// TODO(integration): sttReq.IsTranslation = isTranslation (once phase-routing-author adds IsTranslation to domain.CanonicalAudioTranscriptionRequest)
-	_ = isTranslation
+	sttReq.IsTranslation = isTranslation
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, sttReq.Prompt)
 	if guardrailErr != nil {
 		releaseQuota(0)
@@ -386,7 +386,16 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		CostMicros:     costMicros,
 	})
 
-	w.Header().Set("Content-Type", contentType)
+	safeContentType := "audio/mpeg"
+	if mt, params, err := mime.ParseMediaType(contentType); err == nil &&
+		(strings.HasPrefix(mt, "audio/") || mt == "application/octet-stream") {
+		if formatted := mime.FormatMediaType(mt, params); formatted != "" {
+			safeContentType = formatted
+		} else {
+			safeContentType = mt
+		}
+	}
+	w.Header().Set("Content-Type", safeContentType)
 	w.Header().Set("X-Gateway-Provider", string(provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))

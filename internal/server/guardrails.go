@@ -2,9 +2,19 @@ package server
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
+
+func guardrailStreamBlockedError() *domain.GatewayError {
+	return &domain.GatewayError{
+		StatusCode: http.StatusBadGateway,
+		Type:       domain.ErrorTypeServer,
+		Code:       "guardrail_blocked",
+		Message:    "Stream output blocked by security guardrail policy",
+	}
+}
 
 func (s *GatewayServer) evaluateGuardrailText(ctx context.Context, orgID string, texts ...string) error {
 	_, err := s.guardrailTextValues(ctx, orgID, texts...)

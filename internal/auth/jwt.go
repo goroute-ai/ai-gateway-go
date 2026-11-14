@@ -193,8 +193,6 @@ func (v *JWTVerifier) Verify(ctx context.Context, rawToken string) (*JWTClaims, 
 }
 
 func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signingInput string, sigBytes []byte) error {
-	digest := sha256.Sum256([]byte(signingInput))
-
 	switch hdr.Alg {
 	case "HS256":
 		if len(v.secret) == 0 {
@@ -217,6 +215,7 @@ func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signin
 		if !ok {
 			return errors.New("jwt key type mismatch for RS256")
 		}
+		digest := sha256.Sum256([]byte(signingInput))
 		if err := rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, digest[:], sigBytes); err != nil {
 			return fmt.Errorf("invalid RS256 jwt signature: %w", err)
 		}
@@ -231,6 +230,7 @@ func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signin
 		if !ok {
 			return errors.New("jwt key type mismatch for ES256")
 		}
+		digest := sha256.Sum256([]byte(signingInput))
 		if len(sigBytes) == 64 {
 			r := new(big.Int).SetBytes(sigBytes[:32])
 			s := new(big.Int).SetBytes(sigBytes[32:])

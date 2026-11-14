@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi/providers"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 const (
@@ -21,7 +23,8 @@ const (
 )
 
 type Adapter struct {
-	client *http.Client
+	client     *http.Client
+	ssrfPolicy *network.Policy
 }
 
 func NewAdapter(client *http.Client) *Adapter {
@@ -31,15 +34,27 @@ func NewAdapter(client *http.Client) *Adapter {
 	return &Adapter{client: client}
 }
 
+// SetSSRFPolicy configures the outbound network policy used to validate BaseURL overrides.
+func (a *Adapter) SetSSRFPolicy(policy *network.Policy) {
+	a.ssrfPolicy = policy
+}
+
 func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderGemini
 }
 
 func isVertexExpressKey(cred *domain.ProviderCredential) bool {
-	if cred == nil {
+	if cred == nil || strings.TrimSpace(cred.BaseURL) == "" {
 		return false
 	}
-	return strings.Contains(cred.BaseURL, "aiplatform.googleapis.com")
+	u, err := url.Parse(strings.TrimSpace(cred.BaseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "aiplatform.googleapis.com" ||
+		strings.HasSuffix(host, ".aiplatform.googleapis.com") ||
+		strings.HasSuffix(host, "-aiplatform.googleapis.com")
 }
 
 func buildActionEndpoint(cred *domain.ProviderCredential, model, action string) string {
@@ -716,9 +731,19 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 		}, nil
 	}
 
-	base := defaultAIStudioBaseURL
-	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-		base = strings.TrimRight(cred.BaseURL, "/")
+	rawBase := ""
+	if cred != nil {
+		rawBase = cred.BaseURL
+	}
+	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultAIStudioBaseURL, a.ssrfPolicy)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+			Provider:   domain.ProviderGemini,
+		}
 	}
 	endpoint := base + "/v1beta/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

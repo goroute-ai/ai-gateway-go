@@ -173,3 +173,46 @@ func TestNonTokenModalityEndpointsRejectBudgetedRequests(t *testing.T) {
 		assertBudgetEstimateUnavailable("rerank", w)
 	}
 }
+
+func TestResolveMatchedVerifiedModel_ResolvesModelGroupAlias(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+		ID:                           "openai/custom-tts-alias-target",
+		Provider:                     domain.ProviderOpenAI,
+		ModelName:                    "custom-tts-alias-target",
+		AudioTTSCostMicrosPer1KChars: 15000,
+		PricingStatus:                domain.PricingStatusVerified,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mg := &domain.ModelGroup{
+		ID:       "mg-tts-alias",
+		OrgID:    "org-alias",
+		Alias:    "prod-tts",
+		IsActive: true,
+	}
+	if err := repo.CreateModelGroup(ctx, mg); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{
+		ID:            "dep-tts-alias",
+		ModelGroupID:  mg.ID,
+		GlobalModelID: "openai/custom-tts-alias-target",
+		Status:        domain.DeploymentStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &GatewayServer{repo: repo}
+	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, "org-alias", "prod-tts")
+	if err != nil {
+		t.Fatalf("resolveMatchedVerifiedModel: %v", err)
+	}
+	if sawUnverified {
+		t.Fatal("expected sawUnverified=false for verified deployment alias")
+	}
+	if gm == nil || gm.AudioTTSCostMicrosPer1KChars != 15000 {
+		t.Fatalf("resolved global model = %#v, want AudioTTSCostMicrosPer1KChars=15000", gm)
+	}
+}

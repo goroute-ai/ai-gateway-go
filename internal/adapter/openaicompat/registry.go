@@ -166,7 +166,27 @@ func (r *ProfileRegistry) CreateAdapter(provider domain.ProviderType) (adapter.P
 		return nil, fmt.Errorf("no provider adapter registered for %q", provider)
 	}
 
-	return NewAdapter(profile, r.httpClient), nil
+	adp := NewAdapter(cloneProfileWithPolicy(profile, r.ssrfPolicy), r.httpClient)
+	adp.SetSSRFPolicy(r.ssrfPolicy)
+	return adp, nil
+}
+
+func cloneProfileWithPolicy(profile *DialectProfile, policy *network.Policy) *DialectProfile {
+	if profile == nil {
+		return nil
+	}
+	pCopy := *profile
+	switch strat := profile.EndpointStrategy.(type) {
+	case *adapter.StandardOpenAIEndpointStrategy:
+		sCopy := *strat
+		sCopy.SSRFPolicy = policy
+		pCopy.EndpointStrategy = &sCopy
+	case *azure.AzureEndpointStrategy:
+		sCopy := *strat
+		sCopy.SSRFPolicy = policy
+		pCopy.EndpointStrategy = &sCopy
+	}
+	return &pCopy
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9_\-]+$`)
@@ -220,7 +240,7 @@ func (r *ProfileRegistry) RegisterCustomWithOptions(cfg config.CustomProviderCon
 		ID:                  domain.ProviderType(id),
 		DisplayName:         cfg.DisplayName,
 		DefaultBaseURL:      rawURL,
-		EndpointStrategy:    &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: rawURL},
+		EndpointStrategy:    &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: rawURL, SSRFPolicy: r.ssrfPolicy},
 		AuthStrategy:        &adapter.BearerAuthStrategy{},
 		DefaultHeaders:      cfg.DefaultHeaders,
 		SupportsListModels:  cfg.SupportsListModels,

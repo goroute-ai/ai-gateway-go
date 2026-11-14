@@ -13,6 +13,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi/providers"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 const (
@@ -22,7 +23,8 @@ const (
 )
 
 type Adapter struct {
-	client *http.Client
+	client     *http.Client
+	ssrfPolicy *network.Policy
 }
 
 func NewAdapter(client *http.Client) *Adapter {
@@ -30,6 +32,11 @@ func NewAdapter(client *http.Client) *Adapter {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)
 	}
 	return &Adapter{client: client}
+}
+
+// SetSSRFPolicy configures the outbound network policy used to validate BaseURL overrides.
+func (a *Adapter) SetSSRFPolicy(policy *network.Policy) {
+	a.ssrfPolicy = policy
 }
 
 func (a *Adapter) Provider() domain.ProviderType {
@@ -817,7 +824,21 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 }
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
-	endpoint := resolveBaseURL(cred) + "/v1/models"
+	rawBase := ""
+	if cred != nil {
+		rawBase = cred.BaseURL
+	}
+	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultBaseURL, a.ssrfPolicy)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+			Provider:   domain.ProviderAnthropic,
+		}
+	}
+	endpoint := base + "/v1/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

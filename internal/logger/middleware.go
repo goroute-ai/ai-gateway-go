@@ -51,18 +51,27 @@ func SetInferenceMeta(ctx context.Context, meta InferenceMeta) {
 
 type responseRecorder struct {
 	http.ResponseWriter
-	statusCode int
-	bytes      int
+	statusCode  int
+	bytes       int
+	wroteHeader bool
 }
 
 func (r *responseRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
+	r.wroteHeader = true
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
-	if r.statusCode == 0 {
-		r.statusCode = http.StatusOK
+	if !r.wroteHeader {
+		if r.Header().Get("Content-Type") == "" {
+			// Prevent net/http from sniffing body bytes as text/html on generic responses.
+			r.Header().Set("Content-Type", "application/octet-stream")
+		}
+		if r.statusCode == 0 {
+			r.statusCode = http.StatusOK
+		}
+		r.wroteHeader = true
 	}
 	n, err := r.ResponseWriter.Write(b)
 	r.bytes += n

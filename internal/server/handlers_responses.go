@@ -11,9 +11,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
-	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
 
 // handleResponses serves `POST /v1/responses`, `POST /responses`, and `POST /openai/v1/responses`.
@@ -128,6 +129,14 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 						StatusCode: http.StatusOK,
 						CacheHit:   true,
 					})
+					logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+						Model:            cachedResp.Model,
+						Provider:         string(cachedResp.Provider),
+						PromptTokens:     cachedResp.Usage.PromptTokens,
+						CompletionTokens: cachedResp.Usage.CompletionTokens,
+						CostMicros:       0,
+						CacheHit:         true,
+					})
 					w.Header().Set("X-Gateway-Cache", "HIT")
 					w.Header().Set("Content-Type", "application/json")
 					_ = json.NewEncoder(w).Encode(buildResponsesOutput(cachedResp))
@@ -172,6 +181,14 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+		logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+			Model:            resp.Model,
+			Provider:         string(resp.Provider),
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			CostMicros:       costMicros,
+			CacheHit:         false,
+		})
 		if !s.persistSpendEvent(w, r, domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
 			RequestID:      respID,
@@ -214,7 +231,24 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		domain.WriteHTTPError(w, policyErr)
 		return
 	}
-	streamRedactor := guardrails.NewStreamRedactor(policy)
+	streamRedactor := s.guardrails.NewStreamRedactor(policy)
+
+	streamCacheHeader := streamCacheControlHeader(r)
+	var streamCacheKey string
+	var cachedStreamChunks []domain.CanonicalStreamChunk
+	var streamCacheHit bool
+	if s.respCache != nil && s.respCache.IsStreamCacheable(chatReq, streamCacheHeader) {
+		streamCacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq)
+		if streamCacheKey != "" {
+			cachedStreamChunks, streamCacheHit = s.respCache.GetStreamChunks(r.Context(), streamCacheKey)
+			if streamCacheHit {
+				w.Header().Set("X-Gateway-Cache", "HIT")
+				w.Header().Set("X-Gateway-Cost-Micros", "0")
+			} else {
+				w.Header().Set("X-Gateway-Cache", "MISS")
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -303,16 +337,30 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		flusher.Flush()
 	}
 
+	var sanitizedChunks []domain.CanonicalStreamChunk
+	sawTerminalChunk := false
+
 	onChunk := func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil || len(chunk.Choices) == 0 {
 			return nil
 		}
-		delta := chunk.Choices[0].Delta
+		if isTerminalStreamChunk(chunk) {
+			sawTerminalChunk = true
+		}
+		if streamRedactor != nil && streamRedactor.Blocked() {
+			return guardrailStreamBlockedError()
+		}
+		c := cloneSingleStreamChunk(*chunk)
+		delta := &c.Choices[0].Delta
 		if delta.Content != "" {
 			txt := delta.Content
 			if streamRedactor != nil {
 				txt = streamRedactor.Process(txt)
+				if streamRedactor.Blocked() {
+					return guardrailStreamBlockedError()
+				}
 			}
+			delta.Content = txt
 			emitDelta(txt)
 		}
 		for _, tc := range delta.ToolCalls {
@@ -366,24 +414,75 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 				flusher.Flush()
 			}
 		}
+		if !streamCacheHit && streamCacheKey != "" {
+			if delta.Content != "" || len(delta.ToolCalls) > 0 || c.Choices[0].FinishReason != nil || c.Usage != nil {
+				sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, c)
+			}
+		}
 		return nil
 	}
 
 	onSelected := func(dep *domain.Deployment) {}
 
 	streamStarted := time.Now()
-	usage, meta, err := s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, onChunk, onSelected)
+	var usage *domain.TokenUsage
+	var meta *router.ExecutionMeta
+	var err error
+	if streamCacheHit {
+		for i := range cachedStreamChunks {
+			if err = onChunk(&cachedStreamChunks[i]); err != nil {
+				break
+			}
+		}
+		u := extractStreamChunksUsage(cachedStreamChunks, estInputTokens)
+		usage = &u
+	} else {
+		usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, onChunk, onSelected)
+	}
+	var flushDelta string
+	if err == nil && streamRedactor != nil {
+		flushDelta = streamRedactor.Flush()
+		if streamRedactor.Blocked() {
+			err = guardrailStreamBlockedError()
+		}
+	} else if streamRedactor != nil && streamRedactor.Blocked() {
+		_ = streamRedactor.Flush()
+	}
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 	}
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
 	if err != nil {
-		releaseQuota(-1)
+		if streamCacheHit {
+			releaseQuota(0)
+		} else {
+			releaseQuota(-1)
+		}
+		isBlocked := streamRedactor != nil && streamRedactor.Blocked()
+		errCode := "stream_error"
+		statusCode := http.StatusBadGateway
+		if gwErr, ok := err.(*domain.GatewayError); ok {
+			if gwErr.Code != "" {
+				errCode = gwErr.Code
+			}
+			if gwErr.StatusCode > 0 {
+				statusCode = gwErr.StatusCode
+			}
+		}
+		if isBlocked {
+			errCode = "guardrail_blocked"
+		}
+		s.collector.Record(observability.RequestObservation{
+			Model:             req.Model,
+			StatusCode:        statusCode,
+			GuardrailBlocked:  isBlocked,
+			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+		})
 		errEv := map[string]any{
 			"error": map[string]any{
 				"message": err.Error(),
-				"code":    "stream_error",
+				"code":    errCode,
 			},
 		}
 		eb, _ := json.Marshal(errEv)
@@ -391,30 +490,70 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		flusher.Flush()
 		return
 	}
-	if streamRedactor != nil {
-		emitDelta(streamRedactor.Flush())
+	if flushDelta != "" {
+		emitDelta(flushDelta)
+		if !streamCacheHit && streamCacheKey != "" {
+			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, domain.CanonicalStreamChunk{
+				ID:      respID,
+				Object:  "chat.completion.chunk",
+				Created: now,
+				Model:   req.Model,
+				Choices: []domain.CanonicalStreamChoice{{
+					Index: 0,
+					Delta: domain.CanonicalStreamDelta{Role: "assistant", Content: flushDelta},
+				}},
+			})
+		}
 	}
 
 	var streamUsage domain.TokenUsage
 	if usage != nil {
 		streamUsage = *usage
 	}
-	releaseQuota(streamUsage.TotalTokens)
 	var gm *domain.GlobalModel
 	var depID string
+	var provider domain.ProviderType
 	var pricingVer int
 	resolved := req.Model
-	if meta != nil && meta.WinningDeployment != nil {
-		depID = meta.WinningDeployment.ID
-		gm = meta.WinningDeployment.GlobalModel
-		if gm != nil {
-			pricingVer = gm.PricingVersion
-			if gm.ModelName != "" {
-				resolved = gm.ModelName
+	var costMicros int64
+	if streamCacheHit {
+		releaseQuota(0)
+		resolved, provider, gm = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, req.Model, cachedStreamChunks)
+		costMicros = 0
+		s.collector.Record(observability.RequestObservation{
+			Provider:          string(provider),
+			Model:             resolved,
+			StatusCode:        http.StatusOK,
+			CacheHit:          true,
+			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+		})
+	} else {
+		releaseQuota(streamUsage.TotalTokens)
+		if meta != nil && meta.WinningDeployment != nil {
+			depID = meta.WinningDeployment.ID
+			gm = meta.WinningDeployment.GlobalModel
+			if gm != nil {
+				provider = gm.Provider
+				pricingVer = gm.PricingVersion
+				if gm.ModelName != "" {
+					resolved = gm.ModelName
+				}
 			}
 		}
+		costMicros = finops.CalculateCostMicros(gm, streamUsage)
+		if streamCacheKey != "" && (streamRedactor == nil || !streamRedactor.Blocked()) && sawTerminalChunk && len(sanitizedChunks) > 0 {
+			finalizeStreamChunksForCache(sanitizedChunks, resolved, streamUsage)
+			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolved, sanitizedChunks)
+		}
 	}
-	costMicros := finops.CalculateCostMicros(gm, streamUsage)
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:            resolved,
+		Provider:         string(provider),
+		PromptTokens:     streamUsage.PromptTokens,
+		CompletionTokens: streamUsage.CompletionTokens,
+		CostMicros:       costMicros,
+		CacheHit:         streamCacheHit,
+	})
 	if s.spendWorker != nil {
 		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
@@ -432,6 +571,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Usage:          streamUsage,
 			CostMicros:     costMicros,
 			StatusCode:     http.StatusOK,
+			CacheHit:       streamCacheHit,
 			IsStream:       true,
 			CreatedAt:      time.Now().UTC(),
 		}); err != nil {

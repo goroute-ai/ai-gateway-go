@@ -25,6 +25,7 @@ type Adapter struct {
 	profile    *DialectProfile
 	validator  *RequestValidator
 	httpClient *http.Client
+	ssrfPolicy *network.Policy
 }
 
 // NewAdapter creates an OpenAI-compatible adapter. If httpClient is nil, an SSRF-hardened client is constructed.
@@ -37,6 +38,11 @@ func NewAdapter(profile *DialectProfile, httpClient *http.Client) *Adapter {
 		validator:  NewRequestValidator(profile),
 		httpClient: httpClient,
 	}
+}
+
+// SetSSRFPolicy configures the outbound network policy used to validate BaseURL overrides.
+func (a *Adapter) SetSSRFPolicy(policy *network.Policy) {
+	a.ssrfPolicy = policy
 }
 
 func (a *Adapter) Provider() domain.ProviderType {
@@ -60,7 +66,7 @@ func (a *Adapter) SupportsOperation(op domain.OperationType) bool {
 	case domain.OperationCompletion:
 		return ops != nil && ops.Completion
 	case domain.OperationResponses:
-		return ops == nil || ops.Responses
+		return ops != nil && ops.Responses
 	case domain.OperationEmbedding:
 		if a.profile.DefaultCapabilities.Embeddings == domain.CapabilityUnsupported {
 			return false
@@ -413,9 +419,25 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 		}
 	}
 
+	effectiveCred := cred
+	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
+		cleanBase, err := adapter.ValidateAndResolveBaseURL(cred.BaseURL, a.profile.DefaultBaseURL, a.ssrfPolicy)
+		if err != nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_base_url",
+				Message:    err.Error(),
+				Provider:   a.profile.ID,
+			}
+		}
+		credCopy := *cred
+		credCopy.BaseURL = cleanBase
+		effectiveCred = &credCopy
+	}
 	dummyDep := &domain.Deployment{
 		ID:         "list-models",
-		Credential: cred,
+		Credential: effectiveCred,
 	}
 	targetURL, err := a.profile.EndpointStrategy.BuildURL(dummyDep, adapter.OperationListModels)
 	if err != nil {
@@ -431,7 +453,7 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 		httpReq.Header.Set(k, v)
 	}
 
-	if err := a.profile.AuthStrategy.ApplyAuth(httpReq, cred); err != nil {
+	if err := a.profile.AuthStrategy.ApplyAuth(httpReq, effectiveCred); err != nil {
 		return nil, &domain.GatewayError{
 			StatusCode:  http.StatusUnauthorized,
 			Type:        domain.ErrorTypeAuthentication,
@@ -814,11 +836,22 @@ func (a *Adapter) unsupportedOpError(op domain.OperationType) error {
 	}
 }
 
-func (a *Adapter) resolveEndpointBase(dep *domain.Deployment) string {
-	if dep != nil && dep.Credential != nil && strings.TrimSpace(dep.Credential.BaseURL) != "" {
-		return strings.TrimRight(dep.Credential.BaseURL, "/")
+func (a *Adapter) resolveEndpointBase(dep *domain.Deployment) (string, error) {
+	rawOverride := ""
+	if dep != nil && dep.Credential != nil {
+		rawOverride = dep.Credential.BaseURL
 	}
-	return strings.TrimRight(a.profile.DefaultBaseURL, "/")
+	base, err := adapter.ValidateAndResolveBaseURL(rawOverride, a.profile.DefaultBaseURL, a.ssrfPolicy)
+	if err != nil {
+		return "", &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_base_url",
+			Message:    err.Error(),
+			Provider:   a.profile.ID,
+		}
+	}
+	return base, nil
 }
 
 func (a *Adapter) doJSONRequest(ctx context.Context, dep *domain.Deployment, path string, payload any) ([]byte, string, error) {
@@ -830,7 +863,11 @@ func (a *Adapter) doJSONRequest(ctx context.Context, dep *domain.Deployment, pat
 	if dep != nil {
 		cred = dep.Credential
 	}
-	targetURL := a.resolveEndpointBase(dep) + path
+	base, err := a.resolveEndpointBase(dep)
+	if err != nil {
+		return nil, "", err
+	}
+	targetURL := base + path
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, "", fmt.Errorf("create %s request: %w", path, err)
@@ -954,7 +991,11 @@ func (a *Adapter) StreamTextCompletion(ctx context.Context, dep *domain.Deployme
 	if dep != nil {
 		cred = dep.Credential
 	}
-	targetURL := a.resolveEndpointBase(dep) + "/completions"
+	base, err := a.resolveEndpointBase(dep)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := base + "/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create /completions stream request: %w", err)
@@ -1271,7 +1312,7 @@ func (a *Adapter) generateMultipartImage(ctx context.Context, dep *domain.Deploy
 	if err != nil {
 		return nil, err
 	}
-	if _, err := imagePart.Write(req.ImageData); err != nil {
+	if _, err := io.Copy(imagePart, bytes.NewReader(req.ImageData)); err != nil {
 		return nil, err
 	}
 	if len(req.MaskData) > 0 {
@@ -1283,7 +1324,7 @@ func (a *Adapter) generateMultipartImage(ctx context.Context, dep *domain.Deploy
 		if err != nil {
 			return nil, err
 		}
-		if _, err := maskPart.Write(req.MaskData); err != nil {
+		if _, err := io.Copy(maskPart, bytes.NewReader(req.MaskData)); err != nil {
 			return nil, err
 		}
 	}
@@ -1346,7 +1387,10 @@ func (a *Adapter) operationTarget(dep *domain.Deployment, path string) (*domain.
 	if dep != nil {
 		cred = dep.Credential
 	}
-	base := a.resolveEndpointBase(dep)
+	base, err := a.resolveEndpointBase(dep)
+	if err != nil {
+		return nil, "", err
+	}
 	if strings.TrimSpace(base) == "" {
 		return nil, "", fmt.Errorf("no base URL configured for provider %q", a.profile.ID)
 	}
@@ -1431,7 +1475,11 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	if req != nil && req.IsTranslation {
 		subPath = "/audio/translations"
 	}
-	targetURL := a.resolveEndpointBase(dep) + subPath
+	base, err := a.resolveEndpointBase(dep)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := base + subPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, &buf)
 	if err != nil {
 		return nil, err
@@ -1499,7 +1547,11 @@ func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, re
 	if dep != nil {
 		cred = dep.Credential
 	}
-	targetURL := a.resolveEndpointBase(dep) + "/audio/speech"
+	base, err := a.resolveEndpointBase(dep)
+	if err != nil {
+		return nil, "", err
+	}
+	targetURL := base + "/audio/speech"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, "", err

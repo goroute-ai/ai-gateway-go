@@ -47,6 +47,7 @@ import (
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
 type GatewayServer struct {
 	cfg              *config.Config
+	netPolicy        *network.Policy
 	repo             storage.Repository
 	redisFabric      *storage.RedisFabric
 	reg              *adapter.Registry
@@ -60,6 +61,8 @@ type GatewayServer struct {
 	reliability      *router.ReliabilityManager
 	spendWorker      *finops.SpendWorker
 	collector        *observability.Collector
+	metricsExporter  *observability.OTLPMetricsExporter
+	metricsStop      func()
 	outboundMetrics  *network.HTTPClientMetrics
 	budgetStats      *budgetLookupStats
 	tracer           trace.Tracer
@@ -79,6 +82,43 @@ type GatewayServer struct {
 	uploadSem        chan struct{}
 	uploadInFlightMu sync.Mutex
 	uploadInFlight   map[string]int64
+}
+
+// parseCustomProviderOperations maps string operation names from CustomProviderConfig
+// into an openaicompat.ProviderOperations struct. Returns nil when ops is empty so
+// default capability behavior is preserved.
+func parseCustomProviderOperations(ops []string) *openaicompat.ProviderOperations {
+	if len(ops) == 0 {
+		return nil
+	}
+	out := &openaicompat.ProviderOperations{}
+	for _, raw := range ops {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "chat":
+			out.Chat = true
+		case "completion", "completions":
+			out.Completion = true
+		case "embeddings":
+			out.Embeddings = true
+		case "rerank":
+			out.Rerank = true
+		case "moderations":
+			out.Moderations = true
+		case "image_gen":
+			out.ImageGen = true
+		case "image_edit":
+			out.ImageEdit = true
+		case "image_variation":
+			out.ImageVariation = true
+		case "audio_stt":
+			out.AudioSTT = true
+		case "audio_tts":
+			out.AudioTTS = true
+		case "responses":
+			out.Responses = true
+		}
+	}
+	return out
 }
 
 // New constructs a fully wired GatewayServer ready to serve requests.
@@ -118,19 +158,53 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		outboundMetrics = nil
 	}
 
+	mediaSSRF := config.OutboundSSRFConfig{
+		AllowPrivateNetworks: false,
+		AllowInsecureHTTP:    false,
+		AllowedSchemes:       []string{"https"},
+		BlockedIPs:           append([]string(nil), cfg.Security.Network.OutboundSSRF.BlockedIPs...),
+		DialTimeout:          cfg.Security.Network.OutboundSSRF.DialTimeout,
+		MaxRedirects:         cfg.Security.Network.OutboundSSRF.MaxRedirects,
+		EgressProxyURL:       cfg.Security.Network.OutboundSSRF.EgressProxyURL,
+	}
+	mediaPolicy, err := network.NewPolicy(mediaSSRF)
+	if err != nil {
+		return nil, fmt.Errorf("invalid outbound media security policy: %w", err)
+	}
+	mediaClient := network.NewHTTPClient(mediaPolicy)
+
+	openaiAdp := openai.NewAdapter(adapterClient)
+	openaiAdp.SetSSRFPolicy(netPolicy)
+	anthropicAdp := anthropic.NewAdapter(adapterClient)
+	anthropicAdp.SetSSRFPolicy(netPolicy)
+	geminiAdp := gemini.NewAdapter(adapterClient)
+	geminiAdp.SetSSRFPolicy(netPolicy)
+	mistralAdp := mistral.NewAdapter(adapterClient)
+	mistralAdp.SetSSRFPolicy(netPolicy)
+	ollamaAdp := ollama.NewAdapter(adapterClient)
+	ollamaAdp.SetSSRFPolicy(netPolicy)
+	ollamaAdp.SetMediaFetcher(mediaClient, mediaPolicy)
+	vertexAdp := vertex.NewAdapter(adapterClient, netPolicy)
+	vertexAdp.SetMediaFetcher(mediaClient, mediaPolicy)
+
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(adapterClient))
-	reg.Register(anthropic.NewAdapter(adapterClient))
-	reg.Register(gemini.NewAdapter(adapterClient))
-	reg.Register(mistral.NewAdapter(adapterClient))
-	reg.Register(ollama.NewAdapter(adapterClient))
+	reg.Register(openaiAdp)
+	reg.Register(anthropicAdp)
+	reg.Register(geminiAdp)
+	reg.Register(mistralAdp)
+	reg.Register(ollamaAdp)
 	reg.Register(bedrock.NewAdapter(adapterClient, netPolicy))
-	reg.Register(vertex.NewAdapter(adapterClient, netPolicy))
+	reg.Register(vertexAdp)
 	reg.Register(cohere.NewAdapter(adapterClient, netPolicy))
 
 	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
 	for _, custom := range cfg.Providers.CustomOpenAICompatible {
-		if err := profileReg.RegisterCustom(custom); err != nil {
+		opts := openaicompat.CustomProfileOptions{
+			SupportedOperations: parseCustomProviderOperations(custom.SupportedOperations),
+			ParamMappings:       custom.ParamMappings,
+			ReasoningMapping:    custom.ReasoningMapping,
+		}
+		if err := profileReg.RegisterCustomWithOptions(custom, opts); err != nil {
 			return nil, fmt.Errorf("failed to register custom provider %q: %w", custom.ID, err)
 		}
 	}
@@ -149,6 +223,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	rbac := auth.NewRBACEngine(repo)
 	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
+	limiter.SetEnabled(cfg.RateLimit.Enabled)
+	limiter.SetFallbackToLocalOnOutage(cfg.RateLimit.FallbackToLocalOnOutage)
+	limiter.SetDefaultEstimatedTPM(cfg.RateLimit.DefaultEstimatedTPM)
+	limiter.SetRedisTimeout(cfg.RateLimit.RedisTimeout)
 	limiter.SetGlobalLimits(cfg.RateLimit.GlobalRPMLimit, cfg.RateLimit.GlobalTPMLimit, cfg.RateLimit.GlobalMaxConcurrent)
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
@@ -211,6 +289,16 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return metrics
 	})
+	var metricsExporter *observability.OTLPMetricsExporter
+	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
+		metricsExporter, err = observability.NewOTLPMetricsExporterFromTracingConfig(collector, cfg.Tracing, 0, netPolicy)
+		if err != nil {
+			if tracerShutdown != nil {
+				_ = tracerShutdown(context.Background())
+			}
+			return nil, err
+		}
+	}
 	healthMon := health.NewMonitor(repo, reg, vault, 60*time.Second, 5*time.Second)
 	validator := validation.NewValidator(repo)
 	guardrailsEng := guardrails.NewEngine(repo)
@@ -259,6 +347,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	s := &GatewayServer{
 		cfg:             cfg,
+		netPolicy:       netPolicy,
 		repo:            repo,
 		redisFabric:     redisFabric,
 		reg:             reg,
@@ -272,6 +361,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reliability:     relMgr,
 		spendWorker:     spendWorker,
 		collector:       collector,
+		metricsExporter: metricsExporter,
 		outboundMetrics: outboundMetrics,
 		budgetStats:     budgetStats,
 		tracer:          tracer,
@@ -494,12 +584,18 @@ func (s *GatewayServer) setupRoutes() {
 		// Teams & Users
 		adm.Post("/teams", s.handleAdminCreateTeam)
 		adm.Get("/teams", s.handleAdminListTeams)
+		adm.Put("/teams/{teamID}", s.handleAdminUpdateTeam)
+		adm.Delete("/teams/{teamID}", s.handleAdminDeleteTeam)
 		adm.Post("/users", s.handleAdminCreateUser)
 		adm.Get("/users", s.handleAdminListUsers)
+		adm.Put("/users/{userID}", s.handleAdminUpdateUser)
+		adm.Delete("/users/{userID}", s.handleAdminDeleteUser)
 
 		// Virtual API Keys
 		adm.Post("/keys", s.handleAdminIssueKey)
 		adm.Get("/keys", s.handleAdminListKeys)
+		adm.Put("/keys/{keyID}", s.handleAdminUpdateKey)
+		adm.Post("/keys/{keyID}/rotate", s.handleAdminRotateKey)
 		adm.Post("/keys/{keyID}/revoke", s.handleAdminRevokeKey)
 		adm.Delete("/keys/{keyID}", s.handleAdminRevokeKey)
 
@@ -601,6 +697,10 @@ func (s *GatewayServer) Collector() *observability.Collector {
 	return s.collector
 }
 
+func (s *GatewayServer) MetricsExporter() *observability.OTLPMetricsExporter {
+	return s.metricsExporter
+}
+
 func (s *GatewayServer) HealthMonitor() *health.Monitor {
 	return s.healthMon
 }
@@ -649,6 +749,11 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	if s.a2aOutboxWorker != nil {
 		s.a2aOutboxWorker.Start(ctx)
 	}
+	if s.metricsExporter != nil {
+		metricsCtx, metricsCancel := context.WithCancel(ctx)
+		s.metricsStop = metricsCancel
+		s.metricsExporter.Start(metricsCtx)
+	}
 }
 
 // Shutdown drains background workers cleanly.
@@ -663,6 +768,12 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.healthMon.Stop()
 	s.discovery.Stop()
 	s.spendWorker.Stop(ctx)
+	if s.metricsStop != nil {
+		s.metricsStop()
+	}
+	if s.metricsExporter != nil {
+		_ = s.metricsExporter.Shutdown(ctx)
+	}
 	if s.tracerShutdown != nil {
 		_ = s.tracerShutdown(ctx)
 	}

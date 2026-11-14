@@ -97,7 +97,7 @@ func TestContract_Groq(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	srvGroqAdp, err := srvReg.CreateAdapter("groq")
 	require.NoError(t, err)
 
@@ -188,7 +188,7 @@ func TestContract_DeepSeek(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	srvDsAdp, err := srvReg.CreateAdapter("deepseek")
 	require.NoError(t, err)
 
@@ -294,7 +294,7 @@ func TestContract_TogetherAI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	srvTogetherAdp, err := srvReg.CreateAdapter("together")
 	require.NoError(t, err)
 
@@ -375,7 +375,7 @@ func TestContract_AzureOpenAI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	srvReg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	srvReg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	srvAzureAdp, err := srvReg.CreateAdapter("azure")
 	require.NoError(t, err)
 
@@ -433,7 +433,7 @@ func TestContract_AzureOpenAI(t *testing.T) {
 	}))
 	defer legacySrv.Close()
 
-	srvLegacyReg := openaicompat.NewProfileRegistry(legacySrv.Client(), nil)
+	srvLegacyReg := openaicompat.NewProfileRegistry(legacySrv.Client(), loopbackTestPolicy(t))
 	srvLegacyAzureAdp, err := srvLegacyReg.CreateAdapter("azure")
 	require.NoError(t, err)
 
@@ -596,7 +596,7 @@ func TestContract_ReasoningExtraction(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	reg := openaicompat.NewProfileRegistry(ts.Client(), nil)
+	reg := openaicompat.NewProfileRegistry(ts.Client(), loopbackTestPolicy(t))
 	adp, err := reg.CreateAdapter(domain.ProviderDeepSeek)
 	require.NoError(t, err)
 
@@ -634,7 +634,7 @@ func TestContract_ReasoningExtraction(t *testing.T) {
 	}))
 	defer tsStream.Close()
 
-	streamReg := openaicompat.NewProfileRegistry(tsStream.Client(), nil)
+	streamReg := openaicompat.NewProfileRegistry(tsStream.Client(), loopbackTestPolicy(t))
 	streamAdp, err := streamReg.CreateAdapter(domain.ProviderDeepSeek)
 	require.NoError(t, err)
 
@@ -682,7 +682,7 @@ func TestOpenAICompat_UpstreamStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.upstreamStatus)
 			_, _ = fmt.Fprint(w, `{"error":{"message":"bad","code":"upstream_code"}}`)
 		}))
-		reg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+		reg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 		adp, err := reg.CreateAdapter("deepseek")
 		require.NoError(t, err)
 		dep := &domain.Deployment{

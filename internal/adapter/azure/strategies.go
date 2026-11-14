@@ -8,6 +8,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 // AzureEndpointMode specifies whether Azure uses the modern /openai/v1 format or legacy deployment paths.
@@ -20,7 +21,8 @@ const (
 
 // AzureEndpointStrategy constructs URLs for Azure OpenAI Service backends.
 type AzureEndpointStrategy struct {
-	Mode AzureEndpointMode
+	Mode       AzureEndpointMode
+	SSRFPolicy *network.Policy
 }
 
 func (s *AzureEndpointStrategy) BuildURL(dep *domain.Deployment, op adapter.OperationType) (string, error) {
@@ -28,11 +30,14 @@ func (s *AzureEndpointStrategy) BuildURL(dep *domain.Deployment, op adapter.Oper
 		return "", fmt.Errorf("nil deployment or credential for Azure OpenAI")
 	}
 
-	baseURL := strings.TrimSpace(dep.Credential.BaseURL)
-	if baseURL == "" {
+	rawBase := strings.TrimSpace(dep.Credential.BaseURL)
+	if rawBase == "" {
 		return "", fmt.Errorf("azure openai requires an explicit base_url on provider credential")
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL, err := adapter.ValidateAndResolveBaseURL(rawBase, "", s.SSRFPolicy)
+	if err != nil {
+		return "", err
+	}
 
 	// Mode determination:
 	// If mode is explicit, use it. Otherwise, if baseURL ends with /openai/v1 or /v1, use StandardV1.

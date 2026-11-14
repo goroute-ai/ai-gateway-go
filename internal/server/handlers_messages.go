@@ -12,10 +12,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
-	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
 
 type anthropicMessagesPayload struct {
@@ -194,6 +194,14 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 					StatusCode: http.StatusOK,
 					CacheHit:   true,
 				})
+				logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+					Model:            cachedResp.Model,
+					Provider:         string(cachedResp.Provider),
+					PromptTokens:     cachedResp.Usage.PromptTokens,
+					CompletionTokens: cachedResp.Usage.CompletionTokens,
+					CostMicros:       0,
+					CacheHit:         true,
+				})
 				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
 				w.Header().Set("X-Gateway-Cache", "HIT")
 				w.Header().Set("Content-Type", "application/json")
@@ -252,6 +260,14 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		CostMicros:       costMicros,
+	})
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:            resp.Model,
+		Provider:         string(resp.Provider),
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		CostMicros:       costMicros,
+		CacheHit:         false,
 	})
 
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
@@ -320,7 +336,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		releaseQuota(0)
 		return
 	}
-	streamRedactor := guardrails.NewStreamRedactor(policy)
+	streamRedactor := s.guardrails.NewStreamRedactor(policy)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		releaseQuota(-1)
@@ -331,6 +347,23 @@ func (s *GatewayServer) streamAnthropicMessages(
 			Message:    "ResponseWriter does not support SSE flushing",
 		})
 		return
+	}
+
+	streamCacheHeader := streamCacheControlHeader(r)
+	var streamCacheKey string
+	var cachedStreamChunks []domain.CanonicalStreamChunk
+	var streamCacheHit bool
+	if s.respCache != nil && s.respCache.IsStreamCacheable(chatReq, streamCacheHeader) {
+		streamCacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq)
+		if streamCacheKey != "" {
+			cachedStreamChunks, streamCacheHit = s.respCache.GetStreamChunks(r.Context(), streamCacheKey)
+			if streamCacheHit {
+				w.Header().Set("X-Gateway-Cache", "HIT")
+				w.Header().Set("X-Gateway-Cost-Micros", "0")
+			} else {
+				w.Header().Set("X-Gateway-Cache", "MISS")
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -365,24 +398,71 @@ func (s *GatewayServer) streamAnthropicMessages(
 		flusher.Flush()
 	}
 
-	streamStarted := time.Now()
-	usage, meta, err := s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, func(chunk *domain.CanonicalStreamChunk) error {
+	var sanitizedChunks []domain.CanonicalStreamChunk
+	sawTerminalChunk := false
+
+	onChunk := func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil {
 			return nil
 		}
-		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" {
-				txt := choice.Delta.Content
+		if isTerminalStreamChunk(chunk) {
+			sawTerminalChunk = true
+		}
+		if streamRedactor != nil && streamRedactor.Blocked() {
+			return guardrailStreamBlockedError()
+		}
+		c := cloneSingleStreamChunk(*chunk)
+		hasContent := false
+		for i := range c.Choices {
+			if c.Choices[i].Delta.Content != "" {
+				txt := c.Choices[i].Delta.Content
 				if streamRedactor != nil {
 					txt = streamRedactor.Process(txt)
+					if streamRedactor.Blocked() {
+						return guardrailStreamBlockedError()
+					}
 				}
-				emitDelta(txt)
+				c.Choices[i].Delta.Content = txt
+				if txt != "" {
+					hasContent = true
+					emitDelta(txt)
+				}
+			}
+		}
+		if !streamCacheHit && streamCacheKey != "" {
+			if hasContent || isTerminalStreamChunk(&c) || c.Usage != nil {
+				sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, c)
 			}
 		}
 		return nil
-	}, func(dep *domain.Deployment) {
-		winningDep = dep
-	})
+	}
+
+	streamStarted := time.Now()
+	var usage *domain.TokenUsage
+	var meta *router.ExecutionMeta
+	var err error
+	if streamCacheHit {
+		for i := range cachedStreamChunks {
+			if err = onChunk(&cachedStreamChunks[i]); err != nil {
+				break
+			}
+		}
+		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
+		usage = &u
+	} else {
+		usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
+			winningDep = dep
+		})
+	}
+	var flushDelta string
+	if err == nil && streamRedactor != nil {
+		flushDelta = streamRedactor.Flush()
+		if streamRedactor.Blocked() {
+			err = guardrailStreamBlockedError()
+		}
+	} else if streamRedactor != nil && streamRedactor.Blocked() {
+		_ = streamRedactor.Flush()
+	}
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
@@ -390,11 +470,38 @@ func (s *GatewayServer) streamAnthropicMessages(
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
 
 	if err != nil {
-		releaseQuota(-1)
+		if streamCacheHit {
+			releaseQuota(0)
+		} else {
+			releaseQuota(-1)
+		}
+		isBlocked := streamRedactor != nil && streamRedactor.Blocked()
+		errType := "api_error"
+		errCode := "stream_error"
+		statusCode := http.StatusBadGateway
+		if gwErr, ok := err.(*domain.GatewayError); ok {
+			if gwErr.Code != "" {
+				errCode = gwErr.Code
+			}
+			if gwErr.StatusCode > 0 {
+				statusCode = gwErr.StatusCode
+			}
+		}
+		if isBlocked {
+			errType = "guardrail_blocked"
+			errCode = "guardrail_blocked"
+		}
+		s.collector.Record(observability.RequestObservation{
+			Model:             chatReq.Model,
+			StatusCode:        statusCode,
+			GuardrailBlocked:  isBlocked,
+			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+		})
 		errBytes, _ := json.Marshal(map[string]any{
 			"type": "error",
 			"error": map[string]string{
-				"type":    "api_error",
+				"type":    errType,
+				"code":    errCode,
 				"message": err.Error(),
 			},
 		})
@@ -402,8 +509,20 @@ func (s *GatewayServer) streamAnthropicMessages(
 		flusher.Flush()
 		return
 	}
-	if streamRedactor != nil {
-		emitDelta(streamRedactor.Flush())
+	if flushDelta != "" {
+		emitDelta(flushDelta)
+		if !streamCacheHit && streamCacheKey != "" {
+			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, domain.CanonicalStreamChunk{
+				ID:      reqID,
+				Object:  "chat.completion.chunk",
+				Created: time.Now().Unix(),
+				Model:   chatReq.Model,
+				Choices: []domain.CanonicalStreamChoice{{
+					Index: 0,
+					Delta: domain.CanonicalStreamDelta{Role: "assistant", Content: flushDelta},
+				}},
+			})
+		}
 	}
 
 	totalTokens := estTokens + outputTokens
@@ -411,47 +530,92 @@ func (s *GatewayServer) streamAnthropicMessages(
 		totalTokens = usage.TotalTokens
 		outputTokens = usage.CompletionTokens
 	}
-	releaseQuota(totalTokens)
-
-	var gm *domain.GlobalModel
-	var depID string
-	var pricingVer int
-	if winningDep != nil {
-		depID = winningDep.ID
-		gm = winningDep.GlobalModel
-		if gm != nil {
-			pricingVer = gm.PricingVersion
-		}
-	}
 	finalUsage := domain.TokenUsage{
 		PromptTokens:     estTokens,
 		CompletionTokens: outputTokens,
 		TotalTokens:      totalTokens,
 	}
-	costMicros := finops.CalculateCostMicros(gm, finalUsage)
+	var gm *domain.GlobalModel
+	var depID string
+	var provider domain.ProviderType
+	var pricingVer int
+	resolvedModel := chatReq.Model
+	if chatReq.ResolvedModel != "" {
+		resolvedModel = chatReq.ResolvedModel
+	}
+	var costMicros int64
+	var latMs int64
+	if streamCacheHit {
+		releaseQuota(0)
+		resolvedModel, provider, gm = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, chatReq.Model, cachedStreamChunks)
+		costMicros = 0
+		s.collector.Record(observability.RequestObservation{
+			Provider:          string(provider),
+			Model:             resolvedModel,
+			StatusCode:        http.StatusOK,
+			CacheHit:          true,
+			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+		})
+	} else {
+		releaseQuota(totalTokens)
+		if winningDep == nil && meta != nil && meta.WinningDeployment != nil {
+			winningDep = meta.WinningDeployment
+		}
+		if winningDep != nil {
+			depID = winningDep.ID
+			gm = winningDep.GlobalModel
+			if gm != nil {
+				provider = gm.Provider
+				pricingVer = gm.PricingVersion
+				if gm.ModelName != "" {
+					resolvedModel = gm.ModelName
+				}
+			}
+		}
+		if meta != nil {
+			latMs = meta.LatencyMs
+		}
+		costMicros = finops.CalculateCostMicros(gm, finalUsage)
+		if streamCacheKey != "" && (streamRedactor == nil || !streamRedactor.Blocked()) && sawTerminalChunk && len(sanitizedChunks) > 0 {
+			finalizeStreamChunksForCache(sanitizedChunks, resolvedModel, finalUsage)
+			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
+		}
+	}
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:            resolvedModel,
+		Provider:         string(provider),
+		PromptTokens:     finalUsage.PromptTokens,
+		CompletionTokens: finalUsage.CompletionTokens,
+		CostMicros:       costMicros,
+		CacheHit:         streamCacheHit,
+	})
 
-	if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
-		RequestID:      reqID,
-		TraceID:        traceID,
-		OrgID:          idCtx.OrgID,
-		TeamID:         idCtx.TeamID,
-		UserID:         idCtx.UserID,
-		VirtualKeyID:   idCtx.VirtualKeyID,
-		Endpoint:       r.URL.Path,
-		RequestedModel: chatReq.Model,
-		ResolvedModel:  chatReq.ResolvedModel,
-		DeploymentID:   depID,
-		PricingVersion: pricingVer,
-		Usage:          finalUsage,
-		CostMicros:     costMicros,
-		LatencyMs:      meta.LatencyMs,
-		StatusCode:     http.StatusOK,
-		Modality:       domain.ModalityChat,
-		CreatedAt:      time.Now().UTC(),
-	}); err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"unable to persist request accounting\"}}\n\n")
-		flusher.Flush()
-		return
+	if s.spendWorker != nil {
+		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+			RequestID:      reqID,
+			TraceID:        traceID,
+			OrgID:          idCtx.OrgID,
+			TeamID:         idCtx.TeamID,
+			UserID:         idCtx.UserID,
+			VirtualKeyID:   idCtx.VirtualKeyID,
+			Endpoint:       r.URL.Path,
+			RequestedModel: chatReq.Model,
+			ResolvedModel:  resolvedModel,
+			DeploymentID:   depID,
+			PricingVersion: pricingVer,
+			Usage:          finalUsage,
+			CostMicros:     costMicros,
+			LatencyMs:      latMs,
+			StatusCode:     http.StatusOK,
+			CacheHit:       streamCacheHit,
+			IsStream:       true,
+			Modality:       domain.ModalityChat,
+			CreatedAt:      time.Now().UTC(),
+		}); err != nil {
+			fmt.Fprintf(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"unable to persist request accounting\"}}\n\n")
+			flusher.Flush()
+			return
+		}
 	}
 	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
 	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)

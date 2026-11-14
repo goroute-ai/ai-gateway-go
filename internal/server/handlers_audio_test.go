@@ -28,7 +28,9 @@ func TestPhase3_AudioEndpoints(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 
 	// Mock upstream audio server
+	var lastAudioPath string
 	audioSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastAudioPath = r.URL.Path
 		switch r.URL.Path {
 		case "/v1/audio/transcriptions", "/v1/audio/translations":
 			w.Header().Set("Content-Type", "application/json")
@@ -179,6 +181,7 @@ func TestPhase3_AudioEndpoints(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 
 		require.Equal(t, http.StatusOK, rec.Code, "Response: %s", rec.Body.String())
+		assert.Equal(t, "/v1/audio/transcriptions", lastAudioPath)
 		// 3.5s * 100 micros/sec = 350 micros (calculated with durationMs 3500)
 		assert.Equal(t, "350", rec.Header().Get("X-Gateway-Cost-Micros"))
 
@@ -186,6 +189,30 @@ func TestPhase3_AudioEndpoints(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 		assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp["text"])
 		assert.Equal(t, 3.5, resp["duration"])
+	})
+
+	t.Run("TestAudioTranslation", func(t *testing.T) {
+		bodyBuf := &bytes.Buffer{}
+		mpWriter := multipart.NewWriter(bodyBuf)
+		_ = mpWriter.WriteField("model", "whisper-1")
+		filePart, err := mpWriter.CreateFormFile("file", "test.mp3")
+		require.NoError(t, err)
+		_, _ = filePart.Write([]byte("fake-audio-bytes-data"))
+		require.NoError(t, mpWriter.Close())
+
+		req, _ := http.NewRequest(http.MethodPost, "/v1/audio/translations", bodyBuf)
+		req.Header.Set("Authorization", "Bearer "+issuedKey.RawKey)
+		req.Header.Set("Content-Type", mpWriter.FormDataContentType())
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "Response: %s", rec.Body.String())
+		assert.Equal(t, "/v1/audio/translations", lastAudioPath)
+
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp["text"])
 	})
 
 	t.Run("TestAudioSpeech", func(t *testing.T) {

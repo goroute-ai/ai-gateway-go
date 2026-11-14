@@ -42,7 +42,7 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("HSTS emitted when enabled and CSP omitted on data plane", func(t *testing.T) {
+	t.Run("HSTS emitted when enabled and strict default-none CSP emitted on data plane", func(t *testing.T) {
 		h := server.SecurityHeadersMiddleware(true)(okHandler)
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -54,7 +54,7 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 		assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
 		assert.Equal(t, "max-age=63072000; includeSubDomains", rec.Header().Get("Strict-Transport-Security"))
-		assert.Empty(t, rec.Header().Get("Content-Security-Policy"))
+		assert.Equal(t, "default-src 'none'; frame-ancestors 'none'", rec.Header().Get("Content-Security-Policy"))
 	})
 }
 
@@ -71,6 +71,7 @@ func TestCORSMiddleware(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		assert.Empty(t, rec.Header().Get("Access-Control-Expose-Headers"))
 
 		pre := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
 		pre.Header.Set("Origin", "https://evil.example.com")
@@ -79,10 +80,21 @@ func TestCORSMiddleware(t *testing.T) {
 		h.ServeHTTP(preRec, pre)
 		assert.Equal(t, http.StatusForbidden, preRec.Code)
 		assert.Empty(t, preRec.Header().Get("Access-Control-Allow-Origin"))
+		assert.Empty(t, preRec.Header().Get("Access-Control-Expose-Headers"))
 	})
 
 	t.Run("explicit allowlist with credentials", func(t *testing.T) {
 		h := server.CORSMiddleware([]string{"https://console.example.com"}, true)(okHandler)
+		expectedExpose := []string{
+			"X-Gateway-Request-Id",
+			"X-Gateway-Provider",
+			"X-Gateway-Model",
+			"X-Gateway-Cost-Micros",
+			"X-Gateway-Cache",
+			"X-Gateway-Guardrail-Action",
+			"X-Gateway-Pricing-Status",
+			"X-Gateway-Latency-Ms",
+		}
 
 		// Allowed preflight
 		pre := httptest.NewRequest(http.MethodOptions, "/admin/v1/keys", nil)
@@ -95,6 +107,9 @@ func TestCORSMiddleware(t *testing.T) {
 		assert.Equal(t, "true", preRec.Header().Get("Access-Control-Allow-Credentials"))
 		assert.Contains(t, preRec.Header().Values("Vary"), "Origin")
 		assert.NotEmpty(t, preRec.Header().Get("Access-Control-Allow-Methods"))
+		for _, hdr := range expectedExpose {
+			assert.Contains(t, preRec.Header().Get("Access-Control-Expose-Headers"), hdr)
+		}
 
 		// Allowed GET
 		req := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
@@ -104,6 +119,9 @@ func TestCORSMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "https://console.example.com", rec.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Credentials"))
+		for _, hdr := range expectedExpose {
+			assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), hdr)
+		}
 
 		// Disallowed origin
 		bad := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
@@ -112,6 +130,7 @@ func TestCORSMiddleware(t *testing.T) {
 		h.ServeHTTP(badRec, bad)
 		assert.Empty(t, badRec.Header().Get("Access-Control-Allow-Origin"))
 		assert.Empty(t, badRec.Header().Get("Access-Control-Allow-Credentials"))
+		assert.Empty(t, badRec.Header().Get("Access-Control-Expose-Headers"))
 	})
 
 	t.Run("wildcard without credentials is allowed", func(t *testing.T) {
@@ -123,6 +142,8 @@ func TestCORSMiddleware(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
 		assert.Empty(t, rec.Header().Get("Access-Control-Allow-Credentials"))
+		assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), "X-Gateway-Provider")
+		assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), "X-Gateway-Model")
 	})
 
 	t.Run("wildcard is never combined with AllowCredentials true", func(t *testing.T) {

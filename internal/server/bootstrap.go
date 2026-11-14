@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
 )
@@ -69,6 +71,13 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 
 	// 2. Ensure Default Virtual Key exists (if configured)
 	if defaultVKey != "" {
+		if len(defaultVKey) < 32 {
+			logger.WarnContext(
+				ctx,
+				"Configured auth.default_virtual_key is shorter than 32 characters; use a high-entropy random key in production",
+				slog.Int("length", len(defaultVKey)),
+			)
+		}
 		keyHash := auth.HashKey(defaultVKey)
 		if _, err := s.repo.GetVirtualKeyByHash(ctx, keyHash); err != nil {
 			prefix := defaultVKey

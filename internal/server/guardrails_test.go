@@ -442,3 +442,148 @@ func setupA2AGuardrailsTestServer(t *testing.T, upstreamHandler http.HandlerFunc
 	}
 	return s, repo, mockUpstream
 }
+
+func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	var outputScannerCalls atomic.Int32
+	scannerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Direction string `json:"direction"`
+			Content   string `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		w.Header().Set("Content-Type", "application/json")
+		if payload.Direction == "output" {
+			outputScannerCalls.Add(1)
+			if strings.Contains(payload.Content, "FORBIDDEN_STREAM_TOKEN") {
+				_, _ = w.Write([]byte(`{"decision":"block","violations":["external_stream_block"]}`))
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"decision":"allow"}`))
+	}))
+	defer scannerSrv.Close()
+
+	// Upstream OpenAI-compatible server supporting both /v1/chat/completions and /v1/completions SSE streams.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		pad := strings.Repeat("safe ", 30)
+		if strings.HasSuffix(r.URL.Path, "/completions") && !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			fmt.Fprintf(w, "data: {\"id\":\"cmpl-1\",\"object\":\"text_completion\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"text\":%q}]}\n\n", pad+"FORBIDDEN_STREAM_TOKEN ")
+			fmt.Fprintf(w, "data: {\"id\":\"cmpl-1\",\"object\":\"text_completion\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"text\":%q}]}\n\n", pad+"AFTER_BLOCK_SECRET")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%q}}]}\n\n", pad+"FORBIDDEN_STREAM_TOKEN ")
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", pad+"AFTER_BLOCK_SECRET")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Server.Environment = "test"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	cfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
+		{
+			Name:      "stream-scanner",
+			URL:       scannerSrv.URL,
+			TimeoutMs: 1000,
+			FailOpen:  false,
+		},
+	}
+	cfg.ModelList = []config.ModelListEntry{
+		{
+			ModelName: "gpt-4o-mini",
+			ModelParams: config.ModelParams{
+				Model:   "openai/gpt-4o-mini",
+				APIKey:  "sk-test-upstream",
+				APIBase: upstream.URL,
+			},
+		},
+		{
+			ModelName: "gpt-3.5-turbo-instruct",
+			ModelParams: config.ModelParams{
+				Model:   "openai/gpt-3.5-turbo-instruct",
+				APIKey:  "sk-test-upstream",
+				APIBase: upstream.URL,
+			},
+		},
+	}
+
+	gw, err := New(cfg, storage.NewMemoryRepository(), nil, upstream.Client())
+	if err != nil {
+		t.Fatalf("New server: %v", err)
+	}
+	defer gw.Shutdown(ctx)
+
+	// Issue a virtual key with wildcard permissions.
+	keyReq := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", strings.NewReader(`{"org_id":"org_default","name":"stream-block-key","allowed_endpoints":["*"],"allowed_models":["*"]}`))
+	keyReq.Header.Set("Authorization", "Bearer "+cfg.Auth.MasterAdminKey)
+	keyReq.Header.Set("Content-Type", "application/json")
+	keyRec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(keyRec, keyReq)
+	if keyRec.Code != http.StatusCreated {
+		t.Fatalf("issue key failed (%d): %s", keyRec.Code, keyRec.Body.String())
+	}
+	var issuedKey struct {
+		Key string `json:"raw_key"`
+	}
+	_ = json.Unmarshal(keyRec.Body.Bytes(), &issuedKey)
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "chat_completions",
+			path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name: "legacy_completions",
+			path: "/v1/completions",
+			body: `{"model":"gpt-3.5-turbo-instruct","stream":true,"prompt":"hi"}`,
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: `{"model":"gpt-4o-mini","stream":true,"input":"hi"}`,
+		},
+		{
+			name: "anthropic_messages",
+			path: "/v1/messages",
+			body: `{"model":"gpt-4o-mini","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeBlocks := gw.collector.Snapshot().GuardrailBlocks
+			beforeScannerCalls := outputScannerCalls.Load()
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+issuedKey.Key)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			gw.Handler().ServeHTTP(rec, req)
+
+			out := rec.Body.String()
+			if outputScannerCalls.Load() <= beforeScannerCalls {
+				t.Fatalf("%s: expected external output scanner to be invoked on stream", tc.name)
+			}
+			if !strings.Contains(out, "guardrail_blocked") {
+				t.Fatalf("%s: expected SSE guardrail_blocked error event, got: %s", tc.name, out)
+			}
+			if strings.Contains(out, "FORBIDDEN_STREAM_TOKEN") || strings.Contains(out, "AFTER_BLOCK_SECRET") {
+				t.Fatalf("%s: stream leaked blocked or post-block content: %s", tc.name, out)
+			}
+			afterBlocks := gw.collector.Snapshot().GuardrailBlocks
+			if afterBlocks != beforeBlocks+1 {
+				t.Fatalf("%s (case %d): expected GuardrailBlocks to increment from %d to %d, got %d", tc.name, i, beforeBlocks, beforeBlocks+1, afterBlocks)
+			}
+		})
+	}
+}

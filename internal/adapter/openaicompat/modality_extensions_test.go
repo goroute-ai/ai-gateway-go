@@ -36,6 +36,15 @@ func TestOpenAICompat_OperationResponses_ChecksResponsesFlag(t *testing.T) {
 	if !withResp.SupportsOperation(domain.OperationResponses) {
 		t.Fatal("expected OperationResponses=true when Responses flag is true")
 	}
+
+	nilOps := openaicompat.NewAdapter(&openaicompat.DialectProfile{
+		ID:                  "test_nil_ops",
+		SupportedOperations: nil,
+		AuthStrategy:        &adapter.BearerAuthStrategy{},
+	}, nil)
+	if nilOps.SupportsOperation(domain.OperationResponses) {
+		t.Fatal("expected OperationResponses=false when SupportedOperations is nil")
+	}
 }
 
 func TestOpenAICompat_ChatDoesNotImplyLegacyCompletion(t *testing.T) {
@@ -94,7 +103,7 @@ func TestOpenAICompat_PublicAIFlattensContentPartLists(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+	reg := openaicompat.NewProfileRegistry(srv.Client(), loopbackTestPolicy(t))
 	profile, ok := reg.Get(domain.ProviderPublicAI)
 	if !ok || !profile.ConvertContentListToString {
 		t.Fatal("Public AI profile must enable content-list-to-string conversion")

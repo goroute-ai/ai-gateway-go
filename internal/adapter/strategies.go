@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 // OperationType identifies which LLM endpoint is being invoked.
@@ -30,20 +31,25 @@ type AuthStrategy interface {
 // StandardOpenAIEndpointStrategy builds URLs for standard OpenAI-compatible endpoints.
 type StandardOpenAIEndpointStrategy struct {
 	DefaultBaseURL string
+	SSRFPolicy     *network.Policy
 }
 
 func (s *StandardOpenAIEndpointStrategy) BuildURL(dep *domain.Deployment, op OperationType) (string, error) {
-	base := ""
-	if dep != nil && dep.Credential != nil && strings.TrimSpace(dep.Credential.BaseURL) != "" {
-		base = strings.TrimSpace(dep.Credential.BaseURL)
-	} else if strings.TrimSpace(s.DefaultBaseURL) != "" {
-		base = strings.TrimSpace(s.DefaultBaseURL)
+	rawOverride := ""
+	if dep != nil && dep.Credential != nil {
+		rawOverride = dep.Credential.BaseURL
 	}
-
+	base, err := ValidateAndResolveBaseURL(rawOverride, s.DefaultBaseURL, s.SSRFPolicy)
+	if err != nil {
+		return "", err
+	}
 	if base == "" {
-		return "", fmt.Errorf("no base URL configured for deployment %q", dep.ID)
+		depID := ""
+		if dep != nil {
+			depID = dep.ID
+		}
+		return "", fmt.Errorf("no base URL configured for deployment %q", depID)
 	}
-	base = strings.TrimRight(base, "/")
 
 	switch op {
 	case OperationChatCompletion:

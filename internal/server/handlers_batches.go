@@ -128,12 +128,24 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Launch background processor
+	respBytes, err := json.Marshal(batch)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "marshal_error",
+			Message:    "Failed to encode batch response",
+		})
+		return
+	}
+
+	// Launch background processor only after snapshotting the initial batch response
+	// so background field mutations cannot race with JSON serialization.
 	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(batch)
+	_, _ = w.Write(respBytes)
 }
 
 // handleListBatches serves `GET /v1/batches` and `GET /batches`.

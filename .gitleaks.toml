@@ -8,6 +8,7 @@ description = "Narrow allowlist for synthetic test fixtures, dev defaults, and g
 paths = [
   '''^internal/config/config_test\.go$''',
   '''^internal/logger/scrub_test\.go$''',
+  '''^internal/logger/hardening_test\.go$''',
   '''^internal/guardrails/.*_test\.go$''',
   '''^tests/e2e/.*_test\.go$''',
   '''^web/src/views/GuardrailsView\.tsx$''',
@@ -17,6 +18,9 @@ paths = [
 regexes = [
   '''sk-gw-master-admin-default-key-change-me''',
   '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  '''fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210''',
   '''gateway-jwt-hmac-secret-change-me''',
   '''\$\{GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\}''',
+  '''gpt-3\.5-turbo-instruct''',
+  '''idNew1\.KeyRPMLimit''',
 ]

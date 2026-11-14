@@ -185,7 +185,7 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	if vk.BudgetResetPeriod == "" {
 		vk.BudgetResetPeriod = existing.BudgetResetPeriod
 	}
-	if len(vk.AllowedEndpoints) == 0 {
+	if vk.AllowedEndpoints == nil {
 		vk.AllowedEndpoints = existing.AllowedEndpoints
 	}
 	if vk.CreatedAt.IsZero() {

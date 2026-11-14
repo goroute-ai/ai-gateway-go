@@ -371,8 +371,8 @@ func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 }
 
 func (p *PostgresRepository) GetGlobalModel(ctx context.Context, id string) (*domain.GlobalModel, error) {
-	if gm, err := p.mem.GetGlobalModel(ctx, id); err == nil && gm != nil {
-		return gm, nil
+	if p.pool == nil {
+		return p.mem.GetGlobalModel(ctx, id)
 	}
 	const q = `SELECT ` + globalModelSelectCols + ` FROM global_models WHERE id = $1`
 	m, err := scanGlobalModel(p.pool.QueryRow(ctx, q, id))
@@ -404,11 +404,62 @@ func (p *PostgresRepository) hydrateGlobalModels(ctx context.Context, ids []stri
 }
 
 func (p *PostgresRepository) ListGlobalModels(ctx context.Context) ([]*domain.GlobalModel, error) {
-	return p.mem.ListGlobalModels(ctx)
+	if p.pool == nil {
+		return p.mem.ListGlobalModels(ctx)
+	}
+	const q = `SELECT ` + globalModelSelectCols + ` FROM global_models ORDER BY id ASC`
+	rows, err := p.pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.GlobalModel
+	for rows.Next() {
+		m, err := scanGlobalModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		_ = p.mem.UpsertGlobalModel(ctx, m)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) ListGlobalModelsByName(ctx context.Context, provider domain.ProviderType, modelName string) ([]*domain.GlobalModel, error) {
-	return p.mem.ListGlobalModelsByName(ctx, provider, modelName)
+	if p.pool == nil {
+		return p.mem.ListGlobalModelsByName(ctx, provider, modelName)
+	}
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if provider != "" {
+		const q = `SELECT ` + globalModelSelectCols + ` FROM global_models WHERE provider = $1 AND model_name = $2`
+		rows, err = p.pool.Query(ctx, q, string(provider), modelName)
+	} else {
+		const q = `SELECT ` + globalModelSelectCols + ` FROM global_models WHERE model_name = $1`
+		rows, err = p.pool.Query(ctx, q, modelName)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.GlobalModel
+	for rows.Next() {
+		m, err := scanGlobalModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		_ = p.mem.UpsertGlobalModel(ctx, m)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) GlobalModelCatalogSize() int {
@@ -424,6 +475,11 @@ func (p *PostgresRepository) PricingSummaryRebuilds() uint64 {
 }
 
 func (p *PostgresRepository) UpdateModelPricing(ctx context.Context, modelID string, inputMicros, outputMicros, cachedMicros, reasoningMicros int64, status domain.PricingStatus, provenance, effectiveDate, changedBy string) (*domain.GlobalModel, error) {
+	if p.pool != nil {
+		if _, err := p.GetGlobalModel(ctx, modelID); err != nil {
+			_, _ = p.ListGlobalModelsByName(ctx, "", modelID)
+		}
+	}
 	gm, err := p.mem.UpdateModelPricing(ctx, modelID, inputMicros, outputMicros, cachedMicros, reasoningMicros, status, provenance, effectiveDate, changedBy)
 	if err != nil {
 		return nil, err
@@ -474,8 +530,8 @@ func (p *PostgresRepository) CreateOrganization(ctx context.Context, org *domain
 }
 
 func (p *PostgresRepository) GetOrganization(ctx context.Context, id string) (*domain.Organization, error) {
-	if org, err := p.mem.GetOrganization(ctx, id); err == nil && org != nil {
-		return org, nil
+	if p.pool == nil {
+		return p.mem.GetOrganization(ctx, id)
 	}
 	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM organizations WHERE id = $1`
 	var o domain.Organization
@@ -491,7 +547,32 @@ func (p *PostgresRepository) GetOrganization(ctx context.Context, id string) (*d
 }
 
 func (p *PostgresRepository) ListOrganizations(ctx context.Context) ([]*domain.Organization, error) {
-	return p.mem.ListOrganizations(ctx)
+	if p.pool == nil {
+		return p.mem.ListOrganizations(ctx)
+	}
+	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM organizations ORDER BY name ASC`
+	rows, err := p.pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Organization
+	for rows.Next() {
+		var o domain.Organization
+		var period string
+		if err := rows.Scan(
+			&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.MaxConcurrentRequests, &o.IsActive,
+		); err != nil {
+			return nil, err
+		}
+		o.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+		_ = p.mem.CreateOrganization(ctx, &o)
+		out = append(out, &o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) SetOrgProviderSubscription(ctx context.Context, sub *domain.OrgProviderSubscription) error {
@@ -506,14 +587,10 @@ func (p *PostgresRepository) SetOrgProviderSubscription(ctx context.Context, sub
 }
 
 func (p *PostgresRepository) GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
-	subs, err := p.mem.GetOrgProviderSubscriptions(ctx, orgID)
-	if err == nil && len(subs) > 0 {
-		return subs, nil
+	if p.pool == nil {
+		return p.mem.GetOrgProviderSubscriptions(ctx, orgID)
 	}
 	value, err := p.coalesceLookup(ctx, "subscriptions:"+orgID, func(lookupCtx context.Context) (any, error) {
-		if cached, cacheErr := p.mem.GetOrgProviderSubscriptions(lookupCtx, orgID); cacheErr == nil && len(cached) > 0 {
-			return cached, nil
-		}
 		p.subscriptionQueries.Add(1)
 		const q = `SELECT org_id, provider, is_enabled, auto_enable_new, subscribed_at FROM org_provider_subscriptions WHERE org_id = $1`
 		rows, queryErr := p.pool.Query(lookupCtx, q, orgID)
@@ -521,7 +598,7 @@ func (p *PostgresRepository) GetOrgProviderSubscriptions(ctx context.Context, or
 			return nil, queryErr
 		}
 		defer rows.Close()
-		loaded := 0
+		var out []*domain.OrgProviderSubscription
 		for rows.Next() {
 			var s domain.OrgProviderSubscription
 			var prov string
@@ -529,18 +606,18 @@ func (p *PostgresRepository) GetOrgProviderSubscriptions(ctx context.Context, or
 				return nil, scanErr
 			}
 			s.Provider = domain.ProviderType(prov)
-			if setErr := p.mem.SetOrgProviderSubscription(lookupCtx, &s); setErr != nil {
-				return nil, setErr
+			if p.mem != nil {
+				_ = p.mem.SetOrgProviderSubscription(lookupCtx, &s)
 			}
-			loaded++
+			out = append(out, &s)
 		}
 		if rowsErr := rows.Err(); rowsErr != nil {
 			return nil, rowsErr
 		}
-		if loaded == 0 {
+		if len(out) == 0 {
 			p.emptySubscriptionQueries.Add(1)
 		}
-		return p.mem.GetOrgProviderSubscriptions(lookupCtx, orgID)
+		return out, nil
 	})
 	if err != nil {
 		return nil, err
@@ -561,9 +638,8 @@ func (p *PostgresRepository) SetOrgModelPolicy(ctx context.Context, pol *domain.
 }
 
 func (p *PostgresRepository) GetOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error) {
-	pols, err := p.mem.GetOrgModelPolicies(ctx, orgID)
-	if err == nil && len(pols) > 0 {
-		return pols, nil
+	if p.pool == nil {
+		return p.mem.GetOrgModelPolicies(ctx, orgID)
 	}
 	const q = `SELECT org_id, global_model_id, is_enabled, approved_by, approved_at FROM org_model_policies WHERE org_id = $1`
 	rows, err := p.pool.Query(ctx, q, orgID)
@@ -571,13 +647,19 @@ func (p *PostgresRepository) GetOrgModelPolicies(ctx context.Context, orgID stri
 		return nil, err
 	}
 	defer rows.Close()
+	var out []*domain.OrgModelPolicy
 	for rows.Next() {
 		var pol domain.OrgModelPolicy
-		if err := rows.Scan(&pol.OrgID, &pol.GlobalModelID, &pol.IsEnabled, &pol.ApprovedBy, &pol.ApprovedAt); err == nil {
-			_ = p.mem.SetOrgModelPolicy(ctx, &pol)
+		if err := rows.Scan(&pol.OrgID, &pol.GlobalModelID, &pol.IsEnabled, &pol.ApprovedBy, &pol.ApprovedAt); err != nil {
+			return nil, err
 		}
+		_ = p.mem.SetOrgModelPolicy(ctx, &pol)
+		out = append(out, &pol)
 	}
-	return p.mem.GetOrgModelPolicies(ctx, orgID)
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type rowScanner interface {
@@ -999,12 +1081,16 @@ func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) 
 }
 
 func (p *PostgresRepository) RevokeVirtualKey(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.RevokeVirtualKey(ctx, id)
+	}
 	var keyHash, orgID string
 	err := p.pool.QueryRow(ctx, `UPDATE virtual_keys SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING key_hash, org_id`, id).Scan(&keyHash, &orgID)
 	if err != nil {
 		return err
 	}
-	return p.mem.RevokeVirtualKey(ctx, id)
+	_ = p.mem.RevokeVirtualKey(ctx, id)
+	return nil
 }
 
 func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error {
@@ -1059,8 +1145,8 @@ func scanProviderCredential(row rowScanner) (*domain.ProviderCredential, error) 
 }
 
 func (p *PostgresRepository) GetProviderCredential(ctx context.Context, id string) (*domain.ProviderCredential, error) {
-	if cred, err := p.mem.GetProviderCredential(ctx, id); err == nil && cred != nil {
-		return cred, nil
+	if p.pool == nil {
+		return p.mem.GetProviderCredential(ctx, id)
 	}
 	const q = `SELECT ` + providerCredentialSelectCols + ` FROM provider_credentials WHERE id = $1`
 	c, err := scanProviderCredential(p.pool.QueryRow(ctx, q, id))
@@ -1092,14 +1178,14 @@ func (p *PostgresRepository) hydrateProviderCredentials(ctx context.Context, ids
 }
 
 func (p *PostgresRepository) UpdateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error {
-	if err := p.mem.UpdateProviderCredential(ctx, cred); err != nil {
-		return err
+	if p.pool == nil {
+		return p.mem.UpdateProviderCredential(ctx, cred)
 	}
 	kv := cred.KeyVersion
 	if kv <= 0 {
 		kv = 1
 	}
-	_, _ = p.pool.Exec(ctx, `
+	if _, err := p.pool.Exec(ctx, `
 		UPDATE provider_credentials SET
 			azure_deployment_name = $2,
 			api_version = $3,
@@ -1117,12 +1203,38 @@ func (p *PostgresRepository) UpdateProviderCredential(ctx context.Context, cred 
 		cred.ID, cred.AzureDeploymentName, cred.APIVersion,
 		cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
 		kv, cred.ExpiresAt, cred.LastRotatedAt, cred.LastValidatedAt, cred.IsActive,
-	)
+	); err != nil {
+		return err
+	}
+	if err := p.mem.UpdateProviderCredential(ctx, cred); err != nil {
+		_ = p.mem.CreateProviderCredential(ctx, cred)
+	}
 	return nil
 }
 
 func (p *PostgresRepository) ListProviderCredentials(ctx context.Context, orgID string) ([]*domain.ProviderCredential, error) {
-	return p.mem.ListProviderCredentials(ctx, orgID)
+	if p.pool == nil {
+		return p.mem.ListProviderCredentials(ctx, orgID)
+	}
+	const q = `SELECT ` + providerCredentialSelectCols + ` FROM provider_credentials WHERE ($1 = '' OR org_id = $1) ORDER BY name ASC`
+	rows, err := p.pool.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ProviderCredential
+	for rows.Next() {
+		c, err := scanProviderCredential(rows)
+		if err != nil {
+			return nil, err
+		}
+		_ = p.mem.CreateProviderCredential(ctx, c)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) CreateModelGroup(ctx context.Context, mg *domain.ModelGroup) error {
@@ -1148,8 +1260,8 @@ func (p *PostgresRepository) CreateModelGroup(ctx context.Context, mg *domain.Mo
 }
 
 func (p *PostgresRepository) GetModelGroupByAlias(ctx context.Context, orgID, alias string) (*domain.ModelGroup, error) {
-	if mg, err := p.mem.GetModelGroupByAlias(ctx, orgID, alias); err == nil && mg != nil {
-		return mg, nil
+	if p.pool == nil {
+		return p.mem.GetModelGroupByAlias(ctx, orgID, alias)
 	}
 	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE org_id = $1 AND alias = $2`
 	var g domain.ModelGroup
@@ -1167,8 +1279,8 @@ func (p *PostgresRepository) GetModelGroupByAlias(ctx context.Context, orgID, al
 }
 
 func (p *PostgresRepository) GetModelGroupByID(ctx context.Context, id string) (*domain.ModelGroup, error) {
-	if mg, err := p.mem.GetModelGroupByID(ctx, id); err == nil && mg != nil {
-		return mg, nil
+	if p.pool == nil {
+		return p.mem.GetModelGroupByID(ctx, id)
 	}
 	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE id = $1`
 	var g domain.ModelGroup
@@ -1186,7 +1298,34 @@ func (p *PostgresRepository) GetModelGroupByID(ctx context.Context, id string) (
 }
 
 func (p *PostgresRepository) ListModelGroups(ctx context.Context, orgID string) ([]*domain.ModelGroup, error) {
-	return p.mem.ListModelGroups(ctx, orgID)
+	if p.pool == nil {
+		return p.mem.ListModelGroups(ctx, orgID)
+	}
+	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE ($1 = '' OR org_id = $1) ORDER BY alias ASC`
+	rows, err := p.pool.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ModelGroup
+	for rows.Next() {
+		var g domain.ModelGroup
+		var strat string
+		var fbs []string
+		if err := rows.Scan(
+			&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs, &g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
+		); err != nil {
+			return nil, err
+		}
+		g.RoutingStrategy = domain.RoutingStrategy(strat)
+		g.FallbackGroupIDs = fbs
+		_ = p.mem.CreateModelGroup(ctx, &g)
+		out = append(out, &g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.Deployment) error {
@@ -1222,7 +1361,7 @@ func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q st
 	var deps []*domain.Deployment
 	credSeen := make(map[string]struct{})
 	modelSeen := make(map[string]struct{})
-	var missingCredIDs, missingModelIDs []string
+	var credIDs, modelIDs []string
 	for rows.Next() {
 		var d domain.Deployment
 		var status string
@@ -1237,17 +1376,13 @@ func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q st
 		if d.CredentialID != "" {
 			if _, ok := credSeen[d.CredentialID]; !ok {
 				credSeen[d.CredentialID] = struct{}{}
-				if _, memErr := p.mem.GetProviderCredential(ctx, d.CredentialID); memErr != nil {
-					missingCredIDs = append(missingCredIDs, d.CredentialID)
-				}
+				credIDs = append(credIDs, d.CredentialID)
 			}
 		}
 		if d.GlobalModelID != "" {
 			if _, ok := modelSeen[d.GlobalModelID]; !ok {
 				modelSeen[d.GlobalModelID] = struct{}{}
-				if _, memErr := p.mem.GetGlobalModel(ctx, d.GlobalModelID); memErr != nil {
-					missingModelIDs = append(missingModelIDs, d.GlobalModelID)
-				}
+				modelIDs = append(modelIDs, d.GlobalModelID)
 			}
 		}
 		deps = append(deps, &d)
@@ -1259,40 +1394,42 @@ func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q st
 		return nil, rowsErr
 	}
 
-	if len(missingCredIDs) > 0 {
-		_ = p.hydrateProviderCredentials(ctx, missingCredIDs)
+	if len(credIDs) > 0 {
+		_ = p.hydrateProviderCredentials(ctx, credIDs)
 	}
-	if len(missingModelIDs) > 0 {
-		_ = p.hydrateGlobalModels(ctx, missingModelIDs)
+	if len(modelIDs) > 0 {
+		_ = p.hydrateGlobalModels(ctx, modelIDs)
 	}
 	for _, d := range deps {
+		if d.CredentialID != "" {
+			if c, err := p.mem.GetProviderCredential(ctx, d.CredentialID); err == nil {
+				d.Credential = c
+			}
+		}
+		if d.GlobalModelID != "" {
+			if gm, err := p.mem.GetGlobalModel(ctx, d.GlobalModelID); err == nil {
+				d.GlobalModel = gm
+			}
+		}
 		_ = p.mem.CreateDeployment(ctx, d)
 	}
 	return deps, nil
 }
 
 func (p *PostgresRepository) ListDeploymentsByGroup(ctx context.Context, groupID string) ([]*domain.Deployment, error) {
-	deps, err := p.mem.ListDeploymentsByGroup(ctx, groupID)
-	if err == nil && len(deps) > 0 {
-		return deps, nil
+	if p.pool == nil {
+		return p.mem.ListDeploymentsByGroup(ctx, groupID)
 	}
 	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments WHERE model_group_id = $1`
-	if _, err := p.loadAndHydrateDeployments(ctx, q, groupID); err != nil {
-		return nil, err
-	}
-	return p.mem.ListDeploymentsByGroup(ctx, groupID)
+	return p.loadAndHydrateDeployments(ctx, q, groupID)
 }
 
 func (p *PostgresRepository) ListAllDeployments(ctx context.Context) ([]*domain.Deployment, error) {
-	deps, err := p.mem.ListAllDeployments(ctx)
-	if err == nil && len(deps) > 0 {
-		return deps, nil
+	if p.pool == nil {
+		return p.mem.ListAllDeployments(ctx)
 	}
 	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments`
-	if _, err := p.loadAndHydrateDeployments(ctx, q); err != nil {
-		return nil, err
-	}
-	return p.mem.ListAllDeployments(ctx)
+	return p.loadAndHydrateDeployments(ctx, q)
 }
 
 func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain.GuardrailPolicy) error {
@@ -1330,22 +1467,23 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 	if secAct == "" {
 		secAct = domain.GuardrailActionRedact
 	}
+	blockedKeywords := pol.BlockedKeywords
+	if blockedKeywords == nil {
+		blockedKeywords = []string{}
+	}
 	_, err := p.pool.Exec(ctx, q,
 		pol.OrgID, string(mode), pol.ScanAllRoles, pol.EnablePromptInjection, string(act),
 		pol.EnablePIIDetection, string(piiAct), pol.EnableSecretDetection,
-		string(secAct), pol.BlockedKeywords, pol.RedactOutputPII,
+		string(secAct), blockedKeywords, pol.RedactOutputPII,
 	)
 	return err
 }
 
 func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error) {
-	if pol, err := p.mem.GetGuardrailPolicy(ctx, orgID); err == nil && pol != nil {
-		return pol, nil
+	if p.pool == nil {
+		return p.mem.GetGuardrailPolicy(ctx, orgID)
 	}
 	value, err := p.coalesceLookup(ctx, "guardrail:"+orgID, func(lookupCtx context.Context) (any, error) {
-		if cached, cacheErr := p.mem.GetGuardrailPolicy(lookupCtx, orgID); cacheErr == nil && cached != nil {
-			return cached, nil
-		}
 		p.guardrailQueries.Add(1)
 		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
 		var pol domain.GuardrailPolicy
@@ -1364,8 +1502,8 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 		pol.PromptInjectionAction = domain.GuardrailAction(injAct)
 		pol.PIIAction = domain.GuardrailAction(piiAct)
 		pol.SecretAction = domain.GuardrailAction(secAct)
-		if setErr := p.mem.SetGuardrailPolicy(lookupCtx, &pol); setErr != nil {
-			return nil, setErr
+		if p.mem != nil {
+			_ = p.mem.SetGuardrailPolicy(lookupCtx, &pol)
 		}
 		return &pol, nil
 	})
@@ -1377,10 +1515,14 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 }
 
 func (p *PostgresRepository) UpdateDeploymentStatus(ctx context.Context, depID string, status domain.DeploymentStatus) error {
+	if p.pool == nil {
+		return p.mem.UpdateDeploymentStatus(ctx, depID, status)
+	}
 	if _, err := p.pool.Exec(ctx, `UPDATE model_deployments SET status = $2, updated_at = NOW() WHERE id = $1`, depID, string(status)); err != nil {
 		return err
 	}
-	return p.mem.UpdateDeploymentStatus(ctx, depID, status)
+	_ = p.mem.UpdateDeploymentStatus(ctx, depID, status)
+	return nil
 }
 
 func (p *PostgresRepository) EnqueueSpendEvent(ctx context.Context, ev domain.SpendEvent) error {
@@ -2042,12 +2184,15 @@ func (p *PostgresRepository) UpdateMCPServer(ctx context.Context, server *domain
 		return err
 	}
 	server.ConfigVersion = newVersion
-	return p.mem.UpdateMCPServer(ctx, server)
+	if err := p.mem.UpdateMCPServer(ctx, server); err != nil {
+		_ = p.mem.CreateMCPServer(ctx, server)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) GetMCPServer(ctx context.Context, id string) (*domain.MCPServer, error) {
-	if s, err := p.mem.GetMCPServer(ctx, id); err == nil && s != nil {
-		return s, nil
+	if p.pool == nil {
+		return p.mem.GetMCPServer(ctx, id)
 	}
 	const q = `
 		SELECT id, org_id, name, slug, protocol_version, transport_type, endpoint_url,
@@ -2073,8 +2218,8 @@ func (p *PostgresRepository) GetMCPServer(ctx context.Context, id string) (*doma
 }
 
 func (p *PostgresRepository) GetMCPServerBySlug(ctx context.Context, orgID, slug string) (*domain.MCPServer, error) {
-	if s, err := p.mem.GetMCPServerBySlug(ctx, orgID, slug); err == nil && s != nil {
-		return s, nil
+	if p.pool == nil {
+		return p.mem.GetMCPServerBySlug(ctx, orgID, slug)
 	}
 	const q = `
 		SELECT id, org_id, name, slug, protocol_version, transport_type, endpoint_url,
@@ -2195,8 +2340,8 @@ func (p *PostgresRepository) ListMCPTools(ctx context.Context, serverID string) 
 }
 
 func (p *PostgresRepository) GetMCPTool(ctx context.Context, id string) (*domain.MCPTool, error) {
-	if t, err := p.mem.GetMCPTool(ctx, id); err == nil && t != nil {
-		return t, nil
+	if p.pool == nil {
+		return p.mem.GetMCPTool(ctx, id)
 	}
 	const q = `SELECT id, server_id, org_id, name, description, input_schema, tool_def_hash, cost_per_call_micros, is_active, created_at, updated_at FROM mcp_tools WHERE id = $1`
 	var t domain.MCPTool
@@ -2214,8 +2359,12 @@ func (p *PostgresRepository) CreateMCPToolset(ctx context.Context, toolset *doma
 	if toolset.ID == "" {
 		toolset.ID = uuid.NewString()
 	}
+	toolIDs := toolset.ToolIDs
+	if toolIDs == nil {
+		toolIDs = []string{}
+	}
 	const q = `INSERT INTO mcp_toolsets (id, org_id, name, slug, tool_ids, is_active) VALUES ($1,$2,$3,$4,$5,$6)`
-	if _, err := p.pool.Exec(ctx, q, toolset.ID, toolset.OrgID, toolset.Name, toolset.Slug, toolset.ToolIDs, toolset.IsActive); err != nil {
+	if _, err := p.pool.Exec(ctx, q, toolset.ID, toolset.OrgID, toolset.Name, toolset.Slug, toolIDs, toolset.IsActive); err != nil {
 		return err
 	}
 	return p.mem.CreateMCPToolset(ctx, toolset)
@@ -2321,12 +2470,15 @@ func (p *PostgresRepository) UpdateA2AAgent(ctx context.Context, agent *domain.A
 	); err != nil {
 		return err
 	}
-	return p.mem.UpdateA2AAgent(ctx, agent)
+	if err := p.mem.UpdateA2AAgent(ctx, agent); err != nil {
+		_ = p.mem.CreateA2AAgent(ctx, agent)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) GetA2AAgent(ctx context.Context, id string) (*domain.A2AAgent, error) {
-	if a, err := p.mem.GetA2AAgent(ctx, id); err == nil && a != nil {
-		return a, nil
+	if p.pool == nil {
+		return p.mem.GetA2AAgent(ctx, id)
 	}
 	const q = `
 		SELECT id, org_id, name, slug, endpoint_url, agent_card_url, agent_card_json,
@@ -2348,8 +2500,8 @@ func (p *PostgresRepository) GetA2AAgent(ctx context.Context, id string) (*domai
 }
 
 func (p *PostgresRepository) GetA2AAgentBySlug(ctx context.Context, orgID, slug string) (*domain.A2AAgent, error) {
-	if a, err := p.mem.GetA2AAgentBySlug(ctx, orgID, slug); err == nil && a != nil {
-		return a, nil
+	if p.pool == nil {
+		return p.mem.GetA2AAgentBySlug(ctx, orgID, slug)
 	}
 	const q = `
 		SELECT id, org_id, name, slug, endpoint_url, agent_card_url, agent_card_json,
@@ -2439,7 +2591,8 @@ func (p *PostgresRepository) UpdateA2ATaskState(ctx context.Context, taskID, sta
 	if _, err := p.pool.Exec(ctx, q, taskID, state, outputJSON, costMicros, completedAt); err != nil {
 		return err
 	}
-	return p.mem.UpdateA2ATaskState(ctx, taskID, state, outputJSON, costMicros)
+	_ = p.mem.UpdateA2ATaskState(ctx, taskID, state, outputJSON, costMicros)
+	return nil
 }
 
 func (p *PostgresRepository) GetA2ATask(ctx context.Context, id string) (*domain.A2ATask, error) {
@@ -2779,7 +2932,8 @@ func (p *PostgresRepository) DeleteFile(ctx context.Context, orgID, fileID strin
 	if _, err := p.pool.Exec(ctx, q, fileID, orgID); err != nil {
 		return err
 	}
-	return p.mem.DeleteFile(ctx, orgID, fileID)
+	_ = p.mem.DeleteFile(ctx, orgID, fileID)
+	return nil
 }
 
 // Batches Management
@@ -2858,5 +3012,6 @@ func (p *PostgresRepository) UpdateBatchStatus(ctx context.Context, batchID stri
 	if _, err := p.pool.Exec(ctx, q, status, outputFileID, countsJSON, completedAt, batchID); err != nil {
 		return err
 	}
-	return p.mem.UpdateBatchStatus(ctx, batchID, status, outputFileID, counts, completedAt)
+	_ = p.mem.UpdateBatchStatus(ctx, batchID, status, outputFileID, counts, completedAt)
+	return nil
 }
