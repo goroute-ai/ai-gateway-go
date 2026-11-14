@@ -1003,25 +1003,26 @@ GoRoute AI Gateway embeds a production-grade single-page application (SPA) direc
 ### 8.1 Base Web Routes
 - `GET /ui`: 301 Permanent Redirect to `/ui/` (enforces trailing slash for accurate relative asset resolution).
 - `GET /ui/`: Serves `index.html` with header `Cache-Control: no-cache`.
-- `GET /ui/assets/{filename}`: Serves hashed static bundles (JavaScript, CSS, fonts) with header `Cache-Control: public, max-age=31536000, immutable`.
-- `GET /ui/*`: Client-Side History API fallback. Any unmapped subpath under `/ui/` (e.g. `/ui/playground`, `/ui/models`, `/ui/keys`, `/ui/finops`, `/ui/guardrails`, `/ui/credentials`, `/ui/agentic`) serves `index.html` with status `200 OK` for SPA client-side routing.
+- `GET /ui/assets/{filename}`: Serves hashed static bundles (JavaScript, CSS, fonts) with header `Cache-Control: public, max-age=31536000, immutable`. Directory paths (e.g. `/ui/assets/`) return `404 Not Found`.
+- `GET /ui/*`: Client-Side History API fallback. Any unmapped subpath under `/ui/` (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/keys`, `/ui/finops`, `/ui/guardrails`, `/ui/credentials`, `/ui/agentic`) serves `index.html` with status `200 OK` for SPA client-side routing (`window.location.pathname` + `history.pushState`).
 
 ### 8.2 Client Authentication
 The Operator UI authenticates against the gateway's REST APIs:
 1. On initial load, the user is prompted for the Master Admin Key configured by `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`.
-2. The key is held in React memory and sent as `Authorization: Bearer <key>` on API requests. Reloading the page clears it.
-3. API errors are shown by the relevant view; the API client does not currently clear the key or redirect automatically on `401 Unauthorized`.
+2. Submitting the key probes `GET /admin/v1/organizations` with `Authorization: Bearer <key>`. On `401 Unauthorized` or any request failure, the key is cleared and an error alert is displayed instead of unlocking.
+3. Once validated, the key is held in React memory (reloading the page clears it), and all views render visible error alerts when React Query requests fail.
 
 ### 8.3 Supported Frontend Views
 | In-app view | Component | Core Functionality |
 | :--- | :--- | :--- |
 | Sidebar: Overview | `OverviewView` | Gateway health, latency, request, model, and error summaries. |
-| Sidebar: Playground | `PlaygroundView` | Streaming chat playground. |
-| Sidebar: Models & Routing | `ModelsView` | Model catalogue and deployment views. |
-| Sidebar: Virtual Keys | `KeysView` | Virtual key management. |
-| Sidebar: FinOps & Spend | `FinOpsView` | Spend and budget views. |
-| Sidebar: Guardrails | `GuardrailsView` | Guardrail policy and simulation views. |
-| Sidebar: Credentials Vault | `CredentialsView` | Provider credentials and preflight validation. |
+| Sidebar: Playground | `PlaygroundView` | Streaming chat playground with cost & guardrail telemetry and escaped code export. |
+| Sidebar: Orgs & Teams | `OrganizationsView` | Organizations, teams, users, micro-dollar budgets, provider subscriptions, and org model policies. |
+| Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, and deployment creation. |
+| Sidebar: Virtual Keys | `KeysView` | Virtual key creation (team/user scope, expiry, MCP/A2A allowlists, budgets) and revocation. |
+| Sidebar: FinOps & Spend | `FinOpsView` | Spend summaries (by provider, model, team, virtual key), spend logs, and audit trail. |
+| Sidebar: Guardrails | `GuardrailsView` | Guardrail policy configuration and stateless simulation. |
+| Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP and A2A management views. |
 
 

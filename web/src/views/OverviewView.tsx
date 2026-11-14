@@ -4,6 +4,7 @@ import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import {
   Activity,
   RefreshCw,
@@ -13,8 +14,6 @@ import {
   XCircle,
   Clock,
   Trash2,
-  Radio,
-  Cpu,
 } from 'lucide-react';
 
 export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
@@ -28,6 +27,8 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
   const {
     data: telemetry,
     isLoading: isTelemetryLoading,
+    isError: isTelemetryError,
+    error: telemetryError,
     refetch: refetchTelemetry,
   } = useQuery({
     queryKey: ['admin', 'telemetry', adminKey],
@@ -40,6 +41,8 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
   const {
     data: healthData,
     isLoading: isHealthLoading,
+    isError: isHealthError,
+    error: healthError,
     refetch: refetchHealth,
   } = useQuery({
     queryKey: ['admin', 'health', adminKey],
@@ -82,7 +85,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
             Telemetry & Upstream Health
           </h1>
           <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
-            <Radio className="w-3.5 h-3.5 text-accent-primary animate-pulse" />
+            <Activity className="w-3.5 h-3.5 text-accent-primary animate-pulse" />
             Live in-process reservoir snapshot generated since gateway launch
           </p>
         </div>
@@ -128,6 +131,14 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         </div>
       </div>
 
+      {/* Error Alerts */}
+      {isTelemetryError && (
+        <ErrorAlert error={telemetryError} title="Failed to load telemetry metrics" onRetry={() => refetchTelemetry()} />
+      )}
+      {isHealthError && (
+        <ErrorAlert error={healthError} title="Failed to load deployment health" onRetry={() => refetchHealth()} />
+      )}
+
       {/* KPI Stat Cards Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
@@ -163,7 +174,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
           <div className="flex items-center justify-between text-slate-400 mb-2">
             <span className="text-xs font-medium">Gateway Routing</span>
-            <Cpu className="w-4 h-4 text-amber-400" />
+            <Activity className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white tracking-tight">
             {isTelemetryLoading ? '...' : `${telemetry?.p95_routing_overhead_micros ?? 0} µs`}

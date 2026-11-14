@@ -4,15 +4,18 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: '/ui/',
+  esbuild: {
+    legalComments: 'none',
+  },
   build: {
+    target: 'es2022',
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom'],
-          query: ['@tanstack/react-query'],
-          icons: ['lucide-react'],
+          query: ['@tanstack/react-query', 'lucide-react'],
         },
       },
     },

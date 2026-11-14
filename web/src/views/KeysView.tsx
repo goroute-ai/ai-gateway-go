@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal } from '../components/common/Modal';
+import { Modal, INPUT_CLS } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { VirtualKey } from '../types';
 import {
   Key,
@@ -11,8 +12,8 @@ import {
   Trash2,
   Copy,
   Check,
-  AlertOctagon,
-  Sparkles,
+  AlertTriangle,
+  Zap,
 } from 'lucide-react';
 
 export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
@@ -25,20 +26,39 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
   // Form state
   const [name, setName] = useState('');
+  const [teamId, setTeamId] = useState('');
+  const [userId, setUserId] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
   const [maxBudgetUSD, setMaxBudgetUSD] = useState('');
   const [rpmLimit, setRpmLimit] = useState('');
   const [tpmLimit, setTpmLimit] = useState('');
   const [allowedModels, setAllowedModels] = useState('');
+  const [allowedMCPServers, setAllowedMCPServers] = useState('');
+  const [allowedA2AAgents, setAllowedA2AAgents] = useState('');
 
   // 1. Fetch virtual keys for active org
   const {
     data: keysData,
     isLoading,
+    isError,
+    error,
     refetch,
   } = useQuery({
     queryKey: ['admin', 'keys', adminKey, activeOrgId],
     queryFn: () => adminApi.listKeys(adminKey, activeOrgId),
     enabled: !!adminKey,
+  });
+
+  const { data: teamsData } = useQuery({
+    queryKey: ['admin', 'teams', adminKey, activeOrgId],
+    queryFn: () => adminApi.listTeams(adminKey, activeOrgId),
+    enabled: !!adminKey && !!activeOrgId,
+  });
+
+  const { data: usersData } = useQuery({
+    queryKey: ['admin', 'users', adminKey, activeOrgId],
+    queryFn: () => adminApi.listUsers(adminKey, activeOrgId),
+    enabled: !!adminKey && !!activeOrgId,
   });
 
   // 2. Issue key mutation
@@ -66,10 +86,15 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
   const resetForm = () => {
     setName('');
+    setTeamId('');
+    setUserId('');
+    setExpiresAt('');
     setMaxBudgetUSD('');
     setRpmLimit('');
     setTpmLimit('');
     setAllowedModels('');
+    setAllowedMCPServers('');
+    setAllowedA2AAgents('');
   };
 
   const handleIssueSubmit = (e: React.FormEvent) => {
@@ -81,6 +106,12 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       name: name.trim(),
     };
 
+    if (teamId.trim()) payload.team_id = teamId.trim();
+    if (userId.trim()) payload.user_id = userId.trim();
+    if (expiresAt) {
+      const d = new Date(expiresAt);
+      if (!isNaN(d.getTime())) payload.expires_at = d.toISOString();
+    }
     if (maxBudgetUSD) {
       const parsed = parseFloat(maxBudgetUSD);
       if (!isNaN(parsed) && parsed > 0) {
@@ -91,6 +122,12 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     if (tpmLimit) payload.tpm_limit = parseInt(tpmLimit, 10);
     if (allowedModels.trim()) {
       payload.allowed_models = allowedModels.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (allowedMCPServers.trim()) {
+      payload.allowed_mcp_servers = allowedMCPServers.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (allowedA2AAgents.trim()) {
+      payload.allowed_a2a_agents = allowedA2AAgents.split(',').map((s) => s.trim()).filter(Boolean);
     }
 
     issueMutation.mutate(payload);
@@ -134,6 +171,10 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         </div>
       </div>
 
+      {isError && (
+        <ErrorAlert error={error} title="Failed to load virtual keys" onRetry={() => refetch()} />
+      )}
+
       {/* Keys Table */}
       <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
         <div className="overflow-x-auto">
@@ -169,6 +210,13 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                           <Key className="w-3.5 h-3.5 text-accent-primary shrink-0" />
                           <span>{k.name}</span>
                         </div>
+                        {(k.team_id || k.user_id || k.expires_at) && (
+                          <div className="text-[10px] font-mono text-slate-500 mt-0.5 space-x-2">
+                            {k.team_id && <span>team:{k.team_id}</span>}
+                            {k.user_id && <span>user:{k.user_id}</span>}
+                            {k.expires_at && <span>exp:{new Date(k.expires_at).toLocaleDateString()}</span>}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-3 font-mono text-slate-300">
                         <span className="bg-black/40 px-2 py-0.5 rounded border border-border-subtle">
@@ -249,6 +297,9 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         maxWidth="md"
       >
         <form onSubmit={handleIssueSubmit} className="space-y-4">
+          {issueMutation.isError && (
+            <ErrorAlert error={issueMutation.error} title="Failed to issue virtual key" />
+          )}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
               Key Name <span className="text-rose-400">*</span>
@@ -265,58 +316,54 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Budget Cap (USD)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={maxBudgetUSD}
-                onChange={(e) => setMaxBudgetUSD(e.target.value)}
-                placeholder="e.g. 50.00"
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Team (optional)</label>
+              <select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={INPUT_CLS}>
+                <option value="">Org-wide</option>
+                {(teamsData?.data || []).map((t) => <option key={t.id} value={t.id}>{t.name} ({t.id})</option>)}
+              </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                RPM Limit
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={rpmLimit}
-                onChange={(e) => setRpmLimit(e.target.value)}
-                placeholder="e.g. 600"
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">User (optional)</label>
+              <select value={userId} onChange={(e) => setUserId(e.target.value)} className={INPUT_CLS}>
+                <option value="">Unassigned</option>
+                {(usersData?.data || []).map((u) => <option key={u.id} value={u.id}>{u.email} ({u.id})</option>)}
+              </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                TPM Limit
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={tpmLimit}
-                onChange={(e) => setTpmLimit(e.target.value)}
-                placeholder="e.g. 100000"
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Expires At</label>
+              <input type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} className={`${INPUT_CLS} font-mono`} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Budget Cap (USD)</label>
+              <input type="number" step="0.01" min="0" value={maxBudgetUSD} onChange={(e) => setMaxBudgetUSD(e.target.value)} placeholder="50.00" className={`${INPUT_CLS} font-mono`} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">RPM Limit</label>
+              <input type="number" min="1" value={rpmLimit} onChange={(e) => setRpmLimit(e.target.value)} placeholder="600" className={`${INPUT_CLS} font-mono`} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">TPM Limit</label>
+              <input type="number" min="1" value={tpmLimit} onChange={(e) => setTpmLimit(e.target.value)} placeholder="100000" className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              Allowed Model Scope (Comma-separated, optional)
-            </label>
-            <input
-              type="text"
-              value={allowedModels}
-              onChange={(e) => setAllowedModels(e.target.value)}
-              placeholder="e.g. fast, reasoning, openai/gpt-4o"
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-            />
+            <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Models (Comma-separated)</label>
+            <input type="text" value={allowedModels} onChange={(e) => setAllowedModels(e.target.value)} placeholder="fast, reasoning, openai/gpt-4o" className={`${INPUT_CLS} font-mono`} />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed MCP Servers</label>
+              <input type="text" value={allowedMCPServers} onChange={(e) => setAllowedMCPServers(e.target.value)} placeholder="mcp_github, mcp_postgres" className={`${INPUT_CLS} font-mono`} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed A2A Agents</label>
+              <input type="text" value={allowedA2AAgents} onChange={(e) => setAllowedA2AAgents(e.target.value)} placeholder="agent_research, agent_code" className={`${INPUT_CLS} font-mono`} />
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -348,7 +395,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       >
         <div className="space-y-4">
           <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-300">
-            <AlertOctagon className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
             <div>
               <p className="font-semibold">Security Warning</p>
               <p className="text-[11px] text-amber-300/80 mt-0.5">
@@ -378,7 +425,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
               }}
               className="flex items-center gap-1.5 text-xs text-accent-glow hover:underline font-medium"
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Zap className="w-3.5 h-3.5" />
               <span>Test with this key in Playground ↗</span>
             </button>
 

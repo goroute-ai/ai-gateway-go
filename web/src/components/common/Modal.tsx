@@ -1,6 +1,13 @@
 import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
 
+export const INPUT_CLS =
+  'w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary';
+export const BTN_PRIMARY =
+  'px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50';
+export const BTN_CANCEL =
+  'px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors';
+
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;

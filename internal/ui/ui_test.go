@@ -133,4 +133,12 @@ func TestUI_StaticAssetMimeAndCaching(t *testing.T) {
 	r.ServeHTTP(recFav, reqFav)
 	assert.Equal(t, http.StatusOK, recFav.Code)
 	assert.True(t, strings.HasPrefix(recFav.Header().Get("Content-Type"), "image/png"), "favicon should have image/png MIME, got %q", recFav.Header().Get("Content-Type"))
+
+	// 4. Verify directory paths return 404 (no directory listing)
+	for _, dirPath := range []string{"/ui/assets/", "/ui/assets"} {
+		reqDir := httptest.NewRequest(http.MethodGet, dirPath, nil)
+		recDir := httptest.NewRecorder()
+		r.ServeHTTP(recDir, reqDir)
+		assert.Equal(t, http.StatusNotFound, recDir.Code, "directory path %s should return 404", dirPath)
+	}
 }

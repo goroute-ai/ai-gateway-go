@@ -51,13 +51,18 @@ func RegisterRoutes(r chi.Router) {
 			trimmedPath = "/index.html"
 		}
 
-		cleanPath := strings.TrimPrefix(trimmedPath, "/")
+		cleanPath := strings.Trim(trimmedPath, "/")
 
 		// If the specific file exists (and is not index.html, which FileServer would 301-redirect to ./),
-		// serve it with standard caching headers.
-		if cleanPath != "index.html" {
+		// serve it with standard caching headers. Return 404 for directories (e.g. /ui/assets/).
+		if cleanPath != "" && cleanPath != "index.html" {
 			if f, err := distFS.Open(cleanPath); err == nil {
+				stat, statErr := f.Stat()
 				_ = f.Close()
+				if statErr == nil && stat.IsDir() {
+					http.NotFound(w, r)
+					return
+				}
 				if strings.HasPrefix(trimmedPath, "/assets/") {
 					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				}

@@ -1,18 +1,19 @@
 import React from 'react';
 import {
   Activity,
-  MessageSquare,
+  Zap,
   Key,
   ShieldCheck,
-  Boxes,
-  Coins,
-  Shield,
+  Layers,
+  DollarSign,
   Bot,
+  Building2,
 } from 'lucide-react';
 
 export type NavView =
   | 'overview'
   | 'playground'
+  | 'organizations'
   | 'keys'
   | 'credentials'
   | 'models'
@@ -28,12 +29,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) => {
   const navItems = [
     { id: 'overview' as NavView, label: 'Overview', icon: Activity, badge: 'Live' },
-    { id: 'playground' as NavView, label: 'Playground', icon: MessageSquare, badge: 'SSE' },
+    { id: 'playground' as NavView, label: 'Playground', icon: Zap, badge: 'SSE' },
+    { id: 'organizations' as NavView, label: 'Orgs & Teams', icon: Building2 },
     { id: 'keys' as NavView, label: 'Virtual Keys', icon: Key },
     { id: 'credentials' as NavView, label: 'Credentials Vault', icon: ShieldCheck },
-    { id: 'models' as NavView, label: 'Models & Routing', icon: Boxes },
-    { id: 'finops' as NavView, label: 'FinOps & Spend', icon: Coins },
-    { id: 'guardrails' as NavView, label: 'Guardrails', icon: Shield },
+    { id: 'models' as NavView, label: 'Models & Routing', icon: Layers },
+    { id: 'finops' as NavView, label: 'FinOps & Spend', icon: DollarSign },
+    { id: 'guardrails' as NavView, label: 'Guardrails', icon: ShieldCheck },
     { id: 'agentic' as NavView, label: 'Agentic Hub', icon: Bot, badge: 'MCP/A2A' },
   ];
 

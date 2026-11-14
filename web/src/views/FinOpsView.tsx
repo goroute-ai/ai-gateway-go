@@ -5,20 +5,66 @@ import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import { SpendEvent, AuditLog } from '../types';
 import {
   DollarSign,
-  TrendingUp,
-  Receipt,
-  ShieldAlert,
+  Activity,
+  AlertTriangle,
   Clock,
   Layers,
-  Coins,
-  FileText,
   RefreshCw,
   Search,
-  Eye,
 } from 'lucide-react';
+
+const SpendBreakdownCard: React.FC<{
+  title: string;
+  icon: React.ReactNode;
+  entries?: Record<string, number>;
+  totalCostMicros: number;
+  barClass: string;
+  emptyText: string;
+  limit?: number;
+  formatMicroDollars: (m?: number) => string;
+}> = ({ title, icon, entries, totalCostMicros, barClass, emptyText, limit, formatMicroDollars }) => {
+  const items = entries ? Object.entries(entries).sort(([, a], [, b]) => b - a) : [];
+  const visible = limit ? items.slice(0, limit) : items;
+  return (
+    <div className="bg-surface-base border border-subtle rounded-lg p-4">
+      <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
+        {icon}
+        {title}
+      </h3>
+      {visible.length > 0 ? (
+        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+          {visible.map(([label, micros]) => {
+            const pct = totalCostMicros > 0 ? (micros / totalCostMicros) * 100 : 0;
+            return (
+              <div key={label} className="text-xs font-mono">
+                <div className="flex justify-between text-zinc-300 mb-1">
+                  <span className="truncate max-w-[200px]" title={label}>
+                    {label || 'unassigned'}
+                  </span>
+                  <span>
+                    {formatMicroDollars(micros)} ({pct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className={`${barClass} h-1.5 rounded-full`}
+                    style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-xs text-zinc-500 font-mono py-4 text-center">{emptyText}</div>
+      )}
+    </div>
+  );
+};
 
 export const FinOpsView: React.FC = () => {
   const { adminKey, activeOrgId } = useAuth();
@@ -32,6 +78,8 @@ export const FinOpsView: React.FC = () => {
   const {
     data: summary,
     isLoading: isSummaryLoading,
+    isError: isSummaryError,
+    error: summaryError,
     refetch: refetchSummary,
   } = useQuery({
     queryKey: ['admin', 'spend-summary', adminKey, activeOrgId],
@@ -44,6 +92,8 @@ export const FinOpsView: React.FC = () => {
   const {
     data: spendLogsData,
     isLoading: isLogsLoading,
+    isError: isLogsError,
+    error: logsError,
     refetch: refetchLogs,
   } = useQuery({
     queryKey: ['admin', 'spend-logs', adminKey, activeOrgId, logLimit],
@@ -56,6 +106,8 @@ export const FinOpsView: React.FC = () => {
   const {
     data: auditLogsData,
     isLoading: isAuditLoading,
+    isError: isAuditError,
+    error: auditError,
     refetch: refetchAudit,
   } = useQuery({
     queryKey: ['admin', 'audit-logs', adminKey, activeOrgId, logLimit],
@@ -111,7 +163,7 @@ export const FinOpsView: React.FC = () => {
             FinOps & Spend Governance
           </h2>
           <p className="text-xs text-zinc-400 mt-1">
-            Real-time ledger accounting in integer micro-dollars ($1 = 1,000,000 µ$) with immutable administrative audit trail. Recent ledger spend events are polled on a 10-second interval or refreshed manually.
+            Real-time micro-dollar ($1 = 1,000,000 µ$) ledger accounting and administrative audit trail.
           </p>
         </div>
 
@@ -132,62 +184,26 @@ export const FinOpsView: React.FC = () => {
 
       {/* Aggregate FinOps Metrics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-surface-base border border-subtle rounded-lg p-4">
-          <div className="flex items-center justify-between text-zinc-400 mb-1">
-            <span className="text-xs font-mono uppercase tracking-wider">Cumulative Spend</span>
-            <Coins className="w-4 h-4 text-emerald-400" />
+        {[
+          { label: 'Cumulative Spend', icon: <DollarSign className="w-4 h-4 text-emerald-400" />, val: formatMicroDollars(totalCostMicros), sub: `${totalCostMicros.toLocaleString()} µ$ ledger balance` },
+          { label: 'Total Invocations', icon: <Activity className="w-4 h-4 text-accent-primary" />, val: totalRequests.toLocaleString(), sub: 'Processed via active keys' },
+          { label: 'Total Tokens', icon: <Layers className="w-4 h-4 text-accent-glow" />, val: totalTokens.toLocaleString(), sub: 'Prompt + Completion tokens' },
+          { label: 'Avg Cost / Req', icon: <DollarSign className="w-4 h-4 text-amber-400" />, val: formatMicroDollars(avgCostPerReqMicros), sub: `${avgCostPerReqMicros.toLocaleString()} µ$ per request` },
+        ].map((kpi) => (
+          <div key={kpi.label} className="bg-surface-base border border-subtle rounded-lg p-4">
+            <div className="flex items-center justify-between text-zinc-400 mb-1">
+              <span className="text-xs font-mono uppercase tracking-wider">{kpi.label}</span>
+              {kpi.icon}
+            </div>
+            <div className="text-2xl font-bold font-mono text-zinc-100">{isSummaryLoading ? '...' : kpi.val}</div>
+            <div className="text-[11px] text-zinc-500 font-mono mt-1">{kpi.sub}</div>
           </div>
-          <div className="text-2xl font-bold font-mono text-zinc-100">
-            {isSummaryLoading ? '...' : formatMicroDollars(totalCostMicros)}
-          </div>
-          <div className="text-[11px] text-zinc-500 font-mono mt-1">
-            {totalCostMicros.toLocaleString()} µ$ ledger balance
-          </div>
-        </div>
-
-        <div className="bg-surface-base border border-subtle rounded-lg p-4">
-          <div className="flex items-center justify-between text-zinc-400 mb-1">
-            <span className="text-xs font-mono uppercase tracking-wider">Total Invocations</span>
-            <TrendingUp className="w-4 h-4 text-accent-primary" />
-          </div>
-          <div className="text-2xl font-bold font-mono text-zinc-100">
-            {isSummaryLoading ? '...' : totalRequests.toLocaleString()}
-          </div>
-          <div className="text-[11px] text-zinc-500 font-mono mt-1">
-            Processed via active virtual keys
-          </div>
-        </div>
-
-        <div className="bg-surface-base border border-subtle rounded-lg p-4">
-          <div className="flex items-center justify-between text-zinc-400 mb-1">
-            <span className="text-xs font-mono uppercase tracking-wider">Total Tokens</span>
-            <Layers className="w-4 h-4 text-accent-glow" />
-          </div>
-          <div className="text-2xl font-bold font-mono text-zinc-100">
-            {isSummaryLoading ? '...' : totalTokens.toLocaleString()}
-          </div>
-          <div className="text-[11px] text-zinc-500 font-mono mt-1">
-            Prompt + Completion tokens
-          </div>
-        </div>
-
-        <div className="bg-surface-base border border-subtle rounded-lg p-4">
-          <div className="flex items-center justify-between text-zinc-400 mb-1">
-            <span className="text-xs font-mono uppercase tracking-wider">Avg Cost / Req</span>
-            <Receipt className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="text-2xl font-bold font-mono text-zinc-100">
-            {isSummaryLoading ? '...' : formatMicroDollars(avgCostPerReqMicros)}
-          </div>
-          <div className="text-[11px] text-zinc-500 font-mono mt-1">
-            {avgCostPerReqMicros.toLocaleString()} µ$ per request
-          </div>
-        </div>
+        ))}
       </div>
 
       {!!summary?.unpriced_requests && (
         <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-700/50 bg-amber-950/30 p-4 text-amber-100">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             <p className="text-sm font-medium">Some usage has no verified price</p>
             <p className="mt-1 text-xs text-amber-200/80">
@@ -197,77 +213,28 @@ export const FinOpsView: React.FC = () => {
         </div>
       )}
 
-      {/* Spend Breakdowns (Provider & Model) */}
+      {/* Error Alerts */}
+      {isSummaryError && (
+        <ErrorAlert error={summaryError} title="Failed to load spend summary" onRetry={() => refetchSummary()} />
+      )}
+      {activeTab === 'spend' && isLogsError && (
+        <ErrorAlert error={logsError} title="Failed to load spend logs" onRetry={() => refetchLogs()} />
+      )}
+      {activeTab === 'audit' && isAuditError && (
+        <ErrorAlert error={auditError} title="Failed to load audit logs" onRetry={() => refetchAudit()} />
+      )}
+
+      {/* Spend Breakdowns (Provider, Model, Team & Virtual Key) */}
       {summary && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Provider Breakdown */}
-          <div className="bg-surface-base border border-subtle rounded-lg p-4">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
-              <Receipt className="w-4 h-4 text-accent-primary" />
-              Spend by Provider
-            </h3>
-            {summary.spend_by_provider && Object.keys(summary.spend_by_provider).length > 0 ? (
-              <div className="space-y-2">
-                {Object.entries(summary.spend_by_provider).map(([provider, micros]) => {
-                  const pct = totalCostMicros > 0 ? (micros / totalCostMicros) * 100 : 0;
-                  return (
-                    <div key={provider} className="text-xs font-mono">
-                      <div className="flex justify-between text-zinc-300 mb-1">
-                        <span className="font-semibold capitalize">{provider}</span>
-                        <span>{formatMicroDollars(micros)} ({pct.toFixed(1)}%)</span>
-                      </div>
-                      <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                        <div
-                          className="bg-accent-primary h-1.5 rounded-full"
-                          style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-xs text-zinc-500 font-mono py-4 text-center">
-                No provider spend recorded yet
-              </div>
-            )}
-          </div>
-
-          {/* Model Breakdown */}
-          <div className="bg-surface-base border border-subtle rounded-lg p-4">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
-              <Layers className="w-4 h-4 text-accent-glow" />
-              Top Models by Spend
-            </h3>
-            {summary.spend_by_model && Object.keys(summary.spend_by_model).length > 0 ? (
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                {Object.entries(summary.spend_by_model)
-                  .sort(([, a], [, b]) => b - a)
-                  .slice(0, 5)
-                  .map(([model, micros]) => {
-                    const pct = totalCostMicros > 0 ? (micros / totalCostMicros) * 100 : 0;
-                    return (
-                      <div key={model} className="text-xs font-mono">
-                        <div className="flex justify-between text-zinc-300 mb-1">
-                          <span className="truncate max-w-[200px]" title={model}>{model}</span>
-                          <span>{formatMicroDollars(micros)} ({pct.toFixed(1)}%)</span>
-                        </div>
-                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                          <div
-                            className="bg-accent-violet h-1.5 rounded-full"
-                            style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-              </div>
-            ) : (
-              <div className="text-xs text-zinc-500 font-mono py-4 text-center">
-                No model spend recorded yet
-              </div>
-            )}
-          </div>
+          {[
+            { title: 'Spend by Provider', icon: <DollarSign className="w-4 h-4 text-accent-primary" />, entries: summary.spend_by_provider, barClass: 'bg-accent-primary', emptyText: 'No provider spend yet' },
+            { title: 'Top Models by Spend', icon: <Layers className="w-4 h-4 text-accent-glow" />, entries: summary.spend_by_model, barClass: 'bg-accent-violet', emptyText: 'No model spend yet', limit: 5 },
+            { title: 'Spend by Team', icon: <Layers className="w-4 h-4 text-emerald-400" />, entries: summary.spend_by_team, barClass: 'bg-emerald-500', emptyText: 'No team spend yet' },
+            { title: 'Top Virtual Keys by Spend', icon: <DollarSign className="w-4 h-4 text-cyan-400" />, entries: summary.spend_by_virtual_key, barClass: 'bg-cyan-500', emptyText: 'No virtual key spend yet', limit: 5 },
+          ].map((b) => (
+            <SpendBreakdownCard key={b.title} {...b} totalCostMicros={totalCostMicros} formatMicroDollars={formatMicroDollars} />
+          ))}
         </div>
       )}
 
@@ -283,7 +250,7 @@ export const FinOpsView: React.FC = () => {
                   : 'border-transparent text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              <FileText className="w-4 h-4" />
+              <Layers className="w-4 h-4" />
               Recent Spend Events ({spendLogs.length})
             </button>
             <button
@@ -294,7 +261,7 @@ export const FinOpsView: React.FC = () => {
                   : 'border-transparent text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              <ShieldAlert className="w-4 h-4" />
+              <AlertTriangle className="w-4 h-4" />
               Administrative Audit Log ({auditLogs.length})
             </button>
           </div>
@@ -395,7 +362,7 @@ export const FinOpsView: React.FC = () => {
                           onClick={() => setSelectedSpendEvent(evt)}
                           className="px-2 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-[11px] transition inline-flex items-center gap-1"
                         >
-                          <Eye className="w-3 h-3" />
+                          <Search className="w-3 h-3" />
                           Inspect
                         </button>
                       </td>
@@ -470,7 +437,7 @@ export const FinOpsView: React.FC = () => {
                           onClick={() => setSelectedAuditLog(log)}
                           className="px-2 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-[11px] transition inline-flex items-center gap-1"
                         >
-                          <Eye className="w-3 h-3" />
+                          <Search className="w-3 h-3" />
                           Details
                         </button>
                       </td>

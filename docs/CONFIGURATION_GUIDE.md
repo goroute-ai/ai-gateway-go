@@ -126,14 +126,15 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 
 ### Accessing the Web UI
 1. Launch GoRoute AI Gateway (`ai-gateway --config configs/config.yaml` or `docker compose up`).
-2. Navigate to **`http://localhost:8080/ui/`** in any modern web browser.
-3. When prompted, enter your Master Admin Key (configured via `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`; the development default is `sk-gw-master-admin-default-key-change-me`).
+2. Navigate to **`http://localhost:8080/ui/`** (or deep-link directly to `/ui/playground`, `/ui/organizations`, `/ui/models`, etc.) in any modern web browser.
+3. When prompted, enter your Master Admin Key (configured via `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`; the development default is `sk-gw-master-admin-default-key-change-me`). The UI validates the key against `/admin/v1/organizations` before unlocking.
 
 ### Operator Console Features
-- **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency graphs, and tool call inspection.
-- **Model Catalogue Explorer**: Search and filter 100+ AI models across 12+ providers, inspect micro-dollar pricing, context window boundaries, and supported modalities (text, vision, audio).
-- **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team ownership, monthly micro-dollar budget limits, and RPM/TPM rate limits.
-- **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, model, and provider.
+- **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency, micro-dollar cost, and guardrail action telemetry.
+- **Organizations, Teams & Policies**: Create and manage organizations, teams, users, micro-dollar budgets, provider subscriptions, and org-level model policies.
+- **Model Catalogue & Routing Explorer**: Search and filter 100+ AI models across 12+ providers, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
+- **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team/user ownership, expiry, allowed MCP servers / A2A agents, monthly micro-dollar budget limits, and RPM/TPM rate limits.
+- **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, virtual key, model, and provider.
 - **Interactive Guardrail Simulator**: Test regex PII redaction and secret scanning against arbitrary text without invoking upstream models or incurring token charges.
 - **Upstream Credentials Vault**: Add and rotate AES-256-GCM encrypted provider credentials with live preflight validation against provider endpoints.
 

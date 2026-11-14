@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { adminApi } from '../api/admin';
 
 interface AuthContextType {
   adminKey: string;
   setAdminKey: (key: string) => void;
+  unlockWithKey: (key: string) => Promise<void>;
   isUnlocked: boolean;
   lock: () => void;
   activeOrgId: string;
@@ -25,6 +27,28 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const isUnlocked = adminKey.trim().length > 0;
 
+  const unlockWithKey = async (rawKey: string): Promise<void> => {
+    const trimmed = rawKey.trim();
+    if (!trimmed) {
+      setAdminKey('');
+      throw new Error('Master Admin Key is required.');
+    }
+    try {
+      const orgs = await adminApi.listOrgs(trimmed);
+      setAdminKey(trimmed);
+      if (orgs?.data && orgs.data.length > 0) {
+        const hasCurrent = orgs.data.some((o) => o.id === activeOrgId);
+        if (!hasCurrent) {
+          setActiveOrgId(orgs.data[0].id);
+        }
+      }
+    } catch (err) {
+      setAdminKey('');
+      queryClient.clear();
+      throw err;
+    }
+  };
+
   const lock = () => {
     setAdminKey('');
     setCapturedVirtualKey(null);
@@ -36,6 +60,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       value={{
         adminKey,
         setAdminKey,
+        unlockWithKey,
         isUnlocked,
         lock,
         activeOrgId,

@@ -3,22 +3,62 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import { GuardrailPolicy } from '../types';
 import {
   ShieldCheck,
-  ShieldAlert,
-  Play,
-  Save,
+  Zap,
+  Check,
   CheckCircle2,
   XCircle,
   AlertTriangle,
   Lock,
-  EyeOff,
-  KeyRound,
-  Tag,
+  Key,
+  Layers,
   Plus,
   X,
 } from 'lucide-react';
+
+const GuardrailRuleCard: React.FC<{
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+  action: 'block' | 'redact' | 'audit';
+  onAction: (a: 'block' | 'redact' | 'audit') => void;
+  actions: readonly ('block' | 'redact' | 'audit')[];
+  activeCls: string;
+  extra?: React.ReactNode;
+}> = ({ icon, title, desc, enabled, onToggle, action, onAction, actions, activeCls, extra }) => (
+  <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
+    <div className="flex items-center justify-between">
+      <div>
+        <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">{icon}{title}</div>
+        <p className="text-[11px] text-zinc-400 mt-0.5">{desc}</p>
+      </div>
+      <label className="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} className="sr-only peer" />
+        <div className="w-9 h-5 bg-zinc-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary" />
+      </label>
+    </div>
+    {enabled && (
+      <div className="space-y-2 pt-1 border-t border-subtle text-xs font-mono">
+        <div className="flex items-center gap-3">
+          <span className="text-zinc-400 text-[11px]">Action:</span>
+          <div className="flex gap-2">
+            {actions.map((act) => (
+              <button key={act} type="button" onClick={() => onAction(act)} className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${action === act ? activeCls : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'}`}>
+                {act}
+              </button>
+            ))}
+          </div>
+        </div>
+        {extra}
+      </div>
+    )}
+  </div>
+);
 
 export const GuardrailsView: React.FC = () => {
   const { adminKey, activeOrgId } = useAuth();
@@ -54,6 +94,8 @@ export const GuardrailsView: React.FC = () => {
   const {
     data: fetchedPolicy,
     isLoading: isPolicyLoading,
+    isError: isPolicyError,
+    error: policyError,
     refetch: refetchPolicy,
   } = useQuery({
     queryKey: ['admin', 'guardrail-policy', adminKey, activeOrgId],
@@ -162,11 +204,15 @@ export const GuardrailsView: React.FC = () => {
             disabled={saveMutation.isPending || !activeOrgId}
             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs transition disabled:opacity-50"
           >
-            <Save className="w-3.5 h-3.5" />
+            <Check className="w-3.5 h-3.5" />
             {saveMutation.isPending ? 'Saving...' : 'Save Policy'}
           </button>
         </div>
       </div>
+
+      {isPolicyError && (
+        <ErrorAlert error={policyError} title="Failed to load guardrail policy" onRetry={() => refetchPolicy()} />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Policy Configuration Form (7 cols) */}
@@ -183,168 +229,51 @@ export const GuardrailsView: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-5">
-                {/* Rule 1: Prompt Injection */}
-                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                        <ShieldAlert className="w-4 h-4 text-amber-400" />
-                        Prompt Injection Defense
-                      </div>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        Detect adversarial jailbreak tokens and instruction override patterns.
-                      </p>
+                <GuardrailRuleCard
+                  icon={<AlertTriangle className="w-4 h-4 text-amber-400" />}
+                  title="Prompt Injection Defense"
+                  desc="Detect adversarial jailbreak tokens and instruction override patterns."
+                  enabled={policyForm.enable_prompt_injection}
+                  onToggle={(v) => setPolicyForm({ ...policyForm, enable_prompt_injection: v })}
+                  action={policyForm.prompt_injection_action}
+                  onAction={(a) => setPolicyForm({ ...policyForm, prompt_injection_action: a })}
+                  actions={['block', 'redact', 'audit']}
+                  activeCls="bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold"
+                />
+                <GuardrailRuleCard
+                  icon={<Lock className="w-4 h-4 text-accent-primary" />}
+                  title="PII Detection & Anonymization"
+                  desc="Detect SSNs, credit cards, emails, and phone numbers in incoming prompts."
+                  enabled={policyForm.enable_pii_detection}
+                  onToggle={(v) => setPolicyForm({ ...policyForm, enable_pii_detection: v })}
+                  action={policyForm.pii_action}
+                  onAction={(a) => setPolicyForm({ ...policyForm, pii_action: a })}
+                  actions={['redact', 'block', 'audit']}
+                  activeCls="bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold"
+                  extra={
+                    <div className="flex items-center gap-2 pt-1">
+                      <input type="checkbox" id="redactOutput" checked={policyForm.redact_output_pii} onChange={(e) => setPolicyForm({ ...policyForm, redact_output_pii: e.target.checked })} className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5" />
+                      <label htmlFor="redactOutput" className="text-[11px] text-zinc-300 cursor-pointer">Also sanitize outgoing completion streams for leaked PII</label>
                     </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={policyForm.enable_prompt_injection}
-                        onChange={(e) =>
-                          setPolicyForm({ ...policyForm, enable_prompt_injection: e.target.checked })
-                        }
-                        className="sr-only peer"
-                      />
-                      <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary"></div>
-                    </label>
-                  </div>
-                  {policyForm.enable_prompt_injection && (
-                    <div className="flex items-center gap-3 pt-1 border-t border-subtle text-xs font-mono">
-                      <span className="text-zinc-400 text-[11px]">Enforcement Action:</span>
-                      <div className="flex gap-2">
-                        {(['block', 'redact', 'audit'] as const).map((act) => (
-                          <button
-                            key={act}
-                            type="button"
-                            onClick={() => setPolicyForm({ ...policyForm, prompt_injection_action: act })}
-                            className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${
-                              policyForm.prompt_injection_action === act
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold'
-                                : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
-                            }`}
-                          >
-                            {act}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Rule 2: PII Detection & Anonymization */}
-                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                        <EyeOff className="w-4 h-4 text-accent-primary" />
-                        PII Detection & Anonymization
-                      </div>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        Detect SSNs, credit cards, emails, and phone numbers in incoming prompts.
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={policyForm.enable_pii_detection}
-                        onChange={(e) =>
-                          setPolicyForm({ ...policyForm, enable_pii_detection: e.target.checked })
-                        }
-                        className="sr-only peer"
-                      />
-                      <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary"></div>
-                    </label>
-                  </div>
-                  {policyForm.enable_pii_detection && (
-                    <div className="space-y-2 pt-1 border-t border-subtle text-xs font-mono">
-                      <div className="flex items-center gap-3">
-                        <span className="text-zinc-400 text-[11px]">Enforcement Action:</span>
-                        <div className="flex gap-2">
-                          {(['redact', 'block', 'audit'] as const).map((act) => (
-                            <button
-                              key={act}
-                              type="button"
-                              onClick={() => setPolicyForm({ ...policyForm, pii_action: act })}
-                              className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${
-                                policyForm.pii_action === act
-                                  ? 'bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold'
-                                  : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
-                              }`}
-                            >
-                              {act}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 pt-1">
-                        <input
-                          type="checkbox"
-                          id="redactOutput"
-                          checked={policyForm.redact_output_pii}
-                          onChange={(e) =>
-                            setPolicyForm({ ...policyForm, redact_output_pii: e.target.checked })
-                          }
-                          className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5"
-                        />
-                        <label htmlFor="redactOutput" className="text-[11px] text-zinc-300 cursor-pointer">
-                          Also sanitize outgoing completion streams for leaked PII
-                        </label>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Rule 3: Secret Detection */}
-                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                        <KeyRound className="w-4 h-4 text-emerald-400" />
-                        API Key & Secret Leak Prevention
-                      </div>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        Detect API keys, private keys, AWS access tokens, and high-entropy credentials.
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={policyForm.enable_secret_detection}
-                        onChange={(e) =>
-                          setPolicyForm({ ...policyForm, enable_secret_detection: e.target.checked })
-                        }
-                        className="sr-only peer"
-                      />
-                      <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary"></div>
-                    </label>
-                  </div>
-                  {policyForm.enable_secret_detection && (
-                    <div className="flex items-center gap-3 pt-1 border-t border-subtle text-xs font-mono">
-                      <span className="text-zinc-400 text-[11px]">Enforcement Action:</span>
-                      <div className="flex gap-2">
-                        {(['block', 'redact', 'audit'] as const).map((act) => (
-                          <button
-                            key={act}
-                            type="button"
-                            onClick={() => setPolicyForm({ ...policyForm, secret_action: act })}
-                            className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${
-                              policyForm.secret_action === act
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold'
-                                : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
-                            }`}
-                          >
-                            {act}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  }
+                />
+                <GuardrailRuleCard
+                  icon={<Key className="w-4 h-4 text-emerald-400" />}
+                  title="API Key & Secret Leak Prevention"
+                  desc="Detect API keys, private keys, AWS access tokens, and high-entropy credentials."
+                  enabled={policyForm.enable_secret_detection}
+                  onToggle={(v) => setPolicyForm({ ...policyForm, enable_secret_detection: v })}
+                  action={policyForm.secret_action}
+                  onAction={(a) => setPolicyForm({ ...policyForm, secret_action: a })}
+                  actions={['block', 'redact', 'audit']}
+                  activeCls="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold"
+                />
 
                 {/* Rule 4: Blocked Keywords */}
                 <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
                   <div>
                     <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                      <Tag className="w-4 h-4 text-accent-primary" />
+                      <Layers className="w-4 h-4 text-accent-primary" />
                       Blocked Word & Phrase Lexicon
                     </div>
                     <p className="text-[11px] text-zinc-400 mt-0.5">
@@ -409,7 +338,7 @@ export const GuardrailsView: React.FC = () => {
         <div className="lg:col-span-5 space-y-4">
           <div className="bg-surface-base border border-subtle rounded-lg p-5">
             <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 mb-2 flex items-center gap-2">
-              <Play className="w-4 h-4 text-emerald-400" />
+              <Zap className="w-4 h-4 text-emerald-400" />
               Stateless Policy Dry-Run Simulator
             </h3>
             <p className="text-[11px] text-zinc-400 mb-4">
@@ -468,7 +397,7 @@ export const GuardrailsView: React.FC = () => {
               disabled={simulateMutation.isPending || !simPrompt.trim() || !activeOrgId}
               className="w-full flex items-center justify-center gap-1.5 py-2 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs font-mono transition disabled:opacity-50"
             >
-              <Play className="w-3.5 h-3.5 fill-current" />
+              <Zap className="w-3.5 h-3.5 fill-current" />
               {simulateMutation.isPending ? 'Simulating Evaluation...' : 'Simulate Policy Decision'}
             </button>
 
@@ -516,7 +445,7 @@ export const GuardrailsView: React.FC = () => {
                 {simResult.redacted && simResult.redacted_prompt && (
                   <div className="space-y-1">
                     <span className="text-[11px] text-accent-primary flex items-center gap-1">
-                      <EyeOff className="w-3 h-3" /> Redacted Prompt Sent Upstream:
+                      <Lock className="w-3 h-3" /> Redacted Prompt Sent Upstream:
                     </span>
                     <div className="p-2 bg-canvas border border-subtle rounded text-xs text-zinc-300 whitespace-pre-wrap break-all">
                       {simResult.redacted_prompt}

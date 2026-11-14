@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, Unlock, ShieldAlert, Building2, KeyRound } from 'lucide-react';
+import { Lock, AlertTriangle, Building2, Key } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Modal } from '../common/Modal';
 import { useQuery } from '@tanstack/react-query';
@@ -10,9 +10,11 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ currentView }) => {
-  const { adminKey, setAdminKey, isUnlocked, lock, activeOrgId, setActiveOrgId } = useAuth();
-  const [showKeyModal, setShowKeyModal] = useState<boolean>(!isUnlocked);
+  const { adminKey, unlockWithKey, isUnlocked, lock, activeOrgId, setActiveOrgId } = useAuth();
+  const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
   const [tempKey, setTempKey] = useState<string>('');
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
 
   // Fetch organizations if unlocked
   const { data: orgsData } = useQuery({
@@ -22,12 +24,19 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
     staleTime: 60000,
   });
 
-  const handleSaveKey = (e: React.FormEvent) => {
+  const handleSaveKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (tempKey.trim()) {
-      setAdminKey(tempKey.trim());
+    if (!tempKey.trim() || isUnlocking) return;
+    setUnlockError(null);
+    setIsUnlocking(true);
+    try {
+      await unlockWithKey(tempKey);
       setTempKey('');
       setShowKeyModal(false);
+    } catch (err: any) {
+      setUnlockError(err?.message || 'Invalid Master Admin Key or control plane unreachable.');
+    } finally {
+      setIsUnlocking(false);
     }
   };
 
@@ -94,7 +103,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
               className="flex items-center gap-1.5 text-xs text-accent-primary hover:text-rose-400 bg-[rgba(124,58,237,0.1)] hover:bg-rose-950/30 border border-accent-primary/30 hover:border-rose-500/30 px-2.5 py-1 rounded-md transition-colors font-mono"
               title="Master Admin Key is held in browser memory only. Click to lock session immediately."
             >
-              <Unlock className="w-3.5 h-3.5" />
+              <Key className="w-3.5 h-3.5" />
               <span className="hidden md:inline font-mono text-[11px]">Session Unlocked</span>
             </button>
           ) : (
@@ -123,7 +132,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
               Master Admin Key
             </label>
             <div className="relative">
-              <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+              <Key className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
               <input
                 type="password"
                 value={tempKey}
@@ -134,24 +143,32 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
               />
             </div>
             <p className="text-[11px] text-slate-500 mt-2 flex items-center gap-1">
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
               Key is discarded immediately when you close the tab or refresh.
             </p>
+            {unlockError && (
+              <p className="text-[11px] text-rose-400 font-mono mt-2 bg-rose-950/30 border border-rose-500/30 rounded px-2.5 py-1.5">
+                {unlockError}
+              </p>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
-              onClick={() => setShowKeyModal(false)}
+              onClick={() => {
+                setUnlockError(null);
+                setShowKeyModal(false);
+              }}
               className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={!tempKey.trim()}
+              disabled={!tempKey.trim() || isUnlocking}
               className="px-4 py-1.5 rounded-md text-xs font-medium bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50"
             >
-              Unlock Dashboard
+              {isUnlocking ? 'Verifying...' : 'Unlock Dashboard'}
             </button>
           </div>
         </form>

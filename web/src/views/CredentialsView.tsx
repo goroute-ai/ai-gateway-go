@@ -2,17 +2,18 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
-import type { ProviderType } from '../types';
+import { ErrorAlert } from '../components/common/ErrorAlert';
+import type { ProviderCredential, ProviderType } from '../types';
 import {
   Plus,
   RefreshCw,
-  KeyRound,
+  Key,
   CheckCircle2,
   XCircle,
   Zap,
-  Globe,
+  Layers,
 } from 'lucide-react';
 
 export const CredentialsView: React.FC = () => {
@@ -27,6 +28,12 @@ export const CredentialsView: React.FC = () => {
   const [azureDeployment, setAzureDeployment] = useState('');
   const [apiVersion, setApiVersion] = useState('');
 
+  // Rotate key modal state
+  const [rotateCred, setRotateCred] = useState<ProviderCredential | null>(null);
+  const [rotateApiKey, setRotateApiKey] = useState('');
+  const [rotateBaseURL, setRotateBaseURL] = useState('');
+  const [rotateExpiresAt, setRotateExpiresAt] = useState('');
+
   // Preflight test state
   const [preflightTesting, setPreflightTesting] = useState(false);
   const [preflightResult, setPreflightResult] = useState<{
@@ -40,6 +47,8 @@ export const CredentialsView: React.FC = () => {
   const {
     data: credsData,
     isLoading,
+    isError,
+    error,
     refetch,
   } = useQuery({
     queryKey: ['admin', 'credentials', adminKey, activeOrgId],
@@ -62,6 +71,19 @@ export const CredentialsView: React.FC = () => {
     mutationFn: (credId: string) => adminApi.validateCredential(adminKey, credId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'credentials', adminKey] });
+    },
+  });
+
+  // 4. Rotate credential mutation
+  const rotateMutation = useMutation({
+    mutationFn: ({ credId, data }: { credId: string; data: any }) =>
+      adminApi.rotateCredential(adminKey, credId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'credentials', adminKey] });
+      setRotateCred(null);
+      setRotateApiKey('');
+      setRotateBaseURL('');
+      setRotateExpiresAt('');
     },
   });
 
@@ -163,6 +185,10 @@ export const CredentialsView: React.FC = () => {
         </div>
       </div>
 
+      {isError && (
+        <ErrorAlert error={error} title="Failed to load provider credentials" onRetry={() => refetch()} />
+      )}
+
       {/* Credentials Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {isLoading ? (
@@ -186,20 +212,35 @@ export const CredentialsView: React.FC = () => {
                   <h3 className="text-sm font-semibold text-slate-100 mt-1.5">{c.name}</h3>
                 </div>
 
-                <button
-                  onClick={() => validateMutation.mutate(c.id)}
-                  disabled={validateMutation.isPending}
-                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-accent-primary p-1 rounded hover:bg-surface-elevated transition-colors"
-                  title="Validate connection against upstream provider API"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${validateMutation.isPending ? 'animate-spin' : ''}`} />
-                  <span>Test</span>
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      setRotateCred(c);
+                      setRotateApiKey('');
+                      setRotateBaseURL(c.base_url || '');
+                      setRotateExpiresAt('');
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-amber-400 p-1 rounded hover:bg-surface-elevated transition-colors"
+                    title="Rotate API key"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Rotate</span>
+                  </button>
+                  <button
+                    onClick={() => validateMutation.mutate(c.id)}
+                    disabled={validateMutation.isPending}
+                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-accent-primary p-1 rounded hover:bg-surface-elevated transition-colors"
+                    title="Validate connection against upstream provider API"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${validateMutation.isPending ? 'animate-spin' : ''}`} />
+                    <span>Test</span>
+                  </button>
+                </div>
               </div>
 
               {/* Generic Masked State */}
               <div className="flex items-center gap-2 p-2 rounded bg-black/40 border border-border-subtle font-mono text-xs text-slate-400">
-                <KeyRound className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <Key className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                 <span className="tracking-widest text-slate-500">••••••••••••••••</span>
                 <span className="text-[10px] ml-auto text-emerald-400/80 bg-emerald-950/40 px-1.5 py-0.2 rounded border border-emerald-500/20">
                   AES-256-GCM
@@ -208,7 +249,7 @@ export const CredentialsView: React.FC = () => {
 
               {c.base_url && (
                 <div className="text-[11px] text-slate-400 flex items-center gap-1.5 truncate">
-                  <Globe className="w-3 h-3 text-slate-500 shrink-0" />
+                  <Layers className="w-3 h-3 text-slate-500 shrink-0" />
                   <span className="font-mono truncate">{c.base_url}</span>
                 </div>
               )}
@@ -241,55 +282,20 @@ export const CredentialsView: React.FC = () => {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Provider Type <span className="text-rose-400">*</span>
-              </label>
-              <select
-                value={provider}
-                onChange={(e) => {
-                  setProvider(e.target.value as ProviderType);
-                  setPreflightResult(null);
-                }}
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-accent-primary"
-              >
-                {providersList.map((p) => (
-                  <option key={p.id} value={p.id} className="bg-surface-elevated text-slate-200">
-                    {p.label} ({p.id})
-                  </option>
-                ))}
+              <label className="block text-xs font-medium text-slate-300 mb-1">Provider *</label>
+              <select value={provider} onChange={(e) => { setProvider(e.target.value as ProviderType); setPreflightResult(null); }} className={INPUT_CLS}>
+                {providersList.map((p) => <option key={p.id} value={p.id}>{p.label} ({p.id})</option>)}
               </select>
             </div>
-
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Credential Label <span className="text-rose-400">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. prod-openai-primary"
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Credential Label *</label>
+              <input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-openai-primary" className={INPUT_CLS} />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              API Key / Upstream Secret <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="password"
-              required={provider !== 'ollama'}
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                setPreflightResult(null);
-              }}
-              placeholder={provider === 'ollama' ? 'Optional for local Ollama' : 'e.g. sk-ant-api03-...'}
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-            />
+            <label className="block text-xs font-medium text-slate-300 mb-1">API Key *</label>
+            <input type="password" required={provider !== 'ollama'} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder={provider === 'ollama' ? 'Optional for Ollama' : 'sk-...'} className={`${INPUT_CLS} font-mono`} />
           </div>
 
           {/* Optional Base URL & Azure fields */}
@@ -391,6 +397,54 @@ export const CredentialsView: React.FC = () => {
                 {addMutation.isPending ? 'Saving to Vault...' : 'Save to Vault'}
               </button>
             </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Rotate Credential Modal */}
+      <Modal
+        isOpen={!!rotateCred}
+        onClose={() => setRotateCred(null)}
+        title={`Rotate Key: ${rotateCred?.name || ''}`}
+        description="Re-encrypts the upstream secret with a new key version in the AES-256-GCM vault."
+        maxWidth="md"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!rotateCred || !rotateApiKey.trim()) return;
+            const payload: any = { api_key: rotateApiKey.trim() };
+            if (rotateBaseURL.trim()) payload.base_url = rotateBaseURL.trim();
+            if (rotateExpiresAt) {
+              const d = new Date(rotateExpiresAt);
+              if (!isNaN(d.getTime())) payload.expires_at = d.toISOString();
+            }
+            rotateMutation.mutate({ credId: rotateCred.id, data: payload });
+          }}
+          className="space-y-4"
+        >
+          {rotateMutation.isError && (
+            <ErrorAlert error={rotateMutation.error} title="Failed to rotate credential" />
+          )}
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              New API Key <span className="text-rose-400">*</span>
+            </label>
+            <input type="password" required value={rotateApiKey} onChange={(e) => setRotateApiKey(e.target.value)} placeholder="Enter replacement API key..." className={`${INPUT_CLS} font-mono`} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Base URL (optional)</label>
+            <input type="text" value={rotateBaseURL} onChange={(e) => setRotateBaseURL(e.target.value)} placeholder="Leave blank to keep existing" className={`${INPUT_CLS} font-mono`} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Expires At (optional)</label>
+            <input type="datetime-local" value={rotateExpiresAt} onChange={(e) => setRotateExpiresAt(e.target.value)} className={`${INPUT_CLS} font-mono`} />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setRotateCred(null)} className={BTN_CANCEL}>Cancel</button>
+            <button type="submit" disabled={rotateMutation.isPending || !rotateApiKey.trim()} className={BTN_PRIMARY}>
+              {rotateMutation.isPending ? 'Rotating...' : 'Rotate Key'}
+            </button>
           </div>
         </form>
       </Modal>

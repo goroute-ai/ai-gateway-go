@@ -5,15 +5,16 @@ import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import {
   Bot,
-  Server,
-  Wrench,
-  Power,
+  Layers,
+  Settings,
+  Zap,
   RefreshCw,
   CheckCircle2,
-  AlertOctagon,
-  Radio,
+  AlertTriangle,
+  Activity,
   Search,
 } from 'lucide-react';
 
@@ -28,6 +29,8 @@ export const AgenticView: React.FC = () => {
   const {
     data: mcpServersData,
     isLoading: isMCPLoading,
+    isError: isMCPError,
+    error: mcpError,
     refetch: refetchMCP,
   } = useQuery({
     queryKey: ['admin', 'mcp-servers', adminKey],
@@ -39,6 +42,8 @@ export const AgenticView: React.FC = () => {
   const {
     data: mcpToolsData,
     isLoading: isToolsLoading,
+    isError: isToolsError,
+    error: toolsError,
     refetch: refetchTools,
   } = useQuery({
     queryKey: ['admin', 'mcp-tools', adminKey],
@@ -50,6 +55,8 @@ export const AgenticView: React.FC = () => {
   const {
     data: a2aAgentsData,
     isLoading: isA2ALoading,
+    isError: isA2AError,
+    error: a2aError,
     refetch: refetchA2A,
   } = useQuery({
     queryKey: ['admin', 'a2a-agents', adminKey],
@@ -130,6 +137,17 @@ export const AgenticView: React.FC = () => {
         </div>
       </div>
 
+      {/* Error Alerts */}
+      {isMCPError && (
+        <ErrorAlert error={mcpError} title="Failed to load MCP servers" onRetry={() => refetchMCP()} />
+      )}
+      {isToolsError && (
+        <ErrorAlert error={toolsError} title="Failed to load MCP tools" onRetry={() => refetchTools()} />
+      )}
+      {isA2AError && (
+        <ErrorAlert error={a2aError} title="Failed to load A2A agents" onRetry={() => refetchA2A()} />
+      )}
+
       {/* Tabs */}
       <div className="border-b border-subtle">
         <div className="flex items-center justify-between">
@@ -142,7 +160,7 @@ export const AgenticView: React.FC = () => {
                   : 'border-transparent text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              <Server className="w-4 h-4" />
+              <Layers className="w-4 h-4" />
               Model Context Protocol ({mcpServers.length} Servers, {mcpTools.length} Tools)
             </button>
             <button
@@ -153,7 +171,7 @@ export const AgenticView: React.FC = () => {
                   : 'border-transparent text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              <Radio className="w-4 h-4" />
+              <Activity className="w-4 h-4" />
               A2A Mesh Protocol ({a2aAgents.length} Agents)
             </button>
           </div>
@@ -179,7 +197,7 @@ export const AgenticView: React.FC = () => {
           {/* MCP Servers Grid */}
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
-              <Server className="w-4 h-4 text-accent-primary" />
+              <Layers className="w-4 h-4 text-accent-primary" />
               Registered MCP Servers ({mcpServers.length})
             </h3>
 
@@ -246,7 +264,7 @@ export const AgenticView: React.FC = () => {
           {/* MCP Tools Catalog */}
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
-              <Wrench className="w-4 h-4 text-emerald-400" />
+              <Settings className="w-4 h-4 text-emerald-400" />
               Discovered Tool Schemas ({filteredTools.length})
             </h3>
 
@@ -267,7 +285,7 @@ export const AgenticView: React.FC = () => {
                   >
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                        <Wrench className="w-4 h-4 text-accent-primary shrink-0" />
+                        <Settings className="w-4 h-4 text-accent-primary shrink-0" />
                         <h4 className="text-xs font-bold font-mono text-zinc-100 truncate" title={tool.name}>
                           {tool.name}
                         </h4>
@@ -339,7 +357,7 @@ export const AgenticView: React.FC = () => {
                           {agent.is_killed ? (
                             <Badge variant="danger">
                               <span className="flex items-center gap-1">
-                                <AlertOctagon className="w-3 h-3" /> KILL-SWITCHED
+                                <AlertTriangle className="w-3 h-3" /> KILL-SWITCHED
                               </span>
                             </Badge>
                           ) : agent.is_active ? (
@@ -367,7 +385,7 @@ export const AgenticView: React.FC = () => {
                                 : 'bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30'
                             }`}
                           >
-                            <Power className="w-3 h-3" />
+                            <Zap className="w-3 h-3" />
                             {agent.is_killed ? 'Revive Agent' : 'Kill Agent'}
                           </button>
                         </td>

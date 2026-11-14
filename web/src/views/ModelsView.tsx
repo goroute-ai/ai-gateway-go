@@ -2,14 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
+import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { GlobalModel, ModelGroup, Deployment } from '../types';
 import {
-  Boxes,
   Search,
   RefreshCw,
-  DownloadCloud,
   DollarSign,
   Layers,
   Plus,
@@ -34,10 +33,22 @@ export const ModelsView: React.FC = () => {
   const [groupAlias, setGroupAlias] = useState('');
   const [routingStrategy, setRoutingStrategy] = useState('weighted-shuffle');
 
+  // Create Deployment modal
+  const [deployGroupId, setDeployGroupId] = useState<string | null>(null);
+  const [deployGlobalModelId, setDeployGlobalModelId] = useState('');
+  const [deployCredentialId, setDeployCredentialId] = useState('');
+  const [deployName, setDeployName] = useState('');
+  const [deployRegion, setDeployRegion] = useState('');
+  const [deployPriority, setDeployPriority] = useState('1');
+  const [deployWeight, setDeployWeight] = useState('100');
+
   // 1. Fetch Global Models Catalogue
   const {
     data: catalogueData,
     isLoading: isCatLoading,
+    isError: isCatError,
+    error: catError,
+    refetch: refetchCat,
   } = useQuery({
     queryKey: ['admin', 'catalogue', adminKey],
     queryFn: () => adminApi.listCatalogue(adminKey),
@@ -48,6 +59,9 @@ export const ModelsView: React.FC = () => {
   const {
     data: groupsData,
     isLoading: isGroupsLoading,
+    isError: isGroupsError,
+    error: groupsError,
+    refetch: refetchGroups,
   } = useQuery({
     queryKey: ['admin', 'model-groups', adminKey, activeOrgId],
     queryFn: () => adminApi.listModelGroups(adminKey, activeOrgId),
@@ -57,10 +71,19 @@ export const ModelsView: React.FC = () => {
   // 3. Fetch All Deployments
   const {
     data: deploymentsData,
+    isError: isDepsError,
+    error: depsError,
+    refetch: refetchDeps,
   } = useQuery({
     queryKey: ['admin', 'deployments', adminKey],
     queryFn: () => adminApi.listDeployments(adminKey),
     enabled: !!adminKey,
+  });
+
+  const { data: credsData } = useQuery({
+    queryKey: ['admin', 'credentials', adminKey, activeOrgId],
+    queryFn: () => adminApi.listCredentials(adminKey, activeOrgId),
+    enabled: !!adminKey && !!activeOrgId,
   });
 
   // Discovery Sync mutation
@@ -95,6 +118,21 @@ export const ModelsView: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'model-groups', adminKey] });
       setShowCreateGroupModal(false);
       setGroupAlias('');
+    },
+  });
+
+  // Create Deployment mutation
+  const createDeploymentMutation = useMutation({
+    mutationFn: (data: Partial<Deployment>) => adminApi.createDeployment(adminKey, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'deployments', adminKey] });
+      setDeployGroupId(null);
+      setDeployGlobalModelId('');
+      setDeployCredentialId('');
+      setDeployName('');
+      setDeployRegion('');
+      setDeployPriority('1');
+      setDeployWeight('100');
     },
   });
 
@@ -182,7 +220,7 @@ export const ModelsView: React.FC = () => {
                 disabled={importMutation.isPending}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-slate-300 hover:text-white transition-colors disabled:opacity-50"
               >
-                <DownloadCloud className={`w-3.5 h-3.5 ${importMutation.isPending ? 'animate-bounce' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${importMutation.isPending ? 'animate-spin' : ''}`} />
                 <span>Import All Models</span>
               </button>
               <button
@@ -216,7 +254,7 @@ export const ModelsView: React.FC = () => {
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          <Boxes className="w-3.5 h-3.5" />
+          <Layers className="w-3.5 h-3.5" />
           <span>Curated Catalogue ({catalogueData?.data?.length ?? 0})</span>
         </button>
 
@@ -232,6 +270,17 @@ export const ModelsView: React.FC = () => {
           <span>Routing Topologies & Groups ({groupsData?.data?.length ?? 0})</span>
         </button>
       </div>
+
+      {/* Error Alerts */}
+      {isCatError && (
+        <ErrorAlert error={catError} title="Failed to load global model catalogue" onRetry={() => refetchCat()} />
+      )}
+      {isGroupsError && (
+        <ErrorAlert error={groupsError} title="Failed to load model groups" onRetry={() => refetchGroups()} />
+      )}
+      {isDepsError && (
+        <ErrorAlert error={depsError} title="Failed to load deployments" onRetry={() => refetchDeps()} />
+      )}
 
       {/* Tab 1: Catalogue Explorer */}
       {activeTab === 'catalogue' && (
@@ -298,7 +347,10 @@ export const ModelsView: React.FC = () => {
                         <tr key={m.id} className="hover:bg-surface-hover/30 transition-colors">
                           <td className="px-6 py-3 font-medium text-slate-200">
                             <div>{m.display_name || m.model_name}</div>
-                            <div className="text-[10px] font-mono text-slate-500">{m.id}</div>
+                            <div className="text-[10px] font-mono text-slate-500">
+                              {m.id}
+                              {m.max_input_tokens ? ` · ${(m.max_input_tokens / 1000).toFixed(0)}k ctx` : ''}
+                            </div>
                           </td>
                           <td className="px-6 py-3">
                             <Badge variant="provider" provider={m.provider} size="sm">
@@ -315,22 +367,22 @@ export const ModelsView: React.FC = () => {
                           </td>
                           <td className="px-6 py-3">
                             <div className="flex flex-wrap gap-1 max-w-xs text-[10px]">
-                              {m.capabilities?.tools === 'supported' && (
+                              {(m.capabilities?.tools === 'supported' || m.supports_tools) && (
                                 <span className="px-1.5 py-0.2 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
                                   tools
                                 </span>
                               )}
-                              {m.capabilities?.streaming === 'supported' && (
+                              {(m.capabilities?.streaming === 'supported' || m.supports_streaming) && (
                                 <span className="px-1.5 py-0.2 rounded bg-cyan-950/60 text-cyan-400 border border-cyan-500/20">
                                   stream
                                 </span>
                               )}
-                              {m.capabilities?.vision === 'supported' && (
+                              {(m.capabilities?.vision === 'supported' || m.supports_vision) && (
                                 <span className="px-1.5 py-0.2 rounded bg-indigo-950/60 text-indigo-400 border border-indigo-500/20">
                                   vision
                                 </span>
                               )}
-                              {m.capabilities?.reasoning === 'supported' && (
+                              {(m.capabilities?.reasoning === 'supported' || m.supports_reasoning) && (
                                 <span className="px-1.5 py-0.2 rounded bg-amber-950/60 text-amber-400 border border-amber-500/20">
                                   reasoning
                                 </span>
@@ -396,8 +448,17 @@ export const ModelsView: React.FC = () => {
                     </div>
 
                     <div className="space-y-1.5 pt-2 border-t border-border-subtle/50">
-                      <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
-                        Configured Deployments ({deps.length})
+                      <div className="flex items-center justify-between">
+                        <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
+                          Configured Deployments ({deps.length})
+                        </div>
+                        <button
+                          onClick={() => setDeployGroupId(g.id)}
+                          className="flex items-center gap-1 text-[11px] font-mono text-accent-primary hover:underline"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add Deployment
+                        </button>
                       </div>
                       {deps.length > 0 ? (
                         deps.map((d) => (
@@ -442,97 +503,40 @@ export const ModelsView: React.FC = () => {
         <form onSubmit={handleSavePricing} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Input USD per 1M Tokens
-              </label>
-              <input
-                type="number"
-                step="0.0001"
-                required
-                value={inputCostUSD}
-                onChange={(e) => setInputCostUSD(e.target.value)}
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Input USD / 1M</label>
+              <input type="number" step="0.0001" required value={inputCostUSD} onChange={(e) => setInputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Output USD per 1M Tokens
-              </label>
-              <input
-                type="number"
-                step="0.0001"
-                required
-                value={outputCostUSD}
-                onChange={(e) => setOutputCostUSD(e.target.value)}
-                className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-accent-primary"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Output USD / 1M</label>
+              <input type="number" step="0.0001" required value={outputCostUSD} onChange={(e) => setOutputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              Cached Input USD per 1M Tokens
-            </label>
-            <input
-              type="number"
-              step="0.0001"
-              value={cachedInputUSD}
-              onChange={(e) => setCachedInputUSD(e.target.value)}
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-accent-primary"
-            />
+            <label className="block text-xs font-medium text-slate-300 mb-1">Cached Input USD / 1M</label>
+            <input type="number" step="0.0001" value={cachedInputUSD} onChange={(e) => setCachedInputUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setSelectedModel(null)}
-              className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={pricingMutation.isPending}
-              className="px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50"
-            >
-              {pricingMutation.isPending ? 'Updating...' : 'Save & Verify Pricing'}
+            <button type="button" onClick={() => setSelectedModel(null)} className={BTN_CANCEL}>Cancel</button>
+            <button type="submit" disabled={pricingMutation.isPending} className={BTN_PRIMARY}>
+              {pricingMutation.isPending ? 'Updating...' : 'Save Pricing'}
             </button>
           </div>
         </form>
       </Modal>
 
       {/* Create Model Group Modal */}
-      <Modal
-        isOpen={showCreateGroupModal}
-        onClose={() => setShowCreateGroupModal(false)}
-        title="Create Model Group Routing Alias"
-        description="Defines a smart alias like 'fast', 'reasoning', or 'auto' for intelligent load balancing and failover routing."
-        maxWidth="md"
-      >
+      <Modal isOpen={showCreateGroupModal} onClose={() => setShowCreateGroupModal(false)} title="Create Model Group Alias" maxWidth="md">
         <form onSubmit={handleCreateGroup} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              Alias Name <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="text"
-              required
-              value={groupAlias}
-              onChange={(e) => setGroupAlias(e.target.value)}
-              placeholder="e.g. fast, reasoning, coding, enterprise-tier"
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
-            />
+            <label className="block text-xs font-medium text-slate-300 mb-1">Alias Name *</label>
+            <input type="text" required value={groupAlias} onChange={(e) => setGroupAlias(e.target.value)} placeholder="fast, reasoning, coding" className={`${INPUT_CLS} font-mono`} />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              Load Balancing Strategy
-            </label>
-            <select
-              value={routingStrategy}
-              onChange={(e) => setRoutingStrategy(e.target.value)}
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-accent-primary"
-            >
+            <label className="block text-xs font-medium text-slate-300 mb-1">Routing Strategy</label>
+            <select value={routingStrategy} onChange={(e) => setRoutingStrategy(e.target.value)} className={INPUT_CLS}>
               <option value="weighted-shuffle">weighted-shuffle (Default probabilistic)</option>
               <option value="least-busy">least-busy (Lowest in-flight concurrency)</option>
               <option value="latency-based">latency-based (EWMA latency tracker)</option>
@@ -542,19 +546,70 @@ export const ModelsView: React.FC = () => {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setShowCreateGroupModal(false)}
-              className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
-            >
+            <button type="button" onClick={() => setShowCreateGroupModal(false)} className={BTN_CANCEL}>
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={createGroupMutation.isPending || !groupAlias.trim()}
-              className="px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50"
-            >
+            <button type="submit" disabled={createGroupMutation.isPending || !groupAlias.trim()} className={BTN_PRIMARY}>
               {createGroupMutation.isPending ? 'Creating...' : 'Create Model Group'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add Deployment Modal */}
+      <Modal
+        isOpen={!!deployGroupId}
+        onClose={() => setDeployGroupId(null)}
+        title="Add Deployment to Model Group"
+        description="Attach an upstream global model and provider credential to this routing group."
+        maxWidth="md"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!deployGroupId || !deployGlobalModelId.trim()) return;
+            const payload: Partial<Deployment> = {
+              model_group_id: deployGroupId,
+              global_model_id: deployGlobalModelId.trim(),
+              priority: parseInt(deployPriority, 10) || 1,
+              weight: parseInt(deployWeight, 10) || 100,
+            };
+            if (deployCredentialId.trim()) payload.credential_id = deployCredentialId.trim();
+            if (deployName.trim()) payload.deployment_name = deployName.trim();
+            if (deployRegion.trim()) payload.region = deployRegion.trim();
+            createDeploymentMutation.mutate(payload);
+          }}
+          className="space-y-4"
+        >
+          {createDeploymentMutation.isError && (
+            <ErrorAlert error={createDeploymentMutation.error} title="Failed to create deployment" />
+          )}
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Global Model ID *</label>
+            <input type="text" required list="catalogue-models-list" value={deployGlobalModelId} onChange={(e) => setDeployGlobalModelId(e.target.value)} placeholder="openai/gpt-4.1" className={`${INPUT_CLS} font-mono`} />
+            <datalist id="catalogue-models-list">
+              {(catalogueData?.data || []).slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
+            </datalist>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Provider Credential (optional)</label>
+            <select value={deployCredentialId} onChange={(e) => setDeployCredentialId(e.target.value)} className={INPUT_CLS}>
+              <option value="">Auto-resolve org credential</option>
+              {(credsData?.data || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.provider})</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Deployment Name</label><input type="text" value={deployName} onChange={(e) => setDeployName(e.target.value)} placeholder="primary-us-east" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Region</label><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={`${INPUT_CLS} font-mono`} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Priority</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setDeployGroupId(null)} className={BTN_CANCEL}>Cancel</button>
+            <button type="submit" disabled={createDeploymentMutation.isPending || !deployGlobalModelId.trim()} className={BTN_PRIMARY}>
+              {createDeploymentMutation.isPending ? 'Adding...' : 'Add Deployment'}
             </button>
           </div>
         </form>

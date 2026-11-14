@@ -499,22 +499,23 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
 
 #### Core Design & Operational Principles:
 1. **Single-Binary Zero-Dependency Embedding**:
-   - The React 19 + TypeScript + Vite frontend in `web/` is compiled into static assets and synchronized to `internal/ui/dist/`.
+   - The React 18 + TypeScript + Vite frontend in `web/` uses route-based `React.lazy` + `Suspense` code splitting, compiled into static assets and synchronized to `internal/ui/dist/`.
    - Go's `embed.FS` embeds all assets directly into the Go executable (`//go:embed all:dist`).
    - The gateway serves the full UI from memory without requiring Node.js, npm, or external CDN dependencies at runtime.
 2. **Deterministic Caching & Client-Side Routing**:
-   - Assets in `/ui/assets/` carry content hashes and are served with `Cache-Control: public, max-age=31536000, immutable`.
-   - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics, enabling deep-linking and browser navigation.
+   - Assets in `/ui/assets/` carry content hashes and are served with `Cache-Control: public, max-age=31536000, immutable`. Directory paths (e.g., `/ui/assets/`) return `404 Not Found` instead of directory listings.
+   - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics (`window.location.pathname` + `history.pushState`), enabling deep-linking and browser navigation.
 3. **Frontend Bundle Budget Enforcement**:
    - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
-   - Total uncompressed bundle size is constrained to `< 400 KB` (gzipped `< 110 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+   - Total uncompressed bundle size is constrained to `<= 380 KB` (gzipped `<= 110 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
 4. **Reproducible Container Builds**:
    - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
 5. **Interactive Operator Capabilities**:
-   - **Streaming Chat Playground**: Real-time Server-Sent Events (SSE) streaming with multi-turn history, parameter tuning (temperature, max tokens), system instructions, and live token/latency metrics.
-   - **Live Model Catalogue**: Filterable directory of 100+ AI models across 12+ providers, showing real-time capability tags, context window sizes, and input/output micro-dollar pricing.
+   - **Streaming Chat Playground**: Real-time Server-Sent Events (SSE) streaming with multi-turn history, parameter tuning (temperature, max tokens), system instructions, escaped code export, and live token, cost (`costMicros`), guardrail action, and latency telemetry.
+   - **Organizations, Teams, Users & Policies**: Multi-tenant management for organizations, teams, users, micro-dollar budgets, provider subscriptions, and org model allow/block policies.
+   - **Live Model Catalogue & Routing**: Filterable directory of 100+ AI models across 12+ providers, showing real-time capability tags, context window sizes, input/output micro-dollar pricing, model groups, and deployment attachment.
    - **Interactive Guardrail Simulator**: Stateless prompt evaluator testing regex PII redaction, secret detection, and prompt injection rules without incurring upstream LLM costs.
-   - **Provider Credentials Vault & Preflight Validator**: Form-based credential management with live preflight validation against upstream provider endpoints before persistence.
+   - **Provider Credentials Vault & Preflight Validator**: Form-based credential management with live preflight validation against upstream provider endpoints and key rotation.
 
 ---
 

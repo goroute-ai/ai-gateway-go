@@ -5,21 +5,16 @@ import { Badge } from '../components/common/Badge';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { Modal } from '../components/common/Modal';
 import {
-  Send,
-  Square,
+  X,
   Trash2,
   Settings,
-  Code,
   Key,
-  KeyRound,
   Bot,
   User,
-  Sparkles,
-  AlertCircle,
+  AlertTriangle,
   Copy,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock,
   Zap,
 } from 'lucide-react';
@@ -33,6 +28,15 @@ interface ChatMessage {
   timestamp: string;
   latencyMs?: number;
 }
+
+const generateId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const escapeShellSingle = (val: string): string => `'${val.replace(/'/g, `'\\''`)}'`;
 
 export const PlaygroundView: React.FC = () => {
   const { lastIssuedKey } = useAuth();
@@ -102,7 +106,7 @@ export const PlaygroundView: React.FC = () => {
 
     setStreamError(null);
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       role: 'user',
       content: userInput.trim(),
       timestamp: new Date().toISOString(),
@@ -113,7 +117,7 @@ export const PlaygroundView: React.FC = () => {
     setUserInput('');
 
     // Prepare assistant placeholder
-    const assistantMsgId = crypto.randomUUID();
+    const assistantMsgId = generateId();
     const assistantMsg: ChatMessage = {
       id: assistantMsgId,
       role: 'assistant',
@@ -235,6 +239,7 @@ export const PlaygroundView: React.FC = () => {
   const getCodeSnippet = (lang: 'curl' | 'python' | 'ts' | 'go') => {
     const key = includeKeyInExport && virtualKey.trim() ? virtualKey.trim() : '$GOROUTE_API_KEY';
     const endpoint = `${window.location.origin}/v1/chat/completions`;
+    const baseUrl = `${window.location.origin}/v1`;
     const msgs = [
       ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
       ...messages.map((m) => ({ role: m.role, content: m.content })),
@@ -245,95 +250,33 @@ export const PlaygroundView: React.FC = () => {
 
     switch (lang) {
       case 'curl':
-        return `curl -X POST "${endpoint}" \\
-  -H "Authorization: Bearer ${key}" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "${activeModel}",
-    "messages": ${JSON.stringify(msgs, null, 4).replace(/\n/g, '\n    ')},
-    "temperature": ${temperature},
-    "max_tokens": ${maxTokens},
-    "stream": true
-  }'`;
+        return `curl -X POST ${escapeShellSingle(endpoint)} \\
+  -H ${escapeShellSingle(`Authorization: Bearer ${key}`)} \\
+  -H 'Content-Type: application/json' \\
+  -d ${escapeShellSingle(JSON.stringify({ model: activeModel, messages: msgs, temperature, max_tokens: maxTokens, stream: true }, null, 2))}`;
 
       case 'python':
         return `from openai import OpenAI
-
-client = OpenAI(
-    api_key="${key}",
-    base_url="${window.location.origin}/v1"
-)
-
-response = client.chat.completions.create(
-    model="${activeModel}",
-    messages=${JSON.stringify(msgs, null, 4)},
-    temperature=${temperature},
-    max_tokens=${maxTokens},
-    stream=True,
-)
-
-for chunk in response:
-    content = chunk.choices[0].delta.content or ""
-    print(content, end="", flush=True)
-`;
+client = OpenAI(api_key=${JSON.stringify(key)}, base_url=${JSON.stringify(baseUrl)})
+for c in client.chat.completions.create(model=${JSON.stringify(activeModel)}, messages=${JSON.stringify(msgs)}, temperature=${temperature}, max_tokens=${maxTokens}, stream=True):
+    print(c.choices[0].delta.content or "", end="", flush=True)`;
 
       case 'ts':
         return `import OpenAI from 'openai';
-
-const client = new OpenAI({
-  apiKey: '${key}',
-  baseURL: '${window.location.origin}/v1',
-  dangerouslyAllowBrowser: true, // Only if executing client-side
-});
-
-async function main() {
-  const stream = await client.chat.completions.create({
-    model: '${activeModel}',
-    messages: ${JSON.stringify(msgs, null, 2)},
-    temperature: ${temperature},
-    max_tokens: ${maxTokens},
-    stream: true,
-  });
-
-  for await (const chunk of stream) {
-    process.stdout.write(chunk.choices[0]?.delta?.content || '');
-  }
-}
-
-main();`;
+const client = new OpenAI({ apiKey: ${JSON.stringify(key)}, baseURL: ${JSON.stringify(baseUrl)} });
+const stream = await client.chat.completions.create({ model: ${JSON.stringify(activeModel)}, messages: ${JSON.stringify(msgs)}, temperature: ${temperature}, max_tokens: ${maxTokens}, stream: true });
+for await (const c of stream) process.stdout.write(c.choices[0]?.delta?.content || '');`;
 
       case 'go':
         return `package main
-
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-)
-
+import ("bytes"; "encoding/json"; "io"; "net/http"; "os")
 func main() {
-	payload := map[string]interface{}{
-		"model":       "${activeModel}",
-		"messages":    ${JSON.stringify(msgs)},
-		"temperature": ${temperature},
-		"stream":      false,
-	}
-	body, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", "${endpoint}", bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer ${key}")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	defer resp.Body.Close()
-
-	io.Copy(os.Stdout, resp.Body)
+  body, _ := json.Marshal(map[string]any{"model": ${JSON.stringify(activeModel)}, "messages": ${JSON.stringify(msgs)}, "temperature": ${temperature}})
+  req, _ := http.NewRequest("POST", ${JSON.stringify(endpoint)}, bytes.NewBuffer(body))
+  req.Header.Set("Authorization", "Bearer "+${JSON.stringify(key)})
+  req.Header.Set("Content-Type", "application/json")
+  resp, err := http.DefaultClient.Do(req); if err != nil { panic(err) }
+  defer resp.Body.Close(); io.Copy(os.Stdout, resp.Body)
 }`;
     }
   };
@@ -351,7 +294,7 @@ func main() {
         {/* Chat Header Bar */}
         <div className="px-4 py-2.5 bg-surface-elevated/40 border-b border-subtle flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-accent-primary" />
+            <Zap className="w-4 h-4 text-accent-primary" />
             <span className="text-xs font-semibold text-zinc-100 font-mono">Chat Playground</span>
             <Badge variant="primary">{activeModel}</Badge>
             {isStreaming && (
@@ -368,7 +311,7 @@ func main() {
               className="flex items-center gap-1 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition"
               title="Export as Code"
             >
-              <Code className="w-3.5 h-3.5" />
+              <Copy className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Export Code</span>
             </button>
             <button
@@ -390,7 +333,7 @@ func main() {
             className="w-full px-4 py-2 flex items-center justify-between text-xs font-mono text-zinc-400 hover:text-zinc-200 transition"
           >
             <span className="flex items-center gap-1.5">
-              {isSystemOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isSystemOpen ? '' : '-rotate-90'}`} />
               System Instructions
             </span>
             <span className="text-[10px] text-zinc-500 truncate max-w-[300px]">
@@ -414,7 +357,7 @@ func main() {
         {streamError && (
           <div className="mx-4 mt-3 p-3 bg-red-950/40 border border-red-900/60 rounded flex items-start justify-between text-xs text-red-300 font-mono">
             <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
               <div>
                 <span className="font-bold">Execution Error: </span>
                 {streamError}
@@ -444,7 +387,7 @@ func main() {
                   onClick={() => setVirtualKey(lastIssuedKey)}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-primary/20 hover:bg-accent-primary/30 border border-accent-primary/50 text-accent-primary rounded text-xs font-mono transition"
                 >
-                  <KeyRound className="w-3.5 h-3.5" />
+                  <Key className="w-3.5 h-3.5" />
                   Use newly issued session key ({lastIssuedKey.slice(0, 14)}...)
                 </button>
               )}
@@ -580,7 +523,7 @@ func main() {
                   onClick={handleStopStreaming}
                   className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded text-xs font-mono transition flex items-center justify-center gap-1.5 h-full"
                 >
-                  <Square className="w-3.5 h-3.5 fill-current" />
+                  <X className="w-3.5 h-3.5" />
                   Stop
                 </button>
               ) : (
@@ -590,7 +533,7 @@ func main() {
                   disabled={!userInput.trim() || !virtualKey.trim()}
                   className="px-4 py-2 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs font-mono transition flex items-center justify-center gap-1.5 h-full disabled:opacity-40"
                 >
-                  <Send className="w-3.5 h-3.5" />
+                  <Zap className="w-3.5 h-3.5" />
                   Send
                 </button>
               )}
@@ -645,56 +588,27 @@ func main() {
 
           {/* Sliders */}
           <div className="space-y-3 pt-2 border-t border-subtle text-xs font-mono">
-            {/* Temperature */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-zinc-400">
-                <span>Temperature</span>
-                <span className="text-zinc-200 font-bold">{temperature.toFixed(2)}</span>
+            {[
+              { label: 'Temperature', display: temperature.toFixed(2), min: 0, max: 2, step: 0.05, value: temperature, set: (v: string) => setTemperature(parseFloat(v)) },
+              { label: 'Max Tokens', display: String(maxTokens), min: 128, max: 8192, step: 128, value: maxTokens, set: (v: string) => setMaxTokens(parseInt(v, 10)) },
+              { label: 'Top P', display: topP.toFixed(2), min: 0, max: 1, step: 0.05, value: topP, set: (v: string) => setTopP(parseFloat(v)) },
+            ].map((s) => (
+              <div key={s.label} className="space-y-1">
+                <div className="flex justify-between text-zinc-400">
+                  <span>{s.label}</span>
+                  <span className="text-zinc-200 font-bold">{s.display}</span>
+                </div>
+                <input
+                  type="range"
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  value={s.value}
+                  onChange={(e) => s.set(e.target.value)}
+                  className="w-full accent-accent-primary cursor-pointer"
+                />
               </div>
-              <input
-                type="range"
-                min="0.00"
-                max="2.00"
-                step="0.05"
-                value={temperature}
-                onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                className="w-full accent-accent-primary cursor-pointer"
-              />
-            </div>
-
-            {/* Max Tokens */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-zinc-400">
-                <span>Max Tokens</span>
-                <span className="text-zinc-200 font-bold">{maxTokens}</span>
-              </div>
-              <input
-                type="range"
-                min="128"
-                max="8192"
-                step="128"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(parseInt(e.target.value, 10))}
-                className="w-full accent-accent-primary cursor-pointer"
-              />
-            </div>
-
-            {/* Top P */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-zinc-400">
-                <span>Top P</span>
-                <span className="text-zinc-200 font-bold">{topP.toFixed(2)}</span>
-              </div>
-              <input
-                type="range"
-                min="0.00"
-                max="1.00"
-                step="0.05"
-                value={topP}
-                onChange={(e) => setTopP(parseFloat(e.target.value))}
-                className="w-full accent-accent-primary cursor-pointer"
-              />
-            </div>
+            ))}
           </div>
         </div>
 
@@ -711,7 +625,7 @@ func main() {
                 <div className="flex justify-between items-center text-zinc-400">
                   <span>Request ID:</span>
                   <span
-                    className="text-zinc-300 font-mono text-[11px] truncate max-w-[150px] cursor-pointer hover:text-accent-primary"
+                    className="text-zinc-300 text-[11px] truncate max-w-[150px] cursor-pointer hover:text-accent-primary"
                     title={lastRequestMetrics.headers.requestId}
                     onClick={() => copyToClipboard(lastRequestMetrics.headers!.requestId!)}
                   >
@@ -719,46 +633,24 @@ func main() {
                   </span>
                 </div>
               )}
-              {lastRequestMetrics.headers?.provider && (
-                <div className="flex justify-between text-zinc-400">
-                  <span>Upstream Provider:</span>
-                  <span className="text-zinc-200 capitalize font-medium">{lastRequestMetrics.headers.provider}</span>
+              {[
+                lastRequestMetrics.headers?.provider && ['Upstream Provider:', lastRequestMetrics.headers.provider, 'text-zinc-200 capitalize font-medium'],
+                ['Target Model:', lastRequestMetrics.model, 'text-accent-primary font-medium'],
+                lastRequestMetrics.headers?.cache && ['Exact Cache:', lastRequestMetrics.headers.cache, lastRequestMetrics.headers.cache === 'HIT' ? 'text-emerald-400 font-bold' : 'text-zinc-400'],
+                lastRequestMetrics.headers?.tokenEstimate !== undefined && ['Estimated Tokens:', String(lastRequestMetrics.headers.tokenEstimate), 'text-zinc-300'],
+                lastRequestMetrics.headers?.costMicros !== undefined && ['Estimated Cost:', `$${(lastRequestMetrics.headers.costMicros / 1_000_000).toFixed(6)} (${lastRequestMetrics.headers.costMicros} µ$)`, 'text-emerald-400 font-bold'],
+                lastRequestMetrics.headers?.guardrailAction && ['Guardrail Action:', lastRequestMetrics.headers.guardrailAction, 'text-amber-400 font-semibold uppercase'],
+                ['Total Latency:', `${lastRequestMetrics.latencyMs} ms`, 'text-zinc-200 font-bold'],
+                lastRequestMetrics.ttftMs && ['Time-To-First-Token:', `${lastRequestMetrics.ttftMs} ms`, 'text-emerald-400 font-bold'],
+                ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-zinc-200'],
+              ].filter((x): x is [string, string, string] => Boolean(x)).map(([label, val, cls]) => (
+                <div key={label} className="flex justify-between text-zinc-400">
+                  <span>{label}</span>
+                  <span className={cls}>{val}</span>
                 </div>
-              )}
-              <div className="flex justify-between text-zinc-400">
-                <span>Target Model:</span>
-                <span className="text-accent-primary font-medium">{lastRequestMetrics.model}</span>
-              </div>
-              {lastRequestMetrics.headers?.cache && (
-                <div className="flex justify-between text-zinc-400">
-                  <span>Exact Cache:</span>
-                  <span className={lastRequestMetrics.headers.cache === 'HIT' ? 'text-emerald-400 font-bold' : 'text-zinc-400'}>
-                    {lastRequestMetrics.headers.cache}
-                  </span>
-                </div>
-              )}
-              {lastRequestMetrics.headers?.tokenEstimate !== undefined && (
-                <div className="flex justify-between text-zinc-400">
-                  <span>Estimated Tokens:</span>
-                  <span className="text-zinc-300">{lastRequestMetrics.headers.tokenEstimate}</span>
-                </div>
-              )}
-              <div className="flex justify-between text-zinc-400">
-                <span>Total Latency:</span>
-                <span className="text-zinc-200 font-bold">{lastRequestMetrics.latencyMs} ms</span>
-              </div>
-              {lastRequestMetrics.ttftMs && (
-                <div className="flex justify-between text-zinc-400">
-                  <span>Time-To-First-Token:</span>
-                  <span className="text-emerald-400 font-bold">{lastRequestMetrics.ttftMs} ms</span>
-                </div>
-              )}
-              <div className="flex justify-between text-zinc-400">
-                <span>Stream Chunks:</span>
-                <span className="text-zinc-200">{lastRequestMetrics.chunkCount} SSE events</span>
-              </div>
+              ))}
               <div className="pt-1.5 border-t border-subtle text-[11px] text-zinc-500">
-                Ledger: Recorded as standard spend event under active virtual key.
+                Ledger: Recorded under active virtual key.
               </div>
             </div>
           ) : (

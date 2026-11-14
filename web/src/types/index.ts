@@ -118,6 +118,8 @@ export interface GlobalModel {
   provider: ProviderType;
   model_name: string;
   display_name: string;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
   input_cost_micros_per_1m: number;
   output_cost_micros_per_1m: number;
   cached_input_cost_micros_per_1m: number;

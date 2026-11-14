@@ -716,13 +716,18 @@ Client Request (GET /ui/playground)
        ▼
 2. Asset Lookup in embed.FS
        │
-       ├─ File exists on disk? (e.g. /ui/assets/index-CTqmv4_N.css)
+       ├─ File exists & !stat.IsDir()? (e.g. /ui/assets/index-CTqmv4_N.css)
        │         │
        │         ▼
        │  Set Cache-Control: public, max-age=31536000, immutable
        │  Serve via http.StripPrefix("/ui", http.FileServer)
        │
-       └─ File does NOT exist (e.g. /ui/playground, /ui/keys)
+       ├─ Directory exists (stat.IsDir(), e.g. /ui/assets/)
+       │         │
+       │         ▼
+       │  Return HTTP 404 Not Found (no directory listings)
+       │
+       └─ Path does NOT exist (e.g. /ui/playground, /ui/keys)
                  │
                  ▼
           HTML5 History API Fallback
@@ -732,10 +737,11 @@ Client Request (GET /ui/playground)
           Serve via http.ServeContent (preserves ModTime & ETag)
 ```
 
-### 18.2 Zero-Allocation Embedded Serving
+### 18.2 Zero-Allocation Embedded Serving & Code Splitting
 - `fs.Sub(embeddedDist, "dist")` creates a sub-tree filesystem at server bootstrap time.
 - Requests never touch the host filesystem or shell out to Node.js.
 - Static assets are served from the embedded filesystem; this avoids host filesystem lookups and runtime Node.js processes.
+- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the 380 KB uncompressed / 110 KB gzipped bundle budget.
 
 ---
 
