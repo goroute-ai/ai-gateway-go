@@ -565,16 +565,23 @@ type AdminDeploymentStatus string
 
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
-	CreatedAt   time.Time     `json:"created_at"`
-	Email       string        `json:"email"`
-	Id          string        `json:"id"`
-	IsActive    bool          `json:"is_active"`
-	Name        *string       `json:"name,omitempty"`
-	OidcSubject *string       `json:"oidc_subject,omitempty"`
-	OrgId       string        `json:"org_id"`
-	Role        AdminUserRole `json:"role"`
-	TeamId      *string       `json:"team_id,omitempty"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	BudgetResetAt         *time.Time    `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod     *string       `json:"budget_reset_period,omitempty"`
+	CreatedAt             time.Time     `json:"created_at"`
+	Email                 string        `json:"email"`
+	Id                    string        `json:"id"`
+	IsActive              bool          `json:"is_active"`
+	MaxBudgetMicros       *int64        `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int          `json:"max_concurrent_requests,omitempty"`
+	Name                  *string       `json:"name,omitempty"`
+	OidcSubject           *string       `json:"oidc_subject,omitempty"`
+	OrgId                 string        `json:"org_id"`
+	Role                  AdminUserRole `json:"role"`
+	RpmLimit              *int          `json:"rpm_limit,omitempty"`
+	SpentMicros           *int64        `json:"spent_micros,omitempty"`
+	TeamId                *string       `json:"team_id,omitempty"`
+	TpmLimit              *int          `json:"tpm_limit,omitempty"`
+	UpdatedAt             time.Time     `json:"updated_at"`
 }
 
 // AdminUserRole defines model for AdminUser.Role.

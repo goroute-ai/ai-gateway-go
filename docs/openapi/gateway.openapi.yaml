@@ -727,6 +727,23 @@ components:
           enum: [platform_admin, org_admin, team_admin, developer, service_account, viewer]
         oidc_subject:
           type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        max_concurrent_requests:
+          type: integer
         is_active:
           type: boolean
         created_at:

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -381,7 +382,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	cacheHeader := r.Header.Get("X-Gateway-Cache-Control")
 	var cacheKey string
 	if s.respCache.IsCacheable(&chatReq, cacheHeader) {
-		cacheKey = s.respCache.ComputeKey(idCtx.OrgID, &chatReq)
+		cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq)
 		if cacheKey != "" {
 			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
 				redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
@@ -995,4 +996,28 @@ func (s *GatewayServer) handleListModels(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(list)
+}
+
+// cacheAllowedModelScope returns a deterministic scope string representing the
+// identity's effective allowed-model constraint for cache key isolation.
+func cacheAllowedModelScope(idCtx *domain.IdentityContext) string {
+	if idCtx == nil {
+		return ""
+	}
+	var prefix string
+	var models []string
+	switch {
+	case idCtx.KeyAllowedModels != nil:
+		prefix = "key:"
+		models = idCtx.KeyAllowedModels
+	case idCtx.TeamAllowedModels != nil:
+		prefix = "team:"
+		models = idCtx.TeamAllowedModels
+	default:
+		return ""
+	}
+	sorted := make([]string, len(models))
+	copy(sorted, models)
+	sort.Strings(sorted)
+	return prefix + strings.Join(sorted, ",")
 }

@@ -542,6 +542,11 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Message:    "User associated with this virtual key is inactive",
 			}
 		}
+		idCtx.UserRPMLimit = matchedUser.RPMLimit
+		idCtx.UserTPMLimit = matchedUser.TPMLimit
+		idCtx.UserMaxConcurrent = matchedUser.MaxConcurrentRequests
+		idCtx.UserMaxBudgetMicros = matchedUser.MaxBudgetMicros
+		idCtx.UserSpentMicros = matchedUser.SpentMicros
 	}
 
 	// Hydrate L2 Redis + L1 Memory

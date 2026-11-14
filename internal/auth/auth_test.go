@@ -527,3 +527,47 @@ func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthenticateVirtualKey_PopulatesUserLimitsAndBudget(t *testing.T) {
+	ctx := context.Background()
+	memRepo := storage.NewMemoryRepository()
+	org := &domain.Organization{ID: "org-user-limits", Name: "User Limits Org", Slug: "user-limits", IsActive: true}
+	if err := memRepo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	user := &domain.User{
+		ID:                    "usr-limits-1",
+		OrgID:                 org.ID,
+		Email:                 "limits@example.com",
+		Name:                  "Limits User",
+		Role:                  domain.RoleDeveloper,
+		RPMLimit:              120,
+		TPMLimit:              50000,
+		MaxConcurrentRequests: 7,
+		MaxBudgetMicros:       2500000,
+		SpentMicros:           450000,
+		IsActive:              true,
+	}
+	if err := memRepo.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	svc := auth.NewService(memRepo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
+	vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  org.ID,
+		UserID: user.ID,
+		Name:   "user-scoped-key",
+	})
+	if err != nil {
+		t.Fatalf("issue virtual key: %v", err)
+	}
+
+	idCtx, err := svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateVirtualKey failed: %v", err)
+	}
+	if idCtx.UserRPMLimit != 120 || idCtx.UserTPMLimit != 50000 || idCtx.UserMaxConcurrent != 7 ||
+		idCtx.UserMaxBudgetMicros != 2500000 || idCtx.UserSpentMicros != 450000 {
+		t.Fatalf("unexpected user limits/budget on IdentityContext: %+v", idCtx)
+	}
+}

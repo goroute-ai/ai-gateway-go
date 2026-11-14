@@ -149,6 +149,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	rbac := auth.NewRBACEngine(repo)
 	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
+	limiter.SetGlobalLimits(cfg.RateLimit.GlobalRPMLimit, cfg.RateLimit.GlobalTPMLimit, cfg.RateLimit.GlobalMaxConcurrent)
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)

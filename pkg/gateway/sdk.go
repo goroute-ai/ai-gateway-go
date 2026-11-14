@@ -165,7 +165,13 @@ func New(opts ...Option) (*Client, error) {
 		return NewClient(cc.remoteURL, cc.apiKey), nil
 	}
 
-	cfg, err := config.Load(cc.configPath)
+	var cfg *config.Config
+	var err error
+	if cc.configPath != "" {
+		cfg, err = config.Load(cc.configPath)
+	} else {
+		cfg, err = config.LoadWithDefaultEnvironment("", "development")
+	}
 	if err != nil {
 		return nil, err
 	}

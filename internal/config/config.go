@@ -208,6 +208,9 @@ type RateLimitConfig struct {
 	ConcurrencyTTLSec   int           `yaml:"concurrency_ttl_sec"`
 	DefaultEstimatedTPM int           `yaml:"default_estimated_tpm"`
 	RedisTimeout        time.Duration `yaml:"redis_timeout"`
+	GlobalRPMLimit      int           `yaml:"global_rpm_limit"`
+	GlobalTPMLimit      int           `yaml:"global_tpm_limit"`
+	GlobalMaxConcurrent int           `yaml:"global_max_concurrent"`
 }
 
 type FinOpsConfig struct {
@@ -351,7 +354,19 @@ func Default() *Config {
 }
 
 // Load loads configuration from an optional YAML file path and overrides with environment variables.
+// Load reads configuration from an optional YAML file, applies environment overrides,
+// and validates the resulting configuration.
 func Load(path string) (*Config, error) {
+	return loadWithDefaultEnv(path, "")
+}
+
+// LoadWithDefaultEnvironment loads configuration like Load, applying defaultEnv
+// when neither the config file nor server.environment specifies one.
+func LoadWithDefaultEnvironment(path, defaultEnv string) (*Config, error) {
+	return loadWithDefaultEnv(path, defaultEnv)
+}
+
+func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	cfg := Default()
 	if path != "" {
 		data, err := os.ReadFile(path)
@@ -361,6 +376,9 @@ func Load(path string) (*Config, error) {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
+	}
+	if cfg.Server.Environment == "" && defaultEnv != "" {
+		cfg.Server.Environment = defaultEnv
 	}
 
 	if v := os.Getenv("GATEWAY_PORT"); v != "" {

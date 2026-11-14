@@ -72,6 +72,9 @@ rate_limit:
   concurrency_ttl_sec: 300
   default_estimated_tpm: 128
   redis_timeout: 50ms
+  global_rpm_limit: 0
+  global_tpm_limit: 0
+  global_max_concurrent: 0
 
 finops:
   channel_buffer_size: 16384
