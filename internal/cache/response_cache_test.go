@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,5 +150,98 @@ func TestResponseCache_L1CapacityEvictsLeastRecentlyUsedEntry(t *testing.T) {
 	size, capacity, evicted := rc.L1Stats()
 	if size != 2 || capacity != 2 || evicted != 1 {
 		t.Fatalf("L1 stats = (%d,%d,%d), want (2,2,1)", size, capacity, evicted)
+	}
+}
+
+func TestResponseCache_ComputeKeyAutoModelScope(t *testing.T) {
+	rc := NewResponseCache(true, time.Hour, nil)
+	req := &domain.CanonicalChatRequest{
+		Model:    "auto",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+	}
+
+	kTeam1ModelA := rc.ComputeKeyWithScope("org-1", "team-1", "gpt-4o", req)
+	kTeam2ModelA := rc.ComputeKeyWithScope("org-1", "team-2", "gpt-4o", req)
+	kTeam1ModelB := rc.ComputeKeyWithScope("org-1", "team-1", "claude-3-5-sonnet", req)
+
+	if kTeam1ModelA == "" || kTeam2ModelA == "" || kTeam1ModelB == "" {
+		t.Fatal("expected non-empty cache keys")
+	}
+	if kTeam1ModelA == kTeam2ModelA {
+		t.Fatal("expected different TeamID to produce different cache keys when model == auto")
+	}
+	if kTeam1ModelA == kTeam1ModelB {
+		t.Fatal("expected different effective model to produce different cache keys when model == auto")
+	}
+}
+
+func TestResponseCache_CloneResponseDeepCopyRace(t *testing.T) {
+	rc := NewResponseCache(true, time.Hour, nil)
+	ctx := context.Background()
+	key := rc.ComputeKey("org-1", &domain.CanonicalChatRequest{
+		Model:    "gpt-4o",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "secret"}},
+	})
+	orig := &domain.CanonicalChatResponse{
+		ID:       "resp-1",
+		Model:    "gpt-4o",
+		Metadata: map[string]string{"k": "v"},
+		Choices: []domain.CanonicalChoice{
+			{
+				Index: 0,
+				Message: domain.CanonicalMessage{
+					Role:    "assistant",
+					Content: "original secret",
+					Parts: []domain.ContentPart{
+						{Type: "text", Text: "part-1", ImageURL: &domain.ImageURL{URL: "https://example.com/a.png"}},
+					},
+					ToolCalls: []domain.CanonicalToolCall{
+						{ID: "tc-1", Type: "function", Function: domain.CanonicalFunctionCall{Name: "fn", Arguments: `{"x":1}`}},
+					},
+				},
+			},
+		},
+	}
+	rc.SetWithMeta(ctx, key, "org-1", orig)
+
+	// Mutate original after SetWithMeta; cached copy must remain untouched.
+	orig.Choices[0].Message.Content = "mutated-orig"
+	orig.Choices[0].Message.ToolCalls[0].Function.Arguments = "mutated-args"
+	orig.Metadata["k"] = "mutated"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, ok := rc.Get(ctx, key)
+			if !ok {
+				t.Errorf("expected cache hit")
+				return
+			}
+			// Simulate SanitizeOutputStrict mutating the returned response concurrently.
+			got.Choices[0].Message.Content = "[REDACTED]"
+			got.Choices[0].Message.ToolCalls[0].Function.Arguments = "[REDACTED]"
+			got.Choices[0].Message.Parts[0].ImageURL.URL = "[REDACTED]"
+			got.Metadata["k"] = "[REDACTED]"
+		}()
+	}
+	wg.Wait()
+
+	final, ok := rc.Get(ctx, key)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if final.Choices[0].Message.Content != "original secret" {
+		t.Fatalf("cached content mutated: %q", final.Choices[0].Message.Content)
+	}
+	if final.Choices[0].Message.ToolCalls[0].Function.Arguments != `{"x":1}` {
+		t.Fatalf("cached tool call mutated: %q", final.Choices[0].Message.ToolCalls[0].Function.Arguments)
+	}
+	if final.Choices[0].Message.Parts[0].ImageURL.URL != "https://example.com/a.png" {
+		t.Fatalf("cached image URL mutated: %q", final.Choices[0].Message.Parts[0].ImageURL.URL)
+	}
+	if final.Metadata["k"] != "v" {
+		t.Fatalf("cached metadata mutated: %q", final.Metadata["k"])
 	}
 }

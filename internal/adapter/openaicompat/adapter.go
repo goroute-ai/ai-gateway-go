@@ -152,9 +152,9 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
-		return nil, fmt.Errorf("read upstream response: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -234,7 +234,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, a.Provider())
+		if err != nil {
+			return nil, err
+		}
 		return nil, a.parseUpstreamError(resp.StatusCode, bodyBytes, resp.Header)
 	}
 
@@ -357,9 +360,9 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
-		return nil, fmt.Errorf("read embeddings response: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -444,9 +447,9 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
-		return nil, fmt.Errorf("read list models response: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -783,23 +786,12 @@ func (a *Adapter) parseUpstreamError(statusCode int, body []byte, headers http.H
 		msg = string(body)
 	}
 
-	errCode := errEnvelope.Error.Code
-	if errCode == "" {
-		errCode = fmt.Sprintf("upstream_error_%d", statusCode)
+	gwErr := domain.ClassifyUpstreamStatus(a.Provider(), statusCode, msg, adapter.ParseRetryAfter(headers))
+	if errEnvelope.Error.Code != "" {
+		gwErr.Code = errEnvelope.Error.Code
 	}
-
-	authFail := statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
-	retryable := statusCode == http.StatusTooManyRequests || statusCode >= 500
-
-	return &domain.GatewayError{
-		StatusCode:    statusCode,
-		Type:          domain.ErrorTypeUpstream,
-		Code:          errCode,
-		Message:       fmt.Sprintf("upstream error (%d): %s", statusCode, msg),
-		RetryAfterSec: adapter.ParseRetryAfter(headers),
-		Retryable:     retryable,
-		AuthFailure:   authFail,
-	}
+	gwErr.Message = fmt.Sprintf("upstream error (%d): %s", statusCode, msg)
+	return gwErr
 }
 
 func (a *Adapter) resolveModelName(dep *domain.Deployment, resolved, requested string) string {
@@ -867,9 +859,9 @@ func (a *Adapter) doJSONRequest(ctx context.Context, dep *domain.Deployment, pat
 		}
 	}
 	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
-		return nil, "", fmt.Errorf("read %s response: %w", path, err)
+		return nil, "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", a.parseUpstreamError(resp.StatusCode, respBytes, resp.Header)
@@ -1177,7 +1169,7 @@ func (a *Adapter) generateMultipartImage(ctx context.Context, dep *domain.Deploy
 		}
 	}
 	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
 		return nil, err
 	}
@@ -1290,7 +1282,7 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 		}
 	}
 	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, a.Provider())
 	if err != nil {
 		return nil, err
 	}
@@ -1359,7 +1351,10 @@ func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, re
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, a.Provider())
+		if err != nil {
+			return nil, "", err
+		}
 		return nil, "", a.parseUpstreamError(resp.StatusCode, respBytes, resp.Header)
 	}
 	ct := resp.Header.Get("Content-Type")

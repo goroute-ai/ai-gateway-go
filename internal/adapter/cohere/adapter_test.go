@@ -271,3 +271,37 @@ func TestCohereRerank(t *testing.T) {
 	assert.Equal(t, 0.995, resp.Results[0].RelevanceScore)
 	assert.Equal(t, 1, resp.Usage.SearchUnits)
 }
+
+func TestCohereAdapter_ErrorStatusClassification(t *testing.T) {
+	for _, tc := range []struct {
+		upstreamStatus int
+		wantStatus     int
+		wantRetryable  bool
+		wantAuthFail   bool
+	}{
+		{http.StatusUnauthorized, http.StatusBadGateway, false, true},
+		{http.StatusForbidden, http.StatusBadGateway, false, true},
+		{http.StatusNotFound, http.StatusNotFound, false, false},
+		{http.StatusBadRequest, http.StatusBadRequest, false, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.upstreamStatus)
+			_, _ = fmt.Fprint(w, `{"message":"err"}`)
+		}))
+		adp := cohere.NewAdapter(srv.Client(), nil)
+		dep := &domain.Deployment{
+			GlobalModel: &domain.GlobalModel{ModelName: "command-r"},
+			Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "k"},
+		}
+		_, err := adp.ChatCompletion(context.Background(), dep, &domain.CanonicalChatRequest{
+			Model:    "command-r",
+			Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+		})
+		srv.Close()
+		var gwErr *domain.GatewayError
+		require.ErrorAs(t, err, &gwErr)
+		assert.Equal(t, tc.wantStatus, gwErr.StatusCode)
+		assert.Equal(t, tc.wantRetryable, gwErr.Retryable)
+		assert.Equal(t, tc.wantAuthFail, gwErr.AuthFailure)
+	}
+}

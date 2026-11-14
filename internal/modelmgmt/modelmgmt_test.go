@@ -2,6 +2,7 @@ package modelmgmt_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -106,4 +107,53 @@ func TestEnrichDiscoveredModel_DoesNotAssumeLegacyCompletion(t *testing.T) {
 	if gm.SupportsOperation(domain.OperationCompletion) {
 		t.Fatal("model discovery must not imply legacy /completions support")
 	}
+}
+
+type failingModelMgmtRepo struct {
+	storage.Repository
+	subsErr error
+	polsErr error
+}
+
+func (r *failingModelMgmtRepo) GetOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
+	if r.subsErr != nil {
+		return nil, r.subsErr
+	}
+	return r.Repository.GetOrgProviderSubscriptions(ctx, orgID)
+}
+
+func (r *failingModelMgmtRepo) GetOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error) {
+	if r.polsErr != nil {
+		return nil, r.polsErr
+	}
+	return r.Repository.GetOrgModelPolicies(ctx, orgID)
+}
+
+func TestListVisibleModelsForIdentity_FailsClosedOnRepoErrors(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewMemoryRepository()
+
+	t.Run("provider subscriptions error", func(t *testing.T) {
+		wantErr := errors.New("subs db unavailable")
+		svc := modelmgmt.NewService(&failingModelMgmtRepo{Repository: base, subsErr: wantErr})
+		list, err := svc.ListVisibleModelsForIdentity(ctx, &domain.IdentityContext{OrgID: "org-1"})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("expected error %v, got %v", wantErr, err)
+		}
+		if list != nil {
+			t.Fatalf("expected nil model list on error, got %+v", list)
+		}
+	})
+
+	t.Run("model policies error", func(t *testing.T) {
+		wantErr := errors.New("policies db unavailable")
+		svc := modelmgmt.NewService(&failingModelMgmtRepo{Repository: base, polsErr: wantErr})
+		list, err := svc.ListVisibleModelsForIdentity(ctx, &domain.IdentityContext{OrgID: "org-1"})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("expected error %v, got %v", wantErr, err)
+		}
+		if list != nil {
+			t.Fatalf("expected nil model list on error, got %+v", list)
+		}
+	})
 }

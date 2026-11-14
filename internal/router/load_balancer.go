@@ -16,27 +16,33 @@ import (
 const leastBusyReservationTTL = 2 * time.Second
 
 type deploymentTelemetry struct {
-	inFlight      int
-	ewmaLatencyMs float64
-	ewmaTTFTMs    float64
-	usedRPM       int
-	usedTPM       int
-	windowStart   time.Time
-	reservations  []time.Time
+	inFlight           int
+	ewmaLatencyMs      float64
+	ewmaTTFTMs         float64
+	usedRPM            int
+	usedTPM            int
+	windowStart        time.Time
+	reservations       []time.Time
+	sharedReservations []time.Time
 }
 
-func (m *deploymentTelemetry) pruneReservations(now time.Time) int {
-	if len(m.reservations) == 0 {
-		return 0
+func pruneReservationSlice(s []time.Time, now time.Time) ([]time.Time, int) {
+	if len(s) == 0 {
+		return s, 0
 	}
 	n := 0
-	for _, exp := range m.reservations {
+	for _, exp := range s {
 		if exp.After(now) {
-			m.reservations[n] = exp
+			s[n] = exp
 			n++
 		}
 	}
-	m.reservations = m.reservations[:n]
+	return s[:n], n
+}
+
+func (m *deploymentTelemetry) pruneReservations(now time.Time) int {
+	var n int
+	m.reservations, n = pruneReservationSlice(m.reservations, now)
 	return n
 }
 
@@ -44,9 +50,22 @@ func (m *deploymentTelemetry) addReservation(now time.Time, ttl time.Duration) {
 	m.reservations = append(m.reservations, now.Add(ttl))
 }
 
+func (m *deploymentTelemetry) pruneSharedReservations(now time.Time) int {
+	var n int
+	m.sharedReservations, n = pruneReservationSlice(m.sharedReservations, now)
+	return n
+}
+
+func (m *deploymentTelemetry) addSharedReservation(now time.Time, ttl time.Duration) {
+	m.sharedReservations = append(m.sharedReservations, now.Add(ttl))
+}
+
 func (m *deploymentTelemetry) consumeReservation(now time.Time) {
 	if m.pruneReservations(now) > 0 {
 		m.reservations = m.reservations[1:]
+	}
+	if m.pruneSharedReservations(now) > 0 {
+		m.sharedReservations = m.sharedReservations[1:]
 	}
 }
 
@@ -123,31 +142,58 @@ func isAdaptiveStrategy(strategy domain.RoutingStrategy) bool {
 	return strategy == domain.StrategyLeastBusy || strategy == domain.StrategyLatencyBased || strategy == domain.StrategyUsageBasedHeadroom
 }
 
+func pickRandomTie(ties []*domain.Deployment) *domain.Deployment {
+	if len(ties) == 0 {
+		return nil
+	}
+	if len(ties) == 1 {
+		return ties[0]
+	}
+	return ties[rand.IntN(len(ties))]
+}
+
 func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, candidates []*domain.Deployment, signals map[string]deploymentTelemetry) *domain.Deployment {
 	switch strategy {
 	case domain.StrategyLeastBusy:
-		var best *domain.Deployment
+		lb.mu.Lock()
+		defer lb.mu.Unlock()
+		now := time.Now()
+		var ties []*domain.Deployment
 		minInFlight := math.MaxInt
 		for _, d := range candidates {
-			if signals[d.ID].inFlight < minInFlight {
-				minInFlight = signals[d.ID].inFlight
-				best = d
+			inFlight := signals[d.ID].inFlight
+			if m, ok := lb.metrics[d.ID]; ok {
+				inFlight += m.pruneSharedReservations(now)
 			}
+			if inFlight < minInFlight {
+				minInFlight = inFlight
+				ties = ties[:0]
+				ties = append(ties, d)
+			} else if inFlight == minInFlight {
+				ties = append(ties, d)
+			}
+		}
+		best := pickRandomTie(ties)
+		if best != nil {
+			lb.getOrCreate(best.ID).addSharedReservation(now, leastBusyReservationTTL)
 		}
 		return best
 	case domain.StrategyLatencyBased:
-		var best *domain.Deployment
+		var ties []*domain.Deployment
 		minLatency := math.MaxFloat64
 		for _, d := range candidates {
 			lat := effectiveLatencySignal(signals[d.ID])
 			if lat < minLatency {
 				minLatency = lat
-				best = d
+				ties = ties[:0]
+				ties = append(ties, d)
+			} else if lat == minLatency {
+				ties = append(ties, d)
 			}
 		}
-		return best
+		return pickRandomTie(ties)
 	case domain.StrategyUsageBasedHeadroom:
-		var best *domain.Deployment
+		var ties []*domain.Deployment
 		maxHeadroom := -math.MaxFloat64
 		now := time.Now()
 		for _, d := range candidates {
@@ -163,10 +209,13 @@ func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, cand
 			headroom := 1 - (float64(usedTPM) / float64(capTPM))
 			if headroom > maxHeadroom {
 				maxHeadroom = headroom
-				best = d
+				ties = ties[:0]
+				ties = append(ties, d)
+			} else if headroom == maxHeadroom {
+				ties = append(ties, d)
 			}
 		}
-		return best
+		return pickRandomTie(ties)
 	default:
 		return nil
 	}
@@ -211,7 +260,7 @@ func (lb *LoadBalancer) selectLeastBusy(candidates []*domain.Deployment) *domain
 	defer lb.mu.Unlock()
 
 	now := time.Now()
-	var best *domain.Deployment
+	var ties []*domain.Deployment
 	minInFlight := math.MaxInt
 	for _, d := range candidates {
 		inFlight := 0
@@ -220,9 +269,13 @@ func (lb *LoadBalancer) selectLeastBusy(candidates []*domain.Deployment) *domain
 		}
 		if inFlight < minInFlight {
 			minInFlight = inFlight
-			best = d
+			ties = ties[:0]
+			ties = append(ties, d)
+		} else if inFlight == minInFlight {
+			ties = append(ties, d)
 		}
 	}
+	best := pickRandomTie(ties)
 	if best != nil {
 		lb.getOrCreate(best.ID).addReservation(now, leastBusyReservationTTL)
 	}
@@ -233,7 +286,7 @@ func (lb *LoadBalancer) selectLowestLatency(candidates []*domain.Deployment) *do
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	var best *domain.Deployment
+	var ties []*domain.Deployment
 	minLatency := math.MaxFloat64
 	for _, d := range candidates {
 		lat := 250.0 // Default baseline 250ms for unexplored deployments
@@ -242,17 +295,20 @@ func (lb *LoadBalancer) selectLowestLatency(candidates []*domain.Deployment) *do
 		}
 		if lat < minLatency {
 			minLatency = lat
-			best = d
+			ties = ties[:0]
+			ties = append(ties, d)
+		} else if lat == minLatency {
+			ties = append(ties, d)
 		}
 	}
-	return best
+	return pickRandomTie(ties)
 }
 
 func (lb *LoadBalancer) selectHighestHeadroom(candidates []*domain.Deployment) *domain.Deployment {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	var best *domain.Deployment
+	var ties []*domain.Deployment
 	maxHeadroom := -math.MaxFloat64
 	now := time.Now()
 	for _, d := range candidates {
@@ -269,9 +325,13 @@ func (lb *LoadBalancer) selectHighestHeadroom(candidates []*domain.Deployment) *
 		headroom := 1.0 - (float64(usedTPM) / float64(capTPM))
 		if headroom > maxHeadroom {
 			maxHeadroom = headroom
-			best = d
+			ties = ties[:0]
+			ties = append(ties, d)
+		} else if headroom == maxHeadroom {
+			ties = append(ties, d)
 		}
 	}
+	best := pickRandomTie(ties)
 	if best == nil && len(candidates) > 0 {
 		best = candidates[0]
 	}
@@ -279,7 +339,7 @@ func (lb *LoadBalancer) selectHighestHeadroom(candidates []*domain.Deployment) *
 }
 
 func (lb *LoadBalancer) selectLowestCost(candidates []*domain.Deployment) *domain.Deployment {
-	var best *domain.Deployment
+	var ties []*domain.Deployment
 	minCost := int64(math.MaxInt64)
 	for _, d := range candidates {
 		var cost int64 = 10000000
@@ -288,10 +348,13 @@ func (lb *LoadBalancer) selectLowestCost(candidates []*domain.Deployment) *domai
 		}
 		if cost < minCost {
 			minCost = cost
-			best = d
+			ties = ties[:0]
+			ties = append(ties, d)
+		} else if cost == minCost {
+			ties = append(ties, d)
 		}
 	}
-	return best
+	return pickRandomTie(ties)
 }
 
 // OnRequestStart increments in-flight counters for a deployment.

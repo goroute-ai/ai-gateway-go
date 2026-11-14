@@ -72,3 +72,22 @@ func TestLoadBalancer_RedisFailureFallsBackToLocalAndReportsDegraded(t *testing.
 		t.Fatal("shared signal status should recover after successful Redis read")
 	}
 }
+
+func TestLoadBalancer_RedisLeastBusyReservation(t *testing.T) {
+	server := miniredis.RunT(t)
+	redis := storage.NewRedisFabric(server.Addr(), "", 0)
+	defer redis.Client().Close()
+	lb := NewLoadBalancer(redis)
+	depA := &domain.Deployment{ID: "dep-a"}
+	depB := &domain.Deployment{ID: "dep-b"}
+	candidates := []*domain.Deployment{depA, depB}
+
+	first := lb.Select(domain.StrategyLeastBusy, candidates)
+	second := lb.Select(domain.StrategyLeastBusy, candidates)
+	if first == nil || second == nil {
+		t.Fatal("expected non-nil selections")
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected Redis-backed StrategyLeastBusy reservation to spread consecutive selections, both picked %s", first.ID)
+	}
+}

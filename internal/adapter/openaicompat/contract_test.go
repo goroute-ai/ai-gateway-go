@@ -665,3 +665,70 @@ func TestContract_ReasoningExtraction(t *testing.T) {
 	assert.Equal(t, "Step 1", deltas[0].ReasoningContent)
 	assert.Equal(t, "Final result", deltas[1].Content)
 }
+
+func TestOpenAICompat_UpstreamStatusClassification(t *testing.T) {
+	for _, tc := range []struct {
+		upstreamStatus int
+		wantStatus     int
+		wantRetryable  bool
+		wantAuthFail   bool
+	}{
+		{http.StatusUnauthorized, http.StatusBadGateway, false, true},
+		{http.StatusForbidden, http.StatusBadGateway, false, true},
+		{http.StatusNotFound, http.StatusNotFound, false, false},
+		{http.StatusBadRequest, http.StatusBadRequest, false, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.upstreamStatus)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"bad","code":"upstream_code"}}`)
+		}))
+		reg := openaicompat.NewProfileRegistry(srv.Client(), nil)
+		adp, err := reg.CreateAdapter("deepseek")
+		require.NoError(t, err)
+		dep := &domain.Deployment{
+			GlobalModel: &domain.GlobalModel{ModelName: "deepseek-chat"},
+			Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "k"},
+		}
+		_, err = adp.ChatCompletion(context.Background(), dep, &domain.CanonicalChatRequest{
+			Model:    "deepseek-chat",
+			Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+		})
+		srv.Close()
+		var gwErr *domain.GatewayError
+		require.ErrorAs(t, err, &gwErr)
+		assert.Equal(t, tc.wantStatus, gwErr.StatusCode)
+		assert.Equal(t, tc.wantRetryable, gwErr.Retryable)
+		assert.Equal(t, tc.wantAuthFail, gwErr.AuthFailure)
+	}
+}
+
+func TestRequestValidator_PrecompiledModelOverrides(t *testing.T) {
+	temp := 0.5
+	profile := &openaicompat.DialectProfile{
+		ID:                    "test",
+		DropUnsupportedParams: true,
+		ModelOverrides: []openaicompat.ModelDialectOverride{
+			{
+				ModelPattern: `^o1-.*`,
+				Constraints: openaicompat.DialectConstraints{
+					RejectsCustomTemperature: true,
+				},
+			},
+			{
+				ModelPattern: `[invalid-regex`,
+				Constraints: openaicompat.DialectConstraints{
+					RejectsTopP: true,
+				},
+			},
+		},
+	}
+	v := openaicompat.NewRequestValidator(profile)
+	shaped, dropped, err := v.ShapeRequest(&domain.CanonicalChatRequest{
+		Model:       "o1-mini",
+		Temperature: &temp,
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+	}, "o1-mini")
+	require.NoError(t, err)
+	assert.Nil(t, shaped.Temperature)
+	assert.Equal(t, []string{"temperature"}, dropped)
+}

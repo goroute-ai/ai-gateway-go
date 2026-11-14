@@ -526,6 +526,13 @@ func (rm *ReliabilityManager) ExecuteStream(
 
 			// If bytes were already flushed to the client, we cannot retry on another deployment
 			if firstChunkRecorded {
+				depLatency := time.Since(depStart).Milliseconds()
+				if rm.collector != nil && dep.GlobalModel != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
 				return usage, meta, err
 			}
 
@@ -1849,6 +1856,7 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 	}
 	now := time.Now().UTC()
 	var healthy []*domain.Deployment
+	var probes []*domain.Deployment
 	for _, d := range all {
 		if d.Status != domain.DeploymentStatusActive || d.GlobalModel == nil {
 			continue
@@ -1878,11 +1886,26 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 		}
 		d.CircuitProbeToken = probeToken
 		if probeToken != "" {
-			return []*domain.Deployment{d}, nil
+			probes = append(probes, d)
+			continue
 		}
 		healthy = append(healthy, d)
 	}
-	return healthy, nil
+	if len(healthy) > 0 {
+		for _, p := range probes {
+			rm.releaseHalfOpenProbe(ctx, p.ID, p.CircuitProbeToken)
+			p.CircuitProbeToken = ""
+		}
+		return healthy, nil
+	}
+	if len(probes) > 0 {
+		for _, p := range probes[1:] {
+			rm.releaseHalfOpenProbe(ctx, p.ID, p.CircuitProbeToken)
+			p.CircuitProbeToken = ""
+		}
+		return probes[:1], nil
+	}
+	return nil, nil
 }
 
 func (rm *ReliabilityManager) hydrateCredential(dep *domain.Deployment) {
@@ -2175,6 +2198,23 @@ func (rm *ReliabilityManager) recordSuccess(ctx context.Context, dep *domain.Dep
 			}
 			return rdb.Del(ctx, circuitFailureKey(depID)).Result()
 		})
+	}
+}
+
+func (rm *ReliabilityManager) releaseHalfOpenProbe(ctx context.Context, depID, probeToken string) {
+	if probeToken == "" {
+		return
+	}
+	if rm.redis != nil && rm.redis.Client() != nil {
+		_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Eval(ctx, "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end", []string{circuitProbeKey(depID)}, probeToken).Result()
+		})
+	}
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if st, ok := rm.cooldowns[depID]; ok && st.probeToken == probeToken {
+		st.halfOpenProbeInFlight = false
+		st.probeToken = ""
 	}
 }
 

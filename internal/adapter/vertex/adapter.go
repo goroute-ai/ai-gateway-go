@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,7 +27,7 @@ type Adapter struct {
 // NewAdapter creates a new Google Cloud Vertex AI adapter.
 func NewAdapter(httpClient *http.Client, ssrfPolicy *network.Policy) *Adapter {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = network.NewHTTPClient(nil)
 	}
 	return &Adapter{
 		httpClient: httpClient,
@@ -151,7 +150,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderVertex)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +219,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderVertex)
+		if err != nil {
+			return nil, err
+		}
 		return nil, parseVertexError(resp.StatusCode, respBytes)
 	}
 
@@ -373,7 +375,7 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderVertex)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,7 +1011,7 @@ func (a *Adapter) chatCompletionClaude(ctx context.Context, baseURL, projectID, 
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderVertex)
 	if err != nil {
 		return nil, err
 	}
@@ -1130,7 +1132,10 @@ func (a *Adapter) streamChatCompletionClaude(ctx context.Context, baseURL, proje
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderVertex)
+		if err != nil {
+			return nil, err
+		}
 		return nil, parseVertexError(resp.StatusCode, respBytes)
 	}
 

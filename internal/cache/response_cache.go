@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -180,9 +182,17 @@ func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheContr
 
 // ComputeKey generates a collision-resistant SHA-256 cache key scoped to the organization and request.
 func (c *ResponseCache) ComputeKey(orgID string, req *domain.CanonicalChatRequest) string {
+	return c.ComputeKeyWithScope(orgID, "", "", req)
+}
+
+// ComputeKeyWithScope generates a collision-resistant SHA-256 cache key scoped to the
+// organization, and when model == "auto", also scoped to teamID and effectiveModel.
+func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalChatRequest) string {
 	type keyPayload struct {
-		OrgID   string                       `json:"org_id"`
-		Request *domain.CanonicalChatRequest `json:"request"`
+		OrgID          string                       `json:"org_id"`
+		TeamID         string                       `json:"team_id,omitempty"`
+		EffectiveModel string                       `json:"effective_model,omitempty"`
+		Request        *domain.CanonicalChatRequest `json:"request"`
 	}
 	if req == nil {
 		return ""
@@ -193,8 +203,20 @@ func (c *ResponseCache) ComputeKey(orgID string, req *domain.CanonicalChatReques
 	canonical := *req
 	canonical.RequestID = ""
 	canonical.Stream = false
+	payload := keyPayload{
+		OrgID:   orgID,
+		Request: &canonical,
+	}
+	if req.Model == "auto" {
+		payload.TeamID = teamID
+		if effectiveModel != "" {
+			payload.EffectiveModel = effectiveModel
+		} else {
+			payload.EffectiveModel = req.ResolvedModel
+		}
+	}
 	h := sha256.New()
-	if err := json.NewEncoder(h).Encode(keyPayload{OrgID: orgID, Request: &canonical}); err != nil {
+	if err := json.NewEncoder(h).Encode(payload); err != nil {
 		// An unencodable extension value must disable caching, never collapse to
 		// the same empty-payload digest as another request.
 		return ""
@@ -398,7 +420,58 @@ func cloneResponse(resp *domain.CanonicalChatResponse) *domain.CanonicalChatResp
 		return nil
 	}
 	cp := *resp
+	if resp.Metadata != nil {
+		cp.Metadata = maps.Clone(resp.Metadata)
+	}
+	if resp.Choices != nil {
+		cp.Choices = make([]domain.CanonicalChoice, len(resp.Choices))
+		for i, ch := range resp.Choices {
+			cp.Choices[i] = ch
+			cp.Choices[i].Message = cloneMessage(ch.Message)
+		}
+	}
 	return &cp
+}
+
+func cloneMessage(msg domain.CanonicalMessage) domain.CanonicalMessage {
+	if msg.ToolCalls != nil {
+		msg.ToolCalls = slices.Clone(msg.ToolCalls)
+	}
+	if msg.CacheControl != nil {
+		cc := *msg.CacheControl
+		msg.CacheControl = &cc
+	}
+	if msg.Parts != nil {
+		parts := make([]domain.ContentPart, len(msg.Parts))
+		for i, p := range msg.Parts {
+			parts[i] = p
+			if p.ImageURL != nil {
+				img := *p.ImageURL
+				parts[i].ImageURL = &img
+			}
+			if p.Document != nil {
+				doc := *p.Document
+				parts[i].Document = &doc
+			}
+			if p.CacheControl != nil {
+				cc := *p.CacheControl
+				parts[i].CacheControl = &cc
+			}
+		}
+		msg.Parts = parts
+	}
+	if msg.Annotations != nil {
+		anns := make([]domain.Annotation, len(msg.Annotations))
+		for i, a := range msg.Annotations {
+			anns[i] = a
+			if a.URLCitation != nil {
+				cit := *a.URLCitation
+				anns[i].URLCitation = &cit
+			}
+		}
+		msg.Annotations = anns
+	}
+	return msg
 }
 
 func cacheGlobalEpochKey() string { return "gw:cache:{epochs}:global" }

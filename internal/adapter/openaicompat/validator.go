@@ -8,13 +8,33 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
+type compiledModelOverride struct {
+	re       *regexp.Regexp
+	override ModelDialectOverride
+}
+
 // RequestValidator validates an incoming CanonicalChatRequest against a DialectProfile's capabilities and constraints.
 type RequestValidator struct {
-	profile *DialectProfile
+	profile           *DialectProfile
+	compiledOverrides []compiledModelOverride
 }
 
 func NewRequestValidator(profile *DialectProfile) *RequestValidator {
-	return &RequestValidator{profile: profile}
+	v := &RequestValidator{profile: profile}
+	if profile != nil && len(profile.ModelOverrides) > 0 {
+		v.compiledOverrides = make([]compiledModelOverride, 0, len(profile.ModelOverrides))
+		for _, override := range profile.ModelOverrides {
+			re, err := regexp.Compile(override.ModelPattern)
+			if err != nil {
+				continue
+			}
+			v.compiledOverrides = append(v.compiledOverrides, compiledModelOverride{
+				re:       re,
+				override: override,
+			})
+		}
+	}
+	return v
 }
 
 // ShapeRequest validates hard capabilities and, when DropUnsupportedParams is enabled on the
@@ -66,8 +86,9 @@ func (v *RequestValidator) ShapeRequest(req *domain.CanonicalChatRequest, model 
 func (v *RequestValidator) resolveEffective(model string) (DialectConstraints, domain.ModelCapabilities) {
 	effectiveConstraints := v.profile.Constraints
 	effectiveCapabilities := v.profile.DefaultCapabilities
-	for _, override := range v.profile.ModelOverrides {
-		if matched, _ := regexp.MatchString(override.ModelPattern, model); matched {
+	for _, co := range v.compiledOverrides {
+		if co.re.MatchString(model) {
+			override := co.override
 			if override.Constraints.RejectsCustomTemperature {
 				effectiveConstraints.RejectsCustomTemperature = true
 			}

@@ -78,3 +78,30 @@ func TestLoadBalancer_UsageBasedHeadroom(t *testing.T) {
 	}
 	lb.mu.RUnlock()
 }
+
+func TestLoadBalancer_RandomizedTieBreaking(t *testing.T) {
+	lb := NewLoadBalancer()
+	candidates := []*domain.Deployment{
+		{ID: "dep-1", TPMCapacity: 1000, GlobalModel: &domain.GlobalModel{InputCostMicrosPer1M: 100, OutputCostMicrosPer1M: 100}},
+		{ID: "dep-2", TPMCapacity: 1000, GlobalModel: &domain.GlobalModel{InputCostMicrosPer1M: 100, OutputCostMicrosPer1M: 100}},
+		{ID: "dep-3", TPMCapacity: 1000, GlobalModel: &domain.GlobalModel{InputCostMicrosPer1M: 100, OutputCostMicrosPer1M: 100}},
+	}
+
+	for _, strat := range []domain.RoutingStrategy{
+		domain.StrategyLowestCost,
+		domain.StrategyLatencyBased,
+		domain.StrategyUsageBasedHeadroom,
+	} {
+		seen := make(map[string]int)
+		for i := 0; i < 60; i++ {
+			sel := lb.Select(strat, candidates)
+			if sel == nil {
+				t.Fatalf("strategy %s returned nil", strat)
+			}
+			seen[sel.ID]++
+		}
+		if len(seen) < 2 {
+			t.Fatalf("strategy %s did not break ties randomly: %v", strat, seen)
+		}
+	}
+}

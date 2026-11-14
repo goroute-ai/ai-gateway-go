@@ -38,7 +38,10 @@ func (s *Service) ListVisibleModelsForIdentity(ctx context.Context, idCtx *domai
 	var orgPolicies map[string]bool
 
 	if idCtx != nil && idCtx.OrgID != "" {
-		subs, _ := s.repo.GetOrgProviderSubscriptions(ctx, idCtx.OrgID)
+		subs, err := s.repo.GetOrgProviderSubscriptions(ctx, idCtx.OrgID)
+		if err != nil {
+			return nil, err
+		}
 		if len(subs) > 0 {
 			subscribedProviders = make(map[domain.ProviderType]bool, len(subs))
 			for _, sub := range subs {
@@ -48,7 +51,10 @@ func (s *Service) ListVisibleModelsForIdentity(ctx context.Context, idCtx *domai
 			}
 		}
 
-		pols, _ := s.repo.GetOrgModelPolicies(ctx, idCtx.OrgID)
+		pols, err := s.repo.GetOrgModelPolicies(ctx, idCtx.OrgID)
+		if err != nil {
+			return nil, err
+		}
 		if len(pols) > 0 {
 			orgPolicies = make(map[string]bool, len(pols))
 			for _, pol := range pols {

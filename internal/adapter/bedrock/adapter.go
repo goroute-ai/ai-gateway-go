@@ -26,7 +26,7 @@ type Adapter struct {
 // NewAdapter creates a new AWS Bedrock adapter.
 func NewAdapter(httpClient *http.Client, ssrfPolicy *network.Policy) *Adapter {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = network.NewHTTPClient(nil)
 	}
 	return &Adapter{
 		httpClient: httpClient,
@@ -175,9 +175,9 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderBedrock)
 	if err != nil {
-		return nil, fmt.Errorf("read converse response: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -240,7 +240,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderBedrock)
+		if err != nil {
+			return nil, err
+		}
 		return nil, parseBedrockError(resp.StatusCode, respBytes)
 	}
 
@@ -491,7 +494,7 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 			}
 		}
 		defer resp.Body.Close()
-		respBytes, err := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderBedrock)
 		if err != nil {
 			return nil, err
 		}
@@ -685,9 +688,9 @@ func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domai
 		}
 	}
 	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderBedrock)
 	if err != nil {
-		return nil, fmt.Errorf("read bedrock rerank response: %w", err)
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, parseBedrockError(resp.StatusCode, respBytes)
@@ -1081,26 +1084,5 @@ func parseBedrockError(statusCode int, body []byte) error {
 		msg = string(body)
 	}
 
-	gwErr := &domain.GatewayError{
-		StatusCode: statusCode,
-		Message:    msg,
-	}
-	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		gwErr.Type = domain.ErrorTypeAuthentication
-		gwErr.Code = "bedrock_auth_failed"
-		gwErr.AuthFailure = true
-	case http.StatusBadRequest:
-		gwErr.Type = domain.ErrorTypeInvalidRequest
-		gwErr.Code = "bedrock_invalid_request"
-	case http.StatusTooManyRequests:
-		gwErr.Type = domain.ErrorTypeRateLimit
-		gwErr.Code = "bedrock_throttled"
-		gwErr.Retryable = true
-	default:
-		gwErr.Type = domain.ErrorTypeUpstream
-		gwErr.Code = "bedrock_upstream_error"
-		gwErr.Retryable = true
-	}
-	return gwErr
+	return domain.ClassifyUpstreamStatus(domain.ProviderBedrock, statusCode, msg, 0)
 }

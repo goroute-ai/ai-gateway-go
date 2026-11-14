@@ -75,6 +75,46 @@ func NewPooledHTTPClient(timeout time.Duration) *http.Client {
 	return network.NewHTTPClientWithTimeouts(nil, timeout, 2*time.Minute, 2*time.Minute, nil)
 }
 
+const (
+	// DefaultMaxResponseBytes caps buffered upstream JSON/media responses (32 MiB).
+	DefaultMaxResponseBytes int64 = 32 << 20
+	// DefaultMaxErrorBytes caps buffered upstream error response bodies (64 KiB).
+	DefaultMaxErrorBytes int64 = 64 << 10
+)
+
+// ReadBoundedBody reads at most maxBytes from r. If the body exceeds maxBytes,
+// it returns a structured *domain.GatewayError with StatusBadGateway.
+func ReadBoundedBody(r io.Reader, maxBytes int64, provider domain.ProviderType) ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxResponseBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_read_error",
+			Message:    fmt.Sprintf("failed to read upstream response: %v", err),
+			Provider:   provider,
+			Retryable:  true,
+		}
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_response_too_large",
+			Message:    fmt.Sprintf("upstream response exceeded %d byte limit", maxBytes),
+			Provider:   provider,
+			Retryable:  false,
+		}
+	}
+	return data, nil
+}
+
 // ParseRetryAfter extracts a retry delay in seconds from an HTTP Retry-After or x-ratelimit-reset header.
 func ParseRetryAfter(h http.Header) int {
 	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {

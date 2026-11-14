@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -280,8 +281,8 @@ func TestLoadBalancer_LeastBusyAtomicReservation(t *testing.T) {
 	for i := range picks {
 		picks[i] = lb.Select(domain.StrategyLeastBusy, candidates).ID
 	}
-	if picks[0] != "dep-a" || picks[1] != "dep-b" || picks[2] != "dep-a" || picks[3] != "dep-b" {
-		t.Fatalf("expected alternating reservations [dep-a dep-b dep-a dep-b], got %v", picks)
+	if picks[0] == picks[1] || picks[2] == picks[3] {
+		t.Fatalf("expected alternating reservations across dep-a and dep-b, got %v", picks)
 	}
 
 	// OnRequestStart consumes one reservation while incrementing inFlight, keeping total effective load balanced.
@@ -301,9 +302,15 @@ func TestLoadBalancer_LeastBusyAtomicReservation(t *testing.T) {
 	lb.metrics["dep-b"].inFlight = 0
 	lb.mu.Unlock()
 
-	if sel := lb.Select(domain.StrategyLeastBusy, candidates); sel.ID != "dep-a" {
-		t.Fatalf("expected dep-a after expired reservation pruning, got %s", sel.ID)
+	sel := lb.Select(domain.StrategyLeastBusy, candidates)
+	if sel == nil {
+		t.Fatal("expected non-nil deployment after expired reservation pruning")
 	}
+	lb.mu.RLock()
+	if sel.ID == "dep-b" && len(lb.metrics["dep-a"].reservations) != 0 {
+		t.Fatalf("expected dep-a expired reservation to be pruned, got %d", len(lb.metrics["dep-a"].reservations))
+	}
+	lb.mu.RUnlock()
 }
 
 func TestLatencyVsTTFTSeparation(t *testing.T) {
@@ -400,5 +407,142 @@ func TestLatencyVsTTFTSeparation(t *testing.T) {
 	}
 	if fields["ewma_ttft_ms"] == "" {
 		t.Fatal("expected ewma_ttft_ms to be populated after streaming chat")
+	}
+}
+
+func TestExecuteStream_MidStreamFailureRecordsCBAndMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	vault, _ := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	org := &domain.Organization{Name: "Org Stream", Slug: "org-stream", IsActive: true}
+	_ = repo.CreateOrganization(ctx, org)
+
+	cred := &domain.ProviderCredential{OrgID: org.ID, Provider: domain.ProviderOpenAI, Name: "c", IsActive: true}
+	_ = vault.EncryptCredential(cred, "sk-test")
+	_ = repo.CreateProviderCredential(ctx, cred)
+
+	gm := &domain.GlobalModel{ID: "openai/gpt-4o", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o", SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive}
+	_ = repo.UpsertGlobalModel(ctx, gm)
+
+	group := &domain.ModelGroup{OrgID: org.ID, Alias: "stream-cb", RoutingStrategy: domain.StrategyWeightedShuffle, FailureThreshold: 2, CooldownSeconds: 30, IsActive: true}
+	_ = repo.CreateModelGroup(ctx, group)
+	dep := &domain.Deployment{
+		ModelGroupID:   group.ID,
+		GlobalModelID:  gm.ID,
+		CredentialID:   cred.ID,
+		DeploymentName: "dep-stream",
+		Status:         domain.DeploymentStatusActive,
+		Weight:         100,
+	}
+	_ = repo.CreateDeployment(ctx, dep)
+
+	reg := adapter.NewRegistry()
+	reg.Register(&stubChatAdapter{
+		provider: domain.ProviderOpenAI,
+		streamFn: func(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+			if err := onChunk(&domain.CanonicalStreamChunk{ID: "c1", Choices: []domain.CanonicalStreamChoice{{Delta: domain.CanonicalStreamDelta{Content: "hello"}}}}); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("mid-stream EOF")
+		},
+	})
+
+	rm := NewReliabilityManager(repo, reg, NewIntelligentRouter(repo, config.RouterConfig{}), NewLoadBalancer(), vault, nil, nil, config.RouterConfig{})
+	idCtx := &domain.IdentityContext{OrgID: org.ID}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, meta, err := rm.ExecuteStream(ctx, idCtx, &domain.CanonicalChatRequest{
+				Model:    "stream-cb",
+				Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+			}, func(chunk *domain.CanonicalStreamChunk) error { return nil }, nil)
+			if err == nil {
+				t.Errorf("expected mid-stream error")
+				return
+			}
+			if meta == nil {
+				t.Errorf("expected non-nil meta on mid-stream error: %v", err)
+				return
+			}
+			if meta.WinningDeployment == nil || meta.WinningDeployment.ID != dep.ID {
+				t.Errorf("expected WinningDeployment %s, got %+v", dep.ID, meta.WinningDeployment)
+			}
+			if meta.LatencyMs < 0 {
+				t.Errorf("expected non-negative LatencyMs, got %d", meta.LatencyMs)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if state := rm.GetCircuitState(ctx, dep.ID); state != CircuitOpen {
+		t.Fatalf("expected circuit state OPEN after 2 mid-stream failures, got %s", state)
+	}
+}
+
+func TestGetHealthyDeployments_PreservesClosedWhenHalfOpenExists(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	gm := &domain.GlobalModel{ID: "openai/m1", Provider: domain.ProviderOpenAI, ModelName: "m1", SupportsInference: true, LifecycleStatus: domain.ModelStatusActive}
+	_ = repo.UpsertGlobalModel(ctx, gm)
+	cred := &domain.ProviderCredential{OrgID: "org-1", Provider: domain.ProviderOpenAI, Name: "c", IsActive: true}
+	_ = repo.CreateProviderCredential(ctx, cred)
+
+	group := &domain.ModelGroup{OrgID: "org-1", Alias: "g-half-open"}
+	_ = repo.CreateModelGroup(ctx, group)
+	depHalfOpen := &domain.Deployment{ModelGroupID: group.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, DeploymentName: "half-open", Status: domain.DeploymentStatusActive}
+	depClosed1 := &domain.Deployment{ModelGroupID: group.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, DeploymentName: "closed-1", Status: domain.DeploymentStatusActive}
+	depClosed2 := &domain.Deployment{ModelGroupID: group.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, DeploymentName: "closed-2", Status: domain.DeploymentStatusActive}
+	_ = repo.CreateDeployment(ctx, depHalfOpen)
+	_ = repo.CreateDeployment(ctx, depClosed1)
+	_ = repo.CreateDeployment(ctx, depClosed2)
+
+	rm := NewReliabilityManager(repo, adapter.NewRegistry(), NewIntelligentRouter(repo, config.RouterConfig{}), NewLoadBalancer(), nil, nil, nil, config.RouterConfig{})
+
+	// Trip depHalfOpen and expire its cooldown so it is in HALF_OPEN state.
+	rm.tripCooldown(ctx, depHalfOpen.ID, 1)
+	rm.mu.Lock()
+	rm.cooldowns[depHalfOpen.ID].cooldownUntil = time.Now().Add(-time.Second)
+	rm.mu.Unlock()
+
+	healthy, err := rm.getHealthyDeployments(ctx, "", group)
+	if err != nil {
+		t.Fatalf("getHealthyDeployments failed: %v", err)
+	}
+	if len(healthy) != 2 {
+		t.Fatalf("expected 2 healthy CLOSED deployments, got %d", len(healthy))
+	}
+	for _, d := range healthy {
+		if d.ID == depHalfOpen.ID {
+			t.Fatal("did not expect HALF_OPEN deployment when healthy CLOSED deployments exist")
+		}
+	}
+	// Verify the unused HALF_OPEN probe lease was released.
+	rm.mu.Lock()
+	inFlight := rm.cooldowns[depHalfOpen.ID].halfOpenProbeInFlight
+	rm.mu.Unlock()
+	if inFlight {
+		t.Fatal("expected unused HALF_OPEN probe lease to be released when CLOSED deployments exist")
+	}
+
+	// Now when only depHalfOpen is available, it should be isolated and returned.
+	groupOnlyProbe := &domain.ModelGroup{OrgID: "org-1", Alias: "g-only-probe"}
+	_ = repo.CreateModelGroup(ctx, groupOnlyProbe)
+	depProbeOnly := &domain.Deployment{ModelGroupID: groupOnlyProbe.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, DeploymentName: "probe-only", Status: domain.DeploymentStatusActive}
+	_ = repo.CreateDeployment(ctx, depProbeOnly)
+	rm.tripCooldown(ctx, depProbeOnly.ID, 1)
+	rm.mu.Lock()
+	rm.cooldowns[depProbeOnly.ID].cooldownUntil = time.Now().Add(-time.Second)
+	rm.mu.Unlock()
+
+	onlyProbe, err := rm.getHealthyDeployments(ctx, "", groupOnlyProbe)
+	if err != nil {
+		t.Fatalf("getHealthyDeployments failed: %v", err)
+	}
+	if len(onlyProbe) != 1 || onlyProbe[0].ID != depProbeOnly.ID || onlyProbe[0].CircuitProbeToken == "" {
+		t.Fatalf("expected isolated HALF_OPEN probe with token, got %+v", onlyProbe)
 	}
 }

@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -189,5 +190,27 @@ func TestAllFiveProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	})
 	if err != nil || ollStreamed != "Ollama ok" || ollUsage.TotalTokens != 8 {
 		t.Fatalf("Ollama NDJSON stream failed: err=%v text=%q usage=%+v", err, ollStreamed, ollUsage)
+	}
+}
+
+func TestReadBoundedBody_TruncatesWithGatewayError(t *testing.T) {
+	body, err := adapter.ReadBoundedBody(strings.NewReader("hello"), 5, domain.ProviderOpenAI)
+	if err != nil {
+		t.Fatalf("unexpected error for exact-limit body: %v", err)
+	}
+	if string(body) != "hello" {
+		t.Fatalf("got %q, want %q", string(body), "hello")
+	}
+
+	_, err = adapter.ReadBoundedBody(strings.NewReader("hello!"), 5, domain.ProviderOpenAI)
+	if err == nil {
+		t.Fatal("expected GatewayError when body exceeds limit")
+	}
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) {
+		t.Fatalf("expected *domain.GatewayError, got %T", err)
+	}
+	if gwErr.StatusCode != http.StatusBadGateway || gwErr.Code != "upstream_response_too_large" || gwErr.Retryable {
+		t.Fatalf("unexpected GatewayError: %+v", gwErr)
 	}
 }

@@ -205,7 +205,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderOpenAI)
+		if err != nil {
+			return nil, err
+		}
 		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(errBody), adapter.ParseRetryAfter(resp.Header))
 	}
 
@@ -369,7 +372,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBody), adapter.ParseRetryAfter(resp.Header))
 	}
@@ -412,7 +418,10 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBody), 0)
 	}
@@ -476,7 +485,7 @@ func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *dom
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
 	if err != nil {
 		return nil, err
 	}
@@ -582,9 +591,9 @@ func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, re
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
 	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -729,9 +738,9 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
 	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -824,7 +833,10 @@ func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, re
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		respBytes, _ := io.ReadAll(resp.Body)
+		respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderOpenAI)
+		if err != nil {
+			return nil, "", err
+		}
 		retryAfter := adapter.ParseRetryAfter(resp.Header)
 		return nil, "", domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(respBytes), retryAfter)
 	}
@@ -958,9 +970,9 @@ func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderOpenAI)
 	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {

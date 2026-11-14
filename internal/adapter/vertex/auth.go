@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 // ServiceAccountKey represents a Google Cloud IAM Service Account JSON key.
@@ -47,7 +50,7 @@ type TokenSource struct {
 // NewTokenSource creates a token source from a raw credential string (either JSON service account key or Bearer token).
 func NewTokenSource(client *http.Client, rawCred string) (*TokenSource, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = network.NewHTTPClient(nil)
 	}
 	rawCred = strings.TrimSpace(rawCred)
 	if rawCred == "" {
@@ -165,9 +168,9 @@ func (ts *TokenSource) GetToken(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxResponseBytes, domain.ProviderVertex)
 	if err != nil {
-		return "", fmt.Errorf("read token exchange response: %w", err)
+		return "", err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
