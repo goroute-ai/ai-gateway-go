@@ -455,3 +455,167 @@ func TestResponseCache_StreamChunksL1L2EpochAndRace(t *testing.T) {
 		t.Fatal("expected cacheB stream chunks miss after org invalidation")
 	}
 }
+
+func TestResponseCache_StreamAndNonStreamNamespaceIsolation(t *testing.T) {
+	ctx := context.Background()
+	rc := NewResponseCache(true, time.Hour, nil)
+
+	temp0 := 0.0
+	chatReq := &domain.CanonicalChatRequest{
+		Model:       "gpt-4o",
+		Temperature: &temp0,
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "same prompt"}},
+	}
+	streamReq := *chatReq
+	streamReq.Stream = true
+
+	nonStreamKey := rc.ComputeKey("org-1", chatReq)
+	streamKey := rc.ComputeKey("org-1", &streamReq)
+	if nonStreamKey == "" || nonStreamKey != streamKey {
+		t.Fatalf("expected identical base key for stream and non-stream request, got %q vs %q", nonStreamKey, streamKey)
+	}
+
+	// 1. Store non-stream, call GetStreamChunks, assert non-stream entry survives.
+	nonStreamResp := &domain.CanonicalChatResponse{
+		ID:      "resp-nonstream",
+		Model:   "gpt-4o",
+		Choices: []domain.CanonicalChoice{{Index: 0, Message: domain.CanonicalMessage{Role: "assistant", Content: "sync answer"}}},
+	}
+	rc.SetWithMeta(ctx, nonStreamKey, "org-1", nonStreamResp)
+
+	if chunks, hit := rc.GetStreamChunks(ctx, streamKey); hit || len(chunks) != 0 {
+		t.Fatalf("expected GetStreamChunks miss when only non-stream is cached, got hit=%v len=%d", hit, len(chunks))
+	}
+	gotResp, hit := rc.Get(ctx, nonStreamKey)
+	if !hit || gotResp == nil || gotResp.ID != "resp-nonstream" {
+		t.Fatalf("expected non-stream entry to survive GetStreamChunks, got hit=%v resp=%+v", hit, gotResp)
+	}
+
+	// 2. Reverse: store stream chunks on a fresh key, call Get, assert stream entry survives.
+	rc2 := NewResponseCache(true, time.Hour, nil)
+	finishStop := "stop"
+	streamChunks := []domain.CanonicalStreamChunk{
+		{
+			ID:    "chatcmpl-stream",
+			Model: "gpt-4o",
+			Choices: []domain.CanonicalStreamChoice{{
+				Index:        0,
+				Delta:        domain.CanonicalStreamDelta{Role: "assistant", Content: "stream answer"},
+				FinishReason: &finishStop,
+			}},
+		},
+	}
+	rc2.SetStreamChunks(ctx, streamKey, "org-1", "gpt-4o", streamChunks)
+
+	if resp, hit := rc2.Get(ctx, nonStreamKey); hit || resp != nil {
+		t.Fatalf("expected non-stream Get miss when only stream chunks are cached, got hit=%v resp=%+v", hit, resp)
+	}
+	gotChunks, hit := rc2.GetStreamChunks(ctx, streamKey)
+	if !hit || len(gotChunks) != 1 || gotChunks[0].Choices[0].Delta.Content != "stream answer" {
+		t.Fatalf("expected stream entry to survive non-stream Get, got hit=%v chunks=%+v", hit, gotChunks)
+	}
+
+	// 3. Both coexisting simultaneously under the same base key.
+	rc.SetStreamChunks(ctx, streamKey, "org-1", "gpt-4o", streamChunks)
+	if gotResp, hit := rc.Get(ctx, nonStreamKey); !hit || gotResp == nil || gotResp.ID != "resp-nonstream" {
+		t.Fatalf("expected non-stream entry to coexist with stream entry, got hit=%v resp=%+v", hit, gotResp)
+	}
+	if gotChunks, hit := rc.GetStreamChunks(ctx, streamKey); !hit || len(gotChunks) != 1 {
+		t.Fatalf("expected stream entry to coexist with non-stream entry, got hit=%v len=%d", hit, len(gotChunks))
+	}
+}
+
+func TestResponseCache_IsStreamCacheableAndIsCompletionStreamCacheable(t *testing.T) {
+	rc := NewResponseCache(true, time.Hour, nil)
+	temp0 := 0.0
+	temp7 := 0.7
+
+	chatStream := &domain.CanonicalChatRequest{
+		Model:       "gpt-4o",
+		Stream:      true,
+		Temperature: &temp0,
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+	}
+	chatNonStream := &domain.CanonicalChatRequest{
+		Model:       "gpt-4o",
+		Stream:      false,
+		Temperature: &temp0,
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+	}
+	chatHighTemp := &domain.CanonicalChatRequest{
+		Model:       "gpt-4o",
+		Stream:      true,
+		Temperature: &temp7,
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
+	}
+
+	// Opt-in only: empty Cache-Control must return false even for temperature 0.
+	if rc.IsStreamCacheable(chatStream, "") {
+		t.Fatal("expected IsStreamCacheable to be false without explicit opt-in header")
+	}
+	// Non-streaming request must return false on IsStreamCacheable.
+	if rc.IsStreamCacheable(chatNonStream, "gateway-stream-cache") {
+		t.Fatal("expected IsStreamCacheable to be false when Stream == false")
+	}
+	// Explicit opt-in headers must return true.
+	for _, hdr := range []string{"gateway-stream-cache", "max-age=60", "public, max-age=300", "only-if-cached", "enabled", "force"} {
+		if !rc.IsStreamCacheable(chatStream, hdr) {
+			t.Fatalf("expected IsStreamCacheable=true for header %q", hdr)
+		}
+	}
+	// Bypass / no-cache headers must return false even when combined with opt-in.
+	for _, hdr := range []string{"no-cache", "no-store", "bypass", "max-age=0", "gateway-stream-cache, no-cache"} {
+		if rc.IsStreamCacheable(chatStream, hdr) {
+			t.Fatalf("expected IsStreamCacheable=false for header %q", hdr)
+		}
+	}
+	// Non-zero temperature requires "force".
+	if rc.IsStreamCacheable(chatHighTemp, "gateway-stream-cache") {
+		t.Fatal("expected IsStreamCacheable=false for non-zero temperature without force")
+	}
+	if !rc.IsStreamCacheable(chatHighTemp, "force") {
+		t.Fatal("expected IsStreamCacheable=true for non-zero temperature with force")
+	}
+
+	cmplStream := &domain.CanonicalCompletionRequest{
+		Model:       "gpt-3.5-turbo-instruct",
+		Stream:      true,
+		Temperature: &temp0,
+		Prompt:      domain.CompletionPrompt{Strings: []string{"hi"}},
+	}
+	cmplNonStream := &domain.CanonicalCompletionRequest{
+		Model:       "gpt-3.5-turbo-instruct",
+		Stream:      false,
+		Temperature: &temp0,
+		Prompt:      domain.CompletionPrompt{Strings: []string{"hi"}},
+	}
+	cmplHighTemp := &domain.CanonicalCompletionRequest{
+		Model:       "gpt-3.5-turbo-instruct",
+		Stream:      true,
+		Temperature: &temp7,
+		Prompt:      domain.CompletionPrompt{Strings: []string{"hi"}},
+	}
+
+	if rc.IsCompletionStreamCacheable(cmplStream, "") {
+		t.Fatal("expected IsCompletionStreamCacheable=false without opt-in header")
+	}
+	if rc.IsCompletionStreamCacheable(cmplNonStream, "gateway-stream-cache") {
+		t.Fatal("expected IsCompletionStreamCacheable=false when Stream == false")
+	}
+	for _, hdr := range []string{"gateway-stream-cache", "max-age=120", "only-if-cached", "enabled", "force"} {
+		if !rc.IsCompletionStreamCacheable(cmplStream, hdr) {
+			t.Fatalf("expected IsCompletionStreamCacheable=true for header %q", hdr)
+		}
+	}
+	for _, hdr := range []string{"no-cache", "no-store", "bypass", "max-age=0"} {
+		if rc.IsCompletionStreamCacheable(cmplStream, hdr) {
+			t.Fatalf("expected IsCompletionStreamCacheable=false for header %q", hdr)
+		}
+	}
+	if rc.IsCompletionStreamCacheable(cmplHighTemp, "max-age=60") {
+		t.Fatal("expected IsCompletionStreamCacheable=false for non-zero temperature without force")
+	}
+	if !rc.IsCompletionStreamCacheable(cmplHighTemp, "force") {
+		t.Fatal("expected IsCompletionStreamCacheable=true for non-zero temperature with force")
+	}
+}

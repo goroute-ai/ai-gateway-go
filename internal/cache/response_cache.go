@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -171,7 +172,7 @@ func NewResponseCacheWithL1Capacity(enabled bool, ttl time.Duration, maxL1Entrie
 
 // IsCacheable reports whether a ChatCompletion request is eligible for exact-match caching.
 func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
-	if !c.enabled || req == nil || req.Stream {
+	if c == nil || !c.enabled || req == nil || req.Stream {
 		return false
 	}
 	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
@@ -181,6 +182,63 @@ func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheContr
 		return true
 	}
 	return req.Temperature != nil && *req.Temperature == 0
+}
+
+// IsStreamCacheable reports whether a streaming ChatCompletion request is eligible
+// for exact-match SSE chunk caching.
+//
+// Stream caching is strictly OPT-IN ONLY: unlike non-streaming IsCacheable (which
+// defaults to enabled when temperature == 0), streaming requests are never cached
+// unless the caller explicitly opts in via the Cache-Control (or X-Gateway-Cache-Control)
+// header using an explicit opt-in directive such as "Cache-Control: gateway-stream-cache",
+// "Cache-Control: max-age=<N>" (N > 0), "only-if-cached", "enabled", or "force".
+// Directives "no-cache", "no-store", "bypass", or "max-age=0" always disable caching.
+// Unless "force" is specified, non-deterministic requests with a non-zero temperature
+// (Temperature != nil && *Temperature != 0) are not cached.
+func (c *ResponseCache) IsStreamCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || !req.Stream {
+		return false
+	}
+	optIn, force := parseStreamCacheControl(cacheControlHeader)
+	if !optIn {
+		return false
+	}
+	if force {
+		return true
+	}
+	return req.Temperature == nil || *req.Temperature == 0
+}
+
+func parseStreamCacheControl(header string) (optIn bool, force bool) {
+	if strings.TrimSpace(header) == "" {
+		return false, false
+	}
+	for _, rawPart := range strings.Split(header, ",") {
+		part := strings.ToLower(strings.TrimSpace(rawPart))
+		if part == "" {
+			continue
+		}
+		switch part {
+		case "no-cache", "no-store", "bypass", "max-age=0":
+			return false, false
+		case "force":
+			optIn = true
+			force = true
+		case "gateway-stream-cache", "enabled", "only-if-cached":
+			optIn = true
+		default:
+			if strings.HasPrefix(part, "max-age=") {
+				valStr := strings.TrimSpace(strings.TrimPrefix(part, "max-age="))
+				valStr = strings.Trim(valStr, `"`)
+				n, err := strconv.Atoi(valStr)
+				if err != nil || n <= 0 {
+					return false, false
+				}
+				optIn = true
+			}
+		}
+	}
+	return optIn, force
 }
 
 // ComputeKey generates a collision-resistant SHA-256 cache key scoped to the organization and request.
@@ -228,9 +286,12 @@ func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string
 }
 
 func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalChatResponse, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
 	now := time.Now()
 	if entry, ok := c.l1.load(key); ok {
-		if now.Before(entry.ExpiresAt) {
+		if entry.Response != nil && now.Before(entry.ExpiresAt) {
 			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
 			if err != nil {
 				c.l1Misses.Add(1)
@@ -241,7 +302,9 @@ func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalC
 				return cloneResponse(entry.Response), true
 			}
 		}
-		c.l1.delete(key)
+		if entry.Response != nil {
+			c.l1.delete(key)
+		}
 	}
 	c.l1Misses.Add(1)
 
@@ -279,7 +342,7 @@ func (c *ResponseCache) Set(ctx context.Context, key string, resp *domain.Canoni
 }
 
 func (c *ResponseCache) SetWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalChatResponse) {
-	if resp == nil {
+	if c == nil || key == "" || resp == nil {
 		return
 	}
 	model := resp.Model
@@ -320,6 +383,27 @@ func (c *ResponseCache) IsCompletionCacheable(req *domain.CanonicalCompletionReq
 		return true
 	}
 	return req.Temperature != nil && *req.Temperature == 0
+}
+
+// IsCompletionStreamCacheable reports whether a streaming legacy text completion
+// request is eligible for exact-match SSE chunk caching.
+//
+// Like IsStreamCacheable, stream caching is strictly OPT-IN ONLY and requires an
+// explicit Cache-Control (or X-Gateway-Cache-Control) opt-in directive such as
+// "Cache-Control: gateway-stream-cache", "Cache-Control: max-age=<N>" (N > 0),
+// "only-if-cached", "enabled", or "force".
+func (c *ResponseCache) IsCompletionStreamCacheable(req *domain.CanonicalCompletionRequest, cacheControlHeader string) bool {
+	if c == nil || !c.enabled || req == nil || !req.Stream {
+		return false
+	}
+	optIn, force := parseStreamCacheControl(cacheControlHeader)
+	if !optIn {
+		return false
+	}
+	if force {
+		return true
+	}
+	return req.Temperature == nil || *req.Temperature == 0
 }
 
 // ComputeCompletionKey generates a collision-resistant SHA-256 cache key for `/v1/completions` scoped to orgID.
@@ -584,14 +668,15 @@ func (c *ResponseCache) SetEmbeddingWithMeta(ctx context.Context, key, orgID str
 	c.l1.store(key, entry)
 }
 
-// GetStreamChunks retrieves cached streaming SSE chunks from L1 or L2 Redis (`gw:cache:stream:`),
+// GetStreamChunks retrieves cached streaming SSE chunks from L1 (`"stream:" + key`) or L2 Redis (`gw:cache:stream:`),
 // validating shared epochs and returning a deep copy safe for concurrent replay/redaction.
 func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]domain.CanonicalStreamChunk, bool) {
 	if c == nil || key == "" {
 		return nil, false
 	}
+	l1Key := "stream:" + key
 	now := time.Now()
-	if entry, ok := c.l1.load(key); ok {
+	if entry, ok := c.l1.load(l1Key); ok {
 		if len(entry.StreamChunks) > 0 && now.Before(entry.ExpiresAt) {
 			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
 			if err != nil {
@@ -603,7 +688,9 @@ func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]doma
 				return cloneStreamChunks(entry.StreamChunks), true
 			}
 		}
-		c.l1.delete(key)
+		if len(entry.StreamChunks) > 0 {
+			c.l1.delete(l1Key)
+		}
 	}
 	c.l1Misses.Add(1)
 
@@ -632,11 +719,11 @@ func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]doma
 		return nil, false
 	}
 	c.l2Hits.Add(1)
-	c.l1.store(key, entry)
+	c.l1.store(l1Key, entry)
 	return cloneStreamChunks(entry.StreamChunks), true
 }
 
-// SetStreamChunks stores a slice of streaming SSE chunks in L1 and L2 Redis (`gw:cache:stream:`)
+// SetStreamChunks stores a slice of streaming SSE chunks in L1 (`"stream:" + key`) and L2 Redis (`gw:cache:stream:`)
 // scoped by orgID and model invalidation epochs.
 func (c *ResponseCache) SetStreamChunks(ctx context.Context, key string, orgID string, model string, chunks []domain.CanonicalStreamChunk) {
 	if c == nil || key == "" || len(chunks) == 0 {
@@ -672,7 +759,7 @@ func (c *ResponseCache) SetStreamChunks(ctx context.Context, key string, orgID s
 			return
 		}
 	}
-	c.l1.store(key, entry)
+	c.l1.store("stream:"+key, entry)
 }
 
 // Invalidate advances shared global, organization, and/or model epochs and removes matching local entries.
