@@ -655,6 +655,7 @@ type CanonicalAudioTranscriptionRequest struct {
 	ResponseFormat         string    `json:"response_format,omitempty"` // "json", "text", "verbose_json"
 	Temperature            *float64  `json:"temperature,omitempty"`
 	TimestampGranularities []string  `json:"timestamp_granularities,omitempty"`
+	IsTranslation          bool      `json:"is_translation,omitempty"`
 }
 
 type CanonicalAudioResponse struct {

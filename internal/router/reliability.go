@@ -181,6 +181,26 @@ func finishGenAIClientSpan(span trace.Span, usage *domain.TokenUsage, err error)
 	span.End()
 }
 
+func withDeploymentTimeout(ctx context.Context, dep *domain.Deployment) (context.Context, context.CancelFunc) {
+	if dep != nil && dep.TimeoutMs > 0 {
+		return context.WithTimeout(ctx, time.Duration(dep.TimeoutMs)*time.Millisecond)
+	}
+	return ctx, func() {}
+}
+
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return err
+}
+
 func isBudgetConstrained(idCtx *domain.IdentityContext) bool {
 	if idCtx == nil {
 		return false
@@ -341,7 +361,9 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-			resp, err := adp.ChatCompletion(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := adp.ChatCompletion(depCtx, dep, &reqCopy)
+			depCancel()
 			var usage *domain.TokenUsage
 			if resp != nil {
 				usage = &resp.Usage
@@ -500,13 +522,15 @@ func (rm *ReliabilityManager) ExecuteStream(
 			rm.loadBalancer.OnRequestStart(dep.ID)
 
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-			usage, err := adp.StreamChatCompletion(spanCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			usage, err := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
 				if !firstChunkRecorded {
 					firstChunkRecorded = true
 					meta.TTFTMs = time.Since(depStart).Milliseconds()
 				}
 				return onChunk(chunk)
 			})
+			depCancel()
 			finishGenAIClientSpan(span, usage, err)
 
 			if err == nil {
@@ -678,7 +702,9 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "embeddings", dep)
-			resp, err := adp.Embeddings(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := adp.Embeddings(depCtx, dep, &reqCopy)
+			depCancel()
 			var usage *domain.TokenUsage
 			if resp != nil {
 				usage = &resp.Usage
@@ -854,7 +880,9 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "rerank", dep)
-			resp, err := rerankAdp.Rerank(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := rerankAdp.Rerank(depCtx, dep, &reqCopy)
+			depCancel()
 			var usage *domain.TokenUsage
 			if resp != nil {
 				usage = &domain.TokenUsage{TotalTokens: resp.Usage.TotalTokens}
@@ -1030,7 +1058,9 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "moderation", dep)
-			resp, err := modAdp.Moderate(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := modAdp.Moderate(depCtx, dep, &reqCopy)
+			depCancel()
 			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
@@ -1188,7 +1218,9 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 			// If adapter implements native CompletionAdapter, use it
 			if compAdp, ok := adp.(adapter.CompletionAdapter); ok {
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
-				resp, err = compAdp.TextCompletion(spanCtx, dep, &reqCopy)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err = compAdp.TextCompletion(depCtx, dep, &reqCopy)
+				depCancel()
 				var usage *domain.TokenUsage
 				if resp != nil {
 					usage = &resp.Usage
@@ -1214,7 +1246,9 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 					User:        req.User,
 				}
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-				chatResp, chatErr := adp.ChatCompletion(spanCtx, dep, chatReq)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				chatResp, chatErr := adp.ChatCompletion(depCtx, dep, chatReq)
+				depCancel()
 				var usage *domain.TokenUsage
 				if chatResp != nil {
 					usage = &chatResp.Usage
@@ -1253,6 +1287,195 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 				meta.LatencyMs = time.Since(start).Milliseconds()
 				return resp, meta, nil
 			}
+
+			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+			if rm.collector != nil {
+				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+			}
+			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+			lastErr = normErr
+			if termErr != nil {
+				return nil, meta, termErr
+			}
+		}
+	}
+
+	if lastErr == nil {
+		if isBudgeted && skippedDueToUnknownPricing {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "pricing_unknown_budget_restricted",
+				Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+			}
+		} else {
+			lastErr = &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeUpstream,
+				Code:       "all_deployments_unavailable",
+				Message:    "All primary and fallback completion deployments are currently unavailable or in cooldown",
+			}
+		}
+	}
+	return nil, meta, lastErr
+}
+
+// ExecuteCompletionStream routes and executes a streaming text completion request with automated retries and fallbacks.
+func (rm *ReliabilityManager) ExecuteCompletionStream(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalCompletionRequest) (<-chan domain.CanonicalStreamChunk, *ExecutionMeta, error) {
+	start := time.Now()
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	routeStart := time.Now()
+	mg, err := rm.intelligentRouter.ResolveExplicitModel(ctx, orgID, req.Model)
+	if err != nil {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "completion_model_not_found",
+			Message:    "No active model group configured for: " + req.Model,
+		}
+	}
+
+	decision := &RouteDecision{
+		RequestedModel:   req.Model,
+		TargetGroupAlias: mg.Alias,
+		ModelGroup:       mg,
+		Reason:           "explicit_model",
+	}
+	meta := &ExecutionMeta{
+		RouteDecision: decision,
+		RoutingMicros: time.Since(routeStart).Microseconds(),
+	}
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
+
+	groupChain := rm.buildGroupChain(ctx, mg)
+	isBudgeted := isBudgetConstrained(idCtx)
+	var skippedDueToUnknownPricing bool
+	var lastErr error
+
+	for groupIdx, group := range groupChain {
+		if groupIdx > 0 {
+			meta.FallbackAttempted = true
+			logger.WarnContext(ctx, "Cross-provider fallback activated for completion stream",
+				slog.String("component", "router"),
+				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("fallback_alias", group.Alias),
+				slog.String("requested_model", req.Model),
+			)
+		}
+
+		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
+		if err != nil || len(deployments) == 0 {
+			continue
+		}
+
+		if isBudgeted {
+			filtered := filterKnownPricing(deployments)
+			if len(filtered) == 0 {
+				skippedDueToUnknownPricing = true
+				continue
+			}
+			deployments = filtered
+		}
+
+		maxAttempts := group.MaxRetries + 1
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		triedDepIDs := make([]string, 0, len(deployments))
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			candidates := filterUntried(deployments, triedDepIDs)
+			if len(candidates) == 0 {
+				candidates = deployments
+			}
+			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+			if dep == nil {
+				break
+			}
+			triedDepIDs = append(triedDepIDs, dep.ID)
+
+			if attempt > 0 {
+				meta.RetryCount++
+				logger.WarnContext(ctx, "Intra-group completion stream retry attempt triggered",
+					slog.String("component", "router"),
+					slog.Int("attempt", attempt),
+					slog.String("group_alias", group.Alias),
+					slog.String("deployment_id", dep.ID),
+				)
+			}
+
+			rm.hydrateCredential(dep)
+			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
+				lastErr = opErr
+				continue
+			}
+
+			streamCompAdp, ok := adp.(adapter.StreamingCompletionAdapter)
+			if !ok {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "unsupported_capability",
+					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support streaming text completions",
+					Provider:   dep.GlobalModel.Provider,
+				}
+				continue
+			}
+
+			reqCopy := *req
+			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+			depStart := time.Now()
+			rm.loadBalancer.OnRequestStart(dep.ID)
+			spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			ch, err := streamCompAdp.StreamTextCompletion(depCtx, dep, &reqCopy)
+			finishGenAIClientSpan(span, nil, err)
+			depLatency := time.Since(depStart).Milliseconds()
+
+			if err == nil && ch != nil {
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				rm.recordSuccess(ctx, dep)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				}
+				meta.WinningDeployment = dep
+				meta.LatencyMs = time.Since(start).Milliseconds()
+
+				outCh := make(chan domain.CanonicalStreamChunk, 16)
+				go func() {
+					defer depCancel()
+					defer close(outCh)
+					for {
+						select {
+						case chunk, open := <-ch:
+							if !open {
+								return
+							}
+							select {
+							case outCh <- chunk:
+							case <-depCtx.Done():
+								return
+							}
+						case <-depCtx.Done():
+							return
+						}
+					}
+				}()
+				return outCh, meta, nil
+			}
+			depCancel()
 
 			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
@@ -1412,7 +1635,9 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_transcription", dep)
-			resp, err := audioAdp.TranscribeAudio(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := audioAdp.TranscribeAudio(depCtx, dep, &reqCopy)
+			depCancel()
 			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
@@ -1575,7 +1800,8 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_speech", dep)
-			stream, contentType, err := audioAdp.GenerateSpeech(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			stream, contentType, err := audioAdp.GenerateSpeech(depCtx, dep, &reqCopy)
 			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 
@@ -1587,8 +1813,9 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 				}
 				meta.WinningDeployment = dep
 				meta.LatencyMs = time.Since(start).Milliseconds()
-				return stream, contentType, meta, nil
+				return &cancelReadCloser{ReadCloser: stream, cancel: depCancel}, contentType, meta, nil
 			}
+			depCancel()
 
 			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 			if rm.collector != nil {
@@ -1744,7 +1971,9 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 			depStart := time.Now()
 			rm.loadBalancer.OnRequestStart(dep.ID)
 			spanCtx, span := rm.startGenAIClientSpan(ctx, "image_generation", dep)
-			resp, err := imgAdp.GenerateImage(spanCtx, dep, &reqCopy)
+			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+			resp, err := imgAdp.GenerateImage(depCtx, dep, &reqCopy)
+			depCancel()
 			finishGenAIClientSpan(span, nil, err)
 			depLatency := time.Since(depStart).Milliseconds()
 

@@ -22,6 +22,7 @@ const (
 	StrategyLatencyBased       RoutingStrategy = "latency-based"
 	StrategyUsageBasedHeadroom RoutingStrategy = "usage-based-headroom"
 	StrategyLowestCost         RoutingStrategy = "lowest-cost"
+	StrategyRoundRobin         RoutingStrategy = "round-robin"
 )
 
 // DeploymentStatus represents the operational health of a model deployment.

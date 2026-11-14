@@ -69,4 +69,15 @@ func TestMistral_Vision_Moderation_Audio(t *testing.T) {
 	if err != nil || audResp.Text != "transcribed hello" {
 		t.Fatalf("transcription failed: resp=%+v err=%v", audResp, err)
 	}
+
+	_, err = adp.TranscribeAudio(context.Background(), dep, &domain.CanonicalAudioTranscriptionRequest{
+		Model:         "voxtral-mini-latest",
+		FileName:      "test.mp3",
+		FileReader:    strings.NewReader("fakeaudio"),
+		IsTranslation: true,
+	})
+	gwErr, ok := err.(*domain.GatewayError)
+	if !ok || gwErr.StatusCode != http.StatusBadRequest || gwErr.Code != "unsupported_capability" {
+		t.Fatalf("expected 400 unsupported_capability GatewayError, got %T %+v", err, err)
+	}
 }

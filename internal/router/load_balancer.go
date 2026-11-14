@@ -91,6 +91,7 @@ func (m *deploymentTelemetry) checkWindow(now time.Time) {
 type LoadBalancer struct {
 	mu             sync.RWMutex
 	metrics        map[string]*deploymentTelemetry
+	rrCounters     sync.Map // map[string]*atomic.Uint64 keyed by ModelGroupID
 	redis          *storage.RedisFabric
 	sharedDegraded atomic.Bool
 	sharedChecked  atomic.Bool
@@ -133,9 +134,22 @@ func (lb *LoadBalancer) Select(strategy domain.RoutingStrategy, candidates []*do
 		return lb.selectHighestHeadroom(candidates)
 	case domain.StrategyLowestCost:
 		return lb.selectLowestCost(candidates)
+	case domain.StrategyRoundRobin:
+		return lb.selectRoundRobin(candidates)
 	default: // StrategyWeightedShuffle
 		return lb.selectWeightedRandom(candidates)
 	}
+}
+
+func (lb *LoadBalancer) selectRoundRobin(candidates []*domain.Deployment) *domain.Deployment {
+	key := candidates[0].ModelGroupID
+	val, ok := lb.rrCounters.Load(key)
+	if !ok {
+		val, _ = lb.rrCounters.LoadOrStore(key, &atomic.Uint64{})
+	}
+	counter := val.(*atomic.Uint64)
+	idx := (counter.Add(1) - 1) % uint64(len(candidates))
+	return candidates[idx]
 }
 
 func isAdaptiveStrategy(strategy domain.RoutingStrategy) bool {

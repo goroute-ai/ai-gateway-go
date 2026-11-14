@@ -187,3 +187,31 @@ func TestCustomProvider_InvalidID(t *testing.T) {
 		require.Error(t, err, "expected error for invalid ID %q", id)
 	}
 }
+
+func TestCustomProvider_RegisterCustomWithOptions(t *testing.T) {
+	reg := openaicompat.NewProfileRegistry(nil, nil)
+	err := reg.RegisterCustomWithOptions(config.CustomProviderConfig{
+		ID:          "custom-dialect",
+		DisplayName: "Custom Dialect",
+		BaseURL:     "https://api.example.com/v1",
+	}, openaicompat.CustomProfileOptions{
+		SupportedOperations: &openaicompat.ProviderOperations{
+			Chat:       true,
+			Completion: true,
+		},
+		ParamMappings: map[string]string{
+			"max_completion_tokens": "max_tokens",
+		},
+		ReasoningMapping: "openrouter_reasoning",
+	})
+	require.NoError(t, err)
+
+	profile, ok := reg.Get("custom-dialect")
+	require.True(t, ok)
+	require.NotNil(t, profile.SupportedOperations)
+	assert.True(t, profile.SupportedOperations.Chat)
+	assert.True(t, profile.SupportedOperations.Completion)
+	assert.False(t, profile.SupportedOperations.Rerank)
+	assert.Equal(t, "max_tokens", profile.ParamMappings["max_completion_tokens"])
+	assert.Equal(t, "openrouter_reasoning", profile.ReasoningMapping)
+}

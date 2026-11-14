@@ -641,6 +641,149 @@ func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, re
 	}, nil
 }
 
+// StreamTextCompletion executes a streaming legacy text completion request against OpenAI /v1/completions.
+func (a *Adapter) StreamTextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (<-chan domain.CanonicalStreamChunk, error) {
+	if dep == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_deployment",
+			Message:    "deployment cannot be nil",
+		}
+	}
+
+	ctx = adapter.StreamingContext(ctx)
+	model := dep.GlobalModel.ModelName
+	if req.ResolvedModel != "" {
+		model = req.ResolvedModel
+	} else if req.Model != "" {
+		model = req.Model
+	}
+
+	bodyMap := map[string]any{
+		"model":  model,
+		"stream": true,
+	}
+	if len(req.Prompt.Strings) == 1 {
+		bodyMap["prompt"] = req.Prompt.Strings[0]
+	} else if len(req.Prompt.Strings) > 1 {
+		bodyMap["prompt"] = req.Prompt.Strings
+	}
+	if req.MaxTokens != nil {
+		bodyMap["max_tokens"] = *req.MaxTokens
+	}
+	if req.Temperature != nil {
+		bodyMap["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		bodyMap["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 {
+		bodyMap["stop"] = req.Stop
+	}
+	if req.User != "" {
+		bodyMap["user"] = req.User
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal completion stream request: %w", err)
+	}
+
+	endpoint := resolveBaseURL(dep.Credential) + "/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	setHeaders(httpReq, dep.Credential)
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "openai_network_error",
+			Message:    err.Error(),
+			Provider:   domain.ProviderOpenAI,
+			Retryable:  true,
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, readErr := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, domain.ProviderOpenAI)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, resp.StatusCode, string(errBody), adapter.ParseRetryAfter(resp.Header))
+	}
+
+	ch := make(chan domain.CanonicalStreamChunk, 16)
+	go func() {
+		defer resp.Body.Close()
+		defer close(ch)
+		_ = sse.ReadEvents(resp.Body, func(ev sse.Event) error {
+			if ev.Data == "" || ev.Data == "[DONE]" {
+				return nil
+			}
+			var raw struct {
+				ID                string `json:"id"`
+				Object            string `json:"object"`
+				Created           int64  `json:"created"`
+				Model             string `json:"model"`
+				SystemFingerprint string `json:"system_fingerprint,omitempty"`
+				Choices           []struct {
+					Index        int                          `json:"index"`
+					Text         string                       `json:"text"`
+					Delta        *domain.CanonicalStreamDelta `json:"delta,omitempty"`
+					FinishReason *string                      `json:"finish_reason"`
+				} `json:"choices"`
+				Usage *domain.TokenUsage `json:"usage,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(ev.Data), &raw); err != nil {
+				return nil
+			}
+			choices := make([]domain.CanonicalStreamChoice, len(raw.Choices))
+			for i, c := range raw.Choices {
+				delta := domain.CanonicalStreamDelta{Content: c.Text}
+				if c.Delta != nil {
+					delta = *c.Delta
+					if delta.Content == "" && c.Text != "" {
+						delta.Content = c.Text
+					}
+				}
+				choices[i] = domain.CanonicalStreamChoice{
+					Index:        c.Index,
+					Delta:        delta,
+					FinishReason: c.FinishReason,
+				}
+			}
+			obj := raw.Object
+			if obj == "" {
+				obj = "text_completion"
+			}
+			chunk := domain.CanonicalStreamChunk{
+				ID:                raw.ID,
+				Object:            obj,
+				Created:           raw.Created,
+				Model:             raw.Model,
+				Choices:           choices,
+				Usage:             raw.Usage,
+				SystemFingerprint: raw.SystemFingerprint,
+			}
+			select {
+			case ch <- chunk:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+
+	return ch, nil
+}
+
 // TranscribeAudio sends an audio file to OpenAI's transcriptions/translations endpoint.
 func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
 	if dep == nil {
@@ -715,7 +858,7 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	}
 
 	subPath := "/audio/transcriptions"
-	if strings.Contains(req.RequestID, "translation") {
+	if req.IsTranslation {
 		subPath = "/audio/translations"
 	}
 	endpoint := resolveBaseURL(dep.Credential) + subPath

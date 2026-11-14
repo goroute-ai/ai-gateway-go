@@ -1,6 +1,7 @@
 package router
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -104,4 +105,48 @@ func TestLoadBalancer_RandomizedTieBreaking(t *testing.T) {
 			t.Fatalf("strategy %s did not break ties randomly: %v", strat, seen)
 		}
 	}
+}
+
+func TestLoadBalancer_RoundRobin(t *testing.T) {
+	lb := NewLoadBalancer()
+	g1Candidates := []*domain.Deployment{
+		{ID: "g1-dep-1", ModelGroupID: "group-1"},
+		{ID: "g1-dep-2", ModelGroupID: "group-1"},
+		{ID: "g1-dep-3", ModelGroupID: "group-1"},
+	}
+	g2Candidates := []*domain.Deployment{
+		{ID: "g2-dep-1", ModelGroupID: "group-2"},
+		{ID: "g2-dep-2", ModelGroupID: "group-2"},
+	}
+
+	expectedG1 := []string{"g1-dep-1", "g1-dep-2", "g1-dep-3", "g1-dep-1", "g1-dep-2", "g1-dep-3"}
+	for i, want := range expectedG1 {
+		got := lb.Select(domain.StrategyRoundRobin, g1Candidates)
+		if got == nil || got.ID != want {
+			t.Fatalf("step %d: expected %s, got %v", i, want, got)
+		}
+	}
+
+	// Independent per-model-group counter for group-2.
+	if got := lb.Select(domain.StrategyRoundRobin, g2Candidates); got == nil || got.ID != "g2-dep-1" {
+		t.Fatalf("expected g2-dep-1, got %v", got)
+	}
+	if got := lb.Select(domain.StrategyRoundRobin, g2Candidates); got == nil || got.ID != "g2-dep-2" {
+		t.Fatalf("expected g2-dep-2, got %v", got)
+	}
+
+	// Concurrent calls must be race-free and distribute evenly.
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				if sel := lb.Select(domain.StrategyRoundRobin, g1Candidates); sel == nil {
+					t.Errorf("got nil selection")
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

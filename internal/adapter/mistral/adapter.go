@@ -514,6 +514,15 @@ func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *dom
 
 // TranscribeAudio implements adapter.AudioAdapter for Mistral's /v1/audio/transcriptions endpoint.
 func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
+	if req != nil && req.IsTranslation {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_capability",
+			Message:    "Mistral does not expose an audio translations endpoint",
+			Provider:   domain.ProviderMistral,
+		}
+	}
 	model := req.ResolvedModel
 	if model == "" && dep != nil && dep.GlobalModel != nil {
 		model = dep.GlobalModel.ModelName

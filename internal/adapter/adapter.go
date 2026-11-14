@@ -59,6 +59,11 @@ type CompletionAdapter interface {
 	TextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, error)
 }
 
+// StreamingCompletionAdapter is optionally implemented by providers supporting streaming text completions.
+type StreamingCompletionAdapter interface {
+	StreamTextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (<-chan domain.CanonicalStreamChunk, error)
+}
+
 // OperationSupportChecker is optionally implemented by adapters that declare
 // explicit per-operation wire support (e.g. OpenAI-compatible dialect profiles).
 type OperationSupportChecker interface {

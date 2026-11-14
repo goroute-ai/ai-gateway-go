@@ -914,6 +914,160 @@ func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, re
 	return &out, nil
 }
 
+// StreamTextCompletion implements adapter.StreamingCompletionAdapter for OpenAI-compatible /completions endpoints.
+func (a *Adapter) StreamTextCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalCompletionRequest) (<-chan domain.CanonicalStreamChunk, error) {
+	if !a.SupportsOperation(domain.OperationCompletion) {
+		return nil, a.unsupportedOpError(domain.OperationCompletion)
+	}
+	ctx = adapter.StreamingContext(ctx)
+	model := a.resolveModelName(dep, req.ResolvedModel, req.Model)
+	var prompt any = req.Prompt.Strings
+	if len(req.Prompt.Strings) == 1 {
+		prompt = req.Prompt.Strings[0]
+	}
+	payload := map[string]any{
+		"model":  model,
+		"prompt": prompt,
+		"stream": true,
+	}
+	if req.MaxTokens != nil {
+		payload["max_tokens"] = *req.MaxTokens
+	}
+	if req.Temperature != nil {
+		payload["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		payload["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 {
+		payload["stop"] = req.Stop
+	}
+	if req.User != "" {
+		payload["user"] = req.User
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal /completions stream request: %w", err)
+	}
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
+	}
+	targetURL := a.resolveEndpointBase(dep) + "/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create /completions stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	for k, v := range a.profile.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	if err := a.profile.AuthStrategy.ApplyAuth(httpReq, cred); err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode:  http.StatusUnauthorized,
+			Type:        domain.ErrorTypeAuthentication,
+			Code:        "auth_strategy_failed",
+			Message:     err.Error(),
+			AuthFailure: true,
+		}
+	}
+
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_stream_connection_failed",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, readErr := adapter.ReadBoundedBody(resp.Body, adapter.DefaultMaxErrorBytes, a.Provider())
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, a.parseUpstreamError(resp.StatusCode, bodyBytes, resp.Header)
+	}
+
+	ch := make(chan domain.CanonicalStreamChunk, 16)
+	go func() {
+		defer resp.Body.Close()
+		defer close(ch)
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "" {
+				continue
+			}
+			if data == "[DONE]" {
+				break
+			}
+			var raw struct {
+				ID                string `json:"id"`
+				Object            string `json:"object"`
+				Created           int64  `json:"created"`
+				Model             string `json:"model"`
+				SystemFingerprint string `json:"system_fingerprint,omitempty"`
+				Choices           []struct {
+					Index        int                          `json:"index"`
+					Text         string                       `json:"text"`
+					Delta        *domain.CanonicalStreamDelta `json:"delta,omitempty"`
+					FinishReason *string                      `json:"finish_reason"`
+				} `json:"choices"`
+				Usage *domain.TokenUsage `json:"usage,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(data), &raw); err != nil {
+				continue
+			}
+			choices := make([]domain.CanonicalStreamChoice, len(raw.Choices))
+			for i, c := range raw.Choices {
+				delta := domain.CanonicalStreamDelta{Content: c.Text}
+				if c.Delta != nil {
+					delta = *c.Delta
+					if delta.Content == "" && c.Text != "" {
+						delta.Content = c.Text
+					}
+				}
+				choices[i] = domain.CanonicalStreamChoice{
+					Index:        c.Index,
+					Delta:        delta,
+					FinishReason: c.FinishReason,
+				}
+			}
+			obj := raw.Object
+			if obj == "" {
+				obj = "text_completion"
+			}
+			chunk := domain.CanonicalStreamChunk{
+				ID:                raw.ID,
+				Object:            obj,
+				Created:           raw.Created,
+				Model:             raw.Model,
+				Choices:           choices,
+				Usage:             raw.Usage,
+				SystemFingerprint: raw.SystemFingerprint,
+			}
+			select {
+			case ch <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // Rerank implements adapter.RerankAdapter for OpenAI-compatible /rerank endpoints.
 func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
 	if !a.SupportsOperation(domain.OperationRerank) {

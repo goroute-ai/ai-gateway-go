@@ -326,3 +326,46 @@ func TestOpenAICompat_OptionalModalities_DispatchAndGuard(t *testing.T) {
 		t.Fatal("expected restricted profile to reject image edits")
 	}
 }
+
+func TestOpenAICompat_StreamTextCompletion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"cmpl-c1\",\"object\":\"text_completion\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"text\":\"Hi \",\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"cmpl-c1\",\"object\":\"text_completion\",\"model\":\"m1\",\"choices\":[{\"index\":0,\"text\":\"there\",\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	adp := openaicompat.NewAdapter(&openaicompat.DialectProfile{
+		ID:                  "test_stream_cmpl",
+		DefaultBaseURL:      srv.URL + "/v1",
+		EndpointStrategy:    &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: srv.URL + "/v1"},
+		AuthStrategy:        &adapter.BearerAuthStrategy{},
+		SupportedOperations: &openaicompat.ProviderOperations{Completion: true},
+	}, srv.Client())
+	dep := &domain.Deployment{
+		ID:          "dep-compat-cmpl",
+		GlobalModel: &domain.GlobalModel{ID: "test_stream_cmpl/m1", Provider: "test_stream_cmpl", ModelName: "m1"},
+		Credential:  &domain.ProviderCredential{BaseURL: srv.URL + "/v1", DecryptedAPIKey: "k"},
+	}
+
+	ch, err := adp.StreamTextCompletion(context.Background(), dep, &domain.CanonicalCompletionRequest{
+		Model:  "m1",
+		Prompt: domain.CompletionPrompt{Strings: []string{"Hello"}},
+	})
+	if err != nil {
+		t.Fatalf("StreamTextCompletion failed: %v", err)
+	}
+	var got string
+	for c := range ch {
+		if len(c.Choices) > 0 {
+			got += c.Choices[0].Delta.Content
+		}
+	}
+	if got != "Hi there" {
+		t.Fatalf("expected 'Hi there', got %q", got)
+	}
+}

@@ -171,8 +171,20 @@ func (r *ProfileRegistry) CreateAdapter(provider domain.ProviderType) (adapter.P
 
 var idPattern = regexp.MustCompile(`^[a-z0-9_\-]+$`)
 
+// CustomProfileOptions configures optional dialect behavior when registering a custom OpenAI-compatible provider.
+type CustomProfileOptions struct {
+	SupportedOperations *ProviderOperations `json:"supported_operations,omitempty"`
+	ParamMappings       map[string]string   `json:"param_mappings,omitempty"`
+	ReasoningMapping    string              `json:"reasoning_mapping,omitempty"`
+}
+
 // RegisterCustom registers a custom OpenAI-compatible profile after SSRF and syntax validation.
 func (r *ProfileRegistry) RegisterCustom(cfg config.CustomProviderConfig) error {
+	return r.RegisterCustomWithOptions(cfg, CustomProfileOptions{})
+}
+
+// RegisterCustomWithOptions registers a custom OpenAI-compatible profile with explicit dialect options after SSRF and syntax validation.
+func (r *ProfileRegistry) RegisterCustomWithOptions(cfg config.CustomProviderConfig, opts CustomProfileOptions) error {
 	id := strings.ToLower(strings.TrimSpace(cfg.ID))
 	if !idPattern.MatchString(id) {
 		return fmt.Errorf("invalid custom provider id %q: must be alphanumeric or hyphen/underscore", id)
@@ -193,17 +205,28 @@ func (r *ProfileRegistry) RegisterCustom(cfg config.CustomProviderConfig) error 
 		return fmt.Errorf("custom provider %q base_url rejected by outbound network policy: %w", id, err)
 	}
 
+	var paramMappings map[string]string
+	if len(opts.ParamMappings) > 0 {
+		paramMappings = make(map[string]string, len(opts.ParamMappings))
+		for k, v := range opts.ParamMappings {
+			paramMappings[k] = v
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.profiles[domain.ProviderType(id)] = &DialectProfile{
-		ID:                 domain.ProviderType(id),
-		DisplayName:        cfg.DisplayName,
-		DefaultBaseURL:     rawURL,
-		EndpointStrategy:   &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: rawURL},
-		AuthStrategy:       &adapter.BearerAuthStrategy{},
-		DefaultHeaders:     cfg.DefaultHeaders,
-		SupportsListModels: cfg.SupportsListModels,
+		ID:                  domain.ProviderType(id),
+		DisplayName:         cfg.DisplayName,
+		DefaultBaseURL:      rawURL,
+		EndpointStrategy:    &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: rawURL},
+		AuthStrategy:        &adapter.BearerAuthStrategy{},
+		DefaultHeaders:      cfg.DefaultHeaders,
+		SupportsListModels:  cfg.SupportsListModels,
+		SupportedOperations: opts.SupportedOperations,
+		ParamMappings:       paramMappings,
+		ReasoningMapping:    opts.ReasoningMapping,
 		DefaultCapabilities: domain.ModelCapabilities{
 			Tools:             domain.CapabilityState(cfg.SupportsTools),
 			Streaming:         domain.CapabilityState(cfg.SupportsStreaming),
