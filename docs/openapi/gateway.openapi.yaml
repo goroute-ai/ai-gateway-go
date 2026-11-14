@@ -1085,6 +1085,275 @@ components:
           type: string
         id:
           type: string
+    AdminOrganization:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        max_budget_micro:
+          type: integer
+          format: int64
+        soft_budget_micro:
+          type: integer
+          format: int64
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminProviderCredential:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        provider:
+          type: string
+        name:
+          type: string
+        auth_type:
+          type: string
+        base_url:
+          type: string
+        region:
+          type: string
+        is_active:
+          type: boolean
+        last_validated_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminCredentialCreateRequest:
+      type: object
+      required:
+        - provider
+        - secret
+      properties:
+        org_id:
+          type: string
+        provider:
+          type: string
+        name:
+          type: string
+        auth_type:
+          type: string
+        secret:
+          type: string
+        base_url:
+          type: string
+        region:
+          type: string
+    AdminCredentialRotateRequest:
+      type: object
+      required:
+        - secret
+      properties:
+        secret:
+          type: string
+    AdminModelGroup:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        alias:
+          type: string
+        routing_strategy:
+          type: string
+        fallback_groups:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminCatalogueModel:
+      type: object
+      additionalProperties: true
+    AdminPricingUpdateRequest:
+      type: object
+      required:
+        - global_model_id
+        - input_cost_per_million_micro
+        - output_cost_per_million_micro
+      properties:
+        global_model_id:
+          type: string
+        input_cost_per_million_micro:
+          type: integer
+          format: int64
+        output_cost_per_million_micro:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        effective_from:
+          type: string
+          format: date-time
+        reason:
+          type: string
+    AdminModelPricingHistory:
+      type: object
+      additionalProperties: true
+    AdminCacheInvalidateRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum:
+            - all
+            - org
+            - model
+        org_id:
+          type: string
+        model:
+          type: string
+    AdminSpendSummary:
+      type: object
+      additionalProperties: true
+    AdminMCPServerCreateRequest:
+      type: object
+      required:
+        - slug
+        - name
+        - transport
+      properties:
+        org_id:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        transport:
+          type: string
+          enum:
+            - stdio
+            - sse
+            - streamable_http
+        endpoint_url:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        auth_type:
+          type: string
+        auth_token:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+    AdminMCPToolsetCreateRequest:
+      type: object
+      required:
+        - slug
+        - name
+      properties:
+        org_id:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tool_ids:
+          type: array
+          items:
+            type: string
+    AdminMCPUserCredentialRequest:
+      type: object
+      required:
+        - user_id
+        - server_id
+        - secret
+      properties:
+        org_id:
+          type: string
+        user_id:
+          type: string
+        server_id:
+          type: string
+        auth_type:
+          type: string
+        secret:
+          type: string
+    AdminA2AAgentCreateRequest:
+      type: object
+      required:
+        - slug
+        - name
+        - card_url
+      properties:
+        org_id:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        card_url:
+          type: string
+        auth_type:
+          type: string
+        auth_token:
+          type: string
+        is_active:
+          type: boolean
+    AdminA2AKillSwitchRequest:
+      type: object
+      required:
+        - killed
+      properties:
+        killed:
+          type: boolean
+        reason:
+          type: string
+    AdminA2APushConfigRequest:
+      type: object
+      required:
+        - task_id
+        - target_url
+      properties:
+        org_id:
+          type: string
+        task_id:
+          type: string
+        target_url:
+          type: string
+        auth_token:
+          type: string
   parameters:
     FileID:
       name: file_id
@@ -1427,6 +1696,22 @@ paths:
         '101':
           description: Switching Protocols to WebSocket
   /admin/v1/users:
+    post:
+      operationId: createUser
+      summary: Create a user within an organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUser'
+      responses:
+        '201':
+          description: Created user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
     get:
       operationId: listUsers
       summary: List users for an organization
@@ -1449,6 +1734,28 @@ paths:
                     items:
                       $ref: '#/components/schemas/AdminUser'
   /admin/v1/organizations/{orgID}/subscriptions:
+    post:
+      operationId: setOrgSubscription
+      summary: Create or update an organization provider subscription
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrgProviderSubscription'
+      responses:
+        '200':
+          description: Saved organization provider subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgProviderSubscription'
     get:
       operationId: getOrgSubscriptions
       summary: Get subscription and tier limits for an organization
@@ -1471,6 +1778,28 @@ paths:
                     items:
                       $ref: '#/components/schemas/OrgProviderSubscription'
   /admin/v1/organizations/{orgID}/models:
+    post:
+      operationId: setOrgModelPolicy
+      summary: Create or update an organization model policy
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrgModelPolicy'
+      responses:
+        '200':
+          description: Saved organization model policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgModelPolicy'
     get:
       operationId: getOrgModelPolicies
       summary: Get allowed model policies for an organization
@@ -1493,6 +1822,22 @@ paths:
                     items:
                       $ref: '#/components/schemas/OrgModelPolicy'
   /admin/v1/deployments:
+    post:
+      operationId: createDeployment
+      summary: Create a model deployment within a model group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDeployment'
+      responses:
+        '201':
+          description: Created deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeployment'
     get:
       operationId: listDeployments
       summary: List deployments across model groups
@@ -1659,6 +2004,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminVirtualKey'
+    delete:
+      operationId: revokeVirtualKeyByID
+      summary: Revoke a virtual API key by ID
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Virtual API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
   /admin/v1/keys/{keyID}/rotate:
     post:
       operationId: rotateVirtualKey
@@ -1688,3 +2049,806 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /admin/v1/organizations:
+    post:
+      operationId: createOrganization
+      summary: Create an organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOrganization'
+      responses:
+        '201':
+          description: Created organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrganization'
+    get:
+      operationId: listOrganizations
+      summary: List organizations
+      responses:
+        '200':
+          description: List of organizations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminOrganization'
+  /admin/v1/organizations/{orgID}/guardrails:
+    post:
+      operationId: setGuardrailPolicy
+      summary: Create or update an organization guardrail policy
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuardrailPolicy'
+      responses:
+        '200':
+          description: Saved guardrail policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailPolicy'
+    get:
+      operationId: getGuardrailPolicy
+      summary: Get an organization guardrail policy
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Guardrail policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailPolicy'
+  /admin/v1/teams:
+    post:
+      operationId: createTeam
+      summary: Create a team within an organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTeam'
+      responses:
+        '201':
+          description: Created team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTeam'
+    get:
+      operationId: listTeams
+      summary: List teams for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminTeam'
+  /admin/v1/keys:
+    post:
+      operationId: issueVirtualKey
+      summary: Issue a new virtual API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVirtualKey'
+      responses:
+        '201':
+          description: Issued virtual API key with one-time raw_key secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+    get:
+      operationId: listVirtualKeys
+      summary: List virtual API keys for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of virtual API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminVirtualKey'
+  /admin/v1/keys/{keyID}/revoke:
+    post:
+      operationId: revokeVirtualKey
+      summary: Revoke a virtual API key
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Virtual API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/credentials:
+    post:
+      operationId: createCredential
+      summary: Store an encrypted provider credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCredentialCreateRequest'
+      responses:
+        '201':
+          description: Created provider credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderCredential'
+    get:
+      operationId: listCredentials
+      summary: List provider credentials for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of provider credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminProviderCredential'
+  /admin/v1/credentials/{credID}/rotate:
+    post:
+      operationId: rotateCredential
+      summary: Rotate an encrypted provider credential secret
+      parameters:
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCredentialRotateRequest'
+      responses:
+        '200':
+          description: Rotated provider credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderCredential'
+  /admin/v1/credentials/{credID}/validate:
+    post:
+      operationId: validateCredential
+      summary: Validate a stored provider credential
+      parameters:
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Credential validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialValidateResponse'
+  /admin/v1/model-groups:
+    post:
+      operationId: createModelGroup
+      summary: Create a model group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelGroup'
+      responses:
+        '201':
+          description: Created model group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelGroup'
+    get:
+      operationId: listModelGroups
+      summary: List model groups for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of model groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelGroup'
+  /admin/v1/catalogue:
+    get:
+      operationId: listCatalogue
+      summary: List global model catalogue entries
+      responses:
+        '200':
+          description: Global model catalogue entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminCatalogueModel'
+  /admin/v1/catalogue/sync:
+    post:
+      operationId: triggerDiscoverySync
+      summary: Trigger provider model discovery synchronization
+      responses:
+        '200':
+          description: Discovery synchronization result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/catalogue/import:
+    post:
+      operationId: importCatalogue
+      summary: Import model catalogue entries from provider registries
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Catalogue import result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/catalogue/pricing:
+    post:
+      operationId: updateModelPricing
+      summary: Update pricing for a global catalogue model and record pricing history
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPricingUpdateRequest'
+      responses:
+        '200':
+          description: Updated model and pricing history entry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    $ref: '#/components/schemas/AdminCatalogueModel'
+                  history:
+                    $ref: '#/components/schemas/AdminModelPricingHistory'
+    get:
+      operationId: listModelPricingHistory
+      summary: List pricing history for a global catalogue model
+      parameters:
+        - name: global_model_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model pricing history entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelPricingHistory'
+  /admin/v1/observability/metrics:
+    get:
+      operationId: getObservabilityMetrics
+      summary: Retrieve gateway observability metrics snapshot
+      responses:
+        '200':
+          description: Observability metrics snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/health/deployments:
+    get:
+      operationId: listDeploymentHealth
+      summary: List health status of active deployments
+      responses:
+        '200':
+          description: Deployment health statuses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/health/probe:
+    post:
+      operationId: probeDeployments
+      summary: Probe provider deployments for liveness and latency
+      responses:
+        '200':
+          description: Deployment probe results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/cache/invalidate:
+    post:
+      operationId: invalidateCache
+      summary: Invalidate response cache entries by scope, organization, or model
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCacheInvalidateRequest'
+      responses:
+        '200':
+          description: Cache invalidation summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  purged_entries:
+                    type: integer
+                  namespace_version:
+                    type: integer
+                    format: int64
+  /admin/v1/spend/summary:
+    get:
+      operationId: getSpendSummary
+      summary: Retrieve aggregated spend summary for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Aggregated spend summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSpendSummary'
+  /admin/v1/spend/logs:
+    get:
+      operationId: listSpendLogs
+      summary: List spend log records for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Spend log records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/audit/logs:
+    get:
+      operationId: listAuditLogs
+      summary: List admin and security audit log records
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Audit log records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/mcp/servers:
+    post:
+      operationId: createMCPServer
+      summary: Register a downstream MCP server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMCPServerCreateRequest'
+      responses:
+        '201':
+          description: Created MCP server
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  server:
+                    type: object
+                    additionalProperties: true
+    get:
+      operationId: listMCPServers
+      summary: List registered MCP servers for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of MCP servers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/mcp/servers/{serverID}/sync:
+    post:
+      operationId: syncMCPServer
+      summary: Discover and synchronize tools from an MCP server
+      parameters:
+        - name: serverID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Synchronized MCP tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  server_id:
+                    type: string
+                  config_version:
+                    type: integer
+                  tools_count:
+                    type: integer
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/mcp/toolsets:
+    post:
+      operationId: createMCPToolset
+      summary: Create a curated MCP toolset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMCPToolsetCreateRequest'
+      responses:
+        '201':
+          description: Created MCP toolset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  toolset:
+                    type: object
+                    additionalProperties: true
+    get:
+      operationId: listMCPToolsets
+      summary: List MCP toolsets for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of MCP toolsets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/mcp/tools:
+    get:
+      operationId: listMCPTools
+      summary: List discovered MCP tools for an organization or server
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: server_slug
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of MCP tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/mcp/credentials:
+    post:
+      operationId: setMCPUserCredential
+      summary: Store a per-user encrypted credential for an MCP server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMCPUserCredentialRequest'
+      responses:
+        '200':
+          description: Saved MCP user credential
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  credential_id:
+                    type: string
+  /admin/v1/a2a/agents:
+    post:
+      operationId: createA2AAgent
+      summary: Register an A2A agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminA2AAgentCreateRequest'
+      responses:
+        '201':
+          description: Created A2A agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  agent:
+                    type: object
+                    additionalProperties: true
+    get:
+      operationId: listA2AAgents
+      summary: List registered A2A agents for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of A2A agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/a2a/agents/{id}:
+    get:
+      operationId: getA2AAgent
+      summary: Retrieve an A2A agent by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A2A agent details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    additionalProperties: true
+  /admin/v1/a2a/agents/{id}/kill-switch:
+    post:
+      operationId: setA2AKillSwitch
+      summary: Enable or disable the kill switch for an A2A agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminA2AKillSwitchRequest'
+      responses:
+        '200':
+          description: Updated A2A agent kill-switch state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  agent_id:
+                    type: string
+                  killed:
+                    type: boolean
+  /admin/v1/a2a/push-configs:
+    post:
+      operationId: setA2APushConfig
+      summary: Create a push notification configuration for an A2A task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminA2APushConfigRequest'
+      responses:
+        '201':
+          description: Created A2A push notification configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  push_config:
+                    type: object
+                    additionalProperties: true

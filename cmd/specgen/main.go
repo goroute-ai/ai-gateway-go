@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,22 +48,22 @@ func main() {
 	for _, s := range specs {
 		data, err := os.ReadFile(s.Path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "specgen error reading %s (%s): %v\n", s.Name, s.Path, err)
+			logger.Error("specgen error reading spec", slog.String("spec", s.Name), slog.String("path", s.Path), slog.Any("error", err))
 			os.Exit(1)
 		}
 		var doc openAPIDoc
 		if err := yaml.Unmarshal(data, &doc); err != nil {
-			fmt.Fprintf(os.Stderr, "specgen error parsing YAML %s: %v\n", s.Name, err)
+			logger.Error("specgen error parsing YAML", slog.String("spec", s.Name), slog.Any("error", err))
 			os.Exit(1)
 		}
 		if doc.OpenAPI == "" || len(doc.Paths) == 0 {
-			fmt.Fprintf(os.Stderr, "specgen invalid OpenAPI document %s: version=%q paths=%d\n", s.Name, doc.OpenAPI, len(doc.Paths))
+			logger.Error("specgen invalid OpenAPI document", slog.String("spec", s.Name), slog.String("version", doc.OpenAPI), slog.Int("paths", len(doc.Paths)))
 			os.Exit(1)
 		}
 		loader := openapi3.NewLoader()
 		semanticDoc, err := loader.LoadFromFile(s.Path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "specgen error loading OpenAPI document %s: %v\n", s.Name, err)
+			logger.Error("specgen error loading OpenAPI document", slog.String("spec", s.Name), slog.Any("error", err))
 			os.Exit(1)
 		}
 		if err := semanticDoc.Validate(
@@ -70,23 +71,23 @@ func main() {
 			openapi3.DisableExamplesValidation(),
 			openapi3.DisableSchemaDefaultsValidation(),
 		); err != nil {
-			fmt.Fprintf(os.Stderr, "specgen semantic validation failed for %s: %v\n", s.Name, err)
+			logger.Error("specgen semantic validation failed", slog.String("spec", s.Name), slog.Any("error", err))
 			os.Exit(1)
 		}
 		if s.Name == "Gateway Unified Spec" {
 			serverFile := filepath.Join(*rootDir, "internal", "server", "server.go")
 			if err := checkDataPlaneRouteCoverage(serverFile, doc.Paths); err != nil {
-				fmt.Fprintf(os.Stderr, "specgen route coverage failed: %v\n", err)
+				logger.Error("specgen route coverage failed", slog.Any("error", err))
 				os.Exit(1)
 			}
-			fmt.Println("[specgen] Verified primary /v1 route/spec parity")
+			logger.Info("Verified /v1 and /admin/v1 route/spec parity")
 		}
 		pathList := make([]string, 0, len(doc.Paths))
 		for k := range doc.Paths {
 			pathList = append(pathList, k)
 		}
 		sort.Strings(pathList)
-		fmt.Printf("[specgen] Validated %-25s (OpenAPI %s, %d paths)\n", s.Name, doc.OpenAPI, len(pathList))
+		logger.Info("Validated OpenAPI specification", slog.String("spec", s.Name), slog.String("openapi", doc.OpenAPI), slog.Int("paths", len(pathList)))
 	}
 
 	// Validate MCP 2026-07-28 Schema
@@ -94,22 +95,22 @@ func main() {
 	if mcpData, err := os.ReadFile(mcpSchemaPath); err == nil {
 		var mcpSchema map[string]any
 		if err := json.Unmarshal(mcpData, &mcpSchema); err != nil {
-			fmt.Fprintf(os.Stderr, "specgen error parsing MCP schema %s: %v\n", mcpSchemaPath, err)
+			logger.Error("specgen error parsing MCP schema", slog.String("path", mcpSchemaPath), slog.Any("error", err))
 			os.Exit(1)
 		}
 		defs, ok := mcpSchema["$defs"].(map[string]any)
 		if !ok {
 			defs, _ = mcpSchema["definitions"].(map[string]any)
 		}
-		fmt.Printf("[specgen] Validated %-25s (JSON Schema, %d definitions)\n", "MCP 2026-07-28 Schema", len(defs))
+		logger.Info("Validated MCP JSON Schema", slog.String("spec", "MCP 2026-07-28 Schema"), slog.Int("definitions", len(defs)))
 	}
 
 	// Verify A2A Protobuf generated code freshness
 	a2aPbPath := filepath.Join(*rootDir, "internal", "a2a", "pb", "a2a.pb.go")
 	if stat, err := os.Stat(a2aPbPath); err != nil || stat.Size() == 0 {
-		fmt.Fprintf(os.Stderr, "specgen error: A2A protobuf code missing or empty at %s\n", a2aPbPath)
+		logger.Error("specgen error: A2A protobuf code missing or empty", slog.String("path", a2aPbPath))
 		os.Exit(1)
 	} else {
-		fmt.Printf("[specgen] Verified  %-25s (%d bytes generated)\n", "A2A v1.0 Protobuf (pb)", stat.Size())
+		logger.Info("Verified A2A v1.0 Protobuf (pb)", slog.Int64("bytes", stat.Size()))
 	}
 }

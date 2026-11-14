@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
 	"gopkg.in/yaml.v3"
+	"nhooyr.io/websocket"
 )
 
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
@@ -134,6 +136,15 @@ func WithRemote(baseURL, apiKey string) Option {
 	}
 }
 
+// WithHTTPClient configures a custom *http.Client for remote gateway and WebSocket dialer requests.
+func WithHTTPClient(hc *http.Client) Option {
+	return func(c *clientConfig) {
+		if hc != nil {
+			c.httpClient = hc
+		}
+	}
+}
+
 // WithDemoMocksIfEnvMissing enables built-in local mock providers for any `ModelEntry` whose
 // environment variable API key is not set, allowing demos and local quickstarts to run with zero setup.
 func WithDemoMocksIfEnvMissing() Option {
@@ -170,7 +181,11 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	if cc.remoteURL != "" {
-		return NewClient(cc.remoteURL, cc.apiKey), nil
+		client := NewClient(cc.remoteURL, cc.apiKey)
+		if cc.httpClient != nil {
+			client.httpClient = cc.httpClient
+		}
+		return client, nil
 	}
 
 	var cfg *config.Config
@@ -1442,27 +1457,56 @@ func (c *Client) StreamResponses(ctx context.Context, req domain.CanonicalRespon
 	if err != nil {
 		return nil, fmt.Errorf("marshal responses stream request: %w", err)
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/responses", bytes.NewReader(bodyBytes))
+	rawFinal, fullText, err := c.streamResponsesSSE(ctx, bodyBytes, onDelta)
 	if err != nil {
 		return nil, err
+	}
+	finalResp := &domain.CanonicalResponseOutput{
+		Object: "response",
+		Status: "completed",
+		Model:  req.Model,
+	}
+	if len(rawFinal) > 0 {
+		if err := json.Unmarshal(rawFinal, finalResp); err != nil {
+			return nil, fmt.Errorf("decode final responses payload: %w", err)
+		}
+	}
+	if len(finalResp.Output) == 0 && fullText != "" {
+		finalResp.Output = []domain.CanonicalResponseOutputItem{
+			{
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []domain.CanonicalResponseContentPart{
+					{Type: "output_text", Text: fullText},
+				},
+			},
+		}
+	}
+	return finalResp, nil
+}
+
+func (c *Client) streamResponsesSSE(ctx context.Context, bodyBytes []byte, onDelta func(delta string) error) (json.RawMessage, string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/responses", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, "", err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("gateway stream error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, "", fmt.Errorf("gateway stream error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	var fullText strings.Builder
-	var finalResp *domain.CanonicalResponseOutput
+	var rawFinal json.RawMessage
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
@@ -1476,9 +1520,9 @@ func (c *Client) StreamResponses(ctx context.Context, req domain.CanonicalRespon
 			break
 		}
 		var ev struct {
-			Type     string                          `json:"type"`
-			Delta    string                          `json:"delta"`
-			Response *domain.CanonicalResponseOutput `json:"response"`
+			Type     string          `json:"type"`
+			Delta    string          `json:"delta"`
+			Response json.RawMessage `json:"response"`
 			Error    *struct {
 				Message string `json:"message"`
 				Type    string `json:"type"`
@@ -1489,43 +1533,24 @@ func (c *Client) StreamResponses(ctx context.Context, req domain.CanonicalRespon
 			continue
 		}
 		if ev.Error != nil && ev.Error.Message != "" {
-			return nil, fmt.Errorf("gateway stream error (%s): %s", ev.Error.Code, ev.Error.Message)
+			return nil, "", fmt.Errorf("gateway stream error (%s): %s", ev.Error.Code, ev.Error.Message)
 		}
 		if ev.Delta != "" {
 			fullText.WriteString(ev.Delta)
 			if onDelta != nil {
 				if err := onDelta(ev.Delta); err != nil {
-					return nil, err
+					return nil, "", err
 				}
 			}
 		}
-		if ev.Response != nil {
-			finalResp = ev.Response
+		if len(ev.Response) > 0 && string(ev.Response) != "null" {
+			rawFinal = ev.Response
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if finalResp == nil {
-		finalResp = &domain.CanonicalResponseOutput{
-			Object: "response",
-			Status: "completed",
-			Model:  req.Model,
-		}
-	}
-	if len(finalResp.Output) == 0 && fullText.Len() > 0 {
-		finalResp.Output = []domain.CanonicalResponseOutputItem{
-			{
-				Type:   "message",
-				Status: "completed",
-				Role:   "assistant",
-				Content: []domain.CanonicalResponseContentPart{
-					{Type: "output_text", Text: fullText.String()},
-				},
-			},
-		}
-	}
-	return finalResp, nil
+	return rawFinal, fullText.String(), nil
 }
 
 // Messages executes a non-streaming Anthropic Messages API call via `POST /v1/messages`.
@@ -1658,8 +1683,20 @@ type AudioTranscriptionRequest struct {
 
 // AudioTranscription transcribes (or translates) audio via `POST /v1/audio/transcriptions` or `/v1/audio/translations`.
 func (c *Client) AudioTranscription(ctx context.Context, req AudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
+	raw, path, err := c.postAudioTranscription(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var out domain.CanonicalAudioResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode audio response from %s: %w", path, err)
+	}
+	return &out, nil
+}
+
+func (c *Client) postAudioTranscription(ctx context.Context, req AudioTranscriptionRequest) ([]byte, string, error) {
 	if req.Audio == nil {
-		return nil, fmt.Errorf("audio reader is required")
+		return nil, "", fmt.Errorf("audio reader is required")
 	}
 	fileName := strings.TrimSpace(req.FileName)
 	if fileName == "" {
@@ -1670,10 +1707,10 @@ func (c *Client) AudioTranscription(ctx context.Context, req AudioTranscriptionR
 	mw := multipart.NewWriter(&buf)
 	part, err := mw.CreateFormFile("file", fileName)
 	if err != nil {
-		return nil, fmt.Errorf("create multipart file: %w", err)
+		return nil, "", fmt.Errorf("create multipart file: %w", err)
 	}
 	if _, err := io.Copy(part, req.Audio); err != nil {
-		return nil, fmt.Errorf("copy audio payload: %w", err)
+		return nil, "", fmt.Errorf("copy audio payload: %w", err)
 	}
 	_ = mw.WriteField("model", req.Model)
 	if req.Language != "" {
@@ -1686,7 +1723,7 @@ func (c *Client) AudioTranscription(ctx context.Context, req AudioTranscriptionR
 		_ = mw.WriteField("response_format", req.ResponseFormat)
 	}
 	if err := mw.Close(); err != nil {
-		return nil, fmt.Errorf("close multipart writer: %w", err)
+		return nil, "", fmt.Errorf("close multipart writer: %w", err)
 	}
 
 	path := "/v1/audio/transcriptions"
@@ -1695,13 +1732,9 @@ func (c *Client) AudioTranscription(ctx context.Context, req AudioTranscriptionR
 	}
 	raw, err := c.doRawPost(ctx, path, mw.FormDataContentType(), &buf)
 	if err != nil {
-		return nil, err
+		return nil, path, err
 	}
-	var out domain.CanonicalAudioResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode audio response from %s: %w", path, err)
-	}
-	return &out, nil
+	return raw, path, nil
 }
 
 // AudioSpeech synthesizes spoken audio bytes via `POST /v1/audio/speech`.
@@ -1716,4 +1749,469 @@ func (c *Client) AudioSpeech(ctx context.Context, req domain.CanonicalAudioSpeec
 // Images generates images via `POST /v1/images/generations`.
 func (c *Client) Images(ctx context.Context, req domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error) {
 	return doJSONPost[domain.CanonicalImageRequest, domain.CanonicalImageResponse](c, ctx, "/v1/images/generations", req)
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path, authToken, contentType string, body io.Reader) ([]byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	if contentType != "" {
+		httpReq.Header.Set("Content-Type", contentType)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gateway error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
+func doJSON[Resp any](c *Client, ctx context.Context, method, path, authToken string, reqBody any) (*Resp, error) {
+	var bodyReader io.Reader
+	var contentType string
+	if reqBody != nil {
+		bodyBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("marshal request for %s: %w", path, err)
+		}
+		bodyReader = bytes.NewReader(bodyBytes)
+		contentType = "application/json"
+	}
+	raw, err := c.doRequest(ctx, method, path, authToken, contentType, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	var out Resp
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode response from %s: %w", path, err)
+	}
+	return &out, nil
+}
+
+// UploadFile uploads a multipart file via `POST /v1/files`.
+func (c *Client) UploadFile(ctx context.Context, req FileUploadRequest) (*FileObject, error) {
+	if req.Content == nil {
+		return nil, fmt.Errorf("file content reader is required")
+	}
+	fileName := strings.TrimSpace(req.FileName)
+	if fileName == "" {
+		fileName = "upload.bin"
+	}
+	purpose := strings.TrimSpace(req.Purpose)
+	if purpose == "" {
+		purpose = "assistants"
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("purpose", purpose); err != nil {
+		return nil, fmt.Errorf("write purpose field: %w", err)
+	}
+	part, err := mw.CreateFormFile("file", fileName)
+	if err != nil {
+		return nil, fmt.Errorf("create multipart file: %w", err)
+	}
+	if _, err := io.Copy(part, req.Content); err != nil {
+		return nil, fmt.Errorf("copy file payload: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	raw, err := c.doRequest(ctx, http.MethodPost, "/v1/files", c.apiKey, mw.FormDataContentType(), &buf)
+	if err != nil {
+		return nil, err
+	}
+	var out FileObject
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode file response: %w", err)
+	}
+	return &out, nil
+}
+
+// ListFiles lists uploaded files for the caller's organization via `GET /v1/files`.
+func (c *Client) ListFiles(ctx context.Context, purpose string) ([]FileObject, error) {
+	path := "/v1/files"
+	if strings.TrimSpace(purpose) != "" {
+		path += "?purpose=" + url.QueryEscape(strings.TrimSpace(purpose))
+	}
+	res, err := doJSON[struct {
+		Data []FileObject `json:"data"`
+	}](c, ctx, http.MethodGet, path, c.apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// GetFile retrieves metadata for a single file via `GET /v1/files/{fileID}`.
+func (c *Client) GetFile(ctx context.Context, fileID string) (*FileObject, error) {
+	return doJSON[FileObject](c, ctx, http.MethodGet, "/v1/files/"+url.PathEscape(fileID), c.apiKey, nil)
+}
+
+// GetFileContent downloads the raw bytes of an uploaded file via `GET /v1/files/{fileID}/content`.
+func (c *Client) GetFileContent(ctx context.Context, fileID string) ([]byte, error) {
+	return c.doRequest(ctx, http.MethodGet, "/v1/files/"+url.PathEscape(fileID)+"/content", c.apiKey, "", nil)
+}
+
+// DeleteFile deletes an uploaded file via `DELETE /v1/files/{fileID}`.
+func (c *Client) DeleteFile(ctx context.Context, fileID string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/v1/files/"+url.PathEscape(fileID), c.apiKey, "", nil)
+	return err
+}
+
+// CreateBatch submits an asynchronous batch job via `POST /v1/batches`.
+func (c *Client) CreateBatch(ctx context.Context, req BatchCreateRequest) (*BatchObject, error) {
+	return doJSON[BatchObject](c, ctx, http.MethodPost, "/v1/batches", c.apiKey, req)
+}
+
+// ListBatches lists batch jobs for the caller's organization via `GET /v1/batches`.
+func (c *Client) ListBatches(ctx context.Context) ([]BatchObject, error) {
+	res, err := doJSON[struct {
+		Data []BatchObject `json:"data"`
+	}](c, ctx, http.MethodGet, "/v1/batches", c.apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// GetBatch retrieves a batch job by ID via `GET /v1/batches/{batchID}`.
+func (c *Client) GetBatch(ctx context.Context, batchID string) (*BatchObject, error) {
+	return doJSON[BatchObject](c, ctx, http.MethodGet, "/v1/batches/"+url.PathEscape(batchID), c.apiKey, nil)
+}
+
+// CancelBatch cancels an in-progress batch job via `POST /v1/batches/{batchID}/cancel`.
+func (c *Client) CancelBatch(ctx context.Context, batchID string) (*BatchObject, error) {
+	return doJSON[BatchObject](c, ctx, http.MethodPost, "/v1/batches/"+url.PathEscape(batchID)+"/cancel", c.apiKey, nil)
+}
+
+// Tokenize counts tokens for a prompt or message list via `POST /v1/tokenize`.
+func (c *Client) Tokenize(ctx context.Context, req TokenizeRequest) (*TokenizeResponse, error) {
+	return doJSON[TokenizeResponse](c, ctx, http.MethodPost, "/v1/tokenize", c.apiKey, req)
+}
+
+// CountTokens counts input tokens using the Anthropic-compatible `POST /v1/messages/count_tokens` endpoint.
+func (c *Client) CountTokens(ctx context.Context, req CountTokensRequest) (*CountTokensResponse, error) {
+	return doJSON[CountTokensResponse](c, ctx, http.MethodPost, "/v1/messages/count_tokens", c.apiKey, req)
+}
+
+// ImageEdit edits an image via multipart `POST /v1/images/edits`.
+func (c *Client) ImageEdit(ctx context.Context, req ImageEditRequest) (*ImageResponse, error) {
+	if req.Image == nil {
+		return nil, fmt.Errorf("image reader is required")
+	}
+	imageName := strings.TrimSpace(req.ImageName)
+	if imageName == "" {
+		imageName = "image.png"
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	imgPart, err := mw.CreateFormFile("image", imageName)
+	if err != nil {
+		return nil, fmt.Errorf("create multipart image: %w", err)
+	}
+	if _, err := io.Copy(imgPart, req.Image); err != nil {
+		return nil, fmt.Errorf("copy image payload: %w", err)
+	}
+	if req.Mask != nil {
+		maskName := strings.TrimSpace(req.MaskName)
+		if maskName == "" {
+			maskName = "mask.png"
+		}
+		maskPart, err := mw.CreateFormFile("mask", maskName)
+		if err != nil {
+			return nil, fmt.Errorf("create multipart mask: %w", err)
+		}
+		if _, err := io.Copy(maskPart, req.Mask); err != nil {
+			return nil, fmt.Errorf("copy mask payload: %w", err)
+		}
+	}
+	_ = mw.WriteField("prompt", req.Prompt)
+	if strings.TrimSpace(req.Model) != "" {
+		_ = mw.WriteField("model", strings.TrimSpace(req.Model))
+	}
+	if req.N > 0 {
+		_ = mw.WriteField("n", strconv.Itoa(req.N))
+	}
+	if strings.TrimSpace(req.Size) != "" {
+		_ = mw.WriteField("size", strings.TrimSpace(req.Size))
+	}
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	raw, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", c.apiKey, mw.FormDataContentType(), &buf)
+	if err != nil {
+		return nil, err
+	}
+	var out ImageResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode image edit response: %w", err)
+	}
+	return &out, nil
+}
+
+// ImageVariation creates variations of an image via multipart `POST /v1/images/variations`.
+func (c *Client) ImageVariation(ctx context.Context, req ImageVariationRequest) (*ImageResponse, error) {
+	if req.Image == nil {
+		return nil, fmt.Errorf("image reader is required")
+	}
+	imageName := strings.TrimSpace(req.ImageName)
+	if imageName == "" {
+		imageName = "image.png"
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	imgPart, err := mw.CreateFormFile("image", imageName)
+	if err != nil {
+		return nil, fmt.Errorf("create multipart image: %w", err)
+	}
+	if _, err := io.Copy(imgPart, req.Image); err != nil {
+		return nil, fmt.Errorf("copy image payload: %w", err)
+	}
+	if strings.TrimSpace(req.Model) != "" {
+		_ = mw.WriteField("model", strings.TrimSpace(req.Model))
+	}
+	if req.N > 0 {
+		_ = mw.WriteField("n", strconv.Itoa(req.N))
+	}
+	if strings.TrimSpace(req.Size) != "" {
+		_ = mw.WriteField("size", strings.TrimSpace(req.Size))
+	}
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	raw, err := c.doRequest(ctx, http.MethodPost, "/v1/images/variations", c.apiKey, mw.FormDataContentType(), &buf)
+	if err != nil {
+		return nil, err
+	}
+	var out ImageResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode image variation response: %w", err)
+	}
+	return &out, nil
+}
+
+// UpdateTeam updates a team's settings via `PUT /admin/v1/teams/{teamID}`.
+func (c *Client) UpdateTeam(ctx context.Context, teamID string, req TeamUpdateRequest) (*TeamConfig, error) {
+	return doJSON[TeamConfig](c, ctx, http.MethodPut, "/admin/v1/teams/"+url.PathEscape(teamID), c.adminKey(), req)
+}
+
+// DeleteTeam deletes a team via `DELETE /admin/v1/teams/{teamID}`.
+func (c *Client) DeleteTeam(ctx context.Context, teamID string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/admin/v1/teams/"+url.PathEscape(teamID), c.adminKey(), "", nil)
+	return err
+}
+
+// UpdateUser updates a user's settings via `PUT /admin/v1/users/{userID}`.
+func (c *Client) UpdateUser(ctx context.Context, userID string, req UserUpdateRequest) (*UserConfig, error) {
+	return doJSON[UserConfig](c, ctx, http.MethodPut, "/admin/v1/users/"+url.PathEscape(userID), c.adminKey(), req)
+}
+
+// DeleteUser deletes a user via `DELETE /admin/v1/users/{userID}`.
+func (c *Client) DeleteUser(ctx context.Context, userID string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/admin/v1/users/"+url.PathEscape(userID), c.adminKey(), "", nil)
+	return err
+}
+
+// UpdateVirtualKey updates a virtual API key's limits, scope, or status via `PUT /admin/v1/keys/{keyID}`.
+func (c *Client) UpdateVirtualKey(ctx context.Context, keyID string, req VirtualKeyUpdateRequest) (*VirtualKeyConfig, error) {
+	return doJSON[VirtualKeyConfig](c, ctx, http.MethodPut, "/admin/v1/keys/"+url.PathEscape(keyID), c.adminKey(), req)
+}
+
+// RotateVirtualKey rotates a virtual API key via `POST /admin/v1/keys/{keyID}/rotate`, returning the one-time RawKey.
+func (c *Client) RotateVirtualKey(ctx context.Context, keyID string) (*VirtualKeyRotateResponse, error) {
+	return doJSON[VirtualKeyRotateResponse](c, ctx, http.MethodPost, "/admin/v1/keys/"+url.PathEscape(keyID)+"/rotate", c.adminKey(), nil)
+}
+
+// GetConfig retrieves the sanitized runtime gateway configuration via `GET /admin/v1/config`.
+func (c *Client) GetConfig(ctx context.Context) (map[string]any, error) {
+	res, err := doJSON[map[string]any](c, ctx, http.MethodGet, "/admin/v1/config", c.adminKey(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return *res, nil
+}
+
+// RealtimeSession wraps a live `/v1/realtime` WebSocket connection.
+type RealtimeSession struct {
+	conn *websocket.Conn
+}
+
+// ConnectRealtime opens a bidirectional WebSocket session to `/v1/realtime`.
+func (c *Client) ConnectRealtime(ctx context.Context, model string) (*RealtimeSession, error) {
+	wsURL := c.baseURL
+	switch {
+	case strings.HasPrefix(wsURL, "https://"):
+		wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
+	case strings.HasPrefix(wsURL, "http://"):
+		wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
+	default:
+		return nil, fmt.Errorf("invalid gateway base URL for websocket dial: %q", c.baseURL)
+	}
+	endpoint := wsURL + "/v1/realtime"
+	if strings.TrimSpace(model) != "" {
+		endpoint += "?model=" + url.QueryEscape(model)
+	}
+
+	headers := http.Header{}
+	if c.apiKey != "" {
+		headers.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		HTTPClient:   c.httpClient,
+		HTTPHeader:   headers,
+		Subprotocols: []string{"realtime"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dial realtime websocket: %w", err)
+	}
+	return &RealtimeSession{conn: conn}, nil
+}
+
+// SendEvent sends a JSON RealtimeEvent over the open WebSocket session.
+func (s *RealtimeSession) SendEvent(ctx context.Context, ev RealtimeEvent) error {
+	if s == nil || s.conn == nil {
+		return fmt.Errorf("realtime session is closed")
+	}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("marshal realtime event: %w", err)
+	}
+	return s.conn.Write(ctx, websocket.MessageText, payload)
+}
+
+// ReadEvent reads the next JSON RealtimeEvent frame from the WebSocket session.
+func (s *RealtimeSession) ReadEvent(ctx context.Context) (*RealtimeEvent, error) {
+	if s == nil || s.conn == nil {
+		return nil, fmt.Errorf("realtime session is closed")
+	}
+	for {
+		msgType, data, err := s.conn.Read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if msgType != websocket.MessageText {
+			continue
+		}
+		var ev RealtimeEvent
+		if err := json.Unmarshal(data, &ev); err != nil {
+			return nil, fmt.Errorf("decode realtime event: %w", err)
+		}
+		return &ev, nil
+	}
+}
+
+// Close terminates the Realtime WebSocket session gracefully.
+func (s *RealtimeSession) Close() error {
+	if s == nil || s.conn == nil {
+		return nil
+	}
+	return s.conn.Close(websocket.StatusNormalClosure, "client closed")
+}
+
+// CreateEmbedding generates vector embeddings via `POST /v1/embeddings` using pure SDK types.
+func (c *Client) CreateEmbedding(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error) {
+	return doJSON[EmbeddingResponse](c, ctx, http.MethodPost, "/v1/embeddings", c.apiKey, req)
+}
+
+// CreateRerank scores and reorders candidate documents via `POST /v1/rerank` using pure SDK types.
+func (c *Client) CreateRerank(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
+	return doJSON[RerankResponse](c, ctx, http.MethodPost, "/v1/rerank", c.apiKey, req)
+}
+
+// CreateModeration classifies content safety via `POST /v1/moderations` using pure SDK types.
+func (c *Client) CreateModeration(ctx context.Context, req ModerationRequest) (*ModerationResponse, error) {
+	return doJSON[ModerationResponse](c, ctx, http.MethodPost, "/v1/moderations", c.apiKey, req)
+}
+
+// CreateResponse executes a non-streaming OpenAI Responses API call via `POST /v1/responses` using pure SDK types.
+func (c *Client) CreateResponse(ctx context.Context, req ResponseRequest) (*ResponseOutput, error) {
+	req.Stream = false
+	return doJSON[ResponseOutput](c, ctx, http.MethodPost, "/v1/responses", c.apiKey, req)
+}
+
+// StreamResponse executes a streaming OpenAI Responses API call via `POST /v1/responses` (`stream: true`) using pure SDK types.
+func (c *Client) StreamResponse(ctx context.Context, req ResponseRequest, onDelta func(delta string) error) (*ResponseOutput, error) {
+	req.Stream = true
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal response stream request: %w", err)
+	}
+	rawFinal, fullText, err := c.streamResponsesSSE(ctx, bodyBytes, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	finalResp := &ResponseOutput{
+		Object: "response",
+		Status: "completed",
+		Model:  req.Model,
+	}
+	if len(rawFinal) > 0 {
+		if err := json.Unmarshal(rawFinal, finalResp); err != nil {
+			return nil, fmt.Errorf("decode final response payload: %w", err)
+		}
+	}
+	if len(finalResp.Output) == 0 && fullText != "" {
+		finalResp.Output = []ResponseOutputItem{
+			{
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []ResponseContentPart{
+					{Type: "output_text", Text: fullText},
+				},
+			},
+		}
+	}
+	return finalResp, nil
+}
+
+// CreateImage generates images via `POST /v1/images/generations` using pure SDK types.
+func (c *Client) CreateImage(ctx context.Context, req ImageGenerationRequest) (*ImageResponse, error) {
+	return doJSON[ImageResponse](c, ctx, http.MethodPost, "/v1/images/generations", c.apiKey, req)
+}
+
+// CreateSpeech synthesizes spoken audio bytes via `POST /v1/audio/speech` using pure SDK types.
+func (c *Client) CreateSpeech(ctx context.Context, req SpeechRequest) ([]byte, error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal speech request: %w", err)
+	}
+	return c.doRawPost(ctx, "/v1/audio/speech", "application/json", bytes.NewReader(bodyBytes))
+}
+
+// TranscribeAudio transcribes (or translates) audio via `POST /v1/audio/transcriptions` or `/v1/audio/translations` using pure SDK types.
+func (c *Client) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error) {
+	raw, path, err := c.postAudioTranscription(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var out AudioTranscriptionResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode audio response from %s: %w", path, err)
+	}
+	return &out, nil
+}
+
+// GetSpendSummary retrieves the FinOps ledger summary via `GET /admin/v1/spend/summary` using pure SDK types.
+func (c *Client) GetSpendSummary(ctx context.Context) (*SpendSummaryResponse, error) {
+	return doJSON[SpendSummaryResponse](c, ctx, http.MethodGet, "/admin/v1/spend/summary", c.adminKey(), nil)
 }

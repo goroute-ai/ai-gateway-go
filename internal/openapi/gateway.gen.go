@@ -20,6 +20,27 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AdminCacheInvalidateRequestScope.
+const (
+	All   AdminCacheInvalidateRequestScope = "all"
+	Model AdminCacheInvalidateRequestScope = "model"
+	Org   AdminCacheInvalidateRequestScope = "org"
+)
+
+// Valid indicates whether the value is a known member of the AdminCacheInvalidateRequestScope enum.
+func (e AdminCacheInvalidateRequestScope) Valid() bool {
+	switch e {
+	case All:
+		return true
+	case Model:
+		return true
+	case Org:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminDeploymentStatus.
 const (
 	Active   AdminDeploymentStatus = "active"
@@ -35,6 +56,27 @@ func (e AdminDeploymentStatus) Valid() bool {
 	case Cooldown:
 		return true
 	case Disabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminMCPServerCreateRequestTransport.
+const (
+	Sse            AdminMCPServerCreateRequestTransport = "sse"
+	Stdio          AdminMCPServerCreateRequestTransport = "stdio"
+	StreamableHttp AdminMCPServerCreateRequestTransport = "streamable_http"
+)
+
+// Valid indicates whether the value is a known member of the AdminMCPServerCreateRequestTransport enum.
+func (e AdminMCPServerCreateRequestTransport) Valid() bool {
+	switch e {
+	case Sse:
+		return true
+	case Stdio:
+		return true
+	case StreamableHttp:
 		return true
 	default:
 		return false
@@ -575,6 +617,60 @@ func (e ToolCallType) Valid() bool {
 	}
 }
 
+// AdminA2AAgentCreateRequest defines model for AdminA2AAgentCreateRequest.
+type AdminA2AAgentCreateRequest struct {
+	AuthToken *string `json:"auth_token,omitempty"`
+	AuthType  *string `json:"auth_type,omitempty"`
+	CardUrl   string  `json:"card_url"`
+	IsActive  *bool   `json:"is_active,omitempty"`
+	Name      string  `json:"name"`
+	OrgId     *string `json:"org_id,omitempty"`
+	Slug      string  `json:"slug"`
+}
+
+// AdminA2AKillSwitchRequest defines model for AdminA2AKillSwitchRequest.
+type AdminA2AKillSwitchRequest struct {
+	Killed bool    `json:"killed"`
+	Reason *string `json:"reason,omitempty"`
+}
+
+// AdminA2APushConfigRequest defines model for AdminA2APushConfigRequest.
+type AdminA2APushConfigRequest struct {
+	AuthToken *string `json:"auth_token,omitempty"`
+	OrgId     *string `json:"org_id,omitempty"`
+	TargetUrl string  `json:"target_url"`
+	TaskId    string  `json:"task_id"`
+}
+
+// AdminCacheInvalidateRequest defines model for AdminCacheInvalidateRequest.
+type AdminCacheInvalidateRequest struct {
+	Model *string                           `json:"model,omitempty"`
+	OrgId *string                           `json:"org_id,omitempty"`
+	Scope *AdminCacheInvalidateRequestScope `json:"scope,omitempty"`
+}
+
+// AdminCacheInvalidateRequestScope defines model for AdminCacheInvalidateRequest.Scope.
+type AdminCacheInvalidateRequestScope string
+
+// AdminCatalogueModel defines model for AdminCatalogueModel.
+type AdminCatalogueModel map[string]interface{}
+
+// AdminCredentialCreateRequest defines model for AdminCredentialCreateRequest.
+type AdminCredentialCreateRequest struct {
+	AuthType *string `json:"auth_type,omitempty"`
+	BaseUrl  *string `json:"base_url,omitempty"`
+	Name     *string `json:"name,omitempty"`
+	OrgId    *string `json:"org_id,omitempty"`
+	Provider string  `json:"provider"`
+	Region   *string `json:"region,omitempty"`
+	Secret   string  `json:"secret"`
+}
+
+// AdminCredentialRotateRequest defines model for AdminCredentialRotateRequest.
+type AdminCredentialRotateRequest struct {
+	Secret string `json:"secret"`
+}
+
 // AdminDeleteStatusResponse defines model for AdminDeleteStatusResponse.
 type AdminDeleteStatusResponse struct {
 	Id     string `json:"id"`
@@ -601,6 +697,99 @@ type AdminDeployment struct {
 
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
 type AdminDeploymentStatus string
+
+// AdminMCPServerCreateRequest defines model for AdminMCPServerCreateRequest.
+type AdminMCPServerCreateRequest struct {
+	Args        *[]string                            `json:"args,omitempty"`
+	AuthToken   *string                              `json:"auth_token,omitempty"`
+	AuthType    *string                              `json:"auth_type,omitempty"`
+	Command     *string                              `json:"command,omitempty"`
+	EndpointUrl *string                              `json:"endpoint_url,omitempty"`
+	Env         *map[string]string                   `json:"env,omitempty"`
+	Headers     *map[string]string                   `json:"headers,omitempty"`
+	Name        string                               `json:"name"`
+	OrgId       *string                              `json:"org_id,omitempty"`
+	Slug        string                               `json:"slug"`
+	Transport   AdminMCPServerCreateRequestTransport `json:"transport"`
+}
+
+// AdminMCPServerCreateRequestTransport defines model for AdminMCPServerCreateRequest.Transport.
+type AdminMCPServerCreateRequestTransport string
+
+// AdminMCPToolsetCreateRequest defines model for AdminMCPToolsetCreateRequest.
+type AdminMCPToolsetCreateRequest struct {
+	Description *string   `json:"description,omitempty"`
+	Name        string    `json:"name"`
+	OrgId       *string   `json:"org_id,omitempty"`
+	Slug        string    `json:"slug"`
+	ToolIds     *[]string `json:"tool_ids,omitempty"`
+}
+
+// AdminMCPUserCredentialRequest defines model for AdminMCPUserCredentialRequest.
+type AdminMCPUserCredentialRequest struct {
+	AuthType *string `json:"auth_type,omitempty"`
+	OrgId    *string `json:"org_id,omitempty"`
+	Secret   string  `json:"secret"`
+	ServerId string  `json:"server_id"`
+	UserId   string  `json:"user_id"`
+}
+
+// AdminModelGroup defines model for AdminModelGroup.
+type AdminModelGroup struct {
+	Alias           *string    `json:"alias,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	FallbackGroups  *[]string  `json:"fallback_groups,omitempty"`
+	Id              *string    `json:"id,omitempty"`
+	Name            *string    `json:"name,omitempty"`
+	OrgId           *string    `json:"org_id,omitempty"`
+	RoutingStrategy *string    `json:"routing_strategy,omitempty"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+}
+
+// AdminModelPricingHistory defines model for AdminModelPricingHistory.
+type AdminModelPricingHistory map[string]interface{}
+
+// AdminOrganization defines model for AdminOrganization.
+type AdminOrganization struct {
+	CreatedAt       *time.Time         `json:"created_at,omitempty"`
+	Id              *string            `json:"id,omitempty"`
+	MaxBudgetMicro  *int64             `json:"max_budget_micro,omitempty"`
+	Metadata        *map[string]string `json:"metadata,omitempty"`
+	Name            *string            `json:"name,omitempty"`
+	RpmLimit        *int               `json:"rpm_limit,omitempty"`
+	Slug            *string            `json:"slug,omitempty"`
+	SoftBudgetMicro *int64             `json:"soft_budget_micro,omitempty"`
+	TpmLimit        *int               `json:"tpm_limit,omitempty"`
+	UpdatedAt       *time.Time         `json:"updated_at,omitempty"`
+}
+
+// AdminPricingUpdateRequest defines model for AdminPricingUpdateRequest.
+type AdminPricingUpdateRequest struct {
+	Currency                  *string    `json:"currency,omitempty"`
+	EffectiveFrom             *time.Time `json:"effective_from,omitempty"`
+	GlobalModelId             string     `json:"global_model_id"`
+	InputCostPerMillionMicro  int64      `json:"input_cost_per_million_micro"`
+	OutputCostPerMillionMicro int64      `json:"output_cost_per_million_micro"`
+	Reason                    *string    `json:"reason,omitempty"`
+}
+
+// AdminProviderCredential defines model for AdminProviderCredential.
+type AdminProviderCredential struct {
+	AuthType        *string    `json:"auth_type,omitempty"`
+	BaseUrl         *string    `json:"base_url,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	Id              *string    `json:"id,omitempty"`
+	IsActive        *bool      `json:"is_active,omitempty"`
+	LastValidatedAt *time.Time `json:"last_validated_at,omitempty"`
+	Name            *string    `json:"name,omitempty"`
+	OrgId           *string    `json:"org_id,omitempty"`
+	Provider        *string    `json:"provider,omitempty"`
+	Region          *string    `json:"region,omitempty"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+}
+
+// AdminSpendSummary defines model for AdminSpendSummary.
+type AdminSpendSummary map[string]interface{}
 
 // AdminTeam defines model for AdminTeam.
 type AdminTeam struct {
@@ -1281,9 +1470,77 @@ type BatchID = string
 // FileID defines model for FileID.
 type FileID = string
 
+// ListA2AAgentsParams defines parameters for ListA2AAgents.
+type ListA2AAgentsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListAuditLogsParams defines parameters for ListAuditLogs.
+type ListAuditLogsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ImportCatalogueParams defines parameters for ImportCatalogue.
+type ImportCatalogueParams struct {
+	Provider *string `form:"provider,omitempty" json:"provider,omitempty"`
+}
+
+// ListModelPricingHistoryParams defines parameters for ListModelPricingHistory.
+type ListModelPricingHistoryParams struct {
+	GlobalModelId string `form:"global_model_id" json:"global_model_id"`
+}
+
+// ListCredentialsParams defines parameters for ListCredentials.
+type ListCredentialsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	ModelGroupId *string `form:"model_group_id,omitempty" json:"model_group_id,omitempty"`
+}
+
+// ListVirtualKeysParams defines parameters for ListVirtualKeys.
+type ListVirtualKeysParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListMCPServersParams defines parameters for ListMCPServers.
+type ListMCPServersParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListMCPToolsParams defines parameters for ListMCPTools.
+type ListMCPToolsParams struct {
+	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	ServerSlug *string `form:"server_slug,omitempty" json:"server_slug,omitempty"`
+}
+
+// ListMCPToolsetsParams defines parameters for ListMCPToolsets.
+type ListMCPToolsetsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListModelGroupsParams defines parameters for ListModelGroups.
+type ListModelGroupsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListSpendLogsParams defines parameters for ListSpendLogs.
+type ListSpendLogsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetSpendSummaryParams defines parameters for GetSpendSummary.
+type GetSpendSummaryParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListTeamsParams defines parameters for ListTeams.
+type ListTeamsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
 // ListUsersParams defines parameters for ListUsers.
@@ -1309,17 +1566,74 @@ type CreateAnthropicMessageJSONBody = map[string]interface{}
 // CountAnthropicMessageTokensJSONBody defines parameters for CountAnthropicMessageTokens.
 type CountAnthropicMessageTokensJSONBody = map[string]interface{}
 
+// CreateA2AAgentJSONRequestBody defines body for CreateA2AAgent for application/json ContentType.
+type CreateA2AAgentJSONRequestBody = AdminA2AAgentCreateRequest
+
+// SetA2AKillSwitchJSONRequestBody defines body for SetA2AKillSwitch for application/json ContentType.
+type SetA2AKillSwitchJSONRequestBody = AdminA2AKillSwitchRequest
+
+// SetA2APushConfigJSONRequestBody defines body for SetA2APushConfig for application/json ContentType.
+type SetA2APushConfigJSONRequestBody = AdminA2APushConfigRequest
+
+// InvalidateCacheJSONRequestBody defines body for InvalidateCache for application/json ContentType.
+type InvalidateCacheJSONRequestBody = AdminCacheInvalidateRequest
+
+// UpdateModelPricingJSONRequestBody defines body for UpdateModelPricing for application/json ContentType.
+type UpdateModelPricingJSONRequestBody = AdminPricingUpdateRequest
+
+// CreateCredentialJSONRequestBody defines body for CreateCredential for application/json ContentType.
+type CreateCredentialJSONRequestBody = AdminCredentialCreateRequest
+
 // PreflightValidateCredentialJSONRequestBody defines body for PreflightValidateCredential for application/json ContentType.
 type PreflightValidateCredentialJSONRequestBody = CredentialValidateRequest
+
+// RotateCredentialJSONRequestBody defines body for RotateCredential for application/json ContentType.
+type RotateCredentialJSONRequestBody = AdminCredentialRotateRequest
+
+// CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
+type CreateDeploymentJSONRequestBody = AdminDeployment
+
+// IssueVirtualKeyJSONRequestBody defines body for IssueVirtualKey for application/json ContentType.
+type IssueVirtualKeyJSONRequestBody = AdminVirtualKey
 
 // UpdateVirtualKeyJSONRequestBody defines body for UpdateVirtualKey for application/json ContentType.
 type UpdateVirtualKeyJSONRequestBody = AdminVirtualKey
 
+// SetMCPUserCredentialJSONRequestBody defines body for SetMCPUserCredential for application/json ContentType.
+type SetMCPUserCredentialJSONRequestBody = AdminMCPUserCredentialRequest
+
+// CreateMCPServerJSONRequestBody defines body for CreateMCPServer for application/json ContentType.
+type CreateMCPServerJSONRequestBody = AdminMCPServerCreateRequest
+
+// CreateMCPToolsetJSONRequestBody defines body for CreateMCPToolset for application/json ContentType.
+type CreateMCPToolsetJSONRequestBody = AdminMCPToolsetCreateRequest
+
+// CreateModelGroupJSONRequestBody defines body for CreateModelGroup for application/json ContentType.
+type CreateModelGroupJSONRequestBody = AdminModelGroup
+
+// CreateOrganizationJSONRequestBody defines body for CreateOrganization for application/json ContentType.
+type CreateOrganizationJSONRequestBody = AdminOrganization
+
+// SetGuardrailPolicyJSONRequestBody defines body for SetGuardrailPolicy for application/json ContentType.
+type SetGuardrailPolicyJSONRequestBody = GuardrailPolicy
+
 // SimulateGuardrailsJSONRequestBody defines body for SimulateGuardrails for application/json ContentType.
 type SimulateGuardrailsJSONRequestBody = GuardrailSimulateRequest
 
+// SetOrgModelPolicyJSONRequestBody defines body for SetOrgModelPolicy for application/json ContentType.
+type SetOrgModelPolicyJSONRequestBody = OrgModelPolicy
+
+// SetOrgSubscriptionJSONRequestBody defines body for SetOrgSubscription for application/json ContentType.
+type SetOrgSubscriptionJSONRequestBody = OrgProviderSubscription
+
+// CreateTeamJSONRequestBody defines body for CreateTeam for application/json ContentType.
+type CreateTeamJSONRequestBody = AdminTeam
+
 // UpdateTeamJSONRequestBody defines body for UpdateTeam for application/json ContentType.
 type UpdateTeamJSONRequestBody = AdminTeam
+
+// CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
+type CreateUserJSONRequestBody = AdminUser
 
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = AdminUser
@@ -2011,30 +2325,159 @@ func (t *ResponsesMessageInputItem_Content) UnmarshalJSON(b []byte) error {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListA2AAgents List registered A2A agents for an organization
+	// (GET /admin/v1/a2a/agents)
+	ListA2AAgents(w http.ResponseWriter, r *http.Request, params ListA2AAgentsParams)
+	// CreateA2AAgent Register an A2A agent
+	// (POST /admin/v1/a2a/agents)
+	CreateA2AAgent(w http.ResponseWriter, r *http.Request)
+	// GetA2AAgent Retrieve an A2A agent by ID
+	// (GET /admin/v1/a2a/agents/{id})
+	GetA2AAgent(w http.ResponseWriter, r *http.Request, id string)
+	// SetA2AKillSwitch Enable or disable the kill switch for an A2A agent
+	// (POST /admin/v1/a2a/agents/{id}/kill-switch)
+	SetA2AKillSwitch(w http.ResponseWriter, r *http.Request, id string)
+	// SetA2APushConfig Create a push notification configuration for an A2A task
+	// (POST /admin/v1/a2a/push-configs)
+	SetA2APushConfig(w http.ResponseWriter, r *http.Request)
+	// ListAuditLogs List admin and security audit log records
+	// (GET /admin/v1/audit/logs)
+	ListAuditLogs(w http.ResponseWriter, r *http.Request, params ListAuditLogsParams)
+	// InvalidateCache Invalidate response cache entries by scope, organization, or model
+	// (POST /admin/v1/cache/invalidate)
+	InvalidateCache(w http.ResponseWriter, r *http.Request)
+	// ListCatalogue List global model catalogue entries
+	// (GET /admin/v1/catalogue)
+	ListCatalogue(w http.ResponseWriter, r *http.Request)
+	// ImportCatalogue Import model catalogue entries from provider registries
+	// (POST /admin/v1/catalogue/import)
+	ImportCatalogue(w http.ResponseWriter, r *http.Request, params ImportCatalogueParams)
+	// ListModelPricingHistory List pricing history for a global catalogue model
+	// (GET /admin/v1/catalogue/pricing)
+	ListModelPricingHistory(w http.ResponseWriter, r *http.Request, params ListModelPricingHistoryParams)
+	// UpdateModelPricing Update pricing for a global catalogue model and record pricing history
+	// (POST /admin/v1/catalogue/pricing)
+	UpdateModelPricing(w http.ResponseWriter, r *http.Request)
+	// TriggerDiscoverySync Trigger provider model discovery synchronization
+	// (POST /admin/v1/catalogue/sync)
+	TriggerDiscoverySync(w http.ResponseWriter, r *http.Request)
 	// GetRuntimeConfig Retrieve sanitized runtime gateway configuration with secrets redacted
 	// (GET /admin/v1/config)
 	GetRuntimeConfig(w http.ResponseWriter, r *http.Request)
+	// ListCredentials List provider credentials for an organization
+	// (GET /admin/v1/credentials)
+	ListCredentials(w http.ResponseWriter, r *http.Request, params ListCredentialsParams)
+	// CreateCredential Store an encrypted provider credential
+	// (POST /admin/v1/credentials)
+	CreateCredential(w http.ResponseWriter, r *http.Request)
 	// PreflightValidateCredential Preflight upstream validation of credentials before saving
 	// (POST /admin/v1/credentials/validate)
 	PreflightValidateCredential(w http.ResponseWriter, r *http.Request)
+	// RotateCredential Rotate an encrypted provider credential secret
+	// (POST /admin/v1/credentials/{credID}/rotate)
+	RotateCredential(w http.ResponseWriter, r *http.Request, credID string)
+	// ValidateCredential Validate a stored provider credential
+	// (POST /admin/v1/credentials/{credID}/validate)
+	ValidateCredential(w http.ResponseWriter, r *http.Request, credID string)
 	// ListDeployments List deployments across model groups
 	// (GET /admin/v1/deployments)
 	ListDeployments(w http.ResponseWriter, r *http.Request, params ListDeploymentsParams)
+	// CreateDeployment Create a model deployment within a model group
+	// (POST /admin/v1/deployments)
+	CreateDeployment(w http.ResponseWriter, r *http.Request)
+	// ListDeploymentHealth List health status of active deployments
+	// (GET /admin/v1/health/deployments)
+	ListDeploymentHealth(w http.ResponseWriter, r *http.Request)
+	// ProbeDeployments Probe provider deployments for liveness and latency
+	// (POST /admin/v1/health/probe)
+	ProbeDeployments(w http.ResponseWriter, r *http.Request)
+	// ListVirtualKeys List virtual API keys for an organization
+	// (GET /admin/v1/keys)
+	ListVirtualKeys(w http.ResponseWriter, r *http.Request, params ListVirtualKeysParams)
+	// IssueVirtualKey Issue a new virtual API key
+	// (POST /admin/v1/keys)
+	IssueVirtualKey(w http.ResponseWriter, r *http.Request)
+	// RevokeVirtualKeyByID Revoke a virtual API key by ID
+	// (DELETE /admin/v1/keys/{keyID})
+	RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Request, keyID string)
 	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
 	// (PUT /admin/v1/keys/{keyID})
 	UpdateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// RevokeVirtualKey Revoke a virtual API key
+	// (POST /admin/v1/keys/{keyID}/revoke)
+	RevokeVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
+	// (POST /admin/v1/mcp/credentials)
+	SetMCPUserCredential(w http.ResponseWriter, r *http.Request)
+	// ListMCPServers List registered MCP servers for an organization
+	// (GET /admin/v1/mcp/servers)
+	ListMCPServers(w http.ResponseWriter, r *http.Request, params ListMCPServersParams)
+	// CreateMCPServer Register a downstream MCP server
+	// (POST /admin/v1/mcp/servers)
+	CreateMCPServer(w http.ResponseWriter, r *http.Request)
+	// SyncMCPServer Discover and synchronize tools from an MCP server
+	// (POST /admin/v1/mcp/servers/{serverID}/sync)
+	SyncMCPServer(w http.ResponseWriter, r *http.Request, serverID string)
+	// ListMCPTools List discovered MCP tools for an organization or server
+	// (GET /admin/v1/mcp/tools)
+	ListMCPTools(w http.ResponseWriter, r *http.Request, params ListMCPToolsParams)
+	// ListMCPToolsets List MCP toolsets for an organization
+	// (GET /admin/v1/mcp/toolsets)
+	ListMCPToolsets(w http.ResponseWriter, r *http.Request, params ListMCPToolsetsParams)
+	// CreateMCPToolset Create a curated MCP toolset
+	// (POST /admin/v1/mcp/toolsets)
+	CreateMCPToolset(w http.ResponseWriter, r *http.Request)
+	// ListModelGroups List model groups for an organization
+	// (GET /admin/v1/model-groups)
+	ListModelGroups(w http.ResponseWriter, r *http.Request, params ListModelGroupsParams)
+	// CreateModelGroup Create a model group
+	// (POST /admin/v1/model-groups)
+	CreateModelGroup(w http.ResponseWriter, r *http.Request)
+	// GetObservabilityMetrics Retrieve gateway observability metrics snapshot
+	// (GET /admin/v1/observability/metrics)
+	GetObservabilityMetrics(w http.ResponseWriter, r *http.Request)
+	// ListOrganizations List organizations
+	// (GET /admin/v1/organizations)
+	ListOrganizations(w http.ResponseWriter, r *http.Request)
+	// CreateOrganization Create an organization
+	// (POST /admin/v1/organizations)
+	CreateOrganization(w http.ResponseWriter, r *http.Request)
+	// GetGuardrailPolicy Get an organization guardrail policy
+	// (GET /admin/v1/organizations/{orgID}/guardrails)
+	GetGuardrailPolicy(w http.ResponseWriter, r *http.Request, orgID string)
+	// SetGuardrailPolicy Create or update an organization guardrail policy
+	// (POST /admin/v1/organizations/{orgID}/guardrails)
+	SetGuardrailPolicy(w http.ResponseWriter, r *http.Request, orgID string)
 	// SimulateGuardrails Stateless dry-run evaluation of prompt against security policy
 	// (POST /admin/v1/organizations/{orgID}/guardrails/simulate)
 	SimulateGuardrails(w http.ResponseWriter, r *http.Request, orgID string)
 	// GetOrgModelPolicies Get allowed model policies for an organization
 	// (GET /admin/v1/organizations/{orgID}/models)
 	GetOrgModelPolicies(w http.ResponseWriter, r *http.Request, orgID string)
+	// SetOrgModelPolicy Create or update an organization model policy
+	// (POST /admin/v1/organizations/{orgID}/models)
+	SetOrgModelPolicy(w http.ResponseWriter, r *http.Request, orgID string)
 	// GetOrgSubscriptions Get subscription and tier limits for an organization
 	// (GET /admin/v1/organizations/{orgID}/subscriptions)
 	GetOrgSubscriptions(w http.ResponseWriter, r *http.Request, orgID string)
+	// SetOrgSubscription Create or update an organization provider subscription
+	// (POST /admin/v1/organizations/{orgID}/subscriptions)
+	SetOrgSubscription(w http.ResponseWriter, r *http.Request, orgID string)
+	// ListSpendLogs List spend log records for an organization
+	// (GET /admin/v1/spend/logs)
+	ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams)
+	// GetSpendSummary Retrieve aggregated spend summary for an organization
+	// (GET /admin/v1/spend/summary)
+	GetSpendSummary(w http.ResponseWriter, r *http.Request, params GetSpendSummaryParams)
+	// ListTeams List teams for an organization
+	// (GET /admin/v1/teams)
+	ListTeams(w http.ResponseWriter, r *http.Request, params ListTeamsParams)
+	// CreateTeam Create a team within an organization
+	// (POST /admin/v1/teams)
+	CreateTeam(w http.ResponseWriter, r *http.Request)
 	// DeleteTeam Delete a team if no active virtual keys remain bound to it
 	// (DELETE /admin/v1/teams/{teamID})
 	DeleteTeam(w http.ResponseWriter, r *http.Request, teamID string)
@@ -2044,6 +2487,9 @@ type ServerInterface interface {
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams)
+	// CreateUser Create a user within an organization
+	// (POST /admin/v1/users)
+	CreateUser(w http.ResponseWriter, r *http.Request)
 	// DeleteUser Delete a user if no active virtual keys remain bound to the user
 	// (DELETE /admin/v1/users/{userID})
 	DeleteUser(w http.ResponseWriter, r *http.Request, userID string)
@@ -2139,6 +2585,287 @@ type ServerInterfaceWrapper struct {
 
 type MiddlewareFunc func(http.Handler) http.Handler
 
+// ListA2AAgents operation middleware
+func (siw *ServerInterfaceWrapper) ListA2AAgents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListA2AAgentsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListA2AAgents(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateA2AAgent operation middleware
+func (siw *ServerInterfaceWrapper) CreateA2AAgent(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateA2AAgent(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetA2AAgent operation middleware
+func (siw *ServerInterfaceWrapper) GetA2AAgent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetA2AAgent(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetA2AKillSwitch operation middleware
+func (siw *ServerInterfaceWrapper) SetA2AKillSwitch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetA2AKillSwitch(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetA2APushConfig operation middleware
+func (siw *ServerInterfaceWrapper) SetA2APushConfig(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetA2APushConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAuditLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListAuditLogs(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAuditLogsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAuditLogs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InvalidateCache operation middleware
+func (siw *ServerInterfaceWrapper) InvalidateCache(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InvalidateCache(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListCatalogue operation middleware
+func (siw *ServerInterfaceWrapper) ListCatalogue(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCatalogue(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ImportCatalogue operation middleware
+func (siw *ServerInterfaceWrapper) ImportCatalogue(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ImportCatalogueParams
+
+	// ------------- Optional query parameter "provider" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "provider", r.URL.Query(), &params.Provider, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "provider"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ImportCatalogue(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListModelPricingHistory operation middleware
+func (siw *ServerInterfaceWrapper) ListModelPricingHistory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListModelPricingHistoryParams
+
+	// ------------- Required query parameter "global_model_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "global_model_id", r.URL.Query(), &params.GlobalModelId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "global_model_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "global_model_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListModelPricingHistory(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateModelPricing operation middleware
+func (siw *ServerInterfaceWrapper) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateModelPricing(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TriggerDiscoverySync operation middleware
+func (siw *ServerInterfaceWrapper) TriggerDiscoverySync(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TriggerDiscoverySync(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetRuntimeConfig operation middleware
 func (siw *ServerInterfaceWrapper) GetRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 
@@ -2153,11 +2880,110 @@ func (siw *ServerInterfaceWrapper) GetRuntimeConfig(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ListCredentials operation middleware
+func (siw *ServerInterfaceWrapper) ListCredentials(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListCredentialsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCredentials(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateCredential operation middleware
+func (siw *ServerInterfaceWrapper) CreateCredential(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateCredential(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PreflightValidateCredential operation middleware
 func (siw *ServerInterfaceWrapper) PreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PreflightValidateCredential(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateCredential operation middleware
+func (siw *ServerInterfaceWrapper) RotateCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "credID" -------------
+	var credID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "credID", r.PathValue("credID"), &credID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "credID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateCredential(w, r, credID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ValidateCredential operation middleware
+func (siw *ServerInterfaceWrapper) ValidateCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "credID" -------------
+	var credID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "credID", r.PathValue("credID"), &credID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "credID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ValidateCredential(w, r, credID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2200,6 +3026,121 @@ func (siw *ServerInterfaceWrapper) ListDeployments(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// CreateDeployment operation middleware
+func (siw *ServerInterfaceWrapper) CreateDeployment(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateDeployment(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDeploymentHealth operation middleware
+func (siw *ServerInterfaceWrapper) ListDeploymentHealth(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDeploymentHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ProbeDeployments operation middleware
+func (siw *ServerInterfaceWrapper) ProbeDeployments(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ProbeDeployments(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListVirtualKeys operation middleware
+func (siw *ServerInterfaceWrapper) ListVirtualKeys(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListVirtualKeysParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListVirtualKeys(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// IssueVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) IssueVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.IssueVirtualKey(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeVirtualKeyByID operation middleware
+func (siw *ServerInterfaceWrapper) RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeVirtualKeyByID(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateVirtualKey operation middleware
 func (siw *ServerInterfaceWrapper) UpdateVirtualKey(w http.ResponseWriter, r *http.Request) {
 
@@ -2226,6 +3167,32 @@ func (siw *ServerInterfaceWrapper) UpdateVirtualKey(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// RevokeVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) RevokeVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // RotateVirtualKey operation middleware
 func (siw *ServerInterfaceWrapper) RotateVirtualKey(w http.ResponseWriter, r *http.Request) {
 
@@ -2243,6 +3210,327 @@ func (siw *ServerInterfaceWrapper) RotateVirtualKey(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RotateVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetMCPUserCredential operation middleware
+func (siw *ServerInterfaceWrapper) SetMCPUserCredential(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetMCPUserCredential(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMCPServers operation middleware
+func (siw *ServerInterfaceWrapper) ListMCPServers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMCPServersParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMCPServers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMCPServer operation middleware
+func (siw *ServerInterfaceWrapper) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMCPServer(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SyncMCPServer operation middleware
+func (siw *ServerInterfaceWrapper) SyncMCPServer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "serverID" -------------
+	var serverID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serverID", r.PathValue("serverID"), &serverID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serverID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SyncMCPServer(w, r, serverID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMCPTools operation middleware
+func (siw *ServerInterfaceWrapper) ListMCPTools(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMCPToolsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "server_slug" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "server_slug", r.URL.Query(), &params.ServerSlug, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "server_slug"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "server_slug", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMCPTools(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMCPToolsets operation middleware
+func (siw *ServerInterfaceWrapper) ListMCPToolsets(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMCPToolsetsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMCPToolsets(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMCPToolset operation middleware
+func (siw *ServerInterfaceWrapper) CreateMCPToolset(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMCPToolset(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListModelGroups operation middleware
+func (siw *ServerInterfaceWrapper) ListModelGroups(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListModelGroupsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListModelGroups(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateModelGroup operation middleware
+func (siw *ServerInterfaceWrapper) CreateModelGroup(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateModelGroup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetObservabilityMetrics operation middleware
+func (siw *ServerInterfaceWrapper) GetObservabilityMetrics(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetObservabilityMetrics(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListOrganizations operation middleware
+func (siw *ServerInterfaceWrapper) ListOrganizations(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListOrganizations(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateOrganization operation middleware
+func (siw *ServerInterfaceWrapper) CreateOrganization(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateOrganization(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetGuardrailPolicy operation middleware
+func (siw *ServerInterfaceWrapper) GetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgID" -------------
+	var orgID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGuardrailPolicy(w, r, orgID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetGuardrailPolicy operation middleware
+func (siw *ServerInterfaceWrapper) SetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgID" -------------
+	var orgID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetGuardrailPolicy(w, r, orgID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2304,6 +3592,32 @@ func (siw *ServerInterfaceWrapper) GetOrgModelPolicies(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// SetOrgModelPolicy operation middleware
+func (siw *ServerInterfaceWrapper) SetOrgModelPolicy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgID" -------------
+	var orgID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetOrgModelPolicy(w, r, orgID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetOrgSubscriptions operation middleware
 func (siw *ServerInterfaceWrapper) GetOrgSubscriptions(w http.ResponseWriter, r *http.Request) {
 
@@ -2321,6 +3635,158 @@ func (siw *ServerInterfaceWrapper) GetOrgSubscriptions(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOrgSubscriptions(w, r, orgID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetOrgSubscription operation middleware
+func (siw *ServerInterfaceWrapper) SetOrgSubscription(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgID" -------------
+	var orgID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetOrgSubscription(w, r, orgID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSpendLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListSpendLogs(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSpendLogsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSpendLogs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSpendSummary operation middleware
+func (siw *ServerInterfaceWrapper) GetSpendSummary(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetSpendSummaryParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSpendSummary(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListTeams operation middleware
+func (siw *ServerInterfaceWrapper) ListTeams(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTeamsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTeams(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateTeam operation middleware
+func (siw *ServerInterfaceWrapper) CreateTeam(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateTeam(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2406,6 +3872,20 @@ func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListUsers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateUser operation middleware
+func (siw *ServerInterfaceWrapper) CreateUser(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateUser(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3038,20 +4518,354 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/responses", wrapper.CreateResponse)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/realtime", wrapper.RealtimeSession)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/users", wrapper.ListUsers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/users", wrapper.CreateUser)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/subscriptions", wrapper.GetOrgSubscriptions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/subscriptions", wrapper.SetOrgSubscription)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/models", wrapper.GetOrgModelPolicies)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/models", wrapper.SetOrgModelPolicy)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments", wrapper.ListDeployments)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/deployments", wrapper.CreateDeployment)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrails/simulate", wrapper.SimulateGuardrails)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/validate", wrapper.PreflightValidateCredential)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.DeleteTeam)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.UpdateTeam)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.DeleteUser)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.UpdateUser)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.RevokeVirtualKeyByID)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.UpdateVirtualKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/rotate", wrapper.RotateVirtualKey)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/config", wrapper.GetRuntimeConfig)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations", wrapper.ListOrganizations)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations", wrapper.CreateOrganization)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrails", wrapper.GetGuardrailPolicy)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrails", wrapper.SetGuardrailPolicy)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/teams", wrapper.ListTeams)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/teams", wrapper.CreateTeam)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/keys", wrapper.ListVirtualKeys)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys", wrapper.IssueVirtualKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/revoke", wrapper.RevokeVirtualKey)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/credentials", wrapper.ListCredentials)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials", wrapper.CreateCredential)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/{credID}/rotate", wrapper.RotateCredential)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/{credID}/validate", wrapper.ValidateCredential)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-groups", wrapper.ListModelGroups)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/model-groups", wrapper.CreateModelGroup)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/catalogue", wrapper.ListCatalogue)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/catalogue/sync", wrapper.TriggerDiscoverySync)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/catalogue/import", wrapper.ImportCatalogue)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/catalogue/pricing", wrapper.ListModelPricingHistory)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/catalogue/pricing", wrapper.UpdateModelPricing)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/observability/metrics", wrapper.GetObservabilityMetrics)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/health/deployments", wrapper.ListDeploymentHealth)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/health/probe", wrapper.ProbeDeployments)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/cache/invalidate", wrapper.InvalidateCache)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/summary", wrapper.GetSpendSummary)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/logs", wrapper.ListSpendLogs)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/audit/logs", wrapper.ListAuditLogs)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.ListMCPServers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.CreateMCPServer)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}/sync", wrapper.SyncMCPServer)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/toolsets", wrapper.ListMCPToolsets)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/toolsets", wrapper.CreateMCPToolset)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/tools", wrapper.ListMCPTools)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/credentials", wrapper.SetMCPUserCredential)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/agents", wrapper.ListA2AAgents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents", wrapper.CreateA2AAgent)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}", wrapper.GetA2AAgent)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}/kill-switch", wrapper.SetA2AKillSwitch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/push-configs", wrapper.SetA2APushConfig)
 
 	return m
+}
+
+type ListA2AAgentsRequestObject struct {
+	Params ListA2AAgentsParams
+}
+
+type ListA2AAgentsResponseObject interface {
+	VisitListA2AAgentsResponse(w http.ResponseWriter) error
+}
+
+type ListA2AAgents200JSONResponse struct {
+	Agents *[]map[string]interface{} `json:"agents,omitempty"`
+}
+
+func (response ListA2AAgents200JSONResponse) VisitListA2AAgentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateA2AAgentRequestObject struct {
+	Body *CreateA2AAgentJSONRequestBody
+}
+
+type CreateA2AAgentResponseObject interface {
+	VisitCreateA2AAgentResponse(w http.ResponseWriter) error
+}
+
+type CreateA2AAgent201JSONResponse struct {
+	Agent  *map[string]interface{} `json:"agent,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response CreateA2AAgent201JSONResponse) VisitCreateA2AAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetA2AAgentRequestObject struct {
+	Id string `json:"id"`
+}
+
+type GetA2AAgentResponseObject interface {
+	VisitGetA2AAgentResponse(w http.ResponseWriter) error
+}
+
+type GetA2AAgent200JSONResponse struct {
+	Agent *map[string]interface{} `json:"agent,omitempty"`
+}
+
+func (response GetA2AAgent200JSONResponse) VisitGetA2AAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetA2AKillSwitchRequestObject struct {
+	Id   string `json:"id"`
+	Body *SetA2AKillSwitchJSONRequestBody
+}
+
+type SetA2AKillSwitchResponseObject interface {
+	VisitSetA2AKillSwitchResponse(w http.ResponseWriter) error
+}
+
+type SetA2AKillSwitch200JSONResponse struct {
+	AgentId *string `json:"agent_id,omitempty"`
+	Killed  *bool   `json:"killed,omitempty"`
+	Status  *string `json:"status,omitempty"`
+}
+
+func (response SetA2AKillSwitch200JSONResponse) VisitSetA2AKillSwitchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetA2APushConfigRequestObject struct {
+	Body *SetA2APushConfigJSONRequestBody
+}
+
+type SetA2APushConfigResponseObject interface {
+	VisitSetA2APushConfigResponse(w http.ResponseWriter) error
+}
+
+type SetA2APushConfig201JSONResponse struct {
+	PushConfig *map[string]interface{} `json:"push_config,omitempty"`
+	Status     *string                 `json:"status,omitempty"`
+}
+
+func (response SetA2APushConfig201JSONResponse) VisitSetA2APushConfigResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAuditLogsRequestObject struct {
+	Params ListAuditLogsParams
+}
+
+type ListAuditLogsResponseObject interface {
+	VisitListAuditLogsResponse(w http.ResponseWriter) error
+}
+
+type ListAuditLogs200JSONResponse struct {
+	Data *[]map[string]interface{} `json:"data,omitempty"`
+}
+
+func (response ListAuditLogs200JSONResponse) VisitListAuditLogsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InvalidateCacheRequestObject struct {
+	Body *InvalidateCacheJSONRequestBody
+}
+
+type InvalidateCacheResponseObject interface {
+	VisitInvalidateCacheResponse(w http.ResponseWriter) error
+}
+
+type InvalidateCache200JSONResponse struct {
+	NamespaceVersion *int64  `json:"namespace_version,omitempty"`
+	PurgedEntries    *int    `json:"purged_entries,omitempty"`
+	Status           *string `json:"status,omitempty"`
+}
+
+func (response InvalidateCache200JSONResponse) VisitInvalidateCacheResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCatalogueRequestObject struct {
+}
+
+type ListCatalogueResponseObject interface {
+	VisitListCatalogueResponse(w http.ResponseWriter) error
+}
+
+type ListCatalogue200JSONResponse struct {
+	Data *[]AdminCatalogueModel `json:"data,omitempty"`
+}
+
+func (response ListCatalogue200JSONResponse) VisitListCatalogueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ImportCatalogueRequestObject struct {
+	Params ImportCatalogueParams
+}
+
+type ImportCatalogueResponseObject interface {
+	VisitImportCatalogueResponse(w http.ResponseWriter) error
+}
+
+type ImportCatalogue200JSONResponse map[string]interface{}
+
+func (response ImportCatalogue200JSONResponse) VisitImportCatalogueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListModelPricingHistoryRequestObject struct {
+	Params ListModelPricingHistoryParams
+}
+
+type ListModelPricingHistoryResponseObject interface {
+	VisitListModelPricingHistoryResponse(w http.ResponseWriter) error
+}
+
+type ListModelPricingHistory200JSONResponse struct {
+	Data *[]AdminModelPricingHistory `json:"data,omitempty"`
+}
+
+func (response ListModelPricingHistory200JSONResponse) VisitListModelPricingHistoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateModelPricingRequestObject struct {
+	Body *UpdateModelPricingJSONRequestBody
+}
+
+type UpdateModelPricingResponseObject interface {
+	VisitUpdateModelPricingResponse(w http.ResponseWriter) error
+}
+
+type UpdateModelPricing200JSONResponse struct {
+	History *AdminModelPricingHistory `json:"history,omitempty"`
+	Model   *AdminCatalogueModel      `json:"model,omitempty"`
+}
+
+func (response UpdateModelPricing200JSONResponse) VisitUpdateModelPricingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TriggerDiscoverySyncRequestObject struct {
+}
+
+type TriggerDiscoverySyncResponseObject interface {
+	VisitTriggerDiscoverySyncResponse(w http.ResponseWriter) error
+}
+
+type TriggerDiscoverySync200JSONResponse map[string]interface{}
+
+func (response TriggerDiscoverySync200JSONResponse) VisitTriggerDiscoverySyncResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetRuntimeConfigRequestObject struct {
@@ -3075,6 +4889,52 @@ func (response GetRuntimeConfig200JSONResponse) VisitGetRuntimeConfigResponse(w 
 	return err
 }
 
+type ListCredentialsRequestObject struct {
+	Params ListCredentialsParams
+}
+
+type ListCredentialsResponseObject interface {
+	VisitListCredentialsResponse(w http.ResponseWriter) error
+}
+
+type ListCredentials200JSONResponse struct {
+	Data *[]AdminProviderCredential `json:"data,omitempty"`
+}
+
+func (response ListCredentials200JSONResponse) VisitListCredentialsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCredentialRequestObject struct {
+	Body *CreateCredentialJSONRequestBody
+}
+
+type CreateCredentialResponseObject interface {
+	VisitCreateCredentialResponse(w http.ResponseWriter) error
+}
+
+type CreateCredential201JSONResponse AdminProviderCredential
+
+func (response CreateCredential201JSONResponse) VisitCreateCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PreflightValidateCredentialRequestObject struct {
 	Body *PreflightValidateCredentialJSONRequestBody
 }
@@ -3086,6 +4946,51 @@ type PreflightValidateCredentialResponseObject interface {
 type PreflightValidateCredential200JSONResponse CredentialValidateResponse
 
 func (response PreflightValidateCredential200JSONResponse) VisitPreflightValidateCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateCredentialRequestObject struct {
+	CredID string `json:"credID"`
+	Body   *RotateCredentialJSONRequestBody
+}
+
+type RotateCredentialResponseObject interface {
+	VisitRotateCredentialResponse(w http.ResponseWriter) error
+}
+
+type RotateCredential200JSONResponse AdminProviderCredential
+
+func (response RotateCredential200JSONResponse) VisitRotateCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ValidateCredentialRequestObject struct {
+	CredID string `json:"credID"`
+}
+
+type ValidateCredentialResponseObject interface {
+	VisitValidateCredentialResponse(w http.ResponseWriter) error
+}
+
+type ValidateCredential200JSONResponse CredentialValidateResponse
+
+func (response ValidateCredential200JSONResponse) VisitValidateCredentialResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3121,6 +5026,142 @@ func (response ListDeployments200JSONResponse) VisitListDeploymentsResponse(w ht
 	return err
 }
 
+type CreateDeploymentRequestObject struct {
+	Body *CreateDeploymentJSONRequestBody
+}
+
+type CreateDeploymentResponseObject interface {
+	VisitCreateDeploymentResponse(w http.ResponseWriter) error
+}
+
+type CreateDeployment201JSONResponse AdminDeployment
+
+func (response CreateDeployment201JSONResponse) VisitCreateDeploymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDeploymentHealthRequestObject struct {
+}
+
+type ListDeploymentHealthResponseObject interface {
+	VisitListDeploymentHealthResponse(w http.ResponseWriter) error
+}
+
+type ListDeploymentHealth200JSONResponse struct {
+	Data *[]map[string]interface{} `json:"data,omitempty"`
+}
+
+func (response ListDeploymentHealth200JSONResponse) VisitListDeploymentHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ProbeDeploymentsRequestObject struct {
+}
+
+type ProbeDeploymentsResponseObject interface {
+	VisitProbeDeploymentsResponse(w http.ResponseWriter) error
+}
+
+type ProbeDeployments200JSONResponse struct {
+	Data *[]map[string]interface{} `json:"data,omitempty"`
+}
+
+func (response ProbeDeployments200JSONResponse) VisitProbeDeploymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListVirtualKeysRequestObject struct {
+	Params ListVirtualKeysParams
+}
+
+type ListVirtualKeysResponseObject interface {
+	VisitListVirtualKeysResponse(w http.ResponseWriter) error
+}
+
+type ListVirtualKeys200JSONResponse struct {
+	Data *[]AdminVirtualKey `json:"data,omitempty"`
+}
+
+func (response ListVirtualKeys200JSONResponse) VisitListVirtualKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type IssueVirtualKeyRequestObject struct {
+	Body *IssueVirtualKeyJSONRequestBody
+}
+
+type IssueVirtualKeyResponseObject interface {
+	VisitIssueVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type IssueVirtualKey201JSONResponse AdminVirtualKey
+
+func (response IssueVirtualKey201JSONResponse) VisitIssueVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeVirtualKeyByIDRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type RevokeVirtualKeyByIDResponseObject interface {
+	VisitRevokeVirtualKeyByIDResponse(w http.ResponseWriter) error
+}
+
+type RevokeVirtualKeyByID200JSONResponse AdminDeleteStatusResponse
+
+func (response RevokeVirtualKeyByID200JSONResponse) VisitRevokeVirtualKeyByIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UpdateVirtualKeyRequestObject struct {
 	KeyID string `json:"keyID"`
 	Body  *UpdateVirtualKeyJSONRequestBody
@@ -3144,6 +5185,28 @@ func (response UpdateVirtualKey200JSONResponse) VisitUpdateVirtualKeyResponse(w 
 	return err
 }
 
+type RevokeVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type RevokeVirtualKeyResponseObject interface {
+	VisitRevokeVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type RevokeVirtualKey200JSONResponse AdminDeleteStatusResponse
+
+func (response RevokeVirtualKey200JSONResponse) VisitRevokeVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RotateVirtualKeyRequestObject struct {
 	KeyID string `json:"keyID"`
 }
@@ -3155,6 +5218,338 @@ type RotateVirtualKeyResponseObject interface {
 type RotateVirtualKey200JSONResponse AdminVirtualKey
 
 func (response RotateVirtualKey200JSONResponse) VisitRotateVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetMCPUserCredentialRequestObject struct {
+	Body *SetMCPUserCredentialJSONRequestBody
+}
+
+type SetMCPUserCredentialResponseObject interface {
+	VisitSetMCPUserCredentialResponse(w http.ResponseWriter) error
+}
+
+type SetMCPUserCredential200JSONResponse struct {
+	CredentialId *string `json:"credential_id,omitempty"`
+	Status       *string `json:"status,omitempty"`
+}
+
+func (response SetMCPUserCredential200JSONResponse) VisitSetMCPUserCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMCPServersRequestObject struct {
+	Params ListMCPServersParams
+}
+
+type ListMCPServersResponseObject interface {
+	VisitListMCPServersResponse(w http.ResponseWriter) error
+}
+
+type ListMCPServers200JSONResponse struct {
+	Servers *[]map[string]interface{} `json:"servers,omitempty"`
+}
+
+func (response ListMCPServers200JSONResponse) VisitListMCPServersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMCPServerRequestObject struct {
+	Body *CreateMCPServerJSONRequestBody
+}
+
+type CreateMCPServerResponseObject interface {
+	VisitCreateMCPServerResponse(w http.ResponseWriter) error
+}
+
+type CreateMCPServer201JSONResponse struct {
+	Server *map[string]interface{} `json:"server,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response CreateMCPServer201JSONResponse) VisitCreateMCPServerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SyncMCPServerRequestObject struct {
+	ServerID string `json:"serverID"`
+}
+
+type SyncMCPServerResponseObject interface {
+	VisitSyncMCPServerResponse(w http.ResponseWriter) error
+}
+
+type SyncMCPServer200JSONResponse struct {
+	ConfigVersion *int                      `json:"config_version,omitempty"`
+	ServerId      *string                   `json:"server_id,omitempty"`
+	Status        *string                   `json:"status,omitempty"`
+	Tools         *[]map[string]interface{} `json:"tools,omitempty"`
+	ToolsCount    *int                      `json:"tools_count,omitempty"`
+}
+
+func (response SyncMCPServer200JSONResponse) VisitSyncMCPServerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMCPToolsRequestObject struct {
+	Params ListMCPToolsParams
+}
+
+type ListMCPToolsResponseObject interface {
+	VisitListMCPToolsResponse(w http.ResponseWriter) error
+}
+
+type ListMCPTools200JSONResponse struct {
+	Tools *[]map[string]interface{} `json:"tools,omitempty"`
+}
+
+func (response ListMCPTools200JSONResponse) VisitListMCPToolsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMCPToolsetsRequestObject struct {
+	Params ListMCPToolsetsParams
+}
+
+type ListMCPToolsetsResponseObject interface {
+	VisitListMCPToolsetsResponse(w http.ResponseWriter) error
+}
+
+type ListMCPToolsets200JSONResponse struct {
+	Toolsets *[]map[string]interface{} `json:"toolsets,omitempty"`
+}
+
+func (response ListMCPToolsets200JSONResponse) VisitListMCPToolsetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMCPToolsetRequestObject struct {
+	Body *CreateMCPToolsetJSONRequestBody
+}
+
+type CreateMCPToolsetResponseObject interface {
+	VisitCreateMCPToolsetResponse(w http.ResponseWriter) error
+}
+
+type CreateMCPToolset201JSONResponse struct {
+	Status  *string                 `json:"status,omitempty"`
+	Toolset *map[string]interface{} `json:"toolset,omitempty"`
+}
+
+func (response CreateMCPToolset201JSONResponse) VisitCreateMCPToolsetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListModelGroupsRequestObject struct {
+	Params ListModelGroupsParams
+}
+
+type ListModelGroupsResponseObject interface {
+	VisitListModelGroupsResponse(w http.ResponseWriter) error
+}
+
+type ListModelGroups200JSONResponse struct {
+	Data *[]AdminModelGroup `json:"data,omitempty"`
+}
+
+func (response ListModelGroups200JSONResponse) VisitListModelGroupsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateModelGroupRequestObject struct {
+	Body *CreateModelGroupJSONRequestBody
+}
+
+type CreateModelGroupResponseObject interface {
+	VisitCreateModelGroupResponse(w http.ResponseWriter) error
+}
+
+type CreateModelGroup201JSONResponse AdminModelGroup
+
+func (response CreateModelGroup201JSONResponse) VisitCreateModelGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetObservabilityMetricsRequestObject struct {
+}
+
+type GetObservabilityMetricsResponseObject interface {
+	VisitGetObservabilityMetricsResponse(w http.ResponseWriter) error
+}
+
+type GetObservabilityMetrics200JSONResponse map[string]interface{}
+
+func (response GetObservabilityMetrics200JSONResponse) VisitGetObservabilityMetricsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOrganizationsRequestObject struct {
+}
+
+type ListOrganizationsResponseObject interface {
+	VisitListOrganizationsResponse(w http.ResponseWriter) error
+}
+
+type ListOrganizations200JSONResponse struct {
+	Data *[]AdminOrganization `json:"data,omitempty"`
+}
+
+func (response ListOrganizations200JSONResponse) VisitListOrganizationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrganizationRequestObject struct {
+	Body *CreateOrganizationJSONRequestBody
+}
+
+type CreateOrganizationResponseObject interface {
+	VisitCreateOrganizationResponse(w http.ResponseWriter) error
+}
+
+type CreateOrganization201JSONResponse AdminOrganization
+
+func (response CreateOrganization201JSONResponse) VisitCreateOrganizationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGuardrailPolicyRequestObject struct {
+	OrgID string `json:"orgID"`
+}
+
+type GetGuardrailPolicyResponseObject interface {
+	VisitGetGuardrailPolicyResponse(w http.ResponseWriter) error
+}
+
+type GetGuardrailPolicy200JSONResponse GuardrailPolicy
+
+func (response GetGuardrailPolicy200JSONResponse) VisitGetGuardrailPolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetGuardrailPolicyRequestObject struct {
+	OrgID string `json:"orgID"`
+	Body  *SetGuardrailPolicyJSONRequestBody
+}
+
+type SetGuardrailPolicyResponseObject interface {
+	VisitSetGuardrailPolicyResponse(w http.ResponseWriter) error
+}
+
+type SetGuardrailPolicy200JSONResponse GuardrailPolicy
+
+func (response SetGuardrailPolicy200JSONResponse) VisitSetGuardrailPolicyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3213,6 +5608,29 @@ func (response GetOrgModelPolicies200JSONResponse) VisitGetOrgModelPoliciesRespo
 	return err
 }
 
+type SetOrgModelPolicyRequestObject struct {
+	OrgID string `json:"orgID"`
+	Body  *SetOrgModelPolicyJSONRequestBody
+}
+
+type SetOrgModelPolicyResponseObject interface {
+	VisitSetOrgModelPolicyResponse(w http.ResponseWriter) error
+}
+
+type SetOrgModelPolicy200JSONResponse OrgModelPolicy
+
+func (response SetOrgModelPolicy200JSONResponse) VisitSetOrgModelPolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetOrgSubscriptionsRequestObject struct {
 	OrgID string `json:"orgID"`
 }
@@ -3233,6 +5651,121 @@ func (response GetOrgSubscriptions200JSONResponse) VisitGetOrgSubscriptionsRespo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetOrgSubscriptionRequestObject struct {
+	OrgID string `json:"orgID"`
+	Body  *SetOrgSubscriptionJSONRequestBody
+}
+
+type SetOrgSubscriptionResponseObject interface {
+	VisitSetOrgSubscriptionResponse(w http.ResponseWriter) error
+}
+
+type SetOrgSubscription200JSONResponse OrgProviderSubscription
+
+func (response SetOrgSubscription200JSONResponse) VisitSetOrgSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSpendLogsRequestObject struct {
+	Params ListSpendLogsParams
+}
+
+type ListSpendLogsResponseObject interface {
+	VisitListSpendLogsResponse(w http.ResponseWriter) error
+}
+
+type ListSpendLogs200JSONResponse struct {
+	Data *[]map[string]interface{} `json:"data,omitempty"`
+}
+
+func (response ListSpendLogs200JSONResponse) VisitListSpendLogsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSpendSummaryRequestObject struct {
+	Params GetSpendSummaryParams
+}
+
+type GetSpendSummaryResponseObject interface {
+	VisitGetSpendSummaryResponse(w http.ResponseWriter) error
+}
+
+type GetSpendSummary200JSONResponse AdminSpendSummary
+
+func (response GetSpendSummary200JSONResponse) VisitGetSpendSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTeamsRequestObject struct {
+	Params ListTeamsParams
+}
+
+type ListTeamsResponseObject interface {
+	VisitListTeamsResponse(w http.ResponseWriter) error
+}
+
+type ListTeams200JSONResponse struct {
+	Data *[]AdminTeam `json:"data,omitempty"`
+}
+
+func (response ListTeams200JSONResponse) VisitListTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTeamRequestObject struct {
+	Body *CreateTeamJSONRequestBody
+}
+
+type CreateTeamResponseObject interface {
+	VisitCreateTeamResponse(w http.ResponseWriter) error
+}
+
+type CreateTeam201JSONResponse AdminTeam
+
+func (response CreateTeam201JSONResponse) VisitCreateTeamResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -3310,6 +5843,28 @@ func (response ListUsers200JSONResponse) VisitListUsersResponse(w http.ResponseW
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateUserRequestObject struct {
+	Body *CreateUserJSONRequestBody
+}
+
+type CreateUserResponseObject interface {
+	VisitCreateUserResponse(w http.ResponseWriter) error
+}
+
+type CreateUser201JSONResponse AdminUser
+
+func (response CreateUser201JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -3880,30 +6435,159 @@ func (response CountTokens200JSONResponse) VisitCountTokensResponse(w http.Respo
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListA2AAgents List registered A2A agents for an organization
+	// (GET /admin/v1/a2a/agents)
+	ListA2AAgents(ctx context.Context, request ListA2AAgentsRequestObject) (ListA2AAgentsResponseObject, error)
+	// CreateA2AAgent Register an A2A agent
+	// (POST /admin/v1/a2a/agents)
+	CreateA2AAgent(ctx context.Context, request CreateA2AAgentRequestObject) (CreateA2AAgentResponseObject, error)
+	// GetA2AAgent Retrieve an A2A agent by ID
+	// (GET /admin/v1/a2a/agents/{id})
+	GetA2AAgent(ctx context.Context, request GetA2AAgentRequestObject) (GetA2AAgentResponseObject, error)
+	// SetA2AKillSwitch Enable or disable the kill switch for an A2A agent
+	// (POST /admin/v1/a2a/agents/{id}/kill-switch)
+	SetA2AKillSwitch(ctx context.Context, request SetA2AKillSwitchRequestObject) (SetA2AKillSwitchResponseObject, error)
+	// SetA2APushConfig Create a push notification configuration for an A2A task
+	// (POST /admin/v1/a2a/push-configs)
+	SetA2APushConfig(ctx context.Context, request SetA2APushConfigRequestObject) (SetA2APushConfigResponseObject, error)
+	// ListAuditLogs List admin and security audit log records
+	// (GET /admin/v1/audit/logs)
+	ListAuditLogs(ctx context.Context, request ListAuditLogsRequestObject) (ListAuditLogsResponseObject, error)
+	// InvalidateCache Invalidate response cache entries by scope, organization, or model
+	// (POST /admin/v1/cache/invalidate)
+	InvalidateCache(ctx context.Context, request InvalidateCacheRequestObject) (InvalidateCacheResponseObject, error)
+	// ListCatalogue List global model catalogue entries
+	// (GET /admin/v1/catalogue)
+	ListCatalogue(ctx context.Context, request ListCatalogueRequestObject) (ListCatalogueResponseObject, error)
+	// ImportCatalogue Import model catalogue entries from provider registries
+	// (POST /admin/v1/catalogue/import)
+	ImportCatalogue(ctx context.Context, request ImportCatalogueRequestObject) (ImportCatalogueResponseObject, error)
+	// ListModelPricingHistory List pricing history for a global catalogue model
+	// (GET /admin/v1/catalogue/pricing)
+	ListModelPricingHistory(ctx context.Context, request ListModelPricingHistoryRequestObject) (ListModelPricingHistoryResponseObject, error)
+	// UpdateModelPricing Update pricing for a global catalogue model and record pricing history
+	// (POST /admin/v1/catalogue/pricing)
+	UpdateModelPricing(ctx context.Context, request UpdateModelPricingRequestObject) (UpdateModelPricingResponseObject, error)
+	// TriggerDiscoverySync Trigger provider model discovery synchronization
+	// (POST /admin/v1/catalogue/sync)
+	TriggerDiscoverySync(ctx context.Context, request TriggerDiscoverySyncRequestObject) (TriggerDiscoverySyncResponseObject, error)
 	// GetRuntimeConfig Retrieve sanitized runtime gateway configuration with secrets redacted
 	// (GET /admin/v1/config)
 	GetRuntimeConfig(ctx context.Context, request GetRuntimeConfigRequestObject) (GetRuntimeConfigResponseObject, error)
+	// ListCredentials List provider credentials for an organization
+	// (GET /admin/v1/credentials)
+	ListCredentials(ctx context.Context, request ListCredentialsRequestObject) (ListCredentialsResponseObject, error)
+	// CreateCredential Store an encrypted provider credential
+	// (POST /admin/v1/credentials)
+	CreateCredential(ctx context.Context, request CreateCredentialRequestObject) (CreateCredentialResponseObject, error)
 	// PreflightValidateCredential Preflight upstream validation of credentials before saving
 	// (POST /admin/v1/credentials/validate)
 	PreflightValidateCredential(ctx context.Context, request PreflightValidateCredentialRequestObject) (PreflightValidateCredentialResponseObject, error)
+	// RotateCredential Rotate an encrypted provider credential secret
+	// (POST /admin/v1/credentials/{credID}/rotate)
+	RotateCredential(ctx context.Context, request RotateCredentialRequestObject) (RotateCredentialResponseObject, error)
+	// ValidateCredential Validate a stored provider credential
+	// (POST /admin/v1/credentials/{credID}/validate)
+	ValidateCredential(ctx context.Context, request ValidateCredentialRequestObject) (ValidateCredentialResponseObject, error)
 	// ListDeployments List deployments across model groups
 	// (GET /admin/v1/deployments)
 	ListDeployments(ctx context.Context, request ListDeploymentsRequestObject) (ListDeploymentsResponseObject, error)
+	// CreateDeployment Create a model deployment within a model group
+	// (POST /admin/v1/deployments)
+	CreateDeployment(ctx context.Context, request CreateDeploymentRequestObject) (CreateDeploymentResponseObject, error)
+	// ListDeploymentHealth List health status of active deployments
+	// (GET /admin/v1/health/deployments)
+	ListDeploymentHealth(ctx context.Context, request ListDeploymentHealthRequestObject) (ListDeploymentHealthResponseObject, error)
+	// ProbeDeployments Probe provider deployments for liveness and latency
+	// (POST /admin/v1/health/probe)
+	ProbeDeployments(ctx context.Context, request ProbeDeploymentsRequestObject) (ProbeDeploymentsResponseObject, error)
+	// ListVirtualKeys List virtual API keys for an organization
+	// (GET /admin/v1/keys)
+	ListVirtualKeys(ctx context.Context, request ListVirtualKeysRequestObject) (ListVirtualKeysResponseObject, error)
+	// IssueVirtualKey Issue a new virtual API key
+	// (POST /admin/v1/keys)
+	IssueVirtualKey(ctx context.Context, request IssueVirtualKeyRequestObject) (IssueVirtualKeyResponseObject, error)
+	// RevokeVirtualKeyByID Revoke a virtual API key by ID
+	// (DELETE /admin/v1/keys/{keyID})
+	RevokeVirtualKeyByID(ctx context.Context, request RevokeVirtualKeyByIDRequestObject) (RevokeVirtualKeyByIDResponseObject, error)
 	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
 	// (PUT /admin/v1/keys/{keyID})
 	UpdateVirtualKey(ctx context.Context, request UpdateVirtualKeyRequestObject) (UpdateVirtualKeyResponseObject, error)
+	// RevokeVirtualKey Revoke a virtual API key
+	// (POST /admin/v1/keys/{keyID}/revoke)
+	RevokeVirtualKey(ctx context.Context, request RevokeVirtualKeyRequestObject) (RevokeVirtualKeyResponseObject, error)
 	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(ctx context.Context, request RotateVirtualKeyRequestObject) (RotateVirtualKeyResponseObject, error)
+	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
+	// (POST /admin/v1/mcp/credentials)
+	SetMCPUserCredential(ctx context.Context, request SetMCPUserCredentialRequestObject) (SetMCPUserCredentialResponseObject, error)
+	// ListMCPServers List registered MCP servers for an organization
+	// (GET /admin/v1/mcp/servers)
+	ListMCPServers(ctx context.Context, request ListMCPServersRequestObject) (ListMCPServersResponseObject, error)
+	// CreateMCPServer Register a downstream MCP server
+	// (POST /admin/v1/mcp/servers)
+	CreateMCPServer(ctx context.Context, request CreateMCPServerRequestObject) (CreateMCPServerResponseObject, error)
+	// SyncMCPServer Discover and synchronize tools from an MCP server
+	// (POST /admin/v1/mcp/servers/{serverID}/sync)
+	SyncMCPServer(ctx context.Context, request SyncMCPServerRequestObject) (SyncMCPServerResponseObject, error)
+	// ListMCPTools List discovered MCP tools for an organization or server
+	// (GET /admin/v1/mcp/tools)
+	ListMCPTools(ctx context.Context, request ListMCPToolsRequestObject) (ListMCPToolsResponseObject, error)
+	// ListMCPToolsets List MCP toolsets for an organization
+	// (GET /admin/v1/mcp/toolsets)
+	ListMCPToolsets(ctx context.Context, request ListMCPToolsetsRequestObject) (ListMCPToolsetsResponseObject, error)
+	// CreateMCPToolset Create a curated MCP toolset
+	// (POST /admin/v1/mcp/toolsets)
+	CreateMCPToolset(ctx context.Context, request CreateMCPToolsetRequestObject) (CreateMCPToolsetResponseObject, error)
+	// ListModelGroups List model groups for an organization
+	// (GET /admin/v1/model-groups)
+	ListModelGroups(ctx context.Context, request ListModelGroupsRequestObject) (ListModelGroupsResponseObject, error)
+	// CreateModelGroup Create a model group
+	// (POST /admin/v1/model-groups)
+	CreateModelGroup(ctx context.Context, request CreateModelGroupRequestObject) (CreateModelGroupResponseObject, error)
+	// GetObservabilityMetrics Retrieve gateway observability metrics snapshot
+	// (GET /admin/v1/observability/metrics)
+	GetObservabilityMetrics(ctx context.Context, request GetObservabilityMetricsRequestObject) (GetObservabilityMetricsResponseObject, error)
+	// ListOrganizations List organizations
+	// (GET /admin/v1/organizations)
+	ListOrganizations(ctx context.Context, request ListOrganizationsRequestObject) (ListOrganizationsResponseObject, error)
+	// CreateOrganization Create an organization
+	// (POST /admin/v1/organizations)
+	CreateOrganization(ctx context.Context, request CreateOrganizationRequestObject) (CreateOrganizationResponseObject, error)
+	// GetGuardrailPolicy Get an organization guardrail policy
+	// (GET /admin/v1/organizations/{orgID}/guardrails)
+	GetGuardrailPolicy(ctx context.Context, request GetGuardrailPolicyRequestObject) (GetGuardrailPolicyResponseObject, error)
+	// SetGuardrailPolicy Create or update an organization guardrail policy
+	// (POST /admin/v1/organizations/{orgID}/guardrails)
+	SetGuardrailPolicy(ctx context.Context, request SetGuardrailPolicyRequestObject) (SetGuardrailPolicyResponseObject, error)
 	// SimulateGuardrails Stateless dry-run evaluation of prompt against security policy
 	// (POST /admin/v1/organizations/{orgID}/guardrails/simulate)
 	SimulateGuardrails(ctx context.Context, request SimulateGuardrailsRequestObject) (SimulateGuardrailsResponseObject, error)
 	// GetOrgModelPolicies Get allowed model policies for an organization
 	// (GET /admin/v1/organizations/{orgID}/models)
 	GetOrgModelPolicies(ctx context.Context, request GetOrgModelPoliciesRequestObject) (GetOrgModelPoliciesResponseObject, error)
+	// SetOrgModelPolicy Create or update an organization model policy
+	// (POST /admin/v1/organizations/{orgID}/models)
+	SetOrgModelPolicy(ctx context.Context, request SetOrgModelPolicyRequestObject) (SetOrgModelPolicyResponseObject, error)
 	// GetOrgSubscriptions Get subscription and tier limits for an organization
 	// (GET /admin/v1/organizations/{orgID}/subscriptions)
 	GetOrgSubscriptions(ctx context.Context, request GetOrgSubscriptionsRequestObject) (GetOrgSubscriptionsResponseObject, error)
+	// SetOrgSubscription Create or update an organization provider subscription
+	// (POST /admin/v1/organizations/{orgID}/subscriptions)
+	SetOrgSubscription(ctx context.Context, request SetOrgSubscriptionRequestObject) (SetOrgSubscriptionResponseObject, error)
+	// ListSpendLogs List spend log records for an organization
+	// (GET /admin/v1/spend/logs)
+	ListSpendLogs(ctx context.Context, request ListSpendLogsRequestObject) (ListSpendLogsResponseObject, error)
+	// GetSpendSummary Retrieve aggregated spend summary for an organization
+	// (GET /admin/v1/spend/summary)
+	GetSpendSummary(ctx context.Context, request GetSpendSummaryRequestObject) (GetSpendSummaryResponseObject, error)
+	// ListTeams List teams for an organization
+	// (GET /admin/v1/teams)
+	ListTeams(ctx context.Context, request ListTeamsRequestObject) (ListTeamsResponseObject, error)
+	// CreateTeam Create a team within an organization
+	// (POST /admin/v1/teams)
+	CreateTeam(ctx context.Context, request CreateTeamRequestObject) (CreateTeamResponseObject, error)
 	// DeleteTeam Delete a team if no active virtual keys remain bound to it
 	// (DELETE /admin/v1/teams/{teamID})
 	DeleteTeam(ctx context.Context, request DeleteTeamRequestObject) (DeleteTeamResponseObject, error)
@@ -3913,6 +6597,9 @@ type StrictServerInterface interface {
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
+	// CreateUser Create a user within an organization
+	// (POST /admin/v1/users)
+	CreateUser(ctx context.Context, request CreateUserRequestObject) (CreateUserResponseObject, error)
 	// DeleteUser Delete a user if no active virtual keys remain bound to the user
 	// (DELETE /admin/v1/users/{userID})
 	DeleteUser(ctx context.Context, request DeleteUserRequestObject) (DeleteUserResponseObject, error)
@@ -4038,6 +6725,344 @@ type strictHandler struct {
 	options     StrictHTTPServerOptions
 }
 
+// ListA2AAgents operation middleware
+func (sh *strictHandler) ListA2AAgents(w http.ResponseWriter, r *http.Request, params ListA2AAgentsParams) {
+	var request ListA2AAgentsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListA2AAgents(ctx, request.(ListA2AAgentsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListA2AAgents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListA2AAgentsResponseObject); ok {
+		if err := validResponse.VisitListA2AAgentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateA2AAgent operation middleware
+func (sh *strictHandler) CreateA2AAgent(w http.ResponseWriter, r *http.Request) {
+	var request CreateA2AAgentRequestObject
+
+	var body CreateA2AAgentJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateA2AAgent(ctx, request.(CreateA2AAgentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateA2AAgent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateA2AAgentResponseObject); ok {
+		if err := validResponse.VisitCreateA2AAgentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetA2AAgent operation middleware
+func (sh *strictHandler) GetA2AAgent(w http.ResponseWriter, r *http.Request, id string) {
+	var request GetA2AAgentRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetA2AAgent(ctx, request.(GetA2AAgentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetA2AAgent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetA2AAgentResponseObject); ok {
+		if err := validResponse.VisitGetA2AAgentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetA2AKillSwitch operation middleware
+func (sh *strictHandler) SetA2AKillSwitch(w http.ResponseWriter, r *http.Request, id string) {
+	var request SetA2AKillSwitchRequestObject
+
+	request.Id = id
+
+	var body SetA2AKillSwitchJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetA2AKillSwitch(ctx, request.(SetA2AKillSwitchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetA2AKillSwitch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetA2AKillSwitchResponseObject); ok {
+		if err := validResponse.VisitSetA2AKillSwitchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetA2APushConfig operation middleware
+func (sh *strictHandler) SetA2APushConfig(w http.ResponseWriter, r *http.Request) {
+	var request SetA2APushConfigRequestObject
+
+	var body SetA2APushConfigJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetA2APushConfig(ctx, request.(SetA2APushConfigRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetA2APushConfig")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetA2APushConfigResponseObject); ok {
+		if err := validResponse.VisitSetA2APushConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAuditLogs operation middleware
+func (sh *strictHandler) ListAuditLogs(w http.ResponseWriter, r *http.Request, params ListAuditLogsParams) {
+	var request ListAuditLogsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAuditLogs(ctx, request.(ListAuditLogsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAuditLogs")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAuditLogsResponseObject); ok {
+		if err := validResponse.VisitListAuditLogsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InvalidateCache operation middleware
+func (sh *strictHandler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
+	var request InvalidateCacheRequestObject
+
+	var body InvalidateCacheJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InvalidateCache(ctx, request.(InvalidateCacheRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InvalidateCache")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InvalidateCacheResponseObject); ok {
+		if err := validResponse.VisitInvalidateCacheResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListCatalogue operation middleware
+func (sh *strictHandler) ListCatalogue(w http.ResponseWriter, r *http.Request) {
+	var request ListCatalogueRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCatalogue(ctx, request.(ListCatalogueRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCatalogue")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCatalogueResponseObject); ok {
+		if err := validResponse.VisitListCatalogueResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ImportCatalogue operation middleware
+func (sh *strictHandler) ImportCatalogue(w http.ResponseWriter, r *http.Request, params ImportCatalogueParams) {
+	var request ImportCatalogueRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ImportCatalogue(ctx, request.(ImportCatalogueRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ImportCatalogue")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ImportCatalogueResponseObject); ok {
+		if err := validResponse.VisitImportCatalogueResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListModelPricingHistory operation middleware
+func (sh *strictHandler) ListModelPricingHistory(w http.ResponseWriter, r *http.Request, params ListModelPricingHistoryParams) {
+	var request ListModelPricingHistoryRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListModelPricingHistory(ctx, request.(ListModelPricingHistoryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListModelPricingHistory")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListModelPricingHistoryResponseObject); ok {
+		if err := validResponse.VisitListModelPricingHistoryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateModelPricing operation middleware
+func (sh *strictHandler) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
+	var request UpdateModelPricingRequestObject
+
+	var body UpdateModelPricingJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateModelPricing(ctx, request.(UpdateModelPricingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateModelPricing")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateModelPricingResponseObject); ok {
+		if err := validResponse.VisitUpdateModelPricingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// TriggerDiscoverySync operation middleware
+func (sh *strictHandler) TriggerDiscoverySync(w http.ResponseWriter, r *http.Request) {
+	var request TriggerDiscoverySyncRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.TriggerDiscoverySync(ctx, request.(TriggerDiscoverySyncRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "TriggerDiscoverySync")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(TriggerDiscoverySyncResponseObject); ok {
+		if err := validResponse.VisitTriggerDiscoverySyncResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetRuntimeConfig operation middleware
 func (sh *strictHandler) GetRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 	var request GetRuntimeConfigRequestObject
@@ -4055,6 +7080,63 @@ func (sh *strictHandler) GetRuntimeConfig(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetRuntimeConfigResponseObject); ok {
 		if err := validResponse.VisitGetRuntimeConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListCredentials operation middleware
+func (sh *strictHandler) ListCredentials(w http.ResponseWriter, r *http.Request, params ListCredentialsParams) {
+	var request ListCredentialsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCredentials(ctx, request.(ListCredentialsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCredentials")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCredentialsResponseObject); ok {
+		if err := validResponse.VisitListCredentialsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateCredential operation middleware
+func (sh *strictHandler) CreateCredential(w http.ResponseWriter, r *http.Request) {
+	var request CreateCredentialRequestObject
+
+	var body CreateCredentialJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateCredential(ctx, request.(CreateCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateCredentialResponseObject); ok {
+		if err := validResponse.VisitCreateCredentialResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4093,6 +7175,65 @@ func (sh *strictHandler) PreflightValidateCredential(w http.ResponseWriter, r *h
 	}
 }
 
+// RotateCredential operation middleware
+func (sh *strictHandler) RotateCredential(w http.ResponseWriter, r *http.Request, credID string) {
+	var request RotateCredentialRequestObject
+
+	request.CredID = credID
+
+	var body RotateCredentialJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateCredential(ctx, request.(RotateCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateCredentialResponseObject); ok {
+		if err := validResponse.VisitRotateCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ValidateCredential operation middleware
+func (sh *strictHandler) ValidateCredential(w http.ResponseWriter, r *http.Request, credID string) {
+	var request ValidateCredentialRequestObject
+
+	request.CredID = credID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ValidateCredential(ctx, request.(ValidateCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ValidateCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ValidateCredentialResponseObject); ok {
+		if err := validResponse.VisitValidateCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListDeployments operation middleware
 func (sh *strictHandler) ListDeployments(w http.ResponseWriter, r *http.Request, params ListDeploymentsParams) {
 	var request ListDeploymentsRequestObject
@@ -4112,6 +7253,168 @@ func (sh *strictHandler) ListDeployments(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListDeploymentsResponseObject); ok {
 		if err := validResponse.VisitListDeploymentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateDeployment operation middleware
+func (sh *strictHandler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
+	var request CreateDeploymentRequestObject
+
+	var body CreateDeploymentJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateDeployment(ctx, request.(CreateDeploymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateDeployment")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateDeploymentResponseObject); ok {
+		if err := validResponse.VisitCreateDeploymentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListDeploymentHealth operation middleware
+func (sh *strictHandler) ListDeploymentHealth(w http.ResponseWriter, r *http.Request) {
+	var request ListDeploymentHealthRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListDeploymentHealth(ctx, request.(ListDeploymentHealthRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListDeploymentHealth")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListDeploymentHealthResponseObject); ok {
+		if err := validResponse.VisitListDeploymentHealthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ProbeDeployments operation middleware
+func (sh *strictHandler) ProbeDeployments(w http.ResponseWriter, r *http.Request) {
+	var request ProbeDeploymentsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ProbeDeployments(ctx, request.(ProbeDeploymentsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ProbeDeployments")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ProbeDeploymentsResponseObject); ok {
+		if err := validResponse.VisitProbeDeploymentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListVirtualKeys operation middleware
+func (sh *strictHandler) ListVirtualKeys(w http.ResponseWriter, r *http.Request, params ListVirtualKeysParams) {
+	var request ListVirtualKeysRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListVirtualKeys(ctx, request.(ListVirtualKeysRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListVirtualKeys")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListVirtualKeysResponseObject); ok {
+		if err := validResponse.VisitListVirtualKeysResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// IssueVirtualKey operation middleware
+func (sh *strictHandler) IssueVirtualKey(w http.ResponseWriter, r *http.Request) {
+	var request IssueVirtualKeyRequestObject
+
+	var body IssueVirtualKeyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.IssueVirtualKey(ctx, request.(IssueVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "IssueVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(IssueVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitIssueVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeVirtualKeyByID operation middleware
+func (sh *strictHandler) RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request RevokeVirtualKeyByIDRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeVirtualKeyByID(ctx, request.(RevokeVirtualKeyByIDRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeVirtualKeyByID")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeVirtualKeyByIDResponseObject); ok {
+		if err := validResponse.VisitRevokeVirtualKeyByIDResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4152,6 +7455,32 @@ func (sh *strictHandler) UpdateVirtualKey(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// RevokeVirtualKey operation middleware
+func (sh *strictHandler) RevokeVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request RevokeVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeVirtualKey(ctx, request.(RevokeVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitRevokeVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // RotateVirtualKey operation middleware
 func (sh *strictHandler) RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
 	var request RotateVirtualKeyRequestObject
@@ -4171,6 +7500,398 @@ func (sh *strictHandler) RotateVirtualKey(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RotateVirtualKeyResponseObject); ok {
 		if err := validResponse.VisitRotateVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetMCPUserCredential operation middleware
+func (sh *strictHandler) SetMCPUserCredential(w http.ResponseWriter, r *http.Request) {
+	var request SetMCPUserCredentialRequestObject
+
+	var body SetMCPUserCredentialJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetMCPUserCredential(ctx, request.(SetMCPUserCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetMCPUserCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetMCPUserCredentialResponseObject); ok {
+		if err := validResponse.VisitSetMCPUserCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMCPServers operation middleware
+func (sh *strictHandler) ListMCPServers(w http.ResponseWriter, r *http.Request, params ListMCPServersParams) {
+	var request ListMCPServersRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMCPServers(ctx, request.(ListMCPServersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMCPServers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMCPServersResponseObject); ok {
+		if err := validResponse.VisitListMCPServersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateMCPServer operation middleware
+func (sh *strictHandler) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
+	var request CreateMCPServerRequestObject
+
+	var body CreateMCPServerJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateMCPServer(ctx, request.(CreateMCPServerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateMCPServer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateMCPServerResponseObject); ok {
+		if err := validResponse.VisitCreateMCPServerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SyncMCPServer operation middleware
+func (sh *strictHandler) SyncMCPServer(w http.ResponseWriter, r *http.Request, serverID string) {
+	var request SyncMCPServerRequestObject
+
+	request.ServerID = serverID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SyncMCPServer(ctx, request.(SyncMCPServerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SyncMCPServer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SyncMCPServerResponseObject); ok {
+		if err := validResponse.VisitSyncMCPServerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMCPTools operation middleware
+func (sh *strictHandler) ListMCPTools(w http.ResponseWriter, r *http.Request, params ListMCPToolsParams) {
+	var request ListMCPToolsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMCPTools(ctx, request.(ListMCPToolsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMCPTools")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMCPToolsResponseObject); ok {
+		if err := validResponse.VisitListMCPToolsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMCPToolsets operation middleware
+func (sh *strictHandler) ListMCPToolsets(w http.ResponseWriter, r *http.Request, params ListMCPToolsetsParams) {
+	var request ListMCPToolsetsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMCPToolsets(ctx, request.(ListMCPToolsetsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMCPToolsets")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMCPToolsetsResponseObject); ok {
+		if err := validResponse.VisitListMCPToolsetsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateMCPToolset operation middleware
+func (sh *strictHandler) CreateMCPToolset(w http.ResponseWriter, r *http.Request) {
+	var request CreateMCPToolsetRequestObject
+
+	var body CreateMCPToolsetJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateMCPToolset(ctx, request.(CreateMCPToolsetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateMCPToolset")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateMCPToolsetResponseObject); ok {
+		if err := validResponse.VisitCreateMCPToolsetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListModelGroups operation middleware
+func (sh *strictHandler) ListModelGroups(w http.ResponseWriter, r *http.Request, params ListModelGroupsParams) {
+	var request ListModelGroupsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListModelGroups(ctx, request.(ListModelGroupsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListModelGroups")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListModelGroupsResponseObject); ok {
+		if err := validResponse.VisitListModelGroupsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateModelGroup operation middleware
+func (sh *strictHandler) CreateModelGroup(w http.ResponseWriter, r *http.Request) {
+	var request CreateModelGroupRequestObject
+
+	var body CreateModelGroupJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateModelGroup(ctx, request.(CreateModelGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateModelGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateModelGroupResponseObject); ok {
+		if err := validResponse.VisitCreateModelGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetObservabilityMetrics operation middleware
+func (sh *strictHandler) GetObservabilityMetrics(w http.ResponseWriter, r *http.Request) {
+	var request GetObservabilityMetricsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetObservabilityMetrics(ctx, request.(GetObservabilityMetricsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetObservabilityMetrics")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetObservabilityMetricsResponseObject); ok {
+		if err := validResponse.VisitGetObservabilityMetricsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListOrganizations operation middleware
+func (sh *strictHandler) ListOrganizations(w http.ResponseWriter, r *http.Request) {
+	var request ListOrganizationsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListOrganizations(ctx, request.(ListOrganizationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListOrganizations")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListOrganizationsResponseObject); ok {
+		if err := validResponse.VisitListOrganizationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateOrganization operation middleware
+func (sh *strictHandler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
+	var request CreateOrganizationRequestObject
+
+	var body CreateOrganizationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateOrganization(ctx, request.(CreateOrganizationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateOrganization")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateOrganizationResponseObject); ok {
+		if err := validResponse.VisitCreateOrganizationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetGuardrailPolicy operation middleware
+func (sh *strictHandler) GetGuardrailPolicy(w http.ResponseWriter, r *http.Request, orgID string) {
+	var request GetGuardrailPolicyRequestObject
+
+	request.OrgID = orgID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetGuardrailPolicy(ctx, request.(GetGuardrailPolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetGuardrailPolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetGuardrailPolicyResponseObject); ok {
+		if err := validResponse.VisitGetGuardrailPolicyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetGuardrailPolicy operation middleware
+func (sh *strictHandler) SetGuardrailPolicy(w http.ResponseWriter, r *http.Request, orgID string) {
+	var request SetGuardrailPolicyRequestObject
+
+	request.OrgID = orgID
+
+	var body SetGuardrailPolicyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetGuardrailPolicy(ctx, request.(SetGuardrailPolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetGuardrailPolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetGuardrailPolicyResponseObject); ok {
+		if err := validResponse.VisitSetGuardrailPolicyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4237,6 +7958,39 @@ func (sh *strictHandler) GetOrgModelPolicies(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+// SetOrgModelPolicy operation middleware
+func (sh *strictHandler) SetOrgModelPolicy(w http.ResponseWriter, r *http.Request, orgID string) {
+	var request SetOrgModelPolicyRequestObject
+
+	request.OrgID = orgID
+
+	var body SetOrgModelPolicyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetOrgModelPolicy(ctx, request.(SetOrgModelPolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetOrgModelPolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetOrgModelPolicyResponseObject); ok {
+		if err := validResponse.VisitSetOrgModelPolicyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetOrgSubscriptions operation middleware
 func (sh *strictHandler) GetOrgSubscriptions(w http.ResponseWriter, r *http.Request, orgID string) {
 	var request GetOrgSubscriptionsRequestObject
@@ -4256,6 +8010,148 @@ func (sh *strictHandler) GetOrgSubscriptions(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetOrgSubscriptionsResponseObject); ok {
 		if err := validResponse.VisitGetOrgSubscriptionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetOrgSubscription operation middleware
+func (sh *strictHandler) SetOrgSubscription(w http.ResponseWriter, r *http.Request, orgID string) {
+	var request SetOrgSubscriptionRequestObject
+
+	request.OrgID = orgID
+
+	var body SetOrgSubscriptionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetOrgSubscription(ctx, request.(SetOrgSubscriptionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetOrgSubscription")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetOrgSubscriptionResponseObject); ok {
+		if err := validResponse.VisitSetOrgSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSpendLogs operation middleware
+func (sh *strictHandler) ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams) {
+	var request ListSpendLogsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSpendLogs(ctx, request.(ListSpendLogsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSpendLogs")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSpendLogsResponseObject); ok {
+		if err := validResponse.VisitListSpendLogsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSpendSummary operation middleware
+func (sh *strictHandler) GetSpendSummary(w http.ResponseWriter, r *http.Request, params GetSpendSummaryParams) {
+	var request GetSpendSummaryRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSpendSummary(ctx, request.(GetSpendSummaryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSpendSummary")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSpendSummaryResponseObject); ok {
+		if err := validResponse.VisitGetSpendSummaryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTeams operation middleware
+func (sh *strictHandler) ListTeams(w http.ResponseWriter, r *http.Request, params ListTeamsParams) {
+	var request ListTeamsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTeams(ctx, request.(ListTeamsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTeams")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTeamsResponseObject); ok {
+		if err := validResponse.VisitListTeamsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateTeam operation middleware
+func (sh *strictHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
+	var request CreateTeamRequestObject
+
+	var body CreateTeamJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateTeam(ctx, request.(CreateTeamRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateTeam")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateTeamResponseObject); ok {
+		if err := validResponse.VisitCreateTeamResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4341,6 +8237,37 @@ func (sh *strictHandler) ListUsers(w http.ResponseWriter, r *http.Request, param
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListUsersResponseObject); ok {
 		if err := validResponse.VisitListUsersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateUser operation middleware
+func (sh *strictHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	var request CreateUserRequestObject
+
+	var body CreateUserJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateUser(ctx, request.(CreateUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateUserResponseObject); ok {
+		if err := validResponse.VisitCreateUserResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

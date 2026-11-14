@@ -14,16 +14,26 @@ var supportedHTTPMethods = map[string]bool{
 	"options": true, "head": true, "trace": true,
 }
 
-// checkDataPlaneRouteCoverage keeps the primary /v1 chi route group aligned
-// with the gateway OpenAPI contract. Alias, protocol, and control-plane route
-// groups are tracked separately and are not covered by this initial gate.
+// checkDataPlaneRouteCoverage keeps the primary /v1 and /admin/v1 chi route
+// groups aligned with the gateway OpenAPI contract. Alias, MCP, and A2A route
+// groups are tracked separately.
 func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) error {
+	for _, prefix := range []string{"/v1", "/admin/v1"} {
+		if err := checkRouteGroupCoverage(serverFile, prefix, specPaths); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkRouteGroupCoverage(serverFile, groupPrefix string, specPaths map[string]any) error {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, serverFile, nil, 0)
 	if err != nil {
 		return fmt.Errorf("parse gateway routes: %w", err)
 	}
 
+	foundGroup := false
 	registered := make(map[string]bool)
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -39,13 +49,14 @@ func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) er
 			return true
 		}
 		prefix, ok := stringLiteral(call.Args[0])
-		if !ok || prefix != "/v1" {
+		if !ok || prefix != groupPrefix {
 			return true
 		}
 		callback, ok := call.Args[1].(*ast.FuncLit)
 		if !ok || len(callback.Type.Params.List) == 0 || len(callback.Type.Params.List[0].Names) == 0 {
 			return true
 		}
+		foundGroup = true
 		routerName := callback.Type.Params.List[0].Names[0].Name
 		for _, statement := range callback.Body.List {
 			ast.Inspect(statement, func(child ast.Node) bool {
@@ -75,6 +86,9 @@ func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) er
 		}
 		return false
 	})
+	if !foundGroup {
+		return fmt.Errorf("could not locate %s route group in %s", groupPrefix, serverFile)
+	}
 
 	var missing, stale []string
 	for operation := range registered {
@@ -84,8 +98,9 @@ func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) er
 			missing = append(missing, operation)
 		}
 	}
+	groupSubPrefix := groupPrefix + "/"
 	for route, rawItem := range specPaths {
-		if route != "/v1" && !hasPrefix(route, "/v1/") {
+		if route != groupPrefix && !hasPrefix(route, groupSubPrefix) {
 			continue
 		}
 		item, ok := rawItem.(map[string]any)
@@ -105,7 +120,7 @@ func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) er
 	if len(missing) != 0 || len(stale) != 0 {
 		sortStrings(missing)
 		sortStrings(stale)
-		return fmt.Errorf("/v1 route/spec mismatch: undocumented registered operations=%v; documented operations without /v1 handlers=%v", missing, stale)
+		return fmt.Errorf("%s route/spec mismatch: undocumented registered operations=%v; documented operations without %s handlers=%v", groupPrefix, missing, groupPrefix, stale)
 	}
 	return nil
 }
