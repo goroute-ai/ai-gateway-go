@@ -545,7 +545,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0008`):
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0013`):
 
 #### 1. Multi-Tenant Identity & RBAC
 - **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
@@ -698,7 +698,25 @@ ai-gateway-go/
 │   ├── 0002_add_platform_modules.up.sql
 │   ├── 0002_add_platform_modules.down.sql
 │   ├── 0003_add_mcp_and_a2a.up.sql   # MCP & A2A durable state tables
-│   └── 0003_add_mcp_and_a2a.down.sql
+│   ├── 0003_add_mcp_and_a2a.down.sql
+│   ├── 0004_add_pricing_status.up.sql
+│   ├── 0004_add_pricing_status.down.sql
+│   ├── 0005_add_model_capabilities.up.sql
+│   ├── 0005_add_model_capabilities.down.sql
+│   ├── 0006_add_supports_inference.up.sql
+│   ├── 0006_add_supports_inference.down.sql
+│   ├── 0007_add_modality_pricing_and_spend.up.sql
+│   ├── 0007_add_modality_pricing_and_spend.down.sql
+│   ├── 0008_add_spend_event_outbox.up.sql
+│   ├── 0008_add_spend_event_outbox.down.sql
+│   ├── 0010_guardrail_mode.up.sql
+│   ├── 0010_guardrail_mode.down.sql
+│   ├── 0011_budget_reset_outbox.up.sql
+│   ├── 0011_budget_reset_outbox.down.sql
+│   ├── 0012_add_cache_write_and_operations.up.sql
+│   ├── 0012_add_cache_write_and_operations.down.sql
+│   ├── 0013_user_limits_and_spend_indexes.up.sql
+│   └── 0013_user_limits_and_spend_indexes.down.sql
 ├── tests/
 │   └── e2e/                          # End-to-end integration, protocols, clustering & resilience suites
 ├── internal/
@@ -723,6 +741,9 @@ ai-gateway-go/
 ├── deployments/
 │   ├── Dockerfile                    # Multi-stage distroless container build
 │   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 7 + Prometheus
+│   ├── docker-compose.test.yml       # Integration test stack
+│   ├── helm/goroute/                 # Production Helm chart (Deployment, HPA, PDB, NetworkPolicy, Migration Job)
+│   ├── k8s/                          # Raw Kubernetes manifests & Kustomize overlay
 │   └── prometheus/prometheus.yml     # Prometheus scrape configuration
 ├── Makefile                          # Build, codegen, test, and docker targets
 └── go.mod

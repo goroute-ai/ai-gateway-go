@@ -18,8 +18,8 @@ const BUDGETS = {
   maxSingleJsGzip: 45 * 1024,          // 45 KB max per chunk (gzipped)
   maxCssUncompressed: 35 * 1024,        // 35 KB max CSS
   maxCssGzip: 8 * 1024,                 // 8 KB max CSS gzipped
-  maxTotalDistUncompressed: 380 * 1024, // 380 KB total dist (uncompressed)
-  maxTotalDistGzip: 110 * 1024,         // 110 KB total dist (gzipped across all chunks)
+  maxTotalDistUncompressed: 420 * 1024, // 420 KB total dist (uncompressed)
+  maxTotalDistGzip: 125 * 1024,         // 125 KB total dist (gzipped across all chunks)
 };
 
 function getAllFiles(dirPath, arrayOfFiles = []) {

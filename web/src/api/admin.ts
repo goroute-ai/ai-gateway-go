@@ -18,6 +18,7 @@ import type {
   GuardrailPolicy,
   MCPServer,
   A2AAgent,
+  GatewayConfig,
 } from '../types';
 
 export const adminApi = {
@@ -149,4 +150,8 @@ export const adminApi = {
     apiFetch<{ data: A2AAgent[] }>('/admin/v1/a2a/agents', {}, key),
   setA2AKillSwitch: (key: string, agentId: string, killed: boolean) =>
     apiFetch<any>(`/admin/v1/a2a/agents/${agentId}/kill-switch`, { method: 'POST', body: JSON.stringify({ killed }) }, key),
+
+  // Gateway Runtime Config
+  getConfig: (key: string) =>
+    apiFetch<GatewayConfig>('/admin/v1/config', {}, key),
 };

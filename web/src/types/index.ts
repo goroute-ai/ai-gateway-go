@@ -296,3 +296,17 @@ export interface A2AAgent {
   is_killed: boolean;
   created_at: string;
 }
+
+export interface GatewayConfig {
+  server?: Record<string, any>;
+  rate_limit?: Record<string, any>;
+  rate_limits?: Record<string, any>;
+  cache?: Record<string, any>;
+  guardrails?: Record<string, any>;
+  router?: Record<string, any>;
+  routing?: Record<string, any>;
+  observability?: Record<string, any>;
+  logging?: Record<string, any>;
+  tracing?: Record<string, any>;
+  [key: string]: any;
+}

@@ -14,6 +14,12 @@ services:
       - ./../migrations/0004_add_pricing_status.up.sql:/docker-entrypoint-initdb.d/0004_add_pricing_status.up.sql:ro
       - ./../migrations/0005_add_model_capabilities.up.sql:/docker-entrypoint-initdb.d/0005_add_model_capabilities.up.sql:ro
       - ./../migrations/0006_add_supports_inference.up.sql:/docker-entrypoint-initdb.d/0006_add_supports_inference.up.sql:ro
+      - ./../migrations/0007_add_modality_pricing_and_spend.up.sql:/docker-entrypoint-initdb.d/0007_add_modality_pricing_and_spend.up.sql:ro
+      - ./../migrations/0008_add_spend_event_outbox.up.sql:/docker-entrypoint-initdb.d/0008_add_spend_event_outbox.up.sql:ro
+      - ./../migrations/0010_guardrail_mode.up.sql:/docker-entrypoint-initdb.d/0010_guardrail_mode.up.sql:ro
+      - ./../migrations/0011_budget_reset_outbox.up.sql:/docker-entrypoint-initdb.d/0011_budget_reset_outbox.up.sql:ro
+      - ./../migrations/0012_add_cache_write_and_operations.up.sql:/docker-entrypoint-initdb.d/0012_add_cache_write_and_operations.up.sql:ro
+      - ./../migrations/0013_user_limits_and_spend_indexes.up.sql:/docker-entrypoint-initdb.d/0013_user_limits_and_spend_indexes.up.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
       interval: 5s

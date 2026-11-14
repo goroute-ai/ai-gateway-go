@@ -1,0 +1,14 @@
+apiVersion: v2
+name: goroute
+description: Production Helm chart for GoRoute AI Gateway
+type: application
+version: 0.1.0
+appVersion: "1.6.0"
+keywords:
+  - ai-gateway
+  - llm
+  - mcp
+  - a2a
+  - goroute
+maintainers:
+  - name: GoRoute Maintainers

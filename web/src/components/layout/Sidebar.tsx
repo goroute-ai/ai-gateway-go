@@ -8,6 +8,7 @@ import {
   DollarSign,
   Bot,
   Building2,
+  Settings,
 } from 'lucide-react';
 
 export type NavView =
@@ -19,7 +20,8 @@ export type NavView =
   | 'models'
   | 'finops'
   | 'guardrails'
-  | 'agentic';
+  | 'agentic'
+  | 'config';
 
 interface SidebarProps {
   activeView: NavView;
@@ -37,6 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onSelectView }) =>
     { id: 'finops' as NavView, label: 'FinOps & Spend', icon: DollarSign },
     { id: 'guardrails' as NavView, label: 'Guardrails', icon: ShieldCheck },
     { id: 'agentic' as NavView, label: 'Agentic Hub', icon: Bot, badge: 'MCP/A2A' },
+    { id: 'config' as NavView, label: 'Gateway Config', icon: Settings },
   ];
 
   return (

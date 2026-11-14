@@ -14,6 +14,7 @@ const ModelsView = lazy(() => import('./views/ModelsView').then((m) => ({ defaul
 const FinOpsView = lazy(() => import('./views/FinOpsView').then((m) => ({ default: m.FinOpsView })));
 const GuardrailsView = lazy(() => import('./views/GuardrailsView').then((m) => ({ default: m.GuardrailsView })));
 const AgenticView = lazy(() => import('./views/AgenticView').then((m) => ({ default: m.AgenticView })));
+const ConfigView = lazy(() => import('./views/ConfigView').then((m) => ({ default: m.ConfigView })));
 
 const VALID_VIEWS: ReadonlySet<NavView> = new Set([
   'overview',
@@ -25,6 +26,7 @@ const VALID_VIEWS: ReadonlySet<NavView> = new Set([
   'finops',
   'guardrails',
   'agentic',
+  'config',
 ]);
 
 function parseViewFromPath(pathname: string): NavView {
@@ -97,6 +99,8 @@ export const App: React.FC = () => {
         return <GuardrailsView />;
       case 'agentic':
         return <AgenticView />;
+      case 'config':
+        return <ConfigView />;
       default:
         return <OverviewView onNavigateToPlayground={() => navigateTo('playground')} />;
     }
