@@ -3,6 +3,7 @@ package openaicompat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -367,5 +368,70 @@ func TestOpenAICompat_StreamTextCompletion(t *testing.T) {
 	}
 	if got != "Hi there" {
 		t.Fatalf("expected 'Hi there', got %q", got)
+	}
+}
+
+func TestTranscribeAudio_TranslationRoutingAndCapabilityCheck(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"translated hello"}`))
+	}))
+	defer srv.Close()
+
+	dep := &domain.Deployment{
+		ID:         "dep-audio",
+		Credential: &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "sk-test"},
+	}
+
+	supported := openaicompat.NewAdapter(&openaicompat.DialectProfile{
+		ID:                  "test_audio_translate",
+		DefaultBaseURL:      srv.URL,
+		AuthStrategy:        &adapter.BearerAuthStrategy{},
+		SupportedOperations: &openaicompat.ProviderOperations{AudioSTT: true, AudioTranslation: true},
+	}, srv.Client())
+
+	resp, err := supported.TranscribeAudio(context.Background(), dep, &domain.CanonicalAudioTranscriptionRequest{
+		Model:         "whisper-1",
+		FileName:      "audio.mp3",
+		FileReader:    strings.NewReader("audio-bytes"),
+		IsTranslation: true,
+	})
+	if err != nil {
+		t.Fatalf("expected translation-supported profile to succeed, got err=%v", err)
+	}
+	if resp.Text != "translated hello" {
+		t.Fatalf("expected translated text, got %q", resp.Text)
+	}
+	if len(paths) != 1 || paths[0] != "/audio/translations" {
+		t.Fatalf("expected upstream path [/audio/translations], got %v", paths)
+	}
+
+	unsupported := openaicompat.NewAdapter(&openaicompat.DialectProfile{
+		ID:                  "test_audio_stt_only",
+		DefaultBaseURL:      srv.URL,
+		AuthStrategy:        &adapter.BearerAuthStrategy{},
+		SupportedOperations: &openaicompat.ProviderOperations{AudioSTT: true, AudioTranslation: false},
+	}, srv.Client())
+
+	_, err = unsupported.TranscribeAudio(context.Background(), dep, &domain.CanonicalAudioTranscriptionRequest{
+		Model:         "whisper-1",
+		FileName:      "audio.mp3",
+		FileReader:    strings.NewReader("audio-bytes"),
+		IsTranslation: true,
+	})
+	if err == nil {
+		t.Fatal("expected translation-unsupported profile to return error")
+	}
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) {
+		t.Fatalf("expected *domain.GatewayError, got %T: %v", err, err)
+	}
+	if gwErr.StatusCode != http.StatusBadRequest || gwErr.Code != "unsupported_capability" {
+		t.Fatalf("expected 400 unsupported_capability, got status=%d code=%q", gwErr.StatusCode, gwErr.Code)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("expected no upstream call for unsupported translation, got paths=%v", paths)
 	}
 }

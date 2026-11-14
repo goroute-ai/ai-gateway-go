@@ -106,18 +106,14 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 		}
 	}
 	if req.UserID != "" {
-		users, err := s.repo.ListUsers(ctx, req.OrgID)
+		user, err := s.lookupUser(ctx, req.OrgID, req.UserID)
 		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return nil, fmt.Errorf("user %q does not belong to organization %q", req.UserID, req.OrgID)
+			}
 			return nil, fmt.Errorf("verify user %q: %w", req.UserID, err)
 		}
-		foundUser := false
-		for _, u := range users {
-			if u != nil && u.ID == req.UserID && u.OrgID == req.OrgID {
-				foundUser = true
-				break
-			}
-		}
-		if !foundUser {
+		if user == nil || user.OrgID != req.OrgID {
 			return nil, fmt.Errorf("user %q does not belong to organization %q", req.UserID, req.OrgID)
 		}
 	}
@@ -509,8 +505,16 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	}
 
 	if vk.UserID != "" {
-		users, err := s.repo.ListUsers(ctx, vk.OrgID)
+		user, err := s.lookupUser(ctx, vk.OrgID, vk.UserID)
 		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) || strings.Contains(strings.ToLower(err.Error()), "not found") {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "user_not_found",
+					Message:    "User associated with this virtual key was not found in organization",
+				}
+			}
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
 				Type:       domain.ErrorTypeServer,
@@ -519,14 +523,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Retryable:  true,
 			}
 		}
-		var matchedUser *domain.User
-		for _, u := range users {
-			if u != nil && u.ID == vk.UserID && u.OrgID == vk.OrgID {
-				matchedUser = u
-				break
-			}
-		}
-		if matchedUser == nil {
+		if user == nil || user.OrgID != vk.OrgID {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
 				Type:       domain.ErrorTypePermission,
@@ -534,7 +531,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Message:    "User associated with this virtual key was not found in organization",
 			}
 		}
-		if !matchedUser.IsActive {
+		if !user.IsActive {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
 				Type:       domain.ErrorTypePermission,
@@ -542,11 +539,11 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Message:    "User associated with this virtual key is inactive",
 			}
 		}
-		idCtx.UserRPMLimit = matchedUser.RPMLimit
-		idCtx.UserTPMLimit = matchedUser.TPMLimit
-		idCtx.UserMaxConcurrent = matchedUser.MaxConcurrentRequests
-		idCtx.UserMaxBudgetMicros = matchedUser.MaxBudgetMicros
-		idCtx.UserSpentMicros = matchedUser.SpentMicros
+		idCtx.UserRPMLimit = user.RPMLimit
+		idCtx.UserTPMLimit = user.TPMLimit
+		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
+		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
+		idCtx.UserSpentMicros = user.SpentMicros
 	}
 
 	// Hydrate L2 Redis + L1 Memory
@@ -576,6 +573,29 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	})
 
 	return idCtx, nil
+}
+
+func (s *Service) lookupUser(ctx context.Context, orgID, userID string) (*domain.User, error) {
+	if ul, ok := s.repo.(storage.UserLookupRepository); ok {
+		user, err := ul.GetUser(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if user == nil || user.OrgID != orgID {
+			return nil, storage.ErrNotFound
+		}
+		return user, nil
+	}
+	users, err := s.repo.ListUsers(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		if u != nil && u.ID == userID && u.OrgID == orgID {
+			return u, nil
+		}
+	}
+	return nil, storage.ErrNotFound
 }
 
 func (s *Service) fetchEpochs(ctx context.Context, orgID, teamID string) (int64, int64) {

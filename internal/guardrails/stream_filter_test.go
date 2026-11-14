@@ -239,3 +239,52 @@ func TestStreamRedactorLoggingOnlyAuditsWithoutBlockingOrMutating(t *testing.T) 
 		t.Fatalf("expected violations for keyword, secret, PII, and toxicity, got %v", outcome.Violations)
 	}
 }
+
+func TestStreamRedactorBlockedKeywordsAcrossLargeStreamBoundary(t *testing.T) {
+	// Place a multi-word / hyphenated blocked keyword right at the 128-byte
+	// rolling holdback boundary so it would be missed if split across emitEnd.
+	pad := strings.Repeat("a", 65) + " "
+	tail := strings.Repeat("b ", 70)
+	chunks := []string{
+		pad + "forbidden",
+		"-phrase here " + tail,
+	}
+
+	enforcing := NewStreamRedactor(&domain.GuardrailPolicy{
+		OrgID:           "org",
+		Mode:            domain.GuardrailModeEnforce,
+		BlockedKeywords: []string{"forbidden-phrase"},
+	})
+	var enforceOut strings.Builder
+	for _, c := range chunks {
+		enforceOut.WriteString(enforcing.Process(c))
+	}
+	enforceOut.WriteString(enforcing.Flush())
+	if !enforcing.Blocked() {
+		t.Fatalf("expected cross-chunk blocked keyword to block stream, outcome=%+v", enforcing.Outcome())
+	}
+	if strings.Contains(enforceOut.String(), "forbidden-phrase") {
+		t.Fatalf("blocked keyword leaked in enforced output: %q", enforceOut.String())
+	}
+
+	loggingOnly := NewStreamRedactor(&domain.GuardrailPolicy{
+		OrgID:           "org",
+		Mode:            domain.GuardrailModeLoggingOnly,
+		BlockedKeywords: []string{"forbidden-phrase"},
+	})
+	var logOut strings.Builder
+	for _, c := range chunks {
+		logOut.WriteString(loggingOnly.Process(c))
+	}
+	logOut.WriteString(loggingOnly.Flush())
+	if logOut.String() != strings.Join(chunks, "") {
+		t.Fatalf("logging_only mutated stream: got %q", logOut.String())
+	}
+	if loggingOnly.Blocked() || loggingOnly.Redacted() {
+		t.Fatalf("logging_only must not block or redact: blocked=%v redacted=%v", loggingOnly.Blocked(), loggingOnly.Redacted())
+	}
+	outcome := loggingOnly.Outcome()
+	if outcome.AppliedAction != domain.GuardrailActionAudit || len(outcome.Violations) != 1 || outcome.Violations[0] != "blocked_keyword:forbidden-phrase" {
+		t.Fatalf("expected audit violation for blocked_keyword:forbidden-phrase, got %+v", outcome)
+	}
+}

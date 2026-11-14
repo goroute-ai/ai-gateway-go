@@ -30,6 +30,7 @@ var (
 func main() {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
+	migrateOnly := flag.Bool("migrate-only", false, "run database migrations and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -52,6 +53,15 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if *migrateOnly {
+		if err := runMigrationsOnly(ctx, cfg.Storage.PostgresDSN, "migrations"); err != nil {
+			logger.Error("Database migration failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		logger.Info("Database migrations completed successfully")
+		os.Exit(0)
+	}
 
 	var repo storage.Repository
 	if cfg.Storage.Mode == "postgres" {
@@ -168,4 +178,21 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	gw.Shutdown(shutdownCtx)
 	logger.Info("GoRoute AI Gateway shutdown complete")
+}
+
+// runMigrationsOnly connects to PostgreSQL using dsn, runs all pending migrations in migrationsDir,
+// and closes the pool before returning.
+func runMigrationsOnly(ctx context.Context, dsn, migrationsDir string) error {
+	if dsn == "" {
+		return fmt.Errorf("postgres DSN is required for -migrate-only")
+	}
+	pool, err := storage.NewPostgresPool(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect to PostgreSQL: %w", err)
+	}
+	defer pool.Close()
+	if err := storage.RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	return nil
 }

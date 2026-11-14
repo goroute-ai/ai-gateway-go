@@ -2,9 +2,11 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -569,5 +571,112 @@ func TestAuthenticateVirtualKey_PopulatesUserLimitsAndBudget(t *testing.T) {
 	if idCtx.UserRPMLimit != 120 || idCtx.UserTPMLimit != 50000 || idCtx.UserMaxConcurrent != 7 ||
 		idCtx.UserMaxBudgetMicros != 2500000 || idCtx.UserSpentMicros != 450000 {
 		t.Fatalf("unexpected user limits/budget on IdentityContext: %+v", idCtx)
+	}
+}
+
+type getUserTrackingRepo struct {
+	*storage.MemoryRepository
+	getUserCalls  atomic.Int32
+	listUserCalls atomic.Int32
+}
+
+func (r *getUserTrackingRepo) GetUser(ctx context.Context, id string) (*domain.User, error) {
+	r.getUserCalls.Add(1)
+	return r.MemoryRepository.GetUser(ctx, id)
+}
+
+func (r *getUserTrackingRepo) ListUsers(ctx context.Context, orgID string) ([]*domain.User, error) {
+	r.listUserCalls.Add(1)
+	return nil, errors.New("ListUsers should not be called during virtual key issuance or authentication")
+}
+
+func TestVirtualKeyIssueAndAuthUseGetUserNotListUsers(t *testing.T) {
+	ctx := context.Background()
+	repo := &getUserTrackingRepo{MemoryRepository: storage.NewMemoryRepository()}
+
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org-1", Name: "Org 1", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization org-1: %v", err)
+	}
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org-2", Name: "Org 2", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization org-2: %v", err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{
+		ID:       "user-1",
+		OrgID:    "org-1",
+		Email:    "user1@example.com",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+		RPMLimit: 99,
+	}); err != nil {
+		t.Fatalf("CreateUser user-1: %v", err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{
+		ID:       "user-inactive",
+		OrgID:    "org-1",
+		Email:    "inactive@example.com",
+		Role:     domain.RoleDeveloper,
+		IsActive: false,
+	}); err != nil {
+		t.Fatalf("CreateUser user-inactive: %v", err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{
+		ID:       "user-other-org",
+		OrgID:    "org-2",
+		Email:    "other@example.com",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("CreateUser user-other-org: %v", err)
+	}
+
+	svc := auth.NewService(repo, nil, "master-admin", time.Minute, time.Minute)
+
+	// Cross-org user must fail during IssueVirtualKey without calling ListUsers.
+	if _, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  "org-1",
+		UserID: "user-other-org",
+		Name:   "cross-org",
+	}); err == nil {
+		t.Fatal("expected IssueVirtualKey to reject user from another org")
+	}
+
+	// Active same-org user succeeds via GetUser.
+	issued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  "org-1",
+		UserID: "user-1",
+		Name:   "valid-user-key",
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey failed: %v", err)
+	}
+
+	idCtx, err := svc.AuthenticateVirtualKey(ctx, issued.RawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateVirtualKey failed: %v", err)
+	}
+	if idCtx.UserID != "user-1" || idCtx.UserRPMLimit != 99 {
+		t.Fatalf("unexpected IdentityContext: %+v", idCtx)
+	}
+
+	// Inactive user must be rejected with user_inactive.
+	inactiveIssued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  "org-1",
+		UserID: "user-inactive",
+		Name:   "inactive-user-key",
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey for inactive user failed: %v", err)
+	}
+	_, err = svc.AuthenticateVirtualKey(ctx, inactiveIssued.RawKey)
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) || gwErr.Code != "user_inactive" {
+		t.Fatalf("expected user_inactive GatewayError, got %v", err)
+	}
+
+	if got := repo.listUserCalls.Load(); got != 0 {
+		t.Fatalf("expected 0 ListUsers calls, got %d", got)
+	}
+	if got := repo.getUserCalls.Load(); got != 5 {
+		t.Fatalf("expected 5 GetUser calls (3 IssueVirtualKey + 2 AuthenticateVirtualKey), got %d", got)
 	}
 }

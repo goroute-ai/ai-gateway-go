@@ -275,6 +275,39 @@ func (r *StreamRedactor) computeEmitEnd() int {
 		}
 	}
 
+	if r.pol != nil && len(r.pol.BlockedKeywords) > 0 {
+		lowerBuf := strings.ToLower(r.buf)
+		if len(lowerBuf) == len(r.buf) {
+			for _, kw := range r.pol.BlockedKeywords {
+				kwLower := strings.ToLower(strings.TrimSpace(kw))
+				if kwLower == "" {
+					continue
+				}
+				searchFrom := 0
+				for searchFrom < len(lowerBuf) {
+					idx := strings.Index(lowerBuf[searchFrom:], kwLower)
+					if idx < 0 {
+						break
+					}
+					start := searchFrom + idx
+					end := start + len(kwLower)
+					if start < emitEnd && end > emitEnd {
+						if end == len(r.buf) && len(r.buf) < r.maxBufBytes {
+							emitEnd = start
+						} else if end > emitEnd {
+							emitEnd = end
+						}
+					}
+					searchFrom = end
+				}
+			}
+		}
+	}
+
+	for emitEnd < len(r.buf) && !utf8.RuneStart(r.buf[emitEnd]) {
+		emitEnd++
+	}
+
 	return emitEnd
 }
 

@@ -24,17 +24,18 @@ type ModelDialectOverride struct {
 // ProviderOperations declares which wire operations an OpenAI-compatible provider
 // actually implements on its upstream HTTP API, independent of per-model capabilities.
 type ProviderOperations struct {
-	Chat           bool `json:"chat"`
-	Completion     bool `json:"completion"`
-	Embeddings     bool `json:"embeddings"`
-	Rerank         bool `json:"rerank"`
-	Moderations    bool `json:"moderations"`
-	ImageGen       bool `json:"image_gen"`
-	ImageEdit      bool `json:"image_edit"`
-	ImageVariation bool `json:"image_variation"`
-	AudioSTT       bool `json:"audio_stt"`
-	AudioTTS       bool `json:"audio_tts"`
-	Responses      bool `json:"responses"`
+	Chat             bool `json:"chat"`
+	Completion       bool `json:"completion"`
+	Embeddings       bool `json:"embeddings"`
+	Rerank           bool `json:"rerank"`
+	Moderations      bool `json:"moderations"`
+	ImageGen         bool `json:"image_gen"`
+	ImageEdit        bool `json:"image_edit"`
+	ImageVariation   bool `json:"image_variation"`
+	AudioSTT         bool `json:"audio_stt"`
+	AudioTranslation bool `json:"audio_translation"`
+	AudioTTS         bool `json:"audio_tts"`
+	Responses        bool `json:"responses"`
 }
 
 // DialectProfile encapsulates all configuration, mapping rules, transport, and capabilities for an OpenAI-compatible provider.

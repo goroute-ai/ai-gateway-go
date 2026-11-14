@@ -1353,10 +1353,30 @@ func (a *Adapter) operationTarget(dep *domain.Deployment, path string) (*domain.
 	return cred, strings.TrimRight(base, "/") + path, nil
 }
 
-// TranscribeAudio implements adapter.AudioAdapter for OpenAI-compatible /audio/transcriptions endpoints.
+func (a *Adapter) supportsAudioTranslation() bool {
+	if a.profile == nil || a.profile.SupportedOperations == nil {
+		return false
+	}
+	return a.profile.SupportedOperations.AudioTranslation
+}
+
+// TranscribeAudio implements adapter.AudioAdapter for OpenAI-compatible /audio/transcriptions and /audio/translations endpoints.
 func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalAudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
 	if !a.SupportsOperation(domain.OperationAudioSTT) {
 		return nil, a.unsupportedOpError(domain.OperationAudioSTT)
+	}
+	if req != nil && req.IsTranslation && !a.supportsAudioTranslation() {
+		var providerID domain.ProviderType
+		if a.profile != nil {
+			providerID = a.profile.ID
+		}
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_capability",
+			Message:    fmt.Sprintf("provider %s does not support audio_translation", providerID),
+			Provider:   providerID,
+		}
 	}
 	model := a.resolveModelName(dep, req.ResolvedModel, req.Model)
 	reader := req.FileReader
@@ -1407,7 +1427,11 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	if dep != nil {
 		cred = dep.Credential
 	}
-	targetURL := a.resolveEndpointBase(dep) + "/audio/transcriptions"
+	subPath := "/audio/transcriptions"
+	if req != nil && req.IsTranslation {
+		subPath = "/audio/translations"
+	}
+	targetURL := a.resolveEndpointBase(dep) + subPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, &buf)
 	if err != nil {
 		return nil, err

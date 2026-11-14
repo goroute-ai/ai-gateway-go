@@ -36,7 +36,7 @@ service:
 
 env:
   GATEWAY_PORT: "8080"
-  GATEWAY_ENVIRONMENT: "production"
+  GATEWAY_ENV: "production"
   GATEWAY_STORAGE_MODE: "postgres"
   GATEWAY_REDIS_ADDR: "redis:6379"
 
@@ -102,10 +102,7 @@ migration:
     repository: goroute/ai-gateway
     tag: ""
     pullPolicy: IfNotPresent
-  command:
-    - /app/ai-gateway
-    - -config
-    - /app/configs/config.yaml
+  command: ["/app/ai-gateway", "-config", "/app/configs/config.yaml", "-migrate-only"]
   backoffLimit: 3
   activeDeadlineSeconds: 300
   resources:

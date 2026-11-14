@@ -131,11 +131,13 @@ func (r *ProfileRegistry) registerExtendedProfiles() {
 		o.Rerank = true
 		o.ImageGen = true
 		o.AudioSTT = true
+		o.AudioTranslation = true
 	})
 	setOps(domain.ProviderNovita, func(o *ProviderOperations) { o.Rerank = true })
 	setOps(domain.ProviderNvidia, func(o *ProviderOperations) { o.Rerank = true })
 	setOps(domain.ProviderGroq, func(o *ProviderOperations) {
 		o.AudioSTT = true
+		o.AudioTranslation = true
 		o.AudioTTS = true
 	})
 	setOps(domain.ProviderXAI, func(o *ProviderOperations) {
