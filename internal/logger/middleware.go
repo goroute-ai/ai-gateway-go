@@ -2,15 +2,52 @@ package logger
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// InferenceMeta holds structured inference telemetry recorded by downstream handlers
+// so HTTPMiddleware can include model, provider, token, cost, and cache attributes.
+type InferenceMeta struct {
+	Model            string
+	Provider         string
+	PromptTokens     int
+	CompletionTokens int
+	CostMicros       int64
+	CacheHit         bool
+}
+
+type inferenceMetaKey struct{}
+
+type inferenceMetaHolder struct {
+	mu   sync.Mutex
+	meta InferenceMeta
+	set  bool
+}
+
+// SetInferenceMeta populates the mutable InferenceMeta holder attached to ctx by HTTPMiddleware.
+// It is a no-op if ctx is nil or does not carry an inference metadata holder.
+func SetInferenceMeta(ctx context.Context, meta InferenceMeta) {
+	if ctx == nil {
+		return
+	}
+	holder, ok := ctx.Value(inferenceMetaKey{}).(*inferenceMetaHolder)
+	if !ok || holder == nil {
+		return
+	}
+	holder.mu.Lock()
+	holder.meta = meta
+	holder.set = true
+	holder.mu.Unlock()
+}
 
 type responseRecorder struct {
 	http.ResponseWriter
@@ -65,8 +102,10 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("X-Gateway-Request-Id", reqID)
 
-			// Enrich request context with request ID and tracing context
+			// Enrich request context with request ID, tracing context, and mutable inference metadata holder
+			holder := &inferenceMetaHolder{}
 			ctx := WithRequestID(r.Context(), reqID)
+			ctx = context.WithValue(ctx, inferenceMetaKey{}, holder)
 			r = r.WithContext(ctx)
 
 			rec := &responseRecorder{
@@ -91,6 +130,31 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 				slog.Float64("duration_ms", durMs),
 				slog.Int("bytes", rec.bytes),
 				slog.String("remote_ip", r.RemoteAddr),
+			}
+
+			holder.mu.Lock()
+			meta := holder.meta
+			hasMeta := holder.set
+			holder.mu.Unlock()
+			if hasMeta {
+				if meta.Model != "" {
+					attrs = append(attrs, slog.String("model", meta.Model))
+				}
+				if meta.Provider != "" {
+					attrs = append(attrs, slog.String("provider", meta.Provider))
+				}
+				if meta.PromptTokens > 0 {
+					attrs = append(attrs, slog.Int("prompt_tokens", meta.PromptTokens))
+				}
+				if meta.CompletionTokens > 0 {
+					attrs = append(attrs, slog.Int("completion_tokens", meta.CompletionTokens))
+				}
+				if meta.CostMicros > 0 {
+					attrs = append(attrs, slog.Int64("cost_micros", meta.CostMicros))
+				}
+				if meta.CacheHit {
+					attrs = append(attrs, slog.Bool("cache_hit", true))
+				}
 			}
 
 			// Note: trace_id and request_id are injected automatically by contextHandler from ctx.

@@ -92,6 +92,10 @@ func (s *RouterService) SendMessage(
 	// 1. RBAC check
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+			s.recordAudit(ctx, idCtx, "a2a.rbac.denied", "a2a_agent", agentSlug, map[string]any{
+				"operation": "message/send",
+				"reason":    err.Error(),
+			})
 			return nil, &A2AError{
 				Code:    CodeTaskNotFound, // Hide agent existence on forbidden
 				Message: fmt.Sprintf("Forbidden: %v", err),
@@ -272,6 +276,11 @@ func (s *RouterService) SendMessage(
 		_ = s.repo.CreateA2AOutboxEvent(ctx, outboxEv)
 	}
 
+	s.recordAudit(ctx, idCtx, "a2a.task.dispatch", "a2a_task", task.ID, map[string]any{
+		"agent_slug": agentSlug,
+		"state":      task.State,
+	})
+
 	return upstreamResp, nil
 }
 
@@ -287,6 +296,11 @@ func (s *RouterService) GetTask(
 	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+			s.recordAudit(ctx, idCtx, "a2a.rbac.denied", "a2a_agent", agentSlug, map[string]any{
+				"operation": "tasks/get",
+				"task_id":   taskID,
+				"reason":    err.Error(),
+			})
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
 		}
 	}
@@ -320,6 +334,10 @@ func (s *RouterService) ListTasks(
 	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+			s.recordAudit(ctx, idCtx, "a2a.rbac.denied", "a2a_agent", agentSlug, map[string]any{
+				"operation": "tasks/list",
+				"reason":    err.Error(),
+			})
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
 		}
 	}
@@ -358,6 +376,11 @@ func (s *RouterService) CancelTask(
 	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+			s.recordAudit(ctx, idCtx, "a2a.rbac.denied", "a2a_agent", agentSlug, map[string]any{
+				"operation": "tasks/cancel",
+				"task_id":   taskID,
+				"reason":    err.Error(),
+			})
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
 		}
 	}
@@ -706,4 +729,31 @@ func extractA2AInvocationCostMicros(resp *pb.SendMessageResponse) int64 {
 		}
 	}
 	return defaultA2AInvocationCostMicros
+}
+
+func (s *RouterService) recordAudit(ctx context.Context, idCtx *domain.IdentityContext, action, resource, resourceID string, details map[string]any) {
+	if s == nil || s.repo == nil {
+		return
+	}
+	orgID := ""
+	actorID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+		switch {
+		case idCtx.VirtualKeyID != "":
+			actorID = idCtx.VirtualKeyID
+		case idCtx.UserID != "":
+			actorID = idCtx.UserID
+		default:
+			actorID = idCtx.KeyPrefix
+		}
+	}
+	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
+		OrgID:      orgID,
+		ActorID:    actorID,
+		Action:     action,
+		Resource:   resource,
+		ResourceID: resourceID,
+		Details:    details,
+	})
 }

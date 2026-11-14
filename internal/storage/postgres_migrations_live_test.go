@@ -41,9 +41,16 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		t.Fatalf("RunMigrationsDir up failed: %v", err)
 	}
 
-	// 2. Verify idempotent re-run succeeds.
+	// 2. Verify idempotent re-run succeeds and schema_migrations recorded applied files.
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
 		t.Fatalf("RunMigrationsDir idempotent re-run failed: %v", err)
+	}
+	var recordedCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&recordedCount); err != nil {
+		t.Fatalf("query schema_migrations count: %v", err)
+	}
+	if recordedCount == 0 {
+		t.Fatalf("expected schema_migrations to record applied migrations")
 	}
 
 	// 3. Assert critical compatibility & modality columns exist on global_models.
@@ -90,6 +97,10 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		}
 		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
 			t.Fatalf("exec down migration %s: %v", f, err)
+		}
+		upName := strings.TrimSuffix(f, ".down.sql") + ".up.sql"
+		if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, upName); err != nil {
+			t.Fatalf("delete schema_migrations entry for %s: %v", upName, err)
 		}
 	}
 

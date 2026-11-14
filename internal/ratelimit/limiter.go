@@ -64,10 +64,13 @@ type Limiter struct {
 	windowSec          int
 	concTTLSec         int
 
-	mu            sync.RWMutex
-	globalRPM     int
-	globalTPM     int
-	globalMaxConc int
+	mu                  sync.RWMutex
+	enabled             bool
+	defaultEstimatedTPM int
+	redisTimeout        time.Duration
+	globalRPM           int
+	globalTPM           int
+	globalMaxConc       int
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -89,7 +92,30 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		renewScr:           redis.NewScript(renewReservationLua),
 		windowSec:          windowSec,
 		concTTLSec:         concTTLSec,
+		enabled:            true,
 	}
+}
+
+// SetEnabled enables or disables rate limiting enforcement.
+// When disabled, Acquire and AcquireWithBudget bypass Redis checks and admit requests.
+func (l *Limiter) SetEnabled(enabled bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.enabled = enabled
+}
+
+// SetDefaultEstimatedTPM sets the fallback token estimate used when a caller passes <= 0.
+func (l *Limiter) SetDefaultEstimatedTPM(tokens int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.defaultEstimatedTPM = tokens
+}
+
+// SetRedisTimeout sets the per-call timeout applied to Redis Lua script executions.
+func (l *Limiter) SetRedisTimeout(timeout time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.redisTimeout = timeout
 }
 
 // SetGlobalLimits configures gateway-wide RPM, TPM, and concurrency caps.
@@ -102,10 +128,23 @@ func (l *Limiter) SetGlobalLimits(rpm, tpm, maxConcurrent int) {
 	l.globalMaxConc = maxConcurrent
 }
 
-func (l *Limiter) globalLimits() (rpm, tpm, maxConc int) {
+func (l *Limiter) configSnapshot() (enabled bool, defaultEstTPM, gRPM, gTPM, gConc int) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return l.globalRPM, l.globalTPM, l.globalMaxConc
+	return l.enabled, l.defaultEstimatedTPM, l.globalRPM, l.globalTPM, l.globalMaxConc
+}
+
+func (l *Limiter) withRedisTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.mu.RLock()
+	timeout := l.redisTimeout
+	l.mu.RUnlock()
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // Acquire checks rate limits and, for backward compatibility, only admits requests
@@ -231,14 +270,18 @@ func spendKeys(keyID, teamID, userID, orgID string) []string {
 }
 
 func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
-	if idCtx == nil {
+	enabled, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
+	if !enabled || idCtx == nil {
 		return func(int, int64) {}, nil
 	}
-	if estimatedTokens < 1 {
-		estimatedTokens = 1
+	if estimatedTokens <= 0 {
+		if defaultEstTPM > 0 {
+			estimatedTokens = defaultEstTPM
+		} else {
+			estimatedTokens = 1
+		}
 	}
 
-	gRPM, gTPM, gConc := l.globalLimits()
 	hasGlobal := gRPM > 0 || gTPM > 0 || gConc > 0
 	nowMin := time.Now().Unix() / 60
 
@@ -254,7 +297,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 		}
 
 		res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return l.checkScript.Run(ctx, rdb, keys, argv...).Slice()
+			rCtx, cancel := l.withRedisTimeout(ctx)
+			defer cancel()
+			return l.checkScript.Run(rCtx, rdb, keys, argv...).Slice()
 		})
 		if err == nil {
 			if slice, ok := res.([]any); ok && len(slice) >= 2 {
@@ -267,7 +312,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 				gKeys := globalAcquireKeys(nowMin)
 				if hasGlobal {
 					gRes, gErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-						return l.checkGlobalScript.Run(ctx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens, l.windowSec*2, l.concTTLSec).Slice()
+						rCtx, cancel := l.withRedisTimeout(ctx)
+						defer cancel()
+						return l.checkGlobalScript.Run(rCtx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens, l.windowSec*2, l.concTTLSec).Slice()
 					})
 					rollbackOrg := func() {
 						rbKeys := rollbackKeys(keys)
@@ -278,7 +325,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 							idCtx.OrgRPMLimit, idCtx.OrgTPMLimit,
 						}
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-							return l.rollbackScr.Run(context.Background(), rdb, rbKeys, rbArgv...).Result()
+							rCtx, cancel := l.withRedisTimeout(context.Background())
+							defer cancel()
+							return l.rollbackScr.Run(rCtx, rdb, rbKeys, rbArgv...).Result()
 						})
 					}
 					if gErr != nil {
@@ -310,11 +359,15 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						settle[3] = int64(-2)
 					}
 					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-						return l.reconcileScr.Run(context.Background(), rdb, resKeys, settle...).Result()
+						rCtx, cancel := l.withRedisTimeout(context.Background())
+						defer cancel()
+						return l.reconcileScr.Run(rCtx, rdb, resKeys, settle...).Result()
 					})
 					if hasGlobal {
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-							return l.reconcileGlobalScr.Run(context.Background(), rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc).Result()
+							rCtx, cancel := l.withRedisTimeout(context.Background())
+							defer cancel()
+							return l.reconcileGlobalScr.Run(rCtx, rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc).Result()
 						})
 					}
 				}, nil
@@ -383,7 +436,9 @@ func (l *Limiter) RecordSpendIncrementForUserEvent(ctx context.Context, eventID,
 		CostMicros:   costMicros,
 	})
 	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return l.spendScr.Run(ctx, rdb, keys, argv...).Result()
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return l.spendScr.Run(rCtx, rdb, keys, argv...).Result()
 	})
 	return err
 }
@@ -409,17 +464,19 @@ func (l *Limiter) RecordSpendIncrementsBatch(ctx context.Context, events []Spend
 		return errs
 	}
 	_, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		if err := l.spendScr.Load(ctx, rdb).Err(); err != nil {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		if err := l.spendScr.Load(rCtx, rdb).Err(); err != nil {
 			return nil, err
 		}
 		cmds := make([]*redis.Cmd, len(events))
-		_, pipeErr := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		_, pipeErr := rdb.Pipelined(rCtx, func(pipe redis.Pipeliner) error {
 			for i, ev := range events {
 				if ev.CostMicros <= 0 && ev.RequestID == "" {
 					continue
 				}
 				keys, argv := buildSpendEventArgs(ev)
-				cmds[i] = l.spendScr.EvalSha(ctx, pipe, keys, argv...)
+				cmds[i] = l.spendScr.EvalSha(rCtx, pipe, keys, argv...)
 			}
 			return nil
 		})
@@ -430,7 +487,7 @@ func (l *Limiter) RecordSpendIncrementsBatch(ctx context.Context, events []Spend
 			if err := cmd.Err(); err != nil {
 				if strings.Contains(err.Error(), "NOSCRIPT") {
 					keys, argv := buildSpendEventArgs(events[i])
-					errs[i] = l.spendScr.Run(ctx, rdb, keys, argv...).Err()
+					errs[i] = l.spendScr.Run(rCtx, rdb, keys, argv...).Err()
 					continue
 				}
 				errs[i] = err
@@ -477,7 +534,9 @@ func (l *Limiter) RenewReservationLease(ctx context.Context, idCtx *domain.Ident
 		orgResZ, orgResS, orgResA,
 	}
 	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return l.renewScr.Run(ctx, rdb, keys, requestID, ttlSec).Result()
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return l.renewScr.Run(rCtx, rdb, keys, requestID, ttlSec).Result()
 	})
 	return err
 }
@@ -503,7 +562,11 @@ func (l *Limiter) ResetSpendCounters(ctx context.Context, events []storage.Budge
 			tag := orgHashTag(event.OrgID)
 			spendKey := fmt.Sprintf("gw:spend:%s:%s:%s", tag, scope, event.EntityID)
 			markerKey := fmt.Sprintf("gw:spend-reset:%s:%s:%s:%s", tag, scope, event.EntityID, event.ID)
-			if _, err := l.resetBudgetScr.Run(ctx, rdb, []string{spendKey, markerKey}, event.ID, 7776000).Result(); err != nil {
+			if _, err := func() (any, error) {
+				rCtx, cancel := l.withRedisTimeout(ctx)
+				defer cancel()
+				return l.resetBudgetScr.Run(rCtx, rdb, []string{spendKey, markerKey}, event.ID, 7776000).Result()
+			}(); err != nil {
 				return nil, err
 			}
 		}

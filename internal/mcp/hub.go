@@ -89,6 +89,10 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		}
 		if h.rbac != nil {
 			if err := h.rbac.AuthorizeMCPServer(idCtx, server.Slug); err != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", server.Slug, map[string]any{
+					"operation": "tools/list",
+					"reason":    err.Error(),
+				})
 				return nil, err
 			}
 		}
@@ -162,6 +166,11 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, hdl)
 		if err == nil && h.rbac != nil {
 			if rbacErr := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); rbacErr != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
+					"operation": "get_tool_schema",
+					"tool_name": rec.ToolName,
+					"reason":    rbacErr.Error(),
+				})
 				err = rbacErr
 			}
 		}
@@ -203,6 +212,11 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		}
 		if h.rbac != nil {
 			if err := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); err != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
+					"operation": "tools/call",
+					"tool_name": rec.ToolName,
+					"reason":    err.Error(),
+				})
 				return nil, err
 			}
 		}
@@ -219,6 +233,11 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		}
 		if h.rbac != nil {
 			if err := h.rbac.AuthorizeMCPServer(idCtx, server.Slug); err != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", server.Slug, map[string]any{
+					"operation": "tools/call",
+					"tool_name": input.ToolName,
+					"reason":    err.Error(),
+				})
 				return nil, err
 			}
 		}
@@ -314,6 +333,12 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		if cachedResp, ok := h.cache.Get(ctx, cacheKey); ok {
 			callResp, err := extractCallToolResponse(cachedResp.Result)
 			if err == nil {
+				h.recordAudit(ctx, idCtx, "mcp.tool.call", "mcp_tool", targetServer.Slug+"/"+input.ToolName, map[string]any{
+					"server_slug": targetServer.Slug,
+					"tool_name":   input.ToolName,
+					"cache_hit":   true,
+					"is_error":    callResp.IsError,
+				})
 				return callResp, nil
 			}
 		}
@@ -426,6 +451,12 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse upstream tool result: %w", err)
 	}
+	h.recordAudit(ctx, idCtx, "mcp.tool.call", "mcp_tool", targetServer.Slug+"/"+input.ToolName, map[string]any{
+		"server_slug": targetServer.Slug,
+		"tool_name":   input.ToolName,
+		"cache_hit":   false,
+		"is_error":    callResp.IsError,
+	})
 	return callResp, nil
 }
 
@@ -509,6 +540,10 @@ func (h *Hub) DispatchScopedServer(
 	// RBAC Check
 	if h.rbac != nil {
 		if err := h.rbac.AuthorizeMCPServer(idCtx, serverSlug); err != nil {
+			h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", serverSlug, map[string]any{
+				"operation": "jsonrpc",
+				"reason":    err.Error(),
+			})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				Error: &JSONRPCError{
@@ -1072,4 +1107,35 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 	}
 
 	return callResp, nil
+}
+
+func auditActorID(idCtx *domain.IdentityContext) string {
+	if idCtx == nil {
+		return ""
+	}
+	if idCtx.VirtualKeyID != "" {
+		return idCtx.VirtualKeyID
+	}
+	if idCtx.UserID != "" {
+		return idCtx.UserID
+	}
+	return idCtx.KeyPrefix
+}
+
+func (h *Hub) recordAudit(ctx context.Context, idCtx *domain.IdentityContext, action, resource, resourceID string, details map[string]any) {
+	if h == nil || h.repo == nil {
+		return
+	}
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+	_ = h.repo.RecordAuditLog(ctx, &domain.AuditLog{
+		OrgID:      orgID,
+		ActorID:    auditActorID(idCtx),
+		Action:     action,
+		Resource:   resource,
+		ResourceID: resourceID,
+		Details:    details,
+	})
 }

@@ -86,19 +86,82 @@ func NewPostgresPoolWithOptions(ctx context.Context, dsn string, opts PostgresPo
 	return pool, nil
 }
 
-// RunMigrations executes a single SQL schema migration file on the PostgreSQL pool.
-func RunMigrations(ctx context.Context, pool *pgxpool.Pool, migrationFilePath string) error {
+const schemaMigrationsAdvisoryLockID int64 = 0x676f726f75746501
+
+func withMigrationLock(ctx context.Context, pool *pgxpool.Pool, fn func(conn *pgxpool.Conn) error) error {
+	if pool == nil {
+		return errors.New("postgres pool is nil")
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, schemaMigrationsAdvisoryLockID); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, schemaMigrationsAdvisoryLockID)
+	}()
+
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			filename TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("ensure schema_migrations table: %w", err)
+	}
+
+	return fn(conn)
+}
+
+func applyMigrationFile(ctx context.Context, conn *pgxpool.Conn, migrationFilePath string) error {
+	filename := filepath.Base(migrationFilePath)
+	var applied bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = $1)`, filename).Scan(&applied); err != nil {
+		return fmt.Errorf("check migration %s: %w", filename, err)
+	}
+	if applied {
+		return nil
+	}
+
 	sqlBytes, err := os.ReadFile(migrationFilePath)
 	if err != nil {
 		return fmt.Errorf("read migration file %s: %w", migrationFilePath, err)
 	}
-	if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migration tx %s: %w", filename, err)
+	}
+	if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
+		_ = tx.Rollback(ctx)
 		return fmt.Errorf("execute migration %s: %w", migrationFilePath, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (filename) VALUES ($1)`, filename); err != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("record migration %s: %w", filename, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migration %s: %w", filename, err)
 	}
 	return nil
 }
 
-// RunMigrationsDir executes all *.up.sql migration files in dir in alphabetical order.
+// RunMigrations executes a single SQL schema migration file on the PostgreSQL pool
+// under a PostgreSQL advisory lock, skipping it if already recorded in schema_migrations.
+func RunMigrations(ctx context.Context, pool *pgxpool.Pool, migrationFilePath string) error {
+	return withMigrationLock(ctx, pool, func(conn *pgxpool.Conn) error {
+		return applyMigrationFile(ctx, conn, migrationFilePath)
+	})
+}
+
+// RunMigrationsDir executes all unapplied *.up.sql migration files in dir in alphabetical order
+// under a PostgreSQL advisory lock, recording each applied file in schema_migrations.
 func RunMigrationsDir(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -111,12 +174,15 @@ func RunMigrationsDir(ctx context.Context, pool *pgxpool.Pool, dir string) error
 		}
 	}
 	sort.Strings(upFiles)
-	for _, file := range upFiles {
-		if err := RunMigrations(ctx, pool, file); err != nil {
-			return err
+
+	return withMigrationLock(ctx, pool, func(conn *pgxpool.Conn) error {
+		for _, file := range upFiles {
+			if err := applyMigrationFile(ctx, conn, file); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // PostgresRepository implements Repository backed by PostgreSQL 16+ with a synchronized write-through

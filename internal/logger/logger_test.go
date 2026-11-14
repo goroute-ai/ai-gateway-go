@@ -221,3 +221,56 @@ func TestWithComponent(t *testing.T) {
 		t.Errorf("expected model 'fast', got %v", m["model"])
 	}
 }
+
+func TestHTTPMiddleware_InferenceMeta(t *testing.T) {
+	// Ensure SetInferenceMeta is safe on nil or unattached context.
+	logger.SetInferenceMeta(nil, logger.InferenceMeta{Model: "ignored"})
+	logger.SetInferenceMeta(context.Background(), logger.InferenceMeta{Model: "ignored"})
+
+	var buf bytes.Buffer
+	l := logger.New(logger.Config{
+		Level:  "info",
+		Format: "json",
+		Output: &buf,
+	})
+
+	mw := logger.HTTPMiddleware(l)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+			Model:            "gpt-4o",
+			Provider:         "openai",
+			PromptTokens:     120,
+			CompletionTokens: 45,
+			CostMicros:       2500,
+			CacheHit:         true,
+		})
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("decode log failed: %v", err)
+	}
+	if m["model"] != "gpt-4o" {
+		t.Errorf("expected model gpt-4o, got %v", m["model"])
+	}
+	if m["provider"] != "openai" {
+		t.Errorf("expected provider openai, got %v", m["provider"])
+	}
+	if m["prompt_tokens"] != float64(120) {
+		t.Errorf("expected prompt_tokens 120, got %v", m["prompt_tokens"])
+	}
+	if m["completion_tokens"] != float64(45) {
+		t.Errorf("expected completion_tokens 45, got %v", m["completion_tokens"])
+	}
+	if m["cost_micros"] != float64(2500) {
+		t.Errorf("expected cost_micros 2500, got %v", m["cost_micros"])
+	}
+	if m["cache_hit"] != true {
+		t.Errorf("expected cache_hit true, got %v", m["cache_hit"])
+	}
+}
