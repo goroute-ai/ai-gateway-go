@@ -261,3 +261,69 @@ func TestLoadStorageRedisClusterConfigAndEnvOverrides(t *testing.T) {
 		t.Fatalf("unexpected RedisMasterName: %q", cfg.Storage.RedisMasterName)
 	}
 }
+
+func TestGuardrailsAndCustomProviderConfigValidation(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "test")
+
+	yamlContent := `
+server:
+  port: 8080
+  environment: "test"
+guardrails:
+  scanners:
+    - name: "dlp-webhook"
+      url: "https://guardrails.example.com/scan"
+      timeout_ms: 1500
+      fail_open: true
+      headers:
+        Authorization: "Bearer test-token"
+providers:
+  custom_openai_compatible:
+    - id: "vllm-local"
+      display_name: "vLLM"
+      base_url: "http://127.0.0.1:8000/v1"
+      supported_operations: ["chat", "embeddings"]
+      param_mappings:
+        max_completion_tokens: "max_tokens"
+      reasoning_mapping: "chat_template_thinking"
+`
+	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	cfg, err := config.Load(tmpFile)
+	if err != nil {
+		t.Fatalf("config.Load failed: %v", err)
+	}
+	if len(cfg.Guardrails.Scanners) != 1 || cfg.Guardrails.Scanners[0].Name != "dlp-webhook" || !cfg.Guardrails.Scanners[0].FailOpen || cfg.Guardrails.Scanners[0].TimeoutMs != 1500 {
+		t.Fatalf("unexpected guardrails config: %+v", cfg.Guardrails)
+	}
+	cp := cfg.Providers.CustomOpenAICompatible[0]
+	if len(cp.SupportedOperations) != 2 || cp.ParamMappings["max_completion_tokens"] != "max_tokens" || cp.ReasoningMapping != "chat_template_thinking" {
+		t.Fatalf("unexpected custom provider config: %+v", cp)
+	}
+
+	// Negative cases for GuardrailsConfig
+	badCfg := config.Default()
+	badCfg.Server.Environment = "test"
+	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "", URL: "https://example.com"}}
+	if err := badCfg.Validate(); err == nil {
+		t.Fatalf("expected error for empty scanner name")
+	}
+	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "a", URL: "ftp://example.com"}}
+	if err := badCfg.Validate(); err == nil {
+		t.Fatalf("expected error for invalid scanner URL scheme")
+	}
+	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "a", URL: "https://example.com", TimeoutMs: -1}}
+	if err := badCfg.Validate(); err == nil {
+		t.Fatalf("expected error for negative timeout_ms")
+	}
+	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
+		{Name: "dup", URL: "https://example.com/1"},
+		{Name: "dup", URL: "https://example.com/2"},
+	}
+	if err := badCfg.Validate(); err == nil {
+		t.Fatalf("expected error for duplicate scanner name")
+	}
+}

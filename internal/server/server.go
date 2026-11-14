@@ -290,6 +290,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		uploadSem:       uploadSem,
 		uploadInFlight:  make(map[string]int64),
 	}
+	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
 		if s.tracerShutdown != nil {
@@ -532,6 +533,7 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Get("/spend/summary", s.handleAdminSpendSummary)
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
 		adm.Get("/audit/logs", s.handleAdminAuditLogs)
+		adm.Get("/config", s.handleAdminGetConfig)
 
 		// MCP Enterprise Management: Servers, Toolsets, Tools, Tool Sync & BYOK Credentials
 		adm.Post("/mcp/servers", s.handleAdminCreateMCPServer)

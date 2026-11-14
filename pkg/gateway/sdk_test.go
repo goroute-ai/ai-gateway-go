@@ -1,10 +1,14 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -208,5 +212,154 @@ func TestSDK_PublicTypesAndLoggingOptions(t *testing.T) {
 	}
 	if vk.ID == "" || vk.Key == "" {
 		t.Fatalf("expected populated ID and Key in VirtualKeyInfo, got %+v", vk)
+	}
+}
+
+func TestSDKDataPlaneParityMethods(t *testing.T) {
+	ctx := context.Background()
+
+	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-gw-remote-test" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/completions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"cmpl_1","object":"text_completion","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"completed text"}]}`))
+		case "/v1/embeddings":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","model":"text-embedding-3-small","data":[{"index":0,"embedding":[0.1,0.2]}]}`))
+		case "/v1/rerank":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"rr_1","results":[{"index":0,"relevance_score":0.95}]}`))
+		case "/v1/moderations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"modr_1","model":"omni-moderation-latest","results":[{"flagged":false}]}`))
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-4o"}`))
+		case "/v1/messages":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant"}`))
+		case "/v1/audio/transcriptions":
+			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+				http.Error(w, "expected multipart", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"text":"hello audio"}`))
+		case "/v1/audio/speech":
+			w.Header().Set("Content-Type", "audio/mpeg")
+			_, _ = w.Write([]byte("ID3-AUDIO-BYTES"))
+		case "/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"created":1730000000,"data":[{"url":"https://example.com/img.png"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer remoteSrv.Close()
+
+	client, err := gateway.New(gateway.WithRemote(remoteSrv.URL, "sk-gw-remote-test"))
+	if err != nil {
+		t.Fatalf("gateway.New(WithRemote): %v", err)
+	}
+	defer client.Close()
+
+	cmpl, err := client.Completions(ctx, domain.CanonicalCompletionRequest{Model: "gpt-3.5-turbo-instruct", Prompt: domain.CompletionPrompt{Strings: []string{"hi"}}})
+	if err != nil || len(cmpl.Choices) != 1 || cmpl.Choices[0].Text != "completed text" {
+		t.Fatalf("Completions failed: res=%+v err=%v", cmpl, err)
+	}
+
+	emb, err := client.Embeddings(ctx, domain.CanonicalEmbeddingRequest{Model: "text-embedding-3-small", Input: []string{"hello"}})
+	if err != nil || len(emb.Data) != 1 {
+		t.Fatalf("Embeddings failed: res=%+v err=%v", emb, err)
+	}
+
+	rr, err := client.Rerank(ctx, domain.CanonicalRerankRequest{Model: "rerank-1", Query: "q", Documents: []domain.RerankDocument{{Text: "doc1"}}})
+	if err != nil || len(rr.Results) != 1 {
+		t.Fatalf("Rerank failed: res=%+v err=%v", rr, err)
+	}
+
+	mod, err := client.Moderations(ctx, domain.CanonicalModerationRequest{Model: "omni-moderation-latest", Input: []string{"safe"}})
+	if err != nil || len(mod.Results) != 1 {
+		t.Fatalf("Moderations failed: res=%+v err=%v", mod, err)
+	}
+
+	respOut, err := client.Responses(ctx, domain.CanonicalResponseRequest{Model: "gpt-4o", Input: json.RawMessage(`"hi"`)})
+	if err != nil || respOut.ID != "resp_1" {
+		t.Fatalf("Responses failed: res=%+v err=%v", respOut, err)
+	}
+
+	msgOut, err := client.Messages(ctx, map[string]any{"model": "claude-sonnet-4-20250514", "max_tokens": 16})
+	if err != nil || msgOut["id"] != "msg_1" {
+		t.Fatalf("Messages failed: res=%+v err=%v", msgOut, err)
+	}
+
+	sttOut, err := client.AudioTranscription(ctx, gateway.AudioTranscriptionRequest{
+		Model:    "whisper-1",
+		FileName: "sample.wav",
+		Audio:    bytes.NewReader([]byte("RIFF-WAV")),
+	})
+	if err != nil || sttOut.Text != "hello audio" {
+		t.Fatalf("AudioTranscription failed: res=%+v err=%v", sttOut, err)
+	}
+
+	ttsBytes, err := client.AudioSpeech(ctx, domain.CanonicalAudioSpeechRequest{Model: "tts-1", Input: "hi", Voice: "alloy"})
+	if err != nil || string(ttsBytes) != "ID3-AUDIO-BYTES" {
+		t.Fatalf("AudioSpeech failed: bytes=%q err=%v", string(ttsBytes), err)
+	}
+
+	imgOut, err := client.Images(ctx, domain.CanonicalImageRequest{Model: "dall-e-3", Prompt: "a cat"})
+	if err != nil || len(imgOut.Data) != 1 {
+		t.Fatalf("Images failed: res=%+v err=%v", imgOut, err)
+	}
+}
+
+func TestSDKWithConfigFileGuardrailsScanner(t *testing.T) {
+	scannerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"block","violations":["blocked_by_config"]}`))
+	}))
+	defer scannerSrv.Close()
+
+	cfgYAML := fmt.Sprintf(`
+server:
+  port: 8080
+  environment: "test"
+storage:
+  mode: "memory"
+guardrails:
+  scanners:
+    - name: "cfg-scanner"
+      url: %q
+      timeout_ms: 1000
+      fail_open: false
+`, scannerSrv.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	client, err := gateway.New(
+		gateway.WithConfigFile(cfgPath),
+		gateway.WithAllowPrivateNetworks(),
+		gateway.WithSilentLogs(),
+		gateway.WithDemoMocksIfEnvMissing(),
+		gateway.WithModelList(gateway.ModelEntry{
+			ModelName: "fast",
+			Model:     "openai/gpt-4o-mini",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New(WithConfigFile): %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Chat(context.Background(), "fast", "hello")
+	if err == nil || !strings.Contains(err.Error(), "400") && !strings.Contains(err.Error(), "guardrail") && !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("expected guardrail block error from config-wired scanner, got: %v", err)
 	}
 }

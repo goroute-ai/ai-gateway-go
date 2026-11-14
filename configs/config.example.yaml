@@ -92,6 +92,15 @@ cache:
   default_ttl: 1h
   max_l1_entries: 4096
 
+guardrails:
+  scanners: []
+  #  - name: "dlp-webhook"
+  #    url: "https://guardrails.internal.corp/v1/scan"
+  #    timeout_ms: 2000
+  #    fail_open: false
+  #    headers:
+  #      Authorization: "os.environ/GUARDRAIL_SCANNER_TOKEN"
+
 # ------------------------------------------------------------------------------
 # Security & Network Egress (SSRF Hardening)
 # ------------------------------------------------------------------------------
@@ -165,6 +174,10 @@ providers:
       supports_tools: "true"
       supports_structured_outputs: "true"
       supports_list_models: true
+      # supported_operations: ["chat", "embeddings"]
+      # param_mappings:
+      #   max_completion_tokens: "max_tokens"
+      # reasoning_mapping: "passthrough"
       default_headers:
         X-Internal-Gateway: "goroute"
 

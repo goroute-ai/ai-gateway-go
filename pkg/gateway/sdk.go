@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
 )
 
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
@@ -65,6 +67,7 @@ type Client struct {
 	embeddedGW  *server.GatewayServer
 	embeddedTS  *httptest.Server
 	mockServers []*httptest.Server
+	closeFns    []func()
 }
 
 // Option configures a Gateway Client or Embedded Router.
@@ -270,12 +273,58 @@ func New(opts ...Option) (*Client, error) {
 		cfg.Auth.DefaultVirtualKey = "sk-gw-sdk-" + uuid.NewString()
 	}
 
-	repo := storage.NewMemoryRepository()
-	gw, err := server.New(cfg, repo, nil, nil)
-	if err != nil {
+	var repo storage.Repository
+	var redisFabric *storage.RedisFabric
+	var closeFns []func()
+	cleanupOnErr := func() {
+		for _, fn := range closeFns {
+			fn()
+		}
 		for _, ms := range mockServers {
 			ms.Close()
 		}
+	}
+
+	if cc.configPath != "" && cfg.Storage.Mode == "postgres" && strings.TrimSpace(cfg.Storage.PostgresDSN) != "" {
+		pool, poolErr := storage.NewPostgresPool(context.Background(), cfg.Storage.PostgresDSN)
+		if poolErr != nil {
+			cleanupOnErr()
+			return nil, fmt.Errorf("connect postgres: %w", poolErr)
+		}
+		closeFns = append(closeFns, pool.Close)
+		if migErr := storage.RunMigrationsDir(context.Background(), pool, "migrations"); migErr != nil {
+			slog.Warn("embedded sdk migration notice", slog.String("error", migErr.Error()))
+		}
+		pgRepo, repoErr := storage.NewPostgresRepository(context.Background(), pool)
+		if repoErr != nil {
+			cleanupOnErr()
+			return nil, fmt.Errorf("init postgres repository: %w", repoErr)
+		}
+		repo = pgRepo
+	} else {
+		repo = storage.NewMemoryRepository()
+	}
+
+	if cc.configPath != "" && (len(cfg.Storage.RedisAddrs) > 0 || (strings.TrimSpace(cfg.Storage.RedisAddr) != "" && (cfg.Storage.Mode == "postgres" || cfg.Storage.RedisAddr != "localhost:6379"))) {
+		addrs := cfg.Storage.RedisAddrs
+		if len(addrs) == 0 {
+			addrs = []string{cfg.Storage.RedisAddr}
+		}
+		redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+			Addrs:      addrs,
+			MasterName: cfg.Storage.RedisMasterName,
+			Password:   cfg.Storage.RedisPass,
+			DB:         cfg.Storage.RedisDB,
+		})
+		if redisFabric != nil && redisFabric.Client() != nil {
+			rdb := redisFabric.Client()
+			closeFns = append(closeFns, func() { _ = rdb.Close() })
+		}
+	}
+
+	gw, err := server.New(cfg, repo, redisFabric, nil)
+	if err != nil {
+		cleanupOnErr()
 		return nil, err
 	}
 	gw.StartWorkers(context.Background())
@@ -294,6 +343,7 @@ func New(opts ...Option) (*Client, error) {
 		embeddedGW:  gw,
 		embeddedTS:  ts,
 		mockServers: mockServers,
+		closeFns:    closeFns,
 	}, nil
 }
 
@@ -325,6 +375,9 @@ func (c *Client) Close() {
 	}
 	if c.embeddedTS != nil {
 		c.embeddedTS.Close()
+	}
+	for _, fn := range c.closeFns {
+		fn()
 	}
 	for _, ms := range c.mockServers {
 		ms.Close()
@@ -1118,4 +1171,159 @@ func (c *Client) adminKey() string {
 func parseHeaderInt64(v string) int64 {
 	n, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 	return n
+}
+
+func (c *Client) doRawPost(ctx context.Context, path, contentType string, body io.Reader) ([]byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if contentType != "" {
+		httpReq.Header.Set("Content-Type", contentType)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gateway error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
+func doJSONPost[Req any, Resp any](c *Client, ctx context.Context, path string, req Req) (*Resp, error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request for %s: %w", path, err)
+	}
+	raw, err := c.doRawPost(ctx, path, "application/json", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	var out Resp
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode response from %s: %w", path, err)
+	}
+	return &out, nil
+}
+
+// Completions executes a legacy text completion via `POST /v1/completions`.
+func (c *Client) Completions(ctx context.Context, req domain.CanonicalCompletionRequest) (*domain.CanonicalCompletionResponse, error) {
+	req.Stream = false
+	return doJSONPost[domain.CanonicalCompletionRequest, domain.CanonicalCompletionResponse](c, ctx, "/v1/completions", req)
+}
+
+// Embeddings generates vector embeddings via `POST /v1/embeddings`.
+func (c *Client) Embeddings(ctx context.Context, req domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
+	return doJSONPost[domain.CanonicalEmbeddingRequest, domain.CanonicalEmbeddingResponse](c, ctx, "/v1/embeddings", req)
+}
+
+// Rerank scores and reorders candidate documents via `POST /v1/rerank`.
+func (c *Client) Rerank(ctx context.Context, req domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
+	return doJSONPost[domain.CanonicalRerankRequest, domain.CanonicalRerankResponse](c, ctx, "/v1/rerank", req)
+}
+
+// Moderations classifies content safety via `POST /v1/moderations`.
+func (c *Client) Moderations(ctx context.Context, req domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error) {
+	return doJSONPost[domain.CanonicalModerationRequest, domain.CanonicalModerationResponse](c, ctx, "/v1/moderations", req)
+}
+
+// Responses executes a non-streaming OpenAI Responses API call via `POST /v1/responses`.
+func (c *Client) Responses(ctx context.Context, req domain.CanonicalResponseRequest) (*domain.CanonicalResponseOutput, error) {
+	req.Stream = false
+	return doJSONPost[domain.CanonicalResponseRequest, domain.CanonicalResponseOutput](c, ctx, "/v1/responses", req)
+}
+
+// Messages executes a non-streaming Anthropic Messages API call via `POST /v1/messages`.
+func (c *Client) Messages(ctx context.Context, req map[string]any) (map[string]any, error) {
+	payload := make(map[string]any, len(req)+1)
+	for k, v := range req {
+		payload[k] = v
+	}
+	payload["stream"] = false
+	out, err := doJSONPost[map[string]any, map[string]any](c, ctx, "/v1/messages", payload)
+	if err != nil {
+		return nil, err
+	}
+	return *out, nil
+}
+
+// AudioTranscriptionRequest configures a multipart audio transcription or translation request.
+type AudioTranscriptionRequest struct {
+	Model          string
+	FileName       string
+	Audio          io.Reader
+	Language       string
+	Prompt         string
+	ResponseFormat string
+	IsTranslation  bool
+}
+
+// AudioTranscription transcribes (or translates) audio via `POST /v1/audio/transcriptions` or `/v1/audio/translations`.
+func (c *Client) AudioTranscription(ctx context.Context, req AudioTranscriptionRequest) (*domain.CanonicalAudioResponse, error) {
+	if req.Audio == nil {
+		return nil, fmt.Errorf("audio reader is required")
+	}
+	fileName := strings.TrimSpace(req.FileName)
+	if fileName == "" {
+		fileName = "audio.wav"
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", fileName)
+	if err != nil {
+		return nil, fmt.Errorf("create multipart file: %w", err)
+	}
+	if _, err := io.Copy(part, req.Audio); err != nil {
+		return nil, fmt.Errorf("copy audio payload: %w", err)
+	}
+	_ = mw.WriteField("model", req.Model)
+	if req.Language != "" {
+		_ = mw.WriteField("language", req.Language)
+	}
+	if req.Prompt != "" {
+		_ = mw.WriteField("prompt", req.Prompt)
+	}
+	if req.ResponseFormat != "" {
+		_ = mw.WriteField("response_format", req.ResponseFormat)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	path := "/v1/audio/transcriptions"
+	if req.IsTranslation {
+		path = "/v1/audio/translations"
+	}
+	raw, err := c.doRawPost(ctx, path, mw.FormDataContentType(), &buf)
+	if err != nil {
+		return nil, err
+	}
+	var out domain.CanonicalAudioResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode audio response from %s: %w", path, err)
+	}
+	return &out, nil
+}
+
+// AudioSpeech synthesizes spoken audio bytes via `POST /v1/audio/speech`.
+func (c *Client) AudioSpeech(ctx context.Context, req domain.CanonicalAudioSpeechRequest) ([]byte, error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal audio speech request: %w", err)
+	}
+	return c.doRawPost(ctx, "/v1/audio/speech", "application/json", bytes.NewReader(bodyBytes))
+}
+
+// Images generates images via `POST /v1/images/generations`.
+func (c *Client) Images(ctx context.Context, req domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error) {
+	return doJSONPost[domain.CanonicalImageRequest, domain.CanonicalImageResponse](c, ctx, "/v1/images/generations", req)
 }

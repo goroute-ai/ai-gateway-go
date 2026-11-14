@@ -141,6 +141,8 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		Prompt:         r.FormValue("prompt"),
 		ResponseFormat: r.FormValue("response_format"),
 	}
+	// TODO(integration): sttReq.IsTranslation = isTranslation (once phase-routing-author adds IsTranslation to domain.CanonicalAudioTranscriptionRequest)
+	_ = isTranslation
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, sttReq.Prompt)
 	if guardrailErr != nil {
 		releaseQuota(0)

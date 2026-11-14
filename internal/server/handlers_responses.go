@@ -12,6 +12,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
@@ -106,6 +107,35 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if !req.Stream {
+		var cacheKey string
+		if s.respCache != nil && s.respCache.IsCacheable(chatReq, r.Header.Get("X-Gateway-Cache-Control")) {
+			cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq)
+			if cacheKey != "" {
+				if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
+					redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+					if sanitizeErr != nil {
+						releaseQuota(0)
+						domain.WriteHTTPError(w, sanitizeErr)
+						return
+					}
+					if redacted {
+						w.Header().Set("X-Gateway-Output-Redacted", "true")
+					}
+					releaseQuota(0)
+					s.collector.Record(observability.RequestObservation{
+						Provider:   string(cachedResp.Provider),
+						Model:      cachedResp.Model,
+						StatusCode: http.StatusOK,
+						CacheHit:   true,
+					})
+					w.Header().Set("X-Gateway-Cache", "HIT")
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(buildResponsesOutput(cachedResp))
+					return
+				}
+			}
+		}
+
 		resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, chatReq)
 		if err != nil {
 			releaseQuota(-1)
@@ -123,54 +153,13 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		if redacted {
 			w.Header().Set("X-Gateway-Output-Redacted", "true")
 		}
-
-		respID := "resp_" + uuid.NewString()
-		created := resp.Created
-		if created == 0 {
-			created = time.Now().Unix()
+		if cacheKey != "" {
+			s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+			w.Header().Set("X-Gateway-Cache", "MISS")
 		}
 
-		out := &domain.CanonicalResponseOutput{
-			ID:        respID,
-			Object:    "response",
-			CreatedAt: created,
-			Model:     resp.Model,
-			Status:    "completed",
-			Usage:     &resp.Usage,
-			Output:    make([]domain.CanonicalResponseOutputItem, 0),
-		}
-
-		for i, choice := range resp.Choices {
-			if choice.Message.Content != "" || len(choice.Message.ToolCalls) == 0 {
-				itemID := fmt.Sprintf("msg_%s_%d", resp.ID, i)
-				out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
-					ID:     itemID,
-					Type:   "message",
-					Status: "completed",
-					Role:   choice.Message.Role,
-					Content: []domain.CanonicalResponseContentPart{
-						{
-							Type: "output_text",
-							Text: choice.Message.Content,
-						},
-					},
-				})
-			}
-			for j, tc := range choice.Message.ToolCalls {
-				fcID := tc.ID
-				if fcID == "" {
-					fcID = fmt.Sprintf("fc_%s_%d_%d", resp.ID, i, j)
-				}
-				out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
-					ID:        fcID,
-					Type:      "function_call",
-					Status:    "completed",
-					CallID:    tc.ID,
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				})
-			}
-		}
+		out := buildResponsesOutput(resp)
+		respID := out.ID
 
 		var gm *domain.GlobalModel
 		var depID string
@@ -782,4 +771,55 @@ func responseToolOutputText(value any) string {
 		return string(encoded)
 	}
 	return ""
+}
+
+func buildResponsesOutput(resp *domain.CanonicalChatResponse) *domain.CanonicalResponseOutput {
+	respID := "resp_" + uuid.NewString()
+	created := resp.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+
+	out := &domain.CanonicalResponseOutput{
+		ID:        respID,
+		Object:    "response",
+		CreatedAt: created,
+		Model:     resp.Model,
+		Status:    "completed",
+		Usage:     &resp.Usage,
+		Output:    make([]domain.CanonicalResponseOutputItem, 0),
+	}
+
+	for i, choice := range resp.Choices {
+		if choice.Message.Content != "" || len(choice.Message.ToolCalls) == 0 {
+			itemID := fmt.Sprintf("msg_%s_%d", resp.ID, i)
+			out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
+				ID:     itemID,
+				Type:   "message",
+				Status: "completed",
+				Role:   choice.Message.Role,
+				Content: []domain.CanonicalResponseContentPart{
+					{
+						Type: "output_text",
+						Text: choice.Message.Content,
+					},
+				},
+			})
+		}
+		for j, tc := range choice.Message.ToolCalls {
+			fcID := tc.ID
+			if fcID == "" {
+				fcID = fmt.Sprintf("fc_%s_%d_%d", resp.ID, i, j)
+			}
+			out.Output = append(out.Output, domain.CanonicalResponseOutputItem{
+				ID:        fcID,
+				Type:      "function_call",
+				Status:    "completed",
+				CallID:    tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+	}
+	return out
 }

@@ -15,21 +15,22 @@ import (
 
 // Config holds the complete runtime configuration for the Enterprise AI Gateway.
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Logging   LogConfig        `yaml:"logging"`
-	Tracing   TracingConfig    `yaml:"tracing"`
-	Security  SecurityConfig   `yaml:"security"`
-	Storage   StorageConfig    `yaml:"storage"`
-	Auth      AuthConfig       `yaml:"auth"`
-	Router    RouterConfig     `yaml:"router"`
-	RateLimit RateLimitConfig  `yaml:"rate_limit"`
-	FinOps    FinOpsConfig     `yaml:"finops"`
-	Discovery DiscoveryConfig  `yaml:"discovery"`
-	Cache     CacheConfig      `yaml:"cache"`
-	MCP       MCPConfig        `yaml:"mcp"`
-	A2A       A2AConfig        `yaml:"a2a"`
-	Providers ProvidersConfig  `yaml:"providers"`
-	ModelList []ModelListEntry `yaml:"model_list"`
+	Server     ServerConfig     `yaml:"server"`
+	Logging    LogConfig        `yaml:"logging"`
+	Tracing    TracingConfig    `yaml:"tracing"`
+	Security   SecurityConfig   `yaml:"security"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Auth       AuthConfig       `yaml:"auth"`
+	Router     RouterConfig     `yaml:"router"`
+	RateLimit  RateLimitConfig  `yaml:"rate_limit"`
+	FinOps     FinOpsConfig     `yaml:"finops"`
+	Discovery  DiscoveryConfig  `yaml:"discovery"`
+	Cache      CacheConfig      `yaml:"cache"`
+	Guardrails GuardrailsConfig `yaml:"guardrails"`
+	MCP        MCPConfig        `yaml:"mcp"`
+	A2A        A2AConfig        `yaml:"a2a"`
+	Providers  ProvidersConfig  `yaml:"providers"`
+	ModelList  []ModelListEntry `yaml:"model_list"`
 }
 
 // SecurityConfig defines unified security, network egress/SSRF, and inbound controls.
@@ -146,6 +147,23 @@ type CustomProviderConfig struct {
 	SupportsStructuredOutputs string            `yaml:"supports_structured_outputs,omitempty" json:"supports_structured_outputs,omitempty"`
 	SupportsListModels        bool              `yaml:"supports_list_models" json:"supports_list_models"`
 	DefaultHeaders            map[string]string `yaml:"default_headers,omitempty" json:"default_headers,omitempty"`
+	SupportedOperations       []string          `yaml:"supported_operations,omitempty" json:"supported_operations,omitempty"`
+	ParamMappings             map[string]string `yaml:"param_mappings,omitempty" json:"param_mappings,omitempty"`
+	ReasoningMapping          string            `yaml:"reasoning_mapping,omitempty" json:"reasoning_mapping,omitempty"`
+}
+
+// GuardrailsConfig configures optional external HTTP/webhook guardrail scanners.
+type GuardrailsConfig struct {
+	Scanners []GuardrailScannerConfig `yaml:"scanners" json:"scanners"`
+}
+
+// GuardrailScannerConfig defines an external HTTP/webhook guardrail scanner.
+type GuardrailScannerConfig struct {
+	Name      string            `yaml:"name" json:"name"`
+	URL       string            `yaml:"url" json:"url"`
+	TimeoutMs int               `yaml:"timeout_ms" json:"timeout_ms"`
+	FailOpen  bool              `yaml:"fail_open" json:"fail_open"`
+	Headers   map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 type ServerConfig struct {
@@ -679,6 +697,38 @@ func (c *Config) Validate() error {
 		u, err := url.Parse(strings.TrimSpace(cp.BaseURL))
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			return fmt.Errorf("providers.custom_openai_compatible %q: base_url must have http or https scheme", id)
+		}
+		if rm := strings.TrimSpace(cp.ReasoningMapping); rm != "" {
+			switch rm {
+			case "passthrough", "openrouter_reasoning", "dashscope_thinking", "thinking_enabled", "chat_template_thinking", "strip":
+			default:
+				return fmt.Errorf("providers.custom_openai_compatible %q: unsupported reasoning_mapping %q", id, cp.ReasoningMapping)
+			}
+		}
+	}
+
+	// Guardrails external scanner validation
+	seenScanners := make(map[string]struct{}, len(c.Guardrails.Scanners))
+	for i, sc := range c.Guardrails.Scanners {
+		name := strings.TrimSpace(sc.Name)
+		if name == "" {
+			return fmt.Errorf("guardrails.scanners[%d]: name cannot be empty", i)
+		}
+		if _, dup := seenScanners[name]; dup {
+			return fmt.Errorf("guardrails.scanners[%d]: duplicate scanner name %q", i, name)
+		}
+		seenScanners[name] = struct{}{}
+
+		rawURL := strings.TrimSpace(sc.URL)
+		if rawURL == "" {
+			return fmt.Errorf("guardrails.scanners %q: url cannot be empty", name)
+		}
+		u, err := url.Parse(rawURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("guardrails.scanners %q: url must be a valid http or https URL", name)
+		}
+		if sc.TimeoutMs < 0 {
+			return fmt.Errorf("guardrails.scanners %q: timeout_ms cannot be negative", name)
 		}
 	}
 

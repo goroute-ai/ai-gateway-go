@@ -173,6 +173,36 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	var cacheKey string
+	if s.respCache != nil && s.respCache.IsCacheable(&chatReq, r.Header.Get("X-Gateway-Cache-Control")) {
+		cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq)
+		if cacheKey != "" {
+			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
+				redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+				if sanitizeErr != nil {
+					releaseQuota(0)
+					domain.WriteAnthropicHTTPError(w, sanitizeErr)
+					return
+				}
+				if redacted {
+					w.Header().Set("X-Gateway-Output-Redacted", "true")
+				}
+				releaseQuota(0)
+				s.collector.Record(observability.RequestObservation{
+					Provider:   string(cachedResp.Provider),
+					Model:      cachedResp.Model,
+					StatusCode: http.StatusOK,
+					CacheHit:   true,
+				})
+				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
+				w.Header().Set("X-Gateway-Cache", "HIT")
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(toAnthropicResponse(cachedResp, reqID))
+				return
+			}
+		}
+	}
+
 	resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, &chatReq)
 	if err != nil {
 		releaseQuota(-1)
@@ -190,6 +220,10 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	resp.Choices = guardrailResp.Choices
 	if redacted {
 		w.Header().Set("X-Gateway-Output-Redacted", "true")
+	}
+	if cacheKey != "" {
+		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
 	var gm *domain.GlobalModel

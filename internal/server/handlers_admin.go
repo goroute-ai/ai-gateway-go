@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 )
@@ -993,7 +995,6 @@ func (s *GatewayServer) handleAdminSpendLogs(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": logs})
 }
-
 func (s *GatewayServer) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
 	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
@@ -1006,4 +1007,243 @@ func (s *GatewayServer) handleAdminAuditLogs(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": logs})
+}
+
+func (s *GatewayServer) handleAdminGetConfig(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, sanitizeRuntimeConfig(s.cfg))
+}
+
+func redactSecret(val string) string {
+	if strings.TrimSpace(val) == "" {
+		return ""
+	}
+	return "[REDACTED]"
+}
+
+func redactURLPassword(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.User == nil {
+		return trimmed
+	}
+	if _, hasPass := u.User.Password(); !hasPass {
+		return trimmed
+	}
+	u.User = url.UserPassword(u.User.Username(), "REDACTED")
+	return u.String()
+}
+
+func redactHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for k := range headers {
+		out[k] = "[REDACTED]"
+	}
+	return out
+}
+
+func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
+	if cfg == nil {
+		return map[string]any{}
+	}
+
+	scanners := make([]map[string]any, 0, len(cfg.Guardrails.Scanners))
+	for _, sc := range cfg.Guardrails.Scanners {
+		scanners = append(scanners, map[string]any{
+			"name":       sc.Name,
+			"url":        redactURLPassword(sc.URL),
+			"timeout_ms": sc.TimeoutMs,
+			"fail_open":  sc.FailOpen,
+			"headers":    redactHeaders(sc.Headers),
+		})
+	}
+
+	customProviders := make([]map[string]any, 0, len(cfg.Providers.CustomOpenAICompatible))
+	for _, cp := range cfg.Providers.CustomOpenAICompatible {
+		customProviders = append(customProviders, map[string]any{
+			"id":                          cp.ID,
+			"display_name":                cp.DisplayName,
+			"base_url":                    redactURLPassword(cp.BaseURL),
+			"supports_streaming":          cp.SupportsStreaming,
+			"supports_tools":              cp.SupportsTools,
+			"supports_structured_outputs": cp.SupportsStructuredOutputs,
+			"supports_list_models":        cp.SupportsListModels,
+			"supported_operations":        cp.SupportedOperations,
+			"param_mappings":              cp.ParamMappings,
+			"reasoning_mapping":           cp.ReasoningMapping,
+			"default_headers":             redactHeaders(cp.DefaultHeaders),
+		})
+	}
+
+	modelList := make([]map[string]any, 0, len(cfg.ModelList))
+	for _, m := range cfg.ModelList {
+		modelList = append(modelList, map[string]any{
+			"model_name":       m.ModelName,
+			"routing_strategy": m.RoutingStrategy,
+			"fallbacks":        m.Fallbacks,
+			"model_params": map[string]any{
+				"model":                 m.ModelParams.Model,
+				"api_key":               redactSecret(m.ModelParams.APIKey),
+				"api_base":              redactURLPassword(m.ModelParams.APIBase),
+				"region":                m.ModelParams.Region,
+				"weight":                m.ModelParams.Weight,
+				"rpm":                   m.ModelParams.RPM,
+				"tpm":                   m.ModelParams.TPM,
+				"azure_deployment_name": m.ModelParams.AzureDeploymentName,
+				"api_version":           m.ModelParams.APIVersion,
+				"headers":               redactHeaders(m.ModelParams.Headers),
+			},
+		})
+	}
+
+	return map[string]any{
+		"server": map[string]any{
+			"environment":                    cfg.Server.Environment,
+			"host":                           cfg.Server.Host,
+			"port":                           cfg.Server.Port,
+			"grpc_port":                      cfg.Server.GRPCPort,
+			"read_timeout":                   cfg.Server.ReadTimeout.String(),
+			"write_timeout":                  cfg.Server.WriteTimeout.String(),
+			"idle_timeout":                   cfg.Server.IdleTimeout.String(),
+			"shutdown_timeout":               cfg.Server.ShutdownTimeout.String(),
+			"cors_allowed_origins":           cfg.Server.CORSAllowedOrigins,
+			"cors_allow_credentials":         cfg.Server.CORSAllowCredentials,
+			"enable_hsts":                    cfg.Server.EnableHSTS,
+			"max_file_storage_bytes_per_org": cfg.Server.MaxFileStorageBytesPerOrg,
+			"max_concurrent_file_uploads":    cfg.Server.MaxConcurrentFileUploads,
+		},
+		"logging": map[string]any{
+			"level":      cfg.Logging.Level,
+			"format":     cfg.Logging.Format,
+			"add_source": cfg.Logging.AddSource,
+		},
+		"tracing": map[string]any{
+			"otlp_endpoint": redactURLPassword(cfg.Tracing.OTLPEndpoint),
+			"service_name":  cfg.Tracing.ServiceName,
+			"headers":       redactHeaders(cfg.Tracing.Headers),
+		},
+		"security": map[string]any{
+			"outbound_ssrf": map[string]any{
+				"allow_private_networks": cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks,
+				"allowed_private_cidrs":  cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs,
+				"allow_insecure_http":    cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP,
+				"allowed_schemes":        cfg.Security.Network.OutboundSSRF.AllowedSchemes,
+				"blocked_ips":            cfg.Security.Network.OutboundSSRF.BlockedIPs,
+				"dial_timeout":           cfg.Security.Network.OutboundSSRF.DialTimeout.String(),
+				"max_redirects":          cfg.Security.Network.OutboundSSRF.MaxRedirects,
+				"egress_proxy_url":       redactURLPassword(cfg.Security.Network.OutboundSSRF.EgressProxyURL),
+			},
+			"inbound_caller": map[string]any{
+				"expose_on_public_internet": cfg.Security.Network.InboundCaller.ExposeOnPublicInternet,
+				"allowed_client_cidrs":      cfg.Security.Network.InboundCaller.AllowedClientCIDRs,
+				"trusted_proxy_cidrs":       cfg.Security.Network.InboundCaller.TrustedProxyCIDRs,
+			},
+		},
+		"storage": map[string]any{
+			"mode":              cfg.Storage.Mode,
+			"postgres_dsn":      redactURLPassword(cfg.Storage.PostgresDSN),
+			"redis_addr":        cfg.Storage.RedisAddr,
+			"redis_addrs":       cfg.Storage.RedisAddrs,
+			"redis_master_name": cfg.Storage.RedisMasterName,
+			"redis_pass":        redactSecret(cfg.Storage.RedisPass),
+			"redis_db":          cfg.Storage.RedisDB,
+		},
+		"auth": map[string]any{
+			"master_admin_key":            redactSecret(cfg.Auth.MasterAdminKey),
+			"master_encryption_key":       redactSecret(cfg.Auth.MasterEncryptionKey),
+			"allow_master_key_data_plane": cfg.Auth.AllowMasterKeyDataPlane,
+			"jwt_secret":                  redactSecret(cfg.Auth.JWTSecret),
+			"jwt_issuer":                  cfg.Auth.JWTIssuer,
+			"jwt_audience":                cfg.Auth.JWTAudience,
+			"oidc_jwks_url":               cfg.Auth.OIDCJWKSURL,
+			"default_org_id":              cfg.Auth.DefaultOrgID,
+			"default_virtual_key":         redactSecret(cfg.Auth.DefaultVirtualKey),
+			"l1_cache_ttl":                cfg.Auth.L1CacheTTL.String(),
+			"l2_cache_ttl":                cfg.Auth.L2CacheTTL.String(),
+		},
+		"router": map[string]any{
+			"default_fast_alias":      cfg.Router.DefaultFastAlias,
+			"default_reasoning_alias": cfg.Router.DefaultReasoningAlias,
+			"default_coding_alias":    cfg.Router.DefaultCodingAlias,
+			"complexity_threshold":    cfg.Router.ComplexityThreshold,
+			"long_context_tokens":     cfg.Router.LongContextTokens,
+			"default_max_retries":     cfg.Router.DefaultMaxRetries,
+			"base_retry_delay":        cfg.Router.BaseRetryDelay.String(),
+			"max_retry_delay":         cfg.Router.MaxRetryDelay.String(),
+			"default_cooldown":        cfg.Router.DefaultCooldown.String(),
+			"failure_window":          cfg.Router.FailureWindow.String(),
+			"failure_threshold":       cfg.Router.FailureThreshold,
+		},
+		"rate_limit": map[string]any{
+			"enabled":               cfg.RateLimit.Enabled,
+			"window_seconds":        cfg.RateLimit.WindowSeconds,
+			"concurrency_ttl_sec":   cfg.RateLimit.ConcurrencyTTLSec,
+			"default_estimated_tpm": cfg.RateLimit.DefaultEstimatedTPM,
+			"redis_timeout":         cfg.RateLimit.RedisTimeout.String(),
+			"global_rpm_limit":      cfg.RateLimit.GlobalRPMLimit,
+			"global_tpm_limit":      cfg.RateLimit.GlobalTPMLimit,
+			"global_max_concurrent": cfg.RateLimit.GlobalMaxConcurrent,
+		},
+		"finops": map[string]any{
+			"channel_buffer_size": cfg.FinOps.ChannelBufferSize,
+			"batch_size":          cfg.FinOps.BatchSize,
+			"flush_interval":      cfg.FinOps.FlushInterval.String(),
+			"worker_count":        cfg.FinOps.WorkerCount,
+		},
+		"discovery": map[string]any{
+			"enabled":       cfg.Discovery.Enabled,
+			"sync_interval": cfg.Discovery.SyncInterval.String(),
+			"auto_approve":  cfg.Discovery.AutoApprove,
+		},
+		"cache": map[string]any{
+			"enabled":        cfg.Cache.Enabled,
+			"default_ttl":    cfg.Cache.DefaultTTL.String(),
+			"max_l1_entries": cfg.Cache.MaxL1Entries,
+		},
+		"guardrails": map[string]any{
+			"scanners": scanners,
+		},
+		"mcp": map[string]any{
+			"enabled":                     cfg.MCP.Enabled,
+			"allow_stdio_servers":         cfg.MCP.AllowStdioServers,
+			"allowed_stdio_binaries":      cfg.MCP.AllowedStdioBinaries,
+			"enable_session_compat_2025":  cfg.MCP.EnableSessionCompat2025,
+			"session_ttl_2025":            cfg.MCP.SessionTTL2025.String(),
+			"cache_key_secret":            redactSecret(cfg.MCP.CacheKeySecret),
+			"max_payload_bytes":           cfg.MCP.MaxPayloadBytes,
+			"default_timeout":             cfg.MCP.DefaultTimeout.String(),
+			"subscriptions_listen_active": cfg.MCP.SubscriptionsListenActive,
+		},
+		"a2a": map[string]any{
+			"enabled":                      cfg.A2A.Enabled,
+			"enable_jsonrpc":               cfg.A2A.EnableJSONRPC,
+			"enable_http_json":             cfg.A2A.EnableHTTPJSON,
+			"enable_subscribe_post_compat": cfg.A2A.EnableSubscribePostCompat,
+			"allow_legacy_card_discovery":  cfg.A2A.AllowLegacyCardDiscovery,
+			"max_task_lifespan":            cfg.A2A.MaxTaskLifespan.String(),
+			"stream_buffer_capacity":       cfg.A2A.StreamBufferCapacity,
+			"stream_publish_interval":      cfg.A2A.StreamPublishInterval.String(),
+			"max_push_retries":             cfg.A2A.MaxPushRetries,
+			"signing_key_id":               cfg.A2A.SigningKeyID,
+			"allowed_signing_algs":         cfg.A2A.AllowedSigningAlgs,
+			"trusted_card_jwks":            cfg.A2A.TrustedCardJWKS,
+		},
+		"providers": map[string]any{
+			"request_timeout":          cfg.Providers.RequestTimeout.String(),
+			"response_header_timeout":  cfg.Providers.ResponseHeaderTimeout.String(),
+			"stream_idle_timeout":      cfg.Providers.StreamIdleTimeout.String(),
+			"max_idle_conns":           cfg.Providers.MaxIdleConns,
+			"max_idle_conns_per_host":  cfg.Providers.MaxIdleConnsPerHost,
+			"custom_openai_compatible": customProviders,
+		},
+		"model_list": modelList,
+	}
 }
