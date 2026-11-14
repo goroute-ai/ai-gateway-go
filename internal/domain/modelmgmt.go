@@ -291,18 +291,23 @@ const (
 
 // GuardrailPolicy defines per-organization security, PII redaction, and prompt-injection rules.
 type GuardrailPolicy struct {
-	OrgID                 string          `json:"org_id"`
-	Mode                  GuardrailMode   `json:"mode,omitempty"`
-	ScanAllRoles          bool            `json:"scan_all_roles"`
-	EnablePromptInjection bool            `json:"enable_prompt_injection"`
-	PromptInjectionAction GuardrailAction `json:"prompt_injection_action"`
-	EnablePIIDetection    bool            `json:"enable_pii_detection"`
-	PIIAction             GuardrailAction `json:"pii_action"`
-	EnableSecretDetection bool            `json:"enable_secret_detection"`
-	SecretAction          GuardrailAction `json:"secret_action"`
-	BlockedKeywords       []string        `json:"blocked_keywords,omitempty"`
-	RedactOutputPII       bool            `json:"redact_output_pii"`
-	UpdatedAt             time.Time       `json:"updated_at"`
+	OrgID                    string          `json:"org_id"`
+	Mode                     GuardrailMode   `json:"mode,omitempty"`
+	ScanAllRoles             bool            `json:"scan_all_roles"`
+	EnablePromptInjection    bool            `json:"enable_prompt_injection"`
+	PromptInjectionAction    GuardrailAction `json:"prompt_injection_action"`
+	EnablePIIDetection       bool            `json:"enable_pii_detection"`
+	PIIAction                GuardrailAction `json:"pii_action"`
+	EnableSecretDetection    bool            `json:"enable_secret_detection"`
+	SecretAction             GuardrailAction `json:"secret_action"`
+	BlockedKeywords          []string        `json:"blocked_keywords,omitempty"`
+	RedactOutputPII          bool            `json:"redact_output_pii"`
+	EnableToxicityFilter     bool            `json:"enable_toxicity_filter,omitempty"`
+	ToxicityAction           GuardrailAction `json:"toxicity_action,omitempty"`
+	ToxicityThreshold        string          `json:"toxicity_threshold,omitempty"`
+	EnabledContentCategories []string        `json:"enabled_content_categories,omitempty"`
+	ContentExceptions        []string        `json:"content_exceptions,omitempty"`
+	UpdatedAt                time.Time       `json:"updated_at"`
 }
 
 // EffectiveMode returns the normalized GuardrailMode, defaulting to GuardrailModeEnforce.

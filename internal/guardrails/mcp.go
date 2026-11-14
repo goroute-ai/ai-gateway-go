@@ -205,12 +205,17 @@ func (e *Engine) EvaluateMCPToolResult(
 	}
 	resultStr := string(resultBytes)
 	lower := strings.ToLower(resultStr)
+	loggingOnly := pol.EffectiveMode() == domain.GuardrailModeLoggingOnly
 
 	// 1. Custom Blocked Keywords
 	for _, kw := range pol.BlockedKeywords {
 		kwTrim := strings.TrimSpace(kw)
 		if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
 			outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+				continue
+			}
 			outcome.AppliedAction = domain.GuardrailActionBlock
 			return outcome, nil, &domain.GatewayError{
 				StatusCode: http.StatusBadGateway,
@@ -221,12 +226,18 @@ func (e *Engine) EvaluateMCPToolResult(
 		}
 	}
 
-	mutated := false
+	// 2. Built-in Toxicity & Content Filtering
+	if err := evaluateToxicity(pol, loggingOnly, &resultStr, true, outcome); err != nil {
+		return outcome, nil, err
+	}
+	mutated := outcome.Redacted
 
-	// 2. Secret detection (block, redact, or audit)
+	// 3. Secret detection (block, redact, or audit)
 	if (pol.RedactOutputPII || pol.EnableSecretDetection) && reSecret.MatchString(resultStr) {
 		outcome.Violations = append(outcome.Violations, "secret_leakage")
-		if pol.EnableSecretDetection && pol.SecretAction == domain.GuardrailActionBlock {
+		if loggingOnly {
+			outcome.AppliedAction = domain.GuardrailActionAudit
+		} else if pol.EnableSecretDetection && pol.SecretAction == domain.GuardrailActionBlock {
 			outcome.AppliedAction = domain.GuardrailActionBlock
 			return outcome, nil, &domain.GatewayError{
 				StatusCode: http.StatusBadGateway,
@@ -234,8 +245,7 @@ func (e *Engine) EvaluateMCPToolResult(
 				Code:       "guardrail_secret_detected",
 				Message:    "Tool result blocked by security guardrail: sensitive API key or credential detected",
 			}
-		}
-		if pol.RedactOutputPII || pol.SecretAction == "" || pol.SecretAction == domain.GuardrailActionRedact {
+		} else if pol.RedactOutputPII || pol.SecretAction == "" || pol.SecretAction == domain.GuardrailActionRedact {
 			resultStr = reSecret.ReplaceAllString(resultStr, "[REDACTED_SECRET]")
 			mutated = true
 		} else {
@@ -243,11 +253,11 @@ func (e *Engine) EvaluateMCPToolResult(
 		}
 	}
 
-	// 3. PII detection (block, redact, or audit)
+	// 4. PII detection (block, redact, or audit)
 	if pol.RedactOutputPII || pol.EnablePIIDetection {
 		hasEmail := reEmail.MatchString(resultStr)
 		hasSSN := reSSN.MatchString(resultStr)
-		hasCard := reCard.MatchString(resultStr)
+		hasCard := containsValidCard(resultStr)
 		if hasEmail {
 			outcome.Violations = append(outcome.Violations, "pii:email")
 		}
@@ -258,7 +268,9 @@ func (e *Engine) EvaluateMCPToolResult(
 			outcome.Violations = append(outcome.Violations, "pii:credit_card")
 		}
 		if hasEmail || hasSSN || hasCard {
-			if pol.EnablePIIDetection && pol.PIIAction == domain.GuardrailActionBlock {
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+			} else if pol.EnablePIIDetection && pol.PIIAction == domain.GuardrailActionBlock {
 				outcome.AppliedAction = domain.GuardrailActionBlock
 				return outcome, nil, &domain.GatewayError{
 					StatusCode: http.StatusBadGateway,
@@ -266,11 +278,12 @@ func (e *Engine) EvaluateMCPToolResult(
 					Code:       "guardrail_pii_detected",
 					Message:    "Tool result blocked by security guardrail: PII (email, SSN, or payment card) detected",
 				}
-			}
-			if pol.RedactOutputPII || pol.PIIAction == "" || pol.PIIAction == domain.GuardrailActionRedact {
+			} else if pol.RedactOutputPII || pol.PIIAction == "" || pol.PIIAction == domain.GuardrailActionRedact {
 				resultStr = reEmail.ReplaceAllString(resultStr, "[REDACTED_EMAIL]")
 				resultStr = reSSN.ReplaceAllString(resultStr, "[REDACTED_SSN]")
-				resultStr = reCard.ReplaceAllString(resultStr, "[REDACTED_CARD]")
+				if next, changed := redactValidCards(resultStr); changed {
+					resultStr = next
+				}
 				mutated = true
 			} else {
 				outcome.AppliedAction = pol.PIIAction
@@ -278,8 +291,8 @@ func (e *Engine) EvaluateMCPToolResult(
 		}
 	}
 
-	// 4. Optional external scanners
-	if err := e.scanOutputField(ctx, pol, pol.EffectiveMode() == domain.GuardrailModeLoggingOnly, resultStr, outcome); err != nil {
+	// 5. Optional external scanners
+	if err := e.scanOutputField(ctx, pol, loggingOnly, resultStr, outcome); err != nil {
 		return outcome, nil, err
 	}
 

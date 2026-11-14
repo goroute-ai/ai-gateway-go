@@ -1,0 +1,22 @@
+{
+  "category_name": "harm_toxic_abuse",
+  "default_action": "block",
+  "keywords": [
+    {"term": "harass you", "severity": "high"},
+    {"term": "doxx", "severity": "high"},
+    {"term": "doxxing", "severity": "high"},
+    {"term": "swatting", "severity": "high"},
+    {"term": "stalking", "severity": "medium"},
+    {"term": "cyberbully", "severity": "medium"},
+    {"term": "blackmail", "severity": "medium"},
+    {"term": "extort", "severity": "medium"},
+    {"term": "toxic abuse", "severity": "low"},
+    {"term": "verbal abuse", "severity": "low"}
+  ],
+  "exceptions": [
+    "anti-harassment policy",
+    "prevent cyberbullying",
+    "doxxing prevention",
+    "report stalking"
+  ]
+}

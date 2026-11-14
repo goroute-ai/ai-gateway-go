@@ -1,0 +1,22 @@
+{
+  "category_name": "harmful_violence",
+  "default_action": "block",
+  "keywords": [
+    {"term": "build a bomb", "severity": "high"},
+    {"term": "make explosives", "severity": "high"},
+    {"term": "mass shooting", "severity": "high"},
+    {"term": "assassinate", "severity": "high"},
+    {"term": "murder someone", "severity": "high"},
+    {"term": "torture", "severity": "medium"},
+    {"term": "arson", "severity": "medium"},
+    {"term": "stabbing", "severity": "medium"},
+    {"term": "violent attack", "severity": "low"},
+    {"term": "physical assault", "severity": "low"}
+  ],
+  "exceptions": [
+    "murder mystery",
+    "violence prevention",
+    "arson investigation",
+    "torture test"
+  ]
+}

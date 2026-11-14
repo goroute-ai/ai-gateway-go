@@ -18,8 +18,8 @@ import (
 var (
 	reEmail  = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
 	reSSN    = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
-	reCard   = regexp.MustCompile(`\b(?:\d{4}[-\s]?){3}\d{4}\b`)
-	reSecret = regexp.MustCompile(`\b(?:sk-[a-zA-Z0-9_\-]{12,}|AQ\.[a-zA-Z0-9_\-]{16,}|AKIA[0-9A-Z]{16})\b`)
+	reCard   = regexp.MustCompile(`\b(?:(?:\d{4}[-\s]?){3}\d{4}|3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5})\b`)
+	reSecret = regexp.MustCompile(`\b(?:sk-[a-zA-Z0-9_\-]{12,}|AQ\.[a-zA-Z0-9_\-]{16,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{20,}|xoxb-[a-zA-Z0-9\-]{10,}|AIza[0-9A-Za-z\-_]{20,})\b|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 
 	promptInjectionSignatures = []string{
 		"ignore previous instructions",
@@ -38,6 +38,7 @@ type CheckOutcome struct {
 	Redacted      bool
 	Violations    []string
 	AppliedAction domain.GuardrailAction
+	RiskScore     float64
 }
 
 // Engine evaluates input prompts and output completions against an Organization's GuardrailPolicy.
@@ -115,110 +116,126 @@ func shouldScanRole(pol *domain.GuardrailPolicy, role string) bool {
 	return strings.EqualFold(strings.TrimSpace(role), "user")
 }
 
-// EvaluateInputWithPolicy evaluates a CanonicalChatRequest directly against an explicit GuardrailPolicy.
-func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.GuardrailPolicy, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
-	outcome := &CheckOutcome{}
-	if e == nil || pol == nil || req == nil {
-		return outcome, nil
+func messageTextFields(msg *domain.CanonicalMessage) []*string {
+	fields := []*string{&msg.Content, &msg.ReasoningContent}
+	for ci := range msg.ToolCalls {
+		fields = append(fields, &msg.ToolCalls[ci].Function.Arguments)
 	}
-	loggingOnly := pol.EffectiveMode() == domain.GuardrailModeLoggingOnly
+	for pi := range msg.Parts {
+		if msg.Parts[pi].Type == "text" {
+			fields = append(fields, &msg.Parts[pi].Text)
+		}
+	}
+	return fields
+}
 
-	// Apply the same policy to text carried in multimodal fields and tool arguments.
-	// Images and other binary payloads remain untouched.
-	for mi := range req.Messages {
-		msg := &req.Messages[mi]
-		if !shouldScanRole(pol, msg.Role) {
-			continue
+func collectMessageText(msg *domain.CanonicalMessage) string {
+	var parts []string
+	for _, f := range messageTextFields(msg) {
+		if *f != "" {
+			parts = append(parts, *f)
 		}
-		probe := &domain.CanonicalChatRequest{Messages: make([]domain.CanonicalMessage, 1)}
-		probe.Messages[0].Role = msg.Role
-		texts := []*string{&msg.ReasoningContent}
-		for ci := range msg.ToolCalls {
-			texts = append(texts, &msg.ToolCalls[ci].Function.Arguments)
-		}
-		for pi := range msg.Parts {
-			if msg.Parts[pi].Type == "text" {
-				texts = append(texts, &msg.Parts[pi].Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func checkPromptInjection(pol *domain.GuardrailPolicy, loggingOnly bool, text string, outcome *CheckOutcome) error {
+	if !pol.EnablePromptInjection || text == "" {
+		return nil
+	}
+	normalized := normalizeTextForSignatureCheck(text)
+	for _, sig := range promptInjectionSignatures {
+		if strings.Contains(normalized, sig) {
+			outcome.Violations = append(outcome.Violations, "prompt_injection:"+sig)
+			action := pol.PromptInjectionAction
+			if action == "" {
+				action = domain.GuardrailActionBlock
 			}
-		}
-		for _, field := range texts {
-			if *field == "" {
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
 				continue
 			}
-			probe.Messages[0].Content = *field
-			partOutcome, err := e.EvaluateInputWithPolicy(ctx, pol, probe)
-			if partOutcome != nil {
-				outcome.Violations = append(outcome.Violations, partOutcome.Violations...)
-				if partOutcome.AppliedAction != "" {
-					outcome.AppliedAction = partOutcome.AppliedAction
+			outcome.AppliedAction = action
+			if action == domain.GuardrailActionBlock {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "guardrail_prompt_injection",
+					Message:    fmt.Sprintf("Request blocked by organization security guardrail (prompt injection signature detected: %q)", sig),
 				}
-				outcome.Redacted = outcome.Redacted || partOutcome.Redacted
 			}
-			if err != nil {
-				return outcome, err
+		}
+	}
+	return nil
+}
+
+func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, field *string, outcome *CheckOutcome) error {
+	if *field == "" {
+		return nil
+	}
+	lower := strings.ToLower(*field)
+
+	// 1. Prompt Injection Check (Unicode & whitespace normalized)
+	if err := checkPromptInjection(pol, loggingOnly, *field, outcome); err != nil {
+		return err
+	}
+
+	// 2. Custom Blocked Keywords
+	for _, kw := range pol.BlockedKeywords {
+		kwTrim := strings.TrimSpace(kw)
+		if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
+			outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+				continue
 			}
-			if !loggingOnly && partOutcome != nil && partOutcome.Redacted {
-				*field = probe.Messages[0].Content
+			outcome.AppliedAction = domain.GuardrailActionBlock
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "guardrail_blocked_keyword",
+				Message:    fmt.Sprintf("Request blocked by organization guardrail policy (restricted keyword: %q)", kwTrim),
 			}
 		}
 	}
 
-	for idx := range req.Messages {
-		msg := &req.Messages[idx]
-		if !shouldScanRole(pol, msg.Role) {
-			continue
-		}
-		lower := strings.ToLower(msg.Content)
+	// 3. Built-in Toxicity & Content Filtering
+	if err := evaluateToxicity(pol, loggingOnly, field, false, outcome); err != nil {
+		return err
+	}
 
-		// 1. Prompt Injection Check
-		if pol.EnablePromptInjection {
-			for _, sig := range promptInjectionSignatures {
-				if strings.Contains(lower, sig) {
-					outcome.Violations = append(outcome.Violations, "prompt_injection:"+sig)
-					action := pol.PromptInjectionAction
-					if action == "" {
-						action = domain.GuardrailActionBlock
-					}
-					if loggingOnly {
-						outcome.AppliedAction = domain.GuardrailActionAudit
-						continue
-					}
-					outcome.AppliedAction = action
-					if action == domain.GuardrailActionBlock {
-						return outcome, &domain.GatewayError{
-							StatusCode: http.StatusBadRequest,
-							Type:       domain.ErrorTypeInvalidRequest,
-							Code:       "guardrail_prompt_injection",
-							Message:    fmt.Sprintf("Request blocked by organization security guardrail (prompt injection signature detected: %q)", sig),
-						}
-					}
-				}
-			}
+	// 4. Secret / API Key Leak Check
+	if pol.EnableSecretDetection && reSecret.MatchString(*field) {
+		outcome.Violations = append(outcome.Violations, "secret_detected")
+		action := pol.SecretAction
+		if action == "" {
+			action = domain.GuardrailActionRedact
 		}
-
-		// 2. Custom Blocked Keywords
-		for _, kw := range pol.BlockedKeywords {
-			kwTrim := strings.TrimSpace(kw)
-			if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
-				outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
-				if loggingOnly {
-					outcome.AppliedAction = domain.GuardrailActionAudit
-					continue
-				}
-				outcome.AppliedAction = domain.GuardrailActionBlock
-				return outcome, &domain.GatewayError{
+		if loggingOnly {
+			outcome.AppliedAction = domain.GuardrailActionAudit
+		} else {
+			outcome.AppliedAction = action
+			if action == domain.GuardrailActionBlock {
+				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "guardrail_blocked_keyword",
-					Message:    fmt.Sprintf("Request blocked by organization guardrail policy (restricted keyword: %q)", kwTrim),
+					Code:       "guardrail_secret_detected",
+					Message:    "Request blocked by security guardrail: sensitive API key or credential detected in prompt",
 				}
 			}
+			if action == domain.GuardrailActionRedact {
+				*field = reSecret.ReplaceAllString(*field, "[REDACTED_SECRET]")
+				outcome.Redacted = true
+			}
 		}
+	}
 
-		// 3. Secret / API Key Leak Check
-		if pol.EnableSecretDetection && reSecret.MatchString(msg.Content) {
-			outcome.Violations = append(outcome.Violations, "secret_detected")
-			action := pol.SecretAction
+	// 5. PII Detection (Emails, SSNs, Luhn-valid Credit Cards)
+	if pol.EnablePIIDetection {
+		hasPII := reEmail.MatchString(*field) || reSSN.MatchString(*field) || containsValidCard(*field)
+		if hasPII {
+			outcome.Violations = append(outcome.Violations, "pii_detected")
+			action := pol.PIIAction
 			if action == "" {
 				action = domain.GuardrailActionRedact
 			}
@@ -227,87 +244,99 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 			} else {
 				outcome.AppliedAction = action
 				if action == domain.GuardrailActionBlock {
-					return outcome, &domain.GatewayError{
+					return &domain.GatewayError{
 						StatusCode: http.StatusBadRequest,
 						Type:       domain.ErrorTypeInvalidRequest,
-						Code:       "guardrail_secret_detected",
-						Message:    "Request blocked by security guardrail: sensitive API key or credential detected in prompt",
+						Code:       "guardrail_pii_detected",
+						Message:    "Request blocked by security guardrail: PII (email, SSN, or payment card) detected in prompt",
 					}
 				}
 				if action == domain.GuardrailActionRedact {
-					msg.Content = reSecret.ReplaceAllString(msg.Content, "[REDACTED_SECRET]")
+					*field = reEmail.ReplaceAllString(*field, "[REDACTED_EMAIL]")
+					*field = reSSN.ReplaceAllString(*field, "[REDACTED_SSN]")
+					if next, changed := redactValidCards(*field); changed {
+						*field = next
+					}
 					outcome.Redacted = true
-				}
-			}
-		}
-
-		// 4. PII Detection (Emails, SSNs, Credit Cards)
-		if pol.EnablePIIDetection {
-			hasPII := reEmail.MatchString(msg.Content) || reSSN.MatchString(msg.Content) || reCard.MatchString(msg.Content)
-			if hasPII {
-				outcome.Violations = append(outcome.Violations, "pii_detected")
-				action := pol.PIIAction
-				if action == "" {
-					action = domain.GuardrailActionRedact
-				}
-				if loggingOnly {
-					outcome.AppliedAction = domain.GuardrailActionAudit
-				} else {
-					outcome.AppliedAction = action
-					if action == domain.GuardrailActionBlock {
-						return outcome, &domain.GatewayError{
-							StatusCode: http.StatusBadRequest,
-							Type:       domain.ErrorTypeInvalidRequest,
-							Code:       "guardrail_pii_detected",
-							Message:    "Request blocked by security guardrail: PII (email, SSN, or payment card) detected in prompt",
-						}
-					}
-					if action == domain.GuardrailActionRedact {
-						msg.Content = reEmail.ReplaceAllString(msg.Content, "[REDACTED_EMAIL]")
-						msg.Content = reSSN.ReplaceAllString(msg.Content, "[REDACTED_SSN]")
-						msg.Content = reCard.ReplaceAllString(msg.Content, "[REDACTED_CARD]")
-						outcome.Redacted = true
-					}
 				}
 			}
 		}
 	}
 
-	for idx := range req.Messages {
-		msg := &req.Messages[idx]
-		if !shouldScanRole(pol, msg.Role) {
+	return nil
+}
+
+// EvaluateInputWithPolicy evaluates a CanonicalChatRequest directly against an explicit GuardrailPolicy.
+func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.GuardrailPolicy, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
+	outcome := &CheckOutcome{}
+	if e == nil || pol == nil || req == nil {
+		return outcome, nil
+	}
+	loggingOnly := pol.EffectiveMode() == domain.GuardrailModeLoggingOnly
+
+	// 1. Local field scanning (images and binary payloads remain untouched).
+	for mi := range req.Messages {
+		msg := &req.Messages[mi]
+		scanAll := shouldScanRole(pol, msg.Role)
+		scanToolInjection := !scanAll && strings.EqualFold(strings.TrimSpace(msg.Role), "tool") && pol.EnablePromptInjection
+		if !scanAll && !scanToolInjection {
 			continue
 		}
-		for _, scanner := range e.scanners {
-			scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
-			result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: pol.OrgID, Direction: ScanInput, Content: msg.Content})
-			cancel()
-			if err != nil {
-				logger.WarnContext(ctx, "Optional guardrail scanner failed", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
-				if e.scannerFailClosed {
-					return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
+		for _, field := range messageTextFields(msg) {
+			if *field == "" {
+				continue
+			}
+			if scanToolInjection {
+				if err := checkPromptInjection(pol, loggingOnly, *field, outcome); err != nil {
+					return outcome, err
 				}
 				continue
 			}
-			if result.Decision == ScannerDecisionBlock {
-				outcome.Violations = append(outcome.Violations, result.Violations...)
-				if len(result.Violations) == 0 {
-					outcome.Violations = append(outcome.Violations, "external_scanner_blocked")
-				}
-				if loggingOnly {
-					outcome.AppliedAction = domain.GuardrailActionAudit
+			if err := evaluateLocalInputField(pol, loggingOnly, field, outcome); err != nil {
+				return outcome, err
+			}
+		}
+	}
+
+	// 2. External scanner loop: invoked once per eligible message rather than per part/tool-call.
+	if len(e.scanners) > 0 {
+		for idx := range req.Messages {
+			msg := &req.Messages[idx]
+			if !shouldScanRole(pol, msg.Role) {
+				continue
+			}
+			content := collectMessageText(msg)
+			for _, scanner := range e.scanners {
+				scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
+				result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: pol.OrgID, Direction: ScanInput, Content: content})
+				cancel()
+				if err != nil {
+					logger.WarnContext(ctx, "Optional guardrail scanner failed", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
+					if e.scannerFailClosed {
+						return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
+					}
 					continue
 				}
-				outcome.AppliedAction = domain.GuardrailActionBlock
-				return outcome, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "guardrail_scanner_blocked", Message: "request blocked by configured security scanner"}
-			}
-			if result.Decision != ScannerDecisionAllow {
-				logger.WarnContext(ctx, "Optional guardrail scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
-				if e.scannerFailClosed {
-					return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
+				if result.Decision == ScannerDecisionBlock {
+					outcome.Violations = append(outcome.Violations, result.Violations...)
+					if len(result.Violations) == 0 {
+						outcome.Violations = append(outcome.Violations, "external_scanner_blocked")
+					}
+					if loggingOnly {
+						outcome.AppliedAction = domain.GuardrailActionAudit
+						continue
+					}
+					outcome.AppliedAction = domain.GuardrailActionBlock
+					return outcome, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "guardrail_scanner_blocked", Message: "request blocked by configured security scanner"}
 				}
+				if result.Decision != ScannerDecisionAllow {
+					logger.WarnContext(ctx, "Optional guardrail scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
+					if e.scannerFailClosed {
+						return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
+					}
+				}
+				outcome.Violations = append(outcome.Violations, result.Violations...)
 			}
-			outcome.Violations = append(outcome.Violations, result.Violations...)
 		}
 	}
 
@@ -325,6 +354,104 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	return outcome, nil
 }
 
+func evaluateLocalOutputField(pol *domain.GuardrailPolicy, loggingOnly bool, field *string, outcome *CheckOutcome) error {
+	if *field == "" {
+		return nil
+	}
+	lower := strings.ToLower(*field)
+
+	// 1. Custom Blocked Keywords
+	for _, kw := range pol.BlockedKeywords {
+		kwTrim := strings.TrimSpace(kw)
+		if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
+			outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+				continue
+			}
+			outcome.AppliedAction = domain.GuardrailActionBlock
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeServer,
+				Code:       "guardrail_output_blocked",
+				Message:    fmt.Sprintf("Response blocked by organization guardrail policy (restricted keyword: %q)", kwTrim),
+			}
+		}
+	}
+
+	// 2. Built-in Toxicity & Content Filtering
+	if err := evaluateToxicity(pol, loggingOnly, field, true, outcome); err != nil {
+		return err
+	}
+
+	// 3. Secret / API Key Leak Check
+	if (pol.EnableSecretDetection || pol.RedactOutputPII) && reSecret.MatchString(*field) {
+		outcome.Violations = append(outcome.Violations, "secret_detected")
+		action := domain.GuardrailActionRedact
+		if pol.EnableSecretDetection && pol.SecretAction != "" {
+			action = pol.SecretAction
+		}
+		if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
+			action = domain.GuardrailActionRedact
+		}
+		if loggingOnly {
+			outcome.AppliedAction = domain.GuardrailActionAudit
+		} else {
+			outcome.AppliedAction = action
+			if action == domain.GuardrailActionBlock {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadGateway,
+					Type:       domain.ErrorTypeServer,
+					Code:       "guardrail_output_secret_detected",
+					Message:    "Response blocked by security guardrail: sensitive API key or credential detected in output",
+				}
+			}
+			if action == domain.GuardrailActionRedact {
+				*field = reSecret.ReplaceAllString(*field, "[REDACTED_SECRET]")
+				outcome.Redacted = true
+			}
+		}
+	}
+
+	// 4. PII Detection (Emails, SSNs, Luhn-valid Credit Cards)
+	if pol.EnablePIIDetection || pol.RedactOutputPII {
+		hasPII := reEmail.MatchString(*field) || reSSN.MatchString(*field) || containsValidCard(*field)
+		if hasPII {
+			outcome.Violations = append(outcome.Violations, "pii_detected")
+			action := domain.GuardrailActionRedact
+			if pol.EnablePIIDetection && pol.PIIAction != "" {
+				action = pol.PIIAction
+			}
+			if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
+				action = domain.GuardrailActionRedact
+			}
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+			} else {
+				outcome.AppliedAction = action
+				if action == domain.GuardrailActionBlock {
+					return &domain.GatewayError{
+						StatusCode: http.StatusBadGateway,
+						Type:       domain.ErrorTypeServer,
+						Code:       "guardrail_output_pii_detected",
+						Message:    "Response blocked by security guardrail: PII (email, SSN, or payment card) detected in output",
+					}
+				}
+				if action == domain.GuardrailActionRedact {
+					*field = reEmail.ReplaceAllString(*field, "[REDACTED_EMAIL]")
+					*field = reSSN.ReplaceAllString(*field, "[REDACTED_SSN]")
+					if next, changed := redactValidCards(*field); changed {
+						*field = next
+					}
+					outcome.Redacted = true
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // EvaluateOutputWithPolicy evaluates and optionally redacts or blocks a CanonicalChatResponse
 // against an explicit GuardrailPolicy. Callers must withhold output when this method returns an error.
 func (e *Engine) EvaluateOutputWithPolicy(ctx context.Context, pol *domain.GuardrailPolicy, resp *domain.CanonicalChatResponse) (*CheckOutcome, error) {
@@ -336,110 +463,16 @@ func (e *Engine) EvaluateOutputWithPolicy(ctx context.Context, pol *domain.Guard
 
 	for i := range resp.Choices {
 		msg := &resp.Choices[i].Message
-		fields := []*string{&msg.Content, &msg.ReasoningContent}
-		for pi := range msg.Parts {
-			if msg.Parts[pi].Type == "text" {
-				fields = append(fields, &msg.Parts[pi].Text)
+		for _, field := range messageTextFields(msg) {
+			if err := evaluateLocalOutputField(pol, loggingOnly, field, outcome); err != nil {
+				return outcome, err
 			}
 		}
-		for ci := range msg.ToolCalls {
-			fields = append(fields, &msg.ToolCalls[ci].Function.Arguments)
-		}
-		for _, field := range fields {
-			if *field == "" {
-				// Still run external scanners if configured, preserving existing behavior.
-				if err := e.scanOutputField(ctx, pol, loggingOnly, *field, outcome); err != nil {
-					return outcome, err
-				}
-				continue
-			}
 
-			lower := strings.ToLower(*field)
-
-			// 1. Custom Blocked Keywords
-			for _, kw := range pol.BlockedKeywords {
-				kwTrim := strings.TrimSpace(kw)
-				if kwTrim != "" && strings.Contains(lower, strings.ToLower(kwTrim)) {
-					outcome.Violations = append(outcome.Violations, "blocked_keyword:"+kwTrim)
-					if loggingOnly {
-						outcome.AppliedAction = domain.GuardrailActionAudit
-						continue
-					}
-					outcome.AppliedAction = domain.GuardrailActionBlock
-					return outcome, &domain.GatewayError{
-						StatusCode: http.StatusBadGateway,
-						Type:       domain.ErrorTypeServer,
-						Code:       "guardrail_output_blocked",
-						Message:    fmt.Sprintf("Response blocked by organization guardrail policy (restricted keyword: %q)", kwTrim),
-					}
-				}
-			}
-
-			// 2. Secret / API Key Leak Check
-			if (pol.EnableSecretDetection || pol.RedactOutputPII) && reSecret.MatchString(*field) {
-				outcome.Violations = append(outcome.Violations, "secret_detected")
-				action := domain.GuardrailActionRedact
-				if pol.EnableSecretDetection && pol.SecretAction != "" {
-					action = pol.SecretAction
-				}
-				if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
-					action = domain.GuardrailActionRedact
-				}
-				if loggingOnly {
-					outcome.AppliedAction = domain.GuardrailActionAudit
-				} else {
-					outcome.AppliedAction = action
-					if action == domain.GuardrailActionBlock {
-						return outcome, &domain.GatewayError{
-							StatusCode: http.StatusBadGateway,
-							Type:       domain.ErrorTypeServer,
-							Code:       "guardrail_output_secret_detected",
-							Message:    "Response blocked by security guardrail: sensitive API key or credential detected in output",
-						}
-					}
-					if action == domain.GuardrailActionRedact {
-						*field = reSecret.ReplaceAllString(*field, "[REDACTED_SECRET]")
-						outcome.Redacted = true
-					}
-				}
-			}
-
-			// 3. PII Detection (Emails, SSNs, Credit Cards)
-			if pol.EnablePIIDetection || pol.RedactOutputPII {
-				hasPII := reEmail.MatchString(*field) || reSSN.MatchString(*field) || reCard.MatchString(*field)
-				if hasPII {
-					outcome.Violations = append(outcome.Violations, "pii_detected")
-					action := domain.GuardrailActionRedact
-					if pol.EnablePIIDetection && pol.PIIAction != "" {
-						action = pol.PIIAction
-					}
-					if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
-						action = domain.GuardrailActionRedact
-					}
-					if loggingOnly {
-						outcome.AppliedAction = domain.GuardrailActionAudit
-					} else {
-						outcome.AppliedAction = action
-						if action == domain.GuardrailActionBlock {
-							return outcome, &domain.GatewayError{
-								StatusCode: http.StatusBadGateway,
-								Type:       domain.ErrorTypeServer,
-								Code:       "guardrail_output_pii_detected",
-								Message:    "Response blocked by security guardrail: PII (email, SSN, or payment card) detected in output",
-							}
-						}
-						if action == domain.GuardrailActionRedact {
-							*field = reEmail.ReplaceAllString(*field, "[REDACTED_EMAIL]")
-							*field = reSSN.ReplaceAllString(*field, "[REDACTED_SSN]")
-							*field = reCard.ReplaceAllString(*field, "[REDACTED_CARD]")
-							outcome.Redacted = true
-						}
-					}
-				}
-			}
-
-			// 4. Optional External Scanners
-			if err := e.scanOutputField(ctx, pol, loggingOnly, *field, outcome); err != nil {
+		// Invoke external scanners once per choice message rather than per part/tool-call.
+		if len(e.scanners) > 0 {
+			content := collectMessageText(msg)
+			if err := e.scanOutputField(ctx, pol, loggingOnly, content, outcome); err != nil {
 				return outcome, err
 			}
 		}
@@ -550,10 +583,67 @@ func (e *Engine) SanitizeTextOutput(ctx context.Context, orgID, text string) (st
 	return probe.Choices[0].Message.Content, redacted, nil
 }
 
+func isValidLuhn(card string) bool {
+	var digits [20]int
+	n := 0
+	for i := 0; i < len(card); i++ {
+		c := card[i]
+		if c == '-' || c == ' ' {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+		if n >= len(digits) {
+			return false
+		}
+		digits[n] = int(c - '0')
+		n++
+	}
+	if n < 13 || n > 19 {
+		return false
+	}
+	sum := 0
+	alt := false
+	for i := n - 1; i >= 0; i-- {
+		d := digits[i]
+		if alt {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		alt = !alt
+	}
+	return sum%10 == 0
+}
+
+func containsValidCard(text string) bool {
+	for _, match := range reCard.FindAllString(text, -1) {
+		if isValidLuhn(match) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactValidCards(text string) (string, bool) {
+	changed := false
+	updated := reCard.ReplaceAllStringFunc(text, func(match string) string {
+		if isValidLuhn(match) {
+			changed = true
+			return "[REDACTED_CARD]"
+		}
+		return match
+	})
+	return updated, changed
+}
+
 func sanitizeText(text string) string {
 	updated := reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
 	updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
-	updated = reCard.ReplaceAllString(updated, "[REDACTED_CARD]")
+	updated, _ = redactValidCards(updated)
 	return reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
 }
 
