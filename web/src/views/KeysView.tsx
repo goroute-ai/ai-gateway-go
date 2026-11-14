@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Modal, INPUT_CLS } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
-import type { VirtualKey } from '../types';
+import type { VirtualKey, Role, BudgetResetPeriod } from '../types';
 import {
   Key,
   Plus,
@@ -17,6 +17,48 @@ import {
   AlertTriangle,
   Zap,
 } from 'lucide-react';
+
+type AllowMode = 'inherit' | 'deny' | 'allowlist';
+type AllowState = { mode: AllowMode; text: string };
+const INHERIT: AllowState = { mode: 'inherit', text: '' };
+const ROLES: Role[] = ['developer', 'service_account', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'platform_admin'];
+const RESET_PERIODS: BudgetResetPeriod[] = ['daily', 'monthly', 'never'];
+const parseCSV = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
+const initAllow = (v?: string[] | null): AllowState =>
+  v == null ? INHERIT : v.length === 0 ? { mode: 'deny', text: '' } : { mode: 'allowlist', text: v.join(', ') };
+const encodeAllow = (s: AllowState, isEdit: boolean): string[] | null | undefined =>
+  s.mode === 'inherit' ? (isEdit ? null : undefined) : s.mode === 'deny' ? [] : parseCSV(s.text);
+
+const AllowlistField: React.FC<{
+  label: string;
+  state: AllowState;
+  onChange: (next: AllowState) => void;
+  placeholder: string;
+}> = ({ label, state, onChange, placeholder }) => (
+  <div>
+    <label className="block text-xs font-medium text-slate-300 mb-1">{label}</label>
+    <div className="flex gap-2">
+      <select
+        value={state.mode}
+        onChange={(e) => onChange({ ...state, mode: e.target.value as AllowMode })}
+        className={`${INPUT_CLS} w-40 shrink-0`}
+      >
+        <option value="inherit">Inherit (Org/Team)</option>
+        <option value="deny">Deny All ([])</option>
+        <option value="allowlist">Custom Allowlist</option>
+      </select>
+      {state.mode === 'allowlist' && (
+        <input
+          type="text"
+          value={state.text}
+          onChange={(e) => onChange({ ...state, text: e.target.value })}
+          placeholder={placeholder}
+          className={`${INPUT_CLS} font-mono`}
+        />
+      )}
+    </div>
+  </div>
+);
 
 export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
   const { adminKey, activeOrgId, setCapturedVirtualKey } = useAuth();
@@ -31,13 +73,18 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
   const [name, setName] = useState('');
   const [teamId, setTeamId] = useState('');
   const [userId, setUserId] = useState('');
+  const [role, setRole] = useState<Role>('developer');
   const [expiresAt, setExpiresAt] = useState('');
   const [maxBudgetUSD, setMaxBudgetUSD] = useState('');
+  const [budgetResetPeriod, setBudgetResetPeriod] = useState<BudgetResetPeriod>('monthly');
   const [rpmLimit, setRpmLimit] = useState('');
   const [tpmLimit, setTpmLimit] = useState('');
+  const [maxConcurrent, setMaxConcurrent] = useState('');
   const [allowedModels, setAllowedModels] = useState('');
-  const [allowedMCPServers, setAllowedMCPServers] = useState('');
-  const [allowedA2AAgents, setAllowedA2AAgents] = useState('');
+  const [allowedEndpoints, setAllowedEndpoints] = useState('');
+  const [mcpAllow, setMcpAllow] = useState<AllowState>(INHERIT);
+  const [a2aAllow, setA2aAllow] = useState<AllowState>(INHERIT);
+  const [clientAppAllow, setClientAppAllow] = useState<AllowState>(INHERIT);
 
   // 1. Fetch virtual keys for active org
   const {
@@ -102,27 +149,38 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     setName('');
     setTeamId('');
     setUserId('');
+    setRole('developer');
     setExpiresAt('');
     setMaxBudgetUSD('');
+    setBudgetResetPeriod('monthly');
     setRpmLimit('');
     setTpmLimit('');
+    setMaxConcurrent('');
     setAllowedModels('');
-    setAllowedMCPServers('');
-    setAllowedA2AAgents('');
+    setAllowedEndpoints('');
+    setMcpAllow(INHERIT);
+    setA2aAllow(INHERIT);
+    setClientAppAllow(INHERIT);
   };
 
   const openEditModal = (k: VirtualKey) => {
+    issueMutation.reset();
     setEditingKeyId(k.id);
     setName(k.name);
     setTeamId(k.team_id || '');
     setUserId(k.user_id || '');
+    setRole(k.role || 'developer');
     setExpiresAt(k.expires_at ? k.expires_at.slice(0, 16) : '');
     setMaxBudgetUSD(k.max_budget_micros ? String(k.max_budget_micros / 1_000_000) : '');
+    setBudgetResetPeriod(k.budget_reset_period || 'monthly');
     setRpmLimit(k.rpm_limit ? String(k.rpm_limit) : '');
     setTpmLimit(k.tpm_limit ? String(k.tpm_limit) : '');
+    setMaxConcurrent(k.max_concurrent_requests ? String(k.max_concurrent_requests) : '');
     setAllowedModels((k.allowed_models || []).join(', '));
-    setAllowedMCPServers((k.allowed_mcp_servers || []).join(', '));
-    setAllowedA2AAgents((k.allowed_a2a_agents || []).join(', '));
+    setAllowedEndpoints((k.allowed_endpoints || []).join(', '));
+    setMcpAllow(initAllow(k.allowed_mcp_servers));
+    setA2aAllow(initAllow(k.allowed_a2a_agents));
+    setClientAppAllow(initAllow(k.allowed_client_apps));
     setShowIssueModal(true);
   };
 
@@ -130,11 +188,14 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     e.preventDefault();
     if (!name.trim()) return;
 
+    const isEdit = !!editingKeyId;
     const payload: Partial<VirtualKey> = {
       org_id: activeOrgId,
       name: name.trim(),
       team_id: teamId.trim(),
       user_id: userId.trim(),
+      role,
+      budget_reset_period: budgetResetPeriod,
     };
 
     if (expiresAt) {
@@ -144,20 +205,22 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     const parsedBudget = parseFloat(maxBudgetUSD);
     if (!isNaN(parsedBudget) && parsedBudget >= 0) {
       payload.max_budget_micros = Math.round(parsedBudget * 1_000_000);
-    } else if (editingKeyId) {
+    } else if (isEdit) {
       payload.max_budget_micros = 0;
     }
     payload.rpm_limit = rpmLimit ? parseInt(rpmLimit, 10) : 0;
     payload.tpm_limit = tpmLimit ? parseInt(tpmLimit, 10) : 0;
-    payload.allowed_models = allowedModels.trim()
-      ? allowedModels.split(',').map((s) => s.trim()).filter(Boolean)
-      : [];
-    if (allowedMCPServers.trim() || editingKeyId) {
-      payload.allowed_mcp_servers = allowedMCPServers.split(',').map((s) => s.trim()).filter(Boolean);
+    payload.max_concurrent_requests = maxConcurrent ? parseInt(maxConcurrent, 10) : 0;
+    payload.allowed_models = allowedModels.trim() ? parseCSV(allowedModels) : [];
+    if (allowedEndpoints.trim() || isEdit) {
+      payload.allowed_endpoints = allowedEndpoints.trim() ? parseCSV(allowedEndpoints) : [];
     }
-    if (allowedA2AAgents.trim() || editingKeyId) {
-      payload.allowed_a2a_agents = allowedA2AAgents.split(',').map((s) => s.trim()).filter(Boolean);
-    }
+    const mcpVal = encodeAllow(mcpAllow, isEdit);
+    if (mcpVal !== undefined) payload.allowed_mcp_servers = mcpVal;
+    const a2aVal = encodeAllow(a2aAllow, isEdit);
+    if (a2aVal !== undefined) payload.allowed_a2a_agents = a2aVal;
+    const appVal = encodeAllow(clientAppAllow, isEdit);
+    if (appVal !== undefined) payload.allowed_client_apps = appVal;
 
     issueMutation.mutate(payload);
   };
@@ -192,6 +255,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
           </button>
           <button
             onClick={() => {
+              issueMutation.reset();
               setEditingKeyId(null);
               resetForm();
               setShowIssueModal(true);
@@ -209,6 +273,9 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       )}
       {rotateMutation.isError && (
         <ErrorAlert error={rotateMutation.error} title="Failed to rotate virtual key" />
+      )}
+      {revokeMutation.isError && (
+        <ErrorAlert error={revokeMutation.error} title="Failed to revoke virtual key" />
       )}
 
       {/* Keys Table */}
@@ -354,7 +421,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         }}
         title={editingKeyId ? 'Edit Virtual Key' : 'Issue New Virtual Key'}
         description="Configure rate limits, budget caps, and model scopes for this virtual key."
-        maxWidth="md"
+        maxWidth="lg"
       >
         <form onSubmit={handleIssueSubmit} className="space-y-4">
           {issueMutation.isError && (
@@ -395,7 +462,22 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Role</label>
+              <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={INPUT_CLS}>
+                {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Budget Reset Period</label>
+              <select value={budgetResetPeriod} onChange={(e) => setBudgetResetPeriod(e.target.value as BudgetResetPeriod)} className={`${INPUT_CLS} capitalize`}>
+                {RESET_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">Budget Cap (USD)</label>
               <input type="number" step="0.01" min="0" value={maxBudgetUSD} onChange={(e) => setMaxBudgetUSD(e.target.value)} placeholder="50.00" className={`${INPUT_CLS} font-mono`} />
@@ -408,22 +490,27 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
               <label className="block text-xs font-medium text-slate-300 mb-1">TPM Limit</label>
               <input type="number" min="0" value={tpmLimit} onChange={(e) => setTpmLimit(e.target.value)} placeholder="100000" className={`${INPUT_CLS} font-mono`} />
             </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Models (Comma-separated)</label>
-            <input type="text" value={allowedModels} onChange={(e) => setAllowedModels(e.target.value)} placeholder="fast, reasoning, openai/gpt-4o" className={`${INPUT_CLS} font-mono`} />
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Max Concurrent</label>
+              <input type="number" min="0" value={maxConcurrent} onChange={(e) => setMaxConcurrent(e.target.value)} placeholder="0 (∞)" className={`${INPUT_CLS} font-mono`} />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed MCP Servers</label>
-              <input type="text" value={allowedMCPServers} onChange={(e) => setAllowedMCPServers(e.target.value)} placeholder="mcp_github, mcp_postgres" className={`${INPUT_CLS} font-mono`} />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Models (Comma-separated)</label>
+              <input type="text" value={allowedModels} onChange={(e) => setAllowedModels(e.target.value)} placeholder="fast, reasoning, openai/gpt-4o" className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed A2A Agents</label>
-              <input type="text" value={allowedA2AAgents} onChange={(e) => setAllowedA2AAgents(e.target.value)} placeholder="agent_research, agent_code" className={`${INPUT_CLS} font-mono`} />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Endpoints (Comma-separated)</label>
+              <input type="text" value={allowedEndpoints} onChange={(e) => setAllowedEndpoints(e.target.value)} placeholder="/v1/*, /chat/* (blank=default)" className={`${INPUT_CLS} font-mono`} />
             </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <AllowlistField label="Allowed MCP Servers" state={mcpAllow} onChange={setMcpAllow} placeholder="mcp_github, mcp_postgres" />
+            <AllowlistField label="Allowed A2A Agents" state={a2aAllow} onChange={setA2aAllow} placeholder="agent_research, agent_code" />
+            <AllowlistField label="Allowed Client Apps" state={clientAppAllow} onChange={setClientAppAllow} placeholder="cursor, claude-code" />
           </div>
 
           <div className="flex justify-end gap-2 pt-2">

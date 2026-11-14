@@ -79,54 +79,92 @@ export async function streamChatCompletion(
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
 
+  const processFrame = (rawEvent: string): boolean => {
+    const lines = rawEvent.split(/\r?\n/);
+    let currentEvent = '';
+    let dataAccumulator = '';
+
+    for (const line of lines) {
+      if (line.startsWith(':') || !line.trim()) continue;
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        const dataSlice = line.slice(line.startsWith('data: ') ? 6 : 5);
+        if (dataSlice.trim() === '[DONE]') return true;
+        dataAccumulator += (dataAccumulator ? '\n' : '') + dataSlice;
+      }
+    }
+
+    if (!dataAccumulator) return false;
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(dataAccumulator);
+    } catch {
+      if (currentEvent === 'error') {
+        throw new Error(dataAccumulator);
+      }
+      return false;
+    }
+
+    if (currentEvent === 'error' || parsed.error) {
+      const errInfo = parsed.error || parsed;
+      const msg =
+        (typeof errInfo === 'string' ? errInfo : errInfo?.message) ||
+        'Stream interrupted by gateway error';
+      const err = new Error(msg);
+      if (errInfo && typeof errInfo === 'object') {
+        if (errInfo.code) (err as any).code = errInfo.code;
+        if (errInfo.status) (err as any).status = errInfo.status;
+        (err as any).details = errInfo;
+      }
+      throw err;
+    }
+
+    const choice = parsed.choices?.[0];
+    if (choice || parsed.usage) {
+      onChunk({
+        content: choice?.delta?.content,
+        reasoning_content:
+          choice?.delta?.reasoning_content || choice?.delta?.reasoning,
+        tool_calls: choice?.delta?.tool_calls,
+        finish_reason: choice?.finish_reason,
+        usage: parsed.usage,
+      });
+    }
+    return false;
+  };
+
+  const drainBuffer = (flushAll: boolean): boolean => {
+    while (true) {
+      const lf = buffer.indexOf('\n\n');
+      const crlf = buffer.indexOf('\r\n\r\n');
+      const idx = lf === -1 ? crlf : crlf === -1 ? lf : Math.min(lf, crlf);
+      if (idx === -1) break;
+      const delimLen = buffer.startsWith('\r\n\r\n', idx) ? 4 : 2;
+      const rawEvent = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + delimLen);
+      if (processFrame(rawEvent)) return true;
+    }
+    if (flushAll && buffer.trim()) {
+      const tail = buffer;
+      buffer = '';
+      if (processFrame(tail)) return true;
+    }
+    return false;
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer += decoder.decode();
+        drainBuffer(true);
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
-
-      // Split on double newline event boundary
-      let boundaryIndex: number;
-      while (
-        (boundaryIndex = buffer.indexOf('\n\n')) !== -1 ||
-        (boundaryIndex = buffer.indexOf('\r\n\r\n')) !== -1
-      ) {
-        const delimiterLength = buffer.startsWith('\r\n\r\n', boundaryIndex) ? 4 : 2;
-        const rawEvent = buffer.slice(0, boundaryIndex);
-        buffer = buffer.slice(boundaryIndex + delimiterLength);
-
-        const lines = rawEvent.split(/\r?\n/);
-        let dataAccumulator = '';
-
-        for (const line of lines) {
-          if (line.startsWith(':') || !line.trim()) continue;
-          if (line.startsWith('data: ')) {
-            const dataSlice = line.slice(6);
-            if (dataSlice.trim() === '[DONE]') return;
-            dataAccumulator += (dataAccumulator ? '\n' : '') + dataSlice;
-          }
-        }
-
-        if (dataAccumulator) {
-          try {
-            const parsed = JSON.parse(dataAccumulator);
-            const choice = parsed.choices?.[0];
-            if (choice || parsed.usage) {
-              onChunk({
-                content: choice?.delta?.content,
-                reasoning_content:
-                  choice?.delta?.reasoning_content || choice?.delta?.reasoning,
-                tool_calls: choice?.delta?.tool_calls,
-                finish_reason: choice?.finish_reason,
-                usage: parsed.usage,
-              });
-            }
-          } catch {
-            // Wait for complete JSON event
-          }
-        }
-      }
+      if (drainBuffer(false)) return;
     }
   } finally {
     reader.releaseLock();

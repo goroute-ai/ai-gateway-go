@@ -7,6 +7,29 @@ interface ErrorAlertProps {
   onRetry?: () => void;
 }
 
+export const isPlatformAdminForbidden = (err: unknown): boolean => {
+  const e = err as { status?: number; code?: string; message?: string } | null;
+  return (
+    e?.status === 403 &&
+    (e?.code === 'platform_admin_required' || /platform[ _]admin/i.test(e?.message || ''))
+  );
+};
+
+export const ScopedRoleNotice: React.FC<{ subject?: string }> = ({ subject = 'this view' }) => (
+  <div
+    role="status"
+    className="flex items-start gap-2.5 p-3.5 rounded-lg bg-amber-950/30 border border-amber-500/30 text-xs text-amber-200"
+  >
+    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+    <div>
+      <p className="font-semibold text-amber-300">Platform Admin Only — Scoped Operator View</p>
+      <p className="text-amber-200/80 text-[11px] mt-0.5">
+        Your active key is scoped to an organization, so global {subject} is restricted. Use a platform_admin key to inspect cross-tenant resources.
+      </p>
+    </div>
+  </div>
+);
+
 export const ErrorAlert: React.FC<ErrorAlertProps> = ({
   error,
   title = 'Failed to load data',

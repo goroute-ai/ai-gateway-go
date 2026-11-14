@@ -107,6 +107,8 @@ export const OrganizationsView: React.FC = () => {
       {tab === 'users' && deleteUser.isError && <ErrorAlert error={deleteUser.error} title="Failed to delete user" />}
       {tab === 'policies' && subsQ.isError && <ErrorAlert error={subsQ.error} title="Failed to load subscriptions" onRetry={() => subsQ.refetch()} />}
       {tab === 'policies' && polsQ.isError && <ErrorAlert error={polsQ.error} title="Failed to load model policies" onRetry={() => polsQ.refetch()} />}
+      {tab === 'policies' && !modal && setSub.isError && <ErrorAlert error={setSub.error} title="Failed to update provider subscription" />}
+      {tab === 'policies' && !modal && setPol.isError && <ErrorAlert error={setPol.error} title="Failed to update model policy" />}
 
       {tab !== 'policies' ? (
         <div className="bg-surface-base border border-border-subtle rounded-xl overflow-x-auto">
@@ -120,14 +122,14 @@ export const OrganizationsView: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-border-subtle">
               {tab === 'orgs' && orgs.map((o) => (
-                <tr key={o.id}><td className={`${cell} font-medium text-white`}>{o.name}</td><td className={`${cell} font-mono text-slate-400`}>{o.id}</td><td className={`${cell} font-mono`}>{o.max_budget_micros ? fmtUSD(o.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(o.current_spend_micros)}</td><td className={`${cell} font-mono capitalize text-slate-400`}>{o.budget_reset_period || 'monthly'}</td><td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td><td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td></tr>
+                <tr key={o.id}><td className={`${cell} font-medium text-white`}>{o.name}</td><td className={`${cell} font-mono text-slate-400`}>{o.id}</td><td className={`${cell} font-mono`}>{o.max_budget_micros ? fmtUSD(o.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(o.spent_micros)}</td><td className={`${cell} font-mono capitalize text-slate-400`}>{o.budget_reset_period || 'monthly'}</td><td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td><td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td></tr>
               ))}
               {tab === 'teams' && teams.map((t) => (
                 <tr key={t.id}>
                   <td className={`${cell} font-medium text-white`}>{t.name}</td>
                   <td className={`${cell} font-mono text-slate-400`}>{t.id}</td>
                   <td className={`${cell} font-mono`}>{t.max_budget_micros ? fmtUSD(t.max_budget_micros) : 'Unlimited'}</td>
-                  <td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(t.current_spend_micros)}</td>
+                  <td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(t.spent_micros)}</td>
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
                     <button onClick={() => { setF((p) => ({ ...p, editTeamId: t.id, teamName: t.name, teamBudget: t.max_budget_micros ? String(t.max_budget_micros / 1e6) : '', active: t.is_active })); setModal('team'); }} className="p-1 text-slate-400 hover:text-white rounded" title="Edit team"><Pencil className="w-3.5 h-3.5" /></button>
@@ -183,7 +185,7 @@ export const OrganizationsView: React.FC = () => {
         <input value={f.orgId || ''} onChange={(e) => set('orgId', e.target.value)} placeholder="Organization ID (optional)" className={INPUT_CLS} />
         <div className="grid grid-cols-2 gap-3">
           <input type="number" step="0.01" value={f.orgBudget || ''} onChange={(e) => set('orgBudget', e.target.value)} placeholder="Max Budget USD" className={INPUT_CLS} />
-          <select value={f.reset} onChange={(e) => set('reset', e.target.value)} className={INPUT_CLS}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
+          <select value={f.reset} onChange={(e) => set('reset', e.target.value)} className={INPUT_CLS}><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="never">Never</option></select>
         </div>
       </FormModal>
 
@@ -204,7 +206,7 @@ export const OrganizationsView: React.FC = () => {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <select value={f.userTeamId || ''} onChange={(e) => set('userTeamId', e.target.value)} className={INPUT_CLS}><option value="">No Team</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
-          <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}><option value="developer">developer</option><option value="team_admin">team_admin</option><option value="org_admin">org_admin</option><option value="viewer">viewer</option></select>
+          <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}>{['developer', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'service_account'].map((r) => <option key={r} value={r}>{r}</option>)}</select>
         </div>
         {f.editUserId && <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
       </FormModal>

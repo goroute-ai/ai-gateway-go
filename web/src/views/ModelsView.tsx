@@ -4,7 +4,7 @@ import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
-import { ErrorAlert } from '../components/common/ErrorAlert';
+import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import type { GlobalModel, ModelGroup, Deployment } from '../types';
 import {
   Search,
@@ -12,6 +12,7 @@ import {
   DollarSign,
   Layers,
   Plus,
+  Clock,
 } from 'lucide-react';
 
 export const ModelsView: React.FC = () => {
@@ -22,8 +23,9 @@ export const ModelsView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [providerFilter, setProviderFilter] = useState('');
 
-  // Pricing update modal state
+  // Pricing update & history modals
   const [selectedModel, setSelectedModel] = useState<GlobalModel | null>(null);
+  const [historyModel, setHistoryModel] = useState<GlobalModel | null>(null);
   const [inputCostUSD, setInputCostUSD] = useState('');
   const [outputCostUSD, setOutputCostUSD] = useState('');
   const [cachedInputUSD, setCachedInputUSD] = useState('');
@@ -31,7 +33,11 @@ export const ModelsView: React.FC = () => {
   // Create Model Group modal
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [groupAlias, setGroupAlias] = useState('');
+  const [groupDesc, setGroupDesc] = useState('');
   const [routingStrategy, setRoutingStrategy] = useState('weighted-shuffle');
+  const [groupMaxRetries, setGroupMaxRetries] = useState('');
+  const [groupCooldown, setGroupCooldown] = useState('');
+  const [groupFailureThreshold, setGroupFailureThreshold] = useState('');
 
   // Create Deployment modal
   const [deployGroupId, setDeployGroupId] = useState<string | null>(null);
@@ -41,6 +47,9 @@ export const ModelsView: React.FC = () => {
   const [deployRegion, setDeployRegion] = useState('');
   const [deployPriority, setDeployPriority] = useState('1');
   const [deployWeight, setDeployWeight] = useState('100');
+  const [deployRpm, setDeployRpm] = useState('');
+  const [deployTpm, setDeployTpm] = useState('');
+  const [deployTimeoutMs, setDeployTimeoutMs] = useState('');
 
   // 1. Fetch Global Models Catalogue
   const {
@@ -53,6 +62,19 @@ export const ModelsView: React.FC = () => {
     queryKey: ['admin', 'catalogue', adminKey],
     queryFn: () => adminApi.listCatalogue(adminKey),
     enabled: !!adminKey,
+    retry: (count, err) => !isPlatformAdminForbidden(err) && count < 2,
+  });
+
+  // 1b. Fetch Pricing History for selected model
+  const {
+    data: historyData,
+    isLoading: isHistLoading,
+    isError: isHistError,
+    error: histError,
+  } = useQuery({
+    queryKey: ['admin', 'pricing-history', adminKey, historyModel?.id],
+    queryFn: () => adminApi.listPricingHistory(adminKey, historyModel!.id),
+    enabled: !!adminKey && !!historyModel,
   });
 
   // 2. Fetch Model Groups
@@ -118,6 +140,10 @@ export const ModelsView: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'model-groups', adminKey] });
       setShowCreateGroupModal(false);
       setGroupAlias('');
+      setGroupDesc('');
+      setGroupMaxRetries('');
+      setGroupCooldown('');
+      setGroupFailureThreshold('');
     },
   });
 
@@ -133,6 +159,9 @@ export const ModelsView: React.FC = () => {
       setDeployRegion('');
       setDeployPriority('1');
       setDeployWeight('100');
+      setDeployRpm('');
+      setDeployTpm('');
+      setDeployTimeoutMs('');
     },
   });
 
@@ -149,6 +178,15 @@ export const ModelsView: React.FC = () => {
       return matchSearch && matchProv;
     });
   }, [catalogueData, searchQuery, providerFilter]);
+
+  // Filter catalogue suggestions for Add Deployment datalist
+  const suggestionModels = useMemo(() => {
+    const all = catalogueData?.data || [];
+    const q = deployGlobalModelId.trim().toLowerCase();
+    return q
+      ? all.filter((m) => m.id.toLowerCase().includes(q) || m.model_name.toLowerCase().includes(q))
+      : all;
+  }, [catalogueData, deployGlobalModelId]);
 
   const handleOpenPricingModal = (m: GlobalModel) => {
     setSelectedModel(m);
@@ -176,6 +214,11 @@ export const ModelsView: React.FC = () => {
     });
   };
 
+  const optInt = (v: string) => {
+    const n = parseInt(v, 10);
+    return v.trim() && !isNaN(n) ? n : undefined;
+  };
+
   const handleCreateGroup = (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupAlias.trim()) return;
@@ -183,7 +226,11 @@ export const ModelsView: React.FC = () => {
     createGroupMutation.mutate({
       org_id: activeOrgId,
       alias: groupAlias.trim(),
+      description: groupDesc.trim() || undefined,
       routing_strategy: routingStrategy,
+      max_retries: optInt(groupMaxRetries),
+      cooldown_seconds: optInt(groupCooldown),
+      failure_threshold: optInt(groupFailureThreshold),
     });
   };
 
@@ -272,8 +319,20 @@ export const ModelsView: React.FC = () => {
       </div>
 
       {/* Error Alerts */}
-      {isCatError && (
+      {isCatError && !isPlatformAdminForbidden(catError) && (
         <ErrorAlert error={catError} title="Failed to load global model catalogue" onRetry={() => refetchCat()} />
+      )}
+      {syncMutation.isError && (
+        <ErrorAlert error={syncMutation.error} title="Discovery sync failed" />
+      )}
+      {importMutation.isError && (
+        <ErrorAlert error={importMutation.error} title="Catalogue import failed" />
+      )}
+      {pricingMutation.isError && !selectedModel && (
+        <ErrorAlert error={pricingMutation.error} title="Failed to update pricing" />
+      )}
+      {createGroupMutation.isError && !showCreateGroupModal && (
+        <ErrorAlert error={createGroupMutation.error} title="Failed to create model group" />
       )}
       {isGroupsError && (
         <ErrorAlert error={groupsError} title="Failed to load model groups" onRetry={() => refetchGroups()} />
@@ -284,6 +343,9 @@ export const ModelsView: React.FC = () => {
 
       {/* Tab 1: Catalogue Explorer */}
       {activeTab === 'catalogue' && (
+        isCatError && isPlatformAdminForbidden(catError) ? (
+          <ScopedRoleNotice subject="the global model catalogue" />
+        ) : (
         <div className="space-y-4">
           {/* Search bar & Provider Filter */}
           <div className="flex flex-col sm:flex-row gap-3">
@@ -396,13 +458,22 @@ export const ModelsView: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-6 py-3 text-right">
-                            <button
-                              onClick={() => handleOpenPricingModal(m)}
-                              className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
-                              title="Update model pricing rates"
-                            >
-                              <DollarSign className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                onClick={() => setHistoryModel(m)}
+                                className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                                title="View pricing history"
+                              >
+                                <Clock className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleOpenPricingModal(m)}
+                                className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                                title="Update model pricing rates"
+                              >
+                                <DollarSign className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -417,8 +488,14 @@ export const ModelsView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {filteredModels.length > 100 && (
+              <div className="px-6 py-2 border-t border-border-subtle text-[11px] font-mono text-slate-400">
+                Showing 100 of {filteredModels.length} matching models — refine search or provider filter to narrow results.
+              </div>
+            )}
           </div>
         </div>
+        )
       )}
 
       {/* Tab 2: Routing Topologies & Model Groups */}
@@ -501,6 +578,9 @@ export const ModelsView: React.FC = () => {
         maxWidth="md"
       >
         <form onSubmit={handleSavePricing} className="space-y-4">
+          {pricingMutation.isError && (
+            <ErrorAlert error={pricingMutation.error} title="Failed to update pricing" />
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">Input USD / 1M</label>
@@ -526,23 +606,84 @@ export const ModelsView: React.FC = () => {
         </form>
       </Modal>
 
+      {/* Pricing History Modal */}
+      <Modal
+        isOpen={!!historyModel}
+        onClose={() => setHistoryModel(null)}
+        title={`Pricing History: ${historyModel?.display_name || historyModel?.model_name}`}
+        maxWidth="xl"
+      >
+        <div className="space-y-3 text-xs">
+          {isHistError && (
+            <ErrorAlert error={histError} title="Failed to load pricing history" />
+          )}
+          {isHistLoading ? (
+            <div className="py-6 text-center text-slate-500 font-mono">Loading pricing audit trail...</div>
+          ) : (historyData?.data || []).length > 0 ? (
+            <div className="overflow-x-auto border border-border-subtle rounded-lg">
+              <table className="w-full text-left text-[11px] font-mono">
+                <thead className="bg-surface-elevated/60 text-slate-400 uppercase text-[10px] border-b border-border-subtle">
+                  <tr>
+                    <th className="px-3 py-2">Ver</th>
+                    <th className="px-3 py-2">In / Out / Cached (1M)</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Changed By</th>
+                    <th className="px-3 py-2">Effective</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-subtle/40">
+                  {(historyData?.data || []).map((h) => (
+                    <tr key={h.id}>
+                      <td className="px-3 py-2 text-accent-primary">v{h.pricing_version}</td>
+                      <td className="px-3 py-2 text-slate-200">
+                        ${(h.input_cost_micros_per_1m / 1e6).toFixed(4)} / ${(h.output_cost_micros_per_1m / 1e6).toFixed(4)} / ${(h.cached_input_cost_micros_per_1m / 1e6).toFixed(4)}
+                      </td>
+                      <td className="px-3 py-2 text-slate-300">{h.pricing_status || '-'}</td>
+                      <td className="px-3 py-2 text-slate-400">{h.changed_by}</td>
+                      <td className="px-3 py-2 text-slate-400">{new Date(h.effective_from).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-6 text-center text-slate-500 font-mono">No pricing history entries recorded.</div>
+          )}
+        </div>
+      </Modal>
+
       {/* Create Model Group Modal */}
       <Modal isOpen={showCreateGroupModal} onClose={() => setShowCreateGroupModal(false)} title="Create Model Group Alias" maxWidth="md">
         <form onSubmit={handleCreateGroup} className="space-y-4">
+          {createGroupMutation.isError && (
+            <ErrorAlert error={createGroupMutation.error} title="Failed to create model group" />
+          )}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">Alias Name *</label>
             <input type="text" required value={groupAlias} onChange={(e) => setGroupAlias(e.target.value)} placeholder="fast, reasoning, coding" className={`${INPUT_CLS} font-mono`} />
           </div>
 
           <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Description (optional)</label>
+            <input type="text" value={groupDesc} onChange={(e) => setGroupDesc(e.target.value)} placeholder="Low-latency primary alias" className={INPUT_CLS} />
+          </div>
+
+          <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">Routing Strategy</label>
             <select value={routingStrategy} onChange={(e) => setRoutingStrategy(e.target.value)} className={INPUT_CLS}>
               <option value="weighted-shuffle">weighted-shuffle (Default probabilistic)</option>
+              <option value="round-robin">round-robin (Cyclic distribution)</option>
               <option value="least-busy">least-busy (Lowest in-flight concurrency)</option>
               <option value="latency-based">latency-based (EWMA latency tracker)</option>
               <option value="usage-based-headroom">usage-based-headroom (TPM limit protection)</option>
               <option value="lowest-cost">lowest-cost (Cheapest micro-dollar deployment)</option>
             </select>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Max Retries</label><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Cooldown (s)</label><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Failure Threshold</label><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -573,6 +714,9 @@ export const ModelsView: React.FC = () => {
               global_model_id: deployGlobalModelId.trim(),
               priority: parseInt(deployPriority, 10) || 1,
               weight: parseInt(deployWeight, 10) || 100,
+              rpm_capacity: optInt(deployRpm),
+              tpm_capacity: optInt(deployTpm),
+              timeout_ms: optInt(deployTimeoutMs),
             };
             if (deployCredentialId.trim()) payload.credential_id = deployCredentialId.trim();
             if (deployName.trim()) payload.deployment_name = deployName.trim();
@@ -588,8 +732,13 @@ export const ModelsView: React.FC = () => {
             <label className="block text-xs font-medium text-slate-300 mb-1">Global Model ID *</label>
             <input type="text" required list="catalogue-models-list" value={deployGlobalModelId} onChange={(e) => setDeployGlobalModelId(e.target.value)} placeholder="openai/gpt-4.1" className={`${INPUT_CLS} font-mono`} />
             <datalist id="catalogue-models-list">
-              {(catalogueData?.data || []).slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
+              {suggestionModels.slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
             </datalist>
+            {suggestionModels.length > 100 && (
+              <p className="text-[10px] font-mono text-slate-400 mt-1">
+                Showing 100 of {suggestionModels.length} matching models — type to narrow suggestions.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">Provider Credential (optional)</label>
@@ -605,6 +754,11 @@ export const ModelsView: React.FC = () => {
           <div className="grid grid-cols-2 gap-3">
             <div><label className="block text-xs font-medium text-slate-300 mb-1">Priority</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
             <div><label className="block text-xs font-medium text-slate-300 mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">RPM Cap</label><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">TPM Cap</label><input type="number" min={0} value={deployTpm} onChange={(e) => setDeployTpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-slate-300 mb-1">Timeout (ms)</label><input type="number" min={0} value={deployTimeoutMs} onChange={(e) => setDeployTimeoutMs(e.target.value)} placeholder="30000" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setDeployGroupId(null)} className={BTN_CANCEL}>Cancel</button>

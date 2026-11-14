@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { ErrorAlert } from '../components/common/ErrorAlert';
+import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import { Badge } from '../components/common/Badge';
 import type { GatewayConfig } from '../types';
 
@@ -22,8 +22,27 @@ interface SectionDef {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
-  data: Record<string, any> | undefined;
+  data: Record<string, any> | any[] | undefined;
 }
+
+const SECTION_SPECS: [string, string, string, React.FC<{ className?: string }>][] = [
+  ['server', 'Server & Transport', 'HTTP/gRPC listeners, timeouts & CORS', Server],
+  ['logging', 'Logging', 'Log level, format & source location', Activity],
+  ['tracing', 'Tracing', 'OpenTelemetry OTLP exporter settings', Activity],
+  ['security', 'Network Security', 'Outbound SSRF & inbound caller policies', ShieldCheck],
+  ['storage', 'Storage & Redis', 'Persistence mode, PostgreSQL & Redis', Database],
+  ['auth', 'Authentication', 'Master keys, JWT/OIDC & identity caches', Lock],
+  ['router', 'Router & Reliability', 'Aliases, retries & circuit breakers', GitBranch],
+  ['rate_limit', 'Rate Limits', 'Global RPM/TPM caps & concurrency', Gauge],
+  ['finops', 'FinOps Accounting', 'Async spend batching & worker pool', Activity],
+  ['discovery', 'Model Discovery', 'Background provider sync & approval', RefreshCw],
+  ['cache', 'Response Cache', 'L1/L2 caching & TTL defaults', Database],
+  ['guardrails', 'Guardrails', 'Content filtering & external scanners', ShieldCheck],
+  ['mcp', 'MCP Protocol', 'Stdio allowlists, timeouts & sessions', Settings],
+  ['a2a', 'A2A Agents', 'JSON-RPC/HTTP protocols, JWKS & push', GitBranch],
+  ['providers', 'Providers', 'HTTP transport & custom OpenAI-compat', Server],
+  ['model_list', 'Static Model List', 'Configured static YAML/env deployments', Settings],
+];
 
 function formatKey(key: string): string {
   return key.replace(/_/g, ' ');
@@ -99,7 +118,12 @@ const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
 }
 
 const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
-  const entries = section.data ? Object.entries(section.data) : [];
+  const isArr = Array.isArray(section.data);
+  const entries: [string, unknown][] = isArr
+    ? (section.data as any[]).map((m, i) => [m?.model_name ? String(m.model_name) : `#${i + 1}`, m])
+    : section.data
+      ? Object.entries(section.data)
+      : [];
 
   return (
     <div className="bg-surface-base border border-border rounded-xl p-5 space-y-4">
@@ -113,7 +137,7 @@ const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
             <p className="text-[11px] text-[#9696a4]">{section.subtitle}</p>
           </div>
         </div>
-        <Badge variant="neutral">{entries.length} keys</Badge>
+        <Badge variant="neutral">{entries.length} {isArr ? 'items' : 'keys'}</Badge>
       </div>
 
       {entries.length === 0 ? (
@@ -162,60 +186,18 @@ export const ConfigView: React.FC = () => {
     staleTime: 30000,
   });
 
-  const observabilityData = config
-    ? config.observability ??
-      (config.logging || config.tracing
-        ? {
-            ...(config.logging ? { logging: config.logging } : {}),
-            ...(config.tracing ? { tracing: config.tracing } : {}),
-          }
-        : undefined)
-    : undefined;
-
-  const sections: SectionDef[] = [
-    {
-      id: 'server',
-      title: 'Server & Transport',
-      subtitle: 'HTTP listener, gRPC, timeouts & CORS',
-      icon: <Server className="w-4 h-4" />,
-      data: config?.server,
-    },
-    {
-      id: 'rate_limit',
-      title: 'Rate Limits',
-      subtitle: 'Global RPM/TPM caps & Redis windowing',
-      icon: <Gauge className="w-4 h-4" />,
-      data: config?.rate_limit ?? config?.rate_limits,
-    },
-    {
-      id: 'cache',
-      title: 'Response Cache',
-      subtitle: 'L1/L2 caching & TTL defaults',
-      icon: <Database className="w-4 h-4" />,
-      data: config?.cache,
-    },
-    {
-      id: 'guardrails',
-      title: 'Guardrails',
-      subtitle: 'Content filtering & external scanners',
-      icon: <ShieldCheck className="w-4 h-4" />,
-      data: config?.guardrails,
-    },
-    {
-      id: 'routing',
-      title: 'Routing & Reliability',
-      subtitle: 'Aliases, retries & circuit-breaker thresholds',
-      icon: <GitBranch className="w-4 h-4" />,
-      data: config?.router ?? config?.routing,
-    },
-    {
-      id: 'observability',
-      title: 'Observability',
-      subtitle: 'Structured logging & OTLP tracing',
-      icon: <Activity className="w-4 h-4" />,
-      data: observabilityData,
-    },
-  ];
+  const sections: SectionDef[] = SECTION_SPECS.map(([id, title, subtitle, Icon]) => ({
+    id,
+    title,
+    subtitle,
+    icon: <Icon className="w-4 h-4" />,
+    data:
+      id === 'rate_limit'
+        ? config?.rate_limit ?? config?.rate_limits
+        : id === 'router'
+          ? config?.router ?? config?.routing
+          : config?.[id],
+  }));
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -247,11 +229,13 @@ export const ConfigView: React.FC = () => {
         </span>
       </div>
 
-      {isError && (
-        <ErrorAlert error={error} title="Failed to load runtime configuration" />
-      )}
-
-      {isLoading ? (
+      {isError ? (
+        isPlatformAdminForbidden(error) || (error as { status?: number } | null)?.status === 403 ? (
+          <ScopedRoleNotice subject="gateway runtime configuration" />
+        ) : (
+          <ErrorAlert error={error} title="Failed to load runtime configuration" />
+        )
+      ) : isLoading ? (
         <div className="flex items-center justify-center h-48 text-[#9696a4] font-mono text-xs gap-2">
           <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
           <span>Fetching sanitized gateway configuration...</span>

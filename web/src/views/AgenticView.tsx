@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
@@ -6,6 +6,7 @@ import { Badge } from '../components/common/Badge';
 import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
+import type { MCPTool } from '../types';
 import {
   Bot,
   Layers,
@@ -23,7 +24,7 @@ export const AgenticView: React.FC = () => {
   const { adminKey, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'mcp' | 'a2a'>('mcp');
-  const [selectedTool, setSelectedTool] = useState<any | null>(null);
+  const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
 
   // Modal toggles
@@ -51,7 +52,12 @@ export const AgenticView: React.FC = () => {
   const [srvTransport, setSrvTransport] = useState('streamable_http');
   const [srvAuthType, setSrvAuthType] = useState('none');
   const [srvAuthSecret, setSrvAuthSecret] = useState('');
+  const [srvStaticHeaders, setSrvStaticHeaders] = useState('');
+  const [srvOAuthEndpoint, setSrvOAuthEndpoint] = useState('');
+  const [srvOAuthClientId, setSrvOAuthClientId] = useState('');
+  const [srvOAuthScopes, setSrvOAuthScopes] = useState('');
   const [srvPinnedHash, setSrvPinnedHash] = useState('');
+  const [srvFormError, setSrvFormError] = useState<string | null>(null);
 
   // MCP Toolset form state
   const [tsName, setTsName] = useState('');
@@ -86,6 +92,8 @@ export const AgenticView: React.FC = () => {
   // Fetch MCP Toolsets
   const {
     data: mcpToolsetsData,
+    isError: isToolsetsError,
+    error: toolsetsError,
     refetch: refetchToolsets,
   } = useQuery({
     queryKey: ['admin', 'mcp-toolsets', adminKey, activeOrgId],
@@ -131,7 +139,12 @@ export const AgenticView: React.FC = () => {
       setSrvEndpoint('');
       setSrvAuthType('none');
       setSrvAuthSecret('');
+      setSrvStaticHeaders('');
+      setSrvOAuthEndpoint('');
+      setSrvOAuthClientId('');
+      setSrvOAuthScopes('');
       setSrvPinnedHash('');
+      setSrvFormError(null);
     },
   });
 
@@ -214,6 +227,14 @@ export const AgenticView: React.FC = () => {
   const mcpToolsets = mcpToolsetsData?.toolsets || mcpToolsetsData?.data || [];
   const mcpTools = mcpToolsData?.tools || [];
   const a2aAgents = a2aAgentsData?.agents || a2aAgentsData?.data || [];
+
+  const toolCountByServer = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of mcpTools) {
+      counts.set(t.server_id, (counts.get(t.server_id) || 0) + 1);
+    }
+    return counts;
+  }, [mcpTools]);
 
   const toggleToolSelection = (toolId: string) => {
     setTsSelectedToolIds((prev) =>
@@ -323,11 +344,20 @@ export const AgenticView: React.FC = () => {
       {isMCPError && (
         <ErrorAlert error={mcpError} title="Failed to load MCP servers" onRetry={() => refetchMCP()} />
       )}
+      {isToolsetsError && (
+        <ErrorAlert error={toolsetsError} title="Failed to load MCP toolsets" onRetry={() => refetchToolsets()} />
+      )}
       {isToolsError && (
         <ErrorAlert error={toolsError} title="Failed to load MCP tools" onRetry={() => refetchTools()} />
       )}
       {isA2AError && (
         <ErrorAlert error={a2aError} title="Failed to load A2A agents" onRetry={() => refetchA2A()} />
+      )}
+      {syncServerMutation.isError && (
+        <ErrorAlert error={syncServerMutation.error} title="Failed to sync MCP server" />
+      )}
+      {killSwitchMutation.isError && (
+        <ErrorAlert error={killSwitchMutation.error} title="Failed to toggle A2A kill-switch" />
       )}
 
       {/* Tabs */}
@@ -422,7 +452,7 @@ export const AgenticView: React.FC = () => {
                         )}
                         <div className="text-zinc-400 flex justify-between">
                           <span>Tools Registered:</span>
-                          <span className="text-emerald-400 font-bold">{srv.tool_count ?? 0}</span>
+                          <span className="text-emerald-400 font-bold">{toolCountByServer.get(srv.id) ?? 0}</span>
                         </div>
                       </div>
                     </div>
@@ -521,7 +551,7 @@ export const AgenticView: React.FC = () => {
 
                     <div className="pt-2 border-t border-subtle flex justify-between items-center">
                       <span className="text-[10px] text-zinc-500 font-mono">
-                        {tool.inputSchema?.properties ? `${Object.keys(tool.inputSchema.properties).length} params` : '0 params'}
+                        {tool.input_schema?.properties ? `${Object.keys(tool.input_schema.properties).length} params` : '0 params'}
                       </span>
                       <button
                         onClick={() => setSelectedTool(tool)}
@@ -642,7 +672,7 @@ export const AgenticView: React.FC = () => {
             <div>
               <span className="text-xs text-zinc-400 font-mono block mb-1">Input JSON Schema:</span>
               <CodeBlock
-                code={JSON.stringify(selectedTool.inputSchema || {}, null, 2)}
+                code={JSON.stringify(selectedTool.input_schema || {}, null, 2)}
                 language="json"
               />
             </div>
@@ -662,6 +692,27 @@ export const AgenticView: React.FC = () => {
           onSubmit={(e) => {
             e.preventDefault();
             if (!srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()) return;
+            setSrvFormError(null);
+            let parsedHeaders: Record<string, string> | undefined;
+            if (srvStaticHeaders.trim()) {
+              try {
+                const raw = JSON.parse(srvStaticHeaders);
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                  setSrvFormError('Static headers must be a JSON object of key/value strings.');
+                  return;
+                }
+                parsedHeaders = Object.fromEntries(
+                  Object.entries(raw).map(([k, v]) => [k, String(v)])
+                );
+              } catch {
+                setSrvFormError('Invalid JSON syntax in Static Headers.');
+                return;
+              }
+            }
+            const scopes = srvOAuthScopes
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
             createServerMutation.mutate({
               org_id: activeOrgId || undefined,
               name: srvName.trim(),
@@ -671,11 +722,16 @@ export const AgenticView: React.FC = () => {
               transport_type: srvTransport,
               auth_type: srvAuthType,
               auth_secret: srvAuthSecret.trim() || undefined,
+              static_headers: parsedHeaders,
+              oauth2_endpoint: srvAuthType === 'oauth2' ? srvOAuthEndpoint.trim() || undefined : undefined,
+              oauth2_client_id: srvAuthType === 'oauth2' ? srvOAuthClientId.trim() || undefined : undefined,
+              oauth2_scopes: srvAuthType === 'oauth2' && scopes.length > 0 ? scopes : undefined,
               pinned_tool_hash: srvPinnedHash.trim() || undefined,
             });
           }}
           className="space-y-4"
         >
+          {srvFormError && <ErrorAlert error={srvFormError} title="Invalid MCP server input" />}
           {createServerMutation.isError && (
             <ErrorAlert error={createServerMutation.error} title="Failed to register MCP server" />
           )}
@@ -769,6 +825,56 @@ export const AgenticView: React.FC = () => {
               />
             </div>
           )}
+
+          {srvAuthType === 'oauth2' && (
+            <div className="space-y-3 p-3 rounded-lg bg-surface-elevated/40 border border-subtle">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">OAuth2 Token Endpoint</label>
+                  <input
+                    type="text"
+                    value={srvOAuthEndpoint}
+                    onChange={(e) => setSrvOAuthEndpoint(e.target.value)}
+                    placeholder="https://auth.example.com/oauth/token"
+                    className={`${INPUT_CLS} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">OAuth2 Client ID</label>
+                  <input
+                    type="text"
+                    value={srvOAuthClientId}
+                    onChange={(e) => setSrvOAuthClientId(e.target.value)}
+                    placeholder="mcp-client-id"
+                    className={`${INPUT_CLS} font-mono`}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">OAuth2 Scopes (comma-separated)</label>
+                <input
+                  type="text"
+                  value={srvOAuthScopes}
+                  onChange={(e) => setSrvOAuthScopes(e.target.value)}
+                  placeholder="tools:read, tools:execute"
+                  className={`${INPUT_CLS} font-mono`}
+                />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              Static Headers JSON (Optional)
+            </label>
+            <textarea
+              rows={2}
+              value={srvStaticHeaders}
+              onChange={(e) => setSrvStaticHeaders(e.target.value)}
+              placeholder='{"X-Tenant-Env": "prod"}'
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
 
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
@@ -925,8 +1031,8 @@ export const AgenticView: React.FC = () => {
               endpoint_url: agentEndpoint.trim(),
               agent_card_url: agentCardUrl.trim() || undefined,
               task_visibility_mode: agentVisibility,
-              auth_type: agentAuthType !== 'none' ? agentAuthType : undefined,
-              auth_secret: agentAuthSecret.trim() || undefined,
+              auth_type: agentAuthType,
+              auth_secret: agentAuthType !== 'none' ? agentAuthSecret.trim() || undefined : undefined,
               max_task_iterations: !isNaN(maxIter) && maxIter > 0 ? maxIter : 50,
               max_task_budget_micros: !isNaN(maxBudget) && maxBudget > 0 ? maxBudget : undefined,
             });
@@ -1008,8 +1114,8 @@ export const AgenticView: React.FC = () => {
                 className={INPUT_CLS}
               >
                 <option value="none">none</option>
-                <option value="bearer">bearer</option>
-                <option value="api_key">api_key</option>
+                <option value="static">static</option>
+                <option value="vault_jwt">vault_jwt</option>
               </select>
             </div>
           </div>

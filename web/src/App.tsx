@@ -118,7 +118,7 @@ export const App: React.FC = () => {
             <div className="max-w-md mx-auto my-16 p-8 bg-surface-base border border-border rounded-xl shadow-2xl text-center space-y-5">
               <div className="w-16 h-16 mx-auto rounded-2xl bg-[rgba(124,58,237,0.08)] border border-accent-primary/25 flex items-center justify-center p-2.5 shadow-[0_4px_20px_rgba(124,58,237,0.18)]">
                 <img
-                  src="./logo-dark.png"
+                  src="/ui/logo-dark.png"
                   alt="GoRoute AI Gateway"
                   className="w-full h-full object-contain"
                 />

@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
-import type { ProviderCredential, ProviderType } from '../types';
+import type { ProviderCredential, ProviderType, CredentialValidationResult } from '../types';
 import {
   Plus,
   RefreshCw,
@@ -27,6 +27,9 @@ export const CredentialsView: React.FC = () => {
   const [baseURL, setBaseURL] = useState('');
   const [azureDeployment, setAzureDeployment] = useState('');
   const [apiVersion, setApiVersion] = useState('');
+  const [headersJSON, setHeadersJSON] = useState('');
+  const [headersError, setHeadersError] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState('');
 
   // Rotate key modal state
   const [rotateCred, setRotateCred] = useState<ProviderCredential | null>(null);
@@ -34,14 +37,10 @@ export const CredentialsView: React.FC = () => {
   const [rotateBaseURL, setRotateBaseURL] = useState('');
   const [rotateExpiresAt, setRotateExpiresAt] = useState('');
 
-  // Preflight test state
+  // Per-credential validation & preflight test state
+  const [validationResults, setValidationResults] = useState<Record<string, CredentialValidationResult>>({});
   const [preflightTesting, setPreflightTesting] = useState(false);
-  const [preflightResult, setPreflightResult] = useState<{
-    valid: boolean;
-    discovered_models?: number;
-    latency_ms?: number;
-    error?: string;
-  } | null>(null);
+  const [preflightResult, setPreflightResult] = useState<CredentialValidationResult | null>(null);
 
   // 1. Fetch credentials
   const {
@@ -69,7 +68,8 @@ export const CredentialsView: React.FC = () => {
   // 3. Existing credential validate mutation
   const validateMutation = useMutation({
     mutationFn: (credId: string) => adminApi.validateCredential(adminKey, credId),
-    onSuccess: () => {
+    onSuccess: (res, credId) => {
+      setValidationResults((prev) => ({ ...prev, [credId]: res }));
       queryClient.invalidateQueries({ queryKey: ['admin', 'credentials', adminKey] });
     },
   });
@@ -94,11 +94,38 @@ export const CredentialsView: React.FC = () => {
     setBaseURL('');
     setAzureDeployment('');
     setApiVersion('');
+    setHeadersJSON('');
+    setHeadersError(null);
+    setExpiresAt('');
     setPreflightResult(null);
+  };
+
+  const parseHeaders = (): Record<string, string> | undefined | false => {
+    const raw = headersJSON.trim();
+    if (!raw) {
+      setHeadersError(null);
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setHeadersError('Headers must be a JSON object of key/value strings.');
+        return false;
+      }
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) out[k] = String(v);
+      setHeadersError(null);
+      return out;
+    } catch {
+      setHeadersError('Invalid JSON in custom headers.');
+      return false;
+    }
   };
 
   const handlePreflightTest = async () => {
     if (!apiKey.trim() && provider !== 'ollama') return;
+    const headers = parseHeaders();
+    if (headers === false) return;
     setPreflightTesting(true);
     setPreflightResult(null);
 
@@ -109,6 +136,7 @@ export const CredentialsView: React.FC = () => {
         base_url: baseURL.trim() || undefined,
         azure_deployment_name: azureDeployment.trim() || undefined,
         api_version: apiVersion.trim() || undefined,
+        headers,
       });
       setPreflightResult(res);
     } catch (err: any) {
@@ -124,8 +152,10 @@ export const CredentialsView: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    const headers = parseHeaders();
+    if (headers === false) return;
 
-    addMutation.mutate({
+    const payload: Record<string, any> = {
       org_id: activeOrgId,
       provider,
       name: name.trim(),
@@ -133,7 +163,13 @@ export const CredentialsView: React.FC = () => {
       base_url: baseURL.trim() || undefined,
       azure_deployment_name: azureDeployment.trim() || undefined,
       api_version: apiVersion.trim() || undefined,
-    });
+      headers,
+    };
+    if (expiresAt) {
+      const d = new Date(expiresAt);
+      if (!isNaN(d.getTime())) payload.expires_at = d.toISOString();
+    }
+    addMutation.mutate(payload);
   };
 
   const providersList: { id: ProviderType; label: string }[] = [
@@ -147,6 +183,10 @@ export const CredentialsView: React.FC = () => {
     { id: 'mistral', label: 'Mistral AI' },
     { id: 'groq', label: 'Groq' },
     { id: 'deepseek', label: 'DeepSeek' },
+    { id: 'together', label: 'Together AI' },
+    { id: 'sambanova', label: 'SambaNova' },
+    { id: 'fireworks', label: 'Fireworks AI' },
+    { id: 'perplexity', label: 'Perplexity' },
     { id: 'ollama', label: 'Ollama (Local)' },
     { id: 'cerebras', label: 'Cerebras' },
     { id: 'xai', label: 'xAI Grok' },
@@ -174,6 +214,7 @@ export const CredentialsView: React.FC = () => {
           </button>
           <button
             onClick={() => {
+              addMutation.reset();
               resetForm();
               setShowAddModal(true);
             }}
@@ -187,6 +228,9 @@ export const CredentialsView: React.FC = () => {
 
       {isError && (
         <ErrorAlert error={error} title="Failed to load provider credentials" onRetry={() => refetch()} />
+      )}
+      {validateMutation.isError && (
+        <ErrorAlert error={validateMutation.error} title="Failed to validate credential" />
       )}
 
       {/* Credentials Cards Grid */}
@@ -254,6 +298,30 @@ export const CredentialsView: React.FC = () => {
                 </div>
               )}
 
+              {validationResults[c.id] && (() => {
+                const vr = validationResults[c.id];
+                return (
+                  <div
+                    className={`p-2 rounded border text-[11px] font-mono flex items-start gap-1.5 ${
+                      vr.valid
+                        ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                        : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                    }`}
+                  >
+                    {vr.valid ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                    )}
+                    <span className="break-words">
+                      {vr.valid
+                        ? `Valid${vr.latency_ms != null ? ` (${vr.latency_ms} ms)` : ''}${vr.discovered_models != null ? ` · ${vr.discovered_models} models` : ''}`
+                        : `Invalid: ${vr.error || vr.reason || vr.validation_status || 'Validation failed'}`}
+                    </span>
+                  </div>
+                );
+              })()}
+
               <div className="flex items-center justify-between pt-2 border-t border-border-subtle/50 text-[10px] text-slate-500 font-mono">
                 <span>ID: {c.id.slice(0, 12)}...</span>
                 <span>
@@ -280,6 +348,9 @@ export const CredentialsView: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          {addMutation.isError && (
+            <ErrorAlert error={addMutation.error} title="Failed to save provider credential" />
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">Provider *</label>
@@ -340,6 +411,29 @@ export const CredentialsView: React.FC = () => {
               </div>
             </div>
           )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Custom Headers JSON (Optional)</label>
+              <input
+                type="text"
+                value={headersJSON}
+                onChange={(e) => { setHeadersJSON(e.target.value); setHeadersError(null); }}
+                placeholder='{"X-Custom-Header":"value"}'
+                className={`${INPUT_CLS} font-mono`}
+              />
+              {headersError && <p className="text-[11px] text-rose-400 mt-1">{headersError}</p>}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Expires At (Optional)</label>
+              <input
+                type="datetime-local"
+                value={expiresAt}
+                onChange={(e) => setExpiresAt(e.target.value)}
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          </div>
 
           {/* Preflight Test Result */}
           {preflightResult && (

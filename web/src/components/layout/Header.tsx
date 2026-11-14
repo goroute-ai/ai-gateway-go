@@ -46,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
         <div className="flex items-center gap-5">
           <div className="flex items-center gap-3">
             <img
-              src="./logo-dark.png"
+              src="/ui/logo-dark.png"
               alt="GoRoute AI Gateway Logo"
               className="h-8 w-auto object-contain drop-shadow-[0_2px_8px_rgba(179,154,255,0.35)]"
             />

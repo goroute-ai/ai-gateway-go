@@ -18,12 +18,24 @@ export type ProviderType =
   | 'perplexity'
   | string;
 
+export type BudgetResetPeriod = 'daily' | 'monthly' | 'never';
+
+export type Role =
+  | 'platform_admin'
+  | 'org_admin'
+  | 'org_viewer'
+  | 'team_admin'
+  | 'developer'
+  | 'service_account'
+  | 'viewer';
+
 export interface Organization {
   id: string;
   name: string;
+  slug?: string;
   max_budget_micros?: number;
-  current_spend_micros?: number;
-  budget_reset_period?: string;
+  spent_micros?: number;
+  budget_reset_period?: BudgetResetPeriod;
   is_active: boolean;
   created_at?: string;
 }
@@ -33,7 +45,15 @@ export interface Team {
   org_id: string;
   name: string;
   max_budget_micros?: number;
-  current_spend_micros?: number;
+  spent_micros?: number;
+  budget_reset_period?: BudgetResetPeriod;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  max_concurrent_requests?: number;
+  allowed_models?: string[];
+  allowed_mcp_servers?: string[] | null;
+  allowed_a2a_agents?: string[] | null;
+  allowed_client_apps?: string[] | null;
   is_active: boolean;
   created_at?: string;
 }
@@ -61,7 +81,7 @@ export interface User {
   email: string;
   name?: string;
   oidc_subject?: string;
-  role: string;
+  role: Role;
   is_active: boolean;
   created_at?: string;
   updated_at?: string;
@@ -75,14 +95,18 @@ export interface VirtualKey {
   name: string;
   key_prefix: string;
   raw_key?: string; // Only returned on creation
-  role?: string;
+  role?: Role;
   max_budget_micros?: number;
   spent_micros?: number;
+  budget_reset_period?: BudgetResetPeriod;
   rpm_limit?: number;
   tpm_limit?: number;
+  max_concurrent_requests?: number;
   allowed_models?: string[];
-  allowed_mcp_servers?: string[];
-  allowed_a2a_agents?: string[];
+  allowed_endpoints?: string[];
+  allowed_mcp_servers?: string[] | null;
+  allowed_a2a_agents?: string[] | null;
+  allowed_client_apps?: string[] | null;
   expires_at?: string;
   is_active: boolean;
   created_at: string;
@@ -97,11 +121,24 @@ export interface ProviderCredential {
   key_version: number;
   azure_deployment_name?: string;
   api_version?: string;
+  headers?: Record<string, string>;
   is_active: boolean;
   expires_at?: string;
   last_rotated_at?: string;
   last_validated_at?: string;
   created_at: string;
+}
+
+export interface CredentialValidationResult {
+  id?: string;
+  provider?: ProviderType;
+  valid: boolean;
+  validation_status?: string;
+  error?: string;
+  reason?: string;
+  latency_ms?: number;
+  discovered_models?: number;
+  last_validated_at?: string;
 }
 
 export interface ModelCapabilities {
@@ -141,9 +178,29 @@ export interface ModelGroup {
   id: string;
   org_id: string;
   alias: string;
+  description?: string;
   routing_strategy: string;
+  fallback_group_ids?: string[];
+  max_retries?: number;
+  cooldown_seconds?: number;
+  failure_threshold?: number;
   is_active: boolean;
   created_at: string;
+  updated_at?: string;
+}
+
+export interface PricingHistoryEntry {
+  id: string;
+  global_model_id: string;
+  pricing_version: number;
+  input_cost_micros_per_1m: number;
+  output_cost_micros_per_1m: number;
+  cached_input_cost_micros_per_1m: number;
+  reasoning_cost_micros_per_1m: number;
+  pricing_status?: string;
+  pricing_provenance_source?: string;
+  changed_by: string;
+  effective_from: string;
 }
 
 export interface Deployment {
@@ -264,6 +321,8 @@ export interface AuditLog {
 
 export interface GuardrailPolicy {
   org_id: string;
+  mode?: 'enforce' | 'logging_only';
+  scan_all_roles?: boolean;
   enable_prompt_injection: boolean;
   prompt_injection_action: 'block' | 'redact' | 'audit';
   enable_pii_detection: boolean;
@@ -272,6 +331,12 @@ export interface GuardrailPolicy {
   secret_action: 'block' | 'redact' | 'audit';
   redact_output_pii: boolean;
   blocked_keywords?: string[];
+  enable_toxicity_filter?: boolean;
+  toxicity_action?: 'block' | 'redact' | 'audit';
+  toxicity_threshold?: string;
+  enabled_content_categories?: string[];
+  content_exceptions?: string[];
+  updated_at?: string;
 }
 
 export interface MCPServer {
@@ -283,10 +348,27 @@ export interface MCPServer {
   transport_type: string;
   endpoint_url?: string;
   auth_type?: string;
+  static_headers?: Record<string, string>;
+  oauth2_endpoint?: string;
+  oauth2_client_id?: string;
+  oauth2_scopes?: string[];
   pinned_tool_hash?: string;
-  tool_count?: number;
   is_active: boolean;
   last_synced_at?: string;
+}
+
+export interface MCPTool {
+  id: string;
+  server_id: string;
+  org_id: string;
+  name: string;
+  description?: string;
+  input_schema?: Record<string, any>;
+  tool_def_hash: string;
+  cost_per_call_micros: number;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface MCPToolset {
@@ -307,7 +389,7 @@ export interface A2AAgent {
   endpoint_url: string;
   agent_card_url?: string;
   task_visibility_mode?: string;
-  auth_type?: string;
+  auth_type?: 'none' | 'static' | 'vault_jwt';
   max_task_iterations?: number;
   max_task_budget_micros?: number;
   is_active: boolean;

@@ -4,7 +4,7 @@ import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
-import { ErrorAlert } from '../components/common/ErrorAlert';
+import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import {
   Activity,
   RefreshCw,
@@ -76,6 +76,9 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
     });
   };
 
+  const telemetryForbidden = isTelemetryError && isPlatformAdminForbidden(telemetryError);
+  const healthForbidden = isHealthError && isPlatformAdminForbidden(healthError);
+
   return (
     <div className="space-y-6">
       {/* Title & Actions Bar */}
@@ -132,11 +135,17 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
       </div>
 
       {/* Error Alerts */}
-      {isTelemetryError && (
+      {(telemetryForbidden || healthForbidden) && (
+        <ScopedRoleNotice subject="telemetry and deployment health" />
+      )}
+      {isTelemetryError && !telemetryForbidden && (
         <ErrorAlert error={telemetryError} title="Failed to load telemetry metrics" onRetry={() => refetchTelemetry()} />
       )}
-      {isHealthError && (
+      {isHealthError && !healthForbidden && (
         <ErrorAlert error={healthError} title="Failed to load deployment health" onRetry={() => refetchHealth()} />
+      )}
+      {probeMutation.isError && (
+        <ErrorAlert error={probeMutation.error} title="Failed to probe upstream deployments" />
       )}
 
       {/* KPI Stat Cards Grid */}
@@ -304,6 +313,9 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         maxWidth="md"
       >
         <form onSubmit={handlePurgeSubmit} className="space-y-4">
+          {invalidateMutation.isError && (
+            <ErrorAlert error={invalidateMutation.error} title="Failed to purge response cache" />
+          )}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
               Target Model (Optional)

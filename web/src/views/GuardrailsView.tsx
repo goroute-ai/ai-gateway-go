@@ -60,23 +60,111 @@ const GuardrailRuleCard: React.FC<{
   </div>
 );
 
+const CONTENT_CATEGORIES = [
+  'bias',
+  'denied_insults',
+  'harm_toxic_abuse',
+  'harmful_self_harm',
+  'harmful_violence',
+] as const;
+
+const normalizePolicy = (p: GuardrailPolicy): GuardrailPolicy => ({
+  ...p,
+  mode: p.mode || 'enforce',
+  scan_all_roles: p.scan_all_roles ?? true,
+  enable_toxicity_filter: p.enable_toxicity_filter ?? false,
+  toxicity_action: p.toxicity_action || 'block',
+  toxicity_threshold: p.toxicity_threshold || 'medium',
+  enabled_content_categories: p.enabled_content_categories || [],
+  content_exceptions: p.content_exceptions || [],
+  blocked_keywords: p.blocked_keywords || [],
+});
+
+const TagListField: React.FC<{
+  items: string[];
+  onChange: (next: string[]) => void;
+  placeholder: string;
+  emptyText: string;
+}> = ({ items, onChange, placeholder, emptyText }) => {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const val = draft.trim();
+    if (val && !items.includes(val)) {
+      onChange([...items, val]);
+      setDraft('');
+    }
+  };
+  return (
+    <>
+      {items.length === 0 ? (
+        <div className="text-[11px] text-zinc-500 font-mono italic pt-0.5">{emptyText}</div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {items.map((item) => (
+            <span
+              key={item}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 border border-subtle text-zinc-200 text-xs font-mono"
+            >
+              {item}
+              <button type="button" onClick={() => onChange(items.filter((x) => x !== item))} className="hover:text-red-400 transition">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2 pt-1">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+          placeholder={placeholder}
+          className="flex-1 px-2.5 py-1 text-xs bg-surface-base border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
+        />
+        <button
+          type="button"
+          onClick={add}
+          className="px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition flex items-center gap-1"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Add
+        </button>
+      </div>
+    </>
+  );
+};
+
 export const GuardrailsView: React.FC = () => {
   const { adminKey, activeOrgId } = useAuth();
 
   // Local state for policy editing
-  const [policyForm, setPolicyForm] = useState<GuardrailPolicy>({
-    org_id: activeOrgId || '',
-    enable_prompt_injection: true,
-    prompt_injection_action: 'block',
-    enable_pii_detection: true,
-    pii_action: 'redact',
-    enable_secret_detection: true,
-    secret_action: 'block',
-    redact_output_pii: true,
-    blocked_keywords: [],
-  });
+  const [policyForm, setPolicyForm] = useState<GuardrailPolicy>(() =>
+    normalizePolicy({
+      org_id: activeOrgId || '',
+      mode: 'enforce',
+      scan_all_roles: true,
+      enable_prompt_injection: true,
+      prompt_injection_action: 'block',
+      enable_pii_detection: true,
+      pii_action: 'redact',
+      enable_secret_detection: true,
+      secret_action: 'block',
+      redact_output_pii: true,
+      blocked_keywords: [],
+      enable_toxicity_filter: false,
+      toxicity_action: 'block',
+      toxicity_threshold: 'medium',
+      enabled_content_categories: [],
+      content_exceptions: [],
+    })
+  );
 
-  const [keywordInput, setKeywordInput] = useState('');
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('');
 
   // Simulator state
@@ -105,10 +193,7 @@ export const GuardrailsView: React.FC = () => {
 
   useEffect(() => {
     if (fetchedPolicy) {
-      setPolicyForm({
-        ...fetchedPolicy,
-        blocked_keywords: fetchedPolicy.blocked_keywords || [],
-      });
+      setPolicyForm(normalizePolicy(fetchedPolicy));
     }
   }, [fetchedPolicy]);
 
@@ -116,10 +201,7 @@ export const GuardrailsView: React.FC = () => {
   const saveMutation = useMutation({
     mutationFn: () => adminApi.setGuardrailPolicy(adminKey, activeOrgId, policyForm),
     onSuccess: (updated) => {
-      setPolicyForm({
-        ...updated,
-        blocked_keywords: updated.blocked_keywords || [],
-      });
+      setPolicyForm(normalizePolicy(updated));
       setSaveSuccessMsg('Guardrail policy updated successfully.');
       setTimeout(() => setSaveSuccessMsg(''), 3000);
       refetchPolicy();
@@ -135,21 +217,11 @@ export const GuardrailsView: React.FC = () => {
     },
   });
 
-  const handleAddKeyword = () => {
-    const kw = keywordInput.trim();
-    if (kw && !policyForm.blocked_keywords?.includes(kw)) {
-      setPolicyForm({
-        ...policyForm,
-        blocked_keywords: [...(policyForm.blocked_keywords || []), kw],
-      });
-      setKeywordInput('');
-    }
-  };
-
-  const handleRemoveKeyword = (kwToRemove: string) => {
+  const toggleCategory = (cat: string) => {
+    const cur = policyForm.enabled_content_categories || [];
     setPolicyForm({
       ...policyForm,
-      blocked_keywords: policyForm.blocked_keywords?.filter((k) => k !== kwToRemove),
+      enabled_content_categories: cur.includes(cat) ? cur.filter((c) => c !== cat) : [...cur, cat],
     });
   };
 
@@ -213,6 +285,9 @@ export const GuardrailsView: React.FC = () => {
       {isPolicyError && (
         <ErrorAlert error={policyError} title="Failed to load guardrail policy" onRetry={() => refetchPolicy()} />
       )}
+      {saveMutation.isError && (
+        <ErrorAlert error={saveMutation.error} title="Failed to save guardrail policy" />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Policy Configuration Form (7 cols) */}
@@ -229,6 +304,36 @@ export const GuardrailsView: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-5">
+                {/* Execution Mode & Role Scope */}
+                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="text-zinc-400">Policy Mode:</span>
+                    {(['enforce', 'logging_only'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setPolicyForm({ ...policyForm, mode: m })}
+                        className={`px-2.5 py-1 rounded text-[11px] transition ${
+                          (policyForm.mode || 'enforce') === m
+                            ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/40 font-bold'
+                            : 'bg-surface-base text-zinc-400 border border-subtle hover:text-zinc-200'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer font-mono">
+                    <input
+                      type="checkbox"
+                      checked={policyForm.scan_all_roles ?? true}
+                      onChange={(e) => setPolicyForm({ ...policyForm, scan_all_roles: e.target.checked })}
+                      className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5"
+                    />
+                    Scan all message roles
+                  </label>
+                </div>
+
                 <GuardrailRuleCard
                   icon={<AlertTriangle className="w-4 h-4 text-amber-400" />}
                   title="Prompt Injection Defense"
@@ -268,8 +373,69 @@ export const GuardrailsView: React.FC = () => {
                   actions={['block', 'redact', 'audit']}
                   activeCls="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold"
                 />
+                <GuardrailRuleCard
+                  icon={<ShieldCheck className="w-4 h-4 text-rose-400" />}
+                  title="Toxicity & Content Safety Filter"
+                  desc="Screen prompts and streams against built-in toxicity severity packs and category filters."
+                  enabled={!!policyForm.enable_toxicity_filter}
+                  onToggle={(v) => setPolicyForm({ ...policyForm, enable_toxicity_filter: v })}
+                  action={policyForm.toxicity_action || 'block'}
+                  onAction={(a) => setPolicyForm({ ...policyForm, toxicity_action: a })}
+                  actions={['block', 'redact', 'audit']}
+                  activeCls="bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold"
+                  extra={
+                    <div className="space-y-2.5 pt-2">
+                      <div className="flex items-center gap-3">
+                        <span className="text-zinc-400 text-[11px]">Threshold:</span>
+                        <div className="flex gap-1.5">
+                          {(['low', 'medium', 'high'] as const).map((lvl) => (
+                            <button
+                              key={lvl}
+                              type="button"
+                              onClick={() => setPolicyForm({ ...policyForm, toxicity_threshold: lvl })}
+                              className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${
+                                (policyForm.toxicity_threshold || 'medium') === lvl
+                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold'
+                                  : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
+                              }`}
+                            >
+                              {lvl}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-zinc-400 text-[11px] block mb-1">
+                          Content Categories (none selected = all active):
+                        </span>
+                        <div className="flex flex-wrap gap-2">
+                          {CONTENT_CATEGORIES.map((cat) => (
+                            <label key={cat} className="inline-flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={(policyForm.enabled_content_categories || []).includes(cat)}
+                                onChange={() => toggleCategory(cat)}
+                                className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3 h-3"
+                              />
+                              {cat}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-zinc-400 text-[11px] block mb-1">Content Exceptions (allowlisted phrases):</span>
+                        <TagListField
+                          items={policyForm.content_exceptions || []}
+                          onChange={(next) => setPolicyForm({ ...policyForm, content_exceptions: next })}
+                          placeholder="Add exception phrase..."
+                          emptyText="No content exceptions configured."
+                        />
+                      </div>
+                    </div>
+                  }
+                />
 
-                {/* Rule 4: Blocked Keywords */}
+                {/* Rule 5: Blocked Keywords */}
                 <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
                   <div>
                     <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
@@ -281,53 +447,12 @@ export const GuardrailsView: React.FC = () => {
                     </p>
                   </div>
 
-                  {(!policyForm.blocked_keywords || policyForm.blocked_keywords.length === 0) ? (
-                    <div className="text-[11px] text-zinc-500 font-mono italic pt-0.5">
-                      No blocked keywords configured. Add keywords or phrases below.
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {policyForm.blocked_keywords.map((kw) => (
-                        <span
-                          key={kw}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 border border-subtle text-zinc-200 text-xs font-mono"
-                        >
-                          {kw}
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveKeyword(kw)}
-                            className="hover:text-red-400 transition"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex gap-2 pt-1">
-                    <input
-                      type="text"
-                      value={keywordInput}
-                      onChange={(e) => setKeywordInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleAddKeyword();
-                        }
-                      }}
-                      placeholder="Add keyword (e.g. project_apollo)..."
-                      className="flex-1 px-2.5 py-1 text-xs bg-surface-base border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleAddKeyword}
-                      className="px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition flex items-center gap-1"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Add
-                    </button>
-                  </div>
+                  <TagListField
+                    items={policyForm.blocked_keywords || []}
+                    onChange={(next) => setPolicyForm({ ...policyForm, blocked_keywords: next })}
+                    placeholder="Add keyword (e.g. project_apollo)..."
+                    emptyText="No blocked keywords configured. Add keywords or phrases below."
+                  />
                 </div>
               </div>
             )}
@@ -400,6 +525,12 @@ export const GuardrailsView: React.FC = () => {
               <Zap className="w-3.5 h-3.5 fill-current" />
               {simulateMutation.isPending ? 'Simulating Evaluation...' : 'Simulate Policy Decision'}
             </button>
+
+            {simulateMutation.isError && (
+              <div className="mt-3">
+                <ErrorAlert error={simulateMutation.error} title="Guardrail simulation failed" />
+              </div>
+            )}
 
             {/* Simulation Results Output */}
             {simResult && (

@@ -7,8 +7,10 @@ import type {
   User,
   VirtualKey,
   ProviderCredential,
+  CredentialValidationResult,
   GlobalModel,
   ModelGroup,
+  PricingHistoryEntry,
   Deployment,
   DeploymentHealthReport,
   TelemetrySnapshot,
@@ -17,10 +19,21 @@ import type {
   AuditLog,
   GuardrailPolicy,
   MCPServer,
+  MCPTool,
   MCPToolset,
   A2AAgent,
   GatewayConfig,
 } from '../types';
+
+const enc = encodeURIComponent;
+const qs = (params: Record<string, string | number | undefined>) => {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '') sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : '';
+};
 
 export const adminApi = {
   // Organizations
@@ -29,63 +42,91 @@ export const adminApi = {
   createOrg: (key: string, data: Partial<Organization>) =>
     apiFetch<Organization>('/admin/v1/organizations', { method: 'POST', body: JSON.stringify(data) }, key),
   getOrgSubscriptions: (key: string, orgId: string) =>
-    apiFetch<{ data: OrgProviderSubscription[] }>(`/admin/v1/organizations/${orgId}/subscriptions`, {}, key),
+    apiFetch<{ data: OrgProviderSubscription[] }>(`/admin/v1/organizations/${enc(orgId)}/subscriptions`, {}, key),
   setOrgSubscription: (key: string, orgId: string, data: Partial<OrgProviderSubscription>) =>
-    apiFetch<OrgProviderSubscription>(`/admin/v1/organizations/${orgId}/subscriptions`, { method: 'POST', body: JSON.stringify(data) }, key),
+    apiFetch<OrgProviderSubscription>(`/admin/v1/organizations/${enc(orgId)}/subscriptions`, { method: 'POST', body: JSON.stringify(data) }, key),
   getOrgModelPolicies: (key: string, orgId: string) =>
-    apiFetch<{ data: OrgModelPolicy[] }>(`/admin/v1/organizations/${orgId}/models`, {}, key),
+    apiFetch<{ data: OrgModelPolicy[] }>(`/admin/v1/organizations/${enc(orgId)}/models`, {}, key),
   setOrgModelPolicy: (key: string, orgId: string, data: Partial<OrgModelPolicy>) =>
-    apiFetch<OrgModelPolicy>(`/admin/v1/organizations/${orgId}/models`, { method: 'POST', body: JSON.stringify(data) }, key),
+    apiFetch<OrgModelPolicy>(`/admin/v1/organizations/${enc(orgId)}/models`, { method: 'POST', body: JSON.stringify(data) }, key),
 
   // Teams & Users
   listTeams: (key: string, orgId?: string) =>
-    apiFetch<{ data: Team[] }>(`/admin/v1/teams${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
+    apiFetch<{ data: Team[] }>(`/admin/v1/teams${qs({ org_id: orgId })}`, {}, key),
   createTeam: (key: string, data: Partial<Team>) =>
     apiFetch<Team>('/admin/v1/teams', { method: 'POST', body: JSON.stringify(data) }, key),
   updateTeam: (key: string, teamId: string, data: Partial<Team>) =>
-    apiFetch<Team>(`/admin/v1/teams/${teamId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+    apiFetch<Team>(`/admin/v1/teams/${enc(teamId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
   deleteTeam: (key: string, teamId: string) =>
-    apiFetch<{ status: string; id: string }>(`/admin/v1/teams/${teamId}`, { method: 'DELETE' }, key),
+    apiFetch<{ status: string; id: string }>(`/admin/v1/teams/${enc(teamId)}`, { method: 'DELETE' }, key),
   listUsers: (key: string, orgId?: string) =>
-    apiFetch<{ data: User[] }>(`/admin/v1/users${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
+    apiFetch<{ data: User[] }>(`/admin/v1/users${qs({ org_id: orgId })}`, {}, key),
   createUser: (key: string, data: Partial<User>) =>
     apiFetch<User>('/admin/v1/users', { method: 'POST', body: JSON.stringify(data) }, key),
   updateUser: (key: string, userId: string, data: Partial<User>) =>
-    apiFetch<User>(`/admin/v1/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+    apiFetch<User>(`/admin/v1/users/${enc(userId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
   deleteUser: (key: string, userId: string) =>
-    apiFetch<{ status: string; id: string }>(`/admin/v1/users/${userId}`, { method: 'DELETE' }, key),
+    apiFetch<{ status: string; id: string }>(`/admin/v1/users/${enc(userId)}`, { method: 'DELETE' }, key),
 
   // Virtual Keys
   listKeys: (key: string, orgId?: string) =>
-    apiFetch<{ data: VirtualKey[] }>(`/admin/v1/keys${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
+    apiFetch<{ data: VirtualKey[] }>(`/admin/v1/keys${qs({ org_id: orgId })}`, {}, key),
   issueKey: (key: string, data: Partial<VirtualKey>) =>
     apiFetch<VirtualKey>('/admin/v1/keys', { method: 'POST', body: JSON.stringify(data) }, key),
   updateKey: (key: string, keyId: string, data: Partial<VirtualKey>) =>
-    apiFetch<VirtualKey>(`/admin/v1/keys/${keyId}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+    apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
   rotateKey: (key: string, keyId: string) =>
-    apiFetch<VirtualKey>(`/admin/v1/keys/${keyId}/rotate`, { method: 'POST' }, key),
+    apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}/rotate`, { method: 'POST' }, key),
   revokeKey: (key: string, keyId: string) =>
-    apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${keyId}/revoke`, { method: 'POST' }, key),
+    apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${enc(keyId)}/revoke`, { method: 'POST' }, key),
 
   // Provider Credentials
   listCredentials: (key: string, orgId?: string) =>
-    apiFetch<{ data: ProviderCredential[] }>(`/admin/v1/credentials${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
-  createCredential: (key: string, data: any) =>
+    apiFetch<{ data: ProviderCredential[] }>(`/admin/v1/credentials${qs({ org_id: orgId })}`, {}, key),
+  createCredential: (
+    key: string,
+    data: {
+      org_id?: string;
+      provider: string;
+      name: string;
+      api_key: string;
+      base_url?: string;
+      azure_deployment_name?: string;
+      api_version?: string;
+      headers?: Record<string, string>;
+      expires_at?: string;
+    }
+  ) =>
     apiFetch<ProviderCredential>('/admin/v1/credentials', { method: 'POST', body: JSON.stringify(data) }, key),
-  rotateCredential: (key: string, credId: string, data: any) =>
-    apiFetch<ProviderCredential>(`/admin/v1/credentials/${credId}/rotate`, { method: 'POST', body: JSON.stringify(data) }, key),
+  rotateCredential: (
+    key: string,
+    credId: string,
+    data: { api_key: string; base_url?: string; expires_at?: string; headers?: Record<string, string> }
+  ) =>
+    apiFetch<ProviderCredential>(`/admin/v1/credentials/${enc(credId)}/rotate`, { method: 'POST', body: JSON.stringify(data) }, key),
   validateCredential: (key: string, credId: string) =>
-    apiFetch<any>(`/admin/v1/credentials/${credId}/validate`, { method: 'POST' }, key),
-  preflightValidate: (key: string, data: any) =>
-    apiFetch<any>('/admin/v1/credentials/validate', { method: 'POST', body: JSON.stringify(data) }, key),
+    apiFetch<CredentialValidationResult>(`/admin/v1/credentials/${enc(credId)}/validate`, { method: 'POST' }, key),
+  preflightValidate: (
+    key: string,
+    data: {
+      org_id?: string;
+      provider: string;
+      api_key: string;
+      base_url?: string;
+      azure_deployment_name?: string;
+      api_version?: string;
+      headers?: Record<string, string>;
+    }
+  ) =>
+    apiFetch<CredentialValidationResult>('/admin/v1/credentials/validate', { method: 'POST', body: JSON.stringify(data) }, key),
 
   // Model Groups & Deployments
   listModelGroups: (key: string, orgId?: string) =>
-    apiFetch<{ data: ModelGroup[] }>(`/admin/v1/model-groups${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
+    apiFetch<{ data: ModelGroup[] }>(`/admin/v1/model-groups${qs({ org_id: orgId })}`, {}, key),
   createModelGroup: (key: string, data: Partial<ModelGroup>) =>
     apiFetch<ModelGroup>('/admin/v1/model-groups', { method: 'POST', body: JSON.stringify(data) }, key),
   listDeployments: (key: string, groupId?: string) =>
-    apiFetch<{ data: Deployment[] }>(`/admin/v1/deployments${groupId ? `?model_group_id=${groupId}` : ''}`, {}, key),
+    apiFetch<{ data: Deployment[] }>(`/admin/v1/deployments${qs({ model_group_id: groupId })}`, {}, key),
   createDeployment: (key: string, data: Partial<Deployment>) =>
     apiFetch<Deployment>('/admin/v1/deployments', { method: 'POST', body: JSON.stringify(data) }, key),
 
@@ -96,12 +137,18 @@ export const adminApi = {
     apiFetch<any>('/admin/v1/catalogue/sync', { method: 'POST' }, key),
   importCatalogue: (key: string, provider?: string) =>
     apiFetch<{ imported: number; provider: string; total: number }>(
-      `/admin/v1/catalogue/import${provider ? `?provider=${provider}` : ''}`,
+      `/admin/v1/catalogue/import${qs({ provider })}`,
       { method: 'POST' },
       key
     ),
   updatePricing: (key: string, data: any) =>
     apiFetch<any>('/admin/v1/catalogue/pricing', { method: 'POST', body: JSON.stringify(data) }, key),
+  listPricingHistory: (key: string, globalModelId?: string) =>
+    apiFetch<{ data: PricingHistoryEntry[] }>(
+      `/admin/v1/catalogue/pricing${qs({ global_model_id: globalModelId })}`,
+      {},
+      key
+    ),
 
   // Telemetry & Health
   getTelemetryMetrics: (key: string) =>
@@ -115,26 +162,26 @@ export const adminApi = {
 
   // FinOps & Audit
   getSpendSummary: (key: string, orgId?: string) =>
-    apiFetch<SpendSummary>(`/admin/v1/spend/summary${orgId ? `?org_id=${orgId}` : ''}`, {}, key),
+    apiFetch<SpendSummary>(`/admin/v1/spend/summary${qs({ org_id: orgId })}`, {}, key),
   listSpendLogs: (key: string, orgId?: string, limit: number = 50) =>
     apiFetch<{ data: SpendEvent[] }>(
-      `/admin/v1/spend/logs?limit=${limit}${orgId ? `&org_id=${orgId}` : ''}`,
+      `/admin/v1/spend/logs${qs({ limit, org_id: orgId })}`,
       {},
       key
     ),
   listAuditLogs: (key: string, orgId?: string, limit: number = 50) =>
     apiFetch<{ data: AuditLog[] }>(
-      `/admin/v1/audit/logs?limit=${limit}${orgId ? `&org_id=${orgId}` : ''}`,
+      `/admin/v1/audit/logs${qs({ limit, org_id: orgId })}`,
       {},
       key
     ),
 
   // Guardrails
   getGuardrailPolicy: (key: string, orgId: string) =>
-    apiFetch<GuardrailPolicy>(`/admin/v1/organizations/${orgId}/guardrails`, {}, key),
+    apiFetch<GuardrailPolicy>(`/admin/v1/organizations/${enc(orgId)}/guardrails`, {}, key),
   setGuardrailPolicy: (key: string, orgId: string, data: Partial<GuardrailPolicy>) =>
     apiFetch<GuardrailPolicy>(
-      `/admin/v1/organizations/${orgId}/guardrails`,
+      `/admin/v1/organizations/${enc(orgId)}/guardrails`,
       { method: 'POST', body: JSON.stringify(data) },
       key
     ),
@@ -147,7 +194,7 @@ export const adminApi = {
       redacted_prompt: string;
       error_message?: string;
     }>(
-      `/admin/v1/organizations/${orgId}/guardrails/simulate`,
+      `/admin/v1/organizations/${enc(orgId)}/guardrails/simulate`,
       { method: 'POST', body: JSON.stringify({ prompt, policy }) },
       key
     ),
@@ -155,7 +202,7 @@ export const adminApi = {
   // MCP & A2A
   listMCPServers: (key: string, orgId?: string) =>
     apiFetch<{ servers?: MCPServer[]; data?: MCPServer[] }>(
-      `/admin/v1/mcp/servers${orgId ? `?org_id=${orgId}` : ''}`,
+      `/admin/v1/mcp/servers${qs({ org_id: orgId })}`,
       {},
       key
     ),
@@ -183,10 +230,10 @@ export const adminApi = {
       key
     ),
   syncMCPServer: (key: string, serverId: string) =>
-    apiFetch<any>(`/admin/v1/mcp/servers/${serverId}/sync`, { method: 'POST' }, key),
+    apiFetch<any>(`/admin/v1/mcp/servers/${enc(serverId)}/sync`, { method: 'POST' }, key),
   listMCPToolsets: (key: string, orgId?: string) =>
     apiFetch<{ toolsets?: MCPToolset[]; data?: MCPToolset[] }>(
-      `/admin/v1/mcp/toolsets${orgId ? `?org_id=${orgId}` : ''}`,
+      `/admin/v1/mcp/toolsets${qs({ org_id: orgId })}`,
       {},
       key
     ),
@@ -199,9 +246,9 @@ export const adminApi = {
       { method: 'POST', body: JSON.stringify(data) },
       key
     ),
-  listMCPTools: (key: string, orgId?: string) =>
-    apiFetch<{ tools: any[] }>(
-      `/admin/v1/mcp/tools${orgId ? `?org_id=${orgId}` : ''}`,
+  listMCPTools: (key: string, orgId?: string, serverSlug?: string) =>
+    apiFetch<{ tools: MCPTool[] }>(
+      `/admin/v1/mcp/tools${qs({ org_id: orgId, server_slug: serverSlug })}`,
       {},
       key
     ),
@@ -216,10 +263,12 @@ export const adminApi = {
     ),
   listA2AAgents: (key: string, orgId?: string) =>
     apiFetch<{ agents?: A2AAgent[]; data?: A2AAgent[] }>(
-      `/admin/v1/a2a/agents${orgId ? `?org_id=${orgId}` : ''}`,
+      `/admin/v1/a2a/agents${qs({ org_id: orgId })}`,
       {},
       key
     ),
+  getA2AAgent: (key: string, agentId: string) =>
+    apiFetch<{ agent: A2AAgent }>(`/admin/v1/a2a/agents/${enc(agentId)}`, {}, key),
   createA2AAgent: (
     key: string,
     data: {
@@ -242,7 +291,7 @@ export const adminApi = {
       key
     ),
   setA2AKillSwitch: (key: string, agentId: string, killed: boolean) =>
-    apiFetch<any>(`/admin/v1/a2a/agents/${agentId}/kill-switch`, { method: 'POST', body: JSON.stringify({ killed }) }, key),
+    apiFetch<any>(`/admin/v1/a2a/agents/${enc(agentId)}/kill-switch`, { method: 'POST', body: JSON.stringify({ killed }) }, key),
   setA2APushConfig: (
     key: string,
     data: { task_id: string; target_url: string; auth_token?: string }

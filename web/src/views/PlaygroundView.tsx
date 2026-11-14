@@ -1,5 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
+import { adminApi } from '../api/admin';
+import { isPlatformAdminForbidden } from '../components/common/ErrorAlert';
 import { streamChatCompletion, ChatStreamChunk, ChatStreamHeaders } from '../api/sse';
 import { Badge } from '../components/common/Badge';
 import { CodeBlock } from '../components/common/CodeBlock';
@@ -39,7 +42,7 @@ const generateId = (): string => {
 const escapeShellSingle = (val: string): string => `'${val.replace(/'/g, `'\\''`)}'`;
 
 export const PlaygroundView: React.FC = () => {
-  const { lastIssuedKey } = useAuth();
+  const { adminKey, activeOrgId, lastIssuedKey } = useAuth();
 
   // Authentication State
   const [virtualKey, setVirtualKey] = useState<string>('');
@@ -82,6 +85,38 @@ export const PlaygroundView: React.FC = () => {
   // Streaming Controller Ref
   const abortControllerRef = useRef<AbortController | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Fetch dynamic aliases & catalogue models when admin key is unlocked
+  const { data: modelGroupsData } = useQuery({
+    queryKey: ['admin', 'model-groups', adminKey, activeOrgId],
+    queryFn: () => adminApi.listModelGroups(adminKey, activeOrgId),
+    enabled: !!adminKey,
+  });
+
+  const { data: catalogueData } = useQuery({
+    queryKey: ['admin', 'catalogue', adminKey],
+    queryFn: async () => {
+      try {
+        return await adminApi.listCatalogue(adminKey);
+      } catch (err) {
+        if (isPlatformAdminForbidden(err)) return { data: [] };
+        throw err;
+      }
+    },
+    enabled: !!adminKey,
+    retry: (count, err) => !isPlatformAdminForbidden(err) && count < 2,
+  });
+
+  const aliasOptions = useMemo(() => {
+    const base = ['fast', 'reasoning', 'coding', 'auto'];
+    const dynamic = (modelGroupsData?.data || []).map((g) => g.alias).filter(Boolean);
+    return Array.from(new Set([...base, ...dynamic]));
+  }, [modelGroupsData]);
+
+  const modelSuggestions = useMemo(() => {
+    const catIds = (catalogueData?.data || []).map((m) => m.id).filter(Boolean);
+    return Array.from(new Set([...aliasOptions, ...catIds])).slice(0, 120);
+  }, [aliasOptions, catalogueData]);
 
   // Automatically offer the newly issued key if captured in this session
   useEffect(() => {
@@ -211,6 +246,13 @@ export const PlaygroundView: React.FC = () => {
         prev.map((msg) => (msg.id === assistantMsgId ? { ...msg, latencyMs: Math.round(totalLatency) } : msg))
       );
     } catch (err: any) {
+      setMessages((prev) =>
+        prev.filter(
+          (m) =>
+            m.id !== assistantMsgId ||
+            Boolean(m.content || m.reasoning_content || m.tool_calls?.length)
+        )
+      );
       if (err.name === 'AbortError') {
         setStreamError('Request cancelled by user.');
       } else {
@@ -554,8 +596,8 @@ func main() {
           {/* Model Smart Aliases */}
           <div className="space-y-1.5">
             <label className="text-[11px] text-zinc-400 font-mono">Routing Target / Alias:</label>
-            <div className="grid grid-cols-2 gap-1.5">
-              {(['fast', 'reasoning', 'coding', 'auto'] as const).map((alias) => (
+            <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
+              {aliasOptions.map((alias) => (
                 <button
                   key={alias}
                   type="button"
@@ -563,14 +605,14 @@ func main() {
                     setSelectedModel(alias);
                     setCustomModelInput('');
                   }}
-                  className={`px-2.5 py-1.5 rounded text-xs font-mono capitalize transition text-left flex items-center justify-between ${
+                  className={`px-2.5 py-1.5 rounded text-xs font-mono transition text-left flex items-center justify-between ${
                     selectedModel === alias && !customModelInput
                       ? 'bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold'
                       : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
                   }`}
                 >
-                  <span>{alias}</span>
-                  {selectedModel === alias && !customModelInput && <Zap className="w-3 h-3 text-accent-primary" />}
+                  <span className="truncate">{alias}</span>
+                  {selectedModel === alias && !customModelInput && <Zap className="w-3 h-3 text-accent-primary shrink-0" />}
                 </button>
               ))}
             </div>
@@ -578,11 +620,17 @@ func main() {
             <div className="pt-1.5">
               <input
                 type="text"
+                list="playground-models-list"
                 value={customModelInput}
                 onChange={(e) => setCustomModelInput(e.target.value)}
                 placeholder="Or specify exact model ID..."
                 className="w-full px-2.5 py-1 text-xs bg-canvas border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
               />
+              <datalist id="playground-models-list">
+                {modelSuggestions.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
             </div>
           </div>
 
