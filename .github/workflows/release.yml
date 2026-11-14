@@ -1,0 +1,107 @@
+name: Release Assets
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to package and publish (e.g. v1.7.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build-and-release:
+    name: Build, Verify & Publish Release Assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release tag
+        id: rel
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "clean_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Verify Formatting, Vet, Specgen & Unit Tests
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files detected:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          go vet ./...
+          go generate ./internal/openapi
+          git diff --exit-code -- internal/openapi/gateway.gen.go
+          go test -race -count=1 ./internal/... ./pkg/... ./cmd/...
+
+      - name: Verify Web UI Build, Budget & Embedded Dist Parity
+        run: |
+          cd web
+          npm ci
+          npx tsc --noEmit
+          npm run build
+          node scripts/check-budget.mjs
+          cd ..
+          diff -rq web/dist internal/ui/dist
+
+      - name: Build Multi-Platform Binaries, Helm Chart, K8s Bundle & Checksums
+        env:
+          VERSION: ${{ steps.rel.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          make release-assets VERSION="${VERSION}" COMMIT="${COMMIT}" DATE="${DATE}"
+
+      - name: Extract Release Notes from CHANGELOG.md
+        id: notes
+        run: |
+          VER="${{ steps.rel.outputs.clean_version }}"
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "GoRoute AI Gateway ${{ steps.rel.outputs.tag }}" > release_notes.md
+          fi
+
+      - name: Create or Update GitHub Release with Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.rel.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "GoRoute AI Gateway ${TAG}" --notes-file release_notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "GoRoute AI Gateway ${TAG}" --notes-file release_notes.md
+          fi
+          rm -f release_notes.md

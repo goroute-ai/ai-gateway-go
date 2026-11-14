@@ -13,26 +13,31 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 | Check Go formatting | `gofmt -l .` |
 | Static analysis | `go vet ./...` |
 | Generate and validate API contracts | `make specgen` |
-| Unit tests with race detector | `go test -race -count=1 ./internal/... ./pkg/...` |
+| Unit tests with race detector | `go test -race -count=1 ./internal/... ./pkg/... ./cmd/...` |
 | Focused package tests | `go test -race -count=1 ./internal/<pkg>/...` |
-| E2E tests | `go test -race -count=1 ./tests/e2e` (requires PostgreSQL and Redis) |
+| Live PostgreSQL persistence tests | `make test-postgres` (requires PostgreSQL and Redis) |
+| Strict live E2E tests (no skips) | `make test-e2e-strict` (requires PostgreSQL and Redis) |
+| Full containerized prod suite (Phases 1–7) | `make test-prod-containers` |
+| Live upstream provider canary | `make test-canary` (key-gated via `-tags=canary`) |
 | Build gateway into ignored output directory | `go build -o bin/ai-gateway ./cmd/gateway` |
+| Install UI dependencies | `make ui-install` |
 | Build and synchronize UI assets | `make ui-build` |
 | Check embedded UI asset parity | `make ui-check-dist` |
+| Build release tarballs & Helm package | `make release-assets` |
 
 `make release-check` runs `gofmt -w` through its `fmt` prerequisite, then vet, generation, unit tests, and E2E tests. It modifies files and requires PostgreSQL and Redis; inspect its prerequisites before running it on an existing worktree. `make ui-build` writes generated files under `internal/ui/dist/`.
 
-## v1.5.0 Invariants
+## v1.7.0 Invariants
 
-- Route provider egress through `internal/security/network`; use the shared `network.NewHTTPClient` policy rather than an unconfigured client.
-- Preserve tenant identity and fail-closed authorization for operator roles, virtual keys, MCP tools, and A2A agents.
+- Route provider and tool egress through `internal/security/network`; validate custom `BaseURL` inputs via `adapter.ValidateAndResolveBaseURL`, isolate untrusted user media fetches behind `DefaultPublicMediaPolicy` (`mediaPolicy`/`mediaClient`), and keep private-network preflight probes restricted to `platform_admin`.
+- Preserve tenant identity, tri-state JSON allowlist semantics (`null` = Inherit vs `[]` = Deny All via `optionalStringSlice` and explicit JSON tags without `,omitempty` on `IdentityContext`, `Team`, and `VirtualKey`), and fail-closed authorization for operator roles, virtual keys, MCP tools, and A2A agents.
 - Keep accounting in integer micro-dollars, with integer pico-dollar intermediate arithmetic in `internal/finops`; never use floating point for cost or balance calculations.
 - Keep provider credentials encrypted through the vault. Production validation must reject default admin, encryption, and JWT keys when either `ENV` or `GATEWAY_ENV` signals production.
 - Preserve file-upload quotas and concurrency limits. Defaults are 5 GiB per organization and 8 concurrent uploads; zero disables the corresponding limit.
-- Preserve durable spend delivery, idempotent Redis reconciliation, upper-bound budget reservations, lease renewal, and budget-reset synchronization.
-- Preserve streaming guardrail inspection and redaction, including fail-closed policy handling and `logging_only` behavior.
-- Treat OpenAPI and protocol specs as contract sources. `make specgen` checks primary `/v1` route parity; it does not prove parity for admin, aliases, MCP, or A2A routes.
-- Keep model pricing history append-only and update the frontend source in `web/`; `internal/ui/dist/` is generated and must stay within the checked bundle budget.
+- Preserve durable spend delivery, idempotent Redis reconciliation, upper-bound budget reservations, lease renewal, and budget-reset synchronization across multi-replica PostgreSQL/Redis deployments.
+- Preserve streaming guardrail inspection and redaction, including fail-closed policy handling, `logging_only` behavior, pre-first-chunk `X-Gateway-Provider`/`X-Gateway-Model` emission, and CORS `Access-Control-Expose-Headers`.
+- Treat OpenAPI and protocol specs as contract sources. `make specgen` validates OpenAPI/MCP/A2A specs and enforces both primary `/v1` and `/admin/v1` route parity; it does not verify alias, MCP, or A2A routes automatically.
+- Keep `pkg/gateway` public SDK types self-contained (including `ConnectRealtime`, modality/spend helpers, and `WithHTTPClient`), model pricing history append-only, and `internal/ui/dist/` strictly synced with `web/dist/` within the `<= 420 KB` / `<= 125 KB` gzip bundle budget.
 
 ## Scoped Rules
 
@@ -46,6 +51,5 @@ Claude Code discovers Markdown rules in `.claude/rules/`; `paths` frontmatter li
 
 - Run focused tests for changed packages; add race-tested repository checks when the change warrants them.
 - Run `make specgen` after contract changes and review generated diffs.
-- For `web/` changes, run `make ui-build`, `make ui-check-dist`, and `go test ./internal/ui/...`.
-- Run E2E tests only when PostgreSQL and Redis are available.
-- Report the commands run and any checks not run. Do not claim service-dependent checks passed unless those services were available.
+- For `web/` changes, run `cd web && npm run typecheck`, `make ui-build`, `diff -rq web/dist internal/ui/dist`, and `go test ./internal/ui/...` (`make ui-check-dist` checks clean `git diff` against HEAD after committing).
+- Run E2E tests only when PostgreSQL and Redis are available, and state which checks were run.

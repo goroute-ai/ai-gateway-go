@@ -3,7 +3,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash
 #   OR
-#   curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash -s -- v1.4.0
+#   curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash -s -- v1.7.0
 
 set -e
 
@@ -67,7 +67,7 @@ if [ -z "${REQUESTED_VERSION}" ]; then
   info "Fetching latest release version from GitHub..."
   LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | head -n1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
   if [ -z "${LATEST_TAG}" ]; then
-    VERSION="v1.4.0"
+    VERSION="v1.7.0"
   else
     VERSION="${LATEST_TAG}"
   fi
@@ -163,7 +163,7 @@ if command -v "${BINARY}" >/dev/null 2>&1; then
   "${BINARY}" -version
   printf "\n${BOLD}${GREEN}✔ Successfully installed GoRoute AI Gateway!${RESET}\n"
   printf "Get started by running:\n"
-  printf "  ${BOLD}%s --config config/gateway.yaml${RESET}\n\n" "${BINARY}"
+  printf "  ${BOLD}%s -config configs/config.yaml${RESET}\n\n" "${BINARY}"
 else
   printf "\n${BOLD}${GREEN}✔ Successfully installed GoRoute AI Gateway to ${TARGET_PATH}!${RESET}\n"
   printf "${YELLOW}NOTE:${RESET} ${INSTALL_DIR} is not in your PATH.\n"

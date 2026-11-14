@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,20 +23,25 @@ import (
 )
 
 var (
-	version = "v1.6.0"
+	version = "v1.7.0"
 	commit  = "dev"
-	date    = "2026-11-13T00:00:00Z"
+	date    = "2026-11-14T00:00:00Z"
 )
 
 func main() {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
+	healthcheck := flag.Bool("healthcheck", false, "Probe local /readyz endpoint and exit")
 	migrateOnly := flag.Bool("migrate-only", false, "run database migrations and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("GoRoute AI Gateway %s (commit: %s, built: %s)\n", version, commit, date)
 		os.Exit(0)
+	}
+
+	if *healthcheck {
+		os.Exit(runHealthcheck())
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -195,4 +201,26 @@ func runMigrationsOnly(ctx context.Context, dsn, migrationsDir string) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return nil
+}
+
+// runHealthcheck probes the local /readyz endpoint for container liveness/readiness checks.
+func runHealthcheck() int {
+	port := 8080
+	if raw := os.Getenv("GATEWAY_PORT"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 65535 {
+			port = parsed
+		}
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/readyz")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ai-gateway] healthcheck failed: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "[ai-gateway] healthcheck returned HTTP %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }

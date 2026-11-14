@@ -3,7 +3,7 @@
 > **Document Status**: Production Reference Architecture (v1.0)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
 > **Provider Integrations**: Dedicated adapters and OpenAI-compatible dialect profiles under `internal/adapter/`; consult those packages for the current implementation set.  
-> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway DTOs/interfaces, validates contracts, and checks primary `/v1` route parity. A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
+> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway DTOs/interfaces, validates contracts, and checks both primary `/v1` and `/admin/v1` route parity. A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -269,7 +269,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | 23 primary `/v1` paths; selected admin operations (control-plane contract coverage remains incomplete) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | 23 primary `/v1` paths and `/admin/v1` control-plane contracts (verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
@@ -545,7 +545,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0013`):
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0015`):
 
 #### 1. Multi-Tenant Identity & RBAC
 - **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
@@ -716,7 +716,11 @@ ai-gateway-go/
 │   ├── 0012_add_cache_write_and_operations.up.sql
 │   ├── 0012_add_cache_write_and_operations.down.sql
 │   ├── 0013_user_limits_and_spend_indexes.up.sql
-│   └── 0013_user_limits_and_spend_indexes.down.sql
+│   ├── 0013_user_limits_and_spend_indexes.down.sql
+│   ├── 0014_budget_reset_outbox_user_scope.up.sql
+│   ├── 0014_budget_reset_outbox_user_scope.down.sql
+│   ├── 0015_team_org_concurrency.up.sql
+│   └── 0015_team_org_concurrency.down.sql
 ├── tests/
 │   └── e2e/                          # End-to-end integration, protocols, clustering & resilience suites
 ├── internal/

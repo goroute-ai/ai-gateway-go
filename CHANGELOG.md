@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0] - 2026-11-14
+
+### CodeQL Security Remediations, Pure-SDK Parity, Operator Web UI Wiring & Automated Release Packaging
+
+#### Security & SSRF Defense-in-Depth (`internal/adapter/`, `internal/server/`, `internal/auth/`, `internal/observability/`, `internal/logger/`)
+- **Strict Provider `BaseURL` & Preflight SSRF Enforcement**: Added canonical `ValidateAndResolveBaseURL` across native adapters (`openai`, `anthropic`, `mistral`, `ollama`, `gemini`, `azure`), `openaicompat` profiles (`ProfileRegistry` + `resolveEndpointBase`), and admin credential creation/rotation/validation handlers; restricted private-network preflight probes to `platform_admin`, and hardened Gemini `isVertexExpressKey` to parsed hostname equality.
+- **Isolated Untrusted Media Fetch Policy**: Added `DefaultPublicMediaPolicy` and `FetchRemoteDataURIWithPolicy` in `internal/adapter/media.go`, isolating end-user `image_url` / `document.url` fetches on `ollama` and `vertex` behind strict public-HTTPS `mediaPolicy` / `mediaClient` instances (`AllowPrivateNetworks: false`, `AllowInsecureHTTP: false`).
+- **Response, Header & Concurrency Hardening**: Emitted strict `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` on non-UI routes, validated `/v1/audio/speech` `Content-Type`, sanitized `X-Request-Id` and fallback `Content-Type`, scoped `sha256.Sum256` JWT signature checks strictly to `RS256`/`ES256`, warned on short `auth.default_virtual_key` (< 32 chars), streamed multipart image uploads via `io.Copy`, and fixed a response-marshal race in `handleCreateBatch`.
+
+#### Go SDK, Contracts & Streaming Telemetry (`pkg/gateway/`, `cmd/specgen/`, `internal/server/`)
+- **WebSocket Realtime & Pure-SDK Modality Wrappers**: Added `ConnectRealtime` (`*RealtimeSession`), `WithHTTPClient`, and zero-internal-import typed SDK methods (`CreateEmbedding`, `CreateRerank`, `CreateModeration`, `CreateResponse`, `StreamResponse`, `CreateImage`, `CreateSpeech`, `TranscribeAudio`, `GetSpendSummary`).
+- **`/v1` + `/admin/v1` Spec Parity & Streaming Headers**: Updated `cmd/specgen` to verify both `/v1` and `/admin/v1` route parity (`63` Unified OpenAPI paths), emitted `X-Gateway-Provider` and `X-Gateway-Model` before the first SSE chunk on streaming chat completions, and exposed `X-Gateway-*` telemetry headers via CORS `Access-Control-Expose-Headers`.
+- **Multi-Replica HA & Tri-State Serialization**: Preserved 3-state allowlists (`null` = Inherit vs `[]` = Deny All) across Redis L2 `IdentityContext`, `Team`/`VirtualKey` JSON responses, and `optionalStringSlice` patch decoding (`PATCH`/`PUT` handlers), and ensured `PostgresRepository` mutations and `TEXT[] NOT NULL` bindings stay coherent across multi-replica pods.
+
+#### Operator Web UI Security & Contract Wiring (`web/`, `internal/ui/`)
+- **Control-Plane Contract Alignment**: Synced TypeScript models and views with `spent_micros`, 7 operator roles (`platform_admin` through `service_account` / `viewer`), explicit 3-state `Inherit | Deny All | Custom List` allowlist controls, `round-robin` routing strategy, Pricing History modal, full Guardrails controls (`mode`, `scan_all_roles`, toxicity filter, content categories), `MCPTool.input_schema`, OAuth2/`static_headers` MCP config, `none | static | vault_jwt` A2A auth, inline `valid: false` credential validation errors, URL-encoded admin queries, and `<ScopedRoleNotice>` `403` handling across all 16 `sanitizeRuntimeConfig` sections.
+- **SSE Playground & Nested SPA Assets**: Fixed SSE `event: error` detection and EOF decoder flushing, dynamically populated Playground model aliases from unlocked admin endpoints, removed empty assistant error placeholders, and switched favicon/logo assets to `/ui/*` paths within the `<= 420 KB` / `<= 125 KB` gzip budget.
+
+#### Release Packaging, CI/CD & Documentation (`deployments/`, `.github/workflows/`, `Makefile`, `docs/`, `CLAUDE.md`)
+- **Automated Binary, Helm & GHCR Release Workflow**: Added `.github/workflows/release.yml` and `make release-assets` for cross-platform archives (`darwin`/`linux`/`windows`, `amd64`/`arm64`), `checksums.txt`, Helm `.tgz`, and Kubernetes bundle archives alongside multi-arch `ghcr.io/goroute-ai/ai-gateway-go` publishing with full OCI image labels.
+- **Documentation & Claude Code Sync**: Updated `CLAUDE.md`, `.claude/rules/*`, `CONTRIBUTING.md`, `README.md`, `install.sh`, and `docs/*` for `v1.7.0`.
+
+---
+
 ## [1.6.0] - 2026-11-13
 
 ### Maximum Provider & Model Compatibility, Modality FinOps, Production Test Suite & K8s Hardening

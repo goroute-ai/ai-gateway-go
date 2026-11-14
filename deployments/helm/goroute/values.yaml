@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: goroute/ai-gateway
+  repository: ghcr.io/goroute-ai/ai-gateway-go
   pullPolicy: IfNotPresent
   tag: ""
 
@@ -113,7 +113,7 @@ networkPolicy:
 migration:
   enabled: false
   image:
-    repository: goroute/ai-gateway
+    repository: ghcr.io/goroute-ai/ai-gateway-go
     tag: ""
     pullPolicy: IfNotPresent
   command: ["/app/ai-gateway", "-config", "/app/configs/config.yaml", "-migrate-only"]

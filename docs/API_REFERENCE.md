@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.5.0`  
+> **Version**: `v1.7.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -21,12 +21,17 @@ Every response from GoRoute AI Gateway includes rich tracing and attribution met
 | :--- | :--- | :--- |
 | `X-Gateway-Request-Id` | Unique UUID assigned to the request lifecycle | `req_991efda4-7fab-4b03` |
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
-| `X-Gateway-Provider` | The winning upstream provider selected | `gemini`, `anthropic`, `openai` |
-| `X-Gateway-Model` | The physical model that executed the inference | `gemini-2.5-flash`, `claude-sonnet-4` |
+| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `gemini`, `anthropic`, `openai` |
+| `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gemini-2.5-flash`, `claude-sonnet-4` |
 | `X-Gateway-Cost-Micros`| Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
 | `X-Gateway-Routing-Time`| Gateway Stage 1 + Stage 2 routing overhead | `12 µs` |
+| `X-Gateway-Latency-Ms` | End-to-end request latency in milliseconds | `318` |
 | `X-Gateway-Cache` | Cache evaluation result | `HIT` or `MISS` |
+| `X-Gateway-Guardrail-Action` | Guardrail action applied during request/stream processing | `none`, `redact`, `block` |
+| `X-Gateway-Pricing-Status` | Billing pricing verification status (`verified` vs `unverified`) | `verified` |
 | `Retry-After` | Cooldown period sent on HTTP 429 rate limit | `45` (seconds) |
+
+When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, and `X-Gateway-Latency-Ms` to browser clients.
 
 ---
 
@@ -736,7 +741,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
   ```
 
 ### 5.3 User Management
-- `POST /admin/v1/users`: Register a user and assign their enterprise role (`admin`, `developer`, `finance_auditor`).
+- `POST /admin/v1/users`: Register a user and assign their enterprise role (`platform_admin`, `org_admin`, `org_viewer`, `team_admin`, `developer`, `service_account`, `viewer`).
   ```json
   {
     "org_id": "org_default",

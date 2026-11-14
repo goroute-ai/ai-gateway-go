@@ -1,4 +1,8 @@
-.PHONY: all build fmt vet lint test test-unit test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers specgen catalog-sync run docker-build docker-up docker-down clean release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint test test-unit test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+
+VERSION ?= v1.7.0
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 all: release-check
 
@@ -11,7 +15,7 @@ generate:
 
 build: generate
 	@mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/ai-gateway ./cmd/gateway
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/ai-gateway ./cmd/gateway
 
 run:
 	go run ./cmd/gateway -config configs/config.yaml
@@ -103,15 +107,32 @@ test-canary:
 	go test -tags=canary -v -count=1 ./tests/canary/...
 
 test-prod-containers:
-	@echo "==> Running containerized production security, vulnerability, and k6 load suite..."
+	@echo "==> Running containerized 8-phase production security, functional, HA, and k6 load suite..."
 	./tests/scripts/run_container_prod_suite.sh
+
+test-prod-suite:
+	@echo "==> Running production verification suite (PHASE=$${PHASE:-all})..."
+	./tests/scripts/run_container_prod_suite.sh $${PHASE:+--phase "$$PHASE"}
+
+prod-stack-up:
+	@echo "==> Starting production-like 2-replica Docker stack (HTTPS :28443, Prometheus :19090)..."
+	./tests/scripts/run_container_prod_suite.sh --phase 2 --keep-stack
+
+prod-stack-down:
+	@echo "==> Stopping production-like 2-replica Docker stack..."
+	POSTGRES_PASSWORD=$${POSTGRES_PASSWORD:-down} \
+	REDIS_PASSWORD=$${REDIS_PASSWORD:-down} \
+	GATEWAY_MASTER_ADMIN_KEY=$${GATEWAY_MASTER_ADMIN_KEY:-down-placeholder} \
+	GATEWAY_MASTER_ENCRYPTION_KEY=$${GATEWAY_MASTER_ENCRYPTION_KEY:-down-placeholder-down-placeholder} \
+	GATEWAY_JWT_SECRET=$${GATEWAY_JWT_SECRET:-down-placeholder} \
+	docker compose -f deployments/docker-compose.prod-test.yml down -v --remove-orphans
 
 # ------------------------------------------------------------------------------
 # Docker & Deployment
 # ------------------------------------------------------------------------------
 
 docker-build:
-	docker build -t goroute/ai-gateway:v1.6.0 -f deployments/Dockerfile .
+	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_DATE=$(DATE) -t goroute/ai-gateway:$(VERSION) -f deployments/Dockerfile .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d --build
@@ -151,7 +172,32 @@ clean:
 	@echo "==> Cleaning build and test artifacts..."
 	@rm -rf gateway bin/ dist/ *.test
 
+release-assets:
+	@echo "==> Packaging multi-platform binaries, checksums, and Kubernetes/Helm artifacts ($(VERSION))..."
+	@rm -rf dist && mkdir -p dist
+	@CLEAN_VER="$(patsubst v%,%,$(VERSION))"; \
+	for target in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64" "windows amd64"; do \
+	  set -- $$target; os="$$1"; arch="$$2"; \
+	  stage="dist/stage-$${os}-$${arch}"; mkdir -p "$$stage"; \
+	  bin_name="ai-gateway"; [ "$$os" = "windows" ] && bin_name="ai-gateway.exe"; \
+	  CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -trimpath \
+	    -ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" \
+	    -o "$${stage}/$${bin_name}" ./cmd/gateway; \
+	  if [ "$$os" = "windows" ]; then \
+	    (cd "$$stage" && zip -q "../ai-gateway_$${CLEAN_VER}_$${os}_$${arch}.zip" "$${bin_name}"); \
+	  else \
+	    tar -C "$$stage" -czf "dist/ai-gateway_$${CLEAN_VER}_$${os}_$${arch}.tar.gz" "$${bin_name}"; \
+	  fi; \
+	  rm -rf "$$stage"; \
+	done; \
+	tar -czf "dist/goroute-k8s-manifests-$${CLEAN_VER}.tar.gz" -C deployments k8s; \
+	if command -v helm >/dev/null 2>&1; then \
+	  helm package deployments/helm/goroute --app-version "$${CLEAN_VER}" -d dist/; \
+	fi; \
+	(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum *; else shasum -a 256 *; fi > checksums.txt); \
+	ls -lh dist/
+
 release-check: fmt vet specgen test-unit test-e2e
 	@echo "======================================================================"
-	@echo "  GoRoute AI Gateway v1.6.0 — All Release Checks Passed Successfully! "
+	@echo "  GoRoute AI Gateway $(VERSION) — All Release Checks Passed!          "
 	@echo "======================================================================"

@@ -20,9 +20,9 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (\$1.00 = 1,000,000 µ\$). Never use floating-point math for cost accumulation or pricing.
 3. **SSRF-Protected Network Egress**: All outbound HTTP traffic to upstream LLM providers or webhooks must route through the SSRF-guarded transport in `internal/security/network`.
 4. **Multi-Tenant Isolation**: Boundary 1 Virtual Key authentication and multi-tenant RBAC allowlists (`OrgID > TeamID > UserID > VirtualKeyID`) must be preserved across all endpoints.
-5. **OpenAPI-First Design (in progress)**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and primary `/v1` routes are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
+5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and both primary `/v1` and `/admin/v1` routes are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
-7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The uncompressed production bundle must remain under 400 KB, strictly enforced by `web/scripts/check-budget.mjs`.
+7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 420 KB` uncompressed and `<= 125 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
 
 ---
 

@@ -741,7 +741,7 @@ Client Request (GET /ui/playground)
 - `fs.Sub(embeddedDist, "dist")` creates a sub-tree filesystem at server bootstrap time.
 - Requests never touch the host filesystem or shell out to Node.js.
 - Static assets are served from the embedded filesystem; this avoids host filesystem lookups and runtime Node.js processes.
-- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the 380 KB uncompressed / 110 KB gzipped bundle budget.
+- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the 420 KB uncompressed / 125 KB gzipped bundle budget enforced by `web/scripts/check-budget.mjs`.
 
 ---
 

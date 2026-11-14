@@ -17,9 +17,9 @@ paths:
 
 ## Network, identity, and secrets
 
-- Route provider and tool egress through `internal/security/network`; use `network.NewHTTPClient` and preserve DNS/IP pinning, private-address checks, and redirect validation.
-- Preserve operator RBAC, inbound JWT/OIDC checks, virtual-key model authorization, and organization/team/user boundaries. Authorization failures must fail closed.
-- Keep provider credentials encrypted by the vault. Production config must reject default admin, encryption, and JWT secrets when `ENV` or `GATEWAY_ENV` is production.
+- Route provider and tool egress through `internal/security/network`; use `network.NewHTTPClient`, validate custom `BaseURL` inputs through `adapter.ValidateAndResolveBaseURL`, isolate user-supplied remote media fetches behind strict public-HTTPS `DefaultPublicMediaPolicy`, and preserve DNS/IP pinning, private-address checks, and redirect validation.
+- Preserve operator RBAC, inbound JWT/OIDC checks, virtual-key model authorization, tri-state allowlists (`null` Inherit vs `[]` Deny All across HTTP JSON, storage, and Redis L2 cache), and organization/team/user boundaries. Authorization failures must fail closed.
+- Keep provider credentials encrypted by the vault and restrict private-network preflight checks to `platform_admin`. Production config must reject default admin, encryption, and JWT secrets when `ENV` or `GATEWAY_ENV` is production.
 - MCP stdio is disabled unless its release guard and OS sandbox requirements are satisfied; do not bypass that configuration validation.
 
 ## Accounting, storage, and shared state

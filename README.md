@@ -10,7 +10,8 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.6.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.6.0)
+[![Release](https://img.shields.io/badge/Release-v1.7.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.7.0)
+[![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
 [![Claude Code Ready](<https://img.shields.io/badge/Claude%20Code-Best%20Practices-8A2BE2?logo=anthropic>)](./CLAUDE.md)
@@ -37,7 +38,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.6.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.7.0
 ```
 
 ```go
@@ -96,11 +97,18 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries are also available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.6.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.7.0).*
 
-### Path 3: Production Multi-Tenant Stack (Docker Compose)
+### Path 3: Container Image (`ghcr.io`) & Production Stack (Docker Compose)
 
-Spins up GoRoute (with embedded UI), PostgreSQL 16 (for migrations and spend logs), Redis 7 (for rate limiting and cache), and Prometheus:
+Run the published multi-arch Distroless container image directly from [GitHub Packages](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go):
+
+```bash
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.7.0
+# Or track latest stable: docker pull ghcr.io/goroute-ai/ai-gateway-go:latest
+```
+
+Or spin up GoRoute (with embedded UI), PostgreSQL 16 (for migrations and spend logs), Redis 7 (for rate limiting and cache), and Prometheus:
 
 ```bash
 curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
@@ -365,7 +373,7 @@ Returns:
 
 ### 6. Unified Multi-Modal Data Plane (23 Paths, 26 Operations)
 
-The gateway registers the following primary `/v1` operations. The OpenAPI contract and CI currently enforce route parity for this group. Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Both primary `/v1` and `/admin/v1` contract parity are enforced by `make specgen` (`63` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -488,7 +496,7 @@ GoRoute embeds a production React 19 + TypeScript + Tailwind single-page applica
 
 - **Zero Node.js Runtime Overhead**: Static bundles are compiled at build time and served directly from memory.
 - **Interactive Guardrail Simulator**: Test prompts against regex-based PII, secret leak, and prompt injection policies without making upstream LLM calls.
-- **Strict Bundle Budget**: The production frontend bundle is verified under 400 KB (< 110 KB gzipped) via `web/scripts/check-budget.mjs`.
+- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 420 KB` uncompressed (`<= 125 KB` gzipped) via `web/scripts/check-budget.mjs`.
 
 ---
 
