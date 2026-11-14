@@ -60,13 +60,16 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-1", "org-1", "eng", int64(1000), int64(100), "monthly", nil,
-				10, 1000, []string{"gpt-4.1"}, nil, nil, nil,
+				10, 1000, 5, []string{"gpt-4.1"}, nil, nil, nil,
 				true, now, now,
 			},
 		}
 		team, err := scanTeam(scanner)
 		if err != nil {
 			t.Fatalf("scanTeam failed: %v", err)
+		}
+		if team.MaxConcurrentRequests != 5 {
+			t.Fatalf("expected MaxConcurrentRequests=5, got %d", team.MaxConcurrentRequests)
 		}
 		if team.AllowedMCPServers != nil || team.AllowedA2AAgents != nil || team.AllowedClientApps != nil {
 			t.Fatalf("expected nil slices for NULL columns, got mcp=%#v a2a=%#v apps=%#v",
@@ -78,7 +81,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-2", "org-1", "sec", int64(0), int64(0), "monthly", nil,
-				0, 0, []string{}, []string{}, []string{}, []string{},
+				0, 0, 0, []string{}, []string{}, []string{}, []string{},
 				true, now, now,
 			},
 		}
@@ -101,7 +104,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-3", "org-1", "ml", int64(5000), int64(0), "weekly", nil,
-				20, 2000, []string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
+				20, 2000, 12, []string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
 				true, now, now,
 			},
 		}
@@ -133,14 +136,30 @@ func TestMemoryRepository_TeamThreeStateAndNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepository()
 
+	org := &domain.Organization{
+		ID:                    "org-1",
+		Name:                  "Acme",
+		Slug:                  "acme",
+		MaxConcurrentRequests: 25,
+		IsActive:              true,
+	}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+	gotOrg, err := repo.GetOrganization(ctx, org.ID)
+	if err != nil || gotOrg.MaxConcurrentRequests != 25 {
+		t.Fatalf("GetOrganization MaxConcurrentRequests: got=%+v err=%v", gotOrg, err)
+	}
+
 	team := &domain.Team{
-		ID:                "team-mem-1",
-		OrgID:             "org-1",
-		Name:              "platform",
-		AllowedMCPServers: nil,        // Inherit
-		AllowedA2AAgents:  []string{}, // DenyAll
-		AllowedClientApps: []string{"cli"},
-		IsActive:          true,
+		ID:                    "team-mem-1",
+		OrgID:                 "org-1",
+		Name:                  "platform",
+		MaxConcurrentRequests: 8,
+		AllowedMCPServers:     nil,        // Inherit
+		AllowedA2AAgents:      []string{}, // DenyAll
+		AllowedClientApps:     []string{"cli"},
+		IsActive:              true,
 	}
 	if err := repo.CreateTeam(ctx, team); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
@@ -149,6 +168,9 @@ func TestMemoryRepository_TeamThreeStateAndNotFound(t *testing.T) {
 	got, err := repo.GetTeam(ctx, team.ID)
 	if err != nil {
 		t.Fatalf("GetTeam: %v", err)
+	}
+	if got.MaxConcurrentRequests != 8 {
+		t.Fatalf("expected team MaxConcurrentRequests=8, got %d", got.MaxConcurrentRequests)
 	}
 	if got.AllowedMCPServers != nil {
 		t.Fatalf("expected nil AllowedMCPServers, got %#v", got.AllowedMCPServers)

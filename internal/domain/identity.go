@@ -43,39 +43,41 @@ const (
 
 // Organization represents a top-level tenant in the AI Gateway.
 type Organization struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Slug              string            `json:"slug"`
-	MaxBudgetMicros   int64             `json:"max_budget_micros"` // 0 = unlimited
-	SpentMicros       int64             `json:"spent_micros"`
-	BudgetResetPeriod BudgetResetPeriod `json:"budget_reset_period"`
-	BudgetResetAt     *time.Time        `json:"budget_reset_at,omitempty"`
-	RPMLimit          int               `json:"rpm_limit"` // 0 = unlimited
-	TPMLimit          int               `json:"tpm_limit"` // 0 = unlimited
-	IsActive          bool              `json:"is_active"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
-	CreatedAt         time.Time         `json:"created_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Slug                  string            `json:"slug"`
+	MaxBudgetMicros       int64             `json:"max_budget_micros"` // 0 = unlimited
+	SpentMicros           int64             `json:"spent_micros"`
+	BudgetResetPeriod     BudgetResetPeriod `json:"budget_reset_period"`
+	BudgetResetAt         *time.Time        `json:"budget_reset_at,omitempty"`
+	RPMLimit              int               `json:"rpm_limit"`               // 0 = unlimited
+	TPMLimit              int               `json:"tpm_limit"`               // 0 = unlimited
+	MaxConcurrentRequests int               `json:"max_concurrent_requests"` // 0 = unlimited
+	IsActive              bool              `json:"is_active"`
+	Metadata              map[string]string `json:"metadata,omitempty"`
+	CreatedAt             time.Time         `json:"created_at"`
+	UpdatedAt             time.Time         `json:"updated_at"`
 }
 
 // Team groups users and virtual keys under an Organization with dedicated budgets and model scopes.
 type Team struct {
-	ID                string            `json:"id"`
-	OrgID             string            `json:"org_id"`
-	Name              string            `json:"name"`
-	MaxBudgetMicros   int64             `json:"max_budget_micros"`
-	SpentMicros       int64             `json:"spent_micros"`
-	BudgetResetPeriod BudgetResetPeriod `json:"budget_reset_period"`
-	BudgetResetAt     *time.Time        `json:"budget_reset_at,omitempty"`
-	RPMLimit          int               `json:"rpm_limit"`
-	TPMLimit          int               `json:"tpm_limit"`
-	AllowedModels     []string          `json:"allowed_models,omitempty"`      // Empty = inherit Org enabled models
-	AllowedMCPServers []string          `json:"allowed_mcp_servers,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents  []string          `json:"allowed_a2a_agents,omitempty"`  // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps []string          `json:"allowed_client_apps,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
-	IsActive          bool              `json:"is_active"`
-	CreatedAt         time.Time         `json:"created_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	ID                    string            `json:"id"`
+	OrgID                 string            `json:"org_id"`
+	Name                  string            `json:"name"`
+	MaxBudgetMicros       int64             `json:"max_budget_micros"`
+	SpentMicros           int64             `json:"spent_micros"`
+	BudgetResetPeriod     BudgetResetPeriod `json:"budget_reset_period"`
+	BudgetResetAt         *time.Time        `json:"budget_reset_at,omitempty"`
+	RPMLimit              int               `json:"rpm_limit"`
+	TPMLimit              int               `json:"tpm_limit"`
+	MaxConcurrentRequests int               `json:"max_concurrent_requests"`
+	AllowedModels         []string          `json:"allowed_models,omitempty"`      // Empty = inherit Org enabled models
+	AllowedMCPServers     []string          `json:"allowed_mcp_servers,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents      []string          `json:"allowed_a2a_agents,omitempty"`  // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps     []string          `json:"allowed_client_apps,omitempty"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	IsActive              bool              `json:"is_active"`
+	CreatedAt             time.Time         `json:"created_at"`
+	UpdatedAt             time.Time         `json:"updated_at"`
 }
 
 // User represents a human identity belonging to an Organization and optionally a Team.
@@ -176,6 +178,7 @@ type IdentityContext struct {
 	KeySpentMicros        int64    `json:"key_spent_micros"`
 	TeamRPMLimit          int      `json:"team_rpm_limit"`
 	TeamTPMLimit          int      `json:"team_tpm_limit"`
+	TeamMaxConcurrent     int      `json:"team_max_concurrent"`
 	TeamMaxBudgetMicros   int64    `json:"team_max_budget_micros"`
 	TeamSpentMicros       int64    `json:"team_spent_micros"`
 	UserRPMLimit          int      `json:"user_rpm_limit"`
@@ -185,6 +188,7 @@ type IdentityContext struct {
 	UserSpentMicros       int64    `json:"user_spent_micros"`
 	OrgRPMLimit           int      `json:"org_rpm_limit"`
 	OrgTPMLimit           int      `json:"org_tpm_limit"`
+	OrgMaxConcurrent      int      `json:"org_max_concurrent"`
 	OrgMaxBudgetMicros    int64    `json:"org_max_budget_micros"`
 	OrgSpentMicros        int64    `json:"org_spent_micros"`
 }

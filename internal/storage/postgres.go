@@ -465,9 +465,9 @@ func (p *PostgresRepository) CreateOrganization(ctx context.Context, org *domain
 	}
 	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, time.Now().UTC())
 	const q = `
-		INSERT INTO organizations (id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
-	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SpentMicros, string(org.BudgetResetPeriod), org.BudgetResetAt, org.RPMLimit, org.TPMLimit, org.IsActive); err != nil {
+		INSERT INTO organizations (id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
+	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SpentMicros, string(org.BudgetResetPeriod), org.BudgetResetAt, org.RPMLimit, org.TPMLimit, org.MaxConcurrentRequests, org.IsActive); err != nil {
 		return err
 	}
 	return p.mem.CreateOrganization(ctx, org)
@@ -477,11 +477,11 @@ func (p *PostgresRepository) GetOrganization(ctx context.Context, id string) (*d
 	if org, err := p.mem.GetOrganization(ctx, id); err == nil && org != nil {
 		return org, nil
 	}
-	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, is_active FROM organizations WHERE id = $1`
+	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM organizations WHERE id = $1`
 	var o domain.Organization
 	var period string
 	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.IsActive,
+		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.MaxConcurrentRequests, &o.IsActive,
 	); err != nil {
 		return nil, fmt.Errorf("organization not found: %w", err)
 	}
@@ -589,7 +589,7 @@ func scanTeam(row rowScanner) (*domain.Team, error) {
 	var period string
 	if err := row.Scan(
 		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SpentMicros, &period, &t.BudgetResetAt,
-		&t.RPMLimit, &t.TPMLimit, &t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.RPMLimit, &t.TPMLimit, &t.MaxConcurrentRequests, &t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
 		&t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -610,11 +610,11 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	const q = `
 		INSERT INTO teams (
 			id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
-			rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+			rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	if _, err := p.pool.Exec(ctx, q,
 		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
-		team.RPMLimit, team.TPMLimit, allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+		team.RPMLimit, team.TPMLimit, team.MaxConcurrentRequests, allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
 	); err != nil {
 		return err
 	}
@@ -624,7 +624,7 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
 	const q = `
 		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
-		       rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
+		       rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 		       is_active, created_at, updated_at
 		FROM teams WHERE id = $1`
 	t, err := scanTeam(p.pool.QueryRow(ctx, q, id))
@@ -642,7 +642,7 @@ func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Te
 func (p *PostgresRepository) ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error) {
 	const q = `
 		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
-		       rpm_limit, tpm_limit, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
+		       rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 		       is_active, created_at, updated_at
 		FROM teams WHERE org_id = $1 ORDER BY created_at ASC`
 	rows, err := p.pool.Query(ctx, q, orgID)

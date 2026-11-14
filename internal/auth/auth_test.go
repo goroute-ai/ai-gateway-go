@@ -533,13 +533,18 @@ func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
 func TestAuthenticateVirtualKey_PopulatesUserLimitsAndBudget(t *testing.T) {
 	ctx := context.Background()
 	memRepo := storage.NewMemoryRepository()
-	org := &domain.Organization{ID: "org-user-limits", Name: "User Limits Org", Slug: "user-limits", IsActive: true}
+	org := &domain.Organization{ID: "org-user-limits", Name: "User Limits Org", Slug: "user-limits", MaxConcurrentRequests: 25, IsActive: true}
 	if err := memRepo.CreateOrganization(ctx, org); err != nil {
 		t.Fatalf("create org: %v", err)
+	}
+	team := &domain.Team{ID: "team-limits-1", OrgID: org.ID, Name: "Limits Team", MaxConcurrentRequests: 11, IsActive: true}
+	if err := memRepo.CreateTeam(ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
 	}
 	user := &domain.User{
 		ID:                    "usr-limits-1",
 		OrgID:                 org.ID,
+		TeamID:                team.ID,
 		Email:                 "limits@example.com",
 		Name:                  "Limits User",
 		Role:                  domain.RoleDeveloper,
@@ -557,6 +562,7 @@ func TestAuthenticateVirtualKey_PopulatesUserLimitsAndBudget(t *testing.T) {
 	svc := auth.NewService(memRepo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
 	vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
 		OrgID:  org.ID,
+		TeamID: team.ID,
 		UserID: user.ID,
 		Name:   "user-scoped-key",
 	})
@@ -569,8 +575,9 @@ func TestAuthenticateVirtualKey_PopulatesUserLimitsAndBudget(t *testing.T) {
 		t.Fatalf("AuthenticateVirtualKey failed: %v", err)
 	}
 	if idCtx.UserRPMLimit != 120 || idCtx.UserTPMLimit != 50000 || idCtx.UserMaxConcurrent != 7 ||
-		idCtx.UserMaxBudgetMicros != 2500000 || idCtx.UserSpentMicros != 450000 {
-		t.Fatalf("unexpected user limits/budget on IdentityContext: %+v", idCtx)
+		idCtx.UserMaxBudgetMicros != 2500000 || idCtx.UserSpentMicros != 450000 ||
+		idCtx.TeamMaxConcurrent != 11 || idCtx.OrgMaxConcurrent != 25 {
+		t.Fatalf("unexpected user/team/org limits/budget on IdentityContext: %+v", idCtx)
 	}
 }
 

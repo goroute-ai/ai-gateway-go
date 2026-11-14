@@ -1,11 +1,11 @@
 -- Post-Request Token Reconciliation & Concurrency Release
--- KEYS[1]: key_conc, KEYS[2]: user_conc
--- KEYS[3]: key_tpm,  KEYS[4]: team_tpm, KEYS[5]: user_tpm, KEYS[6]: org_tpm
--- KEYS[7..9]:   key_res_zset,  key_res_sum,  key_res_amounts
--- KEYS[10..12]: team_res_zset, team_res_sum, team_res_amounts
--- KEYS[13..15]: user_res_zset, user_res_sum, user_res_amounts
--- KEYS[16..18]: org_res_zset,  org_res_sum,  org_res_amounts
--- KEYS[19..22]: key_spend, team_spend, user_spend, org_spend
+-- KEYS[1]: key_conc, KEYS[2]: team_conc, KEYS[3]: user_conc, KEYS[4]: org_conc
+-- KEYS[5]: key_tpm,  KEYS[6]: team_tpm,  KEYS[7]: user_tpm,  KEYS[8]: org_tpm
+-- KEYS[9..11]:  key_res_zset,  key_res_sum,  key_res_amounts
+-- KEYS[12..14]: team_res_zset, team_res_sum, team_res_amounts
+-- KEYS[15..17]: user_res_zset, user_res_sum, user_res_amounts
+-- KEYS[18..20]: org_res_zset,  org_res_sum,  org_res_amounts
+-- KEYS[21..24]: key_spend, team_spend, user_spend, org_spend
 -- ARGV[1]: token_delta, ARGV[2]: window_ttl_sec
 -- ARGV[3]: request_id, ARGV[4]: actual cost micros (-1 releases without charge, -2 leaves for outbox), ARGV[5]: reserved amount
 
@@ -25,9 +25,11 @@ end
 
 decr_conc(KEYS[1])
 decr_conc(KEYS[2])
+decr_conc(KEYS[3])
+decr_conc(KEYS[4])
 
 if delta ~= 0 then
-    for i = 3, 6 do
+    for i = 5, 8 do
         if KEYS[i] ~= "" then
             local v = redis.call("INCRBY", KEYS[i], delta)
             if v < 0 then
@@ -41,10 +43,10 @@ end
 
 if request_id ~= "" and actual_cost ~= -2 then
     local scopes = {
-        {KEYS[7],  KEYS[8],  KEYS[9],  KEYS[19]},
-        {KEYS[10], KEYS[11], KEYS[12], KEYS[20]},
-        {KEYS[13], KEYS[14], KEYS[15], KEYS[21]},
-        {KEYS[16], KEYS[17], KEYS[18], KEYS[22]},
+        {KEYS[9],  KEYS[10], KEYS[11], KEYS[21]},
+        {KEYS[12], KEYS[13], KEYS[14], KEYS[22]},
+        {KEYS[15], KEYS[16], KEYS[17], KEYS[23]},
+        {KEYS[18], KEYS[19], KEYS[20], KEYS[24]},
     }
     for _, sc in ipairs(scopes) do
         local res_zset, res_sum, res_amounts, spend_key = sc[1], sc[2], sc[3], sc[4]

@@ -64,13 +64,22 @@ type Limiter struct {
 	windowSec          int
 	concTTLSec         int
 
-	mu                  sync.RWMutex
-	enabled             bool
-	defaultEstimatedTPM int
-	redisTimeout        time.Duration
-	globalRPM           int
-	globalTPM           int
-	globalMaxConc       int
+	mu                      sync.RWMutex
+	enabled                 bool
+	fallbackToLocalOnOutage bool
+	defaultEstimatedTPM     int
+	redisTimeout            time.Duration
+	globalRPM               int
+	globalTPM               int
+	globalMaxConc           int
+
+	localMu           sync.Mutex
+	localWindowMin    int64
+	localRPM          map[string]int
+	localTPM          map[string]int
+	localConc         map[string]int
+	localSpent        map[string]int64
+	localReservations map[string]map[string]int64
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -93,7 +102,20 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		windowSec:          windowSec,
 		concTTLSec:         concTTLSec,
 		enabled:            true,
+		localRPM:           make(map[string]int),
+		localTPM:           make(map[string]int),
+		localConc:          make(map[string]int),
+		localSpent:         make(map[string]int64),
+		localReservations:  make(map[string]map[string]int64),
 	}
+}
+
+// SetFallbackToLocalOnOutage enables or disables degraded in-memory rate-limit
+// and budget enforcement when Redis is unavailable.
+func (l *Limiter) SetFallbackToLocalOnOutage(fallback bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.fallbackToLocalOnOutage = fallback
 }
 
 // SetEnabled enables or disables rate limiting enforcement.
@@ -128,10 +150,10 @@ func (l *Limiter) SetGlobalLimits(rpm, tpm, maxConcurrent int) {
 	l.globalMaxConc = maxConcurrent
 }
 
-func (l *Limiter) configSnapshot() (enabled bool, defaultEstTPM, gRPM, gTPM, gConc int) {
+func (l *Limiter) configSnapshot() (enabled, fallbackLocal bool, defaultEstTPM, gRPM, gTPM, gConc int) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return l.enabled, l.defaultEstimatedTPM, l.globalRPM, l.globalTPM, l.globalMaxConc
+	return l.enabled, l.fallbackToLocalOnOutage, l.defaultEstimatedTPM, l.globalRPM, l.globalTPM, l.globalMaxConc
 }
 
 func (l *Limiter) withRedisTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -195,6 +217,7 @@ func acquireKeys(idCtx *domain.IdentityContext, nowMin int64) []string {
 		fmt.Sprintf("gw:spend:%s:key:%s", tag, idCtx.VirtualKeyID),
 		fmt.Sprintf("gw:rl:%s:rpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
+		fmt.Sprintf("gw:rl:%s:conc:team:%s", tag, idCtx.TeamID),
 		fmt.Sprintf("gw:spend:%s:team:%s", tag, idCtx.TeamID),
 		fmt.Sprintf("gw:rl:%s:rpm:user:%s:%d", tag, idCtx.UserID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:user:%s:%d", tag, idCtx.UserID, nowMin),
@@ -202,6 +225,7 @@ func acquireKeys(idCtx *domain.IdentityContext, nowMin int64) []string {
 		fmt.Sprintf("gw:spend:%s:user:%s", tag, idCtx.UserID),
 		fmt.Sprintf("gw:rl:%s:rpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
+		fmt.Sprintf("gw:rl:%s:conc:org:%s", tag, idCtx.OrgID),
 		fmt.Sprintf("gw:spend:%s:org:%s", tag, idCtx.OrgID),
 		keyResZ, keyResS, keyResA,
 		teamResZ, teamResS, teamResA,
@@ -221,32 +245,34 @@ func globalAcquireKeys(nowMin int64) []string {
 func reconcileKeys(keys []string) []string {
 	return []string{
 		keys[2],                      // key_conc
-		keys[9],                      // user_conc
+		keys[6],                      // team_conc
+		keys[10],                     // user_conc
+		keys[14],                     // org_conc
 		keys[1],                      // key_tpm
 		keys[5],                      // team_tpm
-		keys[8],                      // user_tpm
-		keys[12],                     // org_tpm
-		keys[14], keys[15], keys[16], // key_res
-		keys[17], keys[18], keys[19], // team_res
-		keys[20], keys[21], keys[22], // user_res
-		keys[23], keys[24], keys[25], // org_res
+		keys[9],                      // user_tpm
+		keys[13],                     // org_tpm
+		keys[16], keys[17], keys[18], // key_res
+		keys[19], keys[20], keys[21], // team_res
+		keys[22], keys[23], keys[24], // user_res
+		keys[25], keys[26], keys[27], // org_res
 		keys[3],  // key_spend
-		keys[6],  // team_spend
-		keys[10], // user_spend
-		keys[13], // org_spend
+		keys[7],  // team_spend
+		keys[11], // user_spend
+		keys[15], // org_spend
 	}
 }
 
 func rollbackKeys(keys []string) []string {
 	return []string{
 		keys[0], keys[1], keys[2], // key rpm, tpm, conc
-		keys[4], keys[5], // team rpm, tpm
-		keys[7], keys[8], keys[9], // user rpm, tpm, conc
-		keys[11], keys[12], // org rpm, tpm
-		keys[14], keys[15], keys[16], // key_res
-		keys[17], keys[18], keys[19], // team_res
-		keys[20], keys[21], keys[22], // user_res
-		keys[23], keys[24], keys[25], // org_res
+		keys[4], keys[5], keys[6], // team rpm, tpm, conc
+		keys[8], keys[9], keys[10], // user rpm, tpm, conc
+		keys[12], keys[13], keys[14], // org rpm, tpm, conc
+		keys[16], keys[17], keys[18], // key_res
+		keys[19], keys[20], keys[21], // team_res
+		keys[22], keys[23], keys[24], // user_res
+		keys[25], keys[26], keys[27], // org_res
 	}
 }
 
@@ -270,7 +296,7 @@ func spendKeys(keyID, teamID, userID, orgID string) []string {
 }
 
 func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
-	enabled, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
+	enabled, fallbackLocal, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
 	if !enabled || idCtx == nil {
 		return func(int, int64) {}, nil
 	}
@@ -289,10 +315,10 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 	if l.redis != nil && l.redis.Client() != nil {
 		keys := acquireKeys(idCtx, nowMin)
 		argv := []any{
-			idCtx.KeyRPMLimit, idCtx.KeyTPMLimit, idCtx.KeyMaxConcurrent, idCtx.KeyMaxBudgetMicros,
-			idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxBudgetMicros,
-			idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent, idCtx.UserMaxBudgetMicros,
-			idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxBudgetMicros,
+			idCtx.KeyRPMLimit, idCtx.KeyTPMLimit, idCtx.KeyMaxConcurrent, idCtx.KeyMaxBudgetMicros, idCtx.KeySpentMicros,
+			idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent, idCtx.TeamMaxBudgetMicros, idCtx.TeamSpentMicros,
+			idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent, idCtx.UserMaxBudgetMicros, idCtx.UserSpentMicros,
+			idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent, idCtx.OrgMaxBudgetMicros, idCtx.OrgSpentMicros,
 			estimatedTokens, l.windowSec * 2, l.concTTLSec, reserveMicros, requestID, 3600,
 		}
 
@@ -320,9 +346,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						rbKeys := rollbackKeys(keys)
 						rbArgv := []any{
 							estimatedTokens, requestID,
-							idCtx.TeamRPMLimit, idCtx.TeamTPMLimit,
+							idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent,
 							idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent,
-							idCtx.OrgRPMLimit, idCtx.OrgTPMLimit,
+							idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent,
 						}
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 							rCtx, cancel := l.withRedisTimeout(context.Background())
@@ -332,6 +358,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 					}
 					if gErr != nil {
 						rollbackOrg()
+						if fallbackLocal {
+							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+						}
 						return nil, limiterUnavailableError()
 					}
 					if gSlice, ok := gRes.([]any); ok && len(gSlice) >= 2 {
@@ -343,6 +372,9 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						}
 					} else {
 						rollbackOrg()
+						if fallbackLocal {
+							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+						}
 						return nil, limiterUnavailableError()
 					}
 				}
@@ -375,17 +407,198 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 		}
 	}
 
+	if fallbackLocal {
+		return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+	}
 	if hasConfiguredLimits(idCtx) || hasGlobal {
 		return nil, limiterUnavailableError()
 	}
 	return func(int, int64) {}, nil
 }
 
+func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string, nowMin int64, gRPM, gTPM, gConc int) (func(int, int64), error) {
+	l.localMu.Lock()
+	defer l.localMu.Unlock()
+
+	if l.localWindowMin != nowMin {
+		l.localWindowMin = nowMin
+		clear(l.localRPM)
+		clear(l.localTPM)
+	}
+
+	type budgetScope struct {
+		key     string
+		maxB    int64
+		dbFloor int64
+		errCode string
+	}
+	bScopes := []budgetScope{
+		{key: "key:" + idCtx.VirtualKeyID, maxB: idCtx.KeyMaxBudgetMicros, dbFloor: idCtx.KeySpentMicros, errCode: "KEY_BUDGET_EXCEEDED"},
+		{key: "team:" + idCtx.TeamID, maxB: idCtx.TeamMaxBudgetMicros, dbFloor: idCtx.TeamSpentMicros, errCode: "TEAM_BUDGET_EXCEEDED"},
+		{key: "user:" + idCtx.UserID, maxB: idCtx.UserMaxBudgetMicros, dbFloor: idCtx.UserSpentMicros, errCode: "USER_BUDGET_EXCEEDED"},
+		{key: "org:" + idCtx.OrgID, maxB: idCtx.OrgMaxBudgetMicros, dbFloor: idCtx.OrgSpentMicros, errCode: "ORG_BUDGET_EXCEEDED"},
+	}
+	for _, bs := range bScopes {
+		if bs.dbFloor > l.localSpent[bs.key] {
+			l.localSpent[bs.key] = bs.dbFloor
+		}
+		if bs.maxB > 0 {
+			if reserveMicros <= 0 || requestID == "" {
+				return nil, toQuotaError("BUDGET_ESTIMATE_REQUIRED")
+			}
+			resMap := l.localReservations[bs.key]
+			if resMap != nil {
+				if _, exists := resMap[requestID]; exists {
+					return nil, toQuotaError("BUDGET_RESERVATION_CONFLICT")
+				}
+			}
+			var reserved int64
+			for _, amt := range resMap {
+				reserved += amt
+			}
+			if l.localSpent[bs.key]+reserved+reserveMicros > bs.maxB {
+				return nil, toQuotaError(bs.errCode)
+			}
+		}
+	}
+
+	type quotaCheck struct {
+		bucket  map[string]int
+		key     string
+		delta   int
+		limit   int
+		errCode string
+	}
+	checks := []quotaCheck{
+		{l.localRPM, "key:" + idCtx.VirtualKeyID, 1, idCtx.KeyRPMLimit, "KEY_RPM_EXCEEDED"},
+		{l.localTPM, "key:" + idCtx.VirtualKeyID, estimatedTokens, idCtx.KeyTPMLimit, "KEY_TPM_EXCEEDED"},
+		{l.localConc, "key:" + idCtx.VirtualKeyID, 1, idCtx.KeyMaxConcurrent, "KEY_CONCURRENCY_EXCEEDED"},
+		{l.localRPM, "team:" + idCtx.TeamID, 1, idCtx.TeamRPMLimit, "TEAM_RPM_EXCEEDED"},
+		{l.localTPM, "team:" + idCtx.TeamID, estimatedTokens, idCtx.TeamTPMLimit, "TEAM_TPM_EXCEEDED"},
+		{l.localConc, "team:" + idCtx.TeamID, 1, idCtx.TeamMaxConcurrent, "TEAM_CONCURRENCY_EXCEEDED"},
+		{l.localRPM, "user:" + idCtx.UserID, 1, idCtx.UserRPMLimit, "USER_RPM_EXCEEDED"},
+		{l.localTPM, "user:" + idCtx.UserID, estimatedTokens, idCtx.UserTPMLimit, "USER_TPM_EXCEEDED"},
+		{l.localConc, "user:" + idCtx.UserID, 1, idCtx.UserMaxConcurrent, "USER_CONCURRENCY_EXCEEDED"},
+		{l.localRPM, "org:" + idCtx.OrgID, 1, idCtx.OrgRPMLimit, "ORG_RPM_EXCEEDED"},
+		{l.localTPM, "org:" + idCtx.OrgID, estimatedTokens, idCtx.OrgTPMLimit, "ORG_TPM_EXCEEDED"},
+		{l.localConc, "org:" + idCtx.OrgID, 1, idCtx.OrgMaxConcurrent, "ORG_CONCURRENCY_EXCEEDED"},
+		{l.localRPM, "global", 1, gRPM, "GLOBAL_RPM_EXCEEDED"},
+		{l.localTPM, "global", estimatedTokens, gTPM, "GLOBAL_TPM_EXCEEDED"},
+		{l.localConc, "global", 1, gConc, "GLOBAL_CONCURRENCY_EXCEEDED"},
+	}
+	for _, qc := range checks {
+		if qc.limit > 0 && qc.bucket[qc.key]+qc.delta > qc.limit {
+			return nil, toQuotaError(qc.errCode)
+		}
+	}
+
+	l.localRPM["key:"+idCtx.VirtualKeyID]++
+	l.localTPM["key:"+idCtx.VirtualKeyID] += estimatedTokens
+	l.localConc["key:"+idCtx.VirtualKeyID]++
+	if idCtx.TeamRPMLimit > 0 {
+		l.localRPM["team:"+idCtx.TeamID]++
+	}
+	if idCtx.TeamTPMLimit > 0 {
+		l.localTPM["team:"+idCtx.TeamID] += estimatedTokens
+	}
+	if idCtx.TeamMaxConcurrent > 0 {
+		l.localConc["team:"+idCtx.TeamID]++
+	}
+	if idCtx.UserRPMLimit > 0 {
+		l.localRPM["user:"+idCtx.UserID]++
+	}
+	if idCtx.UserTPMLimit > 0 {
+		l.localTPM["user:"+idCtx.UserID] += estimatedTokens
+	}
+	if idCtx.UserMaxConcurrent > 0 {
+		l.localConc["user:"+idCtx.UserID]++
+	}
+	if idCtx.OrgRPMLimit > 0 {
+		l.localRPM["org:"+idCtx.OrgID]++
+	}
+	if idCtx.OrgTPMLimit > 0 {
+		l.localTPM["org:"+idCtx.OrgID] += estimatedTokens
+	}
+	if idCtx.OrgMaxConcurrent > 0 {
+		l.localConc["org:"+idCtx.OrgID]++
+	}
+	if gRPM > 0 {
+		l.localRPM["global"]++
+	}
+	if gTPM > 0 {
+		l.localTPM["global"] += estimatedTokens
+	}
+	if gConc > 0 {
+		l.localConc["global"]++
+	}
+
+	if reserveMicros > 0 && requestID != "" {
+		for _, bs := range bScopes {
+			if bs.maxB > 0 {
+				if l.localReservations[bs.key] == nil {
+					l.localReservations[bs.key] = make(map[string]int64)
+				}
+				l.localReservations[bs.key][requestID] = reserveMicros
+			}
+		}
+	}
+
+	var once sync.Once
+	return func(actualTokens int, actualCostMicros int64) {
+		once.Do(func() {
+			l.localMu.Lock()
+			defer l.localMu.Unlock()
+
+			for _, ck := range []string{
+				"key:" + idCtx.VirtualKeyID,
+				"team:" + idCtx.TeamID,
+				"user:" + idCtx.UserID,
+				"org:" + idCtx.OrgID,
+				"global",
+			} {
+				if l.localConc[ck] > 0 {
+					l.localConc[ck]--
+				}
+			}
+
+			if l.localWindowMin == nowMin && actualTokens >= 0 {
+				delta := actualTokens - estimatedTokens
+				for _, tk := range []string{
+					"key:" + idCtx.VirtualKeyID,
+					"team:" + idCtx.TeamID,
+					"user:" + idCtx.UserID,
+					"org:" + idCtx.OrgID,
+					"global",
+				} {
+					if _, ok := l.localTPM[tk]; ok {
+						v := l.localTPM[tk] + delta
+						if v < 0 {
+							v = 0
+						}
+						l.localTPM[tk] = v
+					}
+				}
+			}
+
+			if requestID != "" {
+				for _, bs := range bScopes {
+					if resMap := l.localReservations[bs.key]; resMap != nil {
+						delete(resMap, requestID)
+					}
+					if actualTokens >= 0 && actualCostMicros > 0 {
+						l.localSpent[bs.key] += actualCostMicros
+					}
+				}
+			}
+		})
+	}, nil
+}
+
 func hasConfiguredLimits(idCtx *domain.IdentityContext) bool {
 	return idCtx != nil && (idCtx.KeyRPMLimit > 0 || idCtx.KeyTPMLimit > 0 || idCtx.KeyMaxConcurrent > 0 || idCtx.KeyMaxBudgetMicros > 0 ||
-		idCtx.TeamRPMLimit > 0 || idCtx.TeamTPMLimit > 0 || idCtx.TeamMaxBudgetMicros > 0 ||
+		idCtx.TeamRPMLimit > 0 || idCtx.TeamTPMLimit > 0 || idCtx.TeamMaxConcurrent > 0 || idCtx.TeamMaxBudgetMicros > 0 ||
 		idCtx.UserRPMLimit > 0 || idCtx.UserTPMLimit > 0 || idCtx.UserMaxConcurrent > 0 || idCtx.UserMaxBudgetMicros > 0 ||
-		idCtx.OrgRPMLimit > 0 || idCtx.OrgTPMLimit > 0 || idCtx.OrgMaxBudgetMicros > 0)
+		idCtx.OrgRPMLimit > 0 || idCtx.OrgTPMLimit > 0 || idCtx.OrgMaxConcurrent > 0 || idCtx.OrgMaxBudgetMicros > 0)
 }
 
 func limiterUnavailableError() *domain.GatewayError {

@@ -569,6 +569,25 @@ func advanceBudgetResetAt(period domain.BudgetResetPeriod, current *time.Time) *
 	}
 }
 
+func cloneOrganization(org *domain.Organization) *domain.Organization {
+	if org == nil {
+		return nil
+	}
+	cp := *org
+	cp.MaxConcurrentRequests = org.MaxConcurrentRequests
+	if org.BudgetResetAt != nil {
+		t := *org.BudgetResetAt
+		cp.BudgetResetAt = &t
+	}
+	if len(org.Metadata) > 0 {
+		cp.Metadata = make(map[string]string, len(org.Metadata))
+		for k, v := range org.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
 func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.Organization) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -579,8 +598,7 @@ func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.O
 	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, now)
 	org.CreatedAt = now
 	org.UpdatedAt = now
-	cp := *org
-	r.orgs[cp.ID] = &cp
+	r.orgs[org.ID] = cloneOrganization(org)
 	return nil
 }
 
@@ -591,8 +609,7 @@ func (r *MemoryRepository) GetOrganization(ctx context.Context, id string) (*dom
 	if !ok {
 		return nil, fmt.Errorf("organization %q not found", id)
 	}
-	cp := *org
-	return &cp, nil
+	return cloneOrganization(org), nil
 }
 
 func (r *MemoryRepository) ListOrganizations(ctx context.Context) ([]*domain.Organization, error) {
@@ -600,8 +617,7 @@ func (r *MemoryRepository) ListOrganizations(ctx context.Context) ([]*domain.Org
 	defer r.mu.RUnlock()
 	out := make([]*domain.Organization, 0, len(r.orgs))
 	for _, o := range r.orgs {
-		cp := *o
-		out = append(out, &cp)
+		out = append(out, cloneOrganization(o))
 	}
 	return out, nil
 }
@@ -660,6 +676,7 @@ func (r *MemoryRepository) GetOrgModelPolicies(ctx context.Context, orgID string
 
 func cloneTeam(team *domain.Team) *domain.Team {
 	cp := *team
+	cp.MaxConcurrentRequests = team.MaxConcurrentRequests
 	cp.AllowedModels = slices.Clone(team.AllowedModels)
 	cp.AllowedMCPServers = slices.Clone(team.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)

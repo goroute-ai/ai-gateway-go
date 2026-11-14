@@ -21,6 +21,7 @@ services:
       - ./../migrations/0012_add_cache_write_and_operations.up.sql:/docker-entrypoint-initdb.d/0012_add_cache_write_and_operations.up.sql:ro
       - ./../migrations/0013_user_limits_and_spend_indexes.up.sql:/docker-entrypoint-initdb.d/0013_user_limits_and_spend_indexes.up.sql:ro
       - ./../migrations/0014_budget_reset_outbox_user_scope.up.sql:/docker-entrypoint-initdb.d/0014_budget_reset_outbox_user_scope.up.sql:ro
+      - ./../migrations/0015_team_org_concurrency.up.sql:/docker-entrypoint-initdb.d/0015_team_org_concurrency.up.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
       interval: 5s

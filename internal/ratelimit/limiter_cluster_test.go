@@ -74,8 +74,8 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := acquireKeys(tc.idCtx, 12345)
-			if len(acq) != 26 {
-				t.Fatalf("acquireKeys len = %d, want 26", len(acq))
+			if len(acq) != 28 {
+				t.Fatalf("acquireKeys len = %d, want 28", len(acq))
 			}
 			for i, k := range acq {
 				if !strings.Contains(k, tc.tag) {
@@ -85,8 +85,8 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			assertSameClusterSlot(t, "acquireKeys", acq)
 
 			rec := reconcileKeys(acq)
-			if len(rec) != 22 {
-				t.Fatalf("reconcileKeys len = %d, want 22", len(rec))
+			if len(rec) != 24 {
+				t.Fatalf("reconcileKeys len = %d, want 24", len(rec))
 			}
 			assertSameClusterSlot(t, "reconcileKeys", rec)
 			if redisClusterSlot(rec[0]) != redisClusterSlot(acq[0]) {
@@ -94,8 +94,8 @@ func TestRateLimitKeysAlignToSameClusterSlot(t *testing.T) {
 			}
 
 			rb := rollbackKeys(acq)
-			if len(rb) != 22 {
-				t.Fatalf("rollbackKeys len = %d, want 22", len(rb))
+			if len(rb) != 24 {
+				t.Fatalf("rollbackKeys len = %d, want 24", len(rb))
 			}
 			assertSameClusterSlot(t, "rollbackKeys", rb)
 

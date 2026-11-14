@@ -214,3 +214,250 @@ func TestRecordSpendIncrementsBatchPipelining(t *testing.T) {
 		t.Fatalf("expected user spend 200, got %q err=%v", v, err)
 	}
 }
+
+func TestTeamAndOrgConcurrencyEnforcementReconcileAndRollback(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := NewLimiter(redisFabric, 60, 300)
+	ctx := context.Background()
+
+	idTeam := &domain.IdentityContext{
+		VirtualKeyID:      "vk-conc-1",
+		TeamID:            "team-conc-1",
+		OrgID:             "org-conc-1",
+		TeamMaxConcurrent: 1,
+		OrgMaxConcurrent:  2,
+	}
+
+	rel1, err := limiter.Acquire(ctx, idTeam, 10)
+	if err != nil {
+		t.Fatalf("first team/org conc acquire: %v", err)
+	}
+	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:team:team-conc-1"); v != "1" {
+		t.Fatalf("expected conc:team:team-conc-1=1, got %q", v)
+	}
+	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:org:org-conc-1"); v != "1" {
+		t.Fatalf("expected conc:org:org-conc-1=1, got %q", v)
+	}
+
+	// Second concurrent request on the same team hits TEAM_CONCURRENCY_EXCEEDED.
+	if _, err := limiter.Acquire(ctx, idTeam, 10); err == nil {
+		t.Fatal("expected team_concurrency_exceeded")
+	} else {
+		var gwErr *domain.GatewayError
+		if !errors.As(err, &gwErr) || gwErr.Code != "team_concurrency_exceeded" {
+			t.Fatalf("expected team_concurrency_exceeded, got %v", err)
+		}
+	}
+
+	// Different team in the same org succeeds (org conc 2/2), then 3rd hits ORG_CONCURRENCY_EXCEEDED.
+	idTeam2 := &domain.IdentityContext{
+		VirtualKeyID:      "vk-conc-2",
+		TeamID:            "team-conc-2",
+		OrgID:             "org-conc-1",
+		TeamMaxConcurrent: 5,
+		OrgMaxConcurrent:  2,
+	}
+	rel2, err := limiter.Acquire(ctx, idTeam2, 10)
+	if err != nil {
+		t.Fatalf("second org conc acquire: %v", err)
+	}
+	if _, err := limiter.Acquire(ctx, idTeam2, 10); err == nil {
+		t.Fatal("expected org_concurrency_exceeded")
+	} else {
+		var gwErr *domain.GatewayError
+		if !errors.As(err, &gwErr) || gwErr.Code != "org_concurrency_exceeded" {
+			t.Fatalf("expected org_concurrency_exceeded, got %v", err)
+		}
+	}
+
+	// Releasing both decrements team and org concurrency back to 0.
+	rel1(10)
+	rel2(10)
+	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:team:team-conc-1"); v != "0" {
+		t.Fatalf("expected conc:team:team-conc-1=0 after release, got %q", v)
+	}
+	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:org:org-conc-1"); v != "0" {
+		t.Fatalf("expected conc:org:org-conc-1=0 after release, got %q", v)
+	}
+
+	// Verify rollback_acquire.lua rolls back team_conc and org_conc when global limit fails.
+	limiter.SetGlobalLimits(0, 0, 1)
+	gRel, err := limiter.Acquire(ctx, idTeam, 10)
+	if err != nil {
+		t.Fatalf("global conc 1 acquire: %v", err)
+	}
+	defer gRel(10)
+
+	idRollback := &domain.IdentityContext{
+		VirtualKeyID:      "vk-rb",
+		TeamID:            "team-rb",
+		OrgID:             "org-rb",
+		TeamMaxConcurrent: 5,
+		OrgMaxConcurrent:  5,
+	}
+	if _, err := limiter.Acquire(ctx, idRollback, 10); err == nil {
+		t.Fatal("expected global_concurrency_exceeded")
+	}
+	if v, _ := mr.Get("gw:rl:{org:org-rb}:conc:team:team-rb"); v != "" && v != "0" {
+		t.Fatalf("expected rolled back team conc=0, got %q", v)
+	}
+	if v, _ := mr.Get("gw:rl:{org:org-rb}:conc:org:org-rb"); v != "" && v != "0" {
+		t.Fatalf("expected rolled back org conc=0, got %q", v)
+	}
+}
+
+func TestColdStartSpendHydrationPreventsOverspendAfterRedisFlush(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisFabric.Client().Close() })
+	limiter := NewLimiter(redisFabric, 60, 300)
+	ctx := context.Background()
+
+	// Simulate flushed/cold Redis while Postgres already has spent_micros recorded on idCtx.
+	scopes := []struct {
+		name      string
+		idCtx     *domain.IdentityContext
+		wantCode  string
+		spendKey  string
+		wantFloor string
+	}{
+		{
+			name: "key spend floor",
+			idCtx: &domain.IdentityContext{
+				VirtualKeyID:       "vk-cold",
+				OrgID:              "org-cold",
+				KeyMaxBudgetMicros: 1000,
+				KeySpentMicros:     850,
+			},
+			wantCode:  "key_budget_exceeded",
+			spendKey:  "gw:spend:{org:org-cold}:key:vk-cold",
+			wantFloor: "850",
+		},
+		{
+			name: "team spend floor",
+			idCtx: &domain.IdentityContext{
+				VirtualKeyID:        "vk-cold-t",
+				TeamID:              "team-cold",
+				OrgID:               "org-cold",
+				TeamMaxBudgetMicros: 1000,
+				TeamSpentMicros:     900,
+			},
+			wantCode:  "team_budget_exceeded",
+			spendKey:  "gw:spend:{org:org-cold}:team:team-cold",
+			wantFloor: "900",
+		},
+		{
+			name: "user spend floor",
+			idCtx: &domain.IdentityContext{
+				VirtualKeyID:        "vk-cold-u",
+				UserID:              "user-cold",
+				OrgID:               "org-cold",
+				UserMaxBudgetMicros: 1000,
+				UserSpentMicros:     920,
+			},
+			wantCode:  "user_budget_exceeded",
+			spendKey:  "gw:spend:{org:org-cold}:user:user-cold",
+			wantFloor: "920",
+		},
+		{
+			name: "org spend floor",
+			idCtx: &domain.IdentityContext{
+				VirtualKeyID:       "vk-cold-o",
+				OrgID:              "org-cold-floor",
+				OrgMaxBudgetMicros: 1000,
+				OrgSpentMicros:     950,
+			},
+			wantCode:  "org_budget_exceeded",
+			spendKey:  "gw:spend:{org:org-cold-floor}:org:org-cold-floor",
+			wantFloor: "950",
+		},
+	}
+
+	for _, sc := range scopes {
+		t.Run(sc.name, func(t *testing.T) {
+			mr.FlushAll()
+			if _, err := limiter.AcquireWithBudget(ctx, sc.idCtx, 10, 200, "req-over-"+sc.name); err == nil {
+				t.Fatalf("expected %s when cold Redis is hydrated with DB floor", sc.wantCode)
+			} else {
+				var gwErr *domain.GatewayError
+				if !errors.As(err, &gwErr) || gwErr.Code != sc.wantCode {
+					t.Fatalf("expected %s, got %v", sc.wantCode, err)
+				}
+			}
+			if got, err := mr.Get(sc.spendKey); err != nil || got != sc.wantFloor {
+				t.Fatalf("expected %s seeded to %q, got %q err=%v", sc.spendKey, sc.wantFloor, got, err)
+			}
+			// Request within remaining budget (50 <= 1000 - floor) succeeds.
+			rel, err := limiter.AcquireWithBudget(ctx, sc.idCtx, 10, 50, "req-ok-"+sc.name)
+			if err != nil {
+				t.Fatalf("expected request within remaining budget to succeed, got %v", err)
+			}
+			rel(10, 50)
+		})
+	}
+}
+
+func TestSetFallbackToLocalOnOutageEnforcesQuotasInMemory(t *testing.T) {
+	limiter := NewLimiter(nil, 60, 300)
+	limiter.SetFallbackToLocalOnOutage(true)
+	ctx := context.Background()
+
+	id := &domain.IdentityContext{
+		VirtualKeyID:       "vk-local-1",
+		TeamID:             "team-local-1",
+		UserID:             "user-local-1",
+		OrgID:              "org-local-1",
+		KeyRPMLimit:        2,
+		TeamMaxConcurrent:  1,
+		KeyMaxBudgetMicros: 500,
+		KeySpentMicros:     400,
+	}
+
+	// First request within RPM, concurrency, and hydrated budget floor (400 + 80 <= 500) succeeds.
+	rel1, err := limiter.AcquireWithBudget(ctx, id, 10, 80, "req-loc-1")
+	if err != nil {
+		t.Fatalf("first degraded local acquire failed: %v", err)
+	}
+
+	// Second concurrent request exceeds TeamMaxConcurrent=1 while rel1 is active.
+	if _, err := limiter.AcquireWithBudget(ctx, id, 10, 10, "req-loc-conc"); err == nil {
+		t.Fatal("expected team_concurrency_exceeded in local fallback mode")
+	} else {
+		var gwErr *domain.GatewayError
+		if !errors.As(err, &gwErr) || gwErr.Code != "team_concurrency_exceeded" {
+			t.Fatalf("expected team_concurrency_exceeded, got %v", err)
+		}
+	}
+
+	// Settle rel1 with 60 micros actual cost (total local spend = 460).
+	rel1(10, 60)
+
+	// Next request reserving 50 micros exceeds KeyMaxBudgetMicros (460 + 50 > 500).
+	if _, err := limiter.AcquireWithBudget(ctx, id, 10, 50, "req-loc-budget"); err == nil {
+		t.Fatal("expected key_budget_exceeded in local fallback mode")
+	} else {
+		var gwErr *domain.GatewayError
+		if !errors.As(err, &gwErr) || gwErr.Code != "key_budget_exceeded" {
+			t.Fatalf("expected key_budget_exceeded, got %v", err)
+		}
+	}
+
+	// Request reserving 30 micros succeeds (2nd RPM in window).
+	rel2, err := limiter.AcquireWithBudget(ctx, id, 10, 30, "req-loc-2")
+	if err != nil {
+		t.Fatalf("second degraded local acquire failed: %v", err)
+	}
+	rel2(10, 20)
+
+	// 3rd request in same window hits KEY_RPM_EXCEEDED (KeyRPMLimit=2).
+	if _, err := limiter.AcquireWithBudget(ctx, id, 10, 10, "req-loc-3"); err == nil {
+		t.Fatal("expected key_rpm_exceeded on 3rd request")
+	} else {
+		var gwErr *domain.GatewayError
+		if !errors.As(err, &gwErr) || gwErr.Code != "key_rpm_exceeded" {
+			t.Fatalf("expected key_rpm_exceeded, got %v", err)
+		}
+	}
+}

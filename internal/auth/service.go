@@ -405,6 +405,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 					KeyAllowedA2AAgents:  []string{"*"},
 					OrgRPMLimit:          org.RPMLimit,
 					OrgTPMLimit:          org.TPMLimit,
+					OrgMaxConcurrent:     org.MaxConcurrentRequests,
 					OrgMaxBudgetMicros:   org.MaxBudgetMicros,
 					OrgSpentMicros:       org.SpentMicros,
 				}
@@ -455,6 +456,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		KeySpentMicros:       vk.SpentMicros,
 		OrgRPMLimit:          org.RPMLimit,
 		OrgTPMLimit:          org.TPMLimit,
+		OrgMaxConcurrent:     org.MaxConcurrentRequests,
 		OrgMaxBudgetMicros:   org.MaxBudgetMicros,
 		OrgSpentMicros:       org.SpentMicros,
 	}
@@ -500,6 +502,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		idCtx.TeamAllowedClientApps = team.AllowedClientApps
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
+		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
 		idCtx.TeamSpentMicros = team.SpentMicros
 	}
