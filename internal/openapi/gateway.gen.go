@@ -71,6 +71,39 @@ func (e AdminUserRole) Valid() bool {
 	}
 }
 
+// Defines values for AdminVirtualKeyRole.
+const (
+	AdminVirtualKeyRoleDeveloper      AdminVirtualKeyRole = "developer"
+	AdminVirtualKeyRoleOrgAdmin       AdminVirtualKeyRole = "org_admin"
+	AdminVirtualKeyRoleOrgViewer      AdminVirtualKeyRole = "org_viewer"
+	AdminVirtualKeyRolePlatformAdmin  AdminVirtualKeyRole = "platform_admin"
+	AdminVirtualKeyRoleServiceAccount AdminVirtualKeyRole = "service_account"
+	AdminVirtualKeyRoleTeamAdmin      AdminVirtualKeyRole = "team_admin"
+	AdminVirtualKeyRoleViewer         AdminVirtualKeyRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the AdminVirtualKeyRole enum.
+func (e AdminVirtualKeyRole) Valid() bool {
+	switch e {
+	case AdminVirtualKeyRoleDeveloper:
+		return true
+	case AdminVirtualKeyRoleOrgAdmin:
+		return true
+	case AdminVirtualKeyRoleOrgViewer:
+		return true
+	case AdminVirtualKeyRolePlatformAdmin:
+		return true
+	case AdminVirtualKeyRoleServiceAccount:
+		return true
+	case AdminVirtualKeyRoleTeamAdmin:
+		return true
+	case AdminVirtualKeyRoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AudioSpeechRequestResponseFormat.
 const (
 	Aac  AudioSpeechRequestResponseFormat = "aac"
@@ -542,6 +575,12 @@ func (e ToolCallType) Valid() bool {
 	}
 }
 
+// AdminDeleteStatusResponse defines model for AdminDeleteStatusResponse.
+type AdminDeleteStatusResponse struct {
+	Id     string `json:"id"`
+	Status string `json:"status"`
+}
+
 // AdminDeployment defines model for AdminDeployment.
 type AdminDeployment struct {
 	CreatedAt      time.Time             `json:"created_at"`
@@ -562,6 +601,27 @@ type AdminDeployment struct {
 
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
 type AdminDeploymentStatus string
+
+// AdminTeam defines model for AdminTeam.
+type AdminTeam struct {
+	AllowedA2aAgents      *[]string  `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps     *[]string  `json:"allowed_client_apps,omitempty"`
+	AllowedMcpServers     *[]string  `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels         *[]string  `json:"allowed_models,omitempty"`
+	BudgetResetAt         *time.Time `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod     *string    `json:"budget_reset_period,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	Id                    string     `json:"id"`
+	IsActive              bool       `json:"is_active"`
+	MaxBudgetMicros       *int64     `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int       `json:"max_concurrent_requests,omitempty"`
+	Name                  string     `json:"name"`
+	OrgId                 string     `json:"org_id"`
+	RpmLimit              *int       `json:"rpm_limit,omitempty"`
+	SpentMicros           *int64     `json:"spent_micros,omitempty"`
+	TpmLimit              *int       `json:"tpm_limit,omitempty"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
 
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
@@ -586,6 +646,40 @@ type AdminUser struct {
 
 // AdminUserRole defines model for AdminUser.Role.
 type AdminUserRole string
+
+// AdminVirtualKey defines model for AdminVirtualKey.
+type AdminVirtualKey struct {
+	AllowedA2aAgents      *[]string          `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps     *[]string          `json:"allowed_client_apps,omitempty"`
+	AllowedEndpoints      *[]string          `json:"allowed_endpoints,omitempty"`
+	AllowedMcpServers     *[]string          `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels         *[]string          `json:"allowed_models,omitempty"`
+	BudgetResetAt         *time.Time         `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod     *string            `json:"budget_reset_period,omitempty"`
+	CreatedAt             time.Time          `json:"created_at"`
+	ExpiresAt             *time.Time         `json:"expires_at,omitempty"`
+	Id                    string             `json:"id"`
+	IsActive              bool               `json:"is_active"`
+	KeyPrefix             string             `json:"key_prefix"`
+	MaxBudgetMicros       *int64             `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int               `json:"max_concurrent_requests,omitempty"`
+	Metadata              *map[string]string `json:"metadata,omitempty"`
+	Name                  string             `json:"name"`
+	OrgId                 string             `json:"org_id"`
+
+	// RawKey Populated once upon key creation or rotation
+	RawKey      *string             `json:"raw_key,omitempty"`
+	Role        AdminVirtualKeyRole `json:"role"`
+	RpmLimit    *int                `json:"rpm_limit,omitempty"`
+	SpentMicros *int64              `json:"spent_micros,omitempty"`
+	TeamId      *string             `json:"team_id,omitempty"`
+	TpmLimit    *int                `json:"tpm_limit,omitempty"`
+	UpdatedAt   time.Time           `json:"updated_at"`
+	UserId      *string             `json:"user_id,omitempty"`
+}
+
+// AdminVirtualKeyRole defines model for AdminVirtualKey.Role.
+type AdminVirtualKeyRole string
 
 // Annotation defines model for Annotation.
 type Annotation struct {
@@ -1218,8 +1312,17 @@ type CountAnthropicMessageTokensJSONBody = map[string]interface{}
 // PreflightValidateCredentialJSONRequestBody defines body for PreflightValidateCredential for application/json ContentType.
 type PreflightValidateCredentialJSONRequestBody = CredentialValidateRequest
 
+// UpdateVirtualKeyJSONRequestBody defines body for UpdateVirtualKey for application/json ContentType.
+type UpdateVirtualKeyJSONRequestBody = AdminVirtualKey
+
 // SimulateGuardrailsJSONRequestBody defines body for SimulateGuardrails for application/json ContentType.
 type SimulateGuardrailsJSONRequestBody = GuardrailSimulateRequest
+
+// UpdateTeamJSONRequestBody defines body for UpdateTeam for application/json ContentType.
+type UpdateTeamJSONRequestBody = AdminTeam
+
+// UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
+type UpdateUserJSONRequestBody = AdminUser
 
 // CreateAudioSpeechJSONRequestBody defines body for CreateAudioSpeech for application/json ContentType.
 type CreateAudioSpeechJSONRequestBody = AudioSpeechRequest
@@ -1908,12 +2011,21 @@ func (t *ResponsesMessageInputItem_Content) UnmarshalJSON(b []byte) error {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// GetRuntimeConfig Retrieve sanitized runtime gateway configuration with secrets redacted
+	// (GET /admin/v1/config)
+	GetRuntimeConfig(w http.ResponseWriter, r *http.Request)
 	// PreflightValidateCredential Preflight upstream validation of credentials before saving
 	// (POST /admin/v1/credentials/validate)
 	PreflightValidateCredential(w http.ResponseWriter, r *http.Request)
 	// ListDeployments List deployments across model groups
 	// (GET /admin/v1/deployments)
 	ListDeployments(w http.ResponseWriter, r *http.Request, params ListDeploymentsParams)
+	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
+	// (PUT /admin/v1/keys/{keyID})
+	UpdateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
+	// (POST /admin/v1/keys/{keyID}/rotate)
+	RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// SimulateGuardrails Stateless dry-run evaluation of prompt against security policy
 	// (POST /admin/v1/organizations/{orgID}/guardrails/simulate)
 	SimulateGuardrails(w http.ResponseWriter, r *http.Request, orgID string)
@@ -1923,9 +2035,21 @@ type ServerInterface interface {
 	// GetOrgSubscriptions Get subscription and tier limits for an organization
 	// (GET /admin/v1/organizations/{orgID}/subscriptions)
 	GetOrgSubscriptions(w http.ResponseWriter, r *http.Request, orgID string)
+	// DeleteTeam Delete a team if no active virtual keys remain bound to it
+	// (DELETE /admin/v1/teams/{teamID})
+	DeleteTeam(w http.ResponseWriter, r *http.Request, teamID string)
+	// UpdateTeam Update an existing team's metadata, budgets, rate limits, and allowlists
+	// (PUT /admin/v1/teams/{teamID})
+	UpdateTeam(w http.ResponseWriter, r *http.Request, teamID string)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams)
+	// DeleteUser Delete a user if no active virtual keys remain bound to the user
+	// (DELETE /admin/v1/users/{userID})
+	DeleteUser(w http.ResponseWriter, r *http.Request, userID string)
+	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
+	// (PUT /admin/v1/users/{userID})
+	UpdateUser(w http.ResponseWriter, r *http.Request, userID string)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(w http.ResponseWriter, r *http.Request)
@@ -2015,6 +2139,20 @@ type ServerInterfaceWrapper struct {
 
 type MiddlewareFunc func(http.Handler) http.Handler
 
+// GetRuntimeConfig operation middleware
+func (siw *ServerInterfaceWrapper) GetRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRuntimeConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PreflightValidateCredential operation middleware
 func (siw *ServerInterfaceWrapper) PreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
 
@@ -2053,6 +2191,58 @@ func (siw *ServerInterfaceWrapper) ListDeployments(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListDeployments(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) UpdateVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) RotateVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateVirtualKey(w, r, keyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2140,6 +2330,58 @@ func (siw *ServerInterfaceWrapper) GetOrgSubscriptions(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteTeam operation middleware
+func (siw *ServerInterfaceWrapper) DeleteTeam(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteTeam(w, r, teamID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateTeam operation middleware
+func (siw *ServerInterfaceWrapper) UpdateTeam(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateTeam(w, r, teamID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListUsers operation middleware
 func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Request) {
 
@@ -2164,6 +2406,58 @@ func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListUsers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteUser operation middleware
+func (siw *ServerInterfaceWrapper) DeleteUser(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userID" -------------
+	var userID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userID", r.PathValue("userID"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteUser(w, r, userID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateUser operation middleware
+func (siw *ServerInterfaceWrapper) UpdateUser(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userID" -------------
+	var userID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userID", r.PathValue("userID"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateUser(w, r, userID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2749,8 +3043,36 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments", wrapper.ListDeployments)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrails/simulate", wrapper.SimulateGuardrails)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/validate", wrapper.PreflightValidateCredential)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.DeleteTeam)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.UpdateTeam)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.DeleteUser)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.UpdateUser)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.UpdateVirtualKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/rotate", wrapper.RotateVirtualKey)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/config", wrapper.GetRuntimeConfig)
 
 	return m
+}
+
+type GetRuntimeConfigRequestObject struct {
+}
+
+type GetRuntimeConfigResponseObject interface {
+	VisitGetRuntimeConfigResponse(w http.ResponseWriter) error
+}
+
+type GetRuntimeConfig200JSONResponse map[string]interface{}
+
+func (response GetRuntimeConfig200JSONResponse) VisitGetRuntimeConfigResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type PreflightValidateCredentialRequestObject struct {
@@ -2788,6 +3110,51 @@ type ListDeployments200JSONResponse struct {
 }
 
 func (response ListDeployments200JSONResponse) VisitListDeploymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+	Body  *UpdateVirtualKeyJSONRequestBody
+}
+
+type UpdateVirtualKeyResponseObject interface {
+	VisitUpdateVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type UpdateVirtualKey200JSONResponse AdminVirtualKey
+
+func (response UpdateVirtualKey200JSONResponse) VisitUpdateVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type RotateVirtualKeyResponseObject interface {
+	VisitRotateVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type RotateVirtualKey200JSONResponse AdminVirtualKey
+
+func (response RotateVirtualKey200JSONResponse) VisitRotateVirtualKeyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -2870,6 +3237,59 @@ func (response GetOrgSubscriptions200JSONResponse) VisitGetOrgSubscriptionsRespo
 	return err
 }
 
+type DeleteTeamRequestObject struct {
+	TeamID string `json:"teamID"`
+}
+
+type DeleteTeamResponseObject interface {
+	VisitDeleteTeamResponse(w http.ResponseWriter) error
+}
+
+type DeleteTeam200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteTeam200JSONResponse) VisitDeleteTeamResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteTeam409Response struct {
+}
+
+func (response DeleteTeam409Response) VisitDeleteTeamResponse(w http.ResponseWriter) error {
+	w.WriteHeader(409)
+	return nil
+}
+
+type UpdateTeamRequestObject struct {
+	TeamID string `json:"teamID"`
+	Body   *UpdateTeamJSONRequestBody
+}
+
+type UpdateTeamResponseObject interface {
+	VisitUpdateTeamResponse(w http.ResponseWriter) error
+}
+
+type UpdateTeam200JSONResponse AdminTeam
+
+func (response UpdateTeam200JSONResponse) VisitUpdateTeamResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListUsersRequestObject struct {
 	Params ListUsersParams
 }
@@ -2883,6 +3303,59 @@ type ListUsers200JSONResponse struct {
 }
 
 func (response ListUsers200JSONResponse) VisitListUsersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteUserRequestObject struct {
+	UserID string `json:"userID"`
+}
+
+type DeleteUserResponseObject interface {
+	VisitDeleteUserResponse(w http.ResponseWriter) error
+}
+
+type DeleteUser200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteUser200JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteUser409Response struct {
+}
+
+func (response DeleteUser409Response) VisitDeleteUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(409)
+	return nil
+}
+
+type UpdateUserRequestObject struct {
+	UserID string `json:"userID"`
+	Body   *UpdateUserJSONRequestBody
+}
+
+type UpdateUserResponseObject interface {
+	VisitUpdateUserResponse(w http.ResponseWriter) error
+}
+
+type UpdateUser200JSONResponse AdminUser
+
+func (response UpdateUser200JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3407,12 +3880,21 @@ func (response CountTokens200JSONResponse) VisitCountTokensResponse(w http.Respo
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// GetRuntimeConfig Retrieve sanitized runtime gateway configuration with secrets redacted
+	// (GET /admin/v1/config)
+	GetRuntimeConfig(ctx context.Context, request GetRuntimeConfigRequestObject) (GetRuntimeConfigResponseObject, error)
 	// PreflightValidateCredential Preflight upstream validation of credentials before saving
 	// (POST /admin/v1/credentials/validate)
 	PreflightValidateCredential(ctx context.Context, request PreflightValidateCredentialRequestObject) (PreflightValidateCredentialResponseObject, error)
 	// ListDeployments List deployments across model groups
 	// (GET /admin/v1/deployments)
 	ListDeployments(ctx context.Context, request ListDeploymentsRequestObject) (ListDeploymentsResponseObject, error)
+	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
+	// (PUT /admin/v1/keys/{keyID})
+	UpdateVirtualKey(ctx context.Context, request UpdateVirtualKeyRequestObject) (UpdateVirtualKeyResponseObject, error)
+	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
+	// (POST /admin/v1/keys/{keyID}/rotate)
+	RotateVirtualKey(ctx context.Context, request RotateVirtualKeyRequestObject) (RotateVirtualKeyResponseObject, error)
 	// SimulateGuardrails Stateless dry-run evaluation of prompt against security policy
 	// (POST /admin/v1/organizations/{orgID}/guardrails/simulate)
 	SimulateGuardrails(ctx context.Context, request SimulateGuardrailsRequestObject) (SimulateGuardrailsResponseObject, error)
@@ -3422,9 +3904,21 @@ type StrictServerInterface interface {
 	// GetOrgSubscriptions Get subscription and tier limits for an organization
 	// (GET /admin/v1/organizations/{orgID}/subscriptions)
 	GetOrgSubscriptions(ctx context.Context, request GetOrgSubscriptionsRequestObject) (GetOrgSubscriptionsResponseObject, error)
+	// DeleteTeam Delete a team if no active virtual keys remain bound to it
+	// (DELETE /admin/v1/teams/{teamID})
+	DeleteTeam(ctx context.Context, request DeleteTeamRequestObject) (DeleteTeamResponseObject, error)
+	// UpdateTeam Update an existing team's metadata, budgets, rate limits, and allowlists
+	// (PUT /admin/v1/teams/{teamID})
+	UpdateTeam(ctx context.Context, request UpdateTeamRequestObject) (UpdateTeamResponseObject, error)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
+	// DeleteUser Delete a user if no active virtual keys remain bound to the user
+	// (DELETE /admin/v1/users/{userID})
+	DeleteUser(ctx context.Context, request DeleteUserRequestObject) (DeleteUserResponseObject, error)
+	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
+	// (PUT /admin/v1/users/{userID})
+	UpdateUser(ctx context.Context, request UpdateUserRequestObject) (UpdateUserResponseObject, error)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(ctx context.Context, request CreateAudioSpeechRequestObject) (CreateAudioSpeechResponseObject, error)
@@ -3544,6 +4038,30 @@ type strictHandler struct {
 	options     StrictHTTPServerOptions
 }
 
+// GetRuntimeConfig operation middleware
+func (sh *strictHandler) GetRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+	var request GetRuntimeConfigRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRuntimeConfig(ctx, request.(GetRuntimeConfigRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRuntimeConfig")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRuntimeConfigResponseObject); ok {
+		if err := validResponse.VisitGetRuntimeConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PreflightValidateCredential operation middleware
 func (sh *strictHandler) PreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
 	var request PreflightValidateCredentialRequestObject
@@ -3594,6 +4112,65 @@ func (sh *strictHandler) ListDeployments(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListDeploymentsResponseObject); ok {
 		if err := validResponse.VisitListDeploymentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateVirtualKey operation middleware
+func (sh *strictHandler) UpdateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request UpdateVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	var body UpdateVirtualKeyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateVirtualKey(ctx, request.(UpdateVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitUpdateVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RotateVirtualKey operation middleware
+func (sh *strictHandler) RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request RotateVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateVirtualKey(ctx, request.(RotateVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitRotateVirtualKeyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -3686,6 +4263,65 @@ func (sh *strictHandler) GetOrgSubscriptions(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+// DeleteTeam operation middleware
+func (sh *strictHandler) DeleteTeam(w http.ResponseWriter, r *http.Request, teamID string) {
+	var request DeleteTeamRequestObject
+
+	request.TeamID = teamID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteTeam(ctx, request.(DeleteTeamRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteTeam")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteTeamResponseObject); ok {
+		if err := validResponse.VisitDeleteTeamResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateTeam operation middleware
+func (sh *strictHandler) UpdateTeam(w http.ResponseWriter, r *http.Request, teamID string) {
+	var request UpdateTeamRequestObject
+
+	request.TeamID = teamID
+
+	var body UpdateTeamJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateTeam(ctx, request.(UpdateTeamRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateTeam")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateTeamResponseObject); ok {
+		if err := validResponse.VisitUpdateTeamResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListUsers operation middleware
 func (sh *strictHandler) ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams) {
 	var request ListUsersRequestObject
@@ -3705,6 +4341,65 @@ func (sh *strictHandler) ListUsers(w http.ResponseWriter, r *http.Request, param
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListUsersResponseObject); ok {
 		if err := validResponse.VisitListUsersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteUser operation middleware
+func (sh *strictHandler) DeleteUser(w http.ResponseWriter, r *http.Request, userID string) {
+	var request DeleteUserRequestObject
+
+	request.UserID = userID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteUser(ctx, request.(DeleteUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteUserResponseObject); ok {
+		if err := validResponse.VisitDeleteUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateUser operation middleware
+func (sh *strictHandler) UpdateUser(w http.ResponseWriter, r *http.Request, userID string) {
+	var request UpdateUserRequestObject
+
+	request.UserID = userID
+
+	var body UpdateUserJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateUser(ctx, request.(UpdateUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateUserResponseObject); ok {
+		if err := validResponse.VisitUpdateUserResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
