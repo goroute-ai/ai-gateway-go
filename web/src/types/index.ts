@@ -279,11 +279,24 @@ export interface MCPServer {
   org_id: string;
   name: string;
   slug: string;
+  protocol_version?: string;
   transport_type: string;
   endpoint_url?: string;
+  auth_type?: string;
+  pinned_tool_hash?: string;
   tool_count?: number;
   is_active: boolean;
   last_synced_at?: string;
+}
+
+export interface MCPToolset {
+  id: string;
+  org_id: string;
+  name: string;
+  slug: string;
+  tool_ids?: string[];
+  is_active: boolean;
+  created_at?: string;
 }
 
 export interface A2AAgent {
@@ -292,6 +305,11 @@ export interface A2AAgent {
   name: string;
   slug: string;
   endpoint_url: string;
+  agent_card_url?: string;
+  task_visibility_mode?: string;
+  auth_type?: string;
+  max_task_iterations?: number;
+  max_task_budget_micros?: number;
   is_active: boolean;
   is_killed: boolean;
   created_at: string;

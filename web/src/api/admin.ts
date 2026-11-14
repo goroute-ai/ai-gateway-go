@@ -17,6 +17,7 @@ import type {
   AuditLog,
   GuardrailPolicy,
   MCPServer,
+  MCPToolset,
   A2AAgent,
   GatewayConfig,
 } from '../types';
@@ -140,14 +141,85 @@ export const adminApi = {
     ),
 
   // MCP & A2A
-  listMCPServers: (key: string) =>
-    apiFetch<{ data: MCPServer[] }>('/admin/v1/mcp/servers', {}, key),
+  listMCPServers: (key: string, orgId?: string) =>
+    apiFetch<{ servers?: MCPServer[]; data?: MCPServer[] }>(
+      `/admin/v1/mcp/servers${orgId ? `?org_id=${orgId}` : ''}`,
+      {},
+      key
+    ),
+  createMCPServer: (
+    key: string,
+    data: {
+      org_id?: string;
+      name: string;
+      slug: string;
+      protocol_version?: string;
+      transport_type?: string;
+      endpoint_url: string;
+      auth_type?: string;
+      auth_secret?: string;
+      static_headers?: Record<string, string>;
+      oauth2_endpoint?: string;
+      oauth2_client_id?: string;
+      oauth2_scopes?: string[];
+      pinned_tool_hash?: string;
+    }
+  ) =>
+    apiFetch<{ status: string; server: MCPServer }>(
+      '/admin/v1/mcp/servers',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
   syncMCPServer: (key: string, serverId: string) =>
     apiFetch<any>(`/admin/v1/mcp/servers/${serverId}/sync`, { method: 'POST' }, key),
-  listMCPTools: (key: string) =>
-    apiFetch<{ tools: any[] }>('/admin/v1/mcp/tools', {}, key),
-  listA2AAgents: (key: string) =>
-    apiFetch<{ data: A2AAgent[] }>('/admin/v1/a2a/agents', {}, key),
+  listMCPToolsets: (key: string, orgId?: string) =>
+    apiFetch<{ toolsets?: MCPToolset[]; data?: MCPToolset[] }>(
+      `/admin/v1/mcp/toolsets${orgId ? `?org_id=${orgId}` : ''}`,
+      {},
+      key
+    ),
+  createMCPToolset: (
+    key: string,
+    data: { org_id?: string; name: string; slug: string; tool_ids: string[] }
+  ) =>
+    apiFetch<{ status: string; toolset: MCPToolset }>(
+      '/admin/v1/mcp/toolsets',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
+  listMCPTools: (key: string, orgId?: string) =>
+    apiFetch<{ tools: any[] }>(
+      `/admin/v1/mcp/tools${orgId ? `?org_id=${orgId}` : ''}`,
+      {},
+      key
+    ),
+  listA2AAgents: (key: string, orgId?: string) =>
+    apiFetch<{ agents?: A2AAgent[]; data?: A2AAgent[] }>(
+      `/admin/v1/a2a/agents${orgId ? `?org_id=${orgId}` : ''}`,
+      {},
+      key
+    ),
+  createA2AAgent: (
+    key: string,
+    data: {
+      org_id?: string;
+      name: string;
+      slug: string;
+      endpoint_url: string;
+      agent_card_url?: string;
+      agent_card_json?: string;
+      task_visibility_mode?: string;
+      auth_type?: string;
+      auth_secret?: string;
+      max_task_iterations?: number;
+      max_task_budget_micros?: number;
+    }
+  ) =>
+    apiFetch<{ status: string; agent: A2AAgent }>(
+      '/admin/v1/a2a/agents',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
   setA2AKillSwitch: (key: string, agentId: string, killed: boolean) =>
     apiFetch<any>(`/admin/v1/a2a/agents/${agentId}/kill-switch`, { method: 'POST', body: JSON.stringify({ killed }) }, key),
 

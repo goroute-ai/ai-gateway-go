@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import {
@@ -16,14 +16,47 @@ import {
   AlertTriangle,
   Activity,
   Search,
+  Plus,
 } from 'lucide-react';
 
 export const AgenticView: React.FC = () => {
-  const { adminKey } = useAuth();
+  const { adminKey, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'mcp' | 'a2a'>('mcp');
   const [selectedTool, setSelectedTool] = useState<any | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+
+  // Modal toggles
+  const [showServerModal, setShowServerModal] = useState(false);
+  const [showToolsetModal, setShowToolsetModal] = useState(false);
+  const [showAgentModal, setShowAgentModal] = useState(false);
+
+  // MCP Server form state
+  const [srvName, setSrvName] = useState('');
+  const [srvSlug, setSrvSlug] = useState('');
+  const [srvEndpoint, setSrvEndpoint] = useState('');
+  const [srvProtocol, setSrvProtocol] = useState('2026-07-28');
+  const [srvTransport, setSrvTransport] = useState('streamable_http');
+  const [srvAuthType, setSrvAuthType] = useState('none');
+  const [srvAuthSecret, setSrvAuthSecret] = useState('');
+  const [srvPinnedHash, setSrvPinnedHash] = useState('');
+
+  // MCP Toolset form state
+  const [tsName, setTsName] = useState('');
+  const [tsSlug, setTsSlug] = useState('');
+  const [tsSelectedToolIds, setTsSelectedToolIds] = useState<string[]>([]);
+  const [tsManualToolIds, setTsManualToolIds] = useState('');
+
+  // A2A Agent form state
+  const [agentName, setAgentName] = useState('');
+  const [agentSlug, setAgentSlug] = useState('');
+  const [agentEndpoint, setAgentEndpoint] = useState('');
+  const [agentCardUrl, setAgentCardUrl] = useState('');
+  const [agentVisibility, setAgentVisibility] = useState('key_strict');
+  const [agentAuthType, setAgentAuthType] = useState('none');
+  const [agentAuthSecret, setAgentAuthSecret] = useState('');
+  const [agentMaxIter, setAgentMaxIter] = useState('50');
+  const [agentMaxBudgetMicros, setAgentMaxBudgetMicros] = useState('');
 
   // Fetch MCP Servers
   const {
@@ -33,9 +66,19 @@ export const AgenticView: React.FC = () => {
     error: mcpError,
     refetch: refetchMCP,
   } = useQuery({
-    queryKey: ['admin', 'mcp-servers', adminKey],
-    queryFn: () => adminApi.listMCPServers(adminKey),
+    queryKey: ['admin', 'mcp-servers', adminKey, activeOrgId],
+    queryFn: () => adminApi.listMCPServers(adminKey, activeOrgId),
     enabled: !!adminKey,
+  });
+
+  // Fetch MCP Toolsets
+  const {
+    data: mcpToolsetsData,
+    refetch: refetchToolsets,
+  } = useQuery({
+    queryKey: ['admin', 'mcp-toolsets', adminKey, activeOrgId],
+    queryFn: () => adminApi.listMCPToolsets(adminKey, activeOrgId),
+    enabled: !!adminKey && activeTab === 'mcp',
   });
 
   // Fetch MCP Tools
@@ -46,8 +89,8 @@ export const AgenticView: React.FC = () => {
     error: toolsError,
     refetch: refetchTools,
   } = useQuery({
-    queryKey: ['admin', 'mcp-tools', adminKey],
-    queryFn: () => adminApi.listMCPTools(adminKey),
+    queryKey: ['admin', 'mcp-tools', adminKey, activeOrgId],
+    queryFn: () => adminApi.listMCPTools(adminKey, activeOrgId),
     enabled: !!adminKey && activeTab === 'mcp',
   });
 
@@ -59,9 +102,58 @@ export const AgenticView: React.FC = () => {
     error: a2aError,
     refetch: refetchA2A,
   } = useQuery({
-    queryKey: ['admin', 'a2a-agents', adminKey],
-    queryFn: () => adminApi.listA2AAgents(adminKey),
+    queryKey: ['admin', 'a2a-agents', adminKey, activeOrgId],
+    queryFn: () => adminApi.listA2AAgents(adminKey, activeOrgId),
     enabled: !!adminKey,
+  });
+
+  // Create MCP Server Mutation
+  const createServerMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.createMCPServer>[1]) =>
+      adminApi.createMCPServer(adminKey, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-servers'] });
+      setShowServerModal(false);
+      setSrvName('');
+      setSrvSlug('');
+      setSrvEndpoint('');
+      setSrvAuthType('none');
+      setSrvAuthSecret('');
+      setSrvPinnedHash('');
+    },
+  });
+
+  // Create MCP Toolset Mutation
+  const createToolsetMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.createMCPToolset>[1]) =>
+      adminApi.createMCPToolset(adminKey, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-toolsets'] });
+      setShowToolsetModal(false);
+      setTsName('');
+      setTsSlug('');
+      setTsSelectedToolIds([]);
+      setTsManualToolIds('');
+    },
+  });
+
+  // Create A2A Agent Mutation
+  const createAgentMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.createA2AAgent>[1]) =>
+      adminApi.createA2AAgent(adminKey, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'a2a-agents'] });
+      setShowAgentModal(false);
+      setAgentName('');
+      setAgentSlug('');
+      setAgentEndpoint('');
+      setAgentCardUrl('');
+      setAgentVisibility('key_strict');
+      setAgentAuthType('none');
+      setAgentAuthSecret('');
+      setAgentMaxIter('50');
+      setAgentMaxBudgetMicros('');
+    },
   });
 
   // MCP Server Sync Mutation
@@ -82,9 +174,16 @@ export const AgenticView: React.FC = () => {
     },
   });
 
-  const mcpServers = mcpServersData?.data || [];
+  const mcpServers = mcpServersData?.servers || mcpServersData?.data || [];
+  const mcpToolsets = mcpToolsetsData?.toolsets || mcpToolsetsData?.data || [];
   const mcpTools = mcpToolsData?.tools || [];
-  const a2aAgents = a2aAgentsData?.data || [];
+  const a2aAgents = a2aAgentsData?.agents || a2aAgentsData?.data || [];
+
+  const toggleToolSelection = (toolId: string) => {
+    setTsSelectedToolIds((prev) =>
+      prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
+    );
+  };
 
   const filteredTools = mcpTools.filter((t) => {
     if (!searchFilter.trim()) return true;
@@ -119,11 +218,42 @@ export const AgenticView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {activeTab === 'mcp' ? (
+            <>
+              <button
+                onClick={() => setShowToolsetModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-200 hover:text-white rounded text-xs font-medium transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Create Toolset
+              </button>
+              <button
+                onClick={() => setShowServerModal(true)}
+                className={BTN_PRIMARY}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  Register MCP Server
+                </span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setShowAgentModal(true)}
+              className={BTN_PRIMARY}
+            >
+              <span className="flex items-center gap-1.5">
+                <Plus className="w-3.5 h-3.5" />
+                Register A2A Agent
+              </span>
+            </button>
+          )}
           <button
             onClick={() => {
               if (activeTab === 'mcp') {
                 refetchMCP();
+                refetchToolsets();
                 refetchTools();
               } else {
                 refetchA2A();
@@ -255,6 +385,38 @@ export const AgenticView: React.FC = () => {
                         Sync Schema
                       </button>
                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Curated MCP Toolsets */}
+          <div>
+            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-accent-primary" />
+              Curated MCP Toolsets ({mcpToolsets.length})
+            </h3>
+            {mcpToolsets.length === 0 ? (
+              <div className="p-4 bg-surface-base border border-subtle rounded-lg text-center text-xs text-zinc-400 font-mono">
+                No curated toolsets defined yet. Use "Create Toolset" to bundle discovered MCP tools under a dedicated `/mcp/toolsets/{'{slug}'}` endpoint.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {mcpToolsets.map((ts) => (
+                  <div
+                    key={ts.id}
+                    className="bg-surface-base border border-subtle rounded-lg p-4 flex items-center justify-between"
+                  >
+                    <div>
+                      <h4 className="text-sm font-semibold text-zinc-100">{ts.name}</h4>
+                      <span className="text-[11px] font-mono text-zinc-500">
+                        /mcp/toolsets/{ts.slug} ({ts.tool_ids?.length ?? 0} tools)
+                      </span>
+                    </div>
+                    <Badge variant={ts.is_active ? 'success' : 'neutral'}>
+                      {ts.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
                   </div>
                 ))}
               </div>
@@ -425,6 +587,426 @@ export const AgenticView: React.FC = () => {
           </div>
         </Modal>
       )}
+
+      {/* Register MCP Server Modal */}
+      <Modal
+        isOpen={showServerModal}
+        onClose={() => setShowServerModal(false)}
+        title="Register Upstream MCP Server"
+        description="Connect a Model Context Protocol server to discover and govern callable tools."
+        maxWidth="lg"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()) return;
+            createServerMutation.mutate({
+              org_id: activeOrgId || undefined,
+              name: srvName.trim(),
+              slug: srvSlug.trim(),
+              endpoint_url: srvEndpoint.trim(),
+              protocol_version: srvProtocol,
+              transport_type: srvTransport,
+              auth_type: srvAuthType,
+              auth_secret: srvAuthSecret.trim() || undefined,
+              pinned_tool_hash: srvPinnedHash.trim() || undefined,
+            });
+          }}
+          className="space-y-4"
+        >
+          {createServerMutation.isError && (
+            <ErrorAlert error={createServerMutation.error} title="Failed to register MCP server" />
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Server Name *</label>
+              <input
+                type="text"
+                required
+                value={srvName}
+                onChange={(e) => setSrvName(e.target.value)}
+                placeholder="GitHub Enterprise MCP"
+                className={INPUT_CLS}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Slug *</label>
+              <input
+                type="text"
+                required
+                value={srvSlug}
+                onChange={(e) => setSrvSlug(e.target.value)}
+                placeholder="github-mcp"
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Endpoint URL *</label>
+            <input
+              type="text"
+              required
+              value={srvEndpoint}
+              onChange={(e) => setSrvEndpoint(e.target.value)}
+              placeholder="https://mcp.internal.example.com/mcp"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Protocol Version</label>
+              <select
+                value={srvProtocol}
+                onChange={(e) => setSrvProtocol(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="2026-07-28">2026-07-28</option>
+                <option value="2025-11-25">2025-11-25</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Transport</label>
+              <select
+                value={srvTransport}
+                onChange={(e) => setSrvTransport(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="streamable_http">streamable_http</option>
+                <option value="stdio">stdio</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Auth Mode</label>
+              <select
+                value={srvAuthType}
+                onChange={(e) => setSrvAuthType(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="none">none</option>
+                <option value="static">static</option>
+                <option value="oauth2">oauth2</option>
+                <option value="delegation">delegation</option>
+                <option value="vault_jwt">vault_jwt</option>
+              </select>
+            </div>
+          </div>
+
+          {srvAuthType !== 'none' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Auth Secret / Token (Vault Encrypted)
+              </label>
+              <input
+                type="password"
+                value={srvAuthSecret}
+                onChange={(e) => setSrvAuthSecret(e.target.value)}
+                placeholder="Bearer token or client secret..."
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              Pinned Tool Hash (Optional SHA-256)
+            </label>
+            <input
+              type="text"
+              value={srvPinnedHash}
+              onChange={(e) => setSrvPinnedHash(e.target.value)}
+              placeholder="sha256:..."
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowServerModal(false)} className={BTN_CANCEL}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createServerMutation.isPending || !srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()}
+              className={BTN_PRIMARY}
+            >
+              {createServerMutation.isPending ? 'Registering...' : 'Register Server'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Create MCP Toolset Modal */}
+      <Modal
+        isOpen={showToolsetModal}
+        onClose={() => setShowToolsetModal(false)}
+        title="Create Curated MCP Toolset"
+        description="Bundle specific MCP tools into a curated `/mcp/toolsets/{slug}` endpoint."
+        maxWidth="lg"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!tsName.trim() || !tsSlug.trim()) return;
+            const manual = tsManualToolIds
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const combined = Array.from(new Set([...tsSelectedToolIds, ...manual]));
+            createToolsetMutation.mutate({
+              org_id: activeOrgId || undefined,
+              name: tsName.trim(),
+              slug: tsSlug.trim(),
+              tool_ids: combined,
+            });
+          }}
+          className="space-y-4"
+        >
+          {createToolsetMutation.isError && (
+            <ErrorAlert error={createToolsetMutation.error} title="Failed to create MCP toolset" />
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Toolset Name *</label>
+              <input
+                type="text"
+                required
+                value={tsName}
+                onChange={(e) => setTsName(e.target.value)}
+                placeholder="Read-Only DevOps Tools"
+                className={INPUT_CLS}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Slug *</label>
+              <input
+                type="text"
+                required
+                value={tsSlug}
+                onChange={(e) => setTsSlug(e.target.value)}
+                placeholder="devops-readonly"
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          </div>
+
+          {mcpTools.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Select Discovered Tools ({tsSelectedToolIds.length} selected)
+              </label>
+              <div className="p-2 bg-surface-elevated/40 border border-subtle rounded-lg space-y-1.5">
+                {mcpTools.map((tool: any, i: number) => {
+                  const tid = tool.id || tool.name || String(i);
+                  return (
+                    <label key={tid} className="flex items-center gap-2 text-xs font-mono text-zinc-200">
+                      <input
+                        type="checkbox"
+                        checked={tsSelectedToolIds.includes(tid)}
+                        onChange={() => toggleToolSelection(tid)}
+                      />
+                      <span className="truncate">{tool.name}</span>
+                      {tool.id && <span className="text-[10px] text-zinc-500">({tool.id})</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              Tool IDs (comma-separated, optional)
+            </label>
+            <input
+              type="text"
+              value={tsManualToolIds}
+              onChange={(e) => setTsManualToolIds(e.target.value)}
+              placeholder="mcp_tool_1, mcp_tool_2"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowToolsetModal(false)} className={BTN_CANCEL}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createToolsetMutation.isPending || !tsName.trim() || !tsSlug.trim()}
+              className={BTN_PRIMARY}
+            >
+              {createToolsetMutation.isPending ? 'Creating...' : 'Create Toolset'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Register A2A Agent Modal */}
+      <Modal
+        isOpen={showAgentModal}
+        onClose={() => setShowAgentModal(false)}
+        title="Register A2A Mesh Agent"
+        description="Register an Agent-to-Agent protocol endpoint with task isolation, iteration caps, and budget controls."
+        maxWidth="lg"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()) return;
+            const maxIter = parseInt(agentMaxIter, 10);
+            const maxBudget = parseInt(agentMaxBudgetMicros, 10);
+            createAgentMutation.mutate({
+              org_id: activeOrgId || undefined,
+              name: agentName.trim(),
+              slug: agentSlug.trim(),
+              endpoint_url: agentEndpoint.trim(),
+              agent_card_url: agentCardUrl.trim() || undefined,
+              task_visibility_mode: agentVisibility,
+              auth_type: agentAuthType !== 'none' ? agentAuthType : undefined,
+              auth_secret: agentAuthSecret.trim() || undefined,
+              max_task_iterations: !isNaN(maxIter) && maxIter > 0 ? maxIter : 50,
+              max_task_budget_micros: !isNaN(maxBudget) && maxBudget > 0 ? maxBudget : undefined,
+            });
+          }}
+          className="space-y-4"
+        >
+          {createAgentMutation.isError && (
+            <ErrorAlert error={createAgentMutation.error} title="Failed to register A2A agent" />
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Agent Name *</label>
+              <input
+                type="text"
+                required
+                value={agentName}
+                onChange={(e) => setAgentName(e.target.value)}
+                placeholder="Incident Triage Agent"
+                className={INPUT_CLS}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Mesh Slug *</label>
+              <input
+                type="text"
+                required
+                value={agentSlug}
+                onChange={(e) => setAgentSlug(e.target.value)}
+                placeholder="incident-triage"
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Endpoint URL *</label>
+            <input
+              type="text"
+              required
+              value={agentEndpoint}
+              onChange={(e) => setAgentEndpoint(e.target.value)}
+              placeholder="https://agent.internal.example.com/a2a"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">
+              Agent Card URL (Optional)
+            </label>
+            <input
+              type="text"
+              value={agentCardUrl}
+              onChange={(e) => setAgentCardUrl(e.target.value)}
+              placeholder="https://agent.internal.example.com/.well-known/agent-card.json"
+              className={`${INPUT_CLS} font-mono`}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Task Visibility</label>
+              <select
+                value={agentVisibility}
+                onChange={(e) => setAgentVisibility(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="key_strict">key_strict</option>
+                <option value="user_strict">user_strict</option>
+                <option value="team">team</option>
+                <option value="org_admin">org_admin</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Upstream Auth</label>
+              <select
+                value={agentAuthType}
+                onChange={(e) => setAgentAuthType(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="none">none</option>
+                <option value="bearer">bearer</option>
+                <option value="api_key">api_key</option>
+              </select>
+            </div>
+          </div>
+
+          {agentAuthType !== 'none' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Auth Secret (Vault Encrypted)
+              </label>
+              <input
+                type="password"
+                value={agentAuthSecret}
+                onChange={(e) => setAgentAuthSecret(e.target.value)}
+                placeholder="Upstream agent secret..."
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Max Task Iterations</label>
+              <input
+                type="number"
+                min={1}
+                value={agentMaxIter}
+                onChange={(e) => setAgentMaxIter(e.target.value)}
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Max Task Budget (micros, optional)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={agentMaxBudgetMicros}
+                onChange={(e) => setAgentMaxBudgetMicros(e.target.value)}
+                placeholder="1000000"
+                className={`${INPUT_CLS} font-mono`}
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowAgentModal(false)} className={BTN_CANCEL}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createAgentMutation.isPending || !agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()}
+              className={BTN_PRIMARY}
+            >
+              {createAgentMutation.isPending ? 'Registering...' : 'Register Agent'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };
