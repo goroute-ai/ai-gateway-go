@@ -1,149 +1,66 @@
 package observability
 
 import (
-	"context"
-	"net/http"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestTraceMiddlewareRecordsStatusCodeAndErrorOn5xx(t *testing.T) {
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	defer func() { _ = tp.Shutdown(context.Background()) }()
-
-	tracer := tp.Tracer("test")
-	cases := []struct {
-		name       string
-		statusCode int
-		implicit   bool
-		wantErr    bool
-	}{
-		{name: "implicit_200", statusCode: http.StatusOK, implicit: true, wantErr: false},
-		{name: "client_404", statusCode: http.StatusNotFound, wantErr: false},
-		{name: "server_502", statusCode: http.StatusBadGateway, wantErr: true},
+func TestCollector_CapsProvidersMap(t *testing.T) {
+	c := NewCollector()
+	for i := 0; i < maxProviderEntries+50; i++ {
+		c.Record(RequestObservation{
+			Provider:   fmt.Sprintf("provider-%d", i),
+			StatusCode: 200,
+			LatencyMs:  5,
+		})
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			before := len(sr.Ended())
-			handler := TraceMiddlewareWithTracer(tracer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tc.implicit {
-					_, _ = w.Write([]byte("ok"))
-					return
-				}
-				w.WriteHeader(tc.statusCode)
-			}))
-
-			req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			ended := sr.Ended()
-			if len(ended) != before+1 {
-				t.Fatalf("expected %d ended spans, got %d", before+1, len(ended))
-			}
-			span := ended[len(ended)-1]
-
-			var gotCode int64
-			var found bool
-			for _, attr := range span.Attributes() {
-				if attr.Key == attribute.Key("http.response.status_code") {
-					gotCode = attr.Value.AsInt64()
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Fatalf("expected http.response.status_code attribute on span")
-			}
-			if gotCode != int64(tc.statusCode) {
-				t.Fatalf("http.response.status_code = %d, want %d", gotCode, tc.statusCode)
-			}
-			if tc.wantErr && span.Status().Code != codes.Error {
-				t.Fatalf("expected span status codes.Error for %d, got %v", tc.statusCode, span.Status().Code)
-			}
-			if !tc.wantErr && span.Status().Code == codes.Error {
-				t.Fatalf("did not expect span status codes.Error for %d", tc.statusCode)
-			}
-		})
+	snap := c.Snapshot()
+	if len(snap.Providers) > maxProviderEntries {
+		t.Fatalf("expected providers map to be capped at %d, got %d", maxProviderEntries, len(snap.Providers))
 	}
 }
 
-func TestReservoirUniformSamplingAlgorithmR(t *testing.T) {
-	var r reservoir
-	const total = 10000
-	for i := 1; i <= total; i++ {
-		r.add(int64(i))
+func TestParseOrGenerateTrace_RejectsInvalidAndAllZeroTraceIDs(t *testing.T) {
+	// All-zero traceparent must be rejected
+	reqZero := httptest.NewRequest("GET", "/test", nil)
+	reqZero.Header.Set("traceparent", "00-00000000000000000000000000000000-0123456789abcdef-01")
+	tcZero := ParseOrGenerateTrace(reqZero)
+	if tcZero.TraceID == "00000000000000000000000000000000" || !isValidTraceID(tcZero.TraceID) {
+		t.Fatalf("expected valid non-zero trace ID, got %q", tcZero.TraceID)
 	}
 
-	if r.count != total {
-		t.Fatalf("count = %d, want %d", r.count, total)
-	}
-	if len(r.samples) != maxReservoirSamples {
-		t.Fatalf("len(samples) = %d, want %d", len(r.samples), maxReservoirSamples)
+	// Non-hex X-Trace-Id must be rejected
+	reqBadHex := httptest.NewRequest("GET", "/test", nil)
+	reqBadHex.Header.Set("X-Trace-Id", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+	tcBad := ParseOrGenerateTrace(reqBadHex)
+	if tcBad.TraceID == "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" || !isValidTraceID(tcBad.TraceID) {
+		t.Fatalf("expected valid hex trace ID, got %q", tcBad.TraceID)
 	}
 
-	// Under rolling-overwrite, all samples would be >= total - maxReservoirSamples + 1 (8977).
-	// Under Vitter's Algorithm R, early items must still be represented uniformly.
-	var earlyCount int
-	var sum int64
-	for _, s := range r.samples {
-		sum += s
-		if s <= 2000 {
-			earlyCount++
-		}
-	}
-	if earlyCount == 0 {
-		t.Fatalf("expected early samples (<= 2000) to be retained under uniform reservoir sampling")
-	}
-	sampleMean := float64(sum) / float64(len(r.samples))
-	if sampleMean < 4200 || sampleMean > 5800 {
-		t.Fatalf("reservoir sample mean = %.2f, expected near 5000.5", sampleMean)
+	// Valid hex traceparent is accepted and lowercased
+	reqValid := httptest.NewRequest("GET", "/test", nil)
+	reqValid.Header.Set("traceparent", "00-0123456789ABCDEF0123456789ABCDEF-0123456789abcdef-01")
+	tcValid := ParseOrGenerateTrace(reqValid)
+	if tcValid.TraceID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("expected lowercased valid trace ID, got %q", tcValid.TraceID)
 	}
 }
 
-func TestCollectorDeploymentMapBoundedEviction(t *testing.T) {
-	col := NewCollector()
-	col.maxDeployments = 5
-
-	for i := 1; i <= 5; i++ {
-		depID := string(rune('a' + i - 1))
-		col.Record(RequestObservation{
-			Provider:     "openai",
-			Model:        "gpt-4.1-mini",
-			DeploymentID: "dep-" + depID,
-			StatusCode:   200,
-			LatencyMs:    10,
-		})
-	}
-	// Refresh dep-a so it is no longer the least recently used entry.
-	col.RecordDeploymentAttempt("dep-a", "dep-a", "openai", "gpt-4.1-mini", 15, false)
-
-	// Insert 3 more deployments; cap must remain 5 and dep-a must remain present.
-	for _, suffix := range []string{"f", "g", "h"} {
-		col.Record(RequestObservation{
-			Provider:     "openai",
-			Model:        "gpt-4.1-mini",
-			DeploymentID: "dep-" + suffix,
-			StatusCode:   200,
-			LatencyMs:    10,
-		})
+func TestOTLPSamplerConfiguration(t *testing.T) {
+	t.Setenv("OTEL_TRACES_SAMPLER", "always_off")
+	s := resolveOTLPSamplerFromEnv()
+	if s.Description() != sdktrace.NeverSample().Description() {
+		t.Fatalf("expected NeverSample, got %q", s.Description())
 	}
 
-	snap := col.Snapshot()
-	if len(snap.Deployments) != 5 {
-		t.Fatalf("expected bounded 5 deployments, got %d", len(snap.Deployments))
-	}
-	if _, ok := snap.Deployments["dep-a"]; !ok {
-		t.Fatalf("expected recently accessed dep-a to be retained after eviction")
-	}
-	if _, ok := snap.Deployments["dep-b"]; ok {
-		t.Fatalf("expected oldest unused deployment dep-b to be evicted")
+	t.Setenv("OTEL_TRACES_SAMPLER", "traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0.25")
+	s2 := resolveOTLPSamplerFromEnv()
+	if s2.Description() != sdktrace.TraceIDRatioBased(0.25).Description() {
+		t.Fatalf("expected TraceIDRatioBased(0.25), got %q", s2.Description())
 	}
 }

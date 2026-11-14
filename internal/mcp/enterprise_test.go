@@ -214,8 +214,11 @@ func TestMCPSubscriptionsMultiplexing(t *testing.T) {
 	ctx := context.Background()
 	sm := NewSubscriptionManager(nil)
 
-	clientID, msgCh := sm.Subscribe()
-	defer sm.Unsubscribe(clientID)
+	clientID, msgCh := sm.Subscribe("org_test")
+	defer sm.Unsubscribe("org_test", clientID)
+
+	otherClientID, otherCh := sm.Subscribe("org_other")
+	defer sm.Unsubscribe("org_other", otherClientID)
 
 	testNotification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
 	err := sm.PublishNotification(ctx, "org_test", testNotification)
@@ -226,6 +229,12 @@ func TestMCPSubscriptionsMultiplexing(t *testing.T) {
 		assert.Equal(t, testNotification, received)
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for subscription notification")
+	}
+
+	select {
+	case unexpected := <-otherCh:
+		t.Fatalf("cross-tenant leak: org_other received notification %s", string(unexpected))
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

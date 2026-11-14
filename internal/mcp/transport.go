@@ -122,9 +122,14 @@ func NewTransportDispatcher(netPolicy *network.Policy, redisFabric *storage.Redi
 		adapter2025:      NewStreamableHTTP2025Adapter(netPolicy, redisFabric),
 		adapter2024:      NewHTTPSSEServer2024Transport(netPolicy),
 		transportOpenAPI: NewOpenAPITransport(netPolicy),
-		transportStdio:   NewStdioTransport(StdioSecurityPolicy{AllowedBinaries: []string{"*"}, DefaultTimeout: 30 * time.Second}),
+		transportStdio:   NewStdioTransport(StdioSecurityPolicy{AllowedBinaries: []string{}, DefaultTimeout: 30 * time.Second}),
 		allowStdio:       allowStdio,
 	}
+}
+
+// SetStdioPolicy updates the stdio subprocess security policy on the dispatcher.
+func (d *TransportDispatcher) SetStdioPolicy(policy StdioSecurityPolicy) {
+	d.transportStdio = NewStdioTransport(policy)
 }
 
 // Dispatch executes the round-trip through the corresponding transport adapter.

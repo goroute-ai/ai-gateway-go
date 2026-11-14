@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
@@ -71,7 +72,10 @@ func TestHTTPSSEServer2024Transport(t *testing.T) {
 	defer mockSrv.Close()
 	postURL = mockSrv.URL
 
-	netPolicy := &network.Policy{AllowPrivateNetworks: true, AllowInsecureHTTP: true}
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("new network policy: %v", err)
+	}
 	transport := mcp.NewHTTPSSEServer2024Transport(netPolicy)
 	defer transport.Close()
 

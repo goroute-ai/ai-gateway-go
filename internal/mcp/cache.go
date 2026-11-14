@@ -2,11 +2,14 @@ package mcp
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,29 +18,52 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const maxMCPCacheMemEntries = 4096
+
 // MCPCache provides high-performance length-prefixed HMAC caching for MCP operations.
 type MCPCache struct {
 	secret   []byte
 	redis    *storage.RedisFabric
-	memMu    sync.RWMutex
-	memStore map[string]cacheEntry
+	memMu    sync.Mutex
+	memStore map[string]*list.Element
+	memLRU   *list.List
+	maxMem   int
 }
 
 type cacheEntry struct {
+	key       string
 	data      []byte
 	expiresAt time.Time
 }
 
-// NewMCPCache creates a new MCP cache instance.
+// NewMCPCacheStrict creates a new MCP cache instance and fails if no HMAC secret is configured.
+func NewMCPCacheStrict(secret []byte, redis *storage.RedisFabric) (*MCPCache, error) {
+	if len(secret) == 0 {
+		return nil, errors.New("mcp cache: HMAC secret must be configured")
+	}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	return &MCPCache{
+		secret:   cp,
+		redis:    redis,
+		memStore: make(map[string]*list.Element),
+		memLRU:   list.New(),
+		maxMem:   maxMCPCacheMemEntries,
+	}, nil
+}
+
+// NewMCPCache creates a new MCP cache instance. If secret is empty, a random per-process
+// ephemeral secret is generated so no hardcoded fallback secret is ever used.
 func NewMCPCache(secret []byte, redis *storage.RedisFabric) *MCPCache {
 	if len(secret) == 0 {
-		secret = []byte("default-mcp-cache-hmac-secret")
+		ephemeral := make([]byte, 32)
+		if _, err := rand.Read(ephemeral); err != nil {
+			panic("mcp cache: failed to generate random HMAC secret: " + err.Error())
+		}
+		secret = ephemeral
 	}
-	return &MCPCache{
-		secret:   secret,
-		redis:    redis,
-		memStore: make(map[string]cacheEntry),
-	}
+	c, _ := NewMCPCacheStrict(secret, redis)
+	return c
 }
 
 // ComputeCacheKey generates a length-prefixed, collision-resistant HMAC-SHA256 cache key.
@@ -114,12 +140,19 @@ func (c *MCPCache) Get(ctx context.Context, key string) (*JSONRPCResponse, bool)
 		}
 	}
 
-	c.memMu.RLock()
-	defer c.memMu.RUnlock()
-	entry, ok := c.memStore[key]
-	if !ok || time.Now().After(entry.expiresAt) {
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+	elem, ok := c.memStore[key]
+	if !ok {
 		return nil, false
 	}
+	entry := elem.Value.(*cacheEntry)
+	if time.Now().After(entry.expiresAt) {
+		c.memLRU.Remove(elem)
+		delete(c.memStore, key)
+		return nil, false
+	}
+	c.memLRU.MoveToFront(elem)
 
 	var resp JSONRPCResponse
 	if err := json.Unmarshal(entry.data, &resp); err != nil {
@@ -147,10 +180,35 @@ func (c *MCPCache) Set(ctx context.Context, key string, resp *JSONRPCResponse, t
 
 	c.memMu.Lock()
 	defer c.memMu.Unlock()
-	c.memStore[key] = cacheEntry{
-		data:      data,
-		expiresAt: time.Now().Add(ttl),
+	now := time.Now()
+	if elem, ok := c.memStore[key]; ok {
+		entry := elem.Value.(*cacheEntry)
+		entry.data = data
+		entry.expiresAt = now.Add(ttl)
+		c.memLRU.MoveToFront(elem)
+		return nil
 	}
+	for c.memLRU.Len() >= c.maxMem {
+		tail := c.memLRU.Back()
+		if tail == nil {
+			break
+		}
+		tailEntry := tail.Value.(*cacheEntry)
+		c.memLRU.Remove(tail)
+		delete(c.memStore, tailEntry.key)
+	}
+	if tail := c.memLRU.Back(); tail != nil {
+		if tailEntry := tail.Value.(*cacheEntry); now.After(tailEntry.expiresAt) {
+			c.memLRU.Remove(tail)
+			delete(c.memStore, tailEntry.key)
+		}
+	}
+	elem := c.memLRU.PushFront(&cacheEntry{
+		key:       key,
+		data:      data,
+		expiresAt: now.Add(ttl),
+	})
+	c.memStore[key] = elem
 	return nil
 }
 
@@ -164,6 +222,9 @@ func (c *MCPCache) InvalidateKey(ctx context.Context, key string) error {
 
 	c.memMu.Lock()
 	defer c.memMu.Unlock()
-	delete(c.memStore, key)
+	if elem, ok := c.memStore[key]; ok {
+		c.memLRU.Remove(elem)
+		delete(c.memStore, key)
+	}
 	return nil
 }

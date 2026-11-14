@@ -12,6 +12,7 @@ import (
 
 const (
 	maxReservoirSamples  = 1024
+	maxProviderEntries   = 256
 	maxDeploymentEntries = 4096
 )
 
@@ -127,6 +128,7 @@ type providerInternal struct {
 	costMicros  int64
 	latencyHist reservoir
 	ttftHist    reservoir
+	lastAccess  uint64
 }
 
 type deploymentInternal struct {
@@ -183,6 +185,7 @@ type Collector struct {
 	globalTTFT          reservoir
 	routingMicros       reservoir
 	providers           map[string]*providerInternal
+	maxProviders        int
 	deployments         map[string]*deploymentInternal
 	maxDeployments      int
 	accessSeq           uint64
@@ -192,6 +195,7 @@ type Collector struct {
 func NewCollector() *Collector {
 	return &Collector{
 		providers:      make(map[string]*providerInternal),
+		maxProviders:   maxProviderEntries,
 		deployments:    make(map[string]*deploymentInternal),
 		maxDeployments: maxDeploymentEntries,
 	}
@@ -237,6 +241,38 @@ func (c *Collector) RecordStream(duration, ttft time.Duration, failed bool) {
 	if ttft > 0 {
 		c.streamTTFT.add(ttft.Milliseconds())
 	}
+}
+
+// getOrCreateProvider returns an existing providerInternal or creates a new one,
+// evicting the least-recently-updated entry if the bounded capacity is reached. Caller must hold c.mu.
+func (c *Collector) getOrCreateProvider(provider string) *providerInternal {
+	c.accessSeq++
+	if p, ok := c.providers[provider]; ok {
+		p.lastAccess = c.accessSeq
+		return p
+	}
+	limit := c.maxProviders
+	if limit <= 0 {
+		limit = maxProviderEntries
+	}
+	if len(c.providers) >= limit {
+		var evictID string
+		var oldest uint64
+		first := true
+		for id, entry := range c.providers {
+			if first || entry.lastAccess < oldest {
+				oldest = entry.lastAccess
+				evictID = id
+				first = false
+			}
+		}
+		if evictID != "" {
+			delete(c.providers, evictID)
+		}
+	}
+	p := &providerInternal{lastAccess: c.accessSeq}
+	c.providers[provider] = p
+	return p
 }
 
 // getOrCreateDeployment returns an existing deploymentInternal or creates a new one,
@@ -318,11 +354,7 @@ func (c *Collector) Record(obs RequestObservation) {
 	}
 
 	if obs.Provider != "" {
-		p, ok := c.providers[obs.Provider]
-		if !ok {
-			p = &providerInternal{}
-			c.providers[obs.Provider] = p
-		}
+		p := c.getOrCreateProvider(obs.Provider)
 		p.totalReqs++
 		if isErr {
 			p.errors++

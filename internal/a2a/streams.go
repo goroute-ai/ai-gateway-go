@@ -114,6 +114,10 @@ func (s *StreamSubscriber) SubscribeTaskStream(
 		}
 	}
 
+	if isTerminalTaskStateString(task.State) {
+		return
+	}
+
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
@@ -130,6 +134,7 @@ func (s *StreamSubscriber) SubscribeTaskStream(
 			var liveEv struct {
 				EventSeq  int64  `json:"event_seq"`
 				EventType string `json:"event_type"`
+				State     string `json:"state"`
 			}
 			_ = json.Unmarshal(payloadBytes, &liveEv)
 
@@ -156,6 +161,13 @@ func (s *StreamSubscriber) SubscribeTaskStream(
 				lastSentSeq = liveEv.EventSeq
 			}
 
+			if isTerminalTaskStateString(liveEv.State) {
+				return
+			}
+			if latestTask, err := s.repo.GetA2ATask(ctx, taskID); err == nil && latestTask != nil && isTerminalTaskStateString(latestTask.State) {
+				return
+			}
+
 		case <-ticker.C:
 			_, _ = fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
@@ -168,4 +180,13 @@ func (s *StreamSubscriber) writeSSEEvent(w http.ResponseWriter, seq int64, event
 		eventType = "message"
 	}
 	_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, eventType, strings.ReplaceAll(payload, "\n", " "))
+}
+
+func isTerminalTaskStateString(state string) bool {
+	switch state {
+	case domain.A2ATaskStateCompleted, domain.A2ATaskStateFailed, domain.A2ATaskStateCanceled:
+		return true
+	default:
+		return false
+	}
 }

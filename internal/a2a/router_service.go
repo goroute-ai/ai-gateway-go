@@ -75,6 +75,13 @@ func (s *RouterService) SendMessage(
 	agentSlug string,
 	req *pb.SendMessageRequest,
 ) (*pb.SendMessageResponse, error) {
+	if idCtx == nil {
+		return nil, &A2AError{
+			Code:    CodeTaskNotFound,
+			Message: "Forbidden",
+		}
+	}
+
 	if req == nil || req.Message == nil {
 		return nil, &A2AError{
 			Code:    CodeInvalidTaskPayload,
@@ -208,6 +215,8 @@ func (s *RouterService) SendMessage(
 		return nil, err
 	}
 
+	task.TotalCostMicros += extractA2AInvocationCostMicros(upstreamResp)
+
 	// 6b. Outbound Guardrails Sanitization on text parts
 	if s.guardrails != nil && upstreamResp != nil {
 		if err := s.sanitizeOutboundResponse(ctx, orgID, upstreamResp); err != nil {
@@ -273,6 +282,9 @@ func (s *RouterService) GetTask(
 	agentSlug string,
 	taskID string,
 ) (*pb.Task, error) {
+	if idCtx == nil {
+		return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
+	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
@@ -303,6 +315,9 @@ func (s *RouterService) ListTasks(
 	agentSlug string,
 	req *pb.ListTasksRequest,
 ) (*pb.ListTasksResponse, error) {
+	if idCtx == nil {
+		return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
+	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
@@ -338,6 +353,9 @@ func (s *RouterService) CancelTask(
 	agentSlug string,
 	taskID string,
 ) (*pb.Task, error) {
+	if idCtx == nil {
+		return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
+	}
 	if s.rbac != nil {
 		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
 			return nil, &A2AError{Code: CodeTaskNotFound, Message: "Forbidden"}
@@ -669,4 +687,23 @@ func (s *RouterService) sanitizeParts(ctx context.Context, orgID string, parts [
 		}
 	}
 	return nil
+}
+
+const defaultA2AInvocationCostMicros int64 = 100
+
+func extractA2AInvocationCostMicros(resp *pb.SendMessageResponse) int64 {
+	if resp == nil {
+		return defaultA2AInvocationCostMicros
+	}
+	if t := resp.GetTask(); t != nil && t.GetMetadata() != nil {
+		if v, ok := t.GetMetadata().AsMap()["cost_micros"].(float64); ok && v > 0 {
+			return int64(v)
+		}
+	}
+	if m := resp.GetMessage(); m != nil && m.GetMetadata() != nil {
+		if v, ok := m.GetMetadata().AsMap()["cost_micros"].(float64); ok && v > 0 {
+			return int64(v)
+		}
+	}
+	return defaultA2AInvocationCostMicros
 }

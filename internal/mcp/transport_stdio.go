@@ -141,10 +141,12 @@ func (t *StdioTransport) RoundTrip(
 		"GOROUTE_SANDBOX=1",
 	}
 
-	// Apply static headers as environment variables if configured
+	// Apply only allowlisted safe environment variables from static headers
 	for k, v := range server.StaticHeaders {
-		safeKey := strings.ToUpper(strings.ReplaceAll(k, "-", "_"))
-		cmd.Env = append(cmd.Env, safeKey+"="+v)
+		safeKey := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(k), "-", "_"))
+		if isAllowedStdioEnvKey(safeKey) && !strings.ContainsRune(v, 0) {
+			cmd.Env = append(cmd.Env, safeKey+"="+v)
+		}
 	}
 
 	stdin, err := cmd.StdinPipe()
@@ -188,8 +190,11 @@ func (t *StdioTransport) RoundTrip(
 
 	// Drain stderr in background for error reporting if process fails
 	var errOutput strings.Builder
+	var stderrWG sync.WaitGroup
 	if stderr != nil {
+		stderrWG.Add(1)
 		go func() {
+			defer stderrWG.Done()
 			errScanner := bufio.NewScanner(io.LimitReader(stderr, 4096))
 			for errScanner.Scan() {
 				errOutput.WriteString(errScanner.Text() + "\n")
@@ -198,6 +203,7 @@ func (t *StdioTransport) RoundTrip(
 	}
 
 	_ = cmd.Wait()
+	stderrWG.Wait()
 
 	if responseLine == "" {
 		errMsg := errOutput.String()
@@ -213,4 +219,25 @@ func (t *StdioTransport) RoundTrip(
 	}
 
 	return &jsonRPCResp, http.Header{}, nil
+}
+
+func isAllowedStdioEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	if strings.HasPrefix(key, "MCP_") {
+		return true
+	}
+	switch key {
+	case "TZ", "NO_COLOR", "DEBUG", "LC_ALL":
+		return true
+	default:
+		return false
+	}
 }

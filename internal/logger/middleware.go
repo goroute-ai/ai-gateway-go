@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 )
 
 type responseRecorder struct {
@@ -59,8 +58,8 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// Extract or generate unique Request ID
-			reqID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+			// Extract, sanitize, and bound Request ID
+			reqID := sanitizeRequestID(r.Header.Get("X-Request-Id"))
 			if reqID == "" {
 				reqID = "req_" + uuid.NewString()
 			}
@@ -94,12 +93,7 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("remote_ip", r.RemoteAddr),
 			}
 
-			// Add W3C Trace ID if available
-			tc := observability.TraceFromContext(r.Context())
-			if tc.TraceID != "" {
-				attrs = append(attrs, slog.String("trace_id", tc.TraceID))
-			}
-			attrs = append(attrs, slog.String("request_id", reqID))
+			// Note: trace_id and request_id are injected automatically by contextHandler from ctx.
 
 			// Log level selection based on status and path
 			if isProbe {
@@ -118,4 +112,28 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+const maxRequestIDLen = 128
+
+func sanitizeRequestID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxRequestIDLen {
+		if len(raw) > maxRequestIDLen {
+			raw = raw[:maxRequestIDLen]
+		} else {
+			return ""
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == ':' {
+			b.WriteByte(c)
+		} else {
+			return ""
+		}
+	}
+	return b.String()
 }

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,13 +31,22 @@ type MCP2025Session struct {
 	ExpiresAt            time.Time `json:"expires_at"`
 }
 
+const maxMCP2025MemSessions = 4096
+
 // StreamableHTTP2025Adapter provides stateful compatibility for MCP 2025-11-25 servers.
 type StreamableHTTP2025Adapter struct {
 	httpClient *http.Client
 	redis      *storage.RedisFabric
-	memMu      sync.RWMutex
-	memStore   map[string]*MCP2025Session // In-memory fallback if Redis is nil
+	memMu      sync.Mutex
+	memStore   map[string]*list.Element // In-memory LRU fallback if Redis is nil
+	memLRU     *list.List
+	maxMem     int
 	sessionTTL time.Duration
+}
+
+type mcp2025LRUEntry struct {
+	key  string
+	sess *MCP2025Session
 }
 
 // NewStreamableHTTP2025Adapter creates a new 2025 compatibility adapter.
@@ -44,7 +54,9 @@ func NewStreamableHTTP2025Adapter(netPolicy *network.Policy, redisFabric *storag
 	return &StreamableHTTP2025Adapter{
 		httpClient: network.NewHTTPClient(netPolicy),
 		redis:      redisFabric,
-		memStore:   make(map[string]*MCP2025Session),
+		memStore:   make(map[string]*list.Element),
+		memLRU:     list.New(),
+		maxMem:     maxMCP2025MemSessions,
 		sessionTTL: 15 * time.Minute,
 	}
 }
@@ -67,7 +79,7 @@ func (a *StreamableHTTP2025Adapter) RoundTrip(
 
 	// If client provided a session ID, validate and resolve session state
 	if gwSessionID != "" {
-		session, err = a.getSession(ctx, gwSessionID)
+		session, err = a.getSession(ctx, server.ID, gwSessionID)
 		if err != nil || session == nil {
 			return nil, nil, &JSONRPCError{
 				Code:    CodeSessionExpired,
@@ -173,7 +185,7 @@ func (a *StreamableHTTP2025Adapter) RoundTrip(
 	return &jsonResp, resp.Header, nil
 }
 
-func (a *StreamableHTTP2025Adapter) getSession(ctx context.Context, gwSessionID string) (*MCP2025Session, error) {
+func (a *StreamableHTTP2025Adapter) getSession(ctx context.Context, serverID, gwSessionID string) (*MCP2025Session, error) {
 	if a.redis != nil {
 		res, err := a.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Get(ctx, "gw:mcp25:sess:"+gwSessionID).Result()
@@ -182,19 +194,32 @@ func (a *StreamableHTTP2025Adapter) getSession(ctx context.Context, gwSessionID 
 			if jsonStr, ok := res.(string); ok && jsonStr != "" {
 				var sess MCP2025Session
 				if err := json.Unmarshal([]byte(jsonStr), &sess); err == nil {
+					if sess.ServerID != serverID {
+						return nil, errors.New("session does not belong to target server")
+					}
 					return &sess, nil
 				}
 			}
 		}
 	}
 
-	a.memMu.RLock()
-	defer a.memMu.RUnlock()
-	sess, ok := a.memStore[gwSessionID]
-	if !ok || time.Now().UTC().After(sess.ExpiresAt) {
+	a.memMu.Lock()
+	defer a.memMu.Unlock()
+	elem, ok := a.memStore[gwSessionID]
+	if !ok {
 		return nil, errors.New("session not found")
 	}
-	return sess, nil
+	entry := elem.Value.(*mcp2025LRUEntry)
+	if time.Now().UTC().After(entry.sess.ExpiresAt) {
+		a.memLRU.Remove(elem)
+		delete(a.memStore, gwSessionID)
+		return nil, errors.New("session not found")
+	}
+	if entry.sess.ServerID != serverID {
+		return nil, errors.New("session does not belong to target server")
+	}
+	a.memLRU.MoveToFront(elem)
+	return entry.sess, nil
 }
 
 func (a *StreamableHTTP2025Adapter) saveSession(ctx context.Context, sess *MCP2025Session) error {
@@ -207,7 +232,31 @@ func (a *StreamableHTTP2025Adapter) saveSession(ctx context.Context, sess *MCP20
 
 	a.memMu.Lock()
 	defer a.memMu.Unlock()
-	a.memStore[sess.GatewaySessionID] = sess
+	now := time.Now().UTC()
+	if elem, ok := a.memStore[sess.GatewaySessionID]; ok {
+		elem.Value.(*mcp2025LRUEntry).sess = sess
+		a.memLRU.MoveToFront(elem)
+		return nil
+	}
+	// Evict expired tail entries or oldest entry if at capacity
+	for a.memLRU.Len() >= a.maxMem {
+		tail := a.memLRU.Back()
+		if tail == nil {
+			break
+		}
+		tailEntry := tail.Value.(*mcp2025LRUEntry)
+		a.memLRU.Remove(tail)
+		delete(a.memStore, tailEntry.key)
+	}
+	// Opportunistically sweep one expired tail if present
+	if tail := a.memLRU.Back(); tail != nil {
+		if tailEntry := tail.Value.(*mcp2025LRUEntry); now.After(tailEntry.sess.ExpiresAt) {
+			a.memLRU.Remove(tail)
+			delete(a.memStore, tailEntry.key)
+		}
+	}
+	elem := a.memLRU.PushFront(&mcp2025LRUEntry{key: sess.GatewaySessionID, sess: sess})
+	a.memStore[sess.GatewaySessionID] = elem
 	return nil
 }
 
@@ -220,6 +269,9 @@ func (a *StreamableHTTP2025Adapter) deleteSession(ctx context.Context, gwSession
 
 	a.memMu.Lock()
 	defer a.memMu.Unlock()
-	delete(a.memStore, gwSessionID)
+	if elem, ok := a.memStore[gwSessionID]; ok {
+		a.memLRU.Remove(elem)
+		delete(a.memStore, gwSessionID)
+	}
 	return nil
 }

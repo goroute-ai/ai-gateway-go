@@ -81,6 +81,10 @@ func (w *OutboxWorker) run(ctx context.Context) {
 	}
 }
 
+type a2aOutboxUpdater interface {
+	UpdateA2AOutboxEvent(ctx context.Context, ev *domain.A2AOutboxEvent) error
+}
+
 // ProcessPendingEvents synchronously drains pending outbox events (useful for testing and deterministic batch runs).
 func (w *OutboxWorker) ProcessPendingEvents(ctx context.Context) {
 	events, err := w.repo.ClaimPendingA2AOutboxEvents(ctx, 50)
@@ -93,7 +97,9 @@ func (w *OutboxWorker) ProcessPendingEvents(ctx context.Context) {
 		if success {
 			_ = w.repo.UpdateA2AOutboxEventStatus(ctx, ev.ID, domain.OutboxStatusSent)
 		} else {
-			ev.AttemptCount++
+			if ev.AttemptCount == 0 {
+				ev.AttemptCount = 1
+			}
 			if ev.AttemptCount >= w.maxRetries {
 				logger.WarnContext(ctx, "outbox webhook dead-lettered after max retries",
 					slog.String("event_id", ev.ID),
@@ -101,12 +107,22 @@ func (w *OutboxWorker) ProcessPendingEvents(ctx context.Context) {
 					slog.String("target_url", ev.TargetURL),
 					slog.Int("attempts", ev.AttemptCount),
 				)
-				_ = w.repo.UpdateA2AOutboxEventStatus(ctx, ev.ID, domain.OutboxStatusDeadLetter)
+				ev.Status = domain.OutboxStatusDeadLetter
+				if updater, ok := w.repo.(a2aOutboxUpdater); ok {
+					_ = updater.UpdateA2AOutboxEvent(ctx, ev)
+				} else {
+					_ = w.repo.UpdateA2AOutboxEventStatus(ctx, ev.ID, domain.OutboxStatusDeadLetter)
+				}
 			} else {
 				// Exponential backoff: base 100ms * 2^attempt
 				backoff := time.Duration(math.Pow(2, float64(ev.AttemptCount))) * 100 * time.Millisecond
 				ev.NextAttemptAt = time.Now().UTC().Add(backoff)
-				_ = w.repo.UpdateA2AOutboxEventStatus(ctx, ev.ID, domain.OutboxStatusPending)
+				ev.Status = domain.OutboxStatusPending
+				if updater, ok := w.repo.(a2aOutboxUpdater); ok {
+					_ = updater.UpdateA2AOutboxEvent(ctx, ev)
+				} else {
+					_ = w.repo.UpdateA2AOutboxEventStatus(ctx, ev.ID, domain.OutboxStatusPending)
+				}
 			}
 		}
 	}

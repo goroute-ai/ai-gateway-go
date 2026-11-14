@@ -22,12 +22,14 @@ import (
 // HTTPSSEServer2024Transport adapts legacy MCP 2024 HTTP+SSE servers to the stateless gateway.
 type HTTPSSEServer2024Transport struct {
 	httpClient *http.Client
+	netPolicy  *network.Policy
 	mu         sync.RWMutex
-	sessions   map[string]*sseSession // serverID -> session
+	sessions   map[string]*sseSession // (serverID, principalDigest) -> session
 }
 
 type sseSession struct {
 	serverID      string
+	sessionKey    string
 	postEndpoint  string
 	responseChans map[any]chan *JSONRPCResponse
 	cancel        context.CancelFunc
@@ -40,8 +42,17 @@ func NewHTTPSSEServer2024Transport(netPolicy *network.Policy) *HTTPSSEServer2024
 	client.Timeout = 60 * time.Second
 	return &HTTPSSEServer2024Transport{
 		httpClient: client,
+		netPolicy:  netPolicy,
 		sessions:   make(map[string]*sseSession),
 	}
+}
+
+func sseSessionKey(serverID string, authCtx *upstream.UpstreamAuthContext) string {
+	principal := ""
+	if authCtx != nil {
+		principal = authCtx.PrincipalDigest()
+	}
+	return serverID + "|" + principal
 }
 
 // RoundTrip executes an MCP call against a legacy 2024 HTTP+SSE upstream server.
@@ -80,7 +91,9 @@ func (t *HTTPSSEServer2024Transport) RoundTrip(
 	}()
 
 	// POST the JSON-RPC request to the discovered SSE message endpoint
+	session.mu.Lock()
 	postURL := session.postEndpoint
+	session.mu.Unlock()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, bytes.NewReader(reqBytes))
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp 2024 sse: create post request: %w", err)
@@ -126,8 +139,10 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 	authStrategy upstream.Strategy,
 	authCtx *upstream.UpstreamAuthContext,
 ) (*sseSession, error) {
+	sessKey := sseSessionKey(server.ID, authCtx)
+
 	t.mu.RLock()
-	s, exists := t.sessions[server.ID]
+	s, exists := t.sessions[sessKey]
 	t.mu.RUnlock()
 
 	if exists {
@@ -138,7 +153,7 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 	defer t.mu.Unlock()
 
 	// Double-check under write lock
-	if s, exists := t.sessions[server.ID]; exists {
+	if s, exists := t.sessions[sessKey]; exists {
 		return s, nil
 	}
 
@@ -153,7 +168,10 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 	sseReq.Header.Set("Accept", "text/event-stream")
 
 	if authStrategy != nil {
-		_ = authStrategy.Apply(sessionCtx, sseReq, authCtx)
+		if err := authStrategy.Apply(sessionCtx, sseReq, authCtx); err != nil {
+			cancel()
+			return nil, fmt.Errorf("mcp 2024 sse: apply auth: %w", err)
+		}
 	}
 
 	sseResp, err := t.httpClient.Do(sseReq)
@@ -171,16 +189,25 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 
 	sess := &sseSession{
 		serverID:      server.ID,
+		sessionKey:    sessKey,
 		responseChans: make(map[any]chan *JSONRPCResponse),
 		cancel:        cancel,
 	}
 
 	endpointDiscovered := make(chan string, 1)
+	endpointErrCh := make(chan error, 1)
 
 	// Launch background SSE stream reader
 	go func() {
 		defer sseResp.Body.Close()
 		defer cancel()
+		defer func() {
+			t.mu.Lock()
+			if t.sessions[sessKey] == sess {
+				delete(t.sessions, sessKey)
+			}
+			t.mu.Unlock()
+		}()
 
 		scanner := bufio.NewScanner(sseResp.Body)
 		buf := make([]byte, 64*1024)
@@ -210,11 +237,41 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 					endpointURL := payload
 					// If relative URL, resolve against sseURL
 					if !strings.HasPrefix(endpointURL, "http://") && !strings.HasPrefix(endpointURL, "https://") {
-						base, _ := url.Parse(sseURL)
-						rel, _ := url.Parse(endpointURL)
+						base, baseErr := url.Parse(sseURL)
+						rel, relErr := url.Parse(endpointURL)
+						if baseErr != nil || relErr != nil {
+							select {
+							case endpointErrCh <- errors.New("mcp 2024 sse: invalid endpoint url"):
+							default:
+							}
+							currentEvent = ""
+							continue
+						}
 						endpointURL = base.ResolveReference(rel).String()
 					}
+					parsedEP, parseErr := url.Parse(endpointURL)
+					if parseErr != nil {
+						select {
+						case endpointErrCh <- fmt.Errorf("mcp 2024 sse: invalid endpoint url: %w", parseErr):
+						default:
+						}
+						currentEvent = ""
+						continue
+					}
+					if t.netPolicy != nil {
+						if valErr := t.netPolicy.ValidateURL(parsedEP); valErr != nil {
+							select {
+							case endpointErrCh <- fmt.Errorf("mcp 2024 sse: endpoint url blocked by network policy: %w", valErr):
+							default:
+							}
+							currentEvent = ""
+							continue
+						}
+					}
+
+					sess.mu.Lock()
 					sess.postEndpoint = endpointURL
+					sess.mu.Unlock()
 					select {
 					case endpointDiscovered <- endpointURL:
 					default:
@@ -243,11 +300,16 @@ func (t *HTTPSSEServer2024Transport) getOrCreateSession(
 	case <-time.After(10 * time.Second):
 		cancel()
 		return nil, errors.New("timeout waiting for initial 'endpoint' event from sse stream")
+	case err := <-endpointErrCh:
+		cancel()
+		return nil, err
 	case ep := <-endpointDiscovered:
+		sess.mu.Lock()
 		sess.postEndpoint = ep
+		sess.mu.Unlock()
 	}
 
-	t.sessions[server.ID] = sess
+	t.sessions[sessKey] = sess
 	return sess, nil
 }
 

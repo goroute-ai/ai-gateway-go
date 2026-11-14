@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
@@ -23,9 +24,10 @@ var (
 )
 
 const (
-	HandlePrefix   = "tool_hdl_"
-	HandleTTL      = 1 * time.Hour
-	RedisHdlPrefix = "gw:mcp:hdl:"
+	HandlePrefix     = "tool_hdl_"
+	HandleTTL        = 1 * time.Hour
+	RedisHdlPrefix   = "gw:mcp:hdl:"
+	maxMemHandleSize = 10000
 )
 
 // ToolHandleRecord stores the binding between a 256-bit opaque handle and a verified tool.
@@ -46,10 +48,16 @@ type ToolHandleRecord struct {
 type ProgressiveDiscoveryManager struct {
 	repo        storage.Repository
 	redisFabric *storage.RedisFabric
+	rbac        *auth.RBACEngine
 	ttl         time.Duration
 
 	mu       sync.RWMutex
 	memStore map[string]*ToolHandleRecord
+}
+
+// SetRBAC configures the RBAC engine for server-level authorization checks.
+func (m *ProgressiveDiscoveryManager) SetRBAC(rbac *auth.RBACEngine) {
+	m.rbac = rbac
 }
 
 // NewProgressiveDiscoveryManager creates a new ProgressiveDiscoveryManager.
@@ -102,8 +110,24 @@ func (m *ProgressiveDiscoveryManager) GenerateHandle(ctx context.Context, tool *
 		}
 	}
 
-	// In-memory fallback
+	// In-memory fallback with expired-entry cleanup and bounded capacity
 	m.mu.Lock()
+	nowUTC := time.Now().UTC()
+	if len(m.memStore) >= maxMemHandleSize {
+		for k, v := range m.memStore {
+			if nowUTC.After(v.ExpiresAt) {
+				delete(m.memStore, k)
+			}
+		}
+		if len(m.memStore) >= maxMemHandleSize {
+			for k := range m.memStore {
+				delete(m.memStore, k)
+				if len(m.memStore) < maxMemHandleSize {
+					break
+				}
+			}
+		}
+	}
 	m.memStore[hdl] = record
 	m.mu.Unlock()
 
@@ -161,6 +185,27 @@ func (m *ProgressiveDiscoveryManager) ResolveHandle(ctx context.Context, handle 
 	return record, tool, nil
 }
 
+// ResolveHandleForIdentity resolves an opaque handle, enforcing tenant org isolation and MCP server RBAC.
+func (m *ProgressiveDiscoveryManager) ResolveHandleForIdentity(ctx context.Context, idCtx *domain.IdentityContext, handle string) (*ToolHandleRecord, *domain.MCPTool, error) {
+	rec, tool, err := m.ResolveHandle(ctx, handle)
+	if err != nil {
+		return nil, nil, err
+	}
+	orgID := ""
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+	if rec.OrgID != orgID {
+		return nil, nil, ErrHandleNotFound
+	}
+	if m.rbac != nil {
+		if err := m.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); err != nil {
+			return nil, nil, err
+		}
+	}
+	return rec, tool, nil
+}
+
 // ToolSummary is the lightweight metadata returned by progressive search_tools.
 type ToolSummary struct {
 	Name        string `json:"name"`
@@ -190,6 +235,9 @@ func (m *ProgressiveDiscoveryManager) SearchTools(ctx context.Context, idCtx *do
 
 	for _, srv := range servers {
 		if !srv.IsActive {
+			continue
+		}
+		if m.rbac != nil && m.rbac.AuthorizeMCPServer(idCtx, srv.Slug) != nil {
 			continue
 		}
 
@@ -261,6 +309,9 @@ func (m *ProgressiveDiscoveryManager) BuildRegistryFeed(ctx context.Context, idC
 	var feed []RegistryFeedEntry
 	for _, srv := range servers {
 		if !srv.IsActive {
+			continue
+		}
+		if m.rbac != nil && m.rbac.AuthorizeMCPServer(idCtx, srv.Slug) != nil {
 			continue
 		}
 		tools, _ := m.repo.ListMCPTools(ctx, srv.ID)

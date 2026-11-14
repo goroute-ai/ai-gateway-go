@@ -411,11 +411,37 @@ func (s *GRPCServer) GetTaskPushNotificationConfig(ctx context.Context, req *pb.
 	}, nil
 }
 
+type a2aPushConfigDeleter interface {
+	DeleteA2APushNotificationConfig(ctx context.Context, taskID string) error
+}
+
 // DeleteTaskPushNotificationConfig implements lf.a2a.v1.A2AService.DeleteTaskPushNotificationConfig.
 func (s *GRPCServer) DeleteTaskPushNotificationConfig(ctx context.Context, req *pb.DeleteTaskPushNotificationConfigRequest) (*emptypb.Empty, error) {
-	_, _, err := s.authenticate(ctx)
+	idCtx, _, err := s.authenticate(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if req.TaskId == "" {
+		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+
+	agentSlug, err := s.resolveAgentSlug(ctx, idCtx, "", req.TaskId)
+	if err != nil {
+		return nil, err
+	}
+
+	// Enforce task visibility and authorization via GetTask
+	if _, err := s.router.GetTask(ctx, idCtx, agentSlug, req.TaskId); err != nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+
+	deleter, ok := s.router.repo.(a2aPushConfigDeleter)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "push notification config deletion not supported by repository")
+	}
+	if err := deleter.DeleteA2APushNotificationConfig(ctx, req.TaskId); err != nil {
+		return nil, status.Error(codes.NotFound, "push config not found")
 	}
 
 	return &emptypb.Empty{}, nil

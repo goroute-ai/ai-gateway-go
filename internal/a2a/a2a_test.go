@@ -203,8 +203,18 @@ func TestTaskVisibilityIsolationModes(t *testing.T) {
 	assert.True(t, CheckTaskVisibility(task, callerOwner, domain.TaskVisibilityTeam))
 	assert.True(t, CheckTaskVisibility(task, callerSameTeamDifferentUser, domain.TaskVisibilityTeam))
 
-	// 5. Mode: org_admin
-	assert.True(t, CheckTaskVisibility(task, callerSameTeamDifferentUser, domain.TaskVisibilityOrgAdmin))
+	// 5. Mode: org_admin (restricted to admin roles)
+	assert.False(t, CheckTaskVisibility(task, callerSameTeamDifferentUser, domain.TaskVisibilityOrgAdmin))
+	callerOrgAdmin := &domain.IdentityContext{
+		OrgID:        "org_finance",
+		VirtualKeyID: "vk_admin",
+		Role:         domain.RoleOrgAdmin,
+	}
+	assert.True(t, CheckTaskVisibility(task, callerOrgAdmin, domain.TaskVisibilityOrgAdmin))
+
+	// 6. Fail closed on empty OrgID or VirtualKeyID
+	assert.False(t, CheckTaskVisibility(task, &domain.IdentityContext{OrgID: "", VirtualKeyID: "vk_key_1"}, domain.TaskVisibilityKeyStrict))
+	assert.False(t, CheckTaskVisibility(&domain.A2ATask{ID: "t_empty"}, &domain.IdentityContext{}, domain.TaskVisibilityKeyStrict))
 }
 
 // 5. End-to-End RouterService Operations: Monotonic Event Sequencing, Kill-Switch, Cancel

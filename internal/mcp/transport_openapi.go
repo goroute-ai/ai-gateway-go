@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,11 +11,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
+)
+
+const (
+	maxOpenAPISpecCache = 512
+	openAPISpecTTL      = 5 * time.Minute
 )
 
 // OpenAPIOperation maps an OpenAPI endpoint operation to an executable MCP tool.
@@ -29,9 +36,25 @@ type OpenAPIOperation struct {
 	QueryParams []string       `json:"query_params"`
 }
 
+type openAPISpecKey struct {
+	serverID      string
+	configVersion int64
+}
+
+type openAPISpecEntry struct {
+	key       openAPISpecKey
+	ops       []OpenAPIOperation
+	expiresAt time.Time
+}
+
 // OpenAPITransport implements governed OpenAPI-to-MCP translation.
 type OpenAPITransport struct {
 	httpClient *http.Client
+	specMu     sync.Mutex
+	specCache  map[openAPISpecKey]*list.Element
+	specLRU    *list.List
+	maxSpecs   int
+	specTTL    time.Duration
 }
 
 // NewOpenAPITransport creates a new OpenAPITransport.
@@ -40,6 +63,10 @@ func NewOpenAPITransport(netPolicy *network.Policy) *OpenAPITransport {
 	client.Timeout = 30 * time.Second
 	return &OpenAPITransport{
 		httpClient: client,
+		specCache:  make(map[openAPISpecKey]*list.Element),
+		specLRU:    list.New(),
+		maxSpecs:   maxOpenAPISpecCache,
+		specTTL:    openAPISpecTTL,
 	}
 }
 
@@ -160,6 +187,84 @@ func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
 	return operations, nil
 }
 
+func (t *OpenAPITransport) getOperations(
+	ctx context.Context,
+	server *domain.MCPServer,
+	authStrategy upstream.Strategy,
+	authCtx *upstream.UpstreamAuthContext,
+) ([]OpenAPIOperation, http.Header, error) {
+	key := openAPISpecKey{serverID: server.ID, configVersion: server.ConfigVersion}
+	now := time.Now()
+
+	t.specMu.Lock()
+	if elem, ok := t.specCache[key]; ok {
+		entry := elem.Value.(*openAPISpecEntry)
+		if now.Before(entry.expiresAt) {
+			t.specLRU.MoveToFront(elem)
+			ops := entry.ops
+			t.specMu.Unlock()
+			return ops, http.Header{}, nil
+		}
+		t.specLRU.Remove(elem)
+		delete(t.specCache, key)
+	}
+	t.specMu.Unlock()
+
+	specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.EndpointURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	specReq.Header.Set("Accept", "application/json")
+	if authStrategy != nil {
+		if err := authStrategy.Apply(ctx, specReq, authCtx); err != nil {
+			return nil, nil, fmt.Errorf("openapi: apply auth: %w", err)
+		}
+	}
+
+	resp, err := t.httpClient.Do(specReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("openapi: fetch spec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	specBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ops, err := ParseOpenAPISpec(specBody)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	t.specMu.Lock()
+	if elem, ok := t.specCache[key]; ok {
+		entry := elem.Value.(*openAPISpecEntry)
+		entry.ops = ops
+		entry.expiresAt = time.Now().Add(t.specTTL)
+		t.specLRU.MoveToFront(elem)
+	} else {
+		for t.specLRU.Len() >= t.maxSpecs {
+			tail := t.specLRU.Back()
+			if tail == nil {
+				break
+			}
+			tailEntry := tail.Value.(*openAPISpecEntry)
+			t.specLRU.Remove(tail)
+			delete(t.specCache, tailEntry.key)
+		}
+		elem := t.specLRU.PushFront(&openAPISpecEntry{
+			key:       key,
+			ops:       ops,
+			expiresAt: time.Now().Add(t.specTTL),
+		})
+		t.specCache[key] = elem
+	}
+	t.specMu.Unlock()
+
+	return ops, resp.Header, nil
+}
+
 func (t *OpenAPITransport) RoundTrip(
 	ctx context.Context,
 	server *domain.MCPServer,
@@ -179,28 +284,7 @@ func (t *OpenAPITransport) RoundTrip(
 
 	switch jsonRPCReq.Method {
 	case "tools/list":
-		// Fetch OpenAPI spec from server endpoint
-		specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.EndpointURL, nil)
-		if err != nil {
-			return nil, nil, err
-		}
-		specReq.Header.Set("Accept", "application/json")
-		if authStrategy != nil {
-			_ = authStrategy.Apply(ctx, specReq, authCtx)
-		}
-
-		resp, err := t.httpClient.Do(specReq)
-		if err != nil {
-			return nil, nil, fmt.Errorf("openapi: fetch spec: %w", err)
-		}
-		defer resp.Body.Close()
-
-		specBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-		if err != nil {
-			return nil, nil, err
-		}
-
-		ops, err := ParseOpenAPISpec(specBody)
+		ops, respHeaders, err := t.getOperations(ctx, server, authStrategy, authCtx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -220,7 +304,7 @@ func (t *OpenAPITransport) RoundTrip(
 			Result: map[string]any{
 				"tools": tools,
 			},
-		}, resp.Header, nil
+		}, respHeaders, nil
 
 	case "tools/call":
 		var params map[string]any
@@ -232,24 +316,7 @@ func (t *OpenAPITransport) RoundTrip(
 			args = make(map[string]any)
 		}
 
-		// First, discover operations to locate target endpoint
-		specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.EndpointURL, nil)
-		if err != nil {
-			return nil, nil, err
-		}
-		specReq.Header.Set("Accept", "application/json")
-		if authStrategy != nil {
-			_ = authStrategy.Apply(ctx, specReq, authCtx)
-		}
-
-		specResp, err := t.httpClient.Do(specReq)
-		if err != nil {
-			return nil, nil, fmt.Errorf("openapi: fetch spec: %w", err)
-		}
-		defer specResp.Body.Close()
-
-		specBody, _ := io.ReadAll(io.LimitReader(specResp.Body, 5*1024*1024))
-		ops, err := ParseOpenAPISpec(specBody)
+		ops, _, err := t.getOperations(ctx, server, authStrategy, authCtx)
 		if err != nil {
 			return nil, nil, err
 		}

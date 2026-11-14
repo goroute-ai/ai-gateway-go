@@ -33,19 +33,24 @@ type Hub struct {
 	progressive   *ProgressiveDiscoveryManager
 }
 
-func (h *Hub) SetCache(c *MCPCache)                                   { h.cache = c }
-func (h *Hub) SetMRTR(m *MRTRManager)                                 { h.mrtr = m }
-func (h *Hub) SetSubscriptions(s *SubscriptionManager)                { h.subs = s }
-func (h *Hub) SetGuardrails(g *guardrails.Engine)                     { h.guardrails = g }
-func (h *Hub) SetSpendRecorder(sr SpendRecorder)                      { h.spendRecorder = sr }
-func (h *Hub) SetProgressiveDiscovery(p *ProgressiveDiscoveryManager) { h.progressive = p }
-func (h *Hub) Cache() *MCPCache                                       { return h.cache }
-func (h *Hub) MRTR() *MRTRManager                                     { return h.mrtr }
-func (h *Hub) Subscriptions() *SubscriptionManager                    { return h.subs }
-func (h *Hub) Guardrails() *guardrails.Engine                         { return h.guardrails }
-func (h *Hub) SpendRecorder() SpendRecorder                           { return h.spendRecorder }
-func (h *Hub) ProgressiveDiscovery() *ProgressiveDiscoveryManager     { return h.progressive }
-func (h *Hub) Dispatcher() *TransportDispatcher                       { return h.dispatcher }
+func (h *Hub) SetCache(c *MCPCache)                    { h.cache = c }
+func (h *Hub) SetMRTR(m *MRTRManager)                  { h.mrtr = m }
+func (h *Hub) SetSubscriptions(s *SubscriptionManager) { h.subs = s }
+func (h *Hub) SetGuardrails(g *guardrails.Engine)      { h.guardrails = g }
+func (h *Hub) SetSpendRecorder(sr SpendRecorder)       { h.spendRecorder = sr }
+func (h *Hub) SetProgressiveDiscovery(p *ProgressiveDiscoveryManager) {
+	if p != nil && p.rbac == nil {
+		p.SetRBAC(h.rbac)
+	}
+	h.progressive = p
+}
+func (h *Hub) Cache() *MCPCache                                   { return h.cache }
+func (h *Hub) MRTR() *MRTRManager                                 { return h.mrtr }
+func (h *Hub) Subscriptions() *SubscriptionManager                { return h.subs }
+func (h *Hub) Guardrails() *guardrails.Engine                     { return h.guardrails }
+func (h *Hub) SpendRecorder() SpendRecorder                       { return h.spendRecorder }
+func (h *Hub) ProgressiveDiscovery() *ProgressiveDiscoveryManager { return h.progressive }
+func (h *Hub) Dispatcher() *TransportDispatcher                   { return h.dispatcher }
 
 // NewHub constructs a new MCP Hub instance.
 func NewHub(
@@ -55,13 +60,15 @@ func NewHub(
 	dispatcher *TransportDispatcher,
 	authResolver *AuthResolver,
 ) *Hub {
+	pdm := NewProgressiveDiscoveryManager(repo, nil, HandleTTL)
+	pdm.SetRBAC(rbac)
 	return &Hub{
 		repo:         repo,
 		vault:        vault,
 		rbac:         rbac,
 		dispatcher:   dispatcher,
 		authResolver: authResolver,
-		progressive:  NewProgressiveDiscoveryManager(repo, nil, HandleTTL),
+		progressive:  pdm,
 	}
 }
 
@@ -152,7 +159,12 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 	if input.ToolName == "get_tool_schema" && h.progressive != nil {
 		hdl, _ := input.Arguments["tool_handle"].(string)
-		rec, tool, err := h.progressive.ResolveHandle(ctx, hdl)
+		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, hdl)
+		if err == nil && h.rbac != nil {
+			if rbacErr := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); rbacErr != nil {
+				err = rbacErr
+			}
+		}
 		if err != nil {
 			return &CallToolResponse{
 				Content: []ToolContent{{Type: "text", Text: fmt.Sprintf(`{"error": %q}`, err.Error())}},
@@ -182,9 +194,17 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 
 	// 0b. Opaque Tool Handle Resolution (tool_hdl_...)
 	if strings.HasPrefix(input.ToolName, HandlePrefix) && h.progressive != nil {
-		rec, tool, err := h.progressive.ResolveHandle(ctx, input.ToolName)
+		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, input.ToolName)
 		if err != nil {
 			return nil, err
+		}
+		if rec.OrgID != orgID {
+			return nil, ErrHandleNotFound
+		}
+		if h.rbac != nil {
+			if err := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); err != nil {
+				return nil, err
+			}
 		}
 		input.ToolName = rec.ToolName
 		input.ServerSlug = rec.ServerSlug
@@ -262,8 +282,15 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 
 	// 1. Tool Pinning Check
-	if targetServer.PinnedToolHash != "" && h.guardrails != nil && targetTool != nil {
-		if err := h.guardrails.VerifyToolPinning(targetTool, targetServer.PinnedToolHash); err != nil {
+	if targetServer.PinnedToolHash != "" && h.guardrails != nil {
+		if targetTool == nil {
+			return nil, fmt.Errorf("tool pinning violation: tool %q not found in catalog", input.ToolName)
+		}
+		pinnedHash := targetTool.ToolDefHash
+		if pinnedHash == "" {
+			pinnedHash = targetServer.PinnedToolHash
+		}
+		if err := h.guardrails.VerifyToolPinning(targetTool, pinnedHash); err != nil {
 			return nil, fmt.Errorf("tool pinning violation: %w", err)
 		}
 	}
@@ -597,10 +624,38 @@ func (h *Hub) DispatchScopedServer(
 		}
 	}
 
+	// Guardrail input scan for resources/read and prompts/get
+	isGuardedMethod := jsonReq.Method == "resources/read" || jsonReq.Method == "prompts/get"
+	if isGuardedMethod && h.guardrails != nil {
+		var paramsMap map[string]any
+		if len(jsonReq.Params) > 0 {
+			_ = json.Unmarshal(jsonReq.Params, &paramsMap)
+		}
+		if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, jsonReq.Method, paramsMap); err != nil {
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      jsonReq.ID,
+				Error: &JSONRPCError{
+					Code:    CodeInvalidRequest,
+					Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err),
+				},
+			}, nil, nil
+		}
+	}
+
 	// Resolve BYOK user credential if available
 	var userCred *domain.MCPUserCredential
 	if idCtx != nil && idCtx.UserID != "" {
 		userCred, _ = h.repo.GetMCPUserCredential(ctx, server.ID, idCtx.UserID)
+	}
+
+	teamID := ""
+	userID := ""
+	vkID := ""
+	if idCtx != nil {
+		teamID = idCtx.TeamID
+		userID = idCtx.UserID
+		vkID = idCtx.VirtualKeyID
 	}
 
 	authCtx := &upstream.UpstreamAuthContext{
@@ -608,9 +663,9 @@ func (h *Hub) DispatchScopedServer(
 		ServerSlug:        server.Slug,
 		TargetURL:         server.EndpointURL,
 		CallingOrgID:      orgID,
-		CallingTeamID:     idCtx.TeamID,
-		CallingUserID:     idCtx.UserID,
-		CallingVirtualKey: idCtx.VirtualKeyID,
+		CallingTeamID:     teamID,
+		CallingUserID:     userID,
+		CallingVirtualKey: vkID,
 	}
 
 	strat, extraHeaders := h.authResolver.ResolveStrategy(ctx, server, userCred, reqHeaders)
@@ -619,6 +674,22 @@ func (h *Hub) DispatchScopedServer(
 	resp, respHeaders, err := h.dispatcher.Dispatch(ctx, server, strat, authCtx, reqBody, reqHeaders)
 	if err != nil || resp == nil {
 		return resp, respHeaders, err
+	}
+
+	// Guardrail output inspection/redaction for resources/read and prompts/get
+	if isGuardedMethod && h.guardrails != nil && resp.Result != nil {
+		_, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
+		if err != nil {
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      jsonReq.ID,
+				Error: &JSONRPCError{
+					Code:    CodeInvalidRequest,
+					Message: fmt.Sprintf("guardrail result inspection failed: %v", err),
+				},
+			}, respHeaders, nil
+		}
+		resp.Result = redactedResult
 	}
 
 	// Cache storage if response is valid and cacheable

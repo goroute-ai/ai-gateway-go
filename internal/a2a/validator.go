@@ -97,8 +97,8 @@ func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mo
 		return false
 	}
 
-	// Cross-tenant protection: caller and task must belong to the exact same organization
-	if task.OrgID != "" && idCtx.OrgID != "" && task.OrgID != idCtx.OrgID {
+	// Cross-tenant protection: caller and task must belong to the exact same non-empty organization
+	if task.OrgID == "" || idCtx.OrgID == "" || task.OrgID != idCtx.OrgID {
 		return false
 	}
 
@@ -106,10 +106,12 @@ func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mo
 		mode = domain.TaskVisibilityKeyStrict
 	}
 
+	keyMatch := task.VirtualKeyID != "" && idCtx.VirtualKeyID != "" && task.VirtualKeyID == idCtx.VirtualKeyID
+
 	switch mode {
 	case domain.TaskVisibilityKeyStrict:
 		// Only the exact same Virtual Key that created the task can access it
-		return task.VirtualKeyID != "" && idCtx.VirtualKeyID != "" && task.VirtualKeyID == idCtx.VirtualKeyID
+		return keyMatch
 
 	case domain.TaskVisibilityUserStrict:
 		// Any Virtual Key belonging to the same user can access it
@@ -117,7 +119,7 @@ func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mo
 			return true
 		}
 		// Fallback to key match if user ID is not set
-		return task.VirtualKeyID == idCtx.VirtualKeyID
+		return keyMatch
 
 	case domain.TaskVisibilityTeam:
 		// Any Virtual Key belonging to the same team can access it
@@ -125,15 +127,15 @@ func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mo
 			return true
 		}
 		// Fallback to user or key match
-		return (task.UserID != "" && task.UserID == idCtx.UserID) || task.VirtualKeyID == idCtx.VirtualKeyID
+		return (task.UserID != "" && idCtx.UserID != "" && task.UserID == idCtx.UserID) || keyMatch
 
 	case domain.TaskVisibilityOrgAdmin:
-		// Any authenticated caller within the organization can view/access
-		return true
+		// Only organization/platform administrators within the organization can view/access
+		return idCtx.Role == domain.RolePlatformAdmin || idCtx.Role == domain.RoleOrgAdmin
 
 	default:
 		// Unknown mode fails closed to key_strict
-		return task.VirtualKeyID == idCtx.VirtualKeyID
+		return keyMatch
 	}
 }
 

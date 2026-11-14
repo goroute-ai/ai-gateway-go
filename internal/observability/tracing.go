@@ -32,18 +32,37 @@ func Logger() *slog.Logger {
 	return slog.Default()
 }
 
+// isValidTraceID validates that s is a 32-character hex string that is not all zeros.
+func isValidTraceID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	allZero := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+		if c != '0' {
+			allZero = false
+		}
+	}
+	return !allZero
+}
+
 // ParseOrGenerateTrace extracts a W3C `traceparent` or `X-Trace-Id` from the request, or generates a fresh 128-bit TraceID + 64-bit SpanID.
 func ParseOrGenerateTrace(r *http.Request) TraceContext {
 	var traceID string
 	if tp := strings.TrimSpace(r.Header.Get("traceparent")); tp != "" {
 		parts := strings.Split(tp, "-")
-		if len(parts) == 4 && len(parts[1]) == 32 {
-			traceID = parts[1]
+		if len(parts) == 4 && isValidTraceID(parts[1]) {
+			traceID = strings.ToLower(parts[1])
 		}
 	}
 	if traceID == "" {
-		if xtid := strings.TrimSpace(r.Header.Get("X-Trace-Id")); len(xtid) == 32 {
-			traceID = xtid
+		if xtid := strings.TrimSpace(r.Header.Get("X-Trace-Id")); isValidTraceID(xtid) {
+			traceID = strings.ToLower(xtid)
 		}
 	}
 	if traceID == "" {

@@ -16,7 +16,7 @@ import (
 // SubscriptionManager coordinates real-time MCP SSE notifications and Redis Pub/Sub multiplexing.
 type SubscriptionManager struct {
 	redis   *storage.RedisFabric
-	clients map[string]chan []byte
+	clients map[string]map[string]chan []byte // orgID -> clientID -> channel
 	mu      sync.RWMutex
 }
 
@@ -24,47 +24,67 @@ type SubscriptionManager struct {
 func NewSubscriptionManager(redisFabric *storage.RedisFabric) *SubscriptionManager {
 	return &SubscriptionManager{
 		redis:   redisFabric,
-		clients: make(map[string]chan []byte),
+		clients: make(map[string]map[string]chan []byte),
 	}
 }
 
-// Subscribe registers a new SSE client channel.
-func (sm *SubscriptionManager) Subscribe() (string, chan []byte) {
+// Subscribe registers a new SSE client channel scoped to orgID.
+func (sm *SubscriptionManager) Subscribe(orgID string) (string, chan []byte) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	id := uuid.NewString()
 	ch := make(chan []byte, 32)
-	sm.clients[id] = ch
+	if sm.clients[orgID] == nil {
+		sm.clients[orgID] = make(map[string]chan []byte)
+	}
+	sm.clients[orgID][id] = ch
 	return id, ch
 }
 
-// Unsubscribe removes a disconnected SSE client channel.
-func (sm *SubscriptionManager) Unsubscribe(id string) {
+// Unsubscribe removes a disconnected SSE client channel scoped to orgID.
+func (sm *SubscriptionManager) Unsubscribe(orgID, id string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if ch, ok := sm.clients[id]; ok {
-		delete(sm.clients, id)
+	orgClients, ok := sm.clients[orgID]
+	if !ok {
+		return
+	}
+	if ch, exists := orgClients[id]; exists {
+		delete(orgClients, id)
 		close(ch)
+	}
+	if len(orgClients) == 0 {
+		delete(sm.clients, orgID)
 	}
 }
 
-// PublishNotification broadcasts a notification to local SSE subscribers and Redis Pub/Sub.
+// PublishNotification broadcasts a notification to local SSE subscribers in orgID and Redis Pub/Sub.
 func (sm *SubscriptionManager) PublishNotification(ctx context.Context, orgID string, payload []byte) error {
-	if sm.redis != nil {
-		_, _ = sm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Publish(ctx, "gw:mcp:notif:"+orgID, payload).Result()
-		})
+	if orgID == "" {
+		return fmt.Errorf("mcp subscriptions: orgID is required")
 	}
 
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	for _, ch := range sm.clients {
-		select {
-		case ch <- payload:
-		default:
-			// Non-blocking drop if channel full
+	publishedToRedis := false
+	if sm.redis != nil {
+		_, err := sm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Publish(ctx, "gw:mcp:notif:"+orgID, payload).Result()
+		})
+		if err == nil {
+			publishedToRedis = true
+		}
+	}
+
+	if !publishedToRedis {
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		for _, ch := range sm.clients[orgID] {
+			select {
+			case ch <- payload:
+			default:
+				// Non-blocking drop if channel full
+			}
 		}
 	}
 	return nil
@@ -72,6 +92,12 @@ func (sm *SubscriptionManager) PublishNotification(ctx context.Context, orgID st
 
 // ServeSSEStream serves a long-lived SSE connection for MCP notifications (`GET /mcp/subscriptions/listen`).
 func (sm *SubscriptionManager) ServeSSEStream(w http.ResponseWriter, r *http.Request, idCtx *domain.IdentityContext) {
+	if idCtx == nil || idCtx.OrgID == "" {
+		http.Error(w, "Unauthorized: organization context required", http.StatusUnauthorized)
+		return
+	}
+	orgID := idCtx.OrgID
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -88,8 +114,33 @@ func (sm *SubscriptionManager) ServeSSEStream(w http.ResponseWriter, r *http.Req
 	_, _ = fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
-	clientID, msgCh := sm.Subscribe()
-	defer sm.Unsubscribe(clientID)
+	clientID, msgCh := sm.Subscribe(orgID)
+	defer sm.Unsubscribe(orgID, clientID)
+
+	var redisCh chan []byte
+	if sm.redis != nil {
+		var pubsub *redis.PubSub
+		_, err := sm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			pubsub = rdb.Subscribe(r.Context(), "gw:mcp:notif:"+orgID)
+			return nil, nil
+		})
+		if err == nil && pubsub != nil {
+			defer pubsub.Close()
+			redisCh = make(chan []byte, 32)
+			go func() {
+				defer close(redisCh)
+				ch := pubsub.Channel()
+				for msg := range ch {
+					select {
+					case redisCh <- []byte(msg.Payload):
+					case <-r.Context().Done():
+						return
+					default:
+					}
+				}
+			}()
+		}
+	}
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -101,6 +152,13 @@ func (sm *SubscriptionManager) ServeSSEStream(w http.ResponseWriter, r *http.Req
 		case msg, ok := <-msgCh:
 			if !ok {
 				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(msg))
+			flusher.Flush()
+		case msg, ok := <-redisCh:
+			if !ok {
+				redisCh = nil
+				continue
 			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(msg))
 			flusher.Flush()
