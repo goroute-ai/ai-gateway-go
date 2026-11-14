@@ -288,3 +288,29 @@ func TestStreamRedactorBlockedKeywordsAcrossLargeStreamBoundary(t *testing.T) {
 		t.Fatalf("expected audit violation for blocked_keyword:forbidden-phrase, got %+v", outcome)
 	}
 }
+
+type stubStreamScanner struct {
+	block bool
+}
+
+func (s stubStreamScanner) Scan(_ context.Context, req ScanRequest) (ScanResult, error) {
+	if s.block && req.Direction == ScanOutput && strings.Contains(req.Content, "scanner-trigger") {
+		return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"ext_blocked"}}, nil
+	}
+	return ScanResult{Decision: ScannerDecisionAllow}, nil
+}
+
+func TestEngineNewStreamRedactorInheritsConfiguredScanners(t *testing.T) {
+	eng := NewEngine(nil)
+	eng.ConfigureScanners(500*time.Millisecond, true, stubStreamScanner{block: true})
+
+	redactor := eng.NewStreamRedactor(nil)
+	if redactor == nil {
+		t.Fatal("expected non-nil StreamRedactor when external scanners are configured")
+	}
+	_ = redactor.Process("hello scanner-trigger")
+	_ = redactor.Flush()
+	if !redactor.Blocked() {
+		t.Fatalf("expected StreamRedactor from Engine.NewStreamRedactor to block on scanner violation")
+	}
+}

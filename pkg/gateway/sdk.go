@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
+	"gopkg.in/yaml.v3"
 )
 
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
@@ -66,6 +68,8 @@ type Client struct {
 	httpClient  *http.Client
 	embeddedGW  *server.GatewayServer
 	embeddedTS  *httptest.Server
+	repo        storage.Repository
+	redisFabric *storage.RedisFabric
 	mockServers []*httptest.Server
 	closeFns    []func()
 }
@@ -285,6 +289,50 @@ func New(opts ...Option) (*Client, error) {
 		}
 	}
 
+	var rawCfgFile struct {
+		Storage struct {
+			Mode        string   `yaml:"mode"`
+			PostgresDSN string   `yaml:"postgres_dsn"`
+			RedisAddr   string   `yaml:"redis_addr"`
+			RedisAddrs  []string `yaml:"redis_addrs"`
+		} `yaml:"storage"`
+		Database struct {
+			URL string `yaml:"url"`
+			DSN string `yaml:"dsn"`
+		} `yaml:"database"`
+		Redis struct {
+			URL   string   `yaml:"url"`
+			Addr  string   `yaml:"addr"`
+			Addrs []string `yaml:"addrs"`
+		} `yaml:"redis"`
+	}
+	if cc.configPath != "" {
+		if rawBytes, readErr := os.ReadFile(cc.configPath); readErr == nil {
+			_ = yaml.Unmarshal(rawBytes, &rawCfgFile)
+		}
+		if rawCfgFile.Database.URL != "" {
+			cfg.Storage.PostgresDSN = config.ResolveEnvValue(rawCfgFile.Database.URL)
+			if rawCfgFile.Storage.Mode == "" {
+				cfg.Storage.Mode = "postgres"
+			}
+		} else if rawCfgFile.Database.DSN != "" {
+			cfg.Storage.PostgresDSN = config.ResolveEnvValue(rawCfgFile.Database.DSN)
+			if rawCfgFile.Storage.Mode == "" {
+				cfg.Storage.Mode = "postgres"
+			}
+		} else if rawCfgFile.Storage.PostgresDSN != "" && rawCfgFile.Storage.Mode == "" {
+			cfg.Storage.Mode = "postgres"
+		}
+		if rawCfgFile.Redis.URL != "" {
+			cfg.Storage.RedisAddr = config.ResolveEnvValue(rawCfgFile.Redis.URL)
+		} else if rawCfgFile.Redis.Addr != "" {
+			cfg.Storage.RedisAddr = config.ResolveEnvValue(rawCfgFile.Redis.Addr)
+		}
+		if len(rawCfgFile.Redis.Addrs) > 0 && len(cfg.Storage.RedisAddrs) == 0 {
+			cfg.Storage.RedisAddrs = rawCfgFile.Redis.Addrs
+		}
+	}
+
 	if cc.configPath != "" && cfg.Storage.Mode == "postgres" && strings.TrimSpace(cfg.Storage.PostgresDSN) != "" {
 		pool, poolErr := storage.NewPostgresPool(context.Background(), cfg.Storage.PostgresDSN)
 		if poolErr != nil {
@@ -305,17 +353,35 @@ func New(opts ...Option) (*Client, error) {
 		repo = storage.NewMemoryRepository()
 	}
 
-	if cc.configPath != "" && (len(cfg.Storage.RedisAddrs) > 0 || (strings.TrimSpace(cfg.Storage.RedisAddr) != "" && (cfg.Storage.Mode == "postgres" || cfg.Storage.RedisAddr != "localhost:6379"))) {
-		addrs := cfg.Storage.RedisAddrs
-		if len(addrs) == 0 {
-			addrs = []string{cfg.Storage.RedisAddr}
+	explicitRedisConfigured := rawCfgFile.Storage.RedisAddr != "" || len(rawCfgFile.Storage.RedisAddrs) > 0 || rawCfgFile.Redis.URL != "" || rawCfgFile.Redis.Addr != "" || len(rawCfgFile.Redis.Addrs) > 0
+	if cc.configPath != "" && (explicitRedisConfigured || len(cfg.Storage.RedisAddrs) > 0 || (strings.TrimSpace(cfg.Storage.RedisAddr) != "" && (cfg.Storage.Mode == "postgres" || cfg.Storage.RedisAddr != "localhost:6379"))) {
+		rawAddr := strings.TrimSpace(cfg.Storage.RedisAddr)
+		if len(cfg.Storage.RedisAddrs) == 0 && (strings.HasPrefix(rawAddr, "redis://") || strings.HasPrefix(rawAddr, "rediss://")) {
+			opt, parseErr := redis.ParseURL(rawAddr)
+			if parseErr != nil {
+				cleanupOnErr()
+				return nil, fmt.Errorf("parse redis url: %w", parseErr)
+			}
+			redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+				Addrs:      []string{opt.Addr},
+				Username:   opt.Username,
+				Password:   opt.Password,
+				DB:         opt.DB,
+				TLSConfig:  opt.TLSConfig,
+				MasterName: cfg.Storage.RedisMasterName,
+			})
+		} else {
+			addrs := cfg.Storage.RedisAddrs
+			if len(addrs) == 0 {
+				addrs = []string{rawAddr}
+			}
+			redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+				Addrs:      addrs,
+				MasterName: cfg.Storage.RedisMasterName,
+				Password:   cfg.Storage.RedisPass,
+				DB:         cfg.Storage.RedisDB,
+			})
 		}
-		redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
-			Addrs:      addrs,
-			MasterName: cfg.Storage.RedisMasterName,
-			Password:   cfg.Storage.RedisPass,
-			DB:         cfg.Storage.RedisDB,
-		})
 		if redisFabric != nil && redisFabric.Client() != nil {
 			rdb := redisFabric.Client()
 			closeFns = append(closeFns, func() { _ = rdb.Close() })
@@ -342,6 +408,8 @@ func New(opts ...Option) (*Client, error) {
 		httpClient:  cc.httpClient,
 		embeddedGW:  gw,
 		embeddedTS:  ts,
+		repo:        repo,
+		redisFabric: redisFabric,
 		mockServers: mockServers,
 		closeFns:    closeFns,
 	}, nil
@@ -358,13 +426,20 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
-// WithKey returns a shallow copy of Client authenticated with the given Virtual API Key (`sk-gw-...`).
+// WithKey returns a shallow copy of Client authenticated with the given Virtual API Key (`sk-gw-...`),
+// preserving any embedded gateway server, repository, and Redis handles.
 func (c *Client) WithKey(virtualKey string) *Client {
 	return &Client{
-		baseURL:    c.baseURL,
-		apiKey:     strings.TrimSpace(virtualKey),
-		masterKey:  c.masterKey,
-		httpClient: c.httpClient,
+		baseURL:     c.baseURL,
+		apiKey:      strings.TrimSpace(virtualKey),
+		masterKey:   c.masterKey,
+		httpClient:  c.httpClient,
+		embeddedGW:  c.embeddedGW,
+		embeddedTS:  c.embeddedTS,
+		repo:        c.repo,
+		redisFabric: c.redisFabric,
+		mockServers: c.mockServers,
+		closeFns:    c.closeFns,
 	}
 }
 
@@ -1220,6 +1295,119 @@ func (c *Client) Completions(ctx context.Context, req domain.CanonicalCompletion
 	return doJSONPost[domain.CanonicalCompletionRequest, domain.CanonicalCompletionResponse](c, ctx, "/v1/completions", req)
 }
 
+// StreamCompletions executes a streaming legacy text completion via `POST /v1/completions` (`stream: true`),
+// invoking `onDelta` for each text token as it arrives and returning the aggregated `CanonicalCompletionResponse`.
+func (c *Client) StreamCompletions(ctx context.Context, req domain.CanonicalCompletionRequest, onDelta func(delta string) error) (*domain.CanonicalCompletionResponse, error) {
+	req.Stream = true
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal completions stream request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gateway stream error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var fullText strings.Builder
+	var lastID, lastModel, finishReason string
+	var usage domain.TokenUsage
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		var frame struct {
+			ID      string             `json:"id"`
+			Model   string             `json:"model"`
+			Usage   *domain.TokenUsage `json:"usage"`
+			Choices []struct {
+				Index int    `json:"index"`
+				Text  string `json:"text"`
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+			continue
+		}
+		if frame.Error != nil && frame.Error.Message != "" {
+			return nil, fmt.Errorf("gateway stream error (%s): %s", frame.Error.Code, frame.Error.Message)
+		}
+		if frame.ID != "" {
+			lastID = frame.ID
+		}
+		if frame.Model != "" {
+			lastModel = frame.Model
+		}
+		if frame.Usage != nil && (frame.Usage.TotalTokens > 0 || frame.Usage.PromptTokens > 0 || frame.Usage.CompletionTokens > 0) {
+			usage = *frame.Usage
+		}
+		for _, ch := range frame.Choices {
+			if ch.FinishReason != "" {
+				finishReason = ch.FinishReason
+			}
+			text := ch.Text
+			if text == "" {
+				text = ch.Delta.Content
+			}
+			if text != "" {
+				fullText.WriteString(text)
+				if onDelta != nil {
+					if err := onDelta(text); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if lastModel == "" {
+		lastModel = req.Model
+	}
+	return &domain.CanonicalCompletionResponse{
+		ID:    lastID,
+		Model: lastModel,
+		Choices: []domain.CanonicalCompletionChoice{
+			{
+				Index:        0,
+				Text:         fullText.String(),
+				FinishReason: finishReason,
+			},
+		},
+		Usage: usage,
+	}, nil
+}
+
 // Embeddings generates vector embeddings via `POST /v1/embeddings`.
 func (c *Client) Embeddings(ctx context.Context, req domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
 	return doJSONPost[domain.CanonicalEmbeddingRequest, domain.CanonicalEmbeddingResponse](c, ctx, "/v1/embeddings", req)
@@ -1241,6 +1429,100 @@ func (c *Client) Responses(ctx context.Context, req domain.CanonicalResponseRequ
 	return doJSONPost[domain.CanonicalResponseRequest, domain.CanonicalResponseOutput](c, ctx, "/v1/responses", req)
 }
 
+// StreamResponses executes a streaming OpenAI Responses API call via `POST /v1/responses` (`stream: true`),
+// invoking `onDelta` for each `response.output_text.delta` token and returning the final `CanonicalResponseOutput`.
+func (c *Client) StreamResponses(ctx context.Context, req domain.CanonicalResponseRequest, onDelta func(delta string) error) (*domain.CanonicalResponseOutput, error) {
+	req.Stream = true
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses stream request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/responses", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gateway stream error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var fullText strings.Builder
+	var finalResp *domain.CanonicalResponseOutput
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		var ev struct {
+			Type     string                          `json:"type"`
+			Delta    string                          `json:"delta"`
+			Response *domain.CanonicalResponseOutput `json:"response"`
+			Error    *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			continue
+		}
+		if ev.Error != nil && ev.Error.Message != "" {
+			return nil, fmt.Errorf("gateway stream error (%s): %s", ev.Error.Code, ev.Error.Message)
+		}
+		if ev.Delta != "" {
+			fullText.WriteString(ev.Delta)
+			if onDelta != nil {
+				if err := onDelta(ev.Delta); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if ev.Response != nil {
+			finalResp = ev.Response
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if finalResp == nil {
+		finalResp = &domain.CanonicalResponseOutput{
+			Object: "response",
+			Status: "completed",
+			Model:  req.Model,
+		}
+	}
+	if len(finalResp.Output) == 0 && fullText.Len() > 0 {
+		finalResp.Output = []domain.CanonicalResponseOutputItem{
+			{
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []domain.CanonicalResponseContentPart{
+					{Type: "output_text", Text: fullText.String()},
+				},
+			},
+		}
+	}
+	return finalResp, nil
+}
+
 // Messages executes a non-streaming Anthropic Messages API call via `POST /v1/messages`.
 func (c *Client) Messages(ctx context.Context, req map[string]any) (map[string]any, error) {
 	payload := make(map[string]any, len(req)+1)
@@ -1253,6 +1535,109 @@ func (c *Client) Messages(ctx context.Context, req map[string]any) (map[string]a
 		return nil, err
 	}
 	return *out, nil
+}
+
+// StreamMessages executes a streaming Anthropic Messages API call via `POST /v1/messages` (`stream: true`),
+// invoking `onDelta` for each text delta (`content_block_delta`) and returning the aggregated message object.
+func (c *Client) StreamMessages(ctx context.Context, req map[string]any, onDelta func(delta string) error) (map[string]any, error) {
+	payload := make(map[string]any, len(req)+1)
+	for k, v := range req {
+		payload[k] = v
+	}
+	payload["stream"] = true
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal messages stream request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gateway stream error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	result := map[string]any{
+		"type": "message",
+		"role": "assistant",
+	}
+	if m, ok := req["model"].(string); ok && m != "" {
+		result["model"] = m
+	}
+	var fullText strings.Builder
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		dataPayload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if dataPayload == "[DONE]" {
+			break
+		}
+		var ev struct {
+			Type    string         `json:"type"`
+			Message map[string]any `json:"message"`
+			Delta   struct {
+				Type       string `json:"type"`
+				Text       string `json:"text"`
+				StopReason string `json:"stop_reason"`
+			} `json:"delta"`
+			Usage map[string]any `json:"usage"`
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(dataPayload), &ev); err != nil {
+			continue
+		}
+		if ev.Error != nil && ev.Error.Message != "" {
+			return nil, fmt.Errorf("gateway stream error (%s): %s", ev.Error.Code, ev.Error.Message)
+		}
+		if ev.Message != nil {
+			for k, v := range ev.Message {
+				result[k] = v
+			}
+		}
+		if ev.Delta.Text != "" {
+			fullText.WriteString(ev.Delta.Text)
+			if onDelta != nil {
+				if err := onDelta(ev.Delta.Text); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if ev.Delta.StopReason != "" {
+			result["stop_reason"] = ev.Delta.StopReason
+		}
+		if ev.Usage != nil {
+			result["usage"] = ev.Usage
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	result["content"] = []map[string]any{
+		{"type": "text", "text": fullText.String()},
+	}
+	result["text"] = fullText.String()
+	return result, nil
 }
 
 // AudioTranscriptionRequest configures a multipart audio transcription or translation request.

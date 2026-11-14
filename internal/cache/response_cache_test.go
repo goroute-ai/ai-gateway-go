@@ -245,3 +245,82 @@ func TestResponseCache_CloneResponseDeepCopyRace(t *testing.T) {
 		t.Fatalf("cached metadata mutated: %q", final.Metadata["k"])
 	}
 }
+
+func TestResponseCache_CompletionsAndEmbeddingsScopingAndL1(t *testing.T) {
+	rc := NewResponseCache(true, time.Hour, nil)
+	ctx := context.Background()
+
+	temp0 := 0.0
+	cmplReq := &domain.CanonicalCompletionRequest{
+		Model:       "gpt-3.5-turbo-instruct",
+		Temperature: &temp0,
+		Prompt:      domain.CompletionPrompt{Strings: []string{"Hello world"}},
+	}
+	if !rc.IsCompletionCacheable(cmplReq, "") {
+		t.Fatal("expected deterministic completion request to be cacheable")
+	}
+	if rc.IsCompletionCacheable(cmplReq, "no-cache") {
+		t.Fatal("expected no-cache header to bypass completion cache")
+	}
+
+	k1 := rc.ComputeCompletionKeyWithScope("org-1", "team-1", "key:gpt-3.5-turbo-instruct", cmplReq)
+	k2 := rc.ComputeCompletionKeyWithScope("org-2", "team-1", "key:gpt-3.5-turbo-instruct", cmplReq)
+	k3 := rc.ComputeCompletionKeyWithScope("org-1", "team-2", "key:gpt-3.5-turbo-instruct", cmplReq)
+	k4 := rc.ComputeCompletionKeyWithScope("org-1", "team-1", "key:other-model", cmplReq)
+	if k1 == "" || k1 == k2 || k1 == k3 || k1 == k4 {
+		t.Fatalf("expected distinct completion cache keys across org/team/effectiveModel scopes: %q %q %q %q", k1, k2, k3, k4)
+	}
+
+	cmplResp := &domain.CanonicalCompletionResponse{
+		ID:       "cmpl-1",
+		Model:    "gpt-3.5-turbo-instruct",
+		Provider: domain.ProviderOpenAI,
+		Choices:  []domain.CanonicalCompletionChoice{{Index: 0, Text: "cached completion"}},
+	}
+	rc.SetCompletionWithMeta(ctx, k1, "org-1", cmplResp)
+	gotCmpl, hit := rc.GetCompletion(ctx, k1)
+	if !hit || gotCmpl.Choices[0].Text != "cached completion" {
+		t.Fatalf("expected completion L1 hit, got %+v hit=%v", gotCmpl, hit)
+	}
+	gotCmpl.Choices[0].Text = "mutated"
+	gotCmpl2, hit := rc.GetCompletion(ctx, k1)
+	if !hit || gotCmpl2.Choices[0].Text != "cached completion" {
+		t.Fatalf("completion cache mutated in-place: %+v", gotCmpl2)
+	}
+
+	embReq := &domain.CanonicalEmbeddingRequest{
+		Model: "text-embedding-3-small",
+		Input: []string{"embed this"},
+	}
+	if !rc.IsEmbeddingCacheable(embReq, "") {
+		t.Fatal("expected embedding request to be cacheable")
+	}
+	if rc.IsEmbeddingCacheable(embReq, "bypass") {
+		t.Fatal("expected bypass header to disable embedding cache")
+	}
+
+	ek1 := rc.ComputeEmbeddingKeyWithScope("org-1", "team-1", "key:text-embedding-3-small", embReq)
+	ek2 := rc.ComputeEmbeddingKeyWithScope("org-2", "team-1", "key:text-embedding-3-small", embReq)
+	ek3 := rc.ComputeEmbeddingKeyWithScope("org-1", "team-2", "key:text-embedding-3-small", embReq)
+	ek4 := rc.ComputeEmbeddingKeyWithScope("org-1", "team-1", "key:text-embedding-3-large", embReq)
+	if ek1 == "" || ek1 == ek2 || ek1 == ek3 || ek1 == ek4 {
+		t.Fatalf("expected distinct embedding cache keys across org/team/effectiveModel scopes: %q %q %q %q", ek1, ek2, ek3, ek4)
+	}
+
+	embResp := &domain.CanonicalEmbeddingResponse{
+		Object:   "list",
+		Model:    "text-embedding-3-small",
+		Provider: domain.ProviderOpenAI,
+		Data:     []domain.EmbeddingData{{Index: 0, Embedding: []float64{0.25, 0.75}}},
+	}
+	rc.SetEmbeddingWithMeta(ctx, ek1, "org-1", embResp)
+	gotEmb, hit := rc.GetEmbedding(ctx, ek1)
+	if !hit || len(gotEmb.Data) != 1 || gotEmb.Data[0].Embedding[0] != 0.25 {
+		t.Fatalf("expected embedding L1 hit, got %+v hit=%v", gotEmb, hit)
+	}
+	gotEmb.Data[0].Embedding[0] = 99.0
+	gotEmb2, hit := rc.GetEmbedding(ctx, ek1)
+	if !hit || gotEmb2.Data[0].Embedding[0] != 0.25 {
+		t.Fatalf("embedding cache mutated in-place: %+v", gotEmb2)
+	}
+}

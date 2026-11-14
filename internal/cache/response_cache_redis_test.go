@@ -138,3 +138,45 @@ func TestResponseCache_GlobalInvalidationIsSharedAcrossReplicas(t *testing.T) {
 		t.Fatalf("global invalidation left stale response on another replica: %+v", got)
 	}
 }
+
+func TestResponseCache_CompletionsAndEmbeddingsL2RedisSharing(t *testing.T) {
+	ctx := context.Background()
+	server := miniredis.RunT(t)
+	redisA := storage.NewRedisFabric(server.Addr(), "", 0)
+	redisB := storage.NewRedisFabric(server.Addr(), "", 0)
+	defer redisA.Client().Close()
+	defer redisB.Client().Close()
+	cacheA := NewResponseCache(true, time.Minute, redisA)
+	cacheB := NewResponseCache(true, time.Minute, redisB)
+
+	cmplKey := "cmpl-shared"
+	cacheA.SetCompletionWithMeta(ctx, cmplKey, "org-1", &domain.CanonicalCompletionResponse{
+		ID:      "cmpl-l2",
+		Model:   "gpt-3.5-turbo-instruct",
+		Choices: []domain.CanonicalCompletionChoice{{Index: 0, Text: "from-l2"}},
+	})
+	gotCmpl, ok := cacheB.GetCompletion(ctx, cmplKey)
+	if !ok || gotCmpl.ID != "cmpl-l2" || gotCmpl.Choices[0].Text != "from-l2" {
+		t.Fatalf("expected L2 Redis hit for completion on replica B, got (%+v, %v)", gotCmpl, ok)
+	}
+
+	embKey := "emb-shared"
+	cacheA.SetEmbeddingWithMeta(ctx, embKey, "org-1", &domain.CanonicalEmbeddingResponse{
+		Model: "text-embedding-3-small",
+		Data:  []domain.EmbeddingData{{Index: 0, Embedding: []float64{0.1, 0.2}}},
+	})
+	gotEmb, ok := cacheB.GetEmbedding(ctx, embKey)
+	if !ok || len(gotEmb.Data) != 1 || gotEmb.Data[0].Embedding[1] != 0.2 {
+		t.Fatalf("expected L2 Redis hit for embedding on replica B, got (%+v, %v)", gotEmb, ok)
+	}
+
+	if _, _, err := cacheA.Invalidate(ctx, "org-1", ""); err != nil {
+		t.Fatalf("invalidate org-1: %v", err)
+	}
+	if _, ok := cacheB.GetCompletion(ctx, cmplKey); ok {
+		t.Fatal("expected completion cache invalidated across replicas")
+	}
+	if _, ok := cacheB.GetEmbedding(ctx, embKey); ok {
+		t.Fatal("expected embedding cache invalidated across replicas")
+	}
+}

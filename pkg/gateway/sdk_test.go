@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/pkg/gateway"
 )
@@ -361,5 +362,128 @@ guardrails:
 	_, err = client.Chat(context.Background(), "fast", "hello")
 	if err == nil || !strings.Contains(err.Error(), "400") && !strings.Contains(err.Error(), "guardrail") && !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("expected guardrail block error from config-wired scanner, got: %v", err)
+	}
+}
+
+func TestSDKStreamingParityAndWithConfigFileRedisAndWithKey(t *testing.T) {
+	ctx := context.Background()
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
+	defer mr.Close()
+
+	mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Stream \"}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"parity ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":3,\"totalTokenCount\":7}}\n\n")
+	}))
+	defer mockGemini.Close()
+
+	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"cmpl_s1\",\"object\":\"text_completion\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\"Stream \"}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"cmpl_s1\",\"object\":\"text_completion\",\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\"parity ok\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer mockOpenAI.Close()
+
+	cfgYAML := fmt.Sprintf(`
+server:
+  port: 8080
+  environment: "test"
+redis:
+  url: "redis://%s/0"
+`, mr.Addr())
+
+	cfgPath := filepath.Join(t.TempDir(), "gateway-redis.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	gw, err := gateway.New(
+		gateway.WithConfigFile(cfgPath),
+		gateway.WithAllowPrivateNetworks(),
+		gateway.WithSilentLogs(),
+		gateway.WithModelList(
+			gateway.ModelEntry{
+				ModelName: "fast",
+				Model:     "gemini/gemini-2.5-flash",
+				APIKey:    "test-key",
+				APIBase:   mockGemini.URL,
+			},
+			gateway.ModelEntry{
+				ModelName: "instruct",
+				Model:     "openai/gpt-3.5-turbo-instruct",
+				APIKey:    "test-key",
+				APIBase:   mockOpenAI.URL,
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New(WithConfigFile redis): %v", err)
+	}
+
+	vk, err := gw.IssueVirtualKey(ctx, domain.VirtualKey{
+		Name:          "stream-parity-key",
+		AllowedModels: []string{"fast", "instruct"},
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+
+	scoped := gw.WithKey(vk.RawKey)
+	defer scoped.Close()
+
+	// 1. StreamCompletions
+	var cmplDeltas []string
+	cmplOut, err := scoped.StreamCompletions(ctx, domain.CanonicalCompletionRequest{
+		Model:  "instruct",
+		Prompt: domain.CompletionPrompt{Strings: []string{"Say hi"}},
+	}, func(delta string) error {
+		cmplDeltas = append(cmplDeltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamCompletions failed: %v", err)
+	}
+	if len(cmplOut.Choices) != 1 || cmplOut.Choices[0].Text != "Stream parity ok" || len(cmplDeltas) != 2 {
+		t.Fatalf("unexpected StreamCompletions result: %+v deltas=%v", cmplOut, cmplDeltas)
+	}
+
+	// 2. StreamResponses
+	var respDeltas []string
+	respOut, err := scoped.StreamResponses(ctx, domain.CanonicalResponseRequest{
+		Model: "fast",
+		Input: json.RawMessage(`"Say hi"`),
+	}, func(delta string) error {
+		respDeltas = append(respDeltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamResponses failed: %v", err)
+	}
+	if respOut == nil || respOut.Status != "completed" || strings.Join(respDeltas, "") != "Stream parity ok" {
+		t.Fatalf("unexpected StreamResponses result: %+v deltas=%v", respOut, respDeltas)
+	}
+
+	// 3. StreamMessages
+	var msgDeltas []string
+	msgOut, err := scoped.StreamMessages(ctx, map[string]any{
+		"model":      "fast",
+		"max_tokens": 32,
+		"messages": []map[string]any{
+			{"role": "user", "content": "Say hi"},
+		},
+	}, func(delta string) error {
+		msgDeltas = append(msgDeltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamMessages failed: %v", err)
+	}
+	if msgOut["text"] != "Stream parity ok" || strings.Join(msgDeltas, "") != "Stream parity ok" {
+		t.Fatalf("unexpected StreamMessages result: %+v deltas=%v", msgOut, msgDeltas)
 	}
 }

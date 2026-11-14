@@ -507,7 +507,7 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
    - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics (`window.location.pathname` + `history.pushState`), enabling deep-linking and browser navigation.
 3. **Frontend Bundle Budget Enforcement**:
    - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
-   - Total uncompressed bundle size is constrained to `<= 380 KB` (gzipped `<= 110 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+   - Total uncompressed bundle size is constrained to `<= 420 KB` (gzipped `<= 125 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
 4. **Reproducible Container Builds**:
    - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
 5. **Interactive Operator Capabilities**:

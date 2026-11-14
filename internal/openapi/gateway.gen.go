@@ -1947,7 +1947,7 @@ type ServerInterface interface {
 	// CancelBatch Cancel in-progress batch
 	// (POST /v1/batches/{batch_id}/cancel)
 	CancelBatch(w http.ResponseWriter, r *http.Request, batchId BatchID)
-	// CreateChatCompletion Create a unified chat completion across OpenAI, Anthropic, Gemini, Mistral, or Ollama
+	// CreateChatCompletion Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
 	// (POST /v1/chat/completions)
 	CreateChatCompletion(w http.ResponseWriter, r *http.Request)
 	// CreateCompletion Legacy text completions with transparent modern chat fallback
@@ -3446,7 +3446,7 @@ type StrictServerInterface interface {
 	// CancelBatch Cancel in-progress batch
 	// (POST /v1/batches/{batch_id}/cancel)
 	CancelBatch(ctx context.Context, request CancelBatchRequestObject) (CancelBatchResponseObject, error)
-	// CreateChatCompletion Create a unified chat completion across OpenAI, Anthropic, Gemini, Mistral, or Ollama
+	// CreateChatCompletion Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
 	// (POST /v1/chat/completions)
 	CreateChatCompletion(ctx context.Context, request CreateChatCompletionRequestObject) (CreateChatCompletionResponseObject, error)
 	// CreateCompletion Legacy text completions with transparent modern chat fallback

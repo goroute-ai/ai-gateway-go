@@ -9,6 +9,7 @@
 # ==============================================================================
 
 server:
+  environment: "production"  # "development", "staging", or "production"
   host: "0.0.0.0"
   port: 8080
   grpc_port: 0               # Optional A2A gRPC server port (0 = disabled, e.g. 9090)
@@ -19,6 +20,8 @@ server:
   cors_allowed_origins: []
   cors_allow_credentials: false
   enable_hsts: false
+  max_file_storage_bytes_per_org: 5368709120 # Max per-org file storage quota in bytes (default 5 GiB; 0 = unlimited)
+  max_concurrent_file_uploads: 8             # Max concurrent /v1/files uploads per instance (default 8; 0 = unlimited)
 
 logging:
   level: "info"              # "debug", "info", "warn", "error"

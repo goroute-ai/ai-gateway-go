@@ -68,6 +68,16 @@ func (e *Engine) ConfigureScanners(timeout time.Duration, failClosed bool, scann
 	e.scanners = append([]Scanner(nil), scanners...)
 }
 
+// NewStreamRedactor returns a StreamRedactor configured with the engine's
+// external scanners, timeout, and fail-closed settings alongside pol.
+func (e *Engine) NewStreamRedactor(pol *domain.GuardrailPolicy) *StreamRedactor {
+	if e == nil {
+		return NewStreamRedactor(pol)
+	}
+	scanners := append([]Scanner(nil), e.scanners...)
+	return NewStreamRedactorWithScanners(pol, e.scannerTimeout, e.scannerFailClosed, scanners...)
+}
+
 func (e *Engine) Policy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error) {
 	if e == nil || e.repo == nil || orgID == "" {
 		return nil, policyUnavailableError()

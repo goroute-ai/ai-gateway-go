@@ -953,7 +953,7 @@ paths:
   /v1/chat/completions:
     post:
       operationId: createChatCompletion
-      summary: Create a unified chat completion across OpenAI, Anthropic, Gemini, Mistral, or Ollama
+      summary: Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
       requestBody:
         required: true
         content:
