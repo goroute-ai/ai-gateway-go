@@ -56,12 +56,19 @@ func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, reso
 
 // --- Organizations, Layer 2 Subscriptions, Layer 3 Model Policies & Security Guardrails ---
 
+const maxAdminRequestBodyBytes = 2 << 20 // 2 MiB
+
+func decodeAdminJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminRequestBodyBytes)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
 func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
 		return
 	}
 	var org domain.Organization
-	if err := json.NewDecoder(r.Body).Decode(&org); err != nil {
+	if err := decodeAdminJSON(w, r, &org); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -108,7 +115,7 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 		return
 	}
 	var sub domain.OrgProviderSubscription
-	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
+	if err := decodeAdminJSON(w, r, &sub); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -116,6 +123,9 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 	if err := s.repo.SetOrgProviderSubscription(r.Context(), &sub); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if s.rbac != nil {
+		s.rbac.InvalidateOrgPolicies(r.Context(), orgID)
 	}
 	s.audit(r.Context(), orgID, "organization.subscription.updated", "org_provider_subscription", string(sub.Provider), map[string]any{
 		"provider":        sub.Provider,
@@ -144,7 +154,7 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 		return
 	}
 	var pol domain.OrgModelPolicy
-	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
+	if err := decodeAdminJSON(w, r, &pol); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -152,6 +162,9 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 	if err := s.repo.SetOrgModelPolicy(r.Context(), &pol); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if s.rbac != nil {
+		s.rbac.InvalidateOrgPolicies(r.Context(), orgID)
 	}
 	s.audit(r.Context(), orgID, "organization.model_policy.updated", "org_model_policy", pol.GlobalModelID, map[string]any{
 		"global_model_id": pol.GlobalModelID,
@@ -182,7 +195,7 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		Mode:         domain.GuardrailModeEnforce,
 		ScanAllRoles: true,
 	}
-	if err := json.NewDecoder(r.Body).Decode(&pol); err != nil {
+	if err := decodeAdminJSON(w, r, &pol); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -228,7 +241,7 @@ func (s *GatewayServer) handleAdminSimulateGuardrails(w http.ResponseWriter, r *
 		Prompt string                  `json:"prompt"`
 		Policy *domain.GuardrailPolicy `json:"policy,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -276,7 +289,7 @@ func (s *GatewayServer) handleAdminSimulateGuardrails(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 	var team domain.Team
-	if err := json.NewDecoder(r.Body).Decode(&team); err != nil {
+	if err := decodeAdminJSON(w, r, &team); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -308,7 +321,7 @@ func (s *GatewayServer) handleAdminListTeams(w http.ResponseWriter, r *http.Requ
 
 func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	var user domain.User
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+	if err := decodeAdminJSON(w, r, &user); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -350,7 +363,7 @@ func (s *GatewayServer) handleAdminListUsers(w http.ResponseWriter, r *http.Requ
 
 func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Request) {
 	var req domain.VirtualKey
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -417,7 +430,7 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		Headers             map[string]string   `json:"headers,omitempty"`
 		ExpiresAt           *time.Time          `json:"expires_at,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -472,7 +485,7 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 		BaseURL   string     `json:"base_url,omitempty"`
 		ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -584,7 +597,7 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		APIVersion          string              `json:"api_version,omitempty"`
 		Headers             map[string]string   `json:"headers,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -646,7 +659,7 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 
 func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *http.Request) {
 	var mg domain.ModelGroup
-	if err := json.NewDecoder(r.Body).Decode(&mg); err != nil {
+	if err := decodeAdminJSON(w, r, &mg); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -678,18 +691,47 @@ func (s *GatewayServer) handleAdminListModelGroups(w http.ResponseWriter, r *htt
 
 func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var dep domain.Deployment
-	if err := json.NewDecoder(r.Body).Decode(&dep); err != nil {
+	if err := decodeAdminJSON(w, r, &dep); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
 	targetOrgID := ""
 	if dep.ModelGroupID != "" {
-		if mg, err := s.repo.GetModelGroupByID(r.Context(), dep.ModelGroupID); err == nil && mg != nil {
-			targetOrgID = mg.OrgID
+		mg, err := s.repo.GetModelGroupByID(r.Context(), dep.ModelGroupID)
+		if err != nil || mg == nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusNotFound,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "model_group_not_found",
+				Message:    "Model group not found",
+			})
+			return
 		}
+		targetOrgID = mg.OrgID
 	}
 	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
 		return
+	}
+	if dep.CredentialID != "" {
+		cred, err := s.repo.GetProviderCredential(r.Context(), dep.CredentialID)
+		if err != nil || cred == nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusNotFound,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "provider_credential_not_found",
+				Message:    "Provider credential not found",
+			})
+			return
+		}
+		if targetOrgID != "" && cred.OrgID != targetOrgID {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_tenant_credential",
+				Message:    "Provider credential does not belong to target organization",
+			})
+			return
+		}
 	}
 	dep.Status = domain.DeploymentStatusActive
 	if err := s.repo.CreateDeployment(r.Context(), &dep); err != nil {
@@ -733,6 +775,9 @@ func (s *GatewayServer) handleAdminListDeployments(w http.ResponseWriter, r *htt
 // --- Layer 1 Global Catalogue, Automated Discovery & Versioned Pricing ---
 
 func (s *GatewayServer) handleAdminListCatalogue(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
 	models, err := s.repo.ListGlobalModels(r.Context())
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -802,7 +847,7 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 		PricingEffectiveDate       string               `json:"pricing_effective_date,omitempty"`
 		ChangedBy                  string               `json:"changed_by,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
@@ -842,6 +887,9 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 }
 
 func (s *GatewayServer) handleAdminListModelPricingHistory(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
 	modelID := r.URL.Query().Get("global_model_id")
 	hist, err := s.repo.ListModelPricingHistory(r.Context(), modelID)
 	if err != nil {
@@ -887,7 +935,7 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 		OrgID string `json:"org_id,omitempty"`
 		Model string `json:"model,omitempty"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = decodeAdminJSON(w, r, &req)
 	req.OrgID = resolveScopedOrgID(r, req.OrgID)
 	if _, ok := s.authorizeAdmin(w, r, req.OrgID, true); !ok {
 		return

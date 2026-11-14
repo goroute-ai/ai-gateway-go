@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"runtime"
 	"strings"
@@ -146,6 +147,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		NetworkPolicy: netPolicy,
 	}))
 	rbac := auth.NewRBACEngine(repo)
+	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
@@ -300,7 +302,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 func (s *GatewayServer) setupRoutes() {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
+	r.Use(trustedRealIPMiddleware(s.cfg.Security.Network.InboundCaller.TrustedProxyCIDRs))
+	r.Use(inboundCallerMiddleware(s.cfg.Security.Network.InboundCaller))
 	r.Use(observability.TraceMiddlewareWithTracer(s.tracer))
 	r.Use(logger.HTTPMiddleware(nil))
 	r.Use(SecurityHeadersMiddleware(s.cfg.Server.EnableHSTS))
@@ -659,5 +662,104 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.spendWorker.Stop(ctx)
 	if s.tracerShutdown != nil {
 		_ = s.tracerShutdown(ctx)
+	}
+}
+
+func parseCIDRList(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, raw := range cidrs {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if _, ipNet, err := net.ParseCIDR(trimmed); err == nil {
+			nets = append(nets, ipNet)
+		}
+	}
+	return nets
+}
+
+func extractRemoteIP(remoteAddr string) net.IP {
+	host := strings.TrimSpace(remoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return net.ParseIP(host)
+}
+
+func ipInNets(ip net.IP, nets []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var testNet1CIDR = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("192.0.2.0/24")
+	return n
+}()
+
+func isNonPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if unmapped := ip.To4(); unmapped != nil {
+		ip = unmapped
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || testNet1CIDR.Contains(ip)
+}
+
+// trustedRealIPMiddleware restricts chi's RealIP header parsing to requests originating
+// from configured trusted proxy CIDRs so untrusted callers cannot spoof X-Forwarded-For.
+func trustedRealIPMiddleware(trustedProxyCIDRs []string) func(http.Handler) http.Handler {
+	trustedNets := parseCIDRList(trustedProxyCIDRs)
+	realIPHandler := middleware.RealIP
+	return func(next http.Handler) http.Handler {
+		wrappedNext := realIPHandler(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if len(trustedNets) > 0 && ipInNets(extractRemoteIP(r.RemoteAddr), trustedNets) {
+				wrappedNext.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// inboundCallerMiddleware enforces config.Security.Network.InboundCaller policies.
+func inboundCallerMiddleware(cfg config.InboundCallerConfig) func(http.Handler) http.Handler {
+	allowedNets := parseCIDRList(cfg.AllowedClientCIDRs)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := extractRemoteIP(r.RemoteAddr)
+			if len(allowedNets) > 0 {
+				if !ipInNets(ip, allowedNets) {
+					domain.WriteHTTPError(w, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "caller_ip_not_allowed",
+						Message:    "Client IP is not in allowed_client_cidrs",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !cfg.ExposeOnPublicInternet && strings.TrimSpace(r.RemoteAddr) != "" && !isNonPublicIP(ip) {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "public_internet_disabled",
+					Message:    "Gateway is not exposed on the public internet",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }

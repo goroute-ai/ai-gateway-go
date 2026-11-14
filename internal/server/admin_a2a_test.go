@@ -66,6 +66,13 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 		Name:     "Alpha Team",
 		IsActive: true,
 	}))
+	require.NoError(t, repo.CreateUser(context.Background(), &domain.User{
+		ID:       "usr_analyst",
+		OrgID:    "org_default",
+		Email:    "analyst@example.com",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	}))
 
 	// Issue a virtual key for data-plane client calls
 	vKey := &domain.VirtualKey{
@@ -216,6 +223,12 @@ func TestAdminA2APushConfigRegistration(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
+	require.NoError(t, repo.CreateA2ATask(context.Background(), &domain.A2ATask{
+		ID:    "task_audit_999",
+		OrgID: "org_default",
+		State: "submitted",
+	}))
+
 	adminKey := "sk-gw-master-admin-key"
 
 	pushPayload := []byte(`{
@@ -235,7 +248,8 @@ func TestAdminA2APushConfigRegistration(t *testing.T) {
 	cfgStored, err := repo.GetA2APushNotificationConfig(context.Background(), "task_audit_999")
 	require.NoError(t, err)
 	assert.Equal(t, "https://webhook.internal/a2a-notify", cfgStored.TargetURL)
-	assert.Equal(t, "secret-webhook-bearer", cfgStored.AuthToken)
+	assert.NotEqual(t, "secret-webhook-bearer", cfgStored.AuthToken)
+	assert.Contains(t, cfgStored.AuthToken, "vault:")
 }
 
 func TestA2AOpenAIBridgeInference(t *testing.T) {
@@ -286,6 +300,7 @@ func TestA2AOpenAIBridgeInference(t *testing.T) {
 		Name:             "Dev Key",
 		OrgID:            "org_default",
 		Role:             domain.RoleDeveloper,
+		AllowedEndpoints: []string{"*"},
 		AllowedA2AAgents: []string{"chat-agent"},
 		IsActive:         true,
 	}

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,7 +27,7 @@ func (s *GatewayServer) handleAdminCreateA2AAgent(w http.ResponseWriter, r *http
 		MaxTaskBudgetMicros int64  `json:"max_task_budget_micros,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -169,7 +168,7 @@ func (s *GatewayServer) handleAdminSetA2AKillSwitch(w http.ResponseWriter, r *ht
 		Killed bool `json:"killed"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -218,7 +217,7 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 		AuthToken string `json:"auth_token,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -237,10 +236,17 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	targetOrgID := resolveScopedOrgID(r, "")
-	if task, err := s.repo.GetA2ATask(r.Context(), input.TaskID); err == nil && task != nil && task.OrgID != "" {
-		targetOrgID = task.OrgID
+	task, err := s.repo.GetA2ATask(r.Context(), input.TaskID)
+	if err != nil || task == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "a2a_task_not_found",
+			Message:    "A2A task not found",
+		})
+		return
 	}
+	targetOrgID := task.OrgID
 	if targetOrgID == "" {
 		targetOrgID = s.cfg.Auth.DefaultOrgID
 	}
@@ -248,11 +254,26 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 		return
 	}
 
+	encryptedAuthToken := ""
+	if trimmedToken := strings.TrimSpace(input.AuthToken); trimmedToken != "" {
+		cipher, dek, err := s.vault.EncryptString(trimmedToken)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusInternalServerError,
+				Type:       domain.ErrorTypeServer,
+				Code:       "vault_encryption_error",
+				Message:    err.Error(),
+			})
+			return
+		}
+		encryptedAuthToken = "vault:" + cipher + ":" + dek
+	}
+
 	cfg := &domain.A2APushNotificationConfig{
 		ID:        "push_cfg_" + uuid.NewString(),
 		TaskID:    input.TaskID,
 		TargetURL: input.TargetURL,
-		AuthToken: input.AuthToken,
+		AuthToken: encryptedAuthToken,
 		CreatedAt: time.Now().UTC(),
 	}
 

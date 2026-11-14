@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,8 @@ type l1CacheEntry struct {
 type cachedIdentity struct {
 	Identity     domain.IdentityContext `json:"identity"`
 	KeyExpiresAt *time.Time             `json:"key_expires_at,omitempty"`
+	OrgEpoch     int64                  `json:"org_epoch,omitempty"`
+	TeamEpoch    int64                  `json:"team_epoch,omitempty"`
 }
 
 // Service manages Boundary 1 authentication (Virtual API Keys, L1/L2 caching, and Admin authentication).
@@ -92,6 +96,31 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 	if _, err := s.repo.GetOrganization(ctx, req.OrgID); err != nil {
 		return nil, err
 	}
+	if req.TeamID != "" {
+		team, err := s.repo.GetTeam(ctx, req.TeamID)
+		if err != nil {
+			return nil, fmt.Errorf("verify team %q: %w", req.TeamID, err)
+		}
+		if team.OrgID != req.OrgID {
+			return nil, fmt.Errorf("team %q does not belong to organization %q", req.TeamID, req.OrgID)
+		}
+	}
+	if req.UserID != "" {
+		users, err := s.repo.ListUsers(ctx, req.OrgID)
+		if err != nil {
+			return nil, fmt.Errorf("verify user %q: %w", req.UserID, err)
+		}
+		foundUser := false
+		for _, u := range users {
+			if u != nil && u.ID == req.UserID && u.OrgID == req.OrgID {
+				foundUser = true
+				break
+			}
+		}
+		if !foundUser {
+			return nil, fmt.Errorf("user %q does not belong to organization %q", req.UserID, req.OrgID)
+		}
+	}
 
 	randBytes := make([]byte, 22)
 	if _, err := rand.Read(randBytes); err != nil {
@@ -116,7 +145,7 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 		vk.BudgetResetPeriod = domain.BudgetResetMonthly
 	}
 	if len(vk.AllowedEndpoints) == 0 {
-		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
+		vk.AllowedEndpoints = []string{"*"}
 	}
 	// Confirmed Default: newly provisioned keys default to DenyAll ([]string{}) for MCP and A2A
 	if vk.AllowedMCPServers == nil {
@@ -153,9 +182,11 @@ func (s *Service) RevokeKey(ctx context.Context, id string) error {
 func (s *Service) InvalidateKeyHash(ctx context.Context, keyHash string) {
 	s.l1Cache.Delete(keyHash)
 	if s.redis != nil {
-		_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Del(ctx, authCacheKey(keyHash), "gw:auth:key:"+keyHash).Result()
-		})
+		}); err != nil {
+			slog.WarnContext(ctx, "auth: failed to delete cached key from redis", "error", err)
+		}
 		s.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
 			Type:    "key",
 			KeyHash: keyHash,
@@ -163,13 +194,89 @@ func (s *Service) InvalidateKeyHash(ctx context.Context, keyHash string) {
 	}
 }
 
+// InvalidateOrg evicts all L1 cached identities for orgID, bumps the L2 org epoch, and broadcasts Pub/Sub eviction.
+func (s *Service) InvalidateOrg(ctx context.Context, orgID string) {
+	if orgID == "" {
+		return
+	}
+	s.evictL1ByOrg(orgID)
+	if s.redis != nil {
+		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Incr(ctx, orgEpochKey(orgID)).Result()
+		}); err != nil {
+			slog.WarnContext(ctx, "auth: failed to increment org invalidation epoch", "org_id", orgID, "error", err)
+		}
+		s.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
+			Type:  "org",
+			OrgID: orgID,
+		})
+	}
+}
+
+// InvalidateTeam evicts all L1 cached identities for teamID, bumps the L2 team epoch, and broadcasts Pub/Sub eviction.
+func (s *Service) InvalidateTeam(ctx context.Context, teamID string) {
+	if teamID == "" {
+		return
+	}
+	s.evictL1ByTeam(teamID)
+	if s.redis != nil {
+		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Incr(ctx, teamEpochKey(teamID)).Result()
+		}); err != nil {
+			slog.WarnContext(ctx, "auth: failed to increment team invalidation epoch", "team_id", teamID, "error", err)
+		}
+		s.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
+			Type:       "team",
+			EntityType: "team",
+			EntityID:   teamID,
+		})
+	}
+}
+
+func (s *Service) evictL1ByOrg(orgID string) {
+	s.l1Cache.Range(func(k, v any) bool {
+		if entry, ok := v.(l1CacheEntry); ok && entry.identity != nil && entry.identity.OrgID == orgID {
+			s.l1Cache.Delete(k)
+		}
+		return true
+	})
+}
+
+func (s *Service) evictL1ByTeam(teamID string) {
+	s.l1Cache.Range(func(k, v any) bool {
+		if entry, ok := v.(l1CacheEntry); ok && entry.identity != nil && entry.identity.TeamID == teamID {
+			s.l1Cache.Delete(k)
+		}
+		return true
+	})
+}
+
 func authCacheKey(keyHash string) string {
 	return "gw:auth:key:v2:" + keyHash
 }
 
+func orgEpochKey(orgID string) string {
+	return "gw:auth:org_epoch:" + orgID
+}
+
+func teamEpochKey(teamID string) string {
+	return "gw:auth:team_epoch:" + teamID
+}
+
 func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
-	if ev.Type == "key" && ev.KeyHash != "" {
-		s.l1Cache.Delete(ev.KeyHash)
+	switch ev.Type {
+	case "key":
+		if ev.KeyHash != "" {
+			s.l1Cache.Delete(ev.KeyHash)
+		}
+	case "org":
+		if ev.OrgID != "" {
+			s.evictL1ByOrg(ev.OrgID)
+		}
+	case "team":
+		if ev.EntityID != "" {
+			s.evictL1ByTeam(ev.EntityID)
+		}
 	}
 }
 
@@ -271,13 +378,16 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 						s.l1Cache.Delete(keyHash)
 						return nil, expiredVirtualKeyError()
 					}
-					idCtx := cached.Identity
-					s.l1Cache.Store(keyHash, l1CacheEntry{
-						identity:     &idCtx,
-						expiresAt:    now.Add(s.l1TTL),
-						keyExpiresAt: cached.KeyExpiresAt,
-					})
-					return &idCtx, nil
+					orgEpoch, teamEpoch := s.fetchEpochs(ctx, cached.Identity.OrgID, cached.Identity.TeamID)
+					if orgEpoch == cached.OrgEpoch && teamEpoch == cached.TeamEpoch {
+						idCtx := cached.Identity
+						s.l1Cache.Store(keyHash, l1CacheEntry{
+							identity:     &idCtx,
+							expiresAt:    now.Add(s.l1TTL),
+							keyExpiresAt: cached.KeyExpiresAt,
+						})
+						return &idCtx, nil
+					}
 				}
 			}
 		}
@@ -302,6 +412,10 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 					OrgMaxBudgetMicros:   org.MaxBudgetMicros,
 					OrgSpentMicros:       org.SpentMicros,
 				}
+				s.l1Cache.Store(keyHash, l1CacheEntry{
+					identity:  idCtx,
+					expiresAt: now.Add(s.l1TTL),
+				})
 				return idCtx, nil
 			}
 		}
@@ -368,6 +482,14 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Retryable:  true,
 			}
 		}
+		if team.OrgID != vk.OrgID {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_org_mismatch",
+				Message:    "Team associated with this virtual key does not belong to its organization",
+			}
+		}
 		if !team.IsActive {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
@@ -386,13 +508,55 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		idCtx.TeamSpentMicros = team.SpentMicros
 	}
 
+	if vk.UserID != "" {
+		users, err := s.repo.ListUsers(ctx, vk.OrgID)
+		if err != nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "user_policy_unavailable",
+				Message:    "Unable to resolve user status for this virtual key",
+				Retryable:  true,
+			}
+		}
+		var matchedUser *domain.User
+		for _, u := range users {
+			if u != nil && u.ID == vk.UserID && u.OrgID == vk.OrgID {
+				matchedUser = u
+				break
+			}
+		}
+		if matchedUser == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_not_found",
+				Message:    "User associated with this virtual key was not found in organization",
+			}
+		}
+		if !matchedUser.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_inactive",
+				Message:    "User associated with this virtual key is inactive",
+			}
+		}
+	}
+
 	// Hydrate L2 Redis + L1 Memory
 	var keyExpiresAt *time.Time
 	if vk.ExpiresAt != nil {
 		expiresAt := vk.ExpiresAt.UTC()
 		keyExpiresAt = &expiresAt
 	}
-	cacheEntry := cachedIdentity{Identity: *idCtx, KeyExpiresAt: keyExpiresAt}
+	orgEpoch, teamEpoch := s.fetchEpochs(ctx, idCtx.OrgID, idCtx.TeamID)
+	cacheEntry := cachedIdentity{
+		Identity:     *idCtx,
+		KeyExpiresAt: keyExpiresAt,
+		OrgEpoch:     orgEpoch,
+		TeamEpoch:    teamEpoch,
+	}
 	if s.redis != nil {
 		if b, err := json.Marshal(cacheEntry); err == nil {
 			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -407,6 +571,38 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	})
 
 	return idCtx, nil
+}
+
+func (s *Service) fetchEpochs(ctx context.Context, orgID, teamID string) (int64, int64) {
+	if s.redis == nil || orgID == "" {
+		return 0, 0
+	}
+	keys := []string{orgEpochKey(orgID)}
+	if teamID != "" {
+		keys = append(keys, teamEpochKey(teamID))
+	}
+	res, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		return rdb.MGet(ctx, keys...).Result()
+	})
+	if err != nil {
+		return 0, 0
+	}
+	vals, ok := res.([]any)
+	if !ok || len(vals) == 0 {
+		return 0, 0
+	}
+	var orgEpoch, teamEpoch int64
+	if vals[0] != nil {
+		if str, ok := vals[0].(string); ok {
+			orgEpoch, _ = strconv.ParseInt(str, 10, 64)
+		}
+	}
+	if len(vals) > 1 && vals[1] != nil {
+		if str, ok := vals[1].(string); ok {
+			teamEpoch, _ = strconv.ParseInt(str, 10, 64)
+		}
+	}
+	return orgEpoch, teamEpoch
 }
 
 func isKeyExpired(expiresAt *time.Time, now time.Time) bool {

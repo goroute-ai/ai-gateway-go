@@ -41,6 +41,8 @@ func init() {
 		"fc00::/7",       // Unique local IPv6 (ULA)
 		"100.64.0.0/10",  // Carrier-grade NAT
 		"0.0.0.0/8",      // Current network
+		"::/128",         // Unspecified IPv6
+		"64:ff9b::/96",   // NAT64 well-known prefix
 	}
 	for _, r := range ranges {
 		_, ipNet, err := net.ParseCIDR(r)
@@ -112,14 +114,18 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 		return errors.New("network: nil URL")
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if !p.AllowedSchemes[scheme] {
+	if len(p.AllowedSchemes) > 0 {
+		if !p.AllowedSchemes[scheme] {
+			return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
+		}
+	} else if scheme != "https" && scheme != "http" {
 		return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
 	}
 	if scheme == "http" && !p.AllowInsecureHTTP {
 		return ErrInsecureHTTPBlocked
 	}
 
-	hostname := strings.ToLower(u.Hostname())
+	hostname := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
 	if hostname == "" {
 		return errors.New("network: missing hostname in URL")
 	}

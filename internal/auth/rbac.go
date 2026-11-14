@@ -2,26 +2,86 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+	"github.com/redis/go-redis/v9"
 )
 
 // SmartAliases lists the built-in intelligent routing aliases that bypass single-model name checks at ingress
 // (their resolved concrete models are still validated against Org Subscriptions and Policies).
 var SmartAliases = []string{"auto", "fast", "reasoning", "coding"}
 
+type cachedOrgSubs struct {
+	subs      []*domain.OrgProviderSubscription
+	expiresAt time.Time
+}
+
+type cachedOrgPolicies struct {
+	policies  []*domain.OrgModelPolicy
+	expiresAt time.Time
+}
+
 // RBACEngine enforces Endpoint permissions, Virtual Key model scopes, Team model scopes,
 // Organization Model Policies (Layer 3), and Organization Provider Subscriptions (Layer 2).
 type RBACEngine struct {
-	repo storage.Repository
+	repo     storage.Repository
+	redis    *storage.RedisFabric
+	cacheTTL time.Duration
+	subCache sync.Map // orgID -> cachedOrgSubs
+	polCache sync.Map // orgID -> cachedOrgPolicies
 }
 
 func NewRBACEngine(repo storage.Repository) *RBACEngine {
-	return &RBACEngine{repo: repo}
+	return &RBACEngine{
+		repo:     repo,
+		cacheTTL: 15 * time.Second,
+	}
+}
+
+// SetRedis attaches a RedisFabric for L2 caching and cross-pod invalidation of org policies.
+func (e *RBACEngine) SetRedis(redisFabric *storage.RedisFabric) {
+	e.redis = redisFabric
+}
+
+// InvalidateOrgPolicies evicts cached provider subscriptions and model policies for orgID.
+func (e *RBACEngine) InvalidateOrgPolicies(ctx context.Context, orgID string) {
+	if orgID == "" {
+		return
+	}
+	e.subCache.Delete(orgID)
+	e.polCache.Delete(orgID)
+	if e.redis != nil {
+		_, _ = e.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Del(ctx, rbacSubsCacheKey(orgID), rbacPoliciesCacheKey(orgID)).Result()
+		})
+		e.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
+			Type:  "rbac_org",
+			OrgID: orgID,
+		})
+	}
+}
+
+// HandleInvalidation processes a pub/sub invalidation event for org policies.
+func (e *RBACEngine) HandleInvalidation(ev storage.InvalidationEvent) {
+	if (ev.Type == "rbac_org" || ev.Type == "org") && ev.OrgID != "" {
+		e.subCache.Delete(ev.OrgID)
+		e.polCache.Delete(ev.OrgID)
+	}
+}
+
+func rbacSubsCacheKey(orgID string) string {
+	return "gw:rbac:subs:" + orgID
+}
+
+func rbacPoliciesCacheKey(orgID string) string {
+	return "gw:rbac:policies:" + orgID
 }
 
 // AuthorizeEndpoint checks whether the authenticated Virtual Key is permitted to call the HTTP endpoint path.
@@ -33,9 +93,6 @@ func (e *RBACEngine) AuthorizeEndpoint(idCtx *domain.IdentityContext, path strin
 			Code:       "unauthenticated",
 			Message:    "No identity context present on request",
 		}
-	}
-	if len(idCtx.AllowedEndpoints) == 0 {
-		return nil
 	}
 	for _, pattern := range idCtx.AllowedEndpoints {
 		if pattern == "*" || pattern == path {
@@ -58,6 +115,14 @@ func (e *RBACEngine) AuthorizeEndpoint(idCtx *domain.IdentityContext, path strin
 
 // AuthorizeRequestedModel verifies Virtual Key and Team model allowlists for the requested model or smart alias.
 func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requestedModel string) error {
+	if idCtx == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "No identity context present on request",
+		}
+	}
 	if len(idCtx.KeyAllowedModels) > 0 && !matchesModelAllowlist(idCtx.KeyAllowedModels, requestedModel) {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
@@ -143,7 +208,7 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 	}
 
 	// Layer 2: Check Organization Provider Subscription
-	subs, err := e.repo.GetOrgProviderSubscriptions(ctx, orgID)
+	subs, err := e.getOrgProviderSubscriptions(ctx, orgID)
 	if err != nil {
 		return &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
@@ -171,7 +236,7 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 	}
 
 	// Layer 3: Check Organization Model Policy
-	policies, err := e.repo.GetOrgModelPolicies(ctx, orgID)
+	policies, err := e.getOrgModelPolicies(ctx, orgID)
 	if err != nil {
 		return &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
@@ -193,6 +258,82 @@ func (e *RBACEngine) AuthorizeDeployment(ctx context.Context, orgID string, dep 
 		}
 	}
 	return nil
+}
+
+func (e *RBACEngine) getOrgProviderSubscriptions(ctx context.Context, orgID string) ([]*domain.OrgProviderSubscription, error) {
+	now := time.Now().UTC()
+	if val, ok := e.subCache.Load(orgID); ok {
+		entry := val.(cachedOrgSubs)
+		if now.Before(entry.expiresAt) {
+			return entry.subs, nil
+		}
+		e.subCache.Delete(orgID)
+	}
+	if e.redis != nil {
+		res, err := e.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Get(ctx, rbacSubsCacheKey(orgID)).Result()
+		})
+		if err == nil {
+			if jsonStr, ok := res.(string); ok && jsonStr != "" {
+				var subs []*domain.OrgProviderSubscription
+				if json.Unmarshal([]byte(jsonStr), &subs) == nil {
+					e.subCache.Store(orgID, cachedOrgSubs{subs: subs, expiresAt: now.Add(e.cacheTTL)})
+					return subs, nil
+				}
+			}
+		}
+	}
+	subs, err := e.repo.GetOrgProviderSubscriptions(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if e.redis != nil {
+		if b, mErr := json.Marshal(subs); mErr == nil {
+			_, _ = e.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+				return rdb.Set(ctx, rbacSubsCacheKey(orgID), b, e.cacheTTL).Result()
+			})
+		}
+	}
+	e.subCache.Store(orgID, cachedOrgSubs{subs: subs, expiresAt: now.Add(e.cacheTTL)})
+	return subs, nil
+}
+
+func (e *RBACEngine) getOrgModelPolicies(ctx context.Context, orgID string) ([]*domain.OrgModelPolicy, error) {
+	now := time.Now().UTC()
+	if val, ok := e.polCache.Load(orgID); ok {
+		entry := val.(cachedOrgPolicies)
+		if now.Before(entry.expiresAt) {
+			return entry.policies, nil
+		}
+		e.polCache.Delete(orgID)
+	}
+	if e.redis != nil {
+		res, err := e.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return rdb.Get(ctx, rbacPoliciesCacheKey(orgID)).Result()
+		})
+		if err == nil {
+			if jsonStr, ok := res.(string); ok && jsonStr != "" {
+				var policies []*domain.OrgModelPolicy
+				if json.Unmarshal([]byte(jsonStr), &policies) == nil {
+					e.polCache.Store(orgID, cachedOrgPolicies{policies: policies, expiresAt: now.Add(e.cacheTTL)})
+					return policies, nil
+				}
+			}
+		}
+	}
+	policies, err := e.repo.GetOrgModelPolicies(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if e.redis != nil {
+		if b, mErr := json.Marshal(policies); mErr == nil {
+			_, _ = e.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+				return rdb.Set(ctx, rbacPoliciesCacheKey(orgID), b, e.cacheTTL).Result()
+			})
+		}
+	}
+	e.polCache.Store(orgID, cachedOrgPolicies{policies: policies, expiresAt: now.Add(e.cacheTTL)})
+	return policies, nil
 }
 
 // AuthorizeAdminAction enforces operator RBAC, organization isolation, and read-only viewer restrictions

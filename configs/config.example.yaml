@@ -109,6 +109,7 @@ security:
     inbound_caller:
       expose_on_public_internet: false
       allowed_client_cidrs: []
+      trusted_proxy_cidrs: []
 
 # ------------------------------------------------------------------------------
 # Model Context Protocol (MCP) Configuration

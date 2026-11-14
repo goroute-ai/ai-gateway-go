@@ -35,7 +35,7 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		PinnedToolHash  string            `json:"pinned_tool_hash,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -394,7 +394,7 @@ func (s *GatewayServer) handleAdminCreateMCPToolset(w http.ResponseWriter, r *ht
 		ToolIDs []string `json:"tool_ids"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -422,6 +422,29 @@ func (s *GatewayServer) handleAdminCreateMCPToolset(w http.ResponseWriter, r *ht
 	}
 	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
 		return
+	}
+
+	for _, toolID := range input.ToolIDs {
+		tool, err := s.repo.GetMCPTool(r.Context(), toolID)
+		if err != nil || tool == nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusNotFound,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "mcp_tool_not_found",
+				Message:    fmt.Sprintf("MCP tool %q not found", toolID),
+			})
+			return
+		}
+		srv, err := s.repo.GetMCPServer(r.Context(), tool.ServerID)
+		if err != nil || srv == nil || srv.OrgID != input.OrgID {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_tenant_mcp_tool",
+				Message:    fmt.Sprintf("MCP tool %q does not belong to organization %q", toolID, input.OrgID),
+			})
+			return
+		}
 	}
 
 	ts := &domain.MCPToolset{
@@ -486,7 +509,7 @@ func (s *GatewayServer) handleAdminSetMCPUserCredential(w http.ResponseWriter, r
 		Token    string `json:"token"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeAdminJSON(w, r, &input); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -513,6 +536,53 @@ func (s *GatewayServer) handleAdminSetMCPUserCredential(w http.ResponseWriter, r
 		input.OrgID = s.cfg.Auth.DefaultOrgID
 	}
 	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+		return
+	}
+
+	srv, err := s.repo.GetMCPServer(r.Context(), input.ServerID)
+	if err != nil || srv == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "mcp_server_not_found",
+			Message:    "MCP server not found",
+		})
+		return
+	}
+	if srv.OrgID != input.OrgID {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_tenant_mcp_server",
+			Message:    "MCP server does not belong to target organization",
+		})
+		return
+	}
+
+	users, err := s.repo.ListUsers(r.Context(), input.OrgID)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "storage_error",
+			Message:    err.Error(),
+		})
+		return
+	}
+	foundUser := false
+	for _, u := range users {
+		if u != nil && u.ID == input.UserID && u.OrgID == input.OrgID {
+			foundUser = true
+			break
+		}
+	}
+	if !foundUser {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_tenant_user",
+			Message:    "User does not belong to target organization",
+		})
 		return
 	}
 

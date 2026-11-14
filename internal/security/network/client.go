@@ -208,7 +208,7 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 		// model streams. Bound connect/TLS/response-header waits on the transport;
 		// the body wrapper below enforces an idle timeout while allowing a stream
 		// to run for as long as it continues to make progress.
-		Transport: idleTimeoutRoundTripper{base: transport, requestTimeout: options.RequestTimeout, idleTimeout: options.StreamIdleTimeout, stats: stats},
+		Transport: idleTimeoutRoundTripper{base: transport, policy: policy, requestTimeout: options.RequestTimeout, idleTimeout: options.StreamIdleTimeout, stats: stats},
 		Timeout:   0,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= policy.MaxRedirects {
@@ -217,6 +217,10 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 			// Re-validate the target URL on every redirect
 			if err := policy.ValidateURL(req.URL); err != nil {
 				return fmt.Errorf("network: redirect target forbidden: %w", err)
+			}
+			if len(via) > 0 && (!sameOrigin(via[len(via)-1].URL, req.URL) || !sameOrigin(via[0].URL, req.URL)) {
+				req.Header.Del("x-api-key")
+				req.Header.Del("api-key")
 			}
 			return nil
 		},
@@ -229,12 +233,25 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 // periods with no upstream body progress for all calls, including streams.
 type idleTimeoutRoundTripper struct {
 	base           http.RoundTripper
+	policy         *Policy
 	requestTimeout time.Duration
 	idleTimeout    time.Duration
 	stats          *HTTPClientMetrics
 }
 
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
 func (rt idleTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.policy != nil {
+		if err := rt.policy.ValidateURL(req.URL); err != nil {
+			return nil, err
+		}
+	}
 	streaming, _ := req.Context().Value(streamingRequestContextKey{}).(bool)
 	streaming = streaming || strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream")
 	ctx := req.Context()

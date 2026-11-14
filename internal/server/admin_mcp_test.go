@@ -177,6 +177,13 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 	assert.Len(t, tsListResp.Toolsets, 1)
 
 	// 7. Store BYOK Credential via POST /admin/v1/mcp/credentials
+	require.NoError(t, repo.CreateUser(t.Context(), &domain.User{
+		ID:       "user_dev_100",
+		OrgID:    "org_default",
+		Email:    "dev100@example.com",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	}))
 	credPayload := fmt.Appendf(nil, `{
 		"server_id": "%s",
 		"user_id": "user_dev_100",

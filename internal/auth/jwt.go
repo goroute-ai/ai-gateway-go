@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
+	"golang.org/x/sync/singleflight"
 )
 
 // AudienceClaim supports RFC 7519 `aud` values encoded as either a single string or a string array.
@@ -75,6 +76,11 @@ type JWTConfig struct {
 	HTTPClient    *http.Client
 }
 
+type cachedJWK struct {
+	key any
+	alg string
+}
+
 // JWTVerifier validates inbound HS256 and OIDC RS256/ES256 JWTs.
 type JWTVerifier struct {
 	secret     []byte
@@ -84,11 +90,12 @@ type JWTVerifier struct {
 	httpClient *http.Client
 	now        func() time.Time
 
-	mu          sync.RWMutex
-	keys        map[string]any
-	fetchedAt   time.Time
-	lastAttempt time.Time
-	cacheTTL    time.Duration
+	mu           sync.RWMutex
+	keys         map[string]cachedJWK
+	fetchedAt    time.Time
+	lastAttempt  time.Time
+	cacheTTL     time.Duration
+	refreshGroup singleflight.Group
 }
 
 // NewJWTVerifier constructs a JWTVerifier using the outbound network policy HTTP client for JWKS fetches.
@@ -104,7 +111,7 @@ func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 		jwksURL:    strings.TrimSpace(cfg.OIDCJWKSURL),
 		httpClient: client,
 		now:        time.Now,
-		keys:       make(map[string]any),
+		keys:       make(map[string]cachedJWK),
 		cacheTTL:   5 * time.Minute,
 	}
 }
@@ -202,7 +209,7 @@ func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signin
 		return nil
 
 	case "RS256":
-		pubKey, err := v.resolveJWKSKey(ctx, hdr.Kid)
+		pubKey, err := v.resolveJWKSKey(ctx, hdr.Kid, hdr.Alg)
 		if err != nil {
 			return err
 		}
@@ -216,7 +223,7 @@ func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signin
 		return nil
 
 	case "ES256":
-		pubKey, err := v.resolveJWKSKey(ctx, hdr.Kid)
+		pubKey, err := v.resolveJWKSKey(ctx, hdr.Kid, hdr.Alg)
 		if err != nil {
 			return err
 		}
@@ -242,7 +249,7 @@ func (v *JWTVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signin
 	}
 }
 
-func (v *JWTVerifier) resolveJWKSKey(ctx context.Context, kid string) (any, error) {
+func (v *JWTVerifier) resolveJWKSKey(ctx context.Context, kid, expectedAlg string) (any, error) {
 	if v.jwksURL == "" {
 		return nil, errors.New("oidc jwks url is not configured")
 	}
@@ -250,39 +257,62 @@ func (v *JWTVerifier) resolveJWKSKey(ctx context.Context, kid string) (any, erro
 	now := v.now().UTC()
 	v.mu.RLock()
 	cacheValid := !v.fetchedAt.IsZero() && now.Sub(v.fetchedAt) < v.cacheTTL
-	key, found := v.lookupKeyLocked(kid)
-	canRefresh := v.lastAttempt.IsZero() || now.Sub(v.lastAttempt) >= 10*time.Second
+	entry, found := v.lookupKeyLocked(kid)
 	v.mu.RUnlock()
 
 	if cacheValid && found {
-		return key, nil
+		if entry.alg != "" && entry.alg != expectedAlg {
+			return nil, fmt.Errorf("jwks key %q algorithm mismatch: key alg %q != token alg %q", kid, entry.alg, expectedAlg)
+		}
+		return entry.key, nil
 	}
-	if !cacheValid || (!found && canRefresh) {
-		if err := v.refreshJWKS(ctx); err != nil {
-			return nil, err
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_, err, _ := v.refreshGroup.Do("jwks", func() (any, error) {
 		v.mu.RLock()
-		key, found = v.lookupKeyLocked(kid)
+		now := v.now().UTC()
+		stillCacheValid := !v.fetchedAt.IsZero() && now.Sub(v.fetchedAt) < v.cacheTTL
+		_, stillFound := v.lookupKeyLocked(kid)
+		canRefresh := v.lastAttempt.IsZero() || now.Sub(v.lastAttempt) >= 10*time.Second
 		v.mu.RUnlock()
-		if found {
-			return key, nil
+		if stillCacheValid && stillFound {
+			return nil, nil
 		}
+		if !canRefresh {
+			return nil, fmt.Errorf("jwks refresh rate-limited; key %q unavailable", kid)
+		}
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		return nil, v.refreshJWKS(fetchCtx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	v.mu.RLock()
+	entry, found = v.lookupKeyLocked(kid)
+	v.mu.RUnlock()
+	if found {
+		if entry.alg != "" && entry.alg != expectedAlg {
+			return nil, fmt.Errorf("jwks key %q algorithm mismatch: key alg %q != token alg %q", kid, entry.alg, expectedAlg)
+		}
+		return entry.key, nil
 	}
 
 	return nil, fmt.Errorf("jwks key %q not found", kid)
 }
 
-func (v *JWTVerifier) lookupKeyLocked(kid string) (any, bool) {
+func (v *JWTVerifier) lookupKeyLocked(kid string) (cachedJWK, bool) {
 	if kid != "" {
 		k, ok := v.keys[kid]
-		return k, ok && k != nil
+		return k, ok && k.key != nil
 	}
 	if len(v.keys) == 1 {
 		for _, k := range v.keys {
-			return k, k != nil
+			return k, k.key != nil
 		}
 	}
-	return nil, false
+	return cachedJWK{}, false
 }
 
 type jwksDocument struct {
@@ -333,7 +363,7 @@ func (v *JWTVerifier) refreshJWKS(ctx context.Context) error {
 		return fmt.Errorf("parse jwks json: %w", err)
 	}
 
-	parsed := make(map[string]any, len(doc.Keys))
+	parsed := make(map[string]cachedJWK, len(doc.Keys))
 	for _, entry := range doc.Keys {
 		if entry.Use != "" && entry.Use != "sig" {
 			continue
@@ -346,7 +376,10 @@ func (v *JWTVerifier) refreshJWKS(ctx context.Context) error {
 		if kid == "" {
 			kid = fmt.Sprintf("_default_%d", len(parsed))
 		}
-		parsed[kid] = pub
+		parsed[kid] = cachedJWK{
+			key: pub,
+			alg: strings.TrimSpace(entry.Alg),
+		}
 	}
 	if len(parsed) == 0 {
 		return errors.New("jwks contained no usable signing keys")

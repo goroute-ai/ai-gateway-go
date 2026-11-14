@@ -41,6 +41,7 @@ func TestLoadModelListYAML(t *testing.T) {
 	yamlContent := `
 server:
   port: 8080
+  environment: "test"
 auth:
   master_admin_key: "sk-gw-master-admin-test-key"
   master_encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -76,26 +77,68 @@ model_list:
 }
 
 func TestConfigValidationMatrix(t *testing.T) {
-	t.Run("Default configuration is valid in development", func(t *testing.T) {
+	t.Run("Default configuration is valid in development and test", func(t *testing.T) {
 		cfg := config.Default()
+		if cfg.Auth.JWTSecret != "" {
+			t.Fatalf("expected default Auth.JWTSecret to be empty, got %q", cfg.Auth.JWTSecret)
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected default keys to be rejected when environment is unset")
+		}
+		cfg.Server.Environment = "development"
 		if err := cfg.Validate(); err != nil {
-			t.Fatalf("expected default config to be valid, got: %v", err)
+			t.Fatalf("expected default config to be valid in development, got: %v", err)
+		}
+		cfg.Server.Environment = "test"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected default config to be valid in test, got: %v", err)
 		}
 	})
 
-	t.Run("Production environment rejects default master keys", func(t *testing.T) {
+	t.Run("Production and staging environments reject default master keys", func(t *testing.T) {
 		cfg := config.Default()
 		cfg.Server.Environment = "production"
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected error when validating default keys in production, got nil")
 		}
+		cfg.Server.Environment = "staging"
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected error when validating default keys in staging, got nil")
+		}
 
 		// Valid custom keys in production must pass
+		cfg.Server.Environment = "production"
 		cfg.Auth.MasterAdminKey = "sk-gw-custom-production-super-secret-key-12345"
 		cfg.Auth.MasterEncryptionKey = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 		cfg.Auth.JWTSecret = "custom-production-jwt-secret-xyz-987"
+		cfg.Auth.JWTIssuer = "https://auth.example.com"
+		cfg.Auth.JWTAudience = "ai-gateway"
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("expected custom production keys to pass validation, got: %v", err)
+		}
+	})
+
+	t.Run("JWT/OIDC requires issuer and audience", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Server.Environment = "development"
+		cfg.Auth.JWTSecret = "custom-secret"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected error when JWTSecret is set without JWTIssuer/JWTAudience")
+		}
+		cfg.Auth.JWTIssuer = "https://idp.example.com"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected error when JWTSecret is set without JWTAudience")
+		}
+		cfg.Auth.JWTAudience = "ai-gateway"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected valid JWT config, got: %v", err)
+		}
+
+		cfg.Auth.JWTSecret = ""
+		cfg.Auth.OIDCJWKSURL = "https://idp.example.com/.well-known/jwks.json"
+		cfg.Auth.JWTIssuer = ""
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected error when OIDCJWKSURL is set without JWTIssuer")
 		}
 	})
 
@@ -120,6 +163,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("Invalid CIDR in OutboundSSRF fails", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{"not-a-cidr"}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected error on invalid CIDR, got nil")
@@ -128,6 +172,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("Invalid IP in BlockedIPs fails", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		cfg.Security.Network.OutboundSSRF.BlockedIPs = []string{"999.999.999.999"}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected error on invalid blocked IP, got nil")
@@ -136,6 +181,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("MCP AllowStdioServers fails fast without BL-02 sandbox", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		cfg.MCP.AllowStdioServers = true
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected error when MCP allow_stdio_servers is true, got nil")
@@ -144,6 +190,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("A2A with zero enabled transports fails", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		cfg.A2A.EnableJSONRPC = false
 		cfg.A2A.EnableHTTPJSON = false
 		if err := cfg.Validate(); err == nil {
@@ -153,6 +200,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("A2A with unsafe none/HS signing algs fails", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		cfg.A2A.AllowedSigningAlgs = []string{"ES256", "none"}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected error on 'none' algorithm, got nil")
@@ -166,6 +214,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 
 	t.Run("Server GRPCPort defaults to 0 and validates range", func(t *testing.T) {
 		cfg := config.Default()
+		cfg.Server.Environment = "test"
 		if cfg.Server.GRPCPort != 0 {
 			t.Fatalf("expected default GRPCPort 0, got %d", cfg.Server.GRPCPort)
 		}
@@ -185,6 +234,7 @@ func TestConfigValidationMatrix(t *testing.T) {
 }
 
 func TestLoadGRPCPortEnvOverride(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "test")
 	t.Setenv("GATEWAY_GRPC_PORT", "9091")
 	cfg, err := config.Load("")
 	if err != nil {
@@ -196,6 +246,7 @@ func TestLoadGRPCPortEnvOverride(t *testing.T) {
 }
 
 func TestLoadStorageRedisClusterConfigAndEnvOverrides(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "test")
 	t.Setenv("GATEWAY_REDIS_ADDRS", "redis-1:6379, redis-2:6379 ,redis-3:6379")
 	t.Setenv("GATEWAY_REDIS_MASTER_NAME", "goroute-master")
 

@@ -59,6 +59,7 @@ type OutboundSSRFConfig struct {
 type InboundCallerConfig struct {
 	ExposeOnPublicInternet bool     `yaml:"expose_on_public_internet"`
 	AllowedClientCIDRs     []string `yaml:"allowed_client_cidrs"`
+	TrustedProxyCIDRs      []string `yaml:"trusted_proxy_cidrs"`
 }
 
 // MCPConfig defines parameters for Model Context Protocol (2026-07-28 & 2025-11-25 compat).
@@ -263,7 +264,7 @@ func Default() *Config {
 		Auth: AuthConfig{
 			MasterAdminKey:      "sk-gw-master-admin-default-key-change-me",
 			MasterEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			JWTSecret:           "gateway-jwt-hmac-secret-change-me",
+			JWTSecret:           "",
 			DefaultOrgID:        "org_default",
 			L1CacheTTL:          15 * time.Second,
 			L2CacheTTL:          5 * time.Minute,
@@ -560,23 +561,30 @@ func (c *Config) Validate() error {
 		defaultJWTSecret           = "gateway-jwt-hmac-secret-change-me"
 	)
 	env := strings.ToLower(strings.TrimSpace(c.Server.Environment))
-	isProduction := env == "production" || env == "prod"
 	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
 		candidate = strings.ToLower(strings.TrimSpace(candidate))
-		if candidate == "production" || candidate == "prod" {
+		if candidate != "" {
 			env = candidate
-			isProduction = true
 		}
 	}
-	if isProduction {
+	isDevOrTest := env == "development" || env == "test"
+	if !isDevOrTest {
 		if c.Auth.MasterAdminKey == defaultMasterAdminKey {
-			return fmt.Errorf("security violation: auth.master_admin_key cannot be the default key in %s environment", env)
+			return fmt.Errorf("security violation: auth.master_admin_key cannot be the default key in %q environment", env)
 		}
 		if c.Auth.MasterEncryptionKey == defaultMasterEncryptionKey {
-			return fmt.Errorf("security violation: auth.master_encryption_key cannot be the default key in %s environment", env)
+			return fmt.Errorf("security violation: auth.master_encryption_key cannot be the default key in %q environment", env)
 		}
 		if c.Auth.JWTSecret == defaultJWTSecret {
-			return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %s environment", env)
+			return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %q environment", env)
+		}
+	}
+	if strings.TrimSpace(c.Auth.JWTSecret) != "" || strings.TrimSpace(c.Auth.OIDCJWKSURL) != "" {
+		if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
+			return fmt.Errorf("auth.jwt_issuer is required when JWT or OIDC authentication is enabled")
+		}
+		if strings.TrimSpace(c.Auth.JWTAudience) == "" {
+			return fmt.Errorf("auth.jwt_audience is required when JWT or OIDC authentication is enabled")
 		}
 	}
 
@@ -594,6 +602,11 @@ func (c *Config) Validate() error {
 	for _, cidr := range c.Security.Network.InboundCaller.AllowedClientCIDRs {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 			return fmt.Errorf("invalid security.network.inbound_caller.allowed_client_cidrs %q: %w", cidr, err)
+		}
+	}
+	for _, cidr := range c.Security.Network.InboundCaller.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return fmt.Errorf("invalid security.network.inbound_caller.trusted_proxy_cidrs %q: %w", cidr, err)
 		}
 	}
 

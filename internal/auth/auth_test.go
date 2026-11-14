@@ -417,7 +417,7 @@ func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
 			t.Fatalf("create team: %v", err)
 		}
 
-		repo := &failingAuthRepo{Repository: memRepo, failTeam: true}
+		repo := &failingAuthRepo{Repository: memRepo, failTeam: false}
 		svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
 		vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
 			OrgID:  org.ID,
@@ -427,6 +427,8 @@ func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("issue virtual key: %v", err)
 		}
+		repo.failTeam = true
+		repo.getTeamCalls = 0
 
 		// 1. Transient DB error on GetTeam must fail closed with 503 team_policy_unavailable.
 		_, err = svc.AuthenticateVirtualKey(ctx, vk.RawKey)
@@ -466,16 +468,20 @@ func TestAuthenticateVirtualKey_TeamFailClosed(t *testing.T) {
 		}
 
 		svc := auth.NewService(memRepo, nil, "sk-gw-master-admin-secret-key", 10*time.Second, time.Minute)
-		vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
-			OrgID:  org.ID,
-			TeamID: "nonexistent-team-id",
-			Name:   "orphan-team-key",
-		})
-		if err != nil {
-			t.Fatalf("issue virtual key: %v", err)
+		rawKey := "sk-gw-orphaned-team-key-1234567890"
+		if err := memRepo.CreateVirtualKey(ctx, &domain.VirtualKey{
+			ID:        "vk-orphan-team",
+			OrgID:     org.ID,
+			TeamID:    "nonexistent-team-id",
+			Name:      "orphan-team-key",
+			KeyPrefix: "sk-gw-orphan",
+			KeyHash:   auth.HashKey(rawKey),
+			IsActive:  true,
+		}); err != nil {
+			t.Fatalf("create virtual key: %v", err)
 		}
 
-		_, err = svc.AuthenticateVirtualKey(ctx, vk.RawKey)
+		_, err := svc.AuthenticateVirtualKey(ctx, rawKey)
 		if err == nil {
 			t.Fatal("expected AuthenticateVirtualKey to reject missing team")
 		}
