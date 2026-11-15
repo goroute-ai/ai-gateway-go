@@ -23,7 +23,7 @@ This document tracks the six-phase upgrade of GoRoute AI Gateway (`ai-gateway-go
 | Phase 3 | [#77](https://github.com/goroute-ai/ai-gateway-go/issues/77) | `enhancement` | Done (`main` `046b5d5`) | Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking | `#73`, `#74` |
 | Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Done (`main` `dd6697f`) | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
 | Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Done (`main` `5974b47`) | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
-| Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Open | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
+| Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Done (`main` `e251b20`) | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
 | Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Open | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
 
 ---
@@ -203,16 +203,16 @@ flowchart TD
     - [x] Implement all 9 priority drivers (`openai_moderation`, `bedrock`, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `local_content_filter`).
     - [x] Upgrade `StreamRedactor` with `stream_scope`, chunk window overlap for remote `post_call` drivers, and incremental `tool_calls` argument scanning.
 
-- [ ] **Task 4B (`#80`)**: Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router ([Issue #80](https://github.com/goroute-ai/ai-gateway-go/issues/80))
+- [x] **Task 4B (`#80`)**: Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router ([Issue #80](https://github.com/goroute-ai/ai-gateway-go/issues/80)) — **Landed locally on `main` (`e251b20`)**
   - **Exclusive File Ownership (starts after `#79` `DriverRegistry` interface lands):**
     - `internal/guardrails/drivers/llm_judge.go` (new)
     - `internal/guardrails/drivers/decision_model.go` (new)
     - `internal/guardrails/drivers/llm_judge_test.go` (new)
     - `tests/guardrails/llm_judge_test.go` (new)
   - **Deliverables:**
-    - [ ] Implement `llm_as_a_judge` routing via `router.ReliabilityManager.ExecuteChat` with weighted `0–100` rubric scoring and JSON verdict parsing.
-    - [ ] Implement `decision_model` evaluating structured boolean predicate `checks[]` via internal router target models.
-    - [ ] Enforce non-spoofable `_internal_guardrail_origin` loop guard so internal judge/decision calls never re-trigger guardrails recursively.
+    - [x] Implement `llm_as_a_judge` routing via `router.ReliabilityManager.ExecuteChat` with weighted `0–100` rubric scoring and JSON verdict parsing.
+    - [x] Implement `decision_model` evaluating structured boolean predicate `checks[]` via internal router target models.
+    - [x] Enforce non-spoofable `_internal_guardrail_origin` loop guard so internal judge/decision calls never re-trigger guardrails recursively.
 
 ---
 
