@@ -16,7 +16,7 @@ This document tracks the six-phase upgrade of GoRoute AI Gateway (`ai-gateway-go
 | Phase | Issue | Type | Status | Title | Dependencies |
 | --- | --- | --- | --- | --- | --- |
 | Phase 0 | [#72](https://github.com/goroute-ai/ai-gateway-go/issues/72) | `bug` | Done (`main` `2207fab`) | Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract | None |
-| Phase 1 | [#73](https://github.com/goroute-ai/ai-gateway-go/issues/73) | `enhancement` | Open | Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical Org/Team/Key/User/Model/Tag bindings | `#72` |
+| Phase 1 | [#73](https://github.com/goroute-ai/ai-gateway-go/issues/73) | `enhancement` | Done (`main` `d2a954c`) | Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical Org/Team/Key/User/Model/Tag bindings | `#72` |
 | Phase 1 | [#74](https://github.com/goroute-ai/ai-gateway-go/issues/74) | `enhancement` | Open | Multi-hook Guardrail Pipeline v2 (`pre_call`, parallel `during_call`, `post_call`, `logging_only`), `stream_scope`, tag modes & load balancing | `#73` |
 | Phase 2 | [#75](https://github.com/goroute-ai/ai-gateway-go/issues/75) | `enhancement` | Open | Public Go SDK `GuardrailScanner` plugin API (`pkg/gateway`) and upgraded `generic_http` webhook (`modify` action, rich context, per-scanner failure policy) | `#73`, `#74` |
 | Phase 2 | [#76](https://github.com/goroute-ai/ai-gateway-go/issues/76) | `enhancement` | Open | Sandboxed Starlark `custom_code` guardrail runtime with SSRF-enforced HTTP primitives and bounded execution | `#73`, `#74` |
@@ -89,7 +89,7 @@ flowchart TD
 
 ### Phase 1 — Core Guardrail Pipeline v2, Named Registry & Hierarchical Bindings
 
-- [ ] **Task 1A (`#73`)**: Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical bindings ([Issue #73](https://github.com/goroute-ai/ai-gateway-go/issues/73))
+- [x] **Task 1A (`#73`)**: Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical bindings ([Issue #73](https://github.com/goroute-ai/ai-gateway-go/issues/73)) — **Landed locally on `main` (`d2a954c`)**
   - **Exclusive File Ownership:**
     - `internal/domain/guardrails.go` (new)
     - `internal/domain/inference.go` (`GoRouteExtensions` additions)
@@ -98,10 +98,10 @@ flowchart TD
     - `internal/storage/repository.go`, `internal/storage/memory.go`, `internal/storage/postgres.go` (registry & binding CRUD + `RotateGuardrailSecrets`)
     - `internal/storage/guardrail_registry_test.go` (new)
   - **Deliverables:**
-    - [ ] Define `GuardrailHook`, `StreamScope`, `GuardrailModeRule`, `GuardrailStatus`, `GuardrailDecision`, `GuardrailDefinition`, `GuardrailBinding`, `GuardrailEvalInput`, and `GuardrailEvalResult`.
-    - [ ] Extend `GoRouteExtensions` with `Guardrails []GuardrailRequestOverride` and `Tags []string`.
-    - [ ] Create `guardrail_definitions` and `guardrail_bindings` tables in migration `0017` (+ reversible `.down.sql`).
-    - [ ] Implement CRUD, coalesced org lookup, and Vault DEK rotation (`RotateGuardrailSecrets`) in both `MemoryRepository` and `PostgresRepository`.
+    - [x] Define `GuardrailHook`, `StreamScope`, `GuardrailModeRule`, `GuardrailStatus`, `GuardrailDecision`, `GuardrailDefinition`, `GuardrailBinding`, `GuardrailEvalInput`, and `GuardrailEvalResult`.
+    - [x] Extend `GoRouteExtensions` with `Guardrails []GuardrailRequestOverride` and `Tags []string`.
+    - [x] Create `guardrail_definitions` and `guardrail_bindings` tables in migration `0017` (+ reversible `.down.sql`).
+    - [x] Implement CRUD, coalesced org lookup, and Vault DEK rotation (`RotateGuardrailSecrets`) in both `MemoryRepository` and `PostgresRepository`.
 
 - [ ] **Task 1B (`#74`)**: Multi-hook Guardrail Pipeline v2, `stream_scope`, tag modes & load balancing ([Issue #74](https://github.com/goroute-ai/ai-gateway-go/issues/74))
   - **Exclusive File Ownership (starts after `#73` domain/storage types land):**

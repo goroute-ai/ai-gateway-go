@@ -301,35 +301,9 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 1c. Security Guardrails Evaluation (Prompt Injection, Secret/PII Redaction & Blocked Keywords)
-	grRes, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, &chatReq)
-	guardrailRedacted := false
-	if grRes != nil && len(grRes.Violations) > 0 {
-		guardrailRedacted = grRes.Redacted
-		w.Header().Set("X-Gateway-Guardrail-Action", string(grRes.AppliedAction))
-		_ = s.repo.RecordAuditLog(r.Context(), &domain.AuditLog{
-			OrgID:      idCtx.OrgID,
-			ActorID:    idCtx.VirtualKeyID,
-			Action:     "guardrail.triggered",
-			Resource:   "chat_completion",
-			ResourceID: reqID,
-			Details: map[string]any{
-				"action":     grRes.AppliedAction,
-				"violations": grRes.Violations,
-				"redacted":   grRes.Redacted,
-				"trace_id":   traceID,
-			},
-		})
-	}
+	// 1c. Security Guardrails Evaluation (Layer 0 Engine + Layer 1 pre_call Pipeline)
+	prc, guardrailRedacted, err := s.evaluateChatInputGuardrails(r.Context(), w, r, idCtx, &chatReq, "chat_completion")
 	if err != nil {
-		status := http.StatusBadRequest
-		if ge, ok := err.(*domain.GatewayError); ok && ge.StatusCode != 0 {
-			status = ge.StatusCode
-		}
-		s.collector.Record(observability.RequestObservation{
-			StatusCode:       status,
-			GuardrailBlocked: true,
-		})
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -385,14 +359,15 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq)
 		if cacheKey != "" {
 			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-				redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+				redacted, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "chat_completion")
 				if sanitizeErr != nil {
 					domain.WriteHTTPError(w, sanitizeErr)
 					return
 				}
 				if redacted {
-					w.Header().Set("X-Gateway-Output-Redacted", "true")
+					guardrailRedacted = true
 				}
+				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
 				actualTokensReconciled = true
 				releaseQuota(0)
 				s.collector.Record(observability.RequestObservation{
@@ -465,12 +440,21 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	// 4. Streaming SSE Execution Path
 	if chatReq.Stream {
-		policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
-		if policyErr != nil {
-			domain.WriteHTTPError(w, policyErr)
+		upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
+		if duringInitErr != nil {
+			domain.WriteHTTPError(w, duringInitErr)
 			return
 		}
-		streamRedactor := s.guardrails.NewStreamRedactor(policy)
+		streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+		if sessionErr != nil {
+			if duringHandle != nil {
+				duringHandle.Close()
+			}
+			domain.WriteHTTPError(w, sessionErr)
+			return
+		}
+		defer streamSession.Close()
+
 		sseWriter, err := sse.NewWriter(w)
 		if err != nil {
 			domain.WriteHTTPError(w, err)
@@ -491,20 +475,21 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			if chunk == nil {
 				return nil
 			}
+			if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
+				return checkErr
+			}
 			if isTerminalStreamChunk(chunk) {
 				sawTerminalChunk = true
 			}
 			c := cloneSingleStreamChunk(*chunk)
-			if streamRedactor != nil && len(c.Choices) > 0 {
-				if streamRedactor.Blocked() {
-					return guardrailStreamBlockedError()
-				}
+			if len(c.Choices) > 0 {
 				delta := &c.Choices[0].Delta
 				if delta.Content != "" {
-					delta.Content = streamRedactor.Process(delta.Content)
-					if streamRedactor.Blocked() {
-						return guardrailStreamBlockedError()
+					processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
+					if procErr != nil {
+						return procErr
 					}
+					delta.Content = processed
 					if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && c.Choices[0].FinishReason == nil && c.Usage == nil {
 						return nil
 					}
@@ -513,6 +498,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			if err := sseWriter.WriteChunk(&c); err != nil {
 				return err
 			}
+			streamSession.MarkSSEStarted()
 			if collectSanitized && streamCacheKey != "" {
 				sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, c)
 			}
@@ -541,25 +527,21 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						break
 					}
 				}
-				var replayFlushRem string
-				if replayErr == nil && streamRedactor != nil {
-					replayFlushRem = streamRedactor.Flush()
-					if streamRedactor.Redacted() {
-						guardrailRedacted = true
-					}
-					if streamRedactor.Blocked() {
-						replayErr = guardrailStreamBlockedError()
-					}
-				} else if streamRedactor != nil {
-					if streamRedactor.Blocked() {
-						_ = streamRedactor.Flush()
-					}
-					if streamRedactor.Redacted() {
-						guardrailRedacted = true
+				if !sseWriter.Started() {
+					if _, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil && replayErr == nil {
+						replayErr = duringErr
 					}
 				}
+				replayFlushRem, flushErr := streamSession.Flush(r.Context(), replayErr)
+				if replayErr == nil && flushErr != nil {
+					replayErr = flushErr
+				}
+				if streamSession.Redacted() {
+					guardrailRedacted = true
+				}
 				if replayErr != nil {
-					streamGuardrailBlocked := streamRedactor != nil && streamRedactor.Blocked()
+					streamGuardrailBlocked := streamSession.Blocked()
+					legacyStreamBlocked := streamSession.redactor != nil && streamSession.redactor.Blocked()
 					statusCode := http.StatusBadGateway
 					if gwErr, ok := replayErr.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
 						statusCode = gwErr.StatusCode
@@ -572,7 +554,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						GuardrailBlocked:  streamGuardrailBlocked,
 						GuardrailRedacted: guardrailRedacted,
 					})
-					if !sseWriter.Started() && !streamGuardrailBlocked {
+					if !sseWriter.Started() && !legacyStreamBlocked {
 						domain.WriteHTTPError(w, replayErr)
 					} else {
 						_ = sseWriter.WriteError(replayErr)
@@ -642,6 +624,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						return
 					}
 				}
+				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, nil)
 				_ = sseWriter.WriteDone()
 				return
 			}
@@ -666,28 +649,27 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		}
 
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
-			usage, meta, err = s.orchestrator.ExecuteStreamLoop(r.Context(), idCtx, &chatReq, writeChunk, onSelected)
+			usage, meta, err = s.orchestrator.ExecuteStreamLoop(upstreamCtx, idCtx, &chatReq, writeChunk, onSelected)
 		} else {
-			usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, &chatReq, writeChunk, onSelected)
+			usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, &chatReq, writeChunk, onSelected)
 		}
-		var streamFlushRem string
-		if err == nil && streamRedactor != nil {
-			streamFlushRem = streamRedactor.Flush()
-			if streamRedactor.Redacted() {
-				guardrailRedacted = true
+		if !sseWriter.Started() {
+			if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
+				s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "chat_completion")
+				err = duringErr
 			}
-			if streamRedactor.Blocked() {
-				err = guardrailStreamBlockedError()
-			}
-		} else if streamRedactor != nil {
-			if streamRedactor.Blocked() {
-				_ = streamRedactor.Flush()
-			}
-			if streamRedactor.Redacted() {
-				guardrailRedacted = true
-			}
+		} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
+			err = duringErr
 		}
-		streamGuardrailBlocked := streamRedactor != nil && streamRedactor.Blocked()
+		streamFlushRem, flushErr := streamSession.Flush(r.Context(), err)
+		if err == nil && flushErr != nil {
+			err = flushErr
+		}
+		if streamSession.Redacted() {
+			guardrailRedacted = true
+		}
+		streamGuardrailBlocked := streamSession.Blocked()
+		legacyStreamBlocked := streamSession.redactor != nil && streamSession.redactor.Blocked()
 		var streamTTFT time.Duration
 		if meta != nil && meta.TTFTMs > 0 {
 			streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
@@ -729,7 +711,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				GuardrailBlocked:  streamGuardrailBlocked,
 				GuardrailRedacted: guardrailRedacted,
 			})
-			if !sseWriter.Started() && !streamGuardrailBlocked {
+			if !sseWriter.Started() && !legacyStreamBlocked {
 				domain.WriteHTTPError(w, err)
 			} else {
 				// Mid-stream failure or stream output guardrail block:
@@ -849,6 +831,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				return
 			}
 		}
+		s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, nil)
 		_ = sseWriter.WriteDone()
 		logger.InfoContext(r.Context(), "Streaming inference completed",
 			slog.String("component", "inference"),
@@ -871,13 +854,27 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	// 5. Synchronous JSON Execution Path
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
+	if duringInitErr != nil {
+		domain.WriteHTTPError(w, duringInitErr)
+		return
+	}
+	if duringHandle != nil {
+		defer duringHandle.Close()
+	}
+
 	var resp *domain.CanonicalChatResponse
 	var meta *router.ExecutionMeta
 
 	if s.orchestrator != nil && len(chatReq.Tools) > 0 {
-		resp, meta, err = s.orchestrator.ExecuteLoop(r.Context(), idCtx, &chatReq)
+		resp, meta, err = s.orchestrator.ExecuteLoop(upstreamCtx, idCtx, &chatReq)
 	} else {
-		resp, meta, err = s.reliability.ExecuteChat(r.Context(), idCtx, &chatReq)
+		resp, meta, err = s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
+	}
+	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
+		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "chat_completion")
+		domain.WriteHTTPError(w, duringErr)
+		return
 	}
 	if err != nil {
 		statusCode := http.StatusBadGateway
@@ -909,11 +906,10 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	actualTokensReconciled = true
 	releaseQuota(resp.Usage.TotalTokens)
 
-	// Output Guardrail PII sanitization (if enabled on the organization)
-	redacted, guardrailOutputErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, resp)
+	// Output Guardrail Evaluation (Layer 0 Engine + Layer 1 post_call Pipeline)
+	redacted, guardrailOutputErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "chat_completion")
 	if redacted {
 		guardrailRedacted = true
-		w.Header().Set("X-Gateway-Output-Redacted", "true")
 	}
 
 	var gm *domain.GlobalModel
@@ -938,6 +934,9 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	responseStatus := http.StatusOK
 	if guardrailOutputErr != nil {
 		responseStatus = http.StatusServiceUnavailable
+		if gwErr, ok := guardrailOutputErr.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
+			responseStatus = gwErr.StatusCode
+		}
 	}
 
 	s.collector.Record(observability.RequestObservation{
@@ -1017,6 +1016,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, guardrailOutputErr)
 		return
 	}
+	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
 	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Inference completed",
 		slog.String("component", "inference"),
@@ -1045,12 +1045,13 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	idCtx := auth.IdentityFromContext(r.Context())
 
 	var raw struct {
-		Model          string `json:"model"`
-		Input          any    `json:"input"`
-		EncodingFormat string `json:"encoding_format,omitempty"`
-		Dimensions     *int   `json:"dimensions,omitempty"`
-		InputType      string `json:"input_type,omitempty"`
-		User           string `json:"user,omitempty"`
+		Model             string                    `json:"model"`
+		Input             any                       `json:"input"`
+		EncodingFormat    string                    `json:"encoding_format,omitempty"`
+		Dimensions        *int                      `json:"dimensions,omitempty"`
+		InputType         string                    `json:"input_type,omitempty"`
+		User              string                    `json:"user,omitempty"`
+		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -1084,7 +1085,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)
+	guardedInputs, guardrailErr := s.guardrailTextValuesWithExtensions(r.Context(), idCtx.OrgID, raw.Model, raw.GoRouteExtensions, inputs...)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return

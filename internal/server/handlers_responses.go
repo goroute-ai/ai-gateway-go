@@ -31,8 +31,11 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req domain.CanonicalResponseRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 10<<20)).Decode(&req); err != nil {
+	var wire struct {
+		domain.CanonicalResponseRequest
+		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 10<<20)).Decode(&wire); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
@@ -41,6 +44,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	req := wire.CanonicalResponseRequest
 
 	if req.Model == "" {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -74,14 +78,17 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	respReqID := gatewayRequestID(r)
 	chatReq := &domain.CanonicalChatRequest{
-		Model:       req.Model,
-		Messages:    messages,
-		Tools:       mapResponsesTools(req.Tools),
-		ToolChoice:  mapResponsesToolChoice(req.ToolChoice),
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxOutputTokens,
+		RequestID:         respReqID,
+		Model:             req.Model,
+		Messages:          messages,
+		Tools:             mapResponsesTools(req.Tools),
+		ToolChoice:        mapResponsesToolChoice(req.ToolChoice),
+		Stream:            req.Stream,
+		Temperature:       req.Temperature,
+		MaxTokens:         req.MaxOutputTokens,
+		GoRouteExtensions: wire.GoRouteExtensions,
 	}
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		chatReq.ReasoningEffort = req.Reasoning.Effort
@@ -89,12 +96,11 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if req.Text != nil && req.Text.Format != nil {
 		chatReq.ResponseFormat = req.Text.Format
 	}
-	if _, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, chatReq); err != nil {
+	prc, _, err := s.evaluateChatInputGuardrails(r.Context(), w, r, idCtx, chatReq, "responses")
+	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-
-	respReqID := gatewayRequestID(r)
 	estInputTokens := ratelimit.EstimateRequestTokens(chatReq)
 	maxOut := 0
 	if req.MaxOutputTokens != nil {
@@ -113,15 +119,13 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq)
 			if cacheKey != "" {
 				if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-					redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+					_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "responses")
 					if sanitizeErr != nil {
 						releaseQuota(0)
 						domain.WriteHTTPError(w, sanitizeErr)
 						return
 					}
-					if redacted {
-						w.Header().Set("X-Gateway-Output-Redacted", "true")
-					}
+					s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, cachedResp)
 					releaseQuota(0)
 					s.collector.Record(observability.RequestObservation{
 						Provider:   string(cachedResp.Provider),
@@ -145,23 +149,34 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 
-		resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, chatReq)
+		upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
+		if duringInitErr != nil {
+			releaseQuota(-1)
+			domain.WriteHTTPError(w, duringInitErr)
+			return
+		}
+		if duringHandle != nil {
+			defer duringHandle.Close()
+		}
+
+		resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
+		if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
+			releaseQuota(-1)
+			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "responses")
+			domain.WriteHTTPError(w, duringErr)
+			return
+		}
 		if err != nil {
 			releaseQuota(-1)
 			domain.WriteHTTPError(w, err)
 			return
 		}
 		releaseQuota(resp.Usage.TotalTokens)
-		guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
-		redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, guardrailResp)
-		if sanitizeErr != nil {
+		if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "responses"); sanitizeErr != nil {
 			domain.WriteHTTPError(w, sanitizeErr)
 			return
 		}
-		resp.Choices = guardrailResp.Choices
-		if redacted {
-			w.Header().Set("X-Gateway-Output-Redacted", "true")
-		}
+		s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
 		if cacheKey != "" {
 			s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
 			w.Header().Set("X-Gateway-Cache", "MISS")
@@ -226,12 +241,22 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
-	if policyErr != nil {
-		domain.WriteHTTPError(w, policyErr)
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
+	if duringInitErr != nil {
+		releaseQuota(-1)
+		domain.WriteHTTPError(w, duringInitErr)
 		return
 	}
-	streamRedactor := s.guardrails.NewStreamRedactor(policy)
+	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+	if sessionErr != nil {
+		if duringHandle != nil {
+			duringHandle.Close()
+		}
+		releaseQuota(-1)
+		domain.WriteHTTPError(w, sessionErr)
+		return
+	}
+	defer streamSession.Close()
 
 	streamCacheHeader := streamCacheControlHeader(r)
 	var streamCacheKey string
@@ -250,28 +275,38 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
 	respID := "resp_" + uuid.NewString()
 	msgID := "msg_" + uuid.NewString()
 	now := time.Now().Unix()
 
-	// 1. response.created
-	initialResp := map[string]any{
-		"response": map[string]any{
-			"id":         respID,
-			"object":     "response",
-			"status":     "in_progress",
-			"model":      req.Model,
-			"created_at": now,
-		},
+	var b []byte
+	startSSE := func() {
+		if streamSession.SSEStarted() {
+			return
+		}
+		streamSession.MarkSSEStarted()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		// 1. response.created
+		initialResp := map[string]any{
+			"response": map[string]any{
+				"id":         respID,
+				"object":     "response",
+				"status":     "in_progress",
+				"model":      req.Model,
+				"created_at": now,
+			},
+		}
+		b, _ = json.Marshal(initialResp)
+		fmt.Fprintf(w, "event: response.created\ndata: %s\n\n", string(b))
+		flusher.Flush()
 	}
-	b, _ := json.Marshal(initialResp)
-	fmt.Fprintf(w, "event: response.created\ndata: %s\n\n", string(b))
-	flusher.Flush()
+	if !streamSession.HasDuringCall() {
+		startSSE()
+	}
 
 	fullText := strings.Builder{}
 	type streamToolItem struct {
@@ -344,21 +379,19 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		if chunk == nil || len(chunk.Choices) == 0 {
 			return nil
 		}
+		if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
+			return checkErr
+		}
+		startSSE()
 		if isTerminalStreamChunk(chunk) {
 			sawTerminalChunk = true
-		}
-		if streamRedactor != nil && streamRedactor.Blocked() {
-			return guardrailStreamBlockedError()
 		}
 		c := cloneSingleStreamChunk(*chunk)
 		delta := &c.Choices[0].Delta
 		if delta.Content != "" {
-			txt := delta.Content
-			if streamRedactor != nil {
-				txt = streamRedactor.Process(txt)
-				if streamRedactor.Blocked() {
-					return guardrailStreamBlockedError()
-				}
+			txt, procErr := streamSession.ProcessText(r.Context(), delta.Content)
+			if procErr != nil {
+				return procErr
 			}
 			delta.Content = txt
 			emitDelta(txt)
@@ -427,7 +460,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	streamStarted := time.Now()
 	var usage *domain.TokenUsage
 	var meta *router.ExecutionMeta
-	var err error
+	err = nil
 	if streamCacheHit {
 		for i := range cachedStreamChunks {
 			if err = onChunk(&cachedStreamChunks[i]); err != nil {
@@ -437,16 +470,19 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		u := extractStreamChunksUsage(cachedStreamChunks, estInputTokens)
 		usage = &u
 	} else {
-		usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, onChunk, onSelected)
+		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, onSelected)
 	}
-	var flushDelta string
-	if err == nil && streamRedactor != nil {
-		flushDelta = streamRedactor.Flush()
-		if streamRedactor.Blocked() {
-			err = guardrailStreamBlockedError()
+	if !streamSession.SSEStarted() {
+		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
+			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "responses")
+			err = duringErr
 		}
-	} else if streamRedactor != nil && streamRedactor.Blocked() {
-		_ = streamRedactor.Flush()
+	} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
+		err = duringErr
+	}
+	flushDelta, flushErr := streamSession.Flush(r.Context(), err)
+	if err == nil && flushErr != nil {
+		err = flushErr
 	}
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
@@ -459,7 +495,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		} else {
 			releaseQuota(-1)
 		}
-		isBlocked := streamRedactor != nil && streamRedactor.Blocked()
+		isBlocked := streamSession.Blocked()
 		errCode := "stream_error"
 		statusCode := http.StatusBadGateway
 		if gwErr, ok := err.(*domain.GatewayError); ok {
@@ -477,8 +513,12 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Model:             req.Model,
 			StatusCode:        statusCode,
 			GuardrailBlocked:  isBlocked,
-			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+			GuardrailRedacted: streamSession.Redacted(),
 		})
+		if !streamSession.SSEStarted() {
+			domain.WriteHTTPError(w, err)
+			return
+		}
 		errEv := map[string]any{
 			"error": map[string]any{
 				"message": err.Error(),
@@ -490,6 +530,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		flusher.Flush()
 		return
 	}
+	startSSE()
+	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	if flushDelta != "" {
 		emitDelta(flushDelta)
 		if !streamCacheHit && streamCacheKey != "" {
@@ -525,7 +567,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Model:             resolved,
 			StatusCode:        http.StatusOK,
 			CacheHit:          true,
-			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
 		releaseQuota(streamUsage.TotalTokens)
@@ -541,7 +583,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros = finops.CalculateCostMicros(gm, streamUsage)
-		if streamCacheKey != "" && (streamRedactor == nil || !streamRedactor.Blocked()) && sawTerminalChunk && len(sanitizedChunks) > 0 {
+		if streamCacheKey != "" && !streamSession.Blocked() && sawTerminalChunk && len(sanitizedChunks) > 0 {
 			finalizeStreamChunksForCache(sanitizedChunks, resolved, streamUsage)
 			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolved, sanitizedChunks)
 		}
