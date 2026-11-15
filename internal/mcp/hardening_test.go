@@ -2,11 +2,23 @@ package mcp_test
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -333,4 +345,380 @@ func TestMCP2025AndCacheAndOpenAPIHardening(t *testing.T) {
 	_, _, err = oa.RoundTrip(ctx, srv, nil, nil, req, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), fetchCount.Load(), "OpenAPI spec cache should miss when ConfigVersion changes")
+}
+
+type stubMCPPipelineDriver struct {
+	name  string
+	hooks []domain.GuardrailHook
+	fn    func(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error)
+}
+
+func (d *stubMCPPipelineDriver) Name() string                           { return d.name }
+func (d *stubMCPPipelineDriver) SupportedHooks() []domain.GuardrailHook { return d.hooks }
+func (d *stubMCPPipelineDriver) Evaluate(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
+	return d.fn(ctx, input)
+}
+
+func signHS256TestJWT(t *testing.T, secret string, claims map[string]any) string {
+	t.Helper()
+	hdrJSON, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	claimsJSON, _ := json.Marshal(claims)
+	signingInput := base64.RawURLEncoding.EncodeToString(hdrJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func decodeTestJWTPayload(t *testing.T, raw string) (map[string]any, map[string]any) {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(raw, "Bearer "), ".")
+	require.Len(t, parts, 3)
+	hdrBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	require.NoError(t, err)
+	payBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var hdr, pay map[string]any
+	require.NoError(t, json.Unmarshal(hdrBytes, &hdr))
+	require.NoError(t, json.Unmarshal(payBytes, &pay))
+	return hdr, pay
+}
+
+func TestMCPJWTSigner_VerifyTransformAndSign(t *testing.T) {
+	ctx := context.Background()
+	incomingSecret := "incoming-oidc-hs256-secret-32-bytes"
+	outboundSecret := "vault-outbound-hs256-secret-32b"
+
+	signer, err := mcp.NewMCPJWTSigner(mcp.MCPJWTSignerConfig{
+		KeyID:                "vault-k1",
+		SigningKey:           outboundSecret,
+		Issuer:               "goroute-ai-gateway",
+		TrustedAudiences:     []string{"https://mcp.internal/tools"},
+		TokenTTL:             2 * time.Minute,
+		VerifyIncoming:       true,
+		RequireIncomingToken: true,
+		VerificationKey:      incomingSecret,
+		VerificationIssuer:   "https://idp.example.com",
+		VerificationAudience: "goroute-mcp",
+		RequiredClaims: mcp.RequiredClaimsSpec{
+			"sub":   true,
+			"scope": "mcp:invoke",
+		},
+		OptionalClaims: []string{"dept", "missing_opt"},
+		AddClaims: map[string]any{
+			"env":  "prod",
+			"dept": "should-not-overwrite-incoming",
+		},
+		SetClaims: map[string]any{
+			"gateway_hop": "goroute-v1",
+			"org_id":      "org-override",
+		},
+		RemoveClaims: []string{"team_id"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.MCPAuthVaultJWT, signer.Type())
+
+	now := time.Now().UTC()
+	validIncoming := signHS256TestJWT(t, incomingSecret, map[string]any{
+		"iss":   "https://idp.example.com",
+		"aud":   "goroute-mcp",
+		"sub":   "end-user-alice",
+		"email": "alice@example.com",
+		"scope": "openid mcp:invoke",
+		"dept":  "platform",
+		"extra": "not-in-optional-list",
+		"exp":   now.Add(5 * time.Minute).Unix(),
+	})
+
+	req, err := http.NewRequest(http.MethodPost, "https://mcp.internal/tools", nil)
+	require.NoError(t, err)
+	authCtx := &upstream.UpstreamAuthContext{
+		TargetURL:      "https://mcp.internal/tools",
+		CallingOrgID:   "org-orig",
+		CallingTeamID:  "team-secret",
+		CallingUserID:  "u-internal",
+		DelegatedToken: validIncoming,
+	}
+	require.NoError(t, signer.Apply(ctx, req, authCtx))
+
+	authHeader := req.Header.Get("Authorization")
+	require.True(t, strings.HasPrefix(authHeader, "Bearer "))
+	hdr, claims := decodeTestJWTPayload(t, authHeader)
+	assert.Equal(t, "HS256", hdr["alg"])
+	assert.Equal(t, "vault-k1", hdr["kid"])
+	assert.Equal(t, "goroute-ai-gateway", claims["iss"])
+	assert.Equal(t, "https://mcp.internal/tools", claims["aud"])
+	assert.Equal(t, "end-user-alice", claims["sub"])
+	assert.Equal(t, "alice@example.com", claims["email"])
+	assert.Equal(t, "platform", claims["dept"], "add_claims must not overwrite existing claim")
+	assert.Equal(t, "prod", claims["env"])
+	assert.Equal(t, "goroute-v1", claims["gateway_hop"])
+	assert.Equal(t, "org-override", claims["org_id"], "set_claims must overwrite")
+	assert.Nil(t, claims["team_id"], "remove_claims must delete team_id")
+	assert.Nil(t, claims["extra"], "unlisted incoming claim omitted when optional_claims specified")
+
+	// Verify HS256 signature on outbound token
+	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+	parts := strings.Split(tokenStr, ".")
+	mac := hmac.New(sha256.New, []byte(outboundSecret))
+	_, _ = mac.Write([]byte(parts[0] + "." + parts[1]))
+	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	assert.Equal(t, expectedSig, parts[2])
+
+	// Missing required claim rejected
+	missingScope := signHS256TestJWT(t, incomingSecret, map[string]any{
+		"iss": "https://idp.example.com",
+		"aud": "goroute-mcp",
+		"sub": "end-user-alice",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	_, _, err = signer.SignAndVerifyClaims(ctx, missingScope, authCtx, "https://mcp.internal/tools")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scope")
+
+	// Missing incoming token rejected when require_incoming_token=true
+	_, _, err = signer.SignAndVerifyClaims(ctx, "", authCtx, "https://mcp.internal/tools")
+	require.Error(t, err)
+
+	// Untrusted audience rejected
+	_, _, err = signer.SignAndVerifyClaims(ctx, validIncoming, authCtx, "https://evil.example.net")
+	require.ErrorIs(t, err, upstream.ErrUntrustedAudience)
+
+	// RSA JWKS verification + ES256 signing test
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecDER, err := x509.MarshalECPrivateKey(ecPriv)
+	require.NoError(t, err)
+	ecPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: ecDER}))
+
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{{
+				"kty": "RSA",
+				"kid": "idp-rsa-1",
+				"use": "sig",
+				"alg": "RS256",
+				"n":   base64.RawURLEncoding.EncodeToString(rsaPriv.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaPriv.E)).Bytes()),
+			}},
+		})
+	}))
+	defer jwksSrv.Close()
+
+	rsaHdr, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": "idp-rsa-1"})
+	rsaPay, _ := json.Marshal(map[string]any{
+		"sub":   "jwks-user",
+		"email": "jwks@example.com",
+		"exp":   now.Add(5 * time.Minute).Unix(),
+	})
+	rsaInput := base64.RawURLEncoding.EncodeToString(rsaHdr) + "." + base64.RawURLEncoding.EncodeToString(rsaPay)
+	rsaDigest := sha256.Sum256([]byte(rsaInput))
+	rsaSig, err := rsa.SignPKCS1v15(rand.Reader, rsaPriv, crypto.SHA256, rsaDigest[:])
+	require.NoError(t, err)
+	incomingRSAToken := rsaInput + "." + base64.RawURLEncoding.EncodeToString(rsaSig)
+
+	esSigner, err := mcp.NewMCPJWTSigner(mcp.MCPJWTSignerConfig{
+		KeyID:               "ec-k1",
+		SigningKey:          ecPEM,
+		SigningAlgorithm:    "ES256",
+		VerificationJWKSURL: jwksSrv.URL,
+		HTTPClient:          &http.Client{Timeout: 5 * time.Second},
+		RequiredClaims:      mcp.RequiredClaimsSpec{"sub": true},
+	})
+	require.NoError(t, err)
+
+	esToken, esClaims, err := esSigner.SignAndVerifyClaims(ctx, incomingRSAToken, nil, "https://mcp.internal/tools")
+	require.NoError(t, err)
+	assert.Equal(t, "jwks-user", esClaims["sub"])
+	assert.Equal(t, "jwks@example.com", esClaims["email"])
+
+	// Verify ES256 signature with public key
+	esParts := strings.Split(esToken, ".")
+	require.Len(t, esParts, 3)
+	esSigBytes, err := base64.RawURLEncoding.DecodeString(esParts[2])
+	require.NoError(t, err)
+	require.Len(t, esSigBytes, 64)
+	esDigest := sha256.Sum256([]byte(esParts[0] + "." + esParts[1]))
+	assert.True(t, ecdsa.Verify(&ecPriv.PublicKey, esDigest[:], new(big.Int).SetBytes(esSigBytes[:32]), new(big.Int).SetBytes(esSigBytes[32:])))
+}
+
+func TestHub_PipelineHooksAlongsideToolPinning(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_pipe", Name: "org_pipe"}))
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	rbac := auth.NewRBACEngine(repo)
+	eng := guardrails.NewEngine(repo)
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, err)
+
+	var lastAuthHeader string
+	var callCount atomic.Int32
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastAuthHeader = r.Header.Get("Authorization")
+		callCount.Add(1)
+		var req mcp.JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var params struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
+		if params.Arguments["slow"] == true {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mcp.JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "secret-output-marker"}},
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	jwtCfgJSON, err := json.Marshal(mcp.MCPJWTSignerConfig{
+		SigningKey: "hub-vault-jwt-secret-key-32-bytes",
+		AddClaims:  map[string]any{"mcp_env": "staging"},
+	})
+	require.NoError(t, err)
+	encSecret, encDEK, err := vault.EncryptString(string(jwtCfgJSON))
+	require.NoError(t, err)
+
+	srv := &domain.MCPServer{
+		ID:                  "srv_pipe",
+		OrgID:               "org_pipe",
+		Slug:                "pipe-srv",
+		TransportType:       domain.MCPTransportStreamableHTTP,
+		EndpointURL:         mockUpstream.URL,
+		AuthType:            domain.MCPAuthVaultJWT,
+		EncryptedAuthSecret: encSecret,
+		EncryptedAuthDEK:    encDEK,
+		PinnedToolHash:      "pinned",
+		IsActive:            true,
+	}
+	require.NoError(t, repo.CreateMCPServer(ctx, srv))
+
+	cleanSchema := map[string]any{"type": "object"}
+	cleanHash := guardrails.ComputeToolDefinitionHash("safe_tool", "Safe pinned tool", cleanSchema)
+	require.NoError(t, repo.UpsertMCPTools(ctx, srv.ID, "org_pipe", []*domain.MCPTool{{
+		ID:          "tool_safe",
+		ServerID:    srv.ID,
+		OrgID:       "org_pipe",
+		Name:        "safe_tool",
+		Description: "Safe pinned tool",
+		InputSchema: cleanSchema,
+		ToolDefHash: cleanHash,
+		IsActive:    true,
+	}}))
+
+	pipeline := guardrails.NewPipeline(eng, repo)
+	var preCalls, duringCalls, postCalls atomic.Int32
+	pipeline.RegisterDriver("stub-mcp-hooks", func(_ context.Context, cfg guardrails.DriverConfig) (guardrails.Driver, error) {
+		return &stubMCPPipelineDriver{
+			name:  "stub-mcp-hooks",
+			hooks: cfg.Definition.EventHooks,
+			fn: func(evalCtx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
+				switch input.Hook {
+				case domain.GuardrailHookPreMCPCall:
+					preCalls.Add(1)
+					if strings.Contains(strings.Join(input.Texts, ""), "block-pre") {
+						return &domain.GuardrailEvalResult{
+							Decision:     domain.GuardrailDecisionBlock,
+							ErrorMessage: "blocked at pre_mcp_call",
+						}, nil
+					}
+				case domain.GuardrailHookDuringMCPCall:
+					duringCalls.Add(1)
+					if strings.Contains(strings.Join(input.Texts, ""), `"slow":true`) {
+						return &domain.GuardrailEvalResult{
+							Decision:     domain.GuardrailDecisionBlock,
+							ErrorMessage: "blocked at during_mcp_call",
+						}, nil
+					}
+				case domain.GuardrailHookPostMCPCall:
+					postCalls.Add(1)
+					if len(input.Texts) > 0 && strings.Contains(input.Texts[0], "secret-output-marker") {
+						redacted := strings.ReplaceAll(input.Texts[0], "secret-output-marker", "[REDACTED_MCP_OUT]")
+						return &domain.GuardrailEvalResult{
+							Decision:      domain.GuardrailDecisionModify,
+							ModifiedTexts: []string{redacted},
+						}, nil
+					}
+				}
+				return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
+			},
+		}, nil
+	})
+
+	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
+		ID:       "def-mcp-hooks",
+		OrgID:    "org_pipe",
+		Name:     "mcp-lifecycle-hooks",
+		Provider: "stub-mcp-hooks",
+		EventHooks: []domain.GuardrailHook{
+			domain.GuardrailHookPreMCPCall,
+			domain.GuardrailHookDuringMCPCall,
+			domain.GuardrailHookPostMCPCall,
+		},
+		DefaultOn:  true,
+		Precedence: 1,
+		Status:     domain.GuardrailStatusActive,
+	}))
+
+	hub := mcp.NewHub(repo, vault, rbac, mcp.NewTransportDispatcher(netPolicy, nil, false), mcp.NewAuthResolver(vault, netPolicy))
+	hub.ApplyOptions(mcp.WithGuardrailPipeline(pipeline))
+
+	idCtx := &domain.IdentityContext{OrgID: "org_pipe", UserID: "user-77"}
+
+	// 1. Allowed call runs pre_mcp_call, during_mcp_call, post_mcp_call (redacting result), and sends Vault JWT
+	resp, err := hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
+		ServerSlug: "pipe-srv",
+		ToolName:   "safe_tool",
+		Arguments:  map[string]any{"q": "hello"},
+	}, mcp.CallMetadata{})
+	require.NoError(t, err)
+	require.Len(t, resp.Content, 1)
+	assert.Equal(t, "[REDACTED_MCP_OUT]", resp.Content[0].Text)
+	assert.Equal(t, int32(1), preCalls.Load())
+	assert.Equal(t, int32(1), duringCalls.Load())
+	assert.Equal(t, int32(1), postCalls.Load())
+	_, jwtClaims := decodeTestJWTPayload(t, lastAuthHeader)
+	assert.Equal(t, "user-77", jwtClaims["sub"])
+	assert.Equal(t, "staging", jwtClaims["mcp_env"])
+
+	// 2. pre_mcp_call blocks before upstream
+	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
+		ServerSlug: "pipe-srv",
+		ToolName:   "safe_tool",
+		Arguments:  map[string]any{"q": "block-pre"},
+	}, mcp.CallMetadata{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked at pre_mcp_call")
+	assert.Equal(t, int32(1), callCount.Load(), "pre_mcp_call block must prevent upstream call")
+
+	// 3. during_mcp_call cancels slow upstream call early
+	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
+		ServerSlug: "pipe-srv",
+		ToolName:   "safe_tool",
+		Arguments:  map[string]any{"slow": true},
+	}, mcp.CallMetadata{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked at during_mcp_call")
+
+	// 4. Tool pinning still rejects unregistered tool even when pipeline is active
+	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
+		ServerSlug: "pipe-srv",
+		ToolName:   "unpinned_tool",
+	}, mcp.CallMetadata{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool pinning violation")
 }
