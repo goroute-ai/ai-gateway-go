@@ -419,10 +419,7 @@ func collectHistoryMessages(input *domain.GuardrailEvalInput) []domain.Canonical
 	if len(prior) == 0 {
 		return input.StructuredMessages
 	}
-	combined := make([]domain.CanonicalMessage, 0, len(prior)+len(input.StructuredMessages))
-	combined = append(combined, prior...)
-	combined = append(combined, input.StructuredMessages...)
-	return combined
+	return slices.Concat(prior, input.StructuredMessages)
 }
 
 func extractMetadataUntrustedTools(meta map[string]any) []string {
