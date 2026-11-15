@@ -14,6 +14,7 @@ const (
 	maxReservoirSamples  = 1024
 	maxProviderEntries   = 256
 	maxDeploymentEntries = 4096
+	maxGuardrailEntries  = 512
 )
 
 type reservoir struct {
@@ -119,6 +120,19 @@ type TelemetrySnapshot struct {
 	HighestFailureDeployment string                         `json:"highest_failure_deployment,omitempty"`
 	Providers                map[string]ProviderTelemetry   `json:"providers"`
 	Deployments              map[string]DeploymentTelemetry `json:"deployments"`
+	GuardrailMetrics         []GuardrailMetricSummary       `json:"guardrail_metrics,omitempty"`
+}
+
+type guardrailInternal struct {
+	guardrail      string
+	hook           string
+	evaluations    int64
+	errors         int64
+	decisionCounts map[string]int64
+	durationSumMs  int64
+	durationCount  int64
+	buckets        []int64
+	lastAccess     uint64
 }
 
 type providerInternal struct {
@@ -188,6 +202,8 @@ type Collector struct {
 	maxProviders        int
 	deployments         map[string]*deploymentInternal
 	maxDeployments      int
+	guardrails          map[GuardrailMetricKey]*guardrailInternal
+	maxGuardrails       int
 	accessSeq           uint64
 	additionalMetrics   func() map[string]float64
 }
@@ -198,6 +214,8 @@ func NewCollector() *Collector {
 		maxProviders:   maxProviderEntries,
 		deployments:    make(map[string]*deploymentInternal),
 		maxDeployments: maxDeploymentEntries,
+		guardrails:     make(map[GuardrailMetricKey]*guardrailInternal),
+		maxGuardrails:  maxGuardrailEntries,
 	}
 }
 
@@ -241,6 +259,76 @@ func (c *Collector) RecordStream(duration, ttft time.Duration, failed bool) {
 	if ttft > 0 {
 		c.streamTTFT.add(ttft.Milliseconds())
 	}
+}
+
+// RecordGuardrailEvaluation records low-cardinality guardrail evaluation counters and duration histogram.
+func (c *Collector) RecordGuardrailEvaluation(obs GuardrailObservation) {
+	if c == nil {
+		return
+	}
+	guardrailLabel := sanitizeGuardrailLabel(obs.GuardrailName)
+	hookLabel := sanitizeGuardrailLabel(obs.Hook)
+	decisionLabel := NormalizeGuardrailDecision(obs.Decision, obs.IsError)
+	latencyMs := obs.LatencyMs
+	if latencyMs < 0 {
+		latencyMs = 0
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.guardrails == nil {
+		c.guardrails = make(map[GuardrailMetricKey]*guardrailInternal)
+	}
+	if decisionLabel == "block" {
+		c.guardrailBlocks++
+	} else if decisionLabel == "modify" {
+		c.guardrailRedactions++
+	}
+
+	c.accessSeq++
+	key := GuardrailMetricKey{Guardrail: guardrailLabel, Hook: hookLabel}
+	g, ok := c.guardrails[key]
+	if !ok {
+		limit := c.maxGuardrails
+		if limit <= 0 {
+			limit = maxGuardrailEntries
+		}
+		if len(c.guardrails) >= limit {
+			var evictKey GuardrailMetricKey
+			var oldest uint64
+			for k, v := range c.guardrails {
+				if oldest == 0 || v.lastAccess < oldest {
+					oldest = v.lastAccess
+					evictKey = k
+				}
+			}
+			if oldest != 0 {
+				delete(c.guardrails, evictKey)
+			}
+		}
+		g = &guardrailInternal{
+			guardrail:      guardrailLabel,
+			hook:           hookLabel,
+			decisionCounts: make(map[string]int64),
+			buckets:        make([]int64, len(guardrailLatencyBoundsMs)+1),
+		}
+		c.guardrails[key] = g
+	}
+	g.lastAccess = c.accessSeq
+	g.evaluations++
+	if obs.IsError || decisionLabel == "error" {
+		g.errors++
+	}
+	g.decisionCounts[decisionLabel]++
+	g.durationSumMs += latencyMs
+	g.durationCount++
+	for i, bound := range guardrailLatencyBoundsMs {
+		if latencyMs <= bound {
+			g.buckets[i]++
+		}
+	}
+	g.buckets[len(guardrailLatencyBoundsMs)]++ // +Inf bucket
 }
 
 // getOrCreateProvider returns an existing providerInternal or creates a new one,
@@ -477,6 +565,35 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		}
 	}
 
+	guardrailList := make([]GuardrailMetricSummary, 0, len(c.guardrails))
+	for _, g := range c.guardrails {
+		decCopy := make(map[string]int64, len(g.decisionCounts))
+		for k, v := range g.decisionCounts {
+			decCopy[k] = v
+		}
+		bucketsCopy := make([]int64, len(g.buckets))
+		copy(bucketsCopy, g.buckets)
+		boundsCopy := make([]int64, len(guardrailLatencyBoundsMs))
+		copy(boundsCopy, guardrailLatencyBoundsMs)
+		guardrailList = append(guardrailList, GuardrailMetricSummary{
+			Guardrail:        g.guardrail,
+			Hook:             g.hook,
+			Evaluations:      g.evaluations,
+			Errors:           g.errors,
+			DecisionCounts:   decCopy,
+			DurationSumMs:    g.durationSumMs,
+			DurationCount:    g.durationCount,
+			HistogramBuckets: bucketsCopy,
+			HistogramBoundMs: boundsCopy,
+		})
+	}
+	sort.Slice(guardrailList, func(i, j int) bool {
+		if guardrailList[i].Guardrail != guardrailList[j].Guardrail {
+			return guardrailList[i].Guardrail < guardrailList[j].Guardrail
+		}
+		return guardrailList[i].Hook < guardrailList[j].Hook
+	})
+
 	return TelemetrySnapshot{
 		GeneratedAt:              time.Now().UTC(),
 		TotalRequests:            c.totalRequests,
@@ -509,6 +626,7 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		HighestFailureDeployment: highestFailDep,
 		Providers:                provMap,
 		Deployments:              depMap,
+		GuardrailMetrics:         guardrailList,
 	}
 }
 
@@ -585,6 +703,48 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 		b.WriteString("# HELP gateway_guardrail_blocks_total Total requests blocked by security guardrails.\n")
 		b.WriteString("# TYPE gateway_guardrail_blocks_total counter\n")
 		b.WriteString(fmt.Sprintf("gateway_guardrail_blocks_total %d\n", snap.GuardrailBlocks))
+
+		if len(snap.GuardrailMetrics) > 0 {
+			b.WriteString("# HELP gateway_guardrail_evaluations_total Total guardrail evaluations by guardrail, hook, and decision.\n")
+			b.WriteString("# TYPE gateway_guardrail_evaluations_total counter\n")
+			for _, gm := range snap.GuardrailMetrics {
+				decisions := make([]string, 0, len(gm.DecisionCounts))
+				for dec := range gm.DecisionCounts {
+					decisions = append(decisions, dec)
+				}
+				sort.Strings(decisions)
+				for _, dec := range decisions {
+					b.WriteString(fmt.Sprintf("gateway_guardrail_evaluations_total{guardrail=%q,hook=%q,decision=%q} %d\n", gm.Guardrail, gm.Hook, dec, gm.DecisionCounts[dec]))
+				}
+			}
+
+			b.WriteString("# HELP gateway_guardrail_errors_total Total guardrail evaluation errors by guardrail and hook.\n")
+			b.WriteString("# TYPE gateway_guardrail_errors_total counter\n")
+			for _, gm := range snap.GuardrailMetrics {
+				b.WriteString(fmt.Sprintf("gateway_guardrail_errors_total{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.Errors))
+			}
+
+			b.WriteString("# HELP gateway_guardrail_duration_ms Guardrail evaluation duration in milliseconds.\n")
+			b.WriteString("# TYPE gateway_guardrail_duration_ms histogram\n")
+			for _, gm := range snap.GuardrailMetrics {
+				for idx, bound := range gm.HistogramBoundMs {
+					var val int64
+					if idx < len(gm.HistogramBuckets) {
+						val = gm.HistogramBuckets[idx]
+					}
+					b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_bucket{guardrail=%q,hook=%q,le=\"%d\"} %d\n", gm.Guardrail, gm.Hook, bound, val))
+				}
+				var infVal int64
+				if len(gm.HistogramBuckets) > len(gm.HistogramBoundMs) {
+					infVal = gm.HistogramBuckets[len(gm.HistogramBoundMs)]
+				} else {
+					infVal = gm.DurationCount
+				}
+				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_bucket{guardrail=%q,hook=%q,le=\"+Inf\"} %d\n", gm.Guardrail, gm.Hook, infVal))
+				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_sum{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.DurationSumMs))
+				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_count{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.DurationCount))
+			}
+		}
 
 		b.WriteString("# HELP gateway_finops_redis_drift_total Total FinOps spend events that exhausted Redis reconciliation retries.\n")
 		b.WriteString("# TYPE gateway_finops_redis_drift_total counter\n")
