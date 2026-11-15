@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -108,6 +109,29 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		t.Fatalf("RunMigrationsDir re-up after down failed: %v", err)
 	}
 
+	// Assert toxicity & content category columns exist on guardrail_policies after migrations.
+	guardrailCols := []string{
+		"enable_toxicity_filter",
+		"toxicity_action",
+		"toxicity_threshold",
+		"enabled_content_categories",
+		"content_exceptions",
+	}
+	for _, col := range guardrailCols {
+		var exists bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = 'guardrail_policies' AND column_name = $1
+			)`, col).Scan(&exists)
+		if err != nil {
+			t.Fatalf("check guardrail_policies column %s: %v", col, err)
+		}
+		if !exists {
+			t.Fatalf("expected column guardrail_policies.%s to exist after migrations", col)
+		}
+	}
+
 	// 5. Round-trip GlobalModel with SupportedOperations and modality pricing through PostgresRepository.
 	repo, err := NewPostgresRepository(ctx, pool)
 	if err != nil {
@@ -152,5 +176,89 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		got.AudioTTSCostMicrosPer1KChars != gm.AudioTTSCostMicrosPer1KChars ||
 		len(got.SupportedOperations) != 2 {
 		t.Fatalf("round-trip mismatch: got=%+v want=%+v", got, gm)
+	}
+
+	// 6. Round-trip GuardrailPolicy toxicity & content category fields through PostgresRepository.
+	org := &domain.Organization{
+		ID:       "org-guardrail-pg-roundtrip",
+		Name:     "Guardrail PG Roundtrip",
+		Slug:     "guardrail-pg-roundtrip",
+		IsActive: true,
+	}
+	if err := repo.CreateOrganization(ctx, org); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	pol := &domain.GuardrailPolicy{
+		OrgID:                    org.ID,
+		Mode:                     domain.GuardrailModeEnforce,
+		ScanAllRoles:             true,
+		EnablePromptInjection:    true,
+		PromptInjectionAction:    domain.GuardrailActionBlock,
+		EnablePIIDetection:       true,
+		PIIAction:                domain.GuardrailActionRedact,
+		EnableSecretDetection:    true,
+		SecretAction:             domain.GuardrailActionAudit,
+		BlockedKeywords:          []string{"forbidden"},
+		RedactOutputPII:          true,
+		EnableToxicityFilter:     true,
+		ToxicityAction:           domain.GuardrailActionRedact,
+		ToxicityThreshold:        "low",
+		EnabledContentCategories: []string{"bias", "harm_toxic_abuse"},
+		ContentExceptions:        []string{"medical_term"},
+	}
+	if err := repo.SetGuardrailPolicy(ctx, pol); err != nil {
+		t.Fatalf("SetGuardrailPolicy: %v", err)
+	}
+
+	// Use a fresh repository instance to ensure reads come from PostgreSQL rather than in-memory state.
+	freshRepo, err := NewPostgresRepository(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewPostgresRepository fresh: %v", err)
+	}
+	gotPol, err := freshRepo.GetGuardrailPolicy(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetGuardrailPolicy: %v", err)
+	}
+	if gotPol == nil {
+		t.Fatalf("expected non-nil GuardrailPolicy from PostgreSQL")
+	}
+	if !gotPol.EnableToxicityFilter ||
+		gotPol.ToxicityAction != domain.GuardrailActionRedact ||
+		gotPol.ToxicityThreshold != "low" ||
+		!reflect.DeepEqual(gotPol.EnabledContentCategories, []string{"bias", "harm_toxic_abuse"}) ||
+		!reflect.DeepEqual(gotPol.ContentExceptions, []string{"medical_term"}) {
+		t.Fatalf("guardrail policy round-trip mismatch: got=%+v want=%+v", gotPol, pol)
+	}
+
+	// Verify nil slices normalize to empty arrays ({}) and empty toxicity action/threshold use defaults.
+	nilSlicePol := &domain.GuardrailPolicy{
+		OrgID:                org.ID,
+		EnableToxicityFilter: false,
+	}
+	if err := repo.SetGuardrailPolicy(ctx, nilSlicePol); err != nil {
+		t.Fatalf("SetGuardrailPolicy nil slices: %v", err)
+	}
+	gotNilPol, err := freshRepo.GetGuardrailPolicy(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetGuardrailPolicy nil slices: %v", err)
+	}
+	if gotNilPol.EnableToxicityFilter {
+		t.Fatalf("EnableToxicityFilter = true, want false")
+	}
+	if gotNilPol.ToxicityAction != domain.GuardrailActionBlock {
+		t.Fatalf("ToxicityAction = %q, want %q", gotNilPol.ToxicityAction, domain.GuardrailActionBlock)
+	}
+	if gotNilPol.ToxicityThreshold != "medium" {
+		t.Fatalf("ToxicityThreshold = %q, want %q", gotNilPol.ToxicityThreshold, "medium")
+	}
+	if gotNilPol.BlockedKeywords == nil || len(gotNilPol.BlockedKeywords) != 0 {
+		t.Fatalf("BlockedKeywords = %#v, want non-nil empty slice", gotNilPol.BlockedKeywords)
+	}
+	if gotNilPol.EnabledContentCategories == nil || len(gotNilPol.EnabledContentCategories) != 0 {
+		t.Fatalf("EnabledContentCategories = %#v, want non-nil empty slice", gotNilPol.EnabledContentCategories)
+	}
+	if gotNilPol.ContentExceptions == nil || len(gotNilPol.ContentExceptions) != 0 {
+		t.Fatalf("ContentExceptions = %#v, want non-nil empty slice", gotNilPol.ContentExceptions)
 	}
 }

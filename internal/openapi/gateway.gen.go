@@ -425,6 +425,48 @@ func (e GuardrailPolicySecretAction) Valid() bool {
 	}
 }
 
+// Defines values for GuardrailPolicyToxicityAction.
+const (
+	GuardrailPolicyToxicityActionAudit  GuardrailPolicyToxicityAction = "audit"
+	GuardrailPolicyToxicityActionBlock  GuardrailPolicyToxicityAction = "block"
+	GuardrailPolicyToxicityActionRedact GuardrailPolicyToxicityAction = "redact"
+)
+
+// Valid indicates whether the value is a known member of the GuardrailPolicyToxicityAction enum.
+func (e GuardrailPolicyToxicityAction) Valid() bool {
+	switch e {
+	case GuardrailPolicyToxicityActionAudit:
+		return true
+	case GuardrailPolicyToxicityActionBlock:
+		return true
+	case GuardrailPolicyToxicityActionRedact:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GuardrailPolicyToxicityThreshold.
+const (
+	GuardrailPolicyToxicityThresholdHigh   GuardrailPolicyToxicityThreshold = "high"
+	GuardrailPolicyToxicityThresholdLow    GuardrailPolicyToxicityThreshold = "low"
+	GuardrailPolicyToxicityThresholdMedium GuardrailPolicyToxicityThreshold = "medium"
+)
+
+// Valid indicates whether the value is a known member of the GuardrailPolicyToxicityThreshold enum.
+func (e GuardrailPolicyToxicityThreshold) Valid() bool {
+	switch e {
+	case GuardrailPolicyToxicityThresholdHigh:
+		return true
+	case GuardrailPolicyToxicityThresholdLow:
+		return true
+	case GuardrailPolicyToxicityThresholdMedium:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ImageGenerationRequestQuality.
 const (
 	Hd       ImageGenerationRequestQuality = "hd"
@@ -1110,18 +1152,23 @@ type FileObject struct {
 
 // GuardrailPolicy defines model for GuardrailPolicy.
 type GuardrailPolicy struct {
-	BlockedKeywords       *[]string                             `json:"blocked_keywords,omitempty"`
-	EnablePiiDetection    *bool                                 `json:"enable_pii_detection,omitempty"`
-	EnablePromptInjection *bool                                 `json:"enable_prompt_injection,omitempty"`
-	EnableSecretDetection *bool                                 `json:"enable_secret_detection,omitempty"`
-	Mode                  *GuardrailPolicyMode                  `json:"mode,omitempty"`
-	OrgId                 *string                               `json:"org_id,omitempty"`
-	PiiAction             *GuardrailPolicyPiiAction             `json:"pii_action,omitempty"`
-	PromptInjectionAction *GuardrailPolicyPromptInjectionAction `json:"prompt_injection_action,omitempty"`
-	RedactOutputPii       *bool                                 `json:"redact_output_pii,omitempty"`
-	ScanAllRoles          *bool                                 `json:"scan_all_roles,omitempty"`
-	SecretAction          *GuardrailPolicySecretAction          `json:"secret_action,omitempty"`
-	UpdatedAt             *time.Time                            `json:"updated_at,omitempty"`
+	BlockedKeywords          *[]string                             `json:"blocked_keywords,omitempty"`
+	ContentExceptions        *[]string                             `json:"content_exceptions,omitempty"`
+	EnablePiiDetection       *bool                                 `json:"enable_pii_detection,omitempty"`
+	EnablePromptInjection    *bool                                 `json:"enable_prompt_injection,omitempty"`
+	EnableSecretDetection    *bool                                 `json:"enable_secret_detection,omitempty"`
+	EnableToxicityFilter     *bool                                 `json:"enable_toxicity_filter,omitempty"`
+	EnabledContentCategories *[]string                             `json:"enabled_content_categories,omitempty"`
+	Mode                     *GuardrailPolicyMode                  `json:"mode,omitempty"`
+	OrgId                    *string                               `json:"org_id,omitempty"`
+	PiiAction                *GuardrailPolicyPiiAction             `json:"pii_action,omitempty"`
+	PromptInjectionAction    *GuardrailPolicyPromptInjectionAction `json:"prompt_injection_action,omitempty"`
+	RedactOutputPii          *bool                                 `json:"redact_output_pii,omitempty"`
+	ScanAllRoles             *bool                                 `json:"scan_all_roles,omitempty"`
+	SecretAction             *GuardrailPolicySecretAction          `json:"secret_action,omitempty"`
+	ToxicityAction           *GuardrailPolicyToxicityAction        `json:"toxicity_action,omitempty"`
+	ToxicityThreshold        *GuardrailPolicyToxicityThreshold     `json:"toxicity_threshold,omitempty"`
+	UpdatedAt                *time.Time                            `json:"updated_at,omitempty"`
 }
 
 // GuardrailPolicyMode defines model for GuardrailPolicy.Mode.
@@ -1135,6 +1182,12 @@ type GuardrailPolicyPromptInjectionAction string
 
 // GuardrailPolicySecretAction defines model for GuardrailPolicy.SecretAction.
 type GuardrailPolicySecretAction string
+
+// GuardrailPolicyToxicityAction defines model for GuardrailPolicy.ToxicityAction.
+type GuardrailPolicyToxicityAction string
+
+// GuardrailPolicyToxicityThreshold defines model for GuardrailPolicy.ToxicityThreshold.
+type GuardrailPolicyToxicityThreshold string
 
 // GuardrailSimulateRequest defines model for GuardrailSimulateRequest.
 type GuardrailSimulateRequest struct {
