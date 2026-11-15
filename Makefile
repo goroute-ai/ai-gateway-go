@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
 VERSION ?= v1.7.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -57,6 +57,10 @@ test:
 test-unit:
 	@echo "==> Running unit tests with race detector..."
 	go test -race -v -count=1 ./internal/... ./pkg/...
+
+test-guardrails:
+	@echo "==> Running isolated guardrails tests with race detector..."
+	go test -race -v -count=1 ./internal/guardrails/... ./tests/guardrails/...
 
 test-e2e:
 	@echo "==> Running live stack end-to-end integration tests..."
