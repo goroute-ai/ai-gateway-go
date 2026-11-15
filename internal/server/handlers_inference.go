@@ -484,6 +484,13 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			c := cloneSingleStreamChunk(*chunk)
 			if len(c.Choices) > 0 {
 				delta := &c.Choices[0].Delta
+				if len(delta.ToolCalls) > 0 {
+					filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), delta.ToolCalls)
+					if tcErr != nil {
+						return tcErr
+					}
+					delta.ToolCalls = filteredTC
+				}
 				if delta.Content != "" {
 					processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
 					if procErr != nil {

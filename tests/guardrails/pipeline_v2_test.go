@@ -495,3 +495,382 @@ func TestPipelineV2ModeRuleLoggingOnlyAndLBFailoverHTTP(t *testing.T) {
 	lab.gw.GuardrailPipeline().WaitLoggingOnly(context.Background())
 	require.Equal(t, int32(1), shadowCalls.Load())
 }
+
+func TestLiveGatewayServer_StreamWindowSplitAndToolCallDeltas(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Cross-chunk split PII/phrase redaction through StreamWindowEvaluator inside SSE chat streaming.
+	lab := newGuardrailLab(t, withStreamChunks(
+		"Hello, contact ",
+		"secret-",
+		"token-42",
+		" for assistance.",
+	))
+	require.NoError(t, lab.repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
+		ID:         "def-stream-window-filter",
+		OrgID:      lab.orgID,
+		Name:       "stream-window-filter",
+		Provider:   "local_content_filter",
+		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
+		DefaultOn:  true,
+		Config: map[string]any{
+			"action":               "redact",
+			"redact_replacement":   "[MASKED_TOKEN]",
+			"patterns":             []string{`secret-token-\d+`},
+			"stream_window_bytes":  32,
+			"stream_overlap_bytes": 20,
+		},
+		Status: domain.GuardrailStatusActive,
+	}))
+
+	reqBody, err := json.Marshal(map[string]any{
+		"model":    "fast",
+		"stream":   true,
+		"messages": []map[string]any{{"role": "user", "content": "share contact"}},
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, lab.srv.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
+	require.NoError(t, err)
+	for k, v := range lab.authHeaders {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var combined strings.Builder
+	var sseRaw strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			sseRaw.Write(buf[:n])
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	for _, line := range strings.Split(sseRaw.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk) == nil && len(chunk.Choices) > 0 {
+			combined.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	require.Contains(t, combined.String(), "[MASKED_TOKEN]")
+	require.NotContains(t, combined.String(), "secret-token-42")
+
+	// 2. Streamed delta.ToolCalls blocked mid-stream by block_code_execution post_call guardrail.
+	toolStreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"chatcmpl-tc-1","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bash_1","type":"function","function":{"name":"bash","arguments":"{\"cmd\":"}}]}}]}`,
+			`{"id":"chatcmpl-tc-1","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"id\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer toolStreamSrv.Close()
+
+	labTools := newGuardrailLab(t)
+	require.NoError(t, labTools.repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+		ID:                "openai/gpt-4o-mini-tools",
+		Provider:          domain.ProviderOpenAI,
+		ModelName:         "gpt-4o-mini-tools",
+		DisplayName:       "Stream Tools Mock",
+		SupportsInference: true,
+		LifecycleStatus:   domain.ModelStatusActive,
+		PricingStatus:     domain.PricingStatusVerified,
+		Capabilities: domain.ModelCapabilities{
+			Streaming: domain.CapabilitySupported,
+			Tools:     domain.CapabilitySupported,
+		},
+	}))
+
+	var cred domain.ProviderCredential
+	cResp, cRaw := labTools.doJSON(http.MethodPost, "/admin/v1/credentials", labTools.adminHeaders, map[string]any{
+		"org_id":   labTools.orgID,
+		"name":     "Stream Tools Cred",
+		"provider": "openai",
+		"base_url": toolStreamSrv.URL,
+		"api_key":  "sk-test-stream-tools",
+	}, &cred)
+	require.Equal(t, http.StatusCreated, cResp.StatusCode, string(cRaw))
+
+	var mg domain.ModelGroup
+	mgResp, mgRaw := labTools.doJSON(http.MethodPost, "/admin/v1/model-groups", labTools.adminHeaders, map[string]any{
+		"org_id":           labTools.orgID,
+		"alias":            "stream-tools",
+		"routing_strategy": "round_robin",
+	}, &mg)
+	require.Equal(t, http.StatusCreated, mgResp.StatusCode, string(mgRaw))
+
+	dResp, dRaw := labTools.doJSON(http.MethodPost, "/admin/v1/deployments", labTools.adminHeaders, map[string]any{
+		"model_group_id":  mg.ID,
+		"global_model_id": "openai/gpt-4o-mini-tools",
+		"credential_id":   cred.ID,
+		"deployment_name": "stream-tools-openai",
+		"weight":          100,
+	}, nil)
+	require.Equal(t, http.StatusCreated, dResp.StatusCode, string(dRaw))
+
+	var tcKeyResp struct {
+		Key string `json:"raw_key"`
+	}
+	tkResp, tkRaw := labTools.doJSON(http.MethodPost, "/admin/v1/keys", labTools.adminHeaders, map[string]any{
+		"org_id":         labTools.orgID,
+		"team_id":        labTools.teamID,
+		"name":           "stream-tools-key",
+		"allowed_models": []string{"stream-tools"},
+	}, &tcKeyResp)
+	require.Equal(t, http.StatusCreated, tkResp.StatusCode, string(tkRaw))
+
+	require.NoError(t, labTools.repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
+		ID:         "def-stream-no-code",
+		OrgID:      labTools.orgID,
+		Name:       "stream-no-code",
+		Provider:   "block_code_execution",
+		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
+		DefaultOn:  true,
+		Config:     map[string]any{"action": "block"},
+		Status:     domain.GuardrailStatusActive,
+	}))
+
+	tcReqBody, err := json.Marshal(map[string]any{
+		"model":    "stream-tools",
+		"stream":   true,
+		"messages": []map[string]any{{"role": "user", "content": "check system"}},
+	})
+	require.NoError(t, err)
+	tcReq, err := http.NewRequest(http.MethodPost, labTools.srv.URL+"/v1/chat/completions", strings.NewReader(string(tcReqBody)))
+	require.NoError(t, err)
+	tcReq.Header.Set("Authorization", "Bearer "+tcKeyResp.Key)
+	tcResp, err := http.DefaultClient.Do(tcReq)
+	require.NoError(t, err)
+	defer tcResp.Body.Close()
+
+	var tcBody strings.Builder
+	for {
+		n, readErr := tcResp.Body.Read(buf)
+		if n > 0 {
+			tcBody.Write(buf[:n])
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	require.NotContains(t, tcBody.String(), `"call_bash_1"`, "blocked bash tool call must not reach client")
+	require.Equal(t, http.StatusBadGateway, tcResp.StatusCode, "streamed tool-call block status mismatch: body=%s", tcBody.String())
+	require.Contains(t, tcBody.String(), "guardrail_output_blocked", "expected guardrail_output_blocked error, got body=%s", tcBody.String())
+}
+
+func TestLiveGatewayServer_MCPHubAndOrchestratorWired(t *testing.T) {
+	ctx := context.Background()
+	lab := newGuardrailLab(t, withMCPAndA2A())
+
+	// 1. Live MCP Hub receives named pre_mcp_call guardrail from NewGatewayServer automatically.
+	upstream, calls := buildMCPUpstreamMock(t,
+		[]map[string]any{{
+			"name":        "bash",
+			"description": "Execute safe diagnostic status",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"cmd": map[string]any{"type": "string"}}},
+		}},
+		func(name string, _ map[string]any) (any, error) {
+			return map[string]any{"content": []map[string]any{{"type": "text", "text": "ran " + name}}}, nil
+		},
+	)
+	var mcpSrv struct {
+		Server struct {
+			ID string `json:"id"`
+		} `json:"server"`
+	}
+	mResp, mRaw := lab.doJSON(http.MethodPost, "/admin/v1/mcp/servers", lab.adminHeaders, map[string]any{
+		"org_id":       lab.orgID,
+		"name":         "Wired MCP",
+		"slug":         "wired-mcp",
+		"endpoint_url": upstream.URL,
+		"auth_type":    "none",
+	}, &mcpSrv)
+	require.Equal(t, http.StatusCreated, mResp.StatusCode, string(mRaw))
+
+	syncResp, syncRaw := lab.doJSON(http.MethodPost, "/admin/v1/mcp/servers/"+mcpSrv.Server.ID+"/sync", lab.adminHeaders, nil, nil)
+	require.Equal(t, http.StatusOK, syncResp.StatusCode, string(syncRaw))
+
+	require.NoError(t, lab.repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
+		ID:         "def-wired-mcp-block-code",
+		OrgID:      lab.orgID,
+		Name:       "wired-mcp-block-code",
+		Provider:   "block_code_execution",
+		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPreMCPCall},
+		DefaultOn:  true,
+		Config:     map[string]any{"action": "block"},
+		Status:     domain.GuardrailStatusActive,
+	}))
+
+	callResp, callRaw := lab.doJSON(http.MethodPost, "/mcp/wired-mcp", lab.authHeaders, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "bash",
+			"arguments": map[string]any{"cmd": "whoami"},
+		},
+	}, nil)
+	require.Equal(t, http.StatusOK, callResp.StatusCode, string(callRaw))
+	require.Contains(t, strings.ToLower(string(callRaw)), "code-execution")
+	require.Equal(t, 0, *calls, "wired pre_mcp_call block_code_execution must block before upstream MCP dispatch")
+
+	// 2. Live ToolLoopOrchestrator enforces tool_policies from NewGatewayServer across multi-hop agentic calls.
+	var turn atomic.Int32
+	orchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch turn.Add(1) {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl-orch-1", "object": "chat.completion", "model": "gpt-4o-mini",
+				"choices": []map[string]any{{
+					"index": 0, "finish_reason": "tool_calls",
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id": "tc_1", "type": "function",
+							"function": map[string]any{"name": "fetch_page", "arguments": `{"url":"https://example.com"}`},
+						}},
+					},
+				}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl-orch-2", "object": "chat.completion", "model": "gpt-4o-mini",
+				"choices": []map[string]any{{
+					"index": 0, "finish_reason": "tool_calls",
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id": "tc_2", "type": "function",
+							"function": map[string]any{"name": "db_write", "arguments": `{"sql":"INSERT"}`},
+						}},
+					},
+				}},
+			})
+		}
+	}))
+	defer orchSrv.Close()
+
+	orchMCPUpstream, orchCalls := buildMCPUpstreamMock(t,
+		[]map[string]any{
+			{"name": "fetch_page", "description": "Fetch web page", "inputSchema": map[string]any{"type": "object"}},
+			{"name": "db_write", "description": "Write DB", "inputSchema": map[string]any{"type": "object"}},
+		},
+		func(name string, _ map[string]any) (any, error) {
+			return map[string]any{"content": []map[string]any{{"type": "text", "text": "ok " + name}}}, nil
+		},
+	)
+	var omResp struct {
+		Server struct {
+			ID string `json:"id"`
+		} `json:"server"`
+	}
+	omCreate, omRaw := lab.doJSON(http.MethodPost, "/admin/v1/mcp/servers", lab.adminHeaders, map[string]any{
+		"org_id":       lab.orgID,
+		"name":         "Orch MCP",
+		"slug":         "wired-orch-mcp",
+		"endpoint_url": orchMCPUpstream.URL,
+		"auth_type":    "none",
+	}, &omResp)
+	require.Equal(t, http.StatusCreated, omCreate.StatusCode, string(omRaw))
+	syncOrch, syncOrchRaw := lab.doJSON(http.MethodPost, "/admin/v1/mcp/servers/"+omResp.Server.ID+"/sync", lab.adminHeaders, nil, nil)
+	require.Equal(t, http.StatusOK, syncOrch.StatusCode, string(syncOrchRaw))
+
+	require.NoError(t, lab.repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+		ID:                "openai/gpt-4o-mini-orch",
+		Provider:          domain.ProviderOpenAI,
+		ModelName:         "gpt-4o-mini-orch",
+		DisplayName:       "Orch Mock",
+		SupportsInference: true,
+		LifecycleStatus:   domain.ModelStatusActive,
+		PricingStatus:     domain.PricingStatusVerified,
+		Capabilities:      domain.ModelCapabilities{Tools: domain.CapabilitySupported},
+	}))
+
+	var cred domain.ProviderCredential
+	cr, crRaw := lab.doJSON(http.MethodPost, "/admin/v1/credentials", lab.adminHeaders, map[string]any{
+		"org_id": lab.orgID, "name": "Orch Cred", "provider": "openai",
+		"base_url": orchSrv.URL, "api_key": "sk-orch",
+	}, &cred)
+	require.Equal(t, http.StatusCreated, cr.StatusCode, string(crRaw))
+	var mg domain.ModelGroup
+	mgr, mgrRaw := lab.doJSON(http.MethodPost, "/admin/v1/model-groups", lab.adminHeaders, map[string]any{
+		"org_id": lab.orgID, "alias": "orch-model", "routing_strategy": "round_robin",
+	}, &mg)
+	require.Equal(t, http.StatusCreated, mgr.StatusCode, string(mgrRaw))
+	dr, drRaw := lab.doJSON(http.MethodPost, "/admin/v1/deployments", lab.adminHeaders, map[string]any{
+		"model_group_id": mg.ID, "global_model_id": "openai/gpt-4o-mini-orch",
+		"credential_id": cred.ID, "deployment_name": "orch-dep", "weight": 100,
+	}, nil)
+	require.Equal(t, http.StatusCreated, dr.StatusCode, string(drRaw))
+
+	var orchKeyResp struct {
+		Key string `json:"raw_key"`
+	}
+	okResp, okRaw := lab.doJSON(http.MethodPost, "/admin/v1/keys", lab.adminHeaders, map[string]any{
+		"org_id":              lab.orgID,
+		"team_id":             lab.teamID,
+		"name":                "orch-model-key",
+		"allowed_models":      []string{"orch-model"},
+		"allowed_mcp_servers": []string{"*"},
+	}, &orchKeyResp)
+	require.Equal(t, http.StatusCreated, okResp.StatusCode, string(okRaw))
+	orchHeaders := map[string]string{"Authorization": "Bearer " + orchKeyResp.Key}
+
+	tp1, tp1Raw := lab.doJSON(http.MethodPost, "/admin/v1/organizations/"+lab.orgID+"/tool-policies", lab.adminHeaders, map[string]any{
+		"tool_name": "fetch_page", "input_policy": "untrusted", "output_policy": "untrusted",
+	}, nil)
+	require.Equal(t, http.StatusOK, tp1.StatusCode, string(tp1Raw))
+	tp2, tp2Raw := lab.doJSON(http.MethodPost, "/admin/v1/organizations/"+lab.orgID+"/tool-policies", lab.adminHeaders, map[string]any{
+		"tool_name": "db_write", "input_policy": "trusted", "output_policy": "trusted",
+	}, nil)
+	require.Equal(t, http.StatusOK, tp2.StatusCode, string(tp2Raw))
+
+	// Activate tool_policy guardrail definition too so org pipeline + orchestrator both enforce it cleanly.
+	require.NoError(t, lab.repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
+		ID:         "def-wired-tool-policy",
+		OrgID:      lab.orgID,
+		Name:       "wired-tool-policy",
+		Provider:   "tool_policy",
+		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPreCall, domain.GuardrailHookPostCall},
+		DefaultOn:  true,
+		Status:     domain.GuardrailStatusActive,
+	}))
+
+	chatResp, chatRaw := lab.doJSON(http.MethodPost, "/v1/chat/completions", orchHeaders, map[string]any{
+		"model":    "orch-model",
+		"messages": []map[string]any{{"role": "user", "content": "fetch and write"}},
+		"tools": []map[string]any{{
+			"type":     "function",
+			"function": map[string]any{"name": "fetch_page", "parameters": map[string]any{"type": "object"}},
+		}, {
+			"type":     "function",
+			"function": map[string]any{"name": "db_write", "parameters": map[string]any{"type": "object"}},
+		}},
+	}, nil)
+	require.Equal(t, http.StatusBadRequest, chatResp.StatusCode, string(chatRaw))
+	require.Contains(t, string(chatRaw), "violated_tool_policy")
+	require.Equal(t, 1, *orchCalls, "fetch_page executes once cleanly; db_write must be blocked before MCP execution")
+}

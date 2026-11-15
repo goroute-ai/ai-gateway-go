@@ -1310,3 +1310,143 @@ func cloneStringMap(src map[string]string) map[string]string {
 	}
 	return out
 }
+
+// NewResolvedDriverAdapter wraps a ResolvedGuardrail group as a single Driver executed
+// through Pipeline load balancing, cooldowns, Vault decryption, and audit hooks.
+func (p *Pipeline) NewResolvedDriverAdapter(prc PipelineRequestContext, hook domain.GuardrailHook, rg ResolvedGuardrail) Driver {
+	if p == nil {
+		return nil
+	}
+	return &resolvedDriverAdapter{
+		pipeline: p,
+		prc:      prc,
+		hook:     hook,
+		rg:       rg,
+	}
+}
+
+type resolvedDriverAdapter struct {
+	pipeline *Pipeline
+	prc      PipelineRequestContext
+	hook     domain.GuardrailHook
+	rg       ResolvedGuardrail
+}
+
+func (a *resolvedDriverAdapter) Name() string { return a.rg.Name }
+
+func (a *resolvedDriverAdapter) SupportedHooks() []domain.GuardrailHook {
+	if a.hook == "" {
+		return nil
+	}
+	return []domain.GuardrailHook{a.hook}
+}
+
+func (a *resolvedDriverAdapter) Evaluate(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
+	in := cloneGuardrailEvalInput(input)
+	if in == nil {
+		in = &domain.GuardrailEvalInput{}
+	}
+	if in.Hook == "" {
+		in.Hook = a.hook
+	}
+	if in.OrgID == "" {
+		in.OrgID = a.prc.OrgID
+	}
+	if in.TeamID == "" {
+		in.TeamID = a.prc.TeamID
+	}
+	if in.VirtualKeyID == "" {
+		in.VirtualKeyID = a.prc.VirtualKeyID
+	}
+	if in.EndUserID == "" {
+		in.EndUserID = a.prc.EndUserID
+	}
+	if in.Model == "" {
+		in.Model = a.prc.Model
+	}
+	if len(in.Tags) == 0 && len(a.prc.Tags) > 0 {
+		in.Tags = slices.Clone(a.prc.Tags)
+	}
+	res, cand, err := a.pipeline.executeGroup(ctx, a.rg, in)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		res = &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}
+	}
+	if a.pipeline.auditHook != nil {
+		a.pipeline.auditHook(ctx, in.Hook, a.prc, res)
+	}
+	if isCandidateLoggingOnly(cand, res) {
+		return &domain.GuardrailEvalResult{
+			Decision:          domain.GuardrailDecisionAllow,
+			Violations:        append([]domain.GuardrailViolation(nil), res.Violations...),
+			AppliedGuardrails: append([]string(nil), res.AppliedGuardrails...),
+			UsageUnits:        res.UsageUnits,
+		}, nil
+	}
+	return res, nil
+}
+
+// EvaluateResolvedInput resolves and executes all active Layer 1 guardrails for hook
+// against an arbitrary structured GuardrailEvalInput (preserving modify chains and locks).
+func (p *Pipeline) EvaluateResolvedInput(
+	ctx context.Context,
+	prc PipelineRequestContext,
+	hook domain.GuardrailHook,
+	input *domain.GuardrailEvalInput,
+) (*domain.GuardrailEvalResult, error) {
+	agg := &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}
+	if p == nil || input == nil {
+		return agg, nil
+	}
+	resolved, err := p.ResolveForHook(ctx, prc, hook)
+	if err != nil {
+		return agg, policyUnavailableError()
+	}
+	cur := cloneGuardrailEvalInput(input)
+	cur.Hook = hook
+
+	outcome := &PipelineOutcome{Result: agg}
+	for _, rg := range resolved {
+		res, cand, evalErr := p.executeGroup(ctx, rg, cloneGuardrailEvalInput(cur))
+		if evalErr != nil {
+			agg.Decision = domain.GuardrailDecisionBlock
+			agg.ErrorMessage = evalErr.Error()
+			return agg, wrapDriverUnavailableError(rg.Name, evalErr)
+		}
+		if p.auditHook != nil && res != nil {
+			p.auditHook(ctx, hook, prc, res)
+		}
+		loggingOnly := isCandidateLoggingOnly(cand, res)
+		outcome.mergeDriverResult(rg.Name, res, loggingOnly)
+		if loggingOnly || res == nil {
+			continue
+		}
+		switch res.Decision {
+		case domain.GuardrailDecisionBlock:
+			agg.Decision = domain.GuardrailDecisionBlock
+			agg.ErrorMessage = res.ErrorMessage
+			return agg, newBlockedGatewayError(hook, rg.Name, res)
+		case domain.GuardrailDecisionModify:
+			agg.Decision = domain.GuardrailDecisionModify
+			if len(res.ModifiedTexts) > 0 {
+				cur.Texts = slices.Clone(res.ModifiedTexts)
+				agg.ModifiedTexts = slices.Clone(res.ModifiedTexts)
+			}
+			if len(res.ModifiedMessages) > 0 {
+				cur.StructuredMessages = cloneCanonicalMessages(res.ModifiedMessages)
+				agg.ModifiedMessages = cloneCanonicalMessages(res.ModifiedMessages)
+			}
+			if res.ModifiedToolCalls != nil {
+				cur.ToolCalls = cloneToolCalls(res.ModifiedToolCalls)
+				agg.ModifiedToolCalls = cloneToolCalls(res.ModifiedToolCalls)
+			}
+		case domain.GuardrailDecisionFlag:
+			if agg.Decision == domain.GuardrailDecisionAllow {
+				agg.Decision = domain.GuardrailDecisionFlag
+			}
+		}
+	}
+	return agg, nil
+}

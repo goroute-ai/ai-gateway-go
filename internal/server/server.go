@@ -394,7 +394,12 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return nil, err
 	}
-	_ = s.GuardrailPipeline()
+	pipeline := s.GuardrailPipeline()
+	mcpHub.SetGuardrailPipeline(pipeline)
+	if tpRepo, ok := repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
+		toolOrchestrator.SetToolPolicyRepository(tpRepo)
+	}
+	toolOrchestrator.SetToolGuardrails(s.newOrchestratorToolGuardrailDriver())
 	return s, nil
 }
 
