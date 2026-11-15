@@ -91,6 +91,7 @@ type clientConfig struct {
 	customLogger         *slog.Logger
 	silentLogs           bool
 	logLevel             string
+	guardrailScanners    []guardrailScannerEntry
 }
 
 // WithLogger configures a custom slog.Logger for embedded gateway operation.
@@ -160,6 +161,18 @@ func WithAllowPrivateNetworks() Option {
 	}
 }
 
+// WithGuardrailScanner registers an in-process custom GuardrailScanner plugin on the embedded
+// gateway's unified guardrail pipeline.
+func WithGuardrailScanner(name string, scanner GuardrailScanner, opts ...GuardrailOption) Option {
+	return func(c *clientConfig) {
+		c.guardrailScanners = append(c.guardrailScanners, guardrailScannerEntry{
+			name:    name,
+			scanner: scanner,
+			opts:    append([]GuardrailOption(nil), opts...),
+		})
+	}
+}
+
 // New initializes a Gateway Client.
 //   - If `WithRemote(url, key)` is provided, it connects to that remote gateway.
 //   - Otherwise, it starts an embedded in-memory Gateway auto-configured from `WithModelList(...)`,
@@ -181,6 +194,9 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	if cc.remoteURL != "" {
+		if len(cc.guardrailScanners) > 0 {
+			return nil, fmt.Errorf("WithGuardrailScanner requires an embedded gateway and cannot be combined with WithRemote")
+		}
 		client := NewClient(cc.remoteURL, cc.apiKey)
 		if cc.httpClient != nil {
 			client.httpClient = cc.httpClient
@@ -408,6 +424,19 @@ func New(opts ...Option) (*Client, error) {
 	if err != nil {
 		cleanupOnErr()
 		return nil, err
+	}
+	if len(cc.guardrailScanners) > 0 {
+		orgID := strings.TrimSpace(cfg.Auth.DefaultOrgID)
+		if orgID == "" {
+			orgID = "org_default"
+		}
+		for idx, entry := range cc.guardrailScanners {
+			if regErr := registerSDKGuardrailScanner(context.Background(), gw, repo, orgID, idx, entry); regErr != nil {
+				gw.Shutdown(context.Background())
+				cleanupOnErr()
+				return nil, regErr
+			}
+		}
 	}
 	gw.StartWorkers(context.Background())
 
