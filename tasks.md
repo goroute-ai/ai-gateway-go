@@ -24,7 +24,7 @@ This document tracks the six-phase upgrade of GoRoute AI Gateway (`ai-gateway-go
 | Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Done (`main` `dd6697f`) | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
 | Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Done (`main` `5974b47`) | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
 | Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Done (`main` `e251b20`) | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
-| Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Open | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
+| Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Done (`main` `b18e633`, `5c6de9d`, `5dafb6b`) | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
 
 ---
 
@@ -218,7 +218,7 @@ flowchart TD
 
 ### Phase 5 — Standalone `/v1/guardrails/apply`, Micro-Dollar Rollups, OTEL/Prom, OpenAPI & Operator UI
 
-- [ ] **Task 5 (`#81`)**: Control/data plane APIs, usage rollups, observability, YAML config, OpenAPI & Operator Web UI ([Issue #81](https://github.com/goroute-ai/ai-gateway-go/issues/81))
+- [x] **Task 5 (`#81`)**: Control/data plane APIs, usage rollups, observability, YAML config, OpenAPI & Operator Web UI ([Issue #81](https://github.com/goroute-ai/ai-gateway-go/issues/81)) — **Landed locally on `main` (`b18e633`, `5c6de9d`, `5dafb6b`)**
   - **Exclusive File Ownership (runs after Phases 0–4 land):**
     - `migrations/0019_guardrail_usage_metrics.up.sql` & `.down.sql` (new)
     - `internal/storage/` usage rollup queries (`daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`)
@@ -229,12 +229,12 @@ flowchart TD
     - `web/src/views/GuardrailsView.tsx`, `web/src/views/guardrails/*` (lazy-loaded sub-tabs), `web/src/api/admin.ts`, `web/src/types/index.ts`
     - `tests/guardrails/apply_and_usage_test.go` (new) & `tests/e2e/` guardrail integration coverage
   - **Deliverables:**
-    - [ ] Implement `/admin/v1/organizations/{orgID}/guardrail-definitions`, `/admin/v1/guardrail-definitions/{guardrailID}`, `/admin/v1/guardrail-bindings`, `/admin/v1/organizations/{orgID}/tool-policies`, `/admin/v1/organizations/{orgID}/guardrail-usage`, expanded `/guardrails/simulate`, and data-plane `POST /v1/guardrails/apply`.
-    - [ ] Add migration `0019` and integer micro-dollar (`cost_micros BIGINT`) guardrail usage rollups.
-    - [ ] Emit scrubbed OTEL `guardrail.evaluate` spans and Prometheus metrics (`gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms`).
-    - [ ] Seed YAML `guardrails.definitions[]` and `guardrails.tool_policies[]` at startup.
-    - [ ] Update `docs/openapi/gateway.openapi.yaml` and regenerate `internal/openapi/`.
-    - [ ] Add lazy-loaded Operator Web UI sub-tabs (Org Baseline Policy, Named Guardrails & Registry, Tool Policies & Trust Matrix, Simulator & Usage Metrics) passing `web/scripts/check-budget.mjs`.
+    - [x] Implement `/admin/v1/organizations/{orgID}/guardrail-definitions`, `/admin/v1/guardrail-definitions/{guardrailID}`, `/admin/v1/guardrail-bindings`, `/admin/v1/organizations/{orgID}/tool-policies`, `/admin/v1/organizations/{orgID}/guardrail-usage`, expanded `/guardrails/simulate`, and data-plane `POST /v1/guardrails/apply`.
+    - [x] Add migration `0019` and integer micro-dollar (`cost_micros BIGINT`) guardrail usage rollups.
+    - [x] Emit scrubbed OTEL `guardrail.evaluate` spans and Prometheus metrics (`gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms`).
+    - [x] Seed YAML `guardrails.definitions[]` and `guardrails.tool_policies[]` at startup.
+    - [x] Update `docs/openapi/gateway.openapi.yaml` and regenerate `internal/openapi/`.
+    - [x] Add lazy-loaded Operator Web UI sub-tabs (Org Baseline Policy, Named Guardrails & Registry, Tool Policies & Trust Matrix, Simulator & Usage Metrics) passing `web/scripts/check-budget.mjs`.
 
 ---
 
