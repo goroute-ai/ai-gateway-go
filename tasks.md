@@ -17,12 +17,12 @@ This document tracks the six-phase upgrade of GoRoute AI Gateway (`ai-gateway-go
 | --- | --- | --- | --- | --- | --- |
 | Phase 0 | [#72](https://github.com/goroute-ai/ai-gateway-go/issues/72) | `bug` | Done (`main` `2207fab`) | Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract | None |
 | Phase 1 | [#73](https://github.com/goroute-ai/ai-gateway-go/issues/73) | `enhancement` | Done (`main` `d2a954c`) | Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical Org/Team/Key/User/Model/Tag bindings | `#72` |
-| Phase 1 | [#74](https://github.com/goroute-ai/ai-gateway-go/issues/74) | `enhancement` | Open | Multi-hook Guardrail Pipeline v2 (`pre_call`, parallel `during_call`, `post_call`, `logging_only`), `stream_scope`, tag modes & load balancing | `#73` |
-| Phase 2 | [#75](https://github.com/goroute-ai/ai-gateway-go/issues/75) | `enhancement` | Open | Public Go SDK `GuardrailScanner` plugin API (`pkg/gateway`) and upgraded `generic_http` webhook (`modify` action, rich context, per-scanner failure policy) | `#73`, `#74` |
-| Phase 2 | [#76](https://github.com/goroute-ai/ai-gateway-go/issues/76) | `enhancement` | Open | Sandboxed Starlark `custom_code` guardrail runtime with SSRF-enforced HTTP primitives and bounded execution | `#73`, `#74` |
-| Phase 3 | [#77](https://github.com/goroute-ai/ai-gateway-go/issues/77) | `enhancement` | Open | Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking | `#73`, `#74` |
-| Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Open | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
-| Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Open | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
+| Phase 1 | [#74](https://github.com/goroute-ai/ai-gateway-go/issues/74) | `enhancement` | Done (`main` `5492fa6`) | Multi-hook Guardrail Pipeline v2 (`pre_call`, parallel `during_call`, `post_call`, `logging_only`), `stream_scope`, tag modes & load balancing | `#73` |
+| Phase 2 | [#75](https://github.com/goroute-ai/ai-gateway-go/issues/75) | `enhancement` | Done (`main` `cc1753f`) | Public Go SDK `GuardrailScanner` plugin API (`pkg/gateway`) and upgraded `generic_http` webhook (`modify` action, rich context, per-scanner failure policy) | `#73`, `#74` |
+| Phase 2 | [#76](https://github.com/goroute-ai/ai-gateway-go/issues/76) | `enhancement` | Done (`main` `51d423a`) | Sandboxed Starlark `custom_code` guardrail runtime with SSRF-enforced HTTP primitives and bounded execution | `#73`, `#74` |
+| Phase 3 | [#77](https://github.com/goroute-ai/ai-gateway-go/issues/77) | `enhancement` | Done (`main` `046b5d5`) | Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking | `#73`, `#74` |
+| Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Done (`main` `dd6697f`) | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
+| Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Done (`main` `5974b47`) | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
 | Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Open | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
 | Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Open | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
 
@@ -103,7 +103,7 @@ flowchart TD
     - [x] Create `guardrail_definitions` and `guardrail_bindings` tables in migration `0017` (+ reversible `.down.sql`).
     - [x] Implement CRUD, coalesced org lookup, and Vault DEK rotation (`RotateGuardrailSecrets`) in both `MemoryRepository` and `PostgresRepository`.
 
-- [ ] **Task 1B (`#74`)**: Multi-hook Guardrail Pipeline v2, `stream_scope`, tag modes & load balancing ([Issue #74](https://github.com/goroute-ai/ai-gateway-go/issues/74))
+- [x] **Task 1B (`#74`)**: Multi-hook Guardrail Pipeline v2, `stream_scope`, tag modes & load balancing ([Issue #74](https://github.com/goroute-ai/ai-gateway-go/issues/74)) — **Landed locally on `main` (`5492fa6`)**
   - **Exclusive File Ownership (starts after `#73` domain/storage types land):**
     - `internal/guardrails/resolver.go` (new)
     - `internal/guardrails/router_lb.go` (new)
@@ -112,15 +112,15 @@ flowchart TD
     - `internal/server/guardrails.go`, `internal/server/handlers_inference.go`, `internal/server/handlers_responses.go`, `internal/server/handlers_messages.go` (hook wiring for `pre_call`, `during_call`, `post_call`, `logging_only`, `modify` write-back)
     - `tests/guardrails/pipeline_v2_test.go` (new)
   - **Deliverables:**
-    - [ ] Build `resolver.go` respecting `EnabledRoles`, `StreamScope`, `ModeRule` tag evaluation, and anti-bypass locks on `default_on` / `is_locked`.
-    - [ ] Build `router_lb.go` for weighted shuffle + `gobreaker` cooldowns across duplicate `GuardrailDefinition.Name` entries.
-    - [ ] Build `pipeline.go` executing Layer 0 `GuardrailPolicy` + ordered `Driver` instances, `StartDuringCall(...)` parallel cancellation, async `logging_only`, and `modify` mutations.
+    - [x] Build `resolver.go` respecting `EnabledRoles`, `StreamScope`, `ModeRule` tag evaluation, and anti-bypass locks on `default_on` / `is_locked`.
+    - [x] Build `router_lb.go` for weighted shuffle + `gobreaker` cooldowns across duplicate `GuardrailDefinition.Name` entries.
+    - [x] Build `pipeline.go` executing Layer 0 `GuardrailPolicy` + ordered `Driver` instances, `StartDuringCall(...)` parallel cancellation, async `logging_only`, and `modify` mutations.
 
 ---
 
 ### Phase 2 — Extensibility: Public Go SDK, Rich `generic_http` & Sandboxed Starlark
 
-- [ ] **Task 2A (`#75`)**: Public Go SDK `GuardrailScanner` plugin API and upgraded `generic_http` webhook ([Issue #75](https://github.com/goroute-ai/ai-gateway-go/issues/75))
+- [x] **Task 2A (`#75`)**: Public Go SDK `GuardrailScanner` plugin API and upgraded `generic_http` webhook ([Issue #75](https://github.com/goroute-ai/ai-gateway-go/issues/75)) — **Landed locally on `main` (`cc1753f`)**
   - **Exclusive File Ownership:**
     - `pkg/gateway/guardrails.go` (new)
     - `pkg/gateway/sdk.go` (`WithGuardrailScanner` option & internal bridge)
@@ -130,27 +130,27 @@ flowchart TD
     - `internal/server/guardrails_http.go` (independent per-scanner `TimeoutMs` & `FailOpen`)
     - `tests/guardrails/custom_scanners_test.go` (SDK & webhook `modify`/per-scanner policy tests)
   - **Deliverables:**
-    - [ ] Export `GuardrailScanner`, `GuardrailScanRequest`, `GuardrailScanResult`, `GuardrailOption`, and `WithGuardrailScanner` in `pkg/gateway` without leaking `internal/`.
-    - [ ] Upgrade `generic_http` driver to forward `input_type`, `request_id`, `trace_id`, `model`, `texts`, `structured_messages`, `images`, `tools`, `tool_calls`, redacted/allowlisted `request_headers`, and `metadata`.
-    - [ ] Support `allow`, `block`, `flag`, and `modify` (`texts`, `tool_calls`) webhook responses.
-    - [ ] Fix global fail-open/timeout aggregation so each webhook scanner enforces its own `TimeoutMs` and `FailOpen` via `network.NewHTTPClient(ssrfPolicy)`.
+    - [x] Export `GuardrailScanner`, `GuardrailScanRequest`, `GuardrailScanResult`, `GuardrailOption`, and `WithGuardrailScanner` in `pkg/gateway` without leaking `internal/`.
+    - [x] Upgrade `generic_http` driver to forward `input_type`, `request_id`, `trace_id`, `model`, `texts`, `structured_messages`, `images`, `tools`, `tool_calls`, redacted/allowlisted `request_headers`, and `metadata`.
+    - [x] Support `allow`, `block`, `flag`, and `modify` (`texts`, `tool_calls`) webhook responses.
+    - [x] Fix global fail-open/timeout aggregation so each webhook scanner enforces its own `TimeoutMs` and `FailOpen` via `network.NewHTTPClient(ssrfPolicy)`.
 
-- [ ] **Task 2B (`#76`)**: Sandboxed Starlark `custom_code` guardrail runtime ([Issue #76](https://github.com/goroute-ai/ai-gateway-go/issues/76))
+- [x] **Task 2B (`#76`)**: Sandboxed Starlark `custom_code` guardrail runtime ([Issue #76](https://github.com/goroute-ai/ai-gateway-go/issues/76)) — **Landed locally on `main` (`51d423a`)**
   - **Exclusive File Ownership:**
     - `go.mod`, `go.sum` (`go.starlark.net`)
     - `internal/guardrails/drivers/custom_code.go` (new)
     - `internal/guardrails/drivers/custom_code_test.go` (new)
     - `tests/guardrails/custom_code_test.go` (new)
   - **Deliverables:**
-    - [ ] Implement `ScriptRuntime` and `custom_code` driver compiling `def apply_guardrail(inputs, request_data, input_type):`.
-    - [ ] Provide safe predeclared builtins (`allow`, `block`, `flag`, `modify`, `regex_*`, `json_*`, `sha256`, `http_get`, `http_post`) with zero `load`, filesystem, or env access.
-    - [ ] Enforce `thread.Cancel` on context deadline and `thread.SetMaxExecutionSteps`, plus SSRF-checked `network.NewHTTPClient(ssrfPolicy)` for `http_get`/`http_post`.
+    - [x] Implement `ScriptRuntime` and `custom_code` driver compiling `def apply_guardrail(inputs, request_data, input_type):`.
+    - [x] Provide safe predeclared builtins (`allow`, `block`, `flag`, `modify`, `regex_*`, `json_*`, `sha256`, `http_get`, `http_post`) with zero `load`, filesystem, or env access.
+    - [x] Enforce `thread.Cancel` on context deadline and `thread.SetMaxExecutionSteps`, plus SSRF-checked `network.NewHTTPClient(ssrfPolicy)` for `http_get`/`http_post`.
 
 ---
 
 ### Phase 3 — Tool-Level, Agentic Loop & Zero-Trust MCP Governance
 
-- [ ] **Task 3A (`#77`)**: Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking ([Issue #77](https://github.com/goroute-ai/ai-gateway-go/issues/77))
+- [x] **Task 3A (`#77`)**: Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking ([Issue #77](https://github.com/goroute-ai/ai-gateway-go/issues/77)) — **Landed locally on `main` (`046b5d5`)**
   - **Exclusive File Ownership:**
     - `migrations/0018_tool_policies.up.sql` (new)
     - `migrations/0018_tool_policies.down.sql` (new)
@@ -161,11 +161,11 @@ flowchart TD
     - `internal/orchestrator/tool_loop.go` & `internal/orchestrator/tool_loop_test.go` (taint propagation inside `ToolLoopOrchestrator`)
     - `tests/guardrails/tool_governance_test.go` (new)
   - **Deliverables:**
-    - [ ] Implement `tool_permission` evaluating `tools`, `tool_choice`, and `tool_calls` against ordered `ToolPermissionRule` specs (`name_pattern`, `tool_type`, `allowed_arg_regex`, `blocked_arg_regex`, `action`, `default_action`).
-    - [ ] Create `tool_policies` table (`0018`) and repository methods for `(org_id, team_id, virtual_key_id, tool_name, input_policy, output_policy)`.
-    - [ ] Implement two-stage `tool_policy` taint tracking across multi-turn message history (`tool_call_id` mapping) and `ToolLoopOrchestrator`, returning `400 violated_tool_policy` on untrusted-to-trusted chains.
+    - [x] Implement `tool_permission` evaluating `tools`, `tool_choice`, and `tool_calls` against ordered `ToolPermissionRule` specs (`name_pattern`, `tool_type`, `allowed_arg_regex`, `blocked_arg_regex`, `action`, `default_action`).
+    - [x] Create `tool_policies` table (`0018`) and repository methods for `(org_id, team_id, virtual_key_id, tool_name, input_policy, output_policy)`.
+    - [x] Implement two-stage `tool_policy` taint tracking across multi-turn message history (`tool_call_id` mapping) and `ToolLoopOrchestrator`, returning `400 violated_tool_policy` on untrusted-to-trusted chains.
 
-- [ ] **Task 3B (`#78`)**: Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, `mcp_jwt_signer`, `block_code_execution`) ([Issue #78](https://github.com/goroute-ai/ai-gateway-go/issues/78))
+- [x] **Task 3B (`#78`)**: Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, `mcp_jwt_signer`, `block_code_execution`) ([Issue #78](https://github.com/goroute-ai/ai-gateway-go/issues/78)) — **Landed locally on `main` (`dd6697f`)**
   - **Exclusive File Ownership:**
     - `internal/guardrails/drivers/code_execution.go` (new)
     - `internal/guardrails/drivers/mcp_security.go` (new)
@@ -175,16 +175,16 @@ flowchart TD
     - `internal/mcp/auth_resolver.go` (formalized `mcp_jwt_signer` token exchange, claim validation & transforms)
     - `internal/mcp/hardening_test.go` & `tests/guardrails/tool_and_protocol_test.go`
   - **Deliverables:**
-    - [ ] Implement `block_code_execution` driver (`block|strip|flag`) for shell/Python/eval tool calls and fenced executable code.
-    - [ ] Implement `mcp_security` validating LLM request MCP server/URL declarations against tenant-registered `MCPServer` entries.
-    - [ ] Implement `mcp_end_user_permission` validating caller `UserID`/OIDC claims/team RBAC before `mcp.Hub` dispatch.
-    - [ ] Formalize `mcp_jwt_signer` (`MCPAuthVaultJWT` verification, `required_claims`/`optional_claims`, claim transforms, per-hop Vault JWT signing) and wire `*_mcp_call` hooks into `mcp.Hub`.
+    - [x] Implement `block_code_execution` driver (`block|strip|flag`) for shell/Python/eval tool calls and fenced executable code.
+    - [x] Implement `mcp_security` validating LLM request MCP server/URL declarations against tenant-registered `MCPServer` entries.
+    - [x] Implement `mcp_end_user_permission` validating caller `UserID`/OIDC claims/team RBAC before `mcp.Hub` dispatch.
+    - [x] Formalize `mcp_jwt_signer` (`MCPAuthVaultJWT` verification, `required_claims`/`optional_claims`, claim transforms, per-hop Vault JWT signing) and wire `*_mcp_call` hooks into `mcp.Hub`.
 
 ---
 
 ### Phase 4 — Unified Driver Registry, Priority Cloud/OSS Providers & LLM Judges
 
-- [ ] **Task 4A (`#79`)**: Unified `DriverRegistry`, 9 priority cloud/OSS/local drivers & streaming chunk windowing ([Issue #79](https://github.com/goroute-ai/ai-gateway-go/issues/79))
+- [x] **Task 4A (`#79`)**: Unified `DriverRegistry`, 9 priority cloud/OSS/local drivers & streaming chunk windowing ([Issue #79](https://github.com/goroute-ai/ai-gateway-go/issues/79)) — **Landed locally on `main` (`5974b47`)**
   - **Exclusive File Ownership:**
     - `internal/guardrails/drivers/registry.go` (new — `Driver` interface & `DriverRegistry`)
     - `internal/guardrails/drivers/openai_moderation.go` (new)
@@ -199,9 +199,9 @@ flowchart TD
     - `internal/guardrails/drivers/drivers_test.go` (new — `httptest` protocol mock suite for all 9 drivers)
     - `internal/guardrails/stream_filter.go` & `internal/guardrails/stream_filter_test.go` (`stream_scope`, bounded overlap windowing for remote drivers, streamed `tool_calls` argument scanning)
   - **Deliverables:**
-    - [ ] Implement `Driver` interface and `DriverRegistry` using `network.NewHTTPClient(ssrfPolicy)` and `auth.Vault` secret decryption.
-    - [ ] Implement all 9 priority drivers (`openai_moderation`, `bedrock`, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `local_content_filter`).
-    - [ ] Upgrade `StreamRedactor` with `stream_scope`, chunk window overlap for remote `post_call` drivers, and incremental `tool_calls` argument scanning.
+    - [x] Implement `Driver` interface and `DriverRegistry` using `network.NewHTTPClient(ssrfPolicy)` and `auth.Vault` secret decryption.
+    - [x] Implement all 9 priority drivers (`openai_moderation`, `bedrock`, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `local_content_filter`).
+    - [x] Upgrade `StreamRedactor` with `stream_scope`, chunk window overlap for remote `post_call` drivers, and incremental `tool_calls` argument scanning.
 
 - [ ] **Task 4B (`#80`)**: Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router ([Issue #80](https://github.com/goroute-ai/ai-gateway-go/issues/80))
   - **Exclusive File Ownership (starts after `#79` `DriverRegistry` interface lands):**
