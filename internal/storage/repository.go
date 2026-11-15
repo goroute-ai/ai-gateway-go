@@ -122,6 +122,43 @@ type SpendSummary struct {
 	SpendByVirtualKey map[string]int64 `json:"spend_by_virtual_key"`
 }
 
+// GuardrailBindingFilter filters guardrail binding queries. Empty fields match all values.
+type GuardrailBindingFilter struct {
+	OrgID         string
+	GuardrailID   string
+	GuardrailName string
+	TeamID        string
+	VirtualKeyID  string
+	EndUserID     string
+	ModelGroupID  string
+	Tag           string
+}
+
+// EffectiveGuardrails holds an organization's active guardrail definitions and associated bindings.
+type EffectiveGuardrails struct {
+	Definitions []*domain.GuardrailDefinition
+	Bindings    []*domain.GuardrailBinding
+}
+
+// GuardrailRegistryRepository defines persistence operations for named guardrail definitions,
+// hierarchical scope bindings, and Vault-encrypted secret rotation.
+type GuardrailRegistryRepository interface {
+	CreateGuardrailDefinition(ctx context.Context, def *domain.GuardrailDefinition) error
+	GetGuardrailDefinition(ctx context.Context, id string) (*domain.GuardrailDefinition, error)
+	ListGuardrailDefinitions(ctx context.Context, orgID string, status domain.GuardrailStatus, name string) ([]*domain.GuardrailDefinition, error)
+	UpdateGuardrailDefinition(ctx context.Context, def *domain.GuardrailDefinition) error
+	DeleteGuardrailDefinition(ctx context.Context, id string) error
+
+	CreateGuardrailBinding(ctx context.Context, binding *domain.GuardrailBinding) error
+	GetGuardrailBinding(ctx context.Context, id string) (*domain.GuardrailBinding, error)
+	ListGuardrailBindings(ctx context.Context, filter GuardrailBindingFilter) ([]*domain.GuardrailBinding, error)
+	UpdateGuardrailBinding(ctx context.Context, binding *domain.GuardrailBinding) error
+	DeleteGuardrailBinding(ctx context.Context, id string) error
+
+	ListEffectiveGuardrailsForOrg(ctx context.Context, orgID string) (*EffectiveGuardrails, error)
+	RotateGuardrailSecrets(ctx context.Context, orgID, id, encryptedSecrets, encryptedDEK string) error
+}
+
 // Repository defines the persistence contract shared across Control Plane and Data Plane services.
 type Repository interface {
 	// Health & Connectivity
@@ -183,9 +220,10 @@ type Repository interface {
 	ListAllDeployments(ctx context.Context) ([]*domain.Deployment, error)
 	UpdateDeploymentStatus(ctx context.Context, depID string, status domain.DeploymentStatus) error
 
-	// Security Guardrail Policies
+	// Security Guardrail Policies & Registry
 	SetGuardrailPolicy(ctx context.Context, pol *domain.GuardrailPolicy) error
 	GetGuardrailPolicy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error)
+	GuardrailRegistryRepository
 
 	// FinOps Spend & Audit Logging
 	EnqueueSpendEvent(ctx context.Context, event domain.SpendEvent) error

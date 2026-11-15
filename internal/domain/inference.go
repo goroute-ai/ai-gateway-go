@@ -189,10 +189,12 @@ type CanonicalChatRequest struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
-// GoRouteExtensions holds gateway-specific routing and state resumption extensions.
+// GoRouteExtensions holds gateway-specific routing, state resumption, and guardrail extensions.
 type GoRouteExtensions struct {
-	TaskID    string `json:"task_id,omitempty"`
-	ContextID string `json:"context_id,omitempty"`
+	TaskID     string                     `json:"task_id,omitempty"`
+	ContextID  string                     `json:"context_id,omitempty"`
+	Guardrails []GuardrailRequestOverride `json:"guardrails,omitempty"`
+	Tags       []string                   `json:"tags,omitempty"`
 }
 
 type StreamOptions struct {

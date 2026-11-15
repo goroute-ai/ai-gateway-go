@@ -13,18 +13,18 @@ This document tracks the six-phase upgrade of GoRoute AI Gateway (`ai-gateway-go
 
 ## Live GitHub Issues Index
 
-| Phase | Issue | Type | Title | Dependencies |
-| --- | --- | --- | --- | --- |
-| Phase 0 | [#72](https://github.com/goroute-ai/ai-gateway-go/issues/72) | `bug` | Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract | None |
-| Phase 1 | [#73](https://github.com/goroute-ai/ai-gateway-go/issues/73) | `enhancement` | Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical Org/Team/Key/User/Model/Tag bindings | `#72` |
-| Phase 1 | [#74](https://github.com/goroute-ai/ai-gateway-go/issues/74) | `enhancement` | Multi-hook Guardrail Pipeline v2 (`pre_call`, parallel `during_call`, `post_call`, `logging_only`), `stream_scope`, tag modes & load balancing | `#73` |
-| Phase 2 | [#75](https://github.com/goroute-ai/ai-gateway-go/issues/75) | `enhancement` | Public Go SDK `GuardrailScanner` plugin API (`pkg/gateway`) and upgraded `generic_http` webhook (`modify` action, rich context, per-scanner failure policy) | `#73`, `#74` |
-| Phase 2 | [#76](https://github.com/goroute-ai/ai-gateway-go/issues/76) | `enhancement` | Sandboxed Starlark `custom_code` guardrail runtime with SSRF-enforced HTTP primitives and bounded execution | `#73`, `#74` |
-| Phase 3 | [#77](https://github.com/goroute-ai/ai-gateway-go/issues/77) | `enhancement` | Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking | `#73`, `#74` |
-| Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
-| Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
-| Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
-| Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
+| Phase | Issue | Type | Status | Title | Dependencies |
+| --- | --- | --- | --- | --- | --- |
+| Phase 0 | [#72](https://github.com/goroute-ai/ai-gateway-go/issues/72) | `bug` | Done (`main` `2207fab`) | Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract | None |
+| Phase 1 | [#73](https://github.com/goroute-ai/ai-gateway-go/issues/73) | `enhancement` | Open | Named `GuardrailDefinition` registry, Vault-encrypted secrets, and hierarchical Org/Team/Key/User/Model/Tag bindings | `#72` |
+| Phase 1 | [#74](https://github.com/goroute-ai/ai-gateway-go/issues/74) | `enhancement` | Open | Multi-hook Guardrail Pipeline v2 (`pre_call`, parallel `during_call`, `post_call`, `logging_only`), `stream_scope`, tag modes & load balancing | `#73` |
+| Phase 2 | [#75](https://github.com/goroute-ai/ai-gateway-go/issues/75) | `enhancement` | Open | Public Go SDK `GuardrailScanner` plugin API (`pkg/gateway`) and upgraded `generic_http` webhook (`modify` action, rich context, per-scanner failure policy) | `#73`, `#74` |
+| Phase 2 | [#76](https://github.com/goroute-ai/ai-gateway-go/issues/76) | `enhancement` | Open | Sandboxed Starlark `custom_code` guardrail runtime with SSRF-enforced HTTP primitives and bounded execution | `#73`, `#74` |
+| Phase 3 | [#77](https://github.com/goroute-ai/ai-gateway-go/issues/77) | `enhancement` | Open | Rule-based LLM `tool_permission` engine and persistent cross-turn `tool_policy` trust-chain taint tracking | `#73`, `#74` |
+| Phase 3 | [#78](https://github.com/goroute-ai/ai-gateway-go/issues/78) | `enhancement` | Open | Zero-trust MCP & code execution guardrails (`mcp_security`, `mcp_end_user_permission`, formalized `mcp_jwt_signer`, `block_code_execution`) | `#73`, `#74` |
+| Phase 4 | [#79](https://github.com/goroute-ai/ai-gateway-go/issues/79) | `enhancement` | Open | Unified Guardrail Driver Registry with priority cloud/OSS providers & upgraded `local_content_filter` | `#73`, `#74` |
+| Phase 4 | [#80](https://github.com/goroute-ai/ai-gateway-go/issues/80) | `enhancement` | Open | Internal `llm_as_a_judge` and `decision_model` guardrails via gateway router with recursion loop protection | `#73`, `#74`, `#79` |
+| Phase 5 | [#81](https://github.com/goroute-ai/ai-gateway-go/issues/81) | `enhancement` | Open | Standalone `/v1/guardrails/apply` evaluation API, expanded simulator, micro-dollar guardrail usage rollups, OTEL/Prometheus metrics & Operator Web UI | `#72`–`#80` |
 
 ---
 
@@ -70,7 +70,7 @@ flowchart TD
 
 ### Phase 0 — P0 Bugfix: Postgres Persistence & OpenAPI Schema Parity
 
-- [ ] **Task 0 (`#72`)**: Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract ([Issue #72](https://github.com/goroute-ai/ai-gateway-go/issues/72))
+- [x] **Task 0 (`#72`)**: Persist `GuardrailPolicy` toxicity filter & content category fields in PostgreSQL and align OpenAPI contract ([Issue #72](https://github.com/goroute-ai/ai-gateway-go/issues/72)) — **Landed locally on `main` (`2207fab`)**
   - **Exclusive File Ownership:**
     - `migrations/0016_guardrail_policy_toxicity.up.sql` (new)
     - `migrations/0016_guardrail_policy_toxicity.down.sql` (new)
@@ -80,10 +80,10 @@ flowchart TD
     - `internal/storage/storage_roundtrip_test.go`, `internal/storage/postgres_migrations_test.go`, `internal/storage/postgres_migrations_live_test.go` (toxicity persistence assertions)
     - `tests/guardrails/http_flow_test.go` (round-trip HTTP + `/guardrails/simulate` assertions)
   - **Deliverables:**
-    - [ ] Add `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions` columns in migration `0016` (+ reversible `.down.sql`).
-    - [ ] Update `SetGuardrailPolicy` and `GetGuardrailPolicy` in `internal/storage/postgres.go` (normalize `nil` slices to `{}`).
-    - [ ] Update `#/components/schemas/GuardrailPolicy` in `docs/openapi/gateway.openapi.yaml` (`toxicity_threshold` enum `[low, medium, high]`) and run `make specgen`.
-    - [ ] Add cold PostgreSQL round-trip and HTTP persistence tests.
+    - [x] Add `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions` columns in migration `0016` (+ reversible `.down.sql`).
+    - [x] Update `SetGuardrailPolicy` and `GetGuardrailPolicy` in `internal/storage/postgres.go` (normalize `nil` slices to `{}`).
+    - [x] Update `#/components/schemas/GuardrailPolicy` in `docs/openapi/gateway.openapi.yaml` (`toxicity_threshold` enum `[low, medium, high]`) and run `make specgen`.
+    - [x] Add cold PostgreSQL round-trip and HTTP persistence tests.
 
 ---
 
