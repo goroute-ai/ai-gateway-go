@@ -27,13 +27,22 @@ func TestRegistryPreRegisteredProvidersAndConcurrentBuild(t *testing.T) {
 		ProviderAzurePromptShield,
 		ProviderAzureTextModerations,
 		ProviderBedrock,
+		ProviderCodeExecution,
+		CustomCodeProvider,
+		ProviderDecisionModel,
+		DriverNameGenericHTTP,
 		ProviderGuardrailsAI,
 		ProviderLakeraV2,
+		ProviderLLMJudge,
 		ProviderLocalContentFilter,
+		ProviderMCPEndUserPermission,
+		ProviderMCPSecurity,
 		ProviderModelArmor,
 		ProviderOpenAIModeration,
 		ProviderPangea,
 		ProviderPresidio,
+		ProviderToolPermission,
+		ProviderToolPolicy,
 	}
 	slices.Sort(expected)
 

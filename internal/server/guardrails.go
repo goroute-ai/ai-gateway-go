@@ -12,7 +12,9 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails/drivers"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 var serverPipelines sync.Map
@@ -75,7 +77,28 @@ func (s *GatewayServer) GuardrailPipeline() *guardrails.Pipeline {
 		}))
 	}
 
+	registryOpts := make([]drivers.RegistryOption, 0, 4)
+	if s.netPolicy != nil {
+		registryOpts = append(registryOpts, drivers.WithSSRFPolicy(s.netPolicy))
+	}
+	if tpRepo, ok := s.repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
+		registryOpts = append(registryOpts, drivers.WithToolPolicyRepository(tpRepo))
+	}
+	if s.repo != nil {
+		registryOpts = append(registryOpts, drivers.WithMCPServerRegistry(s.repo))
+	}
+	if s.reliability != nil {
+		registryOpts = append(registryOpts, drivers.WithChatExecutor(drivers.ChatExecutorFunc(
+			func(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
+				resp, _, err := s.reliability.ExecuteChat(ctx, idCtx, req)
+				return resp, err
+			},
+		)))
+	}
+	driverRegistry := drivers.NewRegistry(registryOpts...)
+
 	created := guardrails.NewPipeline(s.guardrails, s.repo, opts...)
+	created.SetDriverLookup(driverRegistry.Build)
 	entry := &serverPipelineEntry{
 		server:   weak.Make(s),
 		pipeline: created,
@@ -120,6 +143,9 @@ func buildGuardrailRequestContext(r *http.Request, idCtx *domain.IdentityContext
 		}
 	}
 	if req != nil {
+		// Strip any caller-spoofed internal guardrail origin marker from inbound request metadata.
+		drivers.StripInternalGuardrailOriginStringMetadata(req.Metadata)
+		drivers.StripInternalGuardrailOriginMetadata(req.ExtraParams)
 		prc.RequestID = req.RequestID
 		prc.Model = req.Model
 		prc.IsStreaming = req.Stream
@@ -135,6 +161,7 @@ func buildGuardrailRequestContext(r *http.Request, idCtx *domain.IdentityContext
 			}
 		}
 	}
+	drivers.StripInternalGuardrailOriginMetadata(prc.Metadata)
 	if r != nil && prc.TraceID == "" {
 		prc.TraceID = observability.TraceFromContext(r.Context()).TraceID
 	}
@@ -167,6 +194,9 @@ func (s *GatewayServer) evaluateChatInputGuardrails(
 	resource string,
 ) (guardrails.PipelineRequestContext, bool, error) {
 	prc := buildGuardrailRequestContext(r, idCtx, req)
+	if drivers.IsInternalGuardrailOrigin(ctx) {
+		return prc, false, nil
+	}
 	pipeline := s.GuardrailPipeline()
 	out, err := pipeline.EvaluatePreCall(ctx, prc, req)
 	redacted := false
@@ -218,6 +248,9 @@ func (s *GatewayServer) evaluateChatOutputGuardrails(
 	resp *domain.CanonicalChatResponse,
 	resource string,
 ) (bool, error) {
+	if drivers.IsInternalGuardrailOrigin(ctx) {
+		return false, nil
+	}
 	pipeline := s.GuardrailPipeline()
 	out, err := pipeline.EvaluatePostCall(ctx, prc, resp)
 	redacted := false
@@ -273,6 +306,9 @@ func (s *GatewayServer) startDuringCallGuardrails(
 	prc guardrails.PipelineRequestContext,
 	req *domain.CanonicalChatRequest,
 ) (context.Context, *guardrails.DuringCallHandle, error) {
+	if drivers.IsInternalGuardrailOrigin(parentCtx) {
+		return parentCtx, nil, nil
+	}
 	return s.GuardrailPipeline().StartDuringCall(parentCtx, prc, req)
 }
 
@@ -336,6 +372,12 @@ func (s *GatewayServer) newStreamGuardrailSession(
 	prc guardrails.PipelineRequestContext,
 	duringHandle *guardrails.DuringCallHandle,
 ) (*streamGuardrailSession, error) {
+	if drivers.IsInternalGuardrailOrigin(ctx) {
+		return &streamGuardrailSession{
+			server: s,
+			prc:    prc,
+		}, nil
+	}
 	var redactor *guardrails.StreamRedactor
 	if s.guardrails != nil && prc.OrgID != "" {
 		policy, err := s.guardrails.Policy(ctx, prc.OrgID)
@@ -526,6 +568,9 @@ func (s *GatewayServer) guardrailTextValuesWithExtensions(
 		return nil, nil
 	}
 	out := append([]string(nil), values...)
+	if drivers.IsInternalGuardrailOrigin(ctx) {
+		return out, nil
+	}
 	var msgs []domain.CanonicalMessage
 	var indices []int
 	for i, val := range values {
@@ -596,7 +641,7 @@ func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, r
 }
 
 func (s *GatewayServer) sanitizeGuardrailValue(ctx context.Context, orgID string, raw any) (any, bool, error) {
-	if s.guardrails == nil {
+	if s.guardrails == nil || drivers.IsInternalGuardrailOrigin(ctx) {
 		return raw, false, nil
 	}
 	switch v := raw.(type) {
@@ -653,7 +698,7 @@ func (s *GatewayServer) sanitizeGuardrailValue(ctx context.Context, orgID string
 }
 
 func (s *GatewayServer) sanitizeGuardrailText(ctx context.Context, orgID, text string) (string, error) {
-	if s.guardrails == nil {
+	if s.guardrails == nil || drivers.IsInternalGuardrailOrigin(ctx) {
 		return text, nil
 	}
 	updated, _, err := s.guardrails.SanitizeTextOutput(ctx, orgID, text)

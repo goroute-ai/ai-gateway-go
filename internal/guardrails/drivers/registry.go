@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 const (
@@ -30,6 +31,8 @@ const (
 	ProviderGuardrailsAI         = "guardrails_ai"
 	ProviderPangea               = "pangea"
 	ProviderLocalContentFilter   = "local_content_filter"
+	ProviderGenericHTTP          = DriverNameGenericHTTP
+	ProviderCustomCode           = CustomCodeProvider
 )
 
 const defaultMaxGuardrailResponseBytes int64 = 4 << 20 // 4 MiB
@@ -56,20 +59,52 @@ func WithNetworkPolicy(policy *network.Policy) RegistryOption {
 	}
 }
 
+// WithSSRFPolicy is an alias for WithNetworkPolicy configuring the outbound SSRF policy for
+// network-backed and custom_code drivers.
+func WithSSRFPolicy(policy *network.Policy) RegistryOption {
+	return WithNetworkPolicy(policy)
+}
+
+// WithChatExecutor configures the internal ChatExecutor used by llm_as_a_judge and decision_model.
+func WithChatExecutor(executor ChatExecutor) RegistryOption {
+	return func(r *Registry) {
+		r.chatExecutor = executor
+	}
+}
+
+// WithToolPolicyRepository configures the persistent ToolPolicyRepository used by tool_policy.
+func WithToolPolicyRepository(repo storage.ToolPolicyRepository) RegistryOption {
+	return func(r *Registry) {
+		r.toolPolicyRepo = repo
+	}
+}
+
+// WithMCPServerRegistry configures the repository used by mcp_security to resolve registered
+// tenant MCPServer entries.
+func WithMCPServerRegistry(repo storage.Repository) RegistryOption {
+	return func(r *Registry) {
+		r.mcpServerRepo = repo
+	}
+}
+
 // Registry is a thread-safe catalog mapping guardrail provider names to driver constructors.
 // Its Build method satisfies guardrails.DriverLookup and guardrails.DriverFactory directly.
 type Registry struct {
-	mu            sync.RWMutex
-	constructors  map[string]Constructor
-	httpClient    *http.Client
-	networkPolicy *network.Policy
+	mu             sync.RWMutex
+	constructors   map[string]Constructor
+	httpClient     *http.Client
+	networkPolicy  *network.Policy
+	chatExecutor   ChatExecutor
+	toolPolicyRepo storage.ToolPolicyRepository
+	mcpServerRepo  storage.Repository
 }
 
-// NewRegistry creates a Registry pre-populated with all built-in cloud, OSS, and local guardrail drivers.
+// NewRegistry creates a Registry pre-populated with all built-in cloud, OSS, local, governance,
+// MCP, and model-based guardrail drivers.
 // By default, network-backed drivers use network.NewHTTPClient enforcing strict outbound SSRF policy.
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
-		constructors: make(map[string]Constructor, 10),
+		constructors: make(map[string]Constructor, 19),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -80,6 +115,7 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 		r.httpClient = network.NewHTTPClient(r.networkPolicy)
 	}
 
+	// Wave 1: Cloud, OSS, and local content filters.
 	r.Register(ProviderOpenAIModeration, NewOpenAIModerationDriver)
 	r.Register(ProviderBedrock, NewBedrockDriver)
 	r.Register(ProviderAzurePromptShield, NewAzurePromptShieldDriver)
@@ -90,6 +126,38 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	r.Register(ProviderGuardrailsAI, NewGuardrailsAIDriver)
 	r.Register(ProviderPangea, NewPangeaDriver)
 	r.Register(ProviderLocalContentFilter, NewLocalContentFilterDriver)
+
+	// Wave 2+3: Webhook, Starlark sandbox, tool governance, MCP security, and LLM judge/decision drivers.
+	r.Register(DriverNameGenericHTTP, func(cfg guardrails.DriverConfig, httpClient *http.Client) (guardrails.Driver, error) {
+		return NewGenericHTTPDriver(cfg, httpClient)
+	})
+	r.Register(CustomCodeProvider, func(cfg guardrails.DriverConfig, httpClient *http.Client) (guardrails.Driver, error) {
+		return NewCustomCodeDriverWithPolicy(cfg, r.networkPolicy, httpClient)
+	})
+	r.Register(ProviderToolPermission, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewToolPermissionDriver(cfg)
+	})
+	r.Register(ProviderToolPolicy, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewToolPolicyDriver(cfg, r.toolPolicyRepo)
+	})
+	r.Register(ProviderCodeExecution, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewCodeExecutionDriver(cfg)
+	})
+	r.Register(ProviderMCPSecurity, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		if r.mcpServerRepo != nil {
+			return NewMCPSecurityDriver(cfg, r.mcpServerRepo)
+		}
+		return NewMCPSecurityDriver(cfg)
+	})
+	r.Register(ProviderMCPEndUserPermission, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewMCPEndUserPermissionDriver(cfg)
+	})
+	r.Register(ProviderLLMJudge, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewLLMJudgeDriver(cfg, r.chatExecutor)
+	})
+	r.Register(ProviderDecisionModel, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
+		return NewDecisionModelDriver(cfg, r.chatExecutor)
+	})
 	return r
 }
 
