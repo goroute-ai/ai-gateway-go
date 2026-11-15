@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
-import { GuardrailPolicy } from '../types';
+import { GuardrailPolicy, GuardrailViolation } from '../types';
 import {
   ShieldCheck,
   Zap,
@@ -17,7 +17,28 @@ import {
   Layers,
   Plus,
   X,
+  Activity,
+  RefreshCw,
 } from 'lucide-react';
+
+const RegistryTab = lazy(() =>
+  import('./guardrails/RegistryTab').then((m) => ({ default: m.RegistryTab }))
+);
+const ToolPoliciesTab = lazy(() =>
+  import('./guardrails/ToolPoliciesTab').then((m) => ({ default: m.ToolPoliciesTab }))
+);
+const SimulatorUsageTab = lazy(() =>
+  import('./guardrails/SimulatorUsageTab').then((m) => ({ default: m.SimulatorUsageTab }))
+);
+
+type GuardrailsTab = 'baseline' | 'registry' | 'tools' | 'simulator';
+
+const TabLoadingFallback = () => (
+  <div className="flex items-center justify-center py-12 text-zinc-500 font-mono text-xs gap-2">
+    <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
+    <span>Loading guardrail console module...</span>
+  </div>
+);
 
 const GuardrailRuleCard: React.FC<{
   icon: React.ReactNode;
@@ -142,6 +163,7 @@ const TagListField: React.FC<{
 
 export const GuardrailsView: React.FC = () => {
   const { adminKey, activeOrgId } = useAuth();
+  const [activeTab, setActiveTab] = useState<GuardrailsTab>('baseline');
 
   // Local state for policy editing
   const [policyForm, setPolicyForm] = useState<GuardrailPolicy>(() =>
@@ -172,9 +194,9 @@ export const GuardrailsView: React.FC = () => {
   const [simResult, setSimResult] = useState<{
     allowed: boolean;
     applied_action: string;
-    violations: string[];
+    violations?: Array<string | GuardrailViolation>;
     redacted: boolean;
-    redacted_prompt: string;
+    redacted_prompt?: string;
     error_message?: string;
   } | null>(null);
 
@@ -265,31 +287,77 @@ export const GuardrailsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3">
-          {saveSuccessMsg && (
+          {activeTab === 'baseline' && saveSuccessMsg && (
             <span className="text-xs text-emerald-400 flex items-center gap-1 font-mono">
               <CheckCircle2 className="w-3.5 h-3.5" />
               {saveSuccessMsg}
             </span>
           )}
-          <button
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !activeOrgId}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs transition disabled:opacity-50"
-          >
-            <Check className="w-3.5 h-3.5" />
-            {saveMutation.isPending ? 'Saving...' : 'Save Policy'}
-          </button>
+          {activeTab === 'baseline' && (
+            <button
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || !activeOrgId}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs transition disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5" />
+              {saveMutation.isPending ? 'Saving...' : 'Save Policy'}
+            </button>
+          )}
         </div>
       </div>
 
-      {isPolicyError && (
-        <ErrorAlert error={policyError} title="Failed to load guardrail policy" onRetry={() => refetchPolicy()} />
+      {/* 4-Tab Operator Console Switcher */}
+      <div className="border-b border-subtle">
+        <div className="flex flex-wrap gap-4">
+          {([
+            { id: 'baseline', label: 'Org Baseline Policy', icon: <Lock className="w-3.5 h-3.5" /> },
+            { id: 'registry', label: 'Named Guardrails & Registry', icon: <Layers className="w-3.5 h-3.5" /> },
+            { id: 'tools', label: 'Tool Policies & Trust Matrix', icon: <ShieldCheck className="w-3.5 h-3.5" /> },
+            { id: 'simulator', label: 'Simulator & Usage Metrics', icon: <Activity className="w-3.5 h-3.5" /> },
+          ] as const).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
+                activeTab === tab.id
+                  ? 'border-accent-primary text-accent-primary font-semibold'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === 'registry' && (
+        <Suspense fallback={<TabLoadingFallback />}>
+          <RegistryTab />
+        </Suspense>
       )}
-      {saveMutation.isError && (
-        <ErrorAlert error={saveMutation.error} title="Failed to save guardrail policy" />
+      {activeTab === 'tools' && (
+        <Suspense fallback={<TabLoadingFallback />}>
+          <ToolPoliciesTab />
+        </Suspense>
+      )}
+      {activeTab === 'simulator' && (
+        <Suspense fallback={<TabLoadingFallback />}>
+          <SimulatorUsageTab />
+        </Suspense>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {activeTab === 'baseline' && (
+        <>
+          {isPolicyError && (
+            <ErrorAlert error={policyError} title="Failed to load guardrail policy" onRetry={() => refetchPolicy()} />
+          )}
+          {saveMutation.isError && (
+            <ErrorAlert error={saveMutation.error} title="Failed to save guardrail policy" />
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Policy Configuration Form (7 cols) */}
         <div className="lg:col-span-7 space-y-4">
           <div className="bg-surface-base border border-subtle rounded-lg p-5">
@@ -566,7 +634,7 @@ export const GuardrailsView: React.FC = () => {
                           key={i}
                           className="p-1.5 bg-red-950/30 border border-red-900/50 rounded text-[11px] text-red-300"
                         >
-                          {v}
+                          {typeof v === 'string' ? v : `${v.guardrail_name}: ${v.message}`}
                         </div>
                       ))}
                     </div>
@@ -588,6 +656,8 @@ export const GuardrailsView: React.FC = () => {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

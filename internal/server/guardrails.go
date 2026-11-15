@@ -39,25 +39,7 @@ func (s *GatewayServer) GuardrailPipeline() *guardrails.Pipeline {
 
 	opts := []guardrails.PipelineOption{
 		guardrails.WithAuditHook(func(ctx context.Context, hook domain.GuardrailHook, prc guardrails.PipelineRequestContext, res *domain.GuardrailEvalResult) {
-			if s.repo == nil || prc.OrgID == "" || res == nil {
-				return
-			}
-			_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
-				OrgID:      prc.OrgID,
-				ActorID:    prc.VirtualKeyID,
-				Action:     "guardrail.evaluated",
-				Resource:   string(hook),
-				ResourceID: prc.RequestID,
-				Details: map[string]any{
-					"hook":          hook,
-					"decision":      res.Decision,
-					"error_message": res.ErrorMessage,
-					"violations":    res.Violations,
-					"trace_id":      prc.TraceID,
-					"model":         prc.Model,
-					"model_group":   prc.ModelGroupID,
-				},
-			})
+			s.recordGuardrailAuditHook(ctx, hook, prc, res)
 		}),
 	}
 	if s.vault != nil {
@@ -98,7 +80,7 @@ func (s *GatewayServer) GuardrailPipeline() *guardrails.Pipeline {
 	driverRegistry := drivers.NewRegistry(registryOpts...)
 
 	created := guardrails.NewPipeline(s.guardrails, s.repo, opts...)
-	created.SetDriverLookup(driverRegistry.Build)
+	created.SetDriverLookup(s.wrapGuardrailDriverLookup(driverRegistry.Build))
 	entry := &serverPipelineEntry{
 		server:   weak.Make(s),
 		pipeline: created,

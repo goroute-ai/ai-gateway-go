@@ -353,6 +353,29 @@ func (e *OTLPMetricsExporter) buildPayload() otlpExportMetricsRequest {
 		)
 	}
 
+	for _, gm := range snap.GuardrailMetrics {
+		gAttr := kv("guardrail", gm.Guardrail)
+		hAttr := kv("hook", gm.Hook)
+		decisions := make([]string, 0, len(gm.DecisionCounts))
+		for dec := range gm.DecisionCounts {
+			decisions = append(decisions, dec)
+		}
+		sort.Strings(decisions)
+		for _, dec := range decisions {
+			metrics = append(metrics, intCounter(
+				"gateway_guardrail_evaluations_total",
+				"Total guardrail evaluations.",
+				gm.DecisionCounts[dec],
+				gAttr, hAttr, kv("decision", dec),
+			))
+		}
+		metrics = append(metrics,
+			intCounter("gateway_guardrail_errors_total", "Total guardrail evaluation errors.", gm.Errors, gAttr, hAttr),
+			intCounter("gateway_guardrail_duration_ms_sum", "Total guardrail evaluation duration in milliseconds.", gm.DurationSumMs, gAttr, hAttr),
+			intCounter("gateway_guardrail_duration_ms_count", "Total guardrail evaluations timed.", gm.DurationCount, gAttr, hAttr),
+		)
+	}
+
 	if len(extra) > 0 {
 		extraNames := make([]string, 0, len(extra))
 		for name := range extra {

@@ -388,6 +388,13 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return nil, err
 	}
+	if err := s.seedGuardrailsFromConfig(context.Background()); err != nil {
+		if s.tracerShutdown != nil {
+			_ = s.tracerShutdown(context.Background())
+		}
+		return nil, err
+	}
+	_ = s.GuardrailPipeline()
 	return s, nil
 }
 
@@ -469,6 +476,9 @@ func (s *GatewayServer) setupRoutes() {
 		// Responses API & Realtime WebSocket
 		v1.Post("/responses", s.handleResponses)
 		v1.Get("/realtime", s.handleRealtimeWebSocket)
+
+		// Guardrails Data Plane evaluation
+		v1.Post("/guardrails/apply", s.handleApplyGuardrails)
 	})
 
 	// Unversioned and protocol-specific aliases for SDK compatibility
@@ -579,7 +589,26 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Get("/organizations/{orgID}/models", s.handleAdminGetOrgModelPolicies)
 		adm.Post("/organizations/{orgID}/guardrails", s.handleAdminSetGuardrailPolicy)
 		adm.Get("/organizations/{orgID}/guardrails", s.handleAdminGetGuardrailPolicy)
-		adm.Post("/organizations/{orgID}/guardrails/simulate", s.handleAdminSimulateGuardrails)
+		adm.Post("/organizations/{orgID}/guardrails/simulate", s.handleAdminSimulateGuardrailsExpanded)
+
+		// Guardrail Registry, Bindings, Tool Trust Policies, and Usage Rollups
+		adm.Post("/organizations/{orgID}/guardrail-definitions", s.handleAdminCreateGuardrailDefinition)
+		adm.Get("/organizations/{orgID}/guardrail-definitions", s.handleAdminListGuardrailDefinitions)
+		adm.Get("/guardrail-definitions/{guardrailID}", s.handleAdminGetGuardrailDefinition)
+		adm.Put("/guardrail-definitions/{guardrailID}", s.handleAdminUpdateGuardrailDefinition)
+		adm.Patch("/guardrail-definitions/{guardrailID}", s.handleAdminPatchGuardrailDefinition)
+		adm.Delete("/guardrail-definitions/{guardrailID}", s.handleAdminDeleteGuardrailDefinition)
+		adm.Post("/guardrail-definitions/{guardrailID}/status", s.handleAdminSetGuardrailDefinitionStatus)
+
+		adm.Post("/guardrail-bindings", s.handleAdminCreateGuardrailBinding)
+		adm.Get("/organizations/{orgID}/guardrail-bindings", s.handleAdminListGuardrailBindings)
+		adm.Delete("/guardrail-bindings/{bindingID}", s.handleAdminDeleteGuardrailBinding)
+
+		adm.Post("/organizations/{orgID}/tool-policies", s.handleAdminUpsertToolPolicy)
+		adm.Get("/organizations/{orgID}/tool-policies", s.handleAdminListToolPolicies)
+		adm.Delete("/organizations/{orgID}/tool-policies/{policyID}", s.handleAdminDeleteToolPolicy)
+
+		adm.Get("/organizations/{orgID}/guardrail-usage", s.handleAdminGetGuardrailUsage)
 
 		// Teams & Users
 		adm.Post("/teams", s.handleAdminCreateTeam)
