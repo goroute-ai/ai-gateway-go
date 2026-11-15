@@ -2,15 +2,19 @@ package orchestrator_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails/drivers"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 	"github.com/goroute-ai/ai-gateway-go/internal/orchestrator"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -486,4 +490,275 @@ func TestToolLoopOrchestrator_LookaheadStreaming(t *testing.T) {
 	lastChunk := chunks[len(chunks)-1]
 	require.NotNil(t, lastChunk.Choices[0].FinishReason)
 	assert.Equal(t, "stop", *lastChunk.Choices[0].FinishReason)
+}
+
+func TestToolLoopOrchestrator_ToolPermissionBlocksBeforeDispatch(t *testing.T) {
+	ctx := context.Background()
+	idCtx := &domain.IdentityContext{OrgID: "org_perm"}
+
+	mcpHub := &mockMCPHubApp{
+		tools: []domain.MCPTool{
+			{Name: "sql_query", IsActive: true},
+		},
+	}
+
+	permDriver, err := drivers.NewToolPermissionDriver(guardrails.DriverConfig{
+		EffectiveConfig: map[string]any{
+			"default_action": "deny",
+			"rules": []map[string]any{
+				{
+					"name_pattern":      "sql_query",
+					"allowed_arg_regex": map[string]any{"query": "^(?i)SELECT\\s+"},
+					"action":            "allow",
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	infApp := &mockInferenceApp{
+		turns: []func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error){
+			func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+				return &domain.CanonicalChatResponse{
+					Choices: []domain.CanonicalChoice{{
+						Index:        0,
+						FinishReason: "tool_calls",
+						Message: domain.CanonicalMessage{
+							Role: "assistant",
+							ToolCalls: []domain.CanonicalToolCall{{
+								ID:   "call_drop",
+								Type: "function",
+								Function: domain.CanonicalFunctionCall{
+									Name:      "sql_query",
+									Arguments: `{"query":"DROP TABLE users"}`,
+								},
+							}},
+						},
+					}},
+				}, &router.ExecutionMeta{}, nil
+			},
+		},
+	}
+
+	orch := orchestrator.NewToolLoopOrchestrator(infApp, mcpHub, orchestrator.DefaultBudgetPolicy())
+	orch.SetToolGuardrails(permDriver)
+
+	chatReq := &domain.CanonicalChatRequest{
+		Model:    "gpt-4o",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "Drop users"}},
+		Tools:    []domain.CanonicalTool{{Type: "function", Function: domain.CanonicalFunction{Name: "sql_query"}}},
+	}
+
+	_, _, err = orch.ExecuteLoop(ctx, idCtx, chatReq)
+	require.Error(t, err)
+	var gwErr *domain.GatewayError
+	require.ErrorAs(t, err, &gwErr)
+	assert.Equal(t, http.StatusBadRequest, gwErr.StatusCode)
+	assert.Equal(t, "guardrail_blocked", gwErr.Code)
+	assert.Empty(t, mcpHub.callLogs, "disallowed tool call must never be dispatched to MCP hub")
+}
+
+func TestToolLoopOrchestrator_MultiHopTaintTracking(t *testing.T) {
+	ctx := context.Background()
+	idCtx := &domain.IdentityContext{
+		OrgID:        "org_taint",
+		TeamID:       "team_sec",
+		VirtualKeyID: "vk_agent",
+	}
+
+	repo := storage.NewMemoryRepository()
+	require.NoError(t, repo.UpsertToolPolicy(ctx, &storage.ToolPolicy{
+		OrgID:        "org_taint",
+		ToolName:     "fetch_web",
+		InputPolicy:  storage.ToolTrustUntrusted,
+		OutputPolicy: storage.ToolTrustUntrusted,
+	}))
+	require.NoError(t, repo.UpsertToolPolicy(ctx, &storage.ToolPolicy{
+		OrgID:        "org_taint",
+		ToolName:     "summarize_text",
+		InputPolicy:  storage.ToolTrustUntrusted,
+		OutputPolicy: storage.ToolTrustUntrusted,
+	}))
+	require.NoError(t, repo.UpsertToolPolicy(ctx, &storage.ToolPolicy{
+		OrgID:        "org_taint",
+		TeamID:       "team_sec",
+		ToolName:     "admin_transfer",
+		InputPolicy:  storage.ToolTrustTrusted,
+		OutputPolicy: storage.ToolTrustTrusted,
+	}))
+
+	mcpHub := &mockMCPHubApp{
+		tools: []domain.MCPTool{
+			{Name: "fetch_web", IsActive: true},
+			{Name: "summarize_text", IsActive: true},
+			{Name: "admin_transfer", IsActive: true},
+		},
+	}
+
+	t.Run("untrusted hop taints subsequent trusted tool", func(t *testing.T) {
+		mcpHub.callLogs = nil
+		infApp := &mockInferenceApp{
+			turns: []func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error){
+				// Hop 1: calls untrusted-output fetch_web
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "tool_calls",
+							Message: domain.CanonicalMessage{
+								Role: "assistant",
+								ToolCalls: []domain.CanonicalToolCall{{
+									ID:       "call_web",
+									Type:     "function",
+									Function: domain.CanonicalFunctionCall{Name: "fetch_web", Arguments: `{"url":"https://example.com"}`},
+								}},
+							},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+				// Hop 2: prompt-injected response tries to call trusted-input admin_transfer
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "tool_calls",
+							Message: domain.CanonicalMessage{
+								Role: "assistant",
+								ToolCalls: []domain.CanonicalToolCall{{
+									ID:       "call_xfer",
+									Type:     "function",
+									Function: domain.CanonicalFunctionCall{Name: "admin_transfer", Arguments: `{"amount":1000}`},
+								}},
+							},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+			},
+		}
+
+		orch := orchestrator.NewToolLoopOrchestrator(infApp, mcpHub, orchestrator.DefaultBudgetPolicy())
+		orch.SetToolPolicyRepository(repo)
+
+		req := &domain.CanonicalChatRequest{
+			Model:    "gpt-4o",
+			Messages: []domain.CanonicalMessage{{Role: "user", Content: "Read https://example.com"}},
+		}
+		_, _, err := orch.ExecuteLoop(ctx, idCtx, req)
+		require.Error(t, err)
+		var gwErr *domain.GatewayError
+		require.ErrorAs(t, err, &gwErr)
+		assert.Equal(t, http.StatusBadRequest, gwErr.StatusCode)
+		assert.Equal(t, drivers.CodeViolatedToolPolicy, gwErr.Code)
+
+		// Only fetch_web executed; admin_transfer was blocked before CallTool
+		require.Len(t, mcpHub.callLogs, 1)
+		assert.Equal(t, "fetch_web", mcpHub.callLogs[0].ToolName)
+	})
+
+	t.Run("untrusted hop allows subsequent untrusted-input tool", func(t *testing.T) {
+		mcpHub.callLogs = nil
+		infApp := &mockInferenceApp{
+			turns: []func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error){
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "tool_calls",
+							Message: domain.CanonicalMessage{
+								Role: "assistant",
+								ToolCalls: []domain.CanonicalToolCall{{
+									ID:       "call_web",
+									Type:     "function",
+									Function: domain.CanonicalFunctionCall{Name: "fetch_web", Arguments: `{"url":"https://example.com"}`},
+								}},
+							},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "tool_calls",
+							Message: domain.CanonicalMessage{
+								Role: "assistant",
+								ToolCalls: []domain.CanonicalToolCall{{
+									ID:       "call_sum",
+									Type:     "function",
+									Function: domain.CanonicalFunctionCall{Name: "summarize_text", Arguments: `{"text":"page"}`},
+								}},
+							},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "stop",
+							Message:      domain.CanonicalMessage{Role: "assistant", Content: "Done summarizing."},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+			},
+		}
+
+		orch := orchestrator.NewToolLoopOrchestrator(infApp, mcpHub, orchestrator.DefaultBudgetPolicy())
+		orch.SetToolPolicyRepository(repo)
+
+		req := &domain.CanonicalChatRequest{
+			Model:    "gpt-4o",
+			Messages: []domain.CanonicalMessage{{Role: "user", Content: "Summarize example.com"}},
+		}
+		resp, _, err := orch.ExecuteLoop(ctx, idCtx, req)
+		require.NoError(t, err)
+		assert.Equal(t, "Done summarizing.", resp.Choices[0].Message.Content)
+		require.Len(t, mcpHub.callLogs, 2)
+	})
+
+	t.Run("clean loop without untrusted tool allows trusted tool", func(t *testing.T) {
+		mcpHub.callLogs = nil
+		infApp := &mockInferenceApp{
+			turns: []func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error){
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "tool_calls",
+							Message: domain.CanonicalMessage{
+								Role: "assistant",
+								ToolCalls: []domain.CanonicalToolCall{{
+									ID:       "call_xfer",
+									Type:     "function",
+									Function: domain.CanonicalFunctionCall{Name: "admin_transfer", Arguments: `{"amount":10}`},
+								}},
+							},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+				func(req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+					return &domain.CanonicalChatResponse{
+						Choices: []domain.CanonicalChoice{{
+							Index:        0,
+							FinishReason: "stop",
+							Message:      domain.CanonicalMessage{Role: "assistant", Content: "Transferred."},
+						}},
+					}, &router.ExecutionMeta{}, nil
+				},
+			},
+		}
+
+		orch := orchestrator.NewToolLoopOrchestrator(infApp, mcpHub, orchestrator.DefaultBudgetPolicy())
+		orch.SetToolPolicyRepository(repo)
+
+		req := &domain.CanonicalChatRequest{
+			Model:    "gpt-4o",
+			Messages: []domain.CanonicalMessage{{Role: "user", Content: "Transfer 10"}},
+		}
+		resp, _, err := orch.ExecuteLoop(ctx, idCtx, req)
+		require.NoError(t, err)
+		assert.Equal(t, "Transferred.", resp.Choices[0].Message.Content)
+		require.Len(t, mcpHub.callLogs, 1)
+		assert.Equal(t, "admin_transfer", mcpHub.callLogs[0].ToolName)
+	})
 }
