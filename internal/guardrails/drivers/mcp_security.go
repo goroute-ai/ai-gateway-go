@@ -66,24 +66,24 @@ func NewMCPSecurityDriver(cfg guardrails.DriverConfig, repos ...storage.Reposito
 		guardrailName:       definitionName(cfg, ProviderMCPSecurity),
 		action:              action,
 		repo:                repo,
-		allowTenantRegistry: boolFromAny(rawCfg["allow_tenant_registry"], true),
-		requireRegistered:   boolFromAny(rawCfg["require_registered_server"], false),
-		allowedServerURLs:   normalizeLowerStrings(stringSliceFromAny(rawCfg["allowed_server_urls"])),
+		allowTenantRegistry: boolFromAnyOrDefault(rawCfg["allow_tenant_registry"], true),
+		requireRegistered:   boolFromAnyOrDefault(rawCfg["require_registered_server"], false),
+		allowedServerURLs:   normalizeLowerStrings(execStringSliceFromAny(rawCfg["allowed_server_urls"])),
 		allowedServerLabels: normalizeLowerStrings(collectMultiStringSlices(rawCfg, "allowed_server_labels", "allowed_servers", "allowed_server_slugs")),
-		blockedServerURLs:   normalizeLowerStrings(stringSliceFromAny(rawCfg["blocked_server_urls"])),
+		blockedServerURLs:   normalizeLowerStrings(execStringSliceFromAny(rawCfg["blocked_server_urls"])),
 		blockedServerLabels: normalizeLowerStrings(collectMultiStringSlices(rawCfg, "blocked_server_labels", "blocked_servers", "blocked_server_slugs")),
-		enforceSSRF:         boolFromAny(rawCfg["enforce_ssrf"], false),
-		resolveDNS:          boolFromAny(rawCfg["resolve_dns"], false),
+		enforceSSRF:         boolFromAnyOrDefault(rawCfg["enforce_ssrf"], false),
+		resolveDNS:          boolFromAnyOrDefault(rawCfg["resolve_dns"], false),
 	}
 
 	if d.enforceSSRF {
-		schemes := stringSliceFromAny(rawCfg["allowed_schemes"])
-		if len(schemes) == 0 && !boolFromAny(rawCfg["allow_insecure_http"], false) {
+		schemes := execStringSliceFromAny(rawCfg["allowed_schemes"])
+		if len(schemes) == 0 && !boolFromAnyOrDefault(rawCfg["allow_insecure_http"], false) {
 			schemes = []string{"https"}
 		}
 		pol, err := network.NewPolicy(config.OutboundSSRFConfig{
-			AllowPrivateNetworks: boolFromAny(rawCfg["allow_private_networks"], false),
-			AllowInsecureHTTP:    boolFromAny(rawCfg["allow_insecure_http"], false),
+			AllowPrivateNetworks: boolFromAnyOrDefault(rawCfg["allow_private_networks"], false),
+			AllowInsecureHTTP:    boolFromAnyOrDefault(rawCfg["allow_insecure_http"], false),
 			AllowedSchemes:       schemes,
 		})
 		if err != nil {
@@ -471,7 +471,7 @@ func NewMCPEndUserPermissionDriver(cfg guardrails.DriverConfig) (*MCPEndUserPerm
 		return nil, fmt.Errorf("%s: %w", ProviderMCPEndUserPermission, err)
 	}
 
-	defaultAct := strings.ToLower(strings.TrimSpace(stringFromAny(rawCfg["default_action"])))
+	defaultAct := strings.ToLower(strings.TrimSpace(mcpStringFromAny(rawCfg["default_action"])))
 	switch defaultAct {
 	case "":
 		if len(rules) > 0 {
@@ -712,9 +712,9 @@ func parseSingleMCPPermissionRule(m map[string]any) (mcpPermissionRule, error) {
 		tools = []string{"*"}
 	}
 
-	effect := strings.ToLower(strings.TrimSpace(stringFromAny(m["effect"])))
+	effect := strings.ToLower(strings.TrimSpace(mcpStringFromAny(m["effect"])))
 	if effect == "" {
-		effect = strings.ToLower(strings.TrimSpace(stringFromAny(m["action"])))
+		effect = strings.ToLower(strings.TrimSpace(mcpStringFromAny(m["action"])))
 	}
 	switch effect {
 	case "", "allow", "permit":
@@ -756,8 +756,8 @@ func parseSingleMCPPermissionRule(m map[string]any) (mcpPermissionRule, error) {
 		Servers:        servers,
 		Tools:          tools,
 		Effect:         effect,
-		AllowedUsers:   normalizeLowerStrings(stringSliceFromAny(m["allowed_users"])),
-		DeniedUsers:    normalizeLowerStrings(stringSliceFromAny(m["denied_users"])),
+		AllowedUsers:   normalizeLowerStrings(execStringSliceFromAny(m["allowed_users"])),
+		DeniedUsers:    normalizeLowerStrings(execStringSliceFromAny(m["denied_users"])),
 		AllowedRoles:   normalizeLowerStrings(collectMultiStringSlices(m, "allowed_roles", "required_roles")),
 		AllowedTeams:   normalizeLowerStrings(collectMultiStringSlices(m, "allowed_teams", "required_teams")),
 		RequiredClaims: requiredClaims,
@@ -803,20 +803,20 @@ func extractCallerRoles(meta, oidcClaims map[string]any) []string {
 			roles = append(roles, norm)
 		}
 	}
-	for _, r := range stringSliceFromAny(meta["caller_roles"]) {
+	for _, r := range execStringSliceFromAny(meta["caller_roles"]) {
 		add(r)
 	}
-	for _, r := range stringSliceFromAny(meta["roles"]) {
+	for _, r := range execStringSliceFromAny(meta["roles"]) {
 		add(r)
 	}
 	if len(oidcClaims) > 0 {
-		for _, r := range stringSliceFromAny(oidcClaims["roles"]) {
+		for _, r := range execStringSliceFromAny(oidcClaims["roles"]) {
 			add(r)
 		}
-		for _, r := range stringSliceFromAny(oidcClaims["role"]) {
+		for _, r := range execStringSliceFromAny(oidcClaims["role"]) {
 			add(r)
 		}
-		for _, r := range stringSliceFromAny(oidcClaims["groups"]) {
+		for _, r := range execStringSliceFromAny(oidcClaims["groups"]) {
 			add(r)
 		}
 	}
@@ -867,7 +867,7 @@ func claimMatchesExpectation(claimKey string, want, got any) bool {
 	}
 
 	// If want is a slice of acceptable values, match if got matches any element.
-	if wantSlice := stringSliceFromAny(want); len(wantSlice) > 0 {
+	if wantSlice := execStringSliceFromAny(want); len(wantSlice) > 0 {
 		if _, isSlice := want.([]string); isSlice {
 			return matchesAnyClaimValue(claimKey, wantSlice, got)
 		}
@@ -884,7 +884,7 @@ func claimMatchesExpectation(claimKey string, want, got any) bool {
 }
 
 func matchesAnyClaimValue(claimKey string, accepted []string, got any) bool {
-	gotSlice := stringSliceFromAny(got)
+	gotSlice := execStringSliceFromAny(got)
 	if len(gotSlice) == 1 && (claimKey == "scope" || claimKey == "scp") && strings.Contains(gotSlice[0], " ") {
 		gotSlice = strings.Fields(gotSlice[0])
 	}
@@ -910,7 +910,7 @@ func matchesAnyPattern(patterns []string, value string) bool {
 func collectMultiStringSlices(m map[string]any, keys ...string) []string {
 	var out []string
 	for _, k := range keys {
-		out = append(out, stringSliceFromAny(m[k])...)
+		out = append(out, execStringSliceFromAny(m[k])...)
 	}
 	return out
 }
@@ -929,7 +929,7 @@ func normalizeLowerStrings(items []string) []string {
 	return out
 }
 
-func stringFromAny(v any) string {
+func mcpStringFromAny(v any) string {
 	s, _ := v.(string)
 	return s
 }

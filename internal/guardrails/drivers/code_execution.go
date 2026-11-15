@@ -89,17 +89,17 @@ func NewCodeExecutionDriver(cfg guardrails.DriverConfig) (*CodeExecutionDriver, 
 	}
 
 	rawCfg := cfg.EffectiveConfig
-	replaceDefaults := boolFromAny(rawCfg["replace_default_tools"], false)
+	replaceDefaults := boolFromAnyOrDefault(rawCfg["replace_default_tools"], false)
 	if !replaceDefaults {
 		for _, name := range defaultBlockedCodeTools {
 			d.addBlockedToolPattern(name)
 		}
 	}
 
-	for _, name := range stringSliceFromAny(rawCfg["blocked_tools"]) {
+	for _, name := range execStringSliceFromAny(rawCfg["blocked_tools"]) {
 		d.addBlockedToolPattern(name)
 	}
-	for _, rawPattern := range stringSliceFromAny(rawCfg["blocked_patterns"]) {
+	for _, rawPattern := range execStringSliceFromAny(rawCfg["blocked_patterns"]) {
 		trimmed := strings.TrimSpace(rawPattern)
 		if trimmed == "" {
 			continue
@@ -110,7 +110,7 @@ func NewCodeExecutionDriver(cfg guardrails.DriverConfig) (*CodeExecutionDriver, 
 		}
 		d.blockedRegexes = append(d.blockedRegexes, re)
 	}
-	for _, allowed := range stringSliceFromAny(rawCfg["allowed_tools"]) {
+	for _, allowed := range execStringSliceFromAny(rawCfg["allowed_tools"]) {
 		norm := strings.ToLower(strings.TrimSpace(allowed))
 		if norm != "" {
 			d.allowedPatterns = append(d.allowedPatterns, norm)
@@ -118,20 +118,20 @@ func NewCodeExecutionDriver(cfg guardrails.DriverConfig) (*CodeExecutionDriver, 
 	}
 
 	if v, ok := rawCfg["check_declared_tools"]; ok {
-		d.checkDeclaredTools = boolFromAny(v, true)
+		d.checkDeclaredTools = boolFromAnyOrDefault(v, true)
 	}
 	if repl, ok := rawCfg["strip_replacement"].(string); ok && repl != "" {
 		d.stripReplacement = repl
 	}
 
-	d.detectFencedCode = boolFromAny(rawCfg["detect_fenced_code"], false)
-	d.detectAllFencedCode = boolFromAny(rawCfg["detect_all_fenced_code"], false)
+	d.detectFencedCode = boolFromAnyOrDefault(rawCfg["detect_fenced_code"], false)
+	d.detectAllFencedCode = boolFromAnyOrDefault(rawCfg["detect_all_fenced_code"], false)
 	if d.detectFencedCode {
 		if d.detectAllFencedCode {
 			d.fencedRegex = regexp.MustCompile("(?is)```[^\\n]*\\n[\\s\\S]*?```")
 		} else {
 			langs := append([]string(nil), defaultExecutableFencedLangs...)
-			for _, extra := range stringSliceFromAny(rawCfg["fenced_languages"]) {
+			for _, extra := range execStringSliceFromAny(rawCfg["fenced_languages"]) {
 				norm := strings.ToLower(strings.TrimSpace(extra))
 				if norm != "" {
 					langs = append(langs, regexp.QuoteMeta(norm))
@@ -470,7 +470,7 @@ func matchGlobPattern(pattern, value string) bool {
 	return matched
 }
 
-func stringSliceFromAny(v any) []string {
+func execStringSliceFromAny(v any) []string {
 	switch typed := v.(type) {
 	case []string:
 		out := make([]string, 0, len(typed))
@@ -498,7 +498,7 @@ func stringSliceFromAny(v any) []string {
 	return nil
 }
 
-func boolFromAny(v any, fallback bool) bool {
+func boolFromAnyOrDefault(v any, fallback bool) bool {
 	if b, ok := v.(bool); ok {
 		return b
 	}
