@@ -12,6 +12,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
@@ -19,18 +20,19 @@ import (
 )
 
 type anthropicMessagesPayload struct {
-	Model         string             `json:"model"`
-	Messages      []anthropicMsg     `json:"messages"`
-	System        any                `json:"system,omitempty"`
-	MaxTokens     int                `json:"max_tokens"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	TopK          *int               `json:"top_k,omitempty"`
-	Stream        bool               `json:"stream,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []anthropicToolDef `json:"tools,omitempty"`
-	ToolChoice    any                `json:"tool_choice,omitempty"`
-	Thinking      map[string]any     `json:"thinking,omitempty"`
+	Model             string                    `json:"model"`
+	Messages          []anthropicMsg            `json:"messages"`
+	System            any                       `json:"system,omitempty"`
+	MaxTokens         int                       `json:"max_tokens"`
+	Temperature       *float64                  `json:"temperature,omitempty"`
+	TopP              *float64                  `json:"top_p,omitempty"`
+	TopK              *int                      `json:"top_k,omitempty"`
+	Stream            bool                      `json:"stream,omitempty"`
+	StopSequences     []string                  `json:"stop_sequences,omitempty"`
+	Tools             []anthropicToolDef        `json:"tools,omitempty"`
+	ToolChoice        any                       `json:"tool_choice,omitempty"`
+	Thinking          map[string]any            `json:"thinking,omitempty"`
+	GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type anthropicMsg struct {
@@ -103,12 +105,13 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	// 2. Translate Anthropic Messages payload into CanonicalChatRequest
 	chatReq := domain.CanonicalChatRequest{
-		RequestID:   reqID,
-		Model:       payload.Model,
-		Stream:      payload.Stream,
-		Temperature: payload.Temperature,
-		TopP:        payload.TopP,
-		Stop:        payload.StopSequences,
+		RequestID:         reqID,
+		Model:             payload.Model,
+		Stream:            payload.Stream,
+		Temperature:       payload.Temperature,
+		TopP:              payload.TopP,
+		Stop:              payload.StopSequences,
+		GoRouteExtensions: payload.GoRouteExtensions,
 	}
 	if payload.MaxTokens > 0 {
 		chatReq.MaxTokens = &payload.MaxTokens
@@ -144,7 +147,8 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			},
 		})
 	}
-	if _, err := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, &chatReq); err != nil {
+	prc, _, err := s.evaluateChatInputGuardrails(r.Context(), w, r, idCtx, &chatReq, "messages")
+	if err != nil {
 		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
@@ -169,7 +173,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	// 4. Dispatch Execution
 	if payload.Stream {
-		s.streamAnthropicMessages(w, r, idCtx, &chatReq, estTokens, releaseQuota, traceID, reqID)
+		s.streamAnthropicMessages(w, r, idCtx, prc, &chatReq, estTokens, releaseQuota, traceID, reqID)
 		return
 	}
 
@@ -178,15 +182,13 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq)
 		if cacheKey != "" {
 			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-				redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, cachedResp)
+				_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "messages")
 				if sanitizeErr != nil {
 					releaseQuota(0)
 					domain.WriteAnthropicHTTPError(w, sanitizeErr)
 					return
 				}
-				if redacted {
-					w.Header().Set("X-Gateway-Output-Redacted", "true")
-				}
+				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
 				releaseQuota(0)
 				s.collector.Record(observability.RequestObservation{
 					Provider:   string(cachedResp.Provider),
@@ -211,7 +213,23 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, &chatReq)
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
+	if duringInitErr != nil {
+		releaseQuota(-1)
+		domain.WriteAnthropicHTTPError(w, duringInitErr)
+		return
+	}
+	if duringHandle != nil {
+		defer duringHandle.Close()
+	}
+
+	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
+	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
+		releaseQuota(-1)
+		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
+		domain.WriteAnthropicHTTPError(w, duringErr)
+		return
+	}
 	if err != nil {
 		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
@@ -219,16 +237,11 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	releaseQuota(resp.Usage.TotalTokens)
-	guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
-	redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(r.Context(), idCtx.OrgID, guardrailResp)
-	if sanitizeErr != nil {
+	if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "messages"); sanitizeErr != nil {
 		domain.WriteAnthropicHTTPError(w, sanitizeErr)
 		return
 	}
-	resp.Choices = guardrailResp.Choices
-	if redacted {
-		w.Header().Set("X-Gateway-Output-Redacted", "true")
-	}
+	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
 	if cacheKey != "" {
 		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
 		w.Header().Set("X-Gateway-Cache", "MISS")
@@ -325,18 +338,29 @@ func (s *GatewayServer) streamAnthropicMessages(
 	w http.ResponseWriter,
 	r *http.Request,
 	idCtx *domain.IdentityContext,
+	prc guardrails.PipelineRequestContext,
 	chatReq *domain.CanonicalChatRequest,
 	estTokens int,
 	releaseQuota func(int),
 	traceID, reqID string,
 ) {
-	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
-	if policyErr != nil {
-		domain.WriteAnthropicHTTPError(w, policyErr)
-		releaseQuota(0)
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
+	if duringInitErr != nil {
+		releaseQuota(-1)
+		domain.WriteAnthropicHTTPError(w, duringInitErr)
 		return
 	}
-	streamRedactor := s.guardrails.NewStreamRedactor(policy)
+	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+	if sessionErr != nil {
+		if duringHandle != nil {
+			duringHandle.Close()
+		}
+		releaseQuota(0)
+		domain.WriteAnthropicHTTPError(w, sessionErr)
+		return
+	}
+	defer streamSession.Close()
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		releaseQuota(-1)
@@ -366,17 +390,26 @@ func (s *GatewayServer) streamAnthropicMessages(
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	startSSE := func() {
+		if streamSession.SSEStarted() {
+			return
+		}
+		streamSession.MarkSSEStarted()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
 
-	// Send message_start
-	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":%q,\"type\":\"message\",\"role\":\"assistant\",\"model\":%q,\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n",
-		reqID, chatReq.Model, estTokens)
-	// Send content_block_start
-	fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
-	flusher.Flush()
+		// Send message_start
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":%q,\"type\":\"message\",\"role\":\"assistant\",\"model\":%q,\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n",
+			reqID, chatReq.Model, estTokens)
+		// Send content_block_start
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		flusher.Flush()
+	}
+	if !streamSession.HasDuringCall() {
+		startSSE()
+	}
 
 	var outputTokens int
 	var winningDep *domain.Deployment
@@ -405,22 +438,20 @@ func (s *GatewayServer) streamAnthropicMessages(
 		if chunk == nil {
 			return nil
 		}
+		if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
+			return checkErr
+		}
+		startSSE()
 		if isTerminalStreamChunk(chunk) {
 			sawTerminalChunk = true
-		}
-		if streamRedactor != nil && streamRedactor.Blocked() {
-			return guardrailStreamBlockedError()
 		}
 		c := cloneSingleStreamChunk(*chunk)
 		hasContent := false
 		for i := range c.Choices {
 			if c.Choices[i].Delta.Content != "" {
-				txt := c.Choices[i].Delta.Content
-				if streamRedactor != nil {
-					txt = streamRedactor.Process(txt)
-					if streamRedactor.Blocked() {
-						return guardrailStreamBlockedError()
-					}
+				txt, procErr := streamSession.ProcessText(r.Context(), c.Choices[i].Delta.Content)
+				if procErr != nil {
+					return procErr
 				}
 				c.Choices[i].Delta.Content = txt
 				if txt != "" {
@@ -450,18 +481,21 @@ func (s *GatewayServer) streamAnthropicMessages(
 		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
 		usage = &u
 	} else {
-		usage, meta, err = s.reliability.ExecuteStream(r.Context(), idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
+		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 			winningDep = dep
 		})
 	}
-	var flushDelta string
-	if err == nil && streamRedactor != nil {
-		flushDelta = streamRedactor.Flush()
-		if streamRedactor.Blocked() {
-			err = guardrailStreamBlockedError()
+	if !streamSession.SSEStarted() {
+		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
+			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
+			err = duringErr
 		}
-	} else if streamRedactor != nil && streamRedactor.Blocked() {
-		_ = streamRedactor.Flush()
+	} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
+		err = duringErr
+	}
+	flushDelta, flushErr := streamSession.Flush(r.Context(), err)
+	if err == nil && flushErr != nil {
+		err = flushErr
 	}
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
@@ -475,7 +509,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		} else {
 			releaseQuota(-1)
 		}
-		isBlocked := streamRedactor != nil && streamRedactor.Blocked()
+		isBlocked := streamSession.Blocked()
 		errType := "api_error"
 		errCode := "stream_error"
 		statusCode := http.StatusBadGateway
@@ -495,8 +529,12 @@ func (s *GatewayServer) streamAnthropicMessages(
 			Model:             chatReq.Model,
 			StatusCode:        statusCode,
 			GuardrailBlocked:  isBlocked,
-			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+			GuardrailRedacted: streamSession.Redacted(),
 		})
+		if !streamSession.SSEStarted() {
+			domain.WriteAnthropicHTTPError(w, err)
+			return
+		}
 		errBytes, _ := json.Marshal(map[string]any{
 			"type": "error",
 			"error": map[string]string{
@@ -509,6 +547,8 @@ func (s *GatewayServer) streamAnthropicMessages(
 		flusher.Flush()
 		return
 	}
+	startSSE()
+	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	if flushDelta != "" {
 		emitDelta(flushDelta)
 		if !streamCacheHit && streamCacheKey != "" {
@@ -554,7 +594,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			Model:             resolvedModel,
 			StatusCode:        http.StatusOK,
 			CacheHit:          true,
-			GuardrailRedacted: streamRedactor != nil && streamRedactor.Redacted(),
+			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
 		releaseQuota(totalTokens)
@@ -576,7 +616,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			latMs = meta.LatencyMs
 		}
 		costMicros = finops.CalculateCostMicros(gm, finalUsage)
-		if streamCacheKey != "" && (streamRedactor == nil || !streamRedactor.Blocked()) && sawTerminalChunk && len(sanitizedChunks) > 0 {
+		if streamCacheKey != "" && !streamSession.Blocked() && sawTerminalChunk && len(sanitizedChunks) > 0 {
 			finalizeStreamChunksForCache(sanitizedChunks, resolvedModel, finalUsage)
 			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
 		}
