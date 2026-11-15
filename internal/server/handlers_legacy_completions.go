@@ -258,13 +258,17 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	estTokens int,
 	releaseQuota func(int),
 ) {
-	policy, policyErr := s.guardrails.Policy(r.Context(), idCtx.OrgID)
+	prc := buildGuardrailRequestContext(r, idCtx, &domain.CanonicalChatRequest{
+		Model:  req.Model,
+		Stream: true,
+	})
+	streamSession, policyErr := s.newStreamGuardrailSession(r.Context(), prc, nil)
 	if policyErr != nil {
 		releaseQuota(-1)
 		domain.WriteHTTPError(w, policyErr)
 		return
 	}
-	streamRedactor := s.guardrails.NewStreamRedactor(policy)
+	defer streamSession.Close()
 	sseWriter, err := sse.NewWriter(w)
 	if err != nil {
 		releaseQuota(-1)
@@ -297,18 +301,22 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			var writeErr error
 			for i := range cachedChunks {
 				chunk := cloneSingleStreamChunk(cachedChunks[i])
-				if streamRedactor != nil && len(chunk.Choices) > 0 {
-					if streamRedactor.Blocked() {
-						guardrailBlocked = true
-						break
-					}
+				if len(chunk.Choices) > 0 {
 					delta := &chunk.Choices[0].Delta
 					if delta.Content != "" {
-						delta.Content = streamRedactor.Process(delta.Content)
-						if streamRedactor.Blocked() {
-							guardrailBlocked = true
+						processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
+						if procErr != nil {
+							if streamSession.Blocked() {
+								guardrailBlocked = true
+								if streamSession.Redacted() {
+									guardrailRedacted = true
+								}
+							} else {
+								writeErr = procErr
+							}
 							break
 						}
+						delta.Content = processed
 						if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && chunk.Choices[0].FinishReason == nil && chunk.Usage == nil {
 							continue
 						}
@@ -328,42 +336,44 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 				}
 				return
 			}
-			if streamRedactor != nil {
-				rem := streamRedactor.Flush()
-				if streamRedactor.Redacted() {
-					guardrailRedacted = true
+			rem, flushErr := streamSession.Flush(r.Context(), nil)
+			if streamSession.Redacted() {
+				guardrailRedacted = true
+			}
+			if flushErr != nil || streamSession.Blocked() {
+				guardrailBlocked = true
+			}
+			if guardrailBlocked {
+				releaseQuota(0)
+				s.collector.RecordStream(time.Since(replayStarted), 0, true)
+				s.collector.Record(observability.RequestObservation{
+					Provider:          string(provider),
+					Model:             resolvedModel,
+					StatusCode:        http.StatusBadGateway,
+					GuardrailBlocked:  true,
+					GuardrailRedacted: guardrailRedacted,
+				})
+				errOut := flushErr
+				if errOut == nil {
+					errOut = guardrailStreamBlockedError()
 				}
-				if streamRedactor.Blocked() {
-					guardrailBlocked = true
-				}
-				if guardrailBlocked {
+				_ = sseWriter.WriteError(errOut)
+				return
+			}
+			if rem != "" {
+				if flushWriteErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
+					ID:      "cmpl-" + reqID,
+					Object:  "text_completion",
+					Created: time.Now().Unix(),
+					Model:   resolvedModel,
+					Choices: []domain.CanonicalStreamChoice{{
+						Index: 0,
+						Delta: domain.CanonicalStreamDelta{Content: rem},
+					}},
+				}); flushWriteErr != nil {
 					releaseQuota(0)
-					s.collector.RecordStream(time.Since(replayStarted), 0, true)
-					s.collector.Record(observability.RequestObservation{
-						Provider:          string(provider),
-						Model:             resolvedModel,
-						StatusCode:        http.StatusBadGateway,
-						GuardrailBlocked:  true,
-						GuardrailRedacted: guardrailRedacted,
-					})
-					_ = sseWriter.WriteError(guardrailStreamBlockedError())
+					_ = sseWriter.WriteError(flushWriteErr)
 					return
-				}
-				if rem != "" {
-					if flushErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
-						ID:      "cmpl-" + reqID,
-						Object:  "text_completion",
-						Created: time.Now().Unix(),
-						Model:   resolvedModel,
-						Choices: []domain.CanonicalStreamChoice{{
-							Index: 0,
-							Delta: domain.CanonicalStreamDelta{Content: rem},
-						}},
-					}); flushErr != nil {
-						releaseQuota(0)
-						_ = sseWriter.WriteError(flushErr)
-						return
-					}
 				}
 			}
 			releaseQuota(0)
@@ -481,18 +491,22 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			usage = &u
 		}
 		c := cloneSingleStreamChunk(chunk)
-		if streamRedactor != nil && len(c.Choices) > 0 {
-			if streamRedactor.Blocked() {
-				guardrailBlocked = true
-				break
-			}
+		if len(c.Choices) > 0 {
 			delta := &c.Choices[0].Delta
 			if delta.Content != "" {
-				delta.Content = streamRedactor.Process(delta.Content)
-				if streamRedactor.Blocked() {
-					guardrailBlocked = true
+				processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
+				if procErr != nil {
+					if streamSession.Blocked() {
+						guardrailBlocked = true
+						if streamSession.Redacted() {
+							guardrailRedacted = true
+						}
+					} else {
+						writeErr = procErr
+					}
 					break
 				}
+				delta.Content = processed
 				if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && c.Choices[0].FinishReason == nil && c.Usage == nil {
 					continue
 				}
@@ -516,78 +530,80 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		return
 	}
 
-	if streamRedactor != nil {
-		rem := streamRedactor.Flush()
-		if streamRedactor.Redacted() {
-			guardrailRedacted = true
-		}
-		if streamRedactor.Blocked() {
-			guardrailBlocked = true
-		}
-		if guardrailBlocked {
-			releaseQuota(-1)
-			var depID, depName string
-			var provider domain.ProviderType
-			resolvedModel := req.Model
-			var latMs, ttftMs, routeMicros int64
-			var retries int
-			var fb bool
-			if meta != nil {
-				latMs = meta.LatencyMs
-				ttftMs = meta.TTFTMs
-				routeMicros = meta.RoutingMicros
-				retries = meta.RetryCount
-				fb = meta.FallbackAttempted
-				if meta.WinningDeployment != nil {
-					depID = meta.WinningDeployment.ID
-					depName = meta.WinningDeployment.DeploymentName
-					if meta.WinningDeployment.GlobalModel != nil {
-						provider = meta.WinningDeployment.GlobalModel.Provider
-						resolvedModel = meta.WinningDeployment.GlobalModel.ModelName
-					}
+	rem, flushErr := streamSession.Flush(r.Context(), nil)
+	if streamSession.Redacted() {
+		guardrailRedacted = true
+	}
+	if flushErr != nil || streamSession.Blocked() {
+		guardrailBlocked = true
+	}
+	if guardrailBlocked {
+		releaseQuota(-1)
+		var depID, depName string
+		var provider domain.ProviderType
+		resolvedModel := req.Model
+		var latMs, ttftMs, routeMicros int64
+		var retries int
+		var fb bool
+		if meta != nil {
+			latMs = meta.LatencyMs
+			ttftMs = meta.TTFTMs
+			routeMicros = meta.RoutingMicros
+			retries = meta.RetryCount
+			fb = meta.FallbackAttempted
+			if meta.WinningDeployment != nil {
+				depID = meta.WinningDeployment.ID
+				depName = meta.WinningDeployment.DeploymentName
+				if meta.WinningDeployment.GlobalModel != nil {
+					provider = meta.WinningDeployment.GlobalModel.Provider
+					resolvedModel = meta.WinningDeployment.GlobalModel.ModelName
 				}
 			}
-			var streamTTFT time.Duration
-			if ttftMs > 0 {
-				streamTTFT = time.Duration(ttftMs) * time.Millisecond
-			}
-			s.collector.RecordStream(time.Since(streamStarted), streamTTFT, true)
-			s.collector.Record(observability.RequestObservation{
-				Provider:          string(provider),
-				DeploymentID:      depID,
-				DeploymentName:    depName,
-				Model:             resolvedModel,
-				StatusCode:        http.StatusBadGateway,
-				LatencyMs:         latMs,
-				TTFTMs:            ttftMs,
-				RoutingMicros:     routeMicros,
-				FallbackAttempted: fb,
-				RetryCount:        retries,
-				GuardrailBlocked:  true,
-				GuardrailRedacted: guardrailRedacted,
-			})
-			_ = sseWriter.WriteError(guardrailStreamBlockedError())
+		}
+		var streamTTFT time.Duration
+		if ttftMs > 0 {
+			streamTTFT = time.Duration(ttftMs) * time.Millisecond
+		}
+		s.collector.RecordStream(time.Since(streamStarted), streamTTFT, true)
+		s.collector.Record(observability.RequestObservation{
+			Provider:          string(provider),
+			DeploymentID:      depID,
+			DeploymentName:    depName,
+			Model:             resolvedModel,
+			StatusCode:        http.StatusBadGateway,
+			LatencyMs:         latMs,
+			TTFTMs:            ttftMs,
+			RoutingMicros:     routeMicros,
+			FallbackAttempted: fb,
+			RetryCount:        retries,
+			GuardrailBlocked:  true,
+			GuardrailRedacted: guardrailRedacted,
+		})
+		errOut := flushErr
+		if errOut == nil {
+			errOut = guardrailStreamBlockedError()
+		}
+		_ = sseWriter.WriteError(errOut)
+		return
+	}
+	if rem != "" {
+		flushChunk := domain.CanonicalStreamChunk{
+			ID:      "cmpl-" + reqID,
+			Object:  "text_completion",
+			Created: time.Now().Unix(),
+			Model:   req.Model,
+			Choices: []domain.CanonicalStreamChoice{{
+				Index: 0,
+				Delta: domain.CanonicalStreamDelta{Content: rem},
+			}},
+		}
+		if flushWriteErr := sseWriter.WriteChunk(&flushChunk); flushWriteErr != nil {
+			releaseQuota(-1)
+			_ = sseWriter.WriteError(flushWriteErr)
 			return
 		}
-		if rem != "" {
-			flushChunk := domain.CanonicalStreamChunk{
-				ID:      "cmpl-" + reqID,
-				Object:  "text_completion",
-				Created: time.Now().Unix(),
-				Model:   req.Model,
-				Choices: []domain.CanonicalStreamChoice{{
-					Index: 0,
-					Delta: domain.CanonicalStreamDelta{Content: rem},
-				}},
-			}
-			if flushErr := sseWriter.WriteChunk(&flushChunk); flushErr != nil {
-				releaseQuota(-1)
-				_ = sseWriter.WriteError(flushErr)
-				return
-			}
-			if streamCacheKey != "" {
-				sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, flushChunk)
-			}
+		if streamCacheKey != "" {
+			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, flushChunk)
 		}
 	}
 

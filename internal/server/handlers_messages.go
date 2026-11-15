@@ -448,6 +448,16 @@ func (s *GatewayServer) streamAnthropicMessages(
 		c := cloneSingleStreamChunk(*chunk)
 		hasContent := false
 		for i := range c.Choices {
+			if len(c.Choices[i].Delta.ToolCalls) > 0 {
+				filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), c.Choices[i].Delta.ToolCalls)
+				if tcErr != nil {
+					return tcErr
+				}
+				c.Choices[i].Delta.ToolCalls = filteredTC
+				if len(filteredTC) > 0 {
+					hasContent = true
+				}
+			}
 			if c.Choices[i].Delta.Content != "" {
 				txt, procErr := streamSession.ProcessText(r.Context(), c.Choices[i].Delta.Content)
 				if procErr != nil {

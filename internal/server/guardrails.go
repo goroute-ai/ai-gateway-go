@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"weak"
@@ -337,16 +338,129 @@ func (s *GatewayServer) recordDuringCallBlock(
 }
 
 type streamGuardrailSession struct {
-	server       *GatewayServer
-	pipeline     *guardrails.Pipeline
-	prc          guardrails.PipelineRequestContext
-	redactor     *guardrails.StreamRedactor
-	resolvedPost []guardrails.ResolvedGuardrail
-	duringHandle *guardrails.DuringCallHandle
-	duringDone   bool
-	sseStarted   bool
-	redacted     bool
-	blocked      bool
+	server           *GatewayServer
+	pipeline         *guardrails.Pipeline
+	prc              guardrails.PipelineRequestContext
+	redactor         *guardrails.StreamRedactor
+	windowEval       *guardrails.StreamWindowEvaluator
+	resolvedPost     []guardrails.ResolvedGuardrail
+	duringHandle     *guardrails.DuringCallHandle
+	duringDone       bool
+	sseStarted       bool
+	redacted         bool
+	blocked          bool
+	toolCallBufs     map[int]*streamToolCallBuffer
+	toolCallChecked  map[int]bool
+	toolCallLastArgs map[int]string
+}
+
+type streamToolCallBuffer struct {
+	id         string
+	typ        string
+	name       string
+	args       strings.Builder
+	nameTested bool
+}
+
+func (s *GatewayServer) newOrchestratorToolGuardrailDriver() guardrails.Driver {
+	return &orchestratorPipelineDriver{server: s}
+}
+
+type orchestratorPipelineDriver struct {
+	server *GatewayServer
+}
+
+func (d *orchestratorPipelineDriver) Name() string { return "gateway_orchestrator_pipeline" }
+
+func (d *orchestratorPipelineDriver) SupportedHooks() []domain.GuardrailHook {
+	return []domain.GuardrailHook{
+		domain.GuardrailHookPreMCPCall,
+		domain.GuardrailHookPostCall,
+	}
+}
+
+func (d *orchestratorPipelineDriver) Evaluate(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
+	if d == nil || d.server == nil || input == nil {
+		return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
+	}
+	// PreCall is already evaluated once at request entry by the inference handler before entering ToolLoopOrchestrator.
+	if input.Hook == domain.GuardrailHookPreCall {
+		return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
+	}
+	pipeline := d.server.GuardrailPipeline()
+	if pipeline == nil {
+		return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
+	}
+	prc := guardrails.PipelineRequestContext{
+		RequestID:    input.RequestID,
+		TraceID:      input.TraceID,
+		OrgID:        input.OrgID,
+		TeamID:       input.TeamID,
+		VirtualKeyID: input.VirtualKeyID,
+		EndUserID:    input.EndUserID,
+		Model:        input.Model,
+		Tags:         slices.Clone(input.Tags),
+		Metadata:     input.Metadata,
+	}
+	hook := input.Hook
+	if hook == "" {
+		hook = domain.GuardrailHookPreMCPCall
+	}
+	res, err := pipeline.EvaluateResolvedInput(ctx, prc, hook, input)
+	if err != nil {
+		return nil, err
+	}
+	if res != nil && res.Decision == domain.GuardrailDecisionModify && res.ModifiedToolCalls != nil {
+		return res, nil
+	}
+	// If orchestrator queries pre_mcp_call, also honor org tool_permission/tool_policy/block_code_execution
+	// definitions attached to post_call/pre_call so admins don't have to duplicate hooks.
+	if hook == domain.GuardrailHookPreMCPCall && len(input.ToolCalls) > 0 {
+		seen := make(map[string]struct{})
+		if existing, rErr := pipeline.ResolveForHook(ctx, prc, hook); rErr == nil {
+			for _, g := range existing {
+				seen[g.Name] = struct{}{}
+			}
+		}
+		for _, fallbackHook := range []domain.GuardrailHook{domain.GuardrailHookPostCall, domain.GuardrailHookPreCall} {
+			extraGroups, rErr := pipeline.ResolveForHook(ctx, prc, fallbackHook)
+			if rErr != nil {
+				continue
+			}
+			for _, g := range extraGroups {
+				if _, already := seen[g.Name]; already {
+					continue
+				}
+				seen[g.Name] = struct{}{}
+				isToolGov := false
+				for _, c := range g.Candidates {
+					if c.Definition != nil {
+						switch strings.ToLower(strings.TrimSpace(c.Definition.Provider)) {
+						case drivers.ProviderToolPermission, drivers.ProviderToolPolicy, drivers.ProviderCodeExecution:
+							isToolGov = true
+						}
+					}
+				}
+				if !isToolGov {
+					continue
+				}
+				adapter := pipeline.NewResolvedDriverAdapter(prc, fallbackHook, g)
+				stepIn := *input
+				stepIn.Hook = fallbackHook
+				stepRes, stepErr := adapter.Evaluate(ctx, &stepIn)
+				if stepErr != nil {
+					return nil, stepErr
+				}
+				if stepRes != nil && stepRes.Decision == domain.GuardrailDecisionBlock {
+					return stepRes, nil
+				}
+				if stepRes != nil && stepRes.Decision == domain.GuardrailDecisionModify && stepRes.ModifiedToolCalls != nil {
+					return stepRes, nil
+				}
+			}
+		}
+	}
+	return res, nil
 }
 
 func (s *GatewayServer) newStreamGuardrailSession(
@@ -378,14 +492,71 @@ func (s *GatewayServer) newStreamGuardrailSession(
 			Type:       domain.ErrorTypeServer,
 		}
 	}
+	var windowEval *guardrails.StreamWindowEvaluator
+	if len(resolvedPost) > 0 {
+		winCfg := buildStreamWindowConfig(resolvedPost)
+		windowDrivers := make([]guardrails.Driver, 0, len(resolvedPost))
+		for _, rg := range resolvedPost {
+			if drv := pipeline.NewResolvedDriverAdapter(prc, domain.GuardrailHookPostCall, rg); drv != nil {
+				windowDrivers = append(windowDrivers, drv)
+			}
+		}
+		windowEval = guardrails.NewStreamWindowEvaluator(winCfg, windowDrivers...)
+	}
 	return &streamGuardrailSession{
 		server:       s,
 		pipeline:     pipeline,
 		prc:          prc,
 		redactor:     redactor,
+		windowEval:   windowEval,
 		resolvedPost: resolvedPost,
 		duringHandle: duringHandle,
 	}, nil
+}
+
+func buildStreamWindowConfig(resolvedPost []guardrails.ResolvedGuardrail) guardrails.StreamWindowConfig {
+	cfg := guardrails.StreamWindowConfig{
+		Unit:           guardrails.StreamWindowBytes,
+		WindowSize:     64,
+		OverlapSize:    24,
+		MaxBufferBytes: 1 << 20,
+	}
+	for _, rg := range resolvedPost {
+		for _, c := range rg.Candidates {
+			if len(c.EffectiveConfig) == 0 {
+				continue
+			}
+			if raw, ok := c.EffectiveConfig["stream_window_bytes"]; ok {
+				if v := configInt(raw); v > 0 {
+					cfg.WindowSize = v
+				}
+			}
+			if raw, ok := c.EffectiveConfig["stream_overlap_bytes"]; ok {
+				if v := configInt(raw); v >= 0 {
+					cfg.OverlapSize = v
+				}
+			}
+		}
+	}
+	if cfg.OverlapSize >= cfg.WindowSize && cfg.WindowSize > 1 {
+		cfg.OverlapSize = cfg.WindowSize / 2
+	}
+	return cfg
+}
+
+func configInt(raw any) int {
+	switch v := raw.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	}
+	return 0
 }
 
 func (ss *streamGuardrailSession) HasDuringCall() bool {
@@ -458,18 +629,177 @@ func (ss *streamGuardrailSession) ProcessText(ctx context.Context, text string) 
 			return "", guardrailStreamBlockedError()
 		}
 	}
-	if len(ss.resolvedPost) > 0 && text != "" {
-		next, out, err := ss.pipeline.EvaluatePostCallText(ctx, ss.prc, ss.resolvedPost, text)
-		if out != nil && out.Redacted {
+	if ss.windowEval != nil && text != "" {
+		next, err := ss.windowEval.Process(ctx, text)
+		if ss.windowEval.Redacted() {
 			ss.redacted = true
 		}
-		if err != nil {
+		if err != nil || ss.windowEval.Blocked() {
 			ss.blocked = true
-			return "", err
+			if err != nil {
+				return "", err
+			}
+			return "", guardrailStreamBlockedError()
 		}
 		text = next
 	}
 	return text, nil
+}
+
+// ProcessToolCalls accumulates incremental SSE tool call deltas per index and evaluates
+// resolved post_call guardrails (such as tool_permission, block_code_execution, and tool_policy)
+// before deltas are flushed downstream.
+func (ss *streamGuardrailSession) ProcessToolCalls(ctx context.Context, deltas []domain.CanonicalToolCall) ([]domain.CanonicalToolCall, error) {
+	if ss == nil || len(deltas) == 0 || len(ss.resolvedPost) == 0 || ss.pipeline == nil {
+		return deltas, nil
+	}
+	if ss.toolCallBufs == nil {
+		ss.toolCallBufs = make(map[int]*streamToolCallBuffer)
+		ss.toolCallChecked = make(map[int]bool)
+		ss.toolCallLastArgs = make(map[int]string)
+	}
+	toValidate := make([]int, 0, len(deltas))
+	for pos, delta := range deltas {
+		idx := pos
+		if delta.Index != nil {
+			idx = *delta.Index
+		}
+		buf := ss.toolCallBufs[idx]
+		if buf == nil {
+			buf = &streamToolCallBuffer{}
+			ss.toolCallBufs[idx] = buf
+		}
+		if delta.ID != "" {
+			buf.id = delta.ID
+		}
+		if delta.Type != "" {
+			buf.typ = delta.Type
+		}
+		if delta.Function.Name != "" {
+			buf.name += delta.Function.Name
+		}
+		if delta.Function.Arguments != "" {
+			buf.args.WriteString(delta.Function.Arguments)
+		}
+		toValidate = append(toValidate, idx)
+	}
+
+	filtered := make([]domain.CanonicalToolCall, 0, len(deltas))
+	for pos, delta := range deltas {
+		idx := toValidate[pos]
+		buf := ss.toolCallBufs[idx]
+		fullArgs := buf.args.String()
+		isValidJSON := fullArgs == "" || json.Valid([]byte(fullArgs))
+
+		// Always validate tool identity immediately when the name arrives so disallowed
+		// tools (e.g. bash / blocked policy / tainted trusted tool) fail fast on chunk 1.
+		if buf.name != "" && !buf.nameTested {
+			buf.nameTested = true
+			probe := domain.CanonicalToolCall{
+				Index: &idx,
+				ID:    buf.id,
+				Type:  firstNonEmpty(buf.typ, "function"),
+				Function: domain.CanonicalFunctionCall{
+					Name: buf.name,
+				},
+			}
+			kept, err := ss.evalToolCallSnapshot(ctx, probe)
+			if err != nil {
+				return nil, err
+			}
+			if !kept {
+				ss.redacted = true
+				continue
+			}
+		}
+
+		// Re-validate full arguments whenever accumulated JSON is valid (or changed and valid).
+		if fullArgs != "" && isValidJSON && ss.toolCallLastArgs[idx] != fullArgs {
+			ss.toolCallLastArgs[idx] = fullArgs
+			ss.toolCallChecked[idx] = true
+			probe := domain.CanonicalToolCall{
+				Index: &idx,
+				ID:    buf.id,
+				Type:  firstNonEmpty(buf.typ, "function"),
+				Function: domain.CanonicalFunctionCall{
+					Name:      buf.name,
+					Arguments: fullArgs,
+				},
+			}
+			kept, err := ss.evalToolCallSnapshot(ctx, probe)
+			if err != nil {
+				return nil, err
+			}
+			if !kept {
+				ss.redacted = true
+				continue
+			}
+		} else if fullArgs == "" {
+			ss.toolCallChecked[idx] = true
+		}
+
+		filtered = append(filtered, delta)
+	}
+	return filtered, nil
+}
+
+func (ss *streamGuardrailSession) evalToolCallSnapshot(ctx context.Context, probe domain.CanonicalToolCall) (bool, error) {
+	evalIn := &domain.GuardrailEvalInput{
+		Direction:    domain.GuardrailDirectionOutput,
+		Hook:         domain.GuardrailHookPostCall,
+		RequestID:    ss.prc.RequestID,
+		TraceID:      ss.prc.TraceID,
+		OrgID:        ss.prc.OrgID,
+		TeamID:       ss.prc.TeamID,
+		VirtualKeyID: ss.prc.VirtualKeyID,
+		EndUserID:    ss.prc.EndUserID,
+		Model:        ss.prc.Model,
+		Tags:         slices.Clone(ss.prc.Tags),
+		ToolCalls:    []domain.CanonicalToolCall{probe},
+		Metadata:     ss.prc.Metadata,
+	}
+	res, err := ss.pipeline.EvaluateResolvedInput(ctx, ss.prc, domain.GuardrailHookPostCall, evalIn)
+	if err != nil {
+		ss.blocked = true
+		return false, err
+	}
+	if res != nil && res.Decision == domain.GuardrailDecisionModify && res.ModifiedToolCalls != nil && len(res.ModifiedToolCalls) == 0 {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (ss *streamGuardrailSession) flushToolCalls(ctx context.Context) error {
+	if ss == nil || len(ss.toolCallBufs) == 0 || ss.pipeline == nil {
+		return nil
+	}
+	for idx, buf := range ss.toolCallBufs {
+		fullArgs := buf.args.String()
+		if fullArgs != "" && (!ss.toolCallChecked[idx] || ss.toolCallLastArgs[idx] != fullArgs) {
+			ss.toolCallChecked[idx] = true
+			ss.toolCallLastArgs[idx] = fullArgs
+			probe := domain.CanonicalToolCall{
+				Index: &idx,
+				ID:    buf.id,
+				Type:  firstNonEmpty(buf.typ, "function"),
+				Function: domain.CanonicalFunctionCall{
+					Name:      buf.name,
+					Arguments: fullArgs,
+				},
+			}
+			if _, err := ss.evalToolCallSnapshot(ctx, probe); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(val, fallback string) string {
+	if strings.TrimSpace(val) != "" {
+		return val
+	}
+	return fallback
 }
 
 func (ss *streamGuardrailSession) Flush(ctx context.Context, streamErr error) (string, error) {
@@ -477,25 +807,49 @@ func (ss *streamGuardrailSession) Flush(ctx context.Context, streamErr error) (s
 		return "", streamErr
 	}
 	var rem string
-	if streamErr == nil && ss.redactor != nil {
-		rem = ss.redactor.Flush()
-		if ss.redactor.Redacted() {
-			ss.redacted = true
-		}
-		if ss.redactor.Blocked() {
-			ss.blocked = true
-			return "", guardrailStreamBlockedError()
-		}
-		if rem != "" && len(ss.resolvedPost) > 0 {
-			next, out, postErr := ss.pipeline.EvaluatePostCallText(ctx, ss.prc, ss.resolvedPost, rem)
-			if out != nil && out.Redacted {
+	if streamErr == nil {
+		if ss.redactor != nil {
+			rem = ss.redactor.Flush()
+			if ss.redactor.Redacted() {
 				ss.redacted = true
 			}
-			if postErr != nil {
+			if ss.redactor.Blocked() {
 				ss.blocked = true
-				return "", postErr
+				return "", guardrailStreamBlockedError()
 			}
-			rem = next
+		}
+		if ss.windowEval != nil {
+			var winPart string
+			if rem != "" {
+				processed, pErr := ss.windowEval.Process(ctx, rem)
+				if ss.windowEval.Redacted() {
+					ss.redacted = true
+				}
+				if pErr != nil || ss.windowEval.Blocked() {
+					ss.blocked = true
+					if pErr != nil {
+						return "", pErr
+					}
+					return "", guardrailStreamBlockedError()
+				}
+				winPart = processed
+			}
+			flushed, fErr := ss.windowEval.Flush(ctx)
+			if ss.windowEval.Redacted() {
+				ss.redacted = true
+			}
+			if fErr != nil || ss.windowEval.Blocked() {
+				ss.blocked = true
+				if fErr != nil {
+					return "", fErr
+				}
+				return "", guardrailStreamBlockedError()
+			}
+			rem = winPart + flushed
+		}
+		if tcErr := ss.flushToolCalls(ctx); tcErr != nil {
+			ss.blocked = true
+			return "", tcErr
 		}
 		return rem, nil
 	}
@@ -508,6 +862,14 @@ func (ss *streamGuardrailSession) Flush(ctx context.Context, streamErr error) (s
 			ss.redacted = true
 		}
 	}
+	if ss.windowEval != nil {
+		if ss.windowEval.Blocked() {
+			ss.blocked = true
+		}
+		if ss.windowEval.Redacted() {
+			ss.redacted = true
+		}
+	}
 	return "", streamErr
 }
 
@@ -515,14 +877,14 @@ func (ss *streamGuardrailSession) Redacted() bool {
 	if ss == nil {
 		return false
 	}
-	return ss.redacted || (ss.redactor != nil && ss.redactor.Redacted())
+	return ss.redacted || (ss.redactor != nil && ss.redactor.Redacted()) || (ss.windowEval != nil && ss.windowEval.Redacted())
 }
 
 func (ss *streamGuardrailSession) Blocked() bool {
 	if ss == nil {
 		return false
 	}
-	return ss.blocked || (ss.redactor != nil && ss.redactor.Blocked())
+	return ss.blocked || (ss.redactor != nil && ss.redactor.Blocked()) || (ss.windowEval != nil && ss.windowEval.Blocked())
 }
 
 func (ss *streamGuardrailSession) Close() {
