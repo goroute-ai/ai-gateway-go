@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -87,5 +88,56 @@ func TestMemoryRepository_GlobalModelModalityAndOperationsRoundTrip(t *testing.T
 	}
 	if !found {
 		t.Errorf("expected openai/gpt-test-omni in ListGlobalModels")
+	}
+}
+
+func TestMemoryRepository_GuardrailPolicyToxicityRoundTrip(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	pol := &domain.GuardrailPolicy{
+		OrgID:                    "org_tox_mem_1",
+		Mode:                     domain.GuardrailModeEnforce,
+		ScanAllRoles:             true,
+		EnablePromptInjection:    true,
+		PromptInjectionAction:    domain.GuardrailActionBlock,
+		EnablePIIDetection:       true,
+		PIIAction:                domain.GuardrailActionRedact,
+		EnableSecretDetection:    true,
+		SecretAction:             domain.GuardrailActionAudit,
+		BlockedKeywords:          []string{"banned_term"},
+		RedactOutputPII:          true,
+		EnableToxicityFilter:     true,
+		ToxicityAction:           domain.GuardrailActionRedact,
+		ToxicityThreshold:        "low",
+		EnabledContentCategories: []string{"bias", "denied_insults"},
+		ContentExceptions:        []string{"safe_context"},
+	}
+
+	if err := repo.SetGuardrailPolicy(ctx, pol); err != nil {
+		t.Fatalf("SetGuardrailPolicy failed: %v", err)
+	}
+
+	got, err := repo.GetGuardrailPolicy(ctx, pol.OrgID)
+	if err != nil {
+		t.Fatalf("GetGuardrailPolicy failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil GuardrailPolicy")
+	}
+	if !got.EnableToxicityFilter {
+		t.Errorf("EnableToxicityFilter = false, want true")
+	}
+	if got.ToxicityAction != domain.GuardrailActionRedact {
+		t.Errorf("ToxicityAction = %q, want %q", got.ToxicityAction, domain.GuardrailActionRedact)
+	}
+	if got.ToxicityThreshold != "low" {
+		t.Errorf("ToxicityThreshold = %q, want %q", got.ToxicityThreshold, "low")
+	}
+	if !reflect.DeepEqual(got.EnabledContentCategories, []string{"bias", "denied_insults"}) {
+		t.Errorf("EnabledContentCategories = %#v, want [bias denied_insults]", got.EnabledContentCategories)
+	}
+	if !reflect.DeepEqual(got.ContentExceptions, []string{"safe_context"}) {
+		t.Errorf("ContentExceptions = %#v, want [safe_context]", got.ContentExceptions)
 	}
 }

@@ -1436,12 +1436,17 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 	if err := p.mem.SetGuardrailPolicy(ctx, pol); err != nil {
 		return err
 	}
+	if p.pool == nil {
+		return nil
+	}
 	const q = `
 		INSERT INTO guardrail_policies (
 			org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action,
 			enable_pii_detection, pii_action, enable_secret_detection,
-			secret_action, blocked_keywords, redact_output_pii, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+			secret_action, blocked_keywords, redact_output_pii,
+			enable_toxicity_filter, toxicity_action, toxicity_threshold,
+			enabled_content_categories, content_exceptions, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
 		ON CONFLICT (org_id) DO UPDATE SET
 			mode = EXCLUDED.mode,
 			scan_all_roles = EXCLUDED.scan_all_roles,
@@ -1453,6 +1458,11 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 			secret_action = EXCLUDED.secret_action,
 			blocked_keywords = EXCLUDED.blocked_keywords,
 			redact_output_pii = EXCLUDED.redact_output_pii,
+			enable_toxicity_filter = EXCLUDED.enable_toxicity_filter,
+			toxicity_action = EXCLUDED.toxicity_action,
+			toxicity_threshold = EXCLUDED.toxicity_threshold,
+			enabled_content_categories = EXCLUDED.enabled_content_categories,
+			content_exceptions = EXCLUDED.content_exceptions,
 			updated_at = NOW()`
 	mode := pol.EffectiveMode()
 	act := pol.PromptInjectionAction
@@ -1467,14 +1477,32 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 	if secAct == "" {
 		secAct = domain.GuardrailActionRedact
 	}
+	toxAct := pol.ToxicityAction
+	if toxAct == "" {
+		toxAct = domain.GuardrailActionBlock
+	}
+	toxThreshold := pol.ToxicityThreshold
+	if toxThreshold == "" {
+		toxThreshold = "medium"
+	}
 	blockedKeywords := pol.BlockedKeywords
 	if blockedKeywords == nil {
 		blockedKeywords = []string{}
+	}
+	enabledContentCategories := pol.EnabledContentCategories
+	if enabledContentCategories == nil {
+		enabledContentCategories = []string{}
+	}
+	contentExceptions := pol.ContentExceptions
+	if contentExceptions == nil {
+		contentExceptions = []string{}
 	}
 	_, err := p.pool.Exec(ctx, q,
 		pol.OrgID, string(mode), pol.ScanAllRoles, pol.EnablePromptInjection, string(act),
 		pol.EnablePIIDetection, string(piiAct), pol.EnableSecretDetection,
 		string(secAct), blockedKeywords, pol.RedactOutputPII,
+		pol.EnableToxicityFilter, string(toxAct), toxThreshold,
+		enabledContentCategories, contentExceptions,
 	)
 	return err
 }
@@ -1485,12 +1513,13 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 	}
 	value, err := p.coalesceLookup(ctx, "guardrail:"+orgID, func(lookupCtx context.Context) (any, error) {
 		p.guardrailQueries.Add(1)
-		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii FROM guardrail_policies WHERE org_id = $1`
+		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii, enable_toxicity_filter, toxicity_action, toxicity_threshold, enabled_content_categories, content_exceptions FROM guardrail_policies WHERE org_id = $1`
 		var pol domain.GuardrailPolicy
-		var modeStr, injAct, piiAct, secAct string
+		var modeStr, injAct, piiAct, secAct, toxAct string
 		if scanErr := p.pool.QueryRow(lookupCtx, q, orgID).Scan(
 			&pol.OrgID, &modeStr, &pol.ScanAllRoles, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
 			&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
+			&pol.EnableToxicityFilter, &toxAct, &pol.ToxicityThreshold, &pol.EnabledContentCategories, &pol.ContentExceptions,
 		); scanErr != nil {
 			if errors.Is(scanErr, pgx.ErrNoRows) {
 				p.missingGuardrailQueries.Add(1)
@@ -1502,6 +1531,16 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 		pol.PromptInjectionAction = domain.GuardrailAction(injAct)
 		pol.PIIAction = domain.GuardrailAction(piiAct)
 		pol.SecretAction = domain.GuardrailAction(secAct)
+		pol.ToxicityAction = domain.GuardrailAction(toxAct)
+		if pol.BlockedKeywords == nil {
+			pol.BlockedKeywords = []string{}
+		}
+		if pol.EnabledContentCategories == nil {
+			pol.EnabledContentCategories = []string{}
+		}
+		if pol.ContentExceptions == nil {
+			pol.ContentExceptions = []string{}
+		}
 		if p.mem != nil {
 			_ = p.mem.SetGuardrailPolicy(lookupCtx, &pol)
 		}

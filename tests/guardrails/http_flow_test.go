@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -306,4 +307,46 @@ func TestStreamingSplitChunkMatrix(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestGuardrailPolicyToxicityAdminRoundTrip(t *testing.T) {
+	lab := newGuardrailLab(t, withNonStreamReply("Clean reply."))
+
+	saved := lab.setPolicy(t, map[string]any{
+		"mode":                       "enforce",
+		"enable_toxicity_filter":     true,
+		"toxicity_action":            "redact",
+		"toxicity_threshold":         "low",
+		"enabled_content_categories": []string{"bias", "denied_insults"},
+		"content_exceptions":         []string{"moron in clinical notes"},
+	})
+
+	assert.True(t, saved.EnableToxicityFilter)
+	assert.Equal(t, domain.GuardrailActionRedact, saved.ToxicityAction)
+	assert.Equal(t, "low", saved.ToxicityThreshold)
+	assert.Equal(t, []string{"bias", "denied_insults"}, saved.EnabledContentCategories)
+	assert.Equal(t, []string{"moron in clinical notes"}, saved.ContentExceptions)
+
+	fetched := lab.getPolicy(t)
+	assert.True(t, fetched.EnableToxicityFilter)
+	assert.Equal(t, domain.GuardrailActionRedact, fetched.ToxicityAction)
+	assert.Equal(t, "low", fetched.ToxicityThreshold)
+	assert.Equal(t, []string{"bias", "denied_insults"}, fetched.EnabledContentCategories)
+	assert.Equal(t, []string{"moron in clinical notes"}, fetched.ContentExceptions)
+
+	status, simOut := lab.simulate(t, map[string]any{
+		"prompt": "You are a moron.",
+	})
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, true, simOut["allowed"])
+	assert.Equal(t, "redact", simOut["applied_action"])
+	assert.Equal(t, true, simOut["redacted"])
+	assert.NotContains(t, simOut["redacted_prompt"], "moron")
+
+	statusExc, simExcOut := lab.simulate(t, map[string]any{
+		"prompt": "Historical term moron in clinical notes.",
+	})
+	assert.Equal(t, http.StatusOK, statusExc)
+	assert.Equal(t, true, simExcOut["allowed"])
+	assert.Equal(t, false, simExcOut["redacted"])
 }

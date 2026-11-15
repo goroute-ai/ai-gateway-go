@@ -880,6 +880,22 @@ components:
             type: string
         redact_output_pii:
           type: boolean
+        enable_toxicity_filter:
+          type: boolean
+        toxicity_action:
+          type: string
+          enum: [block, redact, audit]
+        toxicity_threshold:
+          type: string
+          enum: [low, medium, high]
+        enabled_content_categories:
+          type: array
+          items:
+            type: string
+        content_exceptions:
+          type: array
+          items:
+            type: string
         updated_at:
           type: string
           format: date-time
