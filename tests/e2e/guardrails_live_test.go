@@ -52,7 +52,7 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 	}
 
 	adminHeaders := map[string]string{
-		"Authorization": "Bearer sk-gw-master-admin-e2e-test-key",
+		"Authorization": "Bearer sk-gw-master-admin-live-e2e-key",
 		"Content-Type":  "application/json",
 	}
 	doJSON := func(method, path string, headers map[string]string, body any, out any) int {
