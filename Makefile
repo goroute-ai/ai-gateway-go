@@ -1,6 +1,6 @@
 .PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
-VERSION ?= v1.7.0
+VERSION ?= v1.8.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -207,7 +207,11 @@ release-assets:
 	(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum *; else shasum -a 256 *; fi > checksums.txt); \
 	ls -lh dist/
 
-release-check: fmt vet specgen test-unit test-e2e
+release-check: vet specgen ui-check-dist test-unit test-guardrails test-e2e
+	@test -z "$$(gofmt -l .)" || (echo "❌ Unformatted Go files detected; run 'make fmt' or 'gofmt -w ...'" && exit 1)
+	@test -z "$$(go mod tidy -diff)" || (echo "❌ go.mod/go.sum out of sync; run 'go mod tidy'" && exit 1)
+	@cd web && npx tsc --noEmit && node scripts/check-budget.mjs
+	go test -race -count=1 ./cmd/...
 	@echo "======================================================================"
 	@echo "  GoRoute AI Gateway $(VERSION) — All Release Checks Passed!          "
 	@echo "======================================================================"

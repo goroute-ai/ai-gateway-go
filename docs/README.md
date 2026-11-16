@@ -37,13 +37,13 @@ docs/
    - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
-   - Admin Control Plane (`/admin/v1/*`), including preflight credential validation and guardrail simulation, plus Prometheus Metrics scraping (`/metrics`).
+   - Admin Control Plane (`/admin/v1/*`), including preflight credential validation, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
 
 3. **[Subsystem Internals & Engineering Guide (`INTERNALS.md`)](./INTERNALS.md)**  
    *Deep-dive code tour and mathematical specifications for core contributors and platform architects:*
    - Synchronous and Real-Time SSE Streaming Data Plane lifecycles with sequence diagrams.
    - Embedded Operator Web UI serving mechanics, memory footprint, cache header policy, and HTML5 History fallback.
-   - Stateless Guardrails Simulator (`EvaluateInputWithPolicy`) and preflight credential validation mechanics.
+   - Two-layer Guardrails Pipeline (`Engine`, 19-driver registry, Starlark `custom_code` sandbox, tool trust taint tracking, `StreamWindowEvaluator`), `/v1/guardrails/apply`, and preflight credential validation mechanics.
    - Stage-1 heuristic prompt complexity classifier formula (< 0.1ms) and Stage-2 load balancing models.
    - AES-256-GCM Envelope Encryption (DEK/KEK) and SHA-256 constant-time hash verification.
    - Exact 64-bit micro-dollar integer accounting formula ($10^{-6}\text{ USD}$) with zero float drift.

@@ -2,8 +2,8 @@ apiVersion: v2
 name: goroute
 description: Production Helm chart for GoRoute AI Gateway
 type: application
-version: 0.2.0
-appVersion: "1.7.0"
+version: 0.3.0
+appVersion: "1.8.0"
 keywords:
   - ai-gateway
   - llm

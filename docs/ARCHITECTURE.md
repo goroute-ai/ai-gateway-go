@@ -100,7 +100,7 @@ The gateway is partitioned into nine foundational subsystems:
 | **6. MCP Hub & Tool Registry** | MCP 2026-07-28 stateless hub, 2025/2024 compatibility adapters, Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
 | **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream` |
-| **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog browser, guardrails simulator, upstream credentials preflight validator, and FinOps analytics. | `internal/ui`, `web` |
+| **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog browser, 4-tab Guardrails Console (Baseline Policy, 19-Driver Registry, Tool Trust Policies, `/v1/guardrails/apply` Simulator & Usage Dashboard), upstream credentials preflight validator, and FinOps analytics. | `internal/ui`, `web` |
 
 ---
 
@@ -507,14 +507,14 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
    - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics (`window.location.pathname` + `history.pushState`), enabling deep-linking and browser navigation.
 3. **Frontend Bundle Budget Enforcement**:
    - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
-   - Total uncompressed bundle size is constrained to `<= 420 KB` (gzipped `<= 125 KB`), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+   - Total uncompressed bundle size is constrained to `<= 500 KB` (gzipped `<= 150 KB`, CSS `<= 35 KB` / `<= 8 KB` gzipped), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
 4. **Reproducible Container Builds**:
    - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
 5. **Interactive Operator Capabilities**:
    - **Streaming Chat Playground**: Real-time Server-Sent Events (SSE) streaming with multi-turn history, parameter tuning (temperature, max tokens), system instructions, escaped code export, and live token, cost (`costMicros`), guardrail action, and latency telemetry.
    - **Organizations, Teams, Users & Policies**: Multi-tenant management for organizations, teams, users, micro-dollar budgets, provider subscriptions, and org model allow/block policies.
    - **Live Model Catalogue & Routing**: Filterable directory of 100+ AI models across 12+ providers, showing real-time capability tags, context window sizes, input/output micro-dollar pricing, model groups, and deployment attachment.
-   - **Interactive Guardrail Simulator**: Stateless prompt evaluator testing regex PII redaction, secret detection, and prompt injection rules without incurring upstream LLM costs.
+   - **Guardrails Console & Simulator**: Configure baseline PII/secret/toxicity policies, manage the 19-driver registry and hierarchical bindings, define tool trust policies, simulate requests via `/guardrails/simulate` and `/v1/guardrails/apply`, and inspect micro-dollar guardrail usage metrics.
    - **Provider Credentials Vault & Preflight Validator**: Form-based credential management with live preflight validation against upstream provider endpoints and key rotation.
 
 ---
@@ -568,7 +568,10 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 
 #### 4. Audit, Security & FinOps Ledgers
 - **`spend_logs`** (`0001`, `0007`): Append-only inference accounting ledger. Columns: `id` (VARCHAR PK), `request_id` (VARCHAR), `trace_id` (VARCHAR), `protocol` (VARCHAR), `protocol_target` (VARCHAR), `org_id` (FK), `team_id` (VARCHAR), `user_id` (VARCHAR), `virtual_key_id` (VARCHAR), `endpoint` (VARCHAR), `modality` (VARCHAR), `modality_units` (JSONB), `requested_model` (VARCHAR), `resolved_model` (VARCHAR), `provider` (VARCHAR), `deployment_id` (VARCHAR), `prompt_tokens` (INT), `completion_tokens` (INT), `total_tokens` (INT), `cached_prompt_tokens` (INT), `reasoning_tokens` (INT), `cost_micros` (INT8), `latency_ms` (INT8), `ttft_ms` (INT8), `status_code` (INT), `is_stream` (BOOL), `cache_hit` (BOOL), `fallback_attempted` (BOOL), `retry_count` (INT), `error_message` (TEXT), `created_at` (TIMESTAMPTZ, partitioned/indexed).
-- **`guardrail_policies`** (`0002`): Prompt safety policies. Columns: `id` (VARCHAR PK), `org_id` (FK UNIQUE), `enable_prompt_injection` (BOOL), `prompt_injection_action` (`block`, `log_only`), `enable_pii_detection` (BOOL), `pii_action` (`block`, `redact`, `log_only`), `enable_secret_detection` (BOOL), `secret_action` (`block`, `redact`, `log_only`), `redact_output_pii` (BOOL), timestamps.
+- **`guardrail_policies`** (`0002`, `0010`, `0016`): Prompt safety baseline policies. Columns: `id` (VARCHAR PK), `org_id` (FK UNIQUE), `mode` (`enforce`, `logging_only`), `scan_all_roles` (BOOL), `enable_prompt_injection` (BOOL), `prompt_injection_action`, `enable_pii_detection` (BOOL), `pii_action`, `enable_secret_detection` (BOOL), `secret_action`, `redact_output_pii` (BOOL), `enable_toxicity_filter` (BOOL), `toxicity_action`, `toxicity_threshold` (`low`, `medium`, `high`), `enabled_content_categories` (TEXT[]), `content_exceptions` (TEXT[]), timestamps.
+- **`guardrail_definitions` & `guardrail_bindings`** (`0017`): Multi-provider named guardrail registry (19 drivers, Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, `weight`) and hierarchical scope attachments (`team_id`, `virtual_key_id`, `end_user_id`, `model_group_id`, `tag`, `is_locked`).
+- **`tool_policies`** (`0018`): Scoped cross-turn tool trust rules (`input_policy`: `blocked|untrusted|trusted`, `output_policy`: `untrusted|trusted`) driving `ToolLoopOrchestrator` taint-chain enforcement.
+- **`daily_guardrail_metrics`, `daily_guardrail_usage_units`, & `spend_log_guardrails`** (`0019`): Daily guardrail evaluation/block/redaction/flag/error counts, integer micro-dollar (`cost_micros BIGINT`) usage unit attribution, and spend-log guardrail join records.
 - **`audit_logs`** (`0002`): Administrative audit trails. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `user_id` (VARCHAR), `action` (VARCHAR), `resource_type` (VARCHAR), `resource_id` (VARCHAR), `details` (JSONB), `created_at`.
 
 #### 5. Protocols, Stateful Assets & Batch Processing
@@ -720,8 +723,17 @@ ai-gateway-go/
 │   ├── 0014_budget_reset_outbox_user_scope.up.sql
 │   ├── 0014_budget_reset_outbox_user_scope.down.sql
 │   ├── 0015_team_org_concurrency.up.sql
-│   └── 0015_team_org_concurrency.down.sql
+│   ├── 0015_team_org_concurrency.down.sql
+│   ├── 0016_guardrail_policy_toxicity.up.sql
+│   ├── 0016_guardrail_policy_toxicity.down.sql
+│   ├── 0017_guardrail_registry_and_bindings.up.sql
+│   ├── 0017_guardrail_registry_and_bindings.down.sql
+│   ├── 0018_tool_policies.up.sql
+│   ├── 0018_tool_policies.down.sql
+│   ├── 0019_guardrail_usage_metrics.up.sql
+│   └── 0019_guardrail_usage_metrics.down.sql
 ├── tests/
+│   ├── guardrails/                   # Isolated guardrail unit/integration suite
 │   └── e2e/                          # End-to-end integration, protocols, clustering & resilience suites
 ├── internal/
 │   ├── config/                       # YAML + Env configuration & declarative model_list parser
@@ -732,7 +744,7 @@ ai-gateway-go/
 │   ├── mcp/                          # MCP 2026-07-28 stateless core, 2025-11-25 adapter, MRTR, Cache & Hub
 │   ├── a2a/                          # A2A v1.0 engine, Card signer/verifier, RouterService, Streams & Outbox
 │   ├── security/                     # Centralized outbound SSRF network policy engine & safe HTTP client
-│   ├── guardrails/                   # MCP anti-tool-poisoning scanner, tool pinning & result sanitization
+│   ├── guardrails/                   # Two-layer guardrail pipeline, 19 drivers, Starlark custom_code, tool/MCP governance & stream windowing
 │   ├── ratelimit/                    # Redis Lua atomic rate limiter + tokenizer + local fallback
 │   ├── cache/                        # Exact-match deterministic response cache
 │   ├── modelmgmt/                    # 4-Layer model catalogue, org policies & automated discovery worker

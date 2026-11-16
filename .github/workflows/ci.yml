@@ -78,8 +78,8 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Run Unit Tests with Race Detector
-        run: go test -race -v -count=1 ./internal/... ./pkg/...
+      - name: Run Unit & Guardrails Tests with Race Detector
+        run: go test -race -v -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 
       - name: Run Live Stack E2E Tests
         env:
