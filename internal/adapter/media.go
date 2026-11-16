@@ -45,17 +45,23 @@ func validateStrictMediaPort(policy *network.Policy, u *url.URL) error {
 	return nil
 }
 
-// FetchRemoteDataURIWithPolicy fetches user-supplied HTTPS media validated against
-// policy (defaulting to DefaultPublicMediaPolicy when nil) and returns a bounded
-// base64 data URI. When client is nil, an SSRF-enforcing HTTP client is built from policy.
-// When client is non-nil, a shallow clone is used with policy-enforcing redirect validation.
-func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, policy *network.Policy, rawURL string, maxBytes int64, allowedTypes ...string) (string, error) {
+// ValidateAndSanitizeMediaURL validates a remote media URL against strict HTTPS,
+// syntax, port, and outbound network SSRF policy rules (defaulting to
+// DefaultPublicMediaPolicy when policy is nil) and returns a canonicalized HTTPS URL.
+func ValidateAndSanitizeMediaURL(rawURL string, policy *network.Policy) (string, error) {
+	if containsUnsafeURLChars(rawURL) {
+		return "", fmt.Errorf("media URL must not contain control characters or backslashes")
+	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || strings.ToLower(u.Scheme) != "https" || u.Hostname() == "" || u.User != nil {
+	if err != nil || strings.ToLower(u.Scheme) != "https" || u.User != nil {
 		return "", fmt.Errorf("media URL must be an absolute HTTPS URL without embedded credentials")
 	}
-	if maxBytes <= 0 {
-		return "", fmt.Errorf("media fetch is not configured")
+	cleanHost, err := canonicalHostPort(u)
+	if err != nil {
+		return "", fmt.Errorf("media %w", err)
+	}
+	if containsUnsafeURLChars(u.Host) || containsUnsafeURLChars(u.Path) {
+		return "", fmt.Errorf("media URL must not contain control characters or backslashes")
 	}
 	if policy == nil {
 		policy = DefaultPublicMediaPolicy()
@@ -66,10 +72,36 @@ func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, poli
 	if err := validateStrictMediaPort(policy, u); err != nil {
 		return "", err
 	}
+	return (&url.URL{
+		Scheme:   "https",
+		Host:     cleanHost,
+		Path:     u.Path,
+		RawPath:  u.RawPath,
+		RawQuery: u.RawQuery,
+	}).String(), nil
+}
+
+// FetchRemoteDataURIWithPolicy fetches user-supplied HTTPS media validated against
+// policy (defaulting to DefaultPublicMediaPolicy when nil) and returns a bounded
+// base64 data URI. When client is nil, an SSRF-enforcing HTTP client is built from policy.
+// When client is non-nil, a shallow clone is used with policy-enforcing transport and
+// redirect validation.
+func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, policy *network.Policy, rawURL string, maxBytes int64, allowedTypes ...string) (string, error) {
+	if maxBytes <= 0 {
+		return "", fmt.Errorf("media fetch is not configured")
+	}
+	if policy == nil {
+		policy = DefaultPublicMediaPolicy()
+	}
+	cleanURL, err := ValidateAndSanitizeMediaURL(rawURL, policy)
+	if err != nil {
+		return "", err
+	}
 	if client == nil {
 		client = network.NewHTTPClient(policy)
 	} else {
 		cloned := *client
+		cloned.Transport = network.WrapTransport(policy, cloned.Transport)
 		baseCheck := cloned.CheckRedirect
 		cloned.CheckRedirect = network.WrapCheckRedirect(policy, func(req *http.Request, via []*http.Request) error {
 			if err := validateStrictMediaPort(policy, req.URL); err != nil {
@@ -82,13 +114,6 @@ func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, poli
 		})
 		client = &cloned
 	}
-	cleanURL := (&url.URL{
-		Scheme:   "https",
-		Host:     u.Host,
-		Path:     u.Path,
-		RawPath:  u.RawPath,
-		RawQuery: u.RawQuery,
-	}).String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create media request: %w", err)

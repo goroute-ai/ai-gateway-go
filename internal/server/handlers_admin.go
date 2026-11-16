@@ -51,7 +51,7 @@ func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
 func (s *GatewayServer) authorizeCustomBaseURL(op *domain.OperatorContext, cleanBaseURL string) *domain.GatewayError {
 	if cleanBaseURL != "" && s.cfg != nil &&
 		(s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks || len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
-		op != nil && op.Role != domain.OperatorRolePlatformAdmin {
+		(op == nil || op.Role != domain.OperatorRolePlatformAdmin) {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,

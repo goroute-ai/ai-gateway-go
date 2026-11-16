@@ -1,0 +1,8 @@
+extensions:
+  - addsTo:
+      pack: codeql/go-all
+      extensible: barrierModel
+    data:
+      - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ValidateAndResolveBaseURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]
+      - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ResolveCredentialBaseURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]
+      - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ValidateAndSanitizeMediaURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]

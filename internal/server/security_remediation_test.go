@@ -35,6 +35,8 @@ func TestAdminCredentialBaseURL_SSRFAndSyntaxValidation(t *testing.T) {
 		"http://127.0.0.1:8080/v1",
 		"https://user:pass@api.openai.com/v1",
 		"https://api.openai.com/v1?token=leak",
+		"https://api.openai.com./v1",
+		"https://api.openai.com\\evil.com/v1",
 	}
 
 	for _, bad := range badURLs {

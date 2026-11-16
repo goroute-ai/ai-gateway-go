@@ -160,3 +160,29 @@ func TestPolicyValidateIP_MulticastUnspecifiedAndNonGlobalUnicast(t *testing.T) 
 		}
 	}
 }
+
+func TestWrapTransport_NilBaseAndCustomTransportPolicyEnforcement(t *testing.T) {
+	strictPol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: false,
+		AllowInsecureHTTP:    false,
+	})
+	if err != nil {
+		t.Fatalf("new strict policy: %v", err)
+	}
+
+	nilWrapped := &http.Client{Transport: network.WrapTransport(strictPol, nil)}
+	if _, err := nilWrapped.Get("http://127.0.0.1:1/blocked"); err == nil {
+		t.Fatal("expected WrapTransport(strictPol, nil) to reject loopback HTTP target")
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("custom transport should not dial when RoundTrip URL violates policy")
+	}))
+	defer srv.Close()
+
+	customClient := srv.Client()
+	customClient.Transport = network.WrapTransport(strictPol, customClient.Transport)
+	if _, err := customClient.Get(srv.URL + "/blocked"); err == nil {
+		t.Fatal("expected WrapTransport(strictPol, customTransport) to reject loopback URL before dialing")
+	}
+}

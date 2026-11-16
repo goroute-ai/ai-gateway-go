@@ -241,6 +241,32 @@ func WrapCheckRedirect(policy *Policy, next func(*http.Request, []*http.Request)
 	}
 }
 
+type policyValidatingRoundTripper struct {
+	policy *Policy
+	base   http.RoundTripper
+}
+
+func (rt policyValidatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.policy != nil {
+		if err := rt.policy.ValidateURL(req.URL); err != nil {
+			return nil, err
+		}
+	}
+	return rt.base.RoundTrip(req)
+}
+
+// WrapTransport ensures base enforces policy.ValidateURL on every RoundTrip and
+// defaults to an SSRF-safe transport from NewHTTPClient when base is nil.
+func WrapTransport(policy *Policy, base http.RoundTripper) http.RoundTripper {
+	if policy == nil {
+		policy, _ = NewPolicy(config.OutboundSSRFConfig{})
+	}
+	if base == nil {
+		return NewHTTPClient(policy).Transport
+	}
+	return policyValidatingRoundTripper{policy: policy, base: base}
+}
+
 // idleTimeoutRoundTripper applies total deadlines to ordinary calls and bounds
 // periods with no upstream body progress for all calls, including streams.
 type idleTimeoutRoundTripper struct {

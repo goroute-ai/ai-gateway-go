@@ -73,6 +73,9 @@ func TestValidateAndResolveBaseURL(t *testing.T) {
 		"https://metadata.google.internal/v1",
 		"https://metadata.azure.internal/v1",
 		"https://localhost/v1",
+		"https://localhost./v1",
+		"https://api.openai.com./v1",
+		"https://api.openai.com\\evil.com/v1",
 		"https://api.openai.com/v1/../admin",
 		"https://api.openai.com/v1/%2e%2e/admin",
 		"https://api.openai.com/v1\r\n",
@@ -146,5 +149,38 @@ func TestFetchRemoteDataURIWithPolicy_Non443PortAndNonNilClientRedirect(t *testi
 	}
 	if nonNilClient.CheckRedirect != nil {
 		t.Fatal("expected caller CheckRedirect to remain unmodified")
+	}
+
+	// Non-nil client with Transport == nil must still wrap Transport safely without mutating caller client.
+	bareClient := &http.Client{}
+	if _, err := adapter.FetchRemoteDataURIWithPolicy(ctx, bareClient, nil, redirectSrv.URL+"/img.png", 1024, "image/"); err == nil {
+		t.Fatal("expected bare non-nil client to reject loopback media target")
+	}
+	if bareClient.Transport != nil || bareClient.CheckRedirect != nil {
+		t.Fatal("FetchRemoteDataURIWithPolicy must not mutate caller-supplied bare http.Client")
+	}
+}
+
+func TestValidateAndSanitizeMediaURL(t *testing.T) {
+	clean, err := adapter.ValidateAndSanitizeMediaURL("https://CDN.Example.COM/assets/img.png?size=large#frag", nil)
+	if err != nil {
+		t.Fatalf("expected valid public HTTPS media URL, got err=%v", err)
+	}
+	if clean != "https://cdn.example.com/assets/img.png?size=large" {
+		t.Fatalf("unexpected sanitized media URL: %q", clean)
+	}
+
+	for _, bad := range []string{
+		"http://cdn.example.com/img.png",
+		"https://cdn.example.com./img.png",
+		"https://cdn.example.com\\evil.com/img.png",
+		"https://user:pass@cdn.example.com/img.png",
+		"https://cdn.example.com:8443/img.png",
+		"https://169.254.169.254./latest/meta-data",
+		"https://metadata.google.internal./computeMetadata/v1/",
+	} {
+		if _, err := adapter.ValidateAndSanitizeMediaURL(bad, nil); err == nil {
+			t.Fatalf("expected ValidateAndSanitizeMediaURL to reject %q", bad)
+		}
 	}
 }
