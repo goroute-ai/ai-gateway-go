@@ -17,12 +17,12 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language = 'bash', c
   };
 
   return (
-    <div className={`relative group rounded-[0.65rem] bg-[#0d0d12] border border-border overflow-hidden font-mono text-xs ${className}`}>
-      <div className="flex items-center justify-between px-3.5 py-2 bg-surface-elevated/70 border-b border-border text-[#9696a4]">
+    <div className={`relative group rounded-[0.65rem] bg-surface-code border border-border overflow-hidden font-mono text-xs ${className}`}>
+      <div className="flex items-center justify-between px-3.5 py-2 bg-surface-elevated/70 border-b border-border text-brand-muted">
         <span className="uppercase text-[10px] tracking-wider font-semibold text-accent-primary">{language}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 hover:text-white transition-colors py-1 px-2 rounded-md hover:bg-surface-hover hover:text-accent-primary"
+          className="flex items-center gap-1.5 hover:text-brand-title transition-colors py-1 px-2 rounded-md hover:bg-surface-hover"
           title="Copy code"
         >
           {copied ? (
@@ -38,7 +38,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language = 'bash', c
           )}
         </button>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-[#d2d0dc] leading-relaxed whitespace-pre-wrap break-all font-mono">
+      <pre className="p-3.5 overflow-x-auto text-brand-body leading-relaxed whitespace-pre-wrap break-all font-mono">
         <code>{code}</code>
       </pre>
     </div>

@@ -251,10 +251,10 @@ export const ModelsView: React.FC = () => {
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold text-brand-title tracking-tight flex items-center gap-2">
             Model Catalogue & Routing Topologies
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-brand-muted mt-1">
             Curated 4-layer model catalogue, tri-state capabilities, integer micro-dollar pricing, and routing topologies
           </p>
         </div>
@@ -265,7 +265,7 @@ export const ModelsView: React.FC = () => {
               <button
                 onClick={() => importMutation.mutate()}
                 disabled={importMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-slate-300 hover:text-white transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-brand-body hover:text-brand-title transition-colors disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${importMutation.isPending ? 'animate-spin' : ''}`} />
                 <span>Import All Models</span>
@@ -273,7 +273,7 @@ export const ModelsView: React.FC = () => {
               <button
                 onClick={() => syncMutation.mutate()}
                 disabled={syncMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
                 <span>Sync Discovery</span>
@@ -282,7 +282,7 @@ export const ModelsView: React.FC = () => {
           ) : (
             <button
               onClick={() => setShowCreateGroupModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-glow text-xs font-semibold text-black transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-dark text-xs font-semibold text-accent-contrast transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>New Model Group</span>
@@ -297,8 +297,8 @@ export const ModelsView: React.FC = () => {
           onClick={() => setActiveTab('catalogue')}
           className={`flex items-center gap-2 px-4 py-2 text-xs font-medium border-b-2 transition-all ${
             activeTab === 'catalogue'
-              ? 'border-accent-primary text-accent-glow bg-accent-primary/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
+              ? 'border-accent-primary text-accent-primary bg-accent-soft'
+              : 'border-transparent text-brand-muted hover:text-brand-title'
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
@@ -309,8 +309,8 @@ export const ModelsView: React.FC = () => {
           onClick={() => setActiveTab('groups')}
           className={`flex items-center gap-2 px-4 py-2 text-xs font-medium border-b-2 transition-all ${
             activeTab === 'groups'
-              ? 'border-accent-primary text-accent-glow bg-accent-primary/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
+              ? 'border-accent-primary text-accent-primary bg-accent-soft'
+              : 'border-transparent text-brand-muted hover:text-brand-title'
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
@@ -350,20 +350,20 @@ export const ModelsView: React.FC = () => {
           {/* Search bar & Provider Filter */}
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
+              <Search className="w-3.5 h-3.5 text-brand-muted absolute left-3 top-2.5" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search models by name, alias or display label..."
-                className="w-full bg-surface-base border border-border-strong rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-accent-primary"
+                className="w-full bg-surface-input border border-border-strong rounded-lg pl-9 pr-3 py-1.5 text-xs text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
               />
             </div>
 
             <select
               value={providerFilter}
               onChange={(e) => setProviderFilter(e.target.value)}
-              className="bg-surface-base border border-border-strong rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-primary"
+              className="bg-surface-input border border-border-strong rounded-lg px-3 py-1.5 text-xs text-brand-body focus:outline-none focus:border-accent-primary"
             >
               <option value="">All Providers</option>
               <option value="openai">OpenAI</option>
@@ -383,7 +383,7 @@ export const ModelsView: React.FC = () => {
           <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-surface-elevated/60 text-slate-400 uppercase text-[10px] tracking-wider border-b border-border-subtle">
+                <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
                   <tr>
                     <th className="px-6 py-3">Model</th>
                     <th className="px-6 py-3">Provider</th>
@@ -396,7 +396,7 @@ export const ModelsView: React.FC = () => {
                 <tbody className="divide-y divide-border-subtle/40">
                   {isCatLoading ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                      <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
                         Loading model catalogue...
                       </td>
                     </tr>
@@ -407,9 +407,9 @@ export const ModelsView: React.FC = () => {
 
                       return (
                         <tr key={m.id} className="hover:bg-surface-hover/30 transition-colors">
-                          <td className="px-6 py-3 font-medium text-slate-200">
+                          <td className="px-6 py-3 font-medium text-brand-title">
                             <div>{m.display_name || m.model_name}</div>
-                            <div className="text-[10px] font-mono text-slate-500">
+                            <div className="text-[10px] font-mono text-brand-muted">
                               {m.id}
                               {m.max_input_tokens ? ` · ${(m.max_input_tokens / 1000).toFixed(0)}k ctx` : ''}
                             </div>
@@ -420,40 +420,40 @@ export const ModelsView: React.FC = () => {
                             </Badge>
                           </td>
                           <td className="px-6 py-3 font-mono text-xs">
-                            <div className="text-slate-200 font-semibold">
+                            <div className="text-brand-title font-semibold">
                               In: ${inputUSD} / Out: ${outputUSD}
                             </div>
-                            <div className="text-[10px] text-slate-500">
+                            <div className="text-[10px] text-brand-muted">
                               Cache: ${(m.cached_input_cost_micros_per_1m / 1_000_000).toFixed(4)}
                             </div>
                           </td>
                           <td className="px-6 py-3">
                             <div className="flex flex-wrap gap-1 max-w-xs text-[10px]">
                               {(m.capabilities?.tools === 'supported' || m.supports_tools) && (
-                                <span className="px-1.5 py-0.2 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
+                                <span className="px-1.5 py-0.2 rounded border status-success">
                                   tools
                                 </span>
                               )}
                               {(m.capabilities?.streaming === 'supported' || m.supports_streaming) && (
-                                <span className="px-1.5 py-0.2 rounded bg-cyan-950/60 text-cyan-400 border border-cyan-500/20">
+                                <span className="px-1.5 py-0.2 rounded border status-info">
                                   stream
                                 </span>
                               )}
                               {(m.capabilities?.vision === 'supported' || m.supports_vision) && (
-                                <span className="px-1.5 py-0.2 rounded bg-indigo-950/60 text-indigo-400 border border-indigo-500/20">
+                                <span className="px-1.5 py-0.2 rounded border status-indigo">
                                   vision
                                 </span>
                               )}
                               {(m.capabilities?.reasoning === 'supported' || m.supports_reasoning) && (
-                                <span className="px-1.5 py-0.2 rounded bg-amber-950/60 text-amber-400 border border-amber-500/20">
+                                <span className="px-1.5 py-0.2 rounded border status-warning">
                                   reasoning
                                 </span>
                               )}
                             </div>
                           </td>
-                          <td className="px-6 py-3 font-mono text-[11px] text-slate-400">
+                          <td className="px-6 py-3 font-mono text-[11px] text-brand-muted">
                             <div>{m.pricing_status || 'unverified'}</div>
-                            <div className="text-[9px] text-slate-500 truncate max-w-[120px]">
+                            <div className="text-[9px] text-brand-muted truncate max-w-[120px]">
                               {m.pricing_provenance_source || 'default'}
                             </div>
                           </td>
@@ -461,14 +461,14 @@ export const ModelsView: React.FC = () => {
                             <div className="inline-flex items-center gap-1">
                               <button
                                 onClick={() => setHistoryModel(m)}
-                                className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                                className="text-brand-muted hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
                                 title="View pricing history"
                               >
                                 <Clock className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleOpenPricingModal(m)}
-                                className="text-slate-400 hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                                className="text-brand-muted hover:text-accent-primary p-1.5 rounded hover:bg-surface-elevated transition-colors"
                                 title="Update model pricing rates"
                               >
                                 <DollarSign className="w-3.5 h-3.5" />
@@ -480,7 +480,7 @@ export const ModelsView: React.FC = () => {
                     })
                   ) : (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                      <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
                         No models found matching search query. Click "Import All Models" to load catalogue.
                       </td>
                     </tr>
@@ -489,7 +489,7 @@ export const ModelsView: React.FC = () => {
               </table>
             </div>
             {filteredModels.length > 100 && (
-              <div className="px-6 py-2 border-t border-border-subtle text-[11px] font-mono text-slate-400">
+              <div className="px-6 py-2 border-t border-border-subtle text-[11px] font-mono text-brand-muted">
                 Showing 100 of {filteredModels.length} matching models — refine search or provider filter to narrow results.
               </div>
             )}
@@ -503,7 +503,7 @@ export const ModelsView: React.FC = () => {
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {isGroupsLoading ? (
-              <div className="col-span-full py-12 text-center text-slate-500 text-xs">
+              <div className="col-span-full py-12 text-center text-brand-muted text-xs">
                 Loading routing topologies...
               </div>
             ) : groupsData?.data && groupsData.data.length > 0 ? (
@@ -516,17 +516,17 @@ export const ModelsView: React.FC = () => {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-base font-bold text-accent-glow">
+                        <span className="font-mono text-base font-bold text-accent-primary">
                           {g.alias}
                         </span>
                         <Badge size="sm">{g.routing_strategy}</Badge>
                       </div>
-                      <span className="text-[10px] font-mono text-slate-500">ID: {g.id}</span>
+                      <span className="text-[10px] font-mono text-brand-muted">ID: {g.id}</span>
                     </div>
 
                     <div className="space-y-1.5 pt-2 border-t border-border-subtle/50">
                       <div className="flex items-center justify-between">
-                        <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
+                        <div className="text-[10px] uppercase font-semibold text-brand-muted tracking-wider">
                           Configured Deployments ({deps.length})
                         </div>
                         <button
@@ -543,16 +543,16 @@ export const ModelsView: React.FC = () => {
                             key={d.id}
                             className="flex items-center justify-between p-2 rounded bg-surface-elevated/40 border border-border-subtle/60 text-xs font-mono"
                           >
-                            <span className="text-slate-300">{d.global_model_id}</span>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            <span className="text-brand-body">{d.global_model_id}</span>
+                            <div className="flex items-center gap-2 text-[10px] text-brand-muted">
                               <span>P:{d.priority}</span>
                               <span>W:{d.weight}</span>
-                              <span className="text-emerald-400">{d.status}</span>
+                              <span className="text-status-success">{d.status}</span>
                             </div>
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-slate-500 italic p-2">
+                        <div className="text-xs text-brand-muted italic p-2">
                           No child deployments attached. Requests to this alias will resolve dynamically.
                         </div>
                       )}
@@ -561,7 +561,7 @@ export const ModelsView: React.FC = () => {
                 );
               })
             ) : (
-              <div className="col-span-full py-12 text-center text-slate-500 text-xs">
+              <div className="col-span-full py-12 text-center text-brand-muted text-xs">
                 No model groups configured yet. Click "New Model Group" to create aliases like "fast" or "reasoning".
               </div>
             )}
@@ -583,17 +583,17 @@ export const ModelsView: React.FC = () => {
           )}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Input USD / 1M</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Input USD / 1M</label>
               <input type="number" step="0.0001" required value={inputCostUSD} onChange={(e) => setInputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Output USD / 1M</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Output USD / 1M</label>
               <input type="number" step="0.0001" required value={outputCostUSD} onChange={(e) => setOutputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Cached Input USD / 1M</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Cached Input USD / 1M</label>
             <input type="number" step="0.0001" value={cachedInputUSD} onChange={(e) => setCachedInputUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
           </div>
 
@@ -618,11 +618,11 @@ export const ModelsView: React.FC = () => {
             <ErrorAlert error={histError} title="Failed to load pricing history" />
           )}
           {isHistLoading ? (
-            <div className="py-6 text-center text-slate-500 font-mono">Loading pricing audit trail...</div>
+            <div className="py-6 text-center text-brand-muted font-mono">Loading pricing audit trail...</div>
           ) : (historyData?.data || []).length > 0 ? (
             <div className="overflow-x-auto border border-border-subtle rounded-lg">
               <table className="w-full text-left text-[11px] font-mono">
-                <thead className="bg-surface-elevated/60 text-slate-400 uppercase text-[10px] border-b border-border-subtle">
+                <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] border-b border-border-subtle">
                   <tr>
                     <th className="px-3 py-2">Ver</th>
                     <th className="px-3 py-2">In / Out / Cached (1M)</th>
@@ -635,19 +635,19 @@ export const ModelsView: React.FC = () => {
                   {(historyData?.data || []).map((h) => (
                     <tr key={h.id}>
                       <td className="px-3 py-2 text-accent-primary">v{h.pricing_version}</td>
-                      <td className="px-3 py-2 text-slate-200">
+                      <td className="px-3 py-2 text-brand-body">
                         ${(h.input_cost_micros_per_1m / 1e6).toFixed(4)} / ${(h.output_cost_micros_per_1m / 1e6).toFixed(4)} / ${(h.cached_input_cost_micros_per_1m / 1e6).toFixed(4)}
                       </td>
-                      <td className="px-3 py-2 text-slate-300">{h.pricing_status || '-'}</td>
-                      <td className="px-3 py-2 text-slate-400">{h.changed_by}</td>
-                      <td className="px-3 py-2 text-slate-400">{new Date(h.effective_from).toLocaleString()}</td>
+                      <td className="px-3 py-2 text-brand-body">{h.pricing_status || '-'}</td>
+                      <td className="px-3 py-2 text-brand-muted">{h.changed_by}</td>
+                      <td className="px-3 py-2 text-brand-muted">{new Date(h.effective_from).toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="py-6 text-center text-slate-500 font-mono">No pricing history entries recorded.</div>
+            <div className="py-6 text-center text-brand-muted font-mono">No pricing history entries recorded.</div>
           )}
         </div>
       </Modal>
@@ -659,17 +659,17 @@ export const ModelsView: React.FC = () => {
             <ErrorAlert error={createGroupMutation.error} title="Failed to create model group" />
           )}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Alias Name *</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Alias Name *</label>
             <input type="text" required value={groupAlias} onChange={(e) => setGroupAlias(e.target.value)} placeholder="fast, reasoning, coding" className={`${INPUT_CLS} font-mono`} />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Description (optional)</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Description (optional)</label>
             <input type="text" value={groupDesc} onChange={(e) => setGroupDesc(e.target.value)} placeholder="Low-latency primary alias" className={INPUT_CLS} />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Routing Strategy</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Routing Strategy</label>
             <select value={routingStrategy} onChange={(e) => setRoutingStrategy(e.target.value)} className={INPUT_CLS}>
               <option value="weighted-shuffle">weighted-shuffle (Default probabilistic)</option>
               <option value="round-robin">round-robin (Cyclic distribution)</option>
@@ -681,9 +681,9 @@ export const ModelsView: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-3 gap-2">
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Max Retries</label><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Cooldown (s)</label><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Failure Threshold</label><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Max Retries</label><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Cooldown (s)</label><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Failure Threshold</label><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -729,36 +729,36 @@ export const ModelsView: React.FC = () => {
             <ErrorAlert error={createDeploymentMutation.error} title="Failed to create deployment" />
           )}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Global Model ID *</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Global Model ID *</label>
             <input type="text" required list="catalogue-models-list" value={deployGlobalModelId} onChange={(e) => setDeployGlobalModelId(e.target.value)} placeholder="openai/gpt-4.1" className={`${INPUT_CLS} font-mono`} />
             <datalist id="catalogue-models-list">
               {suggestionModels.slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
             </datalist>
             {suggestionModels.length > 100 && (
-              <p className="text-[10px] font-mono text-slate-400 mt-1">
+              <p className="text-[10px] font-mono text-brand-muted mt-1">
                 Showing 100 of {suggestionModels.length} matching models — type to narrow suggestions.
               </p>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Provider Credential (optional)</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Provider Credential (optional)</label>
             <select value={deployCredentialId} onChange={(e) => setDeployCredentialId(e.target.value)} className={INPUT_CLS}>
               <option value="">Auto-resolve org credential</option>
               {(credsData?.data || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.provider})</option>)}
             </select>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Deployment Name</label><input type="text" value={deployName} onChange={(e) => setDeployName(e.target.value)} placeholder="primary-us-east" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Region</label><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Deployment Name</label><input type="text" value={deployName} onChange={(e) => setDeployName(e.target.value)} placeholder="primary-us-east" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Region</label><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Priority</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Priority</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">RPM Cap</label><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">TPM Cap</label><input type="number" min={0} value={deployTpm} onChange={(e) => setDeployTpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-slate-300 mb-1">Timeout (ms)</label><input type="number" min={0} value={deployTimeoutMs} onChange={(e) => setDeployTimeoutMs(e.target.value)} placeholder="30000" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">RPM Cap</label><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">TPM Cap</label><input type="number" min={0} value={deployTpm} onChange={(e) => setDeployTpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Timeout (ms)</label><input type="number" min={0} value={deployTimeoutMs} onChange={(e) => setDeployTimeoutMs(e.target.value)} placeholder="30000" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setDeployGroupId(null)} className={BTN_CANCEL}>Cancel</button>

@@ -332,12 +332,12 @@ func main() {
   return (
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-140px)] min-h-[600px]">
       {/* Center / Left: Interactive Chat Canvas */}
-      <div className="flex-1 flex flex-col bg-surface-base border border-subtle rounded-lg overflow-hidden">
+      <div className="flex-1 flex flex-col bg-surface-base border border-border-subtle rounded-lg overflow-hidden">
         {/* Chat Header Bar */}
-        <div className="px-4 py-2.5 bg-surface-elevated/40 border-b border-subtle flex items-center justify-between">
+        <div className="px-4 py-2.5 bg-surface-elevated/40 border-b border-border-subtle flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Zap className="w-4 h-4 text-accent-primary" />
-            <span className="text-xs font-semibold text-zinc-100 font-mono">Chat Playground</span>
+            <span className="text-xs font-semibold text-brand-title font-mono">Chat Playground</span>
             <Badge variant="primary">{activeModel}</Badge>
             {isStreaming && (
               <span className="flex items-center gap-1.5 text-[11px] text-accent-glow font-mono animate-pulse">
@@ -350,7 +350,7 @@ func main() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowExportModal(true)}
-              className="flex items-center gap-1 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition"
+              className="flex items-center gap-1 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
               title="Export as Code"
             >
               <Copy className="w-3.5 h-3.5" />
@@ -359,7 +359,7 @@ func main() {
             <button
               onClick={handleClearChat}
               disabled={messages.length === 0}
-              className="flex items-center gap-1 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-400 hover:text-red-300 rounded text-xs font-mono transition disabled:opacity-40"
+              className="flex items-center gap-1 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-muted hover:text-status-danger rounded text-xs font-mono transition disabled:opacity-40"
               title="Clear Conversation"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -369,16 +369,16 @@ func main() {
         </div>
 
         {/* Collapsible System Prompt */}
-        <div className="border-b border-subtle bg-canvas/40">
+        <div className="border-b border-border-subtle bg-canvas/40">
           <button
             onClick={() => setIsSystemOpen(!isSystemOpen)}
-            className="w-full px-4 py-2 flex items-center justify-between text-xs font-mono text-zinc-400 hover:text-zinc-200 transition"
+            className="w-full px-4 py-2 flex items-center justify-between text-xs font-mono text-brand-muted hover:text-brand-title transition"
           >
             <span className="flex items-center gap-1.5">
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isSystemOpen ? '' : '-rotate-90'}`} />
               System Instructions
             </span>
-            <span className="text-[10px] text-zinc-500 truncate max-w-[300px]">
+            <span className="text-[10px] text-brand-muted truncate max-w-[300px]">
               {isSystemOpen ? 'Click to collapse' : systemPrompt.slice(0, 45) + '...'}
             </span>
           </button>
@@ -389,7 +389,7 @@ func main() {
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
                 placeholder="Define role or behavior constraints..."
-                className="w-full p-2 text-xs bg-surface-elevated border border-subtle rounded text-zinc-200 font-mono focus:outline-none focus:border-accent-primary resize-y"
+                className="w-full p-2 text-xs bg-surface-input border border-border-subtle rounded text-brand-body font-mono focus:outline-none focus:border-accent-primary resize-y"
               />
             </div>
           )}
@@ -397,15 +397,15 @@ func main() {
 
         {/* Error Notification Banner */}
         {streamError && (
-          <div className="mx-4 mt-3 p-3 bg-red-950/40 border border-red-900/60 rounded flex items-start justify-between text-xs text-red-300 font-mono">
+          <div className="mx-4 mt-3 p-3 status-danger border rounded flex items-start justify-between text-xs font-mono">
             <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <AlertTriangle className="w-4 h-4 text-status-danger shrink-0 mt-0.5" />
               <div>
                 <span className="font-bold">Execution Error: </span>
                 {streamError}
               </div>
             </div>
-            <button onClick={() => setStreamError(null)} className="text-red-400 hover:text-red-200 ml-2">
+            <button onClick={() => setStreamError(null)} className="text-status-danger hover:opacity-80 ml-2">
               ×
             </button>
           </div>
@@ -414,13 +414,13 @@ func main() {
         {/* Messages Stream Container */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center text-zinc-500 space-y-3">
-              <div className="w-12 h-12 rounded-full bg-surface-elevated flex items-center justify-center border border-subtle text-accent-primary">
+            <div className="h-full flex flex-col items-center justify-center text-center text-brand-muted space-y-3">
+              <div className="w-12 h-12 rounded-full bg-surface-elevated flex items-center justify-center border border-border-subtle text-accent-primary">
                 <Bot className="w-6 h-6" />
               </div>
               <div className="max-w-sm">
-                <h3 className="text-sm font-semibold text-zinc-300 font-mono">Interactive Streaming Playground</h3>
-                <p className="text-xs text-zinc-400 mt-1">
+                <h3 className="text-sm font-semibold text-brand-title font-mono">Interactive Streaming Playground</h3>
+                <p className="text-xs text-brand-muted mt-1">
                   Authenticate using a virtual key, select a model or smart alias, and stream responses in real time.
                 </p>
               </div>
@@ -443,7 +443,7 @@ func main() {
                 }`}
               >
                 {msg.role === 'assistant' && (
-                  <div className="w-7 h-7 rounded-full bg-surface-elevated border border-subtle flex items-center justify-center text-accent-primary shrink-0 mt-1">
+                  <div className="w-7 h-7 rounded-full bg-surface-elevated border border-border-subtle flex items-center justify-center text-accent-primary shrink-0 mt-1">
                     <Bot className="w-4 h-4" />
                   </div>
                 )}
@@ -451,26 +451,26 @@ func main() {
                 <div
                   className={`max-w-[85%] rounded-lg p-3 space-y-2 ${
                     msg.role === 'user'
-                      ? 'bg-accent-primary/10 border border-accent-primary/30 text-zinc-100'
-                      : 'bg-surface-elevated border border-subtle text-zinc-200'
+                      ? 'bg-accent-soft border border-accent-primary/30 text-brand-title'
+                      : 'bg-surface-elevated border border-border-subtle text-brand-body'
                   }`}
                 >
                   {/* Reasoning Block if available */}
                   {msg.reasoning_content && (
-                    <details className="bg-canvas/60 border border-subtle rounded p-2 text-zinc-400 text-[11px] mb-2">
-                      <summary className="cursor-pointer text-zinc-400 font-semibold hover:text-zinc-200">
+                    <details className="bg-surface-code border border-border-subtle rounded p-2 text-brand-muted text-[11px] mb-2">
+                      <summary className="cursor-pointer text-brand-muted font-semibold hover:text-brand-title">
                         Thinking Process
                       </summary>
-                      <div className="mt-1.5 pt-1.5 border-t border-subtle whitespace-pre-wrap font-sans text-zinc-400">
+                      <div className="mt-1.5 pt-1.5 border-t border-border-subtle whitespace-pre-wrap font-sans text-brand-muted">
                         {msg.reasoning_content}
                       </div>
                     </details>
                   )}
 
                   {/* Main Content */}
-                  <div className="whitespace-pre-wrap font-sans leading-relaxed text-zinc-100">
+                  <div className="whitespace-pre-wrap font-sans leading-relaxed text-brand-title">
                     {msg.content || (isStreaming && msg.id === messages[messages.length - 1]?.id ? (
-                      <span className="text-zinc-500 italic">Generating response...</span>
+                      <span className="text-brand-muted italic">Generating response...</span>
                     ) : (
                       ''
                     ))}
@@ -478,18 +478,18 @@ func main() {
 
                   {/* Tool calls deltas if any */}
                   {msg.tool_calls && msg.tool_calls.length > 0 && (
-                    <div className="pt-2 border-t border-subtle space-y-1">
+                    <div className="pt-2 border-t border-border-subtle space-y-1">
                       <span className="text-[10px] text-accent-primary uppercase font-bold">
                         Tool Invocation Delta:
                       </span>
-                      <pre className="text-[10px] bg-canvas p-1.5 rounded overflow-x-auto text-zinc-300">
+                      <pre className="text-[10px] bg-surface-code p-1.5 rounded overflow-x-auto text-brand-body">
                         {JSON.stringify(msg.tool_calls, null, 2)}
                       </pre>
                     </div>
                   )}
 
                   {/* Timestamp & Latency */}
-                  <div className="flex items-center justify-between text-[10px] text-zinc-500 pt-1">
+                  <div className="flex items-center justify-between text-[10px] text-brand-muted pt-1">
                     <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
                     {msg.latencyMs && (
                       <span className="flex items-center gap-1">
@@ -500,7 +500,7 @@ func main() {
                 </div>
 
                 {msg.role === 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-zinc-800 border border-subtle flex items-center justify-center text-zinc-300 shrink-0 mt-1">
+                  <div className="w-7 h-7 rounded-full bg-surface-elevated border border-border-subtle flex items-center justify-center text-brand-body shrink-0 mt-1">
                     <User className="w-4 h-4" />
                   </div>
                 )}
@@ -511,22 +511,22 @@ func main() {
         </div>
 
         {/* Input Bar */}
-        <div className="p-3 bg-surface-elevated/40 border-t border-subtle space-y-2">
+        <div className="p-3 bg-surface-elevated/40 border-t border-border-subtle space-y-2">
           {/* Virtual Key Quick Status / Field */}
           <div className="flex items-center justify-between gap-2 text-xs font-mono">
             <div className="flex items-center gap-2 flex-1">
-              <Key className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+              <Key className="w-3.5 h-3.5 text-brand-muted shrink-0" />
               <input
                 type={showKeyInput ? 'text' : 'password'}
                 value={virtualKey}
                 onChange={(e) => setVirtualKey(e.target.value)}
                 placeholder="Virtual Key: paste sk-gw-..."
-                className="w-full max-w-sm px-2 py-0.5 text-xs bg-canvas border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
+                className="w-full max-w-sm px-2 py-0.5 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted font-mono focus:outline-none focus:border-accent-primary"
               />
               <button
                 type="button"
                 onClick={() => setShowKeyInput(!showKeyInput)}
-                className="text-[10px] text-zinc-400 hover:text-zinc-200 transition"
+                className="text-[10px] text-brand-muted hover:text-brand-title transition"
               >
                 {showKeyInput ? 'Hide' : 'Show'}
               </button>
@@ -555,7 +555,7 @@ func main() {
                 }
               }}
               placeholder="Ask anything or test prompt routing... (Enter to send, Shift+Enter for newline)"
-              className="flex-1 p-2.5 text-xs bg-canvas border border-subtle rounded text-zinc-100 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary resize-none"
+              className="flex-1 p-2.5 text-xs bg-surface-input border border-border-subtle rounded text-brand-title placeholder-brand-muted font-mono focus:outline-none focus:border-accent-primary resize-none"
             />
 
             <div className="flex flex-col gap-1.5 justify-end">
@@ -573,7 +573,7 @@ func main() {
                   type="button"
                   onClick={handleSendMessage}
                   disabled={!userInput.trim() || !virtualKey.trim()}
-                  className="px-4 py-2 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs font-mono transition flex items-center justify-center gap-1.5 h-full disabled:opacity-40"
+                  className="px-4 py-2 bg-accent-primary hover:bg-accent-dark text-accent-contrast font-medium rounded text-xs font-mono transition flex items-center justify-center gap-1.5 h-full disabled:opacity-40"
                 >
                   <Zap className="w-3.5 h-3.5" />
                   Send
@@ -587,15 +587,15 @@ func main() {
       {/* Right Sidebar: Model Parameters & Telemetry Inspector (300px) */}
       <div className="w-full lg:w-80 flex flex-col gap-4">
         {/* Model & Routing Configuration */}
-        <div className="bg-surface-base border border-subtle rounded-lg p-4 space-y-4">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+        <div className="bg-surface-base border border-border-subtle rounded-lg p-4 space-y-4">
+          <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-1.5">
             <Settings className="w-3.5 h-3.5 text-accent-primary" />
             Model & Parameters
           </h3>
 
           {/* Model Smart Aliases */}
           <div className="space-y-1.5">
-            <label className="text-[11px] text-zinc-400 font-mono">Routing Target / Alias:</label>
+            <label className="text-[11px] text-brand-muted font-mono">Routing Target / Alias:</label>
             <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
               {aliasOptions.map((alias) => (
                 <button
@@ -607,8 +607,8 @@ func main() {
                   }}
                   className={`px-2.5 py-1.5 rounded text-xs font-mono transition text-left flex items-center justify-between ${
                     selectedModel === alias && !customModelInput
-                      ? 'bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold'
-                      : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
+                      ? 'bg-accent-soft text-accent-primary border border-accent-primary/40 font-bold'
+                      : 'bg-surface-elevated text-brand-muted border border-border-subtle hover:text-brand-title'
                   }`}
                 >
                   <span className="truncate">{alias}</span>
@@ -624,7 +624,7 @@ func main() {
                 value={customModelInput}
                 onChange={(e) => setCustomModelInput(e.target.value)}
                 placeholder="Or specify exact model ID..."
-                className="w-full px-2.5 py-1 text-xs bg-canvas border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
+                className="w-full px-2.5 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted font-mono focus:outline-none focus:border-accent-primary"
               />
               <datalist id="playground-models-list">
                 {modelSuggestions.map((m) => (
@@ -635,16 +635,16 @@ func main() {
           </div>
 
           {/* Sliders */}
-          <div className="space-y-3 pt-2 border-t border-subtle text-xs font-mono">
+          <div className="space-y-3 pt-2 border-t border-border-subtle text-xs font-mono">
             {[
               { label: 'Temperature', display: temperature.toFixed(2), min: 0, max: 2, step: 0.05, value: temperature, set: (v: string) => setTemperature(parseFloat(v)) },
               { label: 'Max Tokens', display: String(maxTokens), min: 128, max: 8192, step: 128, value: maxTokens, set: (v: string) => setMaxTokens(parseInt(v, 10)) },
               { label: 'Top P', display: topP.toFixed(2), min: 0, max: 1, step: 0.05, value: topP, set: (v: string) => setTopP(parseFloat(v)) },
             ].map((s) => (
               <div key={s.label} className="space-y-1">
-                <div className="flex justify-between text-zinc-400">
+                <div className="flex justify-between text-brand-muted">
                   <span>{s.label}</span>
-                  <span className="text-zinc-200 font-bold">{s.display}</span>
+                  <span className="text-brand-title font-bold">{s.display}</span>
                 </div>
                 <input
                   type="range"
@@ -661,19 +661,19 @@ func main() {
         </div>
 
         {/* Live Performance & Telemetry Card */}
-        <div className="bg-surface-base border border-subtle rounded-lg p-4 space-y-3">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
-            <Zap className="w-3.5 h-3.5 text-emerald-400" />
+        <div className="bg-surface-base border border-border-subtle rounded-lg p-4 space-y-3">
+          <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-status-success" />
             Invocation Telemetry
           </h3>
 
           {lastRequestMetrics ? (
             <div className="space-y-2 text-xs font-mono">
               {lastRequestMetrics.headers?.requestId && (
-                <div className="flex justify-between items-center text-zinc-400">
+                <div className="flex justify-between items-center text-brand-muted">
                   <span>Request ID:</span>
                   <span
-                    className="text-zinc-300 text-[11px] truncate max-w-[150px] cursor-pointer hover:text-accent-primary"
+                    className="text-brand-body text-[11px] truncate max-w-[150px] cursor-pointer hover:text-accent-primary"
                     title={lastRequestMetrics.headers.requestId}
                     onClick={() => copyToClipboard(lastRequestMetrics.headers!.requestId!)}
                   >
@@ -682,27 +682,27 @@ func main() {
                 </div>
               )}
               {[
-                lastRequestMetrics.headers?.provider && ['Upstream Provider:', lastRequestMetrics.headers.provider, 'text-zinc-200 capitalize font-medium'],
+                lastRequestMetrics.headers?.provider && ['Upstream Provider:', lastRequestMetrics.headers.provider, 'text-brand-body capitalize font-medium'],
                 ['Target Model:', lastRequestMetrics.model, 'text-accent-primary font-medium'],
-                lastRequestMetrics.headers?.cache && ['Exact Cache:', lastRequestMetrics.headers.cache, lastRequestMetrics.headers.cache === 'HIT' ? 'text-emerald-400 font-bold' : 'text-zinc-400'],
-                lastRequestMetrics.headers?.tokenEstimate !== undefined && ['Estimated Tokens:', String(lastRequestMetrics.headers.tokenEstimate), 'text-zinc-300'],
-                lastRequestMetrics.headers?.costMicros !== undefined && ['Estimated Cost:', `$${(lastRequestMetrics.headers.costMicros / 1_000_000).toFixed(6)} (${lastRequestMetrics.headers.costMicros} µ$)`, 'text-emerald-400 font-bold'],
-                lastRequestMetrics.headers?.guardrailAction && ['Guardrail Action:', lastRequestMetrics.headers.guardrailAction, 'text-amber-400 font-semibold uppercase'],
-                ['Total Latency:', `${lastRequestMetrics.latencyMs} ms`, 'text-zinc-200 font-bold'],
-                lastRequestMetrics.ttftMs && ['Time-To-First-Token:', `${lastRequestMetrics.ttftMs} ms`, 'text-emerald-400 font-bold'],
-                ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-zinc-200'],
+                lastRequestMetrics.headers?.cache && ['Exact Cache:', lastRequestMetrics.headers.cache, lastRequestMetrics.headers.cache === 'HIT' ? 'text-status-success font-bold' : 'text-brand-muted'],
+                lastRequestMetrics.headers?.tokenEstimate !== undefined && ['Estimated Tokens:', String(lastRequestMetrics.headers.tokenEstimate), 'text-brand-body'],
+                lastRequestMetrics.headers?.costMicros !== undefined && ['Estimated Cost:', `$${(lastRequestMetrics.headers.costMicros / 1_000_000).toFixed(6)} (${lastRequestMetrics.headers.costMicros} µ$)`, 'text-status-success font-bold'],
+                lastRequestMetrics.headers?.guardrailAction && ['Guardrail Action:', lastRequestMetrics.headers.guardrailAction, 'text-status-warning font-semibold uppercase'],
+                ['Total Latency:', `${lastRequestMetrics.latencyMs} ms`, 'text-brand-body font-bold'],
+                lastRequestMetrics.ttftMs && ['Time-To-First-Token:', `${lastRequestMetrics.ttftMs} ms`, 'text-status-success font-bold'],
+                ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-brand-body'],
               ].filter((x): x is [string, string, string] => Boolean(x)).map(([label, val, cls]) => (
-                <div key={label} className="flex justify-between text-zinc-400">
+                <div key={label} className="flex justify-between text-brand-muted">
                   <span>{label}</span>
                   <span className={cls}>{val}</span>
                 </div>
               ))}
-              <div className="pt-1.5 border-t border-subtle text-[11px] text-zinc-500">
+              <div className="pt-1.5 border-t border-border-subtle text-[11px] text-brand-muted">
                 Ledger: Recorded under active virtual key.
               </div>
             </div>
           ) : (
-            <div className="text-xs text-zinc-500 font-mono py-2 text-center">
+            <div className="text-xs text-brand-muted font-mono py-2 text-center">
               Awaiting first streaming request...
             </div>
           )}
@@ -721,7 +721,7 @@ func main() {
           size="lg"
         >
           <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-subtle pb-2">
+            <div className="flex items-center justify-between border-b border-border-subtle pb-2">
               <div className="flex gap-2">
                 {(['curl', 'python', 'ts', 'go'] as const).map((lang) => (
                   <button
@@ -729,8 +729,8 @@ func main() {
                     onClick={() => setExportLanguage(lang)}
                     className={`px-3 py-1 rounded text-xs font-mono uppercase transition ${
                       exportLanguage === lang
-                        ? 'bg-accent-primary text-zinc-950 font-bold'
-                        : 'bg-surface-elevated text-zinc-400 hover:text-zinc-200'
+                        ? 'bg-accent-primary text-accent-contrast font-bold'
+                        : 'bg-surface-elevated text-brand-muted hover:text-brand-title'
                     }`}
                   >
                     {lang}
@@ -740,23 +740,23 @@ func main() {
 
               <button
                 onClick={() => copyToClipboard(getCodeSnippet(exportLanguage))}
-                className="flex items-center gap-1.5 px-3 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition"
+                className="flex items-center gap-1.5 px-3 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
               >
-                {copiedSnippet ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedSnippet ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5" />}
                 {copiedSnippet ? 'Copied' : 'Copy'}
               </button>
             </div>
 
-            <label className="flex items-center gap-2 text-xs font-mono text-zinc-400 select-none cursor-pointer">
+            <label className="flex items-center gap-2 text-xs font-mono text-brand-muted select-none cursor-pointer">
               <input
                 type="checkbox"
                 checked={includeKeyInExport}
                 disabled={!virtualKey.trim()}
                 onChange={(e) => setIncludeKeyInExport(e.target.checked)}
-                className="rounded border-subtle bg-canvas text-accent-primary focus:ring-accent-primary disabled:opacity-40"
+                className="rounded border-border-subtle bg-surface-input text-accent-primary focus:ring-accent-primary disabled:opacity-40"
               />
               <span className={!virtualKey.trim() ? 'opacity-50' : ''}>
-                Embed current session virtual key instead of <code className="text-zinc-300">$GOROUTE_API_KEY</code>
+                Embed current session virtual key instead of <code className="text-brand-body">$GOROUTE_API_KEY</code>
               </span>
             </label>
 

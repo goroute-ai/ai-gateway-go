@@ -12,10 +12,10 @@ const INPUT_LEVELS: readonly ToolTrustInputLevel[] = ['blocked', 'untrusted', 't
 const OUTPUT_LEVELS: readonly ToolTrustOutputLevel[] = ['untrusted', 'trusted'];
 
 const levelBtnClass = (active: boolean, level: string) => {
-  if (!active) return 'bg-surface-elevated text-zinc-400 border-subtle hover:text-zinc-200';
-  if (level === 'blocked') return 'bg-rose-500/20 text-rose-400 border-rose-500/30 font-bold';
-  if (level === 'trusted') return 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30 font-bold';
-  return 'bg-amber-950/60 text-amber-400 border-amber-500/30 font-bold';
+  if (!active) return 'bg-surface-elevated text-brand-muted border-border-subtle hover:text-brand-title';
+  if (level === 'blocked') return 'status-danger font-bold';
+  if (level === 'trusted') return 'status-success font-bold';
+  return 'status-warning font-bold';
 };
 
 export const ToolPoliciesTab: React.FC = () => {
@@ -116,14 +116,14 @@ export const ToolPoliciesTab: React.FC = () => {
       {/* Upsert Form */}
       <form
         onSubmit={handleSubmit}
-        className="bg-surface-base border border-subtle rounded-lg p-5 space-y-4"
+        className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4"
       >
         <div>
-          <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+          <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-accent-primary" />
             Add / Update Tool Trust Policy
           </h3>
-          <p className="text-[11px] text-zinc-400 mt-0.5">
+          <p className="text-[11px] text-brand-muted mt-0.5">
             Define input (`blocked` / `untrusted` / `trusted`) and output (`untrusted` / `trusted`) trust boundaries scoped by organization, team, or virtual key.
           </p>
         </div>
@@ -132,7 +132,7 @@ export const ToolPoliciesTab: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Tool Name / Pattern *</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Tool Name / Pattern *</label>
             <input
               value={toolName}
               onChange={(e) => setToolName(e.target.value)}
@@ -142,7 +142,7 @@ export const ToolPoliciesTab: React.FC = () => {
             />
           </div>
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Team Scope (optional)</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Team Scope (optional)</label>
             <select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={INPUT_CLS}>
               <option value="">Organization-wide</option>
               {teams.map((t) => (
@@ -151,7 +151,7 @@ export const ToolPoliciesTab: React.FC = () => {
             </select>
           </div>
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Virtual Key Scope (optional)</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Virtual Key Scope (optional)</label>
             <select value={keyId} onChange={(e) => setKeyId(e.target.value)} className={INPUT_CLS}>
               <option value="">All Keys in Scope</option>
               {keys.map((k) => (
@@ -164,7 +164,7 @@ export const ToolPoliciesTab: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
           <div className="flex flex-wrap items-center gap-5 text-xs font-mono">
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-zinc-400">Input Policy:</span>
+              <span className="text-[11px] text-brand-muted">Input Policy:</span>
               {INPUT_LEVELS.map((lvl) => (
                 <button
                   key={lvl}
@@ -177,7 +177,7 @@ export const ToolPoliciesTab: React.FC = () => {
               ))}
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-zinc-400">Output Policy:</span>
+              <span className="text-[11px] text-brand-muted">Output Policy:</span>
               {OUTPUT_LEVELS.map((lvl) => (
                 <button
                   key={lvl}
@@ -202,14 +202,14 @@ export const ToolPoliciesTab: React.FC = () => {
       </form>
 
       {/* Matrix Table */}
-      <div className="bg-surface-base border border-subtle rounded-lg p-5 space-y-4">
+      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300">
+          <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title">
             Tool Trust Matrix ({policies.length})
           </h3>
           <div className="flex flex-wrap gap-2 text-xs">
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-brand-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 value={searchTool}
                 onChange={(e) => setSearchTool(e.target.value)}
@@ -237,16 +237,16 @@ export const ToolPoliciesTab: React.FC = () => {
         )}
 
         {policiesQuery.isLoading ? (
-          <div className="py-8 text-center text-xs font-mono text-zinc-500">Loading tool trust matrix...</div>
+          <div className="py-8 text-center text-xs font-mono text-brand-muted">Loading tool trust matrix...</div>
         ) : policies.length === 0 ? (
-          <div className="py-8 text-center text-xs font-mono text-zinc-500 border border-subtle rounded-lg">
+          <div className="py-8 text-center text-xs font-mono text-brand-muted border border-border-subtle rounded-lg">
             No tool policies configured. By default, tools without explicit trust overrides are treated as untrusted.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className="border-b border-subtle text-zinc-500 text-[11px] uppercase">
+                <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
                   <th className="py-2 pr-3">Tool Name</th>
                   <th className="py-2 pr-3">Scope</th>
                   <th className="py-2 pr-3">Input Trust Level</th>
@@ -254,10 +254,10 @@ export const ToolPoliciesTab: React.FC = () => {
                   <th className="py-2 text-right">Remove</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-subtle">
+              <tbody className="divide-y divide-border-subtle">
                 {policies.map((p) => (
-                  <tr key={p.id} className="text-zinc-300">
-                    <td className="py-2.5 pr-3 font-semibold text-zinc-100">{p.tool_name}</td>
+                  <tr key={p.id} className="text-brand-body">
+                    <td className="py-2.5 pr-3 font-semibold text-brand-title">{p.tool_name}</td>
                     <td className="py-2.5 pr-3">
                       <div className="flex flex-wrap gap-1">
                         {!p.team_id && !p.virtual_key_id && <Badge variant="neutral" size="sm">org</Badge>}
@@ -297,7 +297,7 @@ export const ToolPoliciesTab: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => deleteMut.mutate(p.id)}
-                        className="p-1 text-zinc-400 hover:text-rose-400"
+                        className="p-1 text-brand-muted hover:text-status-danger"
                         title="Delete tool policy"
                       >
                         <Trash2 className="w-3.5 h-3.5" />

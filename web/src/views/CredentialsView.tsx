@@ -197,10 +197,10 @@ export const CredentialsView: React.FC = () => {
       {/* Header bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold text-brand-title tracking-tight flex items-center gap-2">
             Provider Credentials Vault
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-brand-muted mt-1">
             Boundary 2 provider credentials protected via AES-256-GCM envelope encryption with per-credential DEKs
           </p>
         </div>
@@ -208,7 +208,7 @@ export const CredentialsView: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => refetch()}
-            className="px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-slate-300 hover:text-white transition-colors"
+            className="px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-brand-body hover:text-brand-title transition-colors"
           >
             Refresh
           </button>
@@ -218,7 +218,7 @@ export const CredentialsView: React.FC = () => {
               resetForm();
               setShowAddModal(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-glow text-xs font-semibold text-black transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-dark text-xs font-semibold text-accent-contrast transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Add Provider Credential</span>
@@ -236,7 +236,7 @@ export const CredentialsView: React.FC = () => {
       {/* Credentials Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {isLoading ? (
-          <div className="col-span-full py-12 text-center text-slate-500 text-xs">
+          <div className="col-span-full py-12 text-center text-brand-muted text-xs">
             Loading encrypted credentials vault...
           </div>
         ) : credsData?.data && credsData.data.length > 0 ? (
@@ -251,9 +251,9 @@ export const CredentialsView: React.FC = () => {
                     <Badge variant="provider" provider={c.provider}>
                       {c.provider}
                     </Badge>
-                    <span className="text-[10px] font-mono text-slate-500">v{c.key_version}</span>
+                    <span className="text-[10px] font-mono text-brand-muted">v{c.key_version}</span>
                   </div>
-                  <h3 className="text-sm font-semibold text-slate-100 mt-1.5">{c.name}</h3>
+                  <h3 className="text-sm font-semibold text-brand-title mt-1.5">{c.name}</h3>
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -264,7 +264,7 @@ export const CredentialsView: React.FC = () => {
                       setRotateBaseURL(c.base_url || '');
                       setRotateExpiresAt('');
                     }}
-                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-amber-400 p-1 rounded hover:bg-surface-elevated transition-colors"
+                    className="flex items-center gap-1 text-[11px] text-brand-muted hover:text-status-warning p-1 rounded hover:bg-surface-elevated transition-colors"
                     title="Rotate API key"
                   >
                     <Key className="w-3.5 h-3.5" />
@@ -273,7 +273,7 @@ export const CredentialsView: React.FC = () => {
                   <button
                     onClick={() => validateMutation.mutate(c.id)}
                     disabled={validateMutation.isPending}
-                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-accent-primary p-1 rounded hover:bg-surface-elevated transition-colors"
+                    className="flex items-center gap-1 text-[11px] text-brand-muted hover:text-accent-primary p-1 rounded hover:bg-surface-elevated transition-colors"
                     title="Validate connection against upstream provider API"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${validateMutation.isPending ? 'animate-spin' : ''}`} />
@@ -283,17 +283,17 @@ export const CredentialsView: React.FC = () => {
               </div>
 
               {/* Generic Masked State */}
-              <div className="flex items-center gap-2 p-2 rounded bg-black/40 border border-border-subtle font-mono text-xs text-slate-400">
-                <Key className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                <span className="tracking-widest text-slate-500">••••••••••••••••</span>
-                <span className="text-[10px] ml-auto text-emerald-400/80 bg-emerald-950/40 px-1.5 py-0.2 rounded border border-emerald-500/20">
+              <div className="flex items-center gap-2 p-2 rounded bg-surface-code border border-border-subtle font-mono text-xs text-brand-muted">
+                <Key className="w-3.5 h-3.5 text-brand-muted shrink-0" />
+                <span className="tracking-widest text-brand-muted">••••••••••••••••</span>
+                <span className="text-[10px] ml-auto status-success px-1.5 py-0.2 rounded border">
                   AES-256-GCM
                 </span>
               </div>
 
               {c.base_url && (
-                <div className="text-[11px] text-slate-400 flex items-center gap-1.5 truncate">
-                  <Layers className="w-3 h-3 text-slate-500 shrink-0" />
+                <div className="text-[11px] text-brand-muted flex items-center gap-1.5 truncate">
+                  <Layers className="w-3 h-3 text-brand-muted shrink-0" />
                   <span className="font-mono truncate">{c.base_url}</span>
                 </div>
               )}
@@ -303,15 +303,13 @@ export const CredentialsView: React.FC = () => {
                 return (
                   <div
                     className={`p-2 rounded border text-[11px] font-mono flex items-start gap-1.5 ${
-                      vr.valid
-                        ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                        : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                      vr.valid ? 'status-success' : 'status-danger'
                     }`}
                   >
                     {vr.valid ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <CheckCircle2 className="w-3.5 h-3.5 text-status-success shrink-0 mt-0.5" />
                     ) : (
-                      <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                      <XCircle className="w-3.5 h-3.5 text-status-danger shrink-0 mt-0.5" />
                     )}
                     <span className="break-words">
                       {vr.valid
@@ -322,7 +320,7 @@ export const CredentialsView: React.FC = () => {
                 );
               })()}
 
-              <div className="flex items-center justify-between pt-2 border-t border-border-subtle/50 text-[10px] text-slate-500 font-mono">
+              <div className="flex items-center justify-between pt-2 border-t border-border-subtle/50 text-[10px] text-brand-muted font-mono">
                 <span>ID: {c.id.slice(0, 12)}...</span>
                 <span>
                   {c.last_validated_at
@@ -333,7 +331,7 @@ export const CredentialsView: React.FC = () => {
             </div>
           ))
         ) : (
-          <div className="col-span-full py-12 text-center text-slate-500 text-xs">
+          <div className="col-span-full py-12 text-center text-brand-muted text-xs">
             No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Gemini, Bedrock, etc.
           </div>
         )}
@@ -353,25 +351,25 @@ export const CredentialsView: React.FC = () => {
           )}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Provider *</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Provider *</label>
               <select value={provider} onChange={(e) => { setProvider(e.target.value as ProviderType); setPreflightResult(null); }} className={INPUT_CLS}>
                 {providersList.map((p) => <option key={p.id} value={p.id}>{p.label} ({p.id})</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Credential Label *</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Credential Label *</label>
               <input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-openai-primary" className={INPUT_CLS} />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">API Key *</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">API Key *</label>
             <input type="password" required={provider !== 'ollama'} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder={provider === 'ollama' ? 'Optional for Ollama' : 'sk-...'} className={`${INPUT_CLS} font-mono`} />
           </div>
 
           {/* Optional Base URL & Azure fields */}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label className="block text-xs font-medium text-brand-body mb-1">
               Custom Base URL (Optional)
             </label>
             <input
@@ -379,14 +377,14 @@ export const CredentialsView: React.FC = () => {
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
               placeholder="e.g. https://my-vllm.internal:8000/v1 or http://localhost:11434"
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
+              className={`${INPUT_CLS} font-mono`}
             />
           </div>
 
           {provider === 'azure' && (
             <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
+                <label className="block text-xs font-medium text-brand-body mb-1">
                   Azure Deployment Name
                 </label>
                 <input
@@ -394,11 +392,11 @@ export const CredentialsView: React.FC = () => {
                   value={azureDeployment}
                   onChange={(e) => setAzureDeployment(e.target.value)}
                   placeholder="e.g. gpt-4o-deployment"
-                  className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-accent-primary"
+                  className={`${INPUT_CLS} py-1.5 font-mono`}
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
+                <label className="block text-xs font-medium text-brand-body mb-1">
                   API Version
                 </label>
                 <input
@@ -406,7 +404,7 @@ export const CredentialsView: React.FC = () => {
                   value={apiVersion}
                   onChange={(e) => setApiVersion(e.target.value)}
                   placeholder="2024-08-01-preview"
-                  className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-accent-primary"
+                  className={`${INPUT_CLS} py-1.5 font-mono`}
                 />
               </div>
             </div>
@@ -414,7 +412,7 @@ export const CredentialsView: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Custom Headers JSON (Optional)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Custom Headers JSON (Optional)</label>
               <input
                 type="text"
                 value={headersJSON}
@@ -422,10 +420,10 @@ export const CredentialsView: React.FC = () => {
                 placeholder='{"X-Custom-Header":"value"}'
                 className={`${INPUT_CLS} font-mono`}
               />
-              {headersError && <p className="text-[11px] text-rose-400 mt-1">{headersError}</p>}
+              {headersError && <p className="text-[11px] text-status-danger mt-1">{headersError}</p>}
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Expires At (Optional)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Expires At (Optional)</label>
               <input
                 type="datetime-local"
                 value={expiresAt}
@@ -439,15 +437,13 @@ export const CredentialsView: React.FC = () => {
           {preflightResult && (
             <div
               className={`p-3 rounded-lg border text-xs font-mono flex items-start gap-2 ${
-                preflightResult.valid
-                  ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                preflightResult.valid ? 'status-success' : 'status-danger'
               }`}
             >
               {preflightResult.valid ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <CheckCircle2 className="w-4 h-4 text-status-success shrink-0 mt-0.5" />
               ) : (
-                <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <XCircle className="w-4 h-4 text-status-danger shrink-0 mt-0.5" />
               )}
               <div>
                 <p className="font-semibold">
@@ -456,7 +452,7 @@ export const CredentialsView: React.FC = () => {
                     : 'Preflight Failed: Unable to verify upstream authentication'}
                 </p>
                 {preflightResult.error && (
-                  <p className="text-[11px] text-rose-400/90 mt-0.5 break-all">
+                  <p className="text-[11px] opacity-90 mt-0.5 break-all">
                     {preflightResult.error}
                   </p>
                 )}
@@ -469,7 +465,7 @@ export const CredentialsView: React.FC = () => {
               type="button"
               onClick={handlePreflightTest}
               disabled={preflightTesting || (!apiKey.trim() && provider !== 'ollama')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
             >
               <Zap className={`w-3.5 h-3.5 ${preflightTesting ? 'animate-spin' : ''}`} />
               <span>{preflightTesting ? 'Testing connection...' : 'Test Upstream Before Saving'}</span>
@@ -479,14 +475,14 @@ export const CredentialsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowAddModal(false)}
-                className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
+                className={BTN_CANCEL}
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={addMutation.isPending || !name.trim()}
-                className="px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50"
+                className={BTN_PRIMARY}
               >
                 {addMutation.isPending ? 'Saving to Vault...' : 'Save to Vault'}
               </button>
@@ -521,17 +517,17 @@ export const CredentialsView: React.FC = () => {
             <ErrorAlert error={rotateMutation.error} title="Failed to rotate credential" />
           )}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              New API Key <span className="text-rose-400">*</span>
+            <label className="block text-xs font-medium text-brand-body mb-1">
+              New API Key <span className="text-status-danger">*</span>
             </label>
             <input type="password" required value={rotateApiKey} onChange={(e) => setRotateApiKey(e.target.value)} placeholder="Enter replacement API key..." className={`${INPUT_CLS} font-mono`} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Base URL (optional)</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Base URL (optional)</label>
             <input type="text" value={rotateBaseURL} onChange={(e) => setRotateBaseURL(e.target.value)} placeholder="Leave blank to keep existing" className={`${INPUT_CLS} font-mono`} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Expires At (optional)</label>
+            <label className="block text-xs font-medium text-brand-body mb-1">Expires At (optional)</label>
             <input type="datetime-local" value={rotateExpiresAt} onChange={(e) => setRotateExpiresAt(e.target.value)} className={`${INPUT_CLS} font-mono`} />
           </div>
           <div className="flex justify-end gap-2 pt-2">

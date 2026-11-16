@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_CANCEL } from '../components/common/Modal';
 import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import {
   Activity,
@@ -84,10 +84,10 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
       {/* Title & Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold text-brand-title tracking-tight flex items-center gap-2">
             Telemetry & Upstream Health
           </h1>
-          <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
+          <p className="text-xs text-brand-muted mt-1 flex items-center gap-1.5">
             <Activity className="w-3.5 h-3.5 text-accent-primary animate-pulse" />
             Live in-process reservoir snapshot generated since gateway launch
           </p>
@@ -99,16 +99,16 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
               refetchTelemetry();
               refetchHealth();
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-slate-300 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-brand-body hover:text-brand-title transition-colors"
           >
-            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+            <RefreshCw className="w-3.5 h-3.5 text-brand-muted" />
             <span>Refresh</span>
           </button>
 
           <button
             onClick={() => probeMutation.mutate()}
             disabled={probeMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-[rgba(124,58,237,0.12)] hover:bg-[rgba(124,58,237,0.22)] text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
           >
             <Zap className={`w-3.5 h-3.5 ${probeMutation.isPending ? 'animate-spin' : ''}`} />
             <span>{probeMutation.isPending ? 'Probing...' : 'Probe Upstreams'}</span>
@@ -119,7 +119,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
               setPurgeResult(null);
               setShowPurgeModal(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-rose-500/30 bg-surface-elevated hover:bg-rose-950/30 text-xs font-medium text-slate-300 hover:text-rose-400 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-status-danger/40 bg-surface-elevated hover:bg-status-danger/10 text-xs font-medium text-brand-body hover:text-status-danger transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Purge Cache</span>
@@ -127,7 +127,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
 
           <button
             onClick={onNavigateToPlayground}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-glow text-xs font-semibold text-black transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-dark text-xs font-semibold text-accent-contrast transition-colors"
           >
             <span>Open Playground ↗</span>
           </button>
@@ -151,57 +151,57 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
       {/* KPI Stat Cards Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
+          <div className="flex items-center justify-between text-brand-muted mb-2">
             <span className="text-xs font-medium">Total Inferences</span>
             <Activity className="w-4 h-4 text-accent-primary" />
           </div>
-          <div className="text-2xl font-bold font-mono text-white tracking-tight">
+          <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
             {isTelemetryLoading ? '...' : telemetry?.total_requests?.toLocaleString() ?? 0}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-between">
+          <div className="text-[11px] text-brand-muted mt-1 flex items-center justify-between">
             <span>Errors: {telemetry?.total_errors ?? 0}</span>
-            <span className={(telemetry?.global_error_rate ?? 0) > 0.05 ? 'text-rose-400' : 'text-emerald-400 font-mono'}>
+            <span className={(telemetry?.global_error_rate ?? 0) > 0.05 ? 'text-status-danger font-mono' : 'text-status-success font-mono'}>
               {((telemetry?.global_error_rate ?? 0) * 100).toFixed(2)}% err
             </span>
           </div>
         </div>
 
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
+          <div className="flex items-center justify-between text-brand-muted mb-2">
             <span className="text-xs font-medium">P95 Latency</span>
-            <Clock className="w-4 h-4 text-indigo-400" />
+            <Clock className="w-4 h-4 text-accent-primary" />
           </div>
-          <div className="text-2xl font-bold font-mono text-white tracking-tight">
+          <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
             {isTelemetryLoading ? '...' : `${telemetry?.p95_latency_ms ?? 0} ms`}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-between font-mono">
+          <div className="text-[11px] text-brand-muted mt-1 flex items-center justify-between font-mono">
             <span>Avg: {(telemetry?.avg_latency_ms ?? 0).toFixed(1)} ms</span>
             <span>P50: {telemetry?.p50_latency_ms ?? 0} ms</span>
           </div>
         </div>
 
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
+          <div className="flex items-center justify-between text-brand-muted mb-2">
             <span className="text-xs font-medium">Gateway Routing</span>
-            <Activity className="w-4 h-4 text-amber-400" />
+            <Activity className="w-4 h-4 text-status-warning" />
           </div>
-          <div className="text-2xl font-bold font-mono text-white tracking-tight">
+          <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
             {isTelemetryLoading ? '...' : `${telemetry?.p95_routing_overhead_micros ?? 0} µs`}
           </div>
-          <div className="text-[11px] text-emerald-400 font-mono mt-1">
+          <div className="text-[11px] text-status-success font-mono mt-1">
             Avg: {(telemetry?.avg_routing_overhead_micros ?? 0).toFixed(1)} µs (&lt; 0.1ms)
           </div>
         </div>
 
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
+          <div className="flex items-center justify-between text-brand-muted mb-2">
             <span className="text-xs font-medium">Exact Response Cache</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <CheckCircle2 className="w-4 h-4 text-status-success" />
           </div>
-          <div className="text-2xl font-bold font-mono text-white tracking-tight">
+          <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
             {isTelemetryLoading ? '...' : `${((telemetry?.cache_hit_rate ?? 0) * 100).toFixed(1)}%`}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-between font-mono">
+          <div className="text-[11px] text-brand-muted mt-1 flex items-center justify-between font-mono">
             <span>Hits: {telemetry?.cache_hits ?? 0}</span>
             <span>Misses: {telemetry?.cache_misses ?? 0}</span>
           </div>
@@ -212,19 +212,19 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
       <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
         <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between bg-surface-elevated/30">
           <div>
-            <h2 className="text-sm font-semibold text-white">Upstream Deployment Health Status</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <h2 className="text-sm font-semibold text-brand-title">Upstream Deployment Health Status</h2>
+            <p className="text-xs text-brand-muted mt-0.5">
               Synthetic probe health reports from background liveness monitor
             </p>
           </div>
-          <div className="text-xs text-slate-400 font-mono">
+          <div className="text-xs text-brand-muted font-mono">
             Deployments monitored: {healthData?.data?.length ?? 0}
           </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-surface-elevated/60 text-slate-400 uppercase text-[10px] tracking-wider border-b border-border-subtle">
+            <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
               <tr>
                 <th className="px-6 py-3">Deployment</th>
                 <th className="px-6 py-3">Provider & Model</th>
@@ -237,64 +237,64 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
             <tbody className="divide-y divide-border-subtle/40">
               {isHealthLoading ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
                     Loading health reports...
                   </td>
                 </tr>
               ) : healthData?.data && healthData.data.length > 0 ? (
                 healthData.data.map((h) => (
                   <tr key={h.deployment_id} className="hover:bg-surface-hover/30 transition-colors">
-                    <td className="px-6 py-3 font-medium text-slate-200">
+                    <td className="px-6 py-3 font-medium text-brand-title">
                       <div>{h.deployment_name || h.deployment_id}</div>
-                      <div className="text-[10px] font-mono text-slate-500">{h.deployment_id}</div>
+                      <div className="text-[10px] font-mono text-brand-muted">{h.deployment_id}</div>
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-1.5">
                         <Badge variant="provider" provider={h.provider} size="sm">
                           {h.provider}
                         </Badge>
-                        <span className="font-mono text-slate-300">{h.model}</span>
+                        <span className="font-mono text-brand-body">{h.model}</span>
                       </div>
                     </td>
                     <td className="px-6 py-3">
                       {h.status === 'healthy' ? (
-                        <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium">
+                        <span className="inline-flex items-center gap-1.5 text-status-success font-medium">
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           Healthy
                         </span>
                       ) : h.status === 'degraded' ? (
-                        <span className="inline-flex items-center gap-1.5 text-amber-400 font-medium">
+                        <span className="inline-flex items-center gap-1.5 text-status-warning font-medium">
                           <AlertTriangle className="w-3.5 h-3.5" />
                           Degraded
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1.5 text-rose-400 font-medium">
+                        <span className="inline-flex items-center gap-1.5 text-status-danger font-medium">
                           <XCircle className="w-3.5 h-3.5" />
                           Unhealthy
                         </span>
                       )}
                       {h.last_error && (
-                        <div className="text-[10px] text-rose-400 font-mono mt-0.5 max-w-xs truncate" title={h.last_error}>
+                        <div className="text-[10px] text-status-danger font-mono mt-0.5 max-w-xs truncate" title={h.last_error}>
                           {h.last_error}
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-3 font-mono text-slate-300">
+                    <td className="px-6 py-3 font-mono text-brand-body">
                       {h.probe_latency_ms} ms
                     </td>
                     <td className="px-6 py-3 font-mono">
-                      <span className={h.consecutive_failures > 0 ? 'text-rose-400 font-bold' : 'text-slate-400'}>
+                      <span className={h.consecutive_failures > 0 ? 'text-status-danger font-bold' : 'text-brand-muted'}>
                         {h.consecutive_failures}
                       </span>
                     </td>
-                    <td className="px-6 py-3 font-mono text-slate-500 text-[11px]">
+                    <td className="px-6 py-3 font-mono text-brand-muted text-[11px]">
                       {new Date(h.last_checked_at).toLocaleTimeString()}
                     </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
                     No deployments configured or probed yet. Click "Probe Upstreams" to trigger health checks.
                   </td>
                 </tr>
@@ -317,7 +317,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
             <ErrorAlert error={invalidateMutation.error} title="Failed to purge response cache" />
           )}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label className="block text-xs font-medium text-brand-body mb-1">
               Target Model (Optional)
             </label>
             <input
@@ -325,12 +325,12 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
               value={purgeModel}
               onChange={(e) => setPurgeModel(e.target.value)}
               placeholder="e.g. gpt-4o (Leave blank to purge all models)"
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
+              className={`${INPUT_CLS} font-mono`}
             />
           </div>
 
           {purgeResult && (
-            <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-xs text-emerald-400 font-mono">
+            <div className="p-3 rounded-lg status-success border text-xs font-mono">
               ✓ Cache purged successfully! Entries purged: {purgeResult.purged_entries}, New epoch version: {purgeResult.namespace_version}
             </div>
           )}
@@ -339,7 +339,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
             <button
               type="button"
               onClick={() => setShowPurgeModal(false)}
-              className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
+              className={BTN_CANCEL}
             >
               Cancel
             </button>

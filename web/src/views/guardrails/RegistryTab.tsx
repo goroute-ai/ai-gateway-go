@@ -378,14 +378,14 @@ export const RegistryTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Guardrail Definitions Header & Filter Bar */}
-      <div className="bg-surface-base border border-subtle rounded-lg p-5 space-y-4">
+      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-accent-primary" />
               Named Guardrails & Provider Registry ({defs.length})
             </h3>
-            <p className="text-[11px] text-zinc-400 mt-0.5">
+            <p className="text-[11px] text-brand-muted mt-0.5">
               19 built-in cloud, OSS, Starlark sandbox, MCP, and LLM-judge drivers with Vault-encrypted secrets and weighted routing.
             </p>
           </div>
@@ -397,7 +397,7 @@ export const RegistryTab: React.FC = () => {
 
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-brand-muted absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={search}
@@ -415,7 +415,7 @@ export const RegistryTab: React.FC = () => {
                 className={`px-2.5 py-1.5 rounded text-[11px] font-mono border transition ${
                   statusFilter === st
                     ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/40 font-semibold'
-                    : 'bg-surface-elevated text-zinc-400 border-subtle hover:text-zinc-200'
+                    : 'bg-surface-elevated text-brand-muted border-border-subtle hover:text-brand-title'
                 }`}
               >
                 {st || 'all'}
@@ -429,18 +429,18 @@ export const RegistryTab: React.FC = () => {
         )}
 
         {defsQuery.isLoading ? (
-          <div className="py-8 text-center text-xs font-mono text-zinc-500">Loading guardrail registry...</div>
+          <div className="py-8 text-center text-xs font-mono text-brand-muted">Loading guardrail registry...</div>
         ) : filteredDefs.length === 0 ? (
-          <div className="py-8 text-center text-xs font-mono text-zinc-500 border border-subtle rounded-lg">
+          <div className="py-8 text-center text-xs font-mono text-brand-muted border border-border-subtle rounded-lg">
             No named guardrails found. Create one to enable multi-driver pipelines.
           </div>
         ) : (
           <div className="space-y-3">
             {filteredDefs.map((def) => (
-              <div key={def.id} className="p-4 bg-surface-elevated/40 border border-subtle rounded-lg space-y-2.5">
+              <div key={def.id} className="p-4 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-2.5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-zinc-100 font-mono">{def.name}</span>
+                    <span className="text-sm font-semibold text-brand-title font-mono">{def.name}</span>
                     <Badge variant="info" size="sm">{def.provider}</Badge>
                     <Badge variant={statusVariant(def.status)} size="sm">{def.status}</Badge>
                     {def.default_on && <Badge variant="primary" size="sm">default_on</Badge>}
@@ -456,7 +456,7 @@ export const RegistryTab: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => statusMut.mutate({ id: def.id, next: 'active' })}
-                        className="px-2 py-1 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/30 hover:text-white flex items-center gap-1"
+                        className="px-2 py-1 rounded status-success border hover:opacity-90 flex items-center gap-1"
                       >
                         <CheckCircle2 className="w-3 h-3" /> Activate
                       </button>
@@ -465,7 +465,7 @@ export const RegistryTab: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => statusMut.mutate({ id: def.id, next: 'pending_review' })}
-                        className="px-2 py-1 rounded bg-amber-950/60 text-amber-400 border border-amber-500/30 flex items-center gap-1"
+                        className="px-2 py-1 rounded status-warning border hover:opacity-90 flex items-center gap-1"
                       >
                         <Clock className="w-3 h-3" /> Review
                       </button>
@@ -474,7 +474,7 @@ export const RegistryTab: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => statusMut.mutate({ id: def.id, next: 'rejected' })}
-                        className="px-2 py-1 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center gap-1"
+                        className="px-2 py-1 rounded status-danger border hover:opacity-90 flex items-center gap-1"
                       >
                         <XCircle className="w-3 h-3" /> Reject
                       </button>
@@ -482,21 +482,21 @@ export const RegistryTab: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => openCreateBinding(def.id)}
-                      className="px-2 py-1 rounded bg-surface-base border border-subtle text-zinc-300 hover:text-white flex items-center gap-1"
+                      className="px-2 py-1 rounded bg-surface-base border border-border-subtle text-brand-body hover:text-brand-title flex items-center gap-1"
                     >
                       <Layers className="w-3 h-3" /> Bind
                     </button>
                     <button
                       type="button"
                       onClick={() => openEdit(def)}
-                      className="px-2 py-1 rounded bg-surface-base border border-subtle text-zinc-300 hover:text-white flex items-center gap-1"
+                      className="px-2 py-1 rounded bg-surface-base border border-border-subtle text-brand-body hover:text-brand-title flex items-center gap-1"
                     >
                       <Settings className="w-3 h-3" /> Edit
                     </button>
                     <button
                       type="button"
                       onClick={() => deleteDefMut.mutate(def.id)}
-                      className="p-1.5 rounded bg-surface-base border border-subtle text-zinc-400 hover:text-rose-400"
+                      className="p-1.5 rounded bg-surface-base border border-border-subtle text-brand-muted hover:text-status-danger"
                       title="Delete guardrail"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -504,19 +504,19 @@ export const RegistryTab: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-3 text-[11px] font-mono text-zinc-400">
-                  <span>id: <code className="text-zinc-300">{def.id}</code></span>
-                  <span>weight: <strong className="text-zinc-200">{def.weight}</strong></span>
-                  <span>precedence: <strong className="text-zinc-200">{def.precedence}</strong></span>
-                  <span>stream: <strong className="text-zinc-200">{def.stream_scope || 'both'}</strong></span>
-                  {def.timeout_ms ? <span>timeout: <strong className="text-zinc-200">{def.timeout_ms}ms</strong></span> : null}
-                  {def.enabled_roles?.length ? <span>roles: <strong className="text-zinc-200">{def.enabled_roles.join(', ')}</strong></span> : null}
+                <div className="flex flex-wrap gap-3 text-[11px] font-mono text-brand-muted">
+                  <span>id: <code className="text-brand-body">{def.id}</code></span>
+                  <span>weight: <strong className="text-brand-title">{def.weight}</strong></span>
+                  <span>precedence: <strong className="text-brand-title">{def.precedence}</strong></span>
+                  <span>stream: <strong className="text-brand-title">{def.stream_scope || 'both'}</strong></span>
+                  {def.timeout_ms ? <span>timeout: <strong className="text-brand-title">{def.timeout_ms}ms</strong></span> : null}
+                  {def.enabled_roles?.length ? <span>roles: <strong className="text-brand-title">{def.enabled_roles.join(', ')}</strong></span> : null}
                 </div>
 
                 {(def.event_hooks?.length || def.mode_rule) && (
                   <div className="flex flex-wrap gap-1.5 pt-1">
                     {(def.event_hooks || []).map((h) => (
-                      <span key={h} className="px-2 py-0.5 rounded bg-zinc-800 border border-subtle text-zinc-300 text-[10px] font-mono">
+                      <span key={h} className="px-2 py-0.5 rounded bg-surface-elevated border border-border-subtle text-brand-body text-[10px] font-mono">
                         {h}
                       </span>
                     ))}
@@ -535,14 +535,14 @@ export const RegistryTab: React.FC = () => {
       </div>
 
       {/* Hierarchical Guardrail Bindings */}
-      <div className="bg-surface-base border border-subtle rounded-lg p-5 space-y-4">
+      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
               <Lock className="w-4 h-4 text-accent-primary" />
               Hierarchical Guardrail Bindings ({bindings.length})
             </h3>
-            <p className="text-[11px] text-zinc-400 mt-0.5">
+            <p className="text-[11px] text-brand-muted mt-0.5">
               Attach named guardrails to Teams, Virtual Keys, End Users, Model Groups, or Tags. Locked bindings cannot be disabled per-request.
             </p>
           </div>
@@ -550,31 +550,31 @@ export const RegistryTab: React.FC = () => {
             type="button"
             onClick={() => openCreateBinding()}
             disabled={defs.length === 0}
-            className="px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-200 rounded text-xs font-mono flex items-center gap-1 disabled:opacity-40"
+            className="px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono flex items-center gap-1 disabled:opacity-40"
           >
             <Plus className="w-3.5 h-3.5" /> Add Binding
           </button>
         </div>
 
         {bindings.length === 0 ? (
-          <div className="py-6 text-center text-xs font-mono text-zinc-500 border border-subtle rounded-lg">
+          <div className="py-6 text-center text-xs font-mono text-brand-muted border border-border-subtle rounded-lg">
             No scoped bindings configured. Guardrails with default_on apply org-wide.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className="border-b border-subtle text-zinc-500 text-[11px] uppercase">
+                <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
                   <th className="py-2 pr-3">Guardrail</th>
                   <th className="py-2 pr-3">Scope Targets</th>
                   <th className="py-2 pr-3">Lock</th>
                   <th className="py-2 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-subtle">
+              <tbody className="divide-y divide-border-subtle">
                 {bindings.map((b) => (
-                  <tr key={b.id} className="text-zinc-300">
-                    <td className="py-2.5 pr-3 font-semibold text-zinc-100">{b.guardrail_name || b.guardrail_id}</td>
+                  <tr key={b.id} className="text-brand-body">
+                    <td className="py-2.5 pr-3 font-semibold text-brand-title">{b.guardrail_name || b.guardrail_id}</td>
                     <td className="py-2.5 pr-3">
                       <div className="flex flex-wrap gap-1.5">
                         {b.team_id && <Badge variant="neutral" size="sm">team:{b.team_id}</Badge>}
@@ -583,18 +583,18 @@ export const RegistryTab: React.FC = () => {
                         {b.model_group_id && <Badge variant="neutral" size="sm">group:{b.model_group_id}</Badge>}
                         {b.tag && <Badge variant="primary" size="sm">tag:{b.tag}</Badge>}
                         {!b.team_id && !b.virtual_key_id && !b.end_user_id && !b.model_group_id && !b.tag && (
-                          <span className="text-zinc-500">org-wide</span>
+                          <span className="text-brand-muted">org-wide</span>
                         )}
                       </div>
                     </td>
                     <td className="py-2.5 pr-3">
-                      {b.is_locked ? <Badge variant="warning" size="sm">LOCKED</Badge> : <span className="text-zinc-500">optional</span>}
+                      {b.is_locked ? <Badge variant="warning" size="sm">LOCKED</Badge> : <span className="text-brand-muted">optional</span>}
                     </td>
                     <td className="py-2.5 text-right">
                       <button
                         type="button"
                         onClick={() => deleteBindMut.mutate(b.id)}
-                        className="p-1 text-zinc-400 hover:text-rose-400"
+                        className="p-1 text-brand-muted hover:text-status-danger"
                         title="Delete binding"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -621,11 +621,11 @@ export const RegistryTab: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Guardrail Name *</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Guardrail Name *</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. prod-pii-presidio" className={INPUT_CLS} required />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Provider (19 Drivers) *</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Provider (19 Drivers) *</label>
               <select value={provider} onChange={(e) => handleProviderChange(e.target.value)} className={INPUT_CLS}>
                 {PROVIDERS.map((p) => (
                   <option key={p.id} value={p.id}>{p.label} ({p.id})</option>
@@ -636,7 +636,7 @@ export const RegistryTab: React.FC = () => {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Status</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Status</label>
               <select value={status} onChange={(e) => setStatus(e.target.value as GuardrailStatus)} className={INPUT_CLS}>
                 <option value="active">active</option>
                 <option value="pending_review">pending_review</option>
@@ -644,7 +644,7 @@ export const RegistryTab: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Stream Scope</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Stream Scope</label>
               <select value={streamScope} onChange={(e) => setStreamScope(e.target.value as StreamScope)} className={INPUT_CLS}>
                 {STREAM_SCOPES.map((sc) => (
                   <option key={sc} value={sc}>{sc}</option>
@@ -652,32 +652,32 @@ export const RegistryTab: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Weight</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Weight</label>
               <input type="number" min={1} value={weight} onChange={(e) => setWeight(e.target.value)} className={INPUT_CLS} />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Precedence</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Precedence</label>
               <input type="number" value={precedence} onChange={(e) => setPrecedence(e.target.value)} className={INPUT_CLS} />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Timeout (ms)</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Timeout (ms)</label>
               <input type="number" min={0} value={timeoutMs} onChange={(e) => setTimeoutMs(e.target.value)} className={INPUT_CLS} />
             </div>
           </div>
 
           <div className="flex flex-wrap gap-5 items-center">
-            <label className="flex items-center gap-2 text-zinc-300 font-mono cursor-pointer">
+            <label className="flex items-center gap-2 text-brand-body font-mono cursor-pointer">
               <input type="checkbox" checked={defaultOn} onChange={(e) => setDefaultOn(e.target.checked)} />
               default_on (apply org-wide unless opted out)
             </label>
-            <label className="flex items-center gap-2 text-zinc-300 font-mono cursor-pointer">
+            <label className="flex items-center gap-2 text-brand-body font-mono cursor-pointer">
               <input type="checkbox" checked={failOpen} onChange={(e) => setFailOpen(e.target.checked)} />
               fail_open (flag instead of block on driver error)
             </label>
           </div>
 
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1.5">Event Hooks</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1.5">Event Hooks</label>
             <div className="flex flex-wrap gap-1.5">
               {HOOKS.map((h) => (
                 <button
@@ -687,7 +687,7 @@ export const RegistryTab: React.FC = () => {
                   className={`px-2 py-1 rounded text-[11px] font-mono border transition ${
                     eventHooks.includes(h)
                       ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/40 font-semibold'
-                      : 'bg-surface-elevated text-zinc-400 border-subtle'
+                      : 'bg-surface-elevated text-brand-muted border-border-subtle'
                   }`}
                 >
                   {h}
@@ -697,15 +697,15 @@ export const RegistryTab: React.FC = () => {
           </div>
 
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Enabled Roles (comma-separated, empty = all roles)</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Enabled Roles (comma-separated, empty = all roles)</label>
             <input value={enabledRolesText} onChange={(e) => setEnabledRolesText(e.target.value)} placeholder="e.g. *, org_admin, developer" className={INPUT_CLS} />
           </div>
 
           {/* ModeRule Tag -> Hook Matrix */}
-          <div className="p-3 bg-surface-elevated/40 border border-subtle rounded-lg space-y-2.5">
-            <div className="text-[11px] font-mono text-zinc-300 font-semibold">ModeRule: Tag → Hook Routing Matrix</div>
+          <div className="p-3 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-2.5">
+            <div className="text-[11px] font-mono text-brand-title font-semibold">ModeRule: Tag → Hook Routing Matrix</div>
             <div>
-              <span className="text-[10px] text-zinc-400 font-mono block mb-1">Default fallback hooks:</span>
+              <span className="text-[10px] text-brand-muted font-mono block mb-1">Default fallback hooks:</span>
               <div className="flex flex-wrap gap-1">
                 {HOOKS.map((h) => (
                   <button
@@ -715,7 +715,7 @@ export const RegistryTab: React.FC = () => {
                     className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
                       modeRuleDefault.includes(h)
                         ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/40'
-                        : 'bg-surface-base text-zinc-500 border-subtle'
+                        : 'bg-surface-base text-brand-muted border-border-subtle'
                     }`}
                   >
                     {h}
@@ -725,8 +725,8 @@ export const RegistryTab: React.FC = () => {
             </div>
 
             {modeRuleTags.map((row, idx) => (
-              <div key={idx} className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-subtle">
-                <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-200 font-mono text-[10px]">{row.tag}</span>
+              <div key={idx} className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border-subtle">
+                <span className="px-2 py-0.5 rounded bg-surface-elevated border border-border-subtle text-brand-title font-mono text-[10px]">{row.tag}</span>
                 {HOOKS.map((h) => (
                   <button
                     key={h}
@@ -738,8 +738,8 @@ export const RegistryTab: React.FC = () => {
                     }
                     className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
                       row.hooks.includes(h)
-                        ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
-                        : 'bg-surface-base text-zinc-500 border-subtle'
+                        ? 'status-success'
+                        : 'bg-surface-base text-brand-muted border-border-subtle'
                     }`}
                   >
                     {h}
@@ -748,7 +748,7 @@ export const RegistryTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setModeRuleTags(modeRuleTags.filter((_, i) => i !== idx))}
-                  className="text-rose-400 text-[10px] font-mono ml-auto"
+                  className="text-status-danger text-[10px] font-mono ml-auto"
                 >
                   remove
                 </button>
@@ -771,7 +771,7 @@ export const RegistryTab: React.FC = () => {
                     setNewRuleTag('');
                   }
                 }}
-                className="px-3 py-1.5 bg-surface-base border border-subtle rounded text-zinc-300 hover:text-white font-mono whitespace-nowrap"
+                className="px-3 py-1.5 bg-surface-base border border-border-subtle rounded text-brand-body hover:text-brand-title font-mono whitespace-nowrap"
               >
                 + Tag Rule
               </button>
@@ -793,7 +793,7 @@ export const RegistryTab: React.FC = () => {
           )}
 
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Driver Config (JSON)</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Driver Config (JSON)</label>
             <textarea
               rows={4}
               value={configJson}
@@ -802,10 +802,10 @@ export const RegistryTab: React.FC = () => {
             />
           </div>
 
-          <div className="p-3 bg-surface-elevated/40 border border-subtle rounded-lg space-y-2">
+          <div className="p-3 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-[11px] text-zinc-300 font-mono flex items-center gap-1.5">
-                <Key className="w-3.5 h-3.5 text-emerald-400" />
+              <label className="text-[11px] text-brand-body font-mono flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5 text-status-success" />
                 Vault Secrets (Write-Only JSON{activePreset?.secretsHint ? ` — keys: ${activePreset.secretsHint}` : ''})
               </label>
               {editing?.has_secrets && <Badge variant="success" size="sm">Secrets Stored</Badge>}
@@ -818,7 +818,7 @@ export const RegistryTab: React.FC = () => {
               className={`${INPUT_CLS} font-mono`}
             />
             {editing?.has_secrets && (
-              <label className="flex items-center gap-2 text-[11px] text-rose-300 font-mono cursor-pointer">
+              <label className="flex items-center gap-2 text-[11px] text-status-danger font-mono cursor-pointer">
                 <input type="checkbox" checked={clearSecrets} onChange={(e) => setClearSecrets(e.target.checked)} />
                 Clear stored Vault secrets on save
               </label>
@@ -826,7 +826,7 @@ export const RegistryTab: React.FC = () => {
           </div>
 
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">
               Billing & Info Metadata (optional JSON: usage_unit, cost_per_call_micros, cost_per_unit_micros)
             </label>
             <textarea
@@ -838,7 +838,7 @@ export const RegistryTab: React.FC = () => {
             />
           </div>
 
-          <div className="flex justify-end gap-2 pt-2 border-t border-subtle">
+          <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
             <button type="button" onClick={() => setFormOpen(false)} className={BTN_CANCEL}>Cancel</button>
             <button type="submit" disabled={saveDefMut.isPending} className={BTN_PRIMARY}>
               {saveDefMut.isPending ? 'Saving...' : editing ? 'Update Guardrail' : 'Create Guardrail'}
@@ -858,7 +858,7 @@ export const RegistryTab: React.FC = () => {
         <form onSubmit={handleSaveBinding} className="space-y-3 text-xs">
           {bindErr && <ErrorAlert error={bindErr} title="Binding error" />}
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Guardrail Definition *</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Guardrail Definition *</label>
             <select value={bindGuardrailId} onChange={(e) => setBindGuardrailId(e.target.value)} className={INPUT_CLS} required>
               {defs.map((d) => (
                 <option key={d.id} value={d.id}>{d.name} ({d.provider})</option>
@@ -868,7 +868,7 @@ export const RegistryTab: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Team Scope (optional)</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Team Scope (optional)</label>
               <select value={bindTeamId} onChange={(e) => setBindTeamId(e.target.value)} className={INPUT_CLS}>
                 <option value="">All Teams</option>
                 {teams.map((t) => (
@@ -877,7 +877,7 @@ export const RegistryTab: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Virtual Key Scope (optional)</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Virtual Key Scope (optional)</label>
               <select value={bindKeyId} onChange={(e) => setBindKeyId(e.target.value)} className={INPUT_CLS}>
                 <option value="">All Virtual Keys</option>
                 {keys.map((k) => (
@@ -889,21 +889,21 @@ export const RegistryTab: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">End User ID</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">End User ID</label>
               <input value={bindEndUserId} onChange={(e) => setBindEndUserId(e.target.value)} placeholder="optional" className={INPUT_CLS} />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Model Group ID</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Model Group ID</label>
               <input value={bindModelGroupId} onChange={(e) => setBindModelGroupId(e.target.value)} placeholder="optional" className={INPUT_CLS} />
             </div>
             <div>
-              <label className="text-[11px] text-zinc-400 font-mono block mb-1">Tag</label>
+              <label className="text-[11px] text-brand-muted font-mono block mb-1">Tag</label>
               <input value={bindTag} onChange={(e) => setBindTag(e.target.value)} placeholder="e.g. prod" className={INPUT_CLS} />
             </div>
           </div>
 
           <div>
-            <label className="text-[11px] text-zinc-400 font-mono block mb-1">Parameter Overrides (JSON, optional)</label>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">Parameter Overrides (JSON, optional)</label>
             <textarea
               rows={2}
               value={bindOverridesJson}
@@ -913,12 +913,12 @@ export const RegistryTab: React.FC = () => {
             />
           </div>
 
-          <label className="flex items-center gap-2 text-amber-300 font-mono cursor-pointer pt-1">
+          <label className="flex items-center gap-2 text-status-warning font-mono cursor-pointer pt-1">
             <input type="checkbox" checked={bindLocked} onChange={(e) => setBindLocked(e.target.checked)} />
             Lock binding (`is_locked` — disallow downstream key/request opt-out)
           </label>
 
-          <div className="flex justify-end gap-2 pt-2 border-t border-subtle">
+          <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle">
             <button type="button" onClick={() => setBindOpen(false)} className={BTN_CANCEL}>Cancel</button>
             <button type="submit" disabled={createBindMut.isPending} className={BTN_PRIMARY}>
               {createBindMut.isPending ? 'Saving...' : 'Create Binding'}

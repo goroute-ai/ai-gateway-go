@@ -34,7 +34,7 @@ const SimulatorUsageTab = lazy(() =>
 type GuardrailsTab = 'baseline' | 'registry' | 'tools' | 'simulator';
 
 const TabLoadingFallback = () => (
-  <div className="flex items-center justify-center py-12 text-zinc-500 font-mono text-xs gap-2">
+  <div className="flex items-center justify-center py-12 text-brand-muted font-mono text-xs gap-2">
     <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
     <span>Loading guardrail console module...</span>
   </div>
@@ -52,24 +52,24 @@ const GuardrailRuleCard: React.FC<{
   activeCls: string;
   extra?: React.ReactNode;
 }> = ({ icon, title, desc, enabled, onToggle, action, onAction, actions, activeCls, extra }) => (
-  <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
+  <div className="p-3.5 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-3">
     <div className="flex items-center justify-between">
       <div>
-        <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">{icon}{title}</div>
-        <p className="text-[11px] text-zinc-400 mt-0.5">{desc}</p>
+        <div className="text-xs font-semibold text-brand-title flex items-center gap-2">{icon}{title}</div>
+        <p className="text-[11px] text-brand-muted mt-0.5">{desc}</p>
       </div>
       <label className="relative inline-flex items-center cursor-pointer">
         <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} className="sr-only peer" />
-        <div className="w-9 h-5 bg-zinc-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary" />
+        <div className="w-9 h-5 bg-border-strong rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-primary" />
       </label>
     </div>
     {enabled && (
-      <div className="space-y-2 pt-1 border-t border-subtle text-xs font-mono">
+      <div className="space-y-2 pt-1 border-t border-border-subtle text-xs font-mono">
         <div className="flex items-center gap-3">
-          <span className="text-zinc-400 text-[11px]">Action:</span>
+          <span className="text-brand-muted text-[11px]">Action:</span>
           <div className="flex gap-2">
             {actions.map((act) => (
-              <button key={act} type="button" onClick={() => onAction(act)} className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${action === act ? activeCls : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'}`}>
+              <button key={act} type="button" onClick={() => onAction(act)} className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${action === act ? activeCls : 'bg-surface-elevated text-brand-muted border border-border-subtle hover:text-brand-title'}`}>
                 {act}
               </button>
             ))}
@@ -118,16 +118,16 @@ const TagListField: React.FC<{
   return (
     <>
       {items.length === 0 ? (
-        <div className="text-[11px] text-zinc-500 font-mono italic pt-0.5">{emptyText}</div>
+        <div className="text-[11px] text-brand-muted font-mono italic pt-0.5">{emptyText}</div>
       ) : (
         <div className="flex flex-wrap gap-1.5 pt-1">
           {items.map((item) => (
             <span
               key={item}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 border border-subtle text-zinc-200 text-xs font-mono"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-elevated border border-border-subtle text-brand-body text-xs font-mono"
             >
               {item}
-              <button type="button" onClick={() => onChange(items.filter((x) => x !== item))} className="hover:text-red-400 transition">
+              <button type="button" onClick={() => onChange(items.filter((x) => x !== item))} className="hover:text-status-danger transition">
                 <X className="w-3 h-3" />
               </button>
             </span>
@@ -146,12 +146,12 @@ const TagListField: React.FC<{
             }
           }}
           placeholder={placeholder}
-          className="flex-1 px-2.5 py-1 text-xs bg-surface-base border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary"
+          className="flex-1 px-2.5 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted font-mono focus:outline-none focus:border-accent-primary"
         />
         <button
           type="button"
           onClick={add}
-          className="px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-300 hover:text-white rounded text-xs font-mono transition flex items-center gap-1"
+          className="px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition flex items-center gap-1"
         >
           <Plus className="w-3.5 h-3.5" />
           Add
@@ -277,18 +277,18 @@ export const GuardrailsView: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100 flex items-center gap-2">
+          <h2 className="text-xl font-semibold text-brand-title flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-accent-primary" />
             Security & Guardrails Engine
           </h2>
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="text-xs text-brand-muted mt-1">
             Pre-flight inference boundary filtering: prompt injection heuristics, PII masking, leaked secret detection, and keyword barriers.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           {activeTab === 'baseline' && saveSuccessMsg && (
-            <span className="text-xs text-emerald-400 flex items-center gap-1 font-mono">
+            <span className="text-xs text-status-success flex items-center gap-1 font-mono">
               <CheckCircle2 className="w-3.5 h-3.5" />
               {saveSuccessMsg}
             </span>
@@ -297,7 +297,7 @@ export const GuardrailsView: React.FC = () => {
             <button
               onClick={() => saveMutation.mutate()}
               disabled={saveMutation.isPending || !activeOrgId}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs transition disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent-primary hover:bg-accent-dark text-accent-contrast font-medium rounded text-xs transition disabled:opacity-50"
             >
               <Check className="w-3.5 h-3.5" />
               {saveMutation.isPending ? 'Saving...' : 'Save Policy'}
@@ -307,7 +307,7 @@ export const GuardrailsView: React.FC = () => {
       </div>
 
       {/* 4-Tab Operator Console Switcher */}
-      <div className="border-b border-subtle">
+      <div className="border-b border-border-subtle">
         <div className="flex flex-wrap gap-4">
           {([
             { id: 'baseline', label: 'Org Baseline Policy', icon: <Lock className="w-3.5 h-3.5" /> },
@@ -322,7 +322,7 @@ export const GuardrailsView: React.FC = () => {
               className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
                 activeTab === tab.id
                   ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                  : 'border-transparent text-brand-muted hover:text-brand-title'
               }`}
             >
               {tab.icon}
@@ -360,22 +360,22 @@ export const GuardrailsView: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Policy Configuration Form (7 cols) */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="bg-surface-base border border-subtle rounded-lg p-5">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 mb-4 flex items-center gap-2">
+          <div className="bg-surface-base border border-border-subtle rounded-lg p-5">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title mb-4 flex items-center gap-2">
               <Lock className="w-4 h-4 text-accent-primary" />
               Organization Security Rules
             </h3>
 
             {isPolicyLoading ? (
-              <div className="py-8 text-center text-xs font-mono text-zinc-500">
+              <div className="py-8 text-center text-xs font-mono text-brand-muted">
                 Loading security policy...
               </div>
             ) : (
               <div className="space-y-5">
                 {/* Execution Mode & Role Scope */}
-                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="p-3.5 bg-surface-elevated/40 border border-border-subtle rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-xs font-mono">
-                    <span className="text-zinc-400">Policy Mode:</span>
+                    <span className="text-brand-muted">Policy Mode:</span>
                     {(['enforce', 'logging_only'] as const).map((m) => (
                       <button
                         key={m}
@@ -384,26 +384,26 @@ export const GuardrailsView: React.FC = () => {
                         className={`px-2.5 py-1 rounded text-[11px] transition ${
                           (policyForm.mode || 'enforce') === m
                             ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/40 font-bold'
-                            : 'bg-surface-base text-zinc-400 border border-subtle hover:text-zinc-200'
+                            : 'bg-surface-base text-brand-muted border border-border-subtle hover:text-brand-title'
                         }`}
                       >
                         {m}
                       </button>
                     ))}
                   </div>
-                  <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer font-mono">
+                  <label className="flex items-center gap-2 text-[11px] text-brand-body cursor-pointer font-mono">
                     <input
                       type="checkbox"
                       checked={policyForm.scan_all_roles ?? true}
                       onChange={(e) => setPolicyForm({ ...policyForm, scan_all_roles: e.target.checked })}
-                      className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5"
+                      className="rounded bg-surface-input border-border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5"
                     />
                     Scan all message roles
                   </label>
                 </div>
 
                 <GuardrailRuleCard
-                  icon={<AlertTriangle className="w-4 h-4 text-amber-400" />}
+                  icon={<AlertTriangle className="w-4 h-4 text-status-warning" />}
                   title="Prompt Injection Defense"
                   desc="Detect adversarial jailbreak tokens and instruction override patterns."
                   enabled={policyForm.enable_prompt_injection}
@@ -411,7 +411,7 @@ export const GuardrailsView: React.FC = () => {
                   action={policyForm.prompt_injection_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, prompt_injection_action: a })}
                   actions={['block', 'redact', 'audit']}
-                  activeCls="bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold"
+                  activeCls="status-warning border font-bold"
                 />
                 <GuardrailRuleCard
                   icon={<Lock className="w-4 h-4 text-accent-primary" />}
@@ -422,16 +422,16 @@ export const GuardrailsView: React.FC = () => {
                   action={policyForm.pii_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, pii_action: a })}
                   actions={['redact', 'block', 'audit']}
-                  activeCls="bg-[rgba(124,58,237,0.15)] text-accent-primary border border-accent-primary/40 font-bold"
+                  activeCls="bg-accent-soft text-accent-primary border border-accent-primary/40 font-bold"
                   extra={
                     <div className="flex items-center gap-2 pt-1">
-                      <input type="checkbox" id="redactOutput" checked={policyForm.redact_output_pii} onChange={(e) => setPolicyForm({ ...policyForm, redact_output_pii: e.target.checked })} className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5" />
-                      <label htmlFor="redactOutput" className="text-[11px] text-zinc-300 cursor-pointer">Also sanitize outgoing completion streams for leaked PII</label>
+                      <input type="checkbox" id="redactOutput" checked={policyForm.redact_output_pii} onChange={(e) => setPolicyForm({ ...policyForm, redact_output_pii: e.target.checked })} className="rounded bg-surface-input border-border-subtle text-accent-primary focus:ring-0 w-3.5 h-3.5" />
+                      <label htmlFor="redactOutput" className="text-[11px] text-brand-body cursor-pointer">Also sanitize outgoing completion streams for leaked PII</label>
                     </div>
                   }
                 />
                 <GuardrailRuleCard
-                  icon={<Key className="w-4 h-4 text-emerald-400" />}
+                  icon={<Key className="w-4 h-4 text-status-success" />}
                   title="API Key & Secret Leak Prevention"
                   desc="Detect API keys, private keys, AWS access tokens, and high-entropy credentials."
                   enabled={policyForm.enable_secret_detection}
@@ -439,10 +439,10 @@ export const GuardrailsView: React.FC = () => {
                   action={policyForm.secret_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, secret_action: a })}
                   actions={['block', 'redact', 'audit']}
-                  activeCls="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold"
+                  activeCls="status-success border font-bold"
                 />
                 <GuardrailRuleCard
-                  icon={<ShieldCheck className="w-4 h-4 text-rose-400" />}
+                  icon={<ShieldCheck className="w-4 h-4 text-status-danger" />}
                   title="Toxicity & Content Safety Filter"
                   desc="Screen prompts and streams against built-in toxicity severity packs and category filters."
                   enabled={!!policyForm.enable_toxicity_filter}
@@ -450,11 +450,11 @@ export const GuardrailsView: React.FC = () => {
                   action={policyForm.toxicity_action || 'block'}
                   onAction={(a) => setPolicyForm({ ...policyForm, toxicity_action: a })}
                   actions={['block', 'redact', 'audit']}
-                  activeCls="bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold"
+                  activeCls="status-danger border font-bold"
                   extra={
                     <div className="space-y-2.5 pt-2">
                       <div className="flex items-center gap-3">
-                        <span className="text-zinc-400 text-[11px]">Threshold:</span>
+                        <span className="text-brand-muted text-[11px]">Threshold:</span>
                         <div className="flex gap-1.5">
                           {(['low', 'medium', 'high'] as const).map((lvl) => (
                             <button
@@ -463,8 +463,8 @@ export const GuardrailsView: React.FC = () => {
                               onClick={() => setPolicyForm({ ...policyForm, toxicity_threshold: lvl })}
                               className={`px-2 py-0.5 rounded text-[11px] uppercase transition ${
                                 (policyForm.toxicity_threshold || 'medium') === lvl
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold'
-                                  : 'bg-surface-elevated text-zinc-400 border border-subtle hover:text-zinc-200'
+                                  ? 'status-danger border font-bold'
+                                  : 'bg-surface-elevated text-brand-muted border border-border-subtle hover:text-brand-title'
                               }`}
                             >
                               {lvl}
@@ -473,17 +473,17 @@ export const GuardrailsView: React.FC = () => {
                         </div>
                       </div>
                       <div>
-                        <span className="text-zinc-400 text-[11px] block mb-1">
+                        <span className="text-brand-muted text-[11px] block mb-1">
                           Content Categories (none selected = all active):
                         </span>
                         <div className="flex flex-wrap gap-2">
                           {CONTENT_CATEGORIES.map((cat) => (
-                            <label key={cat} className="inline-flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
+                            <label key={cat} className="inline-flex items-center gap-1.5 text-[11px] text-brand-body cursor-pointer">
                               <input
                                 type="checkbox"
                                 checked={(policyForm.enabled_content_categories || []).includes(cat)}
                                 onChange={() => toggleCategory(cat)}
-                                className="rounded bg-surface-elevated border-subtle text-accent-primary focus:ring-0 w-3 h-3"
+                                className="rounded bg-surface-input border-border-subtle text-accent-primary focus:ring-0 w-3 h-3"
                               />
                               {cat}
                             </label>
@@ -491,7 +491,7 @@ export const GuardrailsView: React.FC = () => {
                         </div>
                       </div>
                       <div>
-                        <span className="text-zinc-400 text-[11px] block mb-1">Content Exceptions (allowlisted phrases):</span>
+                        <span className="text-brand-muted text-[11px] block mb-1">Content Exceptions (allowlisted phrases):</span>
                         <TagListField
                           items={policyForm.content_exceptions || []}
                           onChange={(next) => setPolicyForm({ ...policyForm, content_exceptions: next })}
@@ -504,13 +504,13 @@ export const GuardrailsView: React.FC = () => {
                 />
 
                 {/* Rule 5: Blocked Keywords */}
-                <div className="p-3.5 bg-surface-elevated/40 border border-subtle rounded-lg space-y-3">
+                <div className="p-3.5 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-3">
                   <div>
-                    <div className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
+                    <div className="text-xs font-semibold text-brand-title flex items-center gap-2">
                       <Layers className="w-4 h-4 text-accent-primary" />
                       Blocked Word & Phrase Lexicon
                     </div>
-                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                    <p className="text-[11px] text-brand-muted mt-0.5">
                       Hard reject requests containing forbidden domain keywords or confidential project codenames.
                     </p>
                   </div>
@@ -529,44 +529,44 @@ export const GuardrailsView: React.FC = () => {
 
         {/* Right Column: Interactive Stateless Dry-Run Simulator (5 cols) */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-surface-base border border-subtle rounded-lg p-5">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-zinc-300 mb-2 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-emerald-400" />
+          <div className="bg-surface-base border border-border-subtle rounded-lg p-5">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title mb-2 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-status-success" />
               Stateless Policy Dry-Run Simulator
             </h3>
-            <p className="text-[11px] text-zinc-400 mb-4">
+            <p className="text-[11px] text-brand-muted mb-4">
               Test prompts against your active or unsaved draft policy without sending inference tokens to upstream providers.
             </p>
 
             {/* Test Presets */}
             <div className="mb-3">
-              <span className="text-[10px] text-zinc-500 uppercase font-mono block mb-1.5">Load Test Vectors:</span>
+              <span className="text-[10px] text-brand-muted uppercase font-mono block mb-1.5">Load Test Vectors:</span>
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   onClick={() => loadPreset('injection')}
-                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-amber-300 rounded text-[10px] font-mono transition"
+                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-status-warning rounded text-[10px] font-mono transition"
                 >
                   Jailbreak
                 </button>
                 <button
                   type="button"
                   onClick={() => loadPreset('pii')}
-                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-indigo-300 rounded text-[10px] font-mono transition"
+                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-accent-primary rounded text-[10px] font-mono transition"
                 >
                   PII Data
                 </button>
                 <button
                   type="button"
                   onClick={() => loadPreset('secret')}
-                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-emerald-300 rounded text-[10px] font-mono transition"
+                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-status-success rounded text-[10px] font-mono transition"
                 >
                   API Secret
                 </button>
                 <button
                   type="button"
                   onClick={() => loadPreset('clean')}
-                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-subtle text-zinc-400 rounded text-[10px] font-mono transition"
+                  className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-muted rounded text-[10px] font-mono transition"
                 >
                   Benign
                 </button>
@@ -575,20 +575,20 @@ export const GuardrailsView: React.FC = () => {
 
             {/* Input Prompt */}
             <div className="space-y-1.5 mb-4">
-              <label className="text-[11px] text-zinc-400 font-mono">Input Prompt:</label>
+              <label className="text-[11px] text-brand-muted font-mono">Input Prompt:</label>
               <textarea
                 rows={4}
                 value={simPrompt}
                 onChange={(e) => setSimPrompt(e.target.value)}
                 placeholder="Enter prompt text or select a test vector above to simulate guardrail evaluation..."
-                className="w-full p-2.5 text-xs bg-canvas border border-subtle rounded text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-accent-primary resize-y"
+                className="w-full p-2.5 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted font-mono focus:outline-none focus:border-accent-primary resize-y"
               />
             </div>
 
             <button
               onClick={() => simulateMutation.mutate()}
               disabled={simulateMutation.isPending || !simPrompt.trim() || !activeOrgId}
-              className="w-full flex items-center justify-center gap-1.5 py-2 bg-accent-primary hover:bg-accent-glow text-zinc-950 font-medium rounded text-xs font-mono transition disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-1.5 py-2 bg-accent-primary hover:bg-accent-dark text-accent-contrast font-medium rounded text-xs font-mono transition disabled:opacity-50"
             >
               <Zap className="w-3.5 h-3.5 fill-current" />
               {simulateMutation.isPending ? 'Simulating Evaluation...' : 'Simulate Policy Decision'}
@@ -602,9 +602,9 @@ export const GuardrailsView: React.FC = () => {
 
             {/* Simulation Results Output */}
             {simResult && (
-              <div className="mt-5 pt-4 border-t border-subtle space-y-3 font-mono">
+              <div className="mt-5 pt-4 border-t border-border-subtle space-y-3 font-mono">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-zinc-400">Verdict:</span>
+                  <span className="text-xs text-brand-muted">Verdict:</span>
                   <Badge variant={simResult.allowed ? 'success' : 'danger'}>
                     {simResult.allowed ? (
                       <span className="flex items-center gap-1">
@@ -619,20 +619,20 @@ export const GuardrailsView: React.FC = () => {
                 </div>
 
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-zinc-400">Applied Action:</span>
-                  <span className="font-bold uppercase text-zinc-200">{simResult.applied_action}</span>
+                  <span className="text-brand-muted">Applied Action:</span>
+                  <span className="font-bold uppercase text-brand-title">{simResult.applied_action}</span>
                 </div>
 
                 {simResult.violations && simResult.violations.length > 0 && (
                   <div className="space-y-1">
-                    <span className="text-[11px] text-amber-400 flex items-center gap-1">
+                    <span className="text-[11px] text-status-warning flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3" /> Detected Violations ({simResult.violations.length}):
                     </span>
                     <div className="space-y-1">
                       {simResult.violations.map((v, i) => (
                         <div
                           key={i}
-                          className="p-1.5 bg-red-950/30 border border-red-900/50 rounded text-[11px] text-red-300"
+                          className="p-1.5 status-danger border rounded text-[11px]"
                         >
                           {typeof v === 'string' ? v : `${v.guardrail_name}: ${v.message}`}
                         </div>
@@ -646,7 +646,7 @@ export const GuardrailsView: React.FC = () => {
                     <span className="text-[11px] text-accent-primary flex items-center gap-1">
                       <Lock className="w-3 h-3" /> Redacted Prompt Sent Upstream:
                     </span>
-                    <div className="p-2 bg-canvas border border-subtle rounded text-xs text-zinc-300 whitespace-pre-wrap break-all">
+                    <div className="p-2 bg-surface-code border border-border-subtle rounded text-xs text-brand-body whitespace-pre-wrap break-all">
                       {simResult.redacted_prompt}
                     </div>
                   </div>
