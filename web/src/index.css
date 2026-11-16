@@ -2,36 +2,126 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --brand-primary: #b39aff;
-  --brand-primary-hover: #9a79ff;
-  --brand-accent-soft: rgba(124, 58, 237, 0.09);
-  --brand-code-color: #d8ccff;
+:root,
+html[data-theme='dark'] {
+  --rgb-canvas: 0 0 0;
+  --rgb-surface-base: 9 12 18;
+  --rgb-surface-elevated: 17 23 35;
+  --rgb-surface-hover: 22 30 46;
+  --rgb-surface-code: 10 14 22;
+  --rgb-surface-input: 5 7 11;
 
-  --bg-canvas: #000000;
-  --bg-surface: #0c0c0f;
-  --bg-code: #0d0d12;
-  --border-color: #1e1e24;
-  --border-subtle: #141418;
+  --rgb-border: 28 36 51;
+  --rgb-border-subtle: 19 26 38;
+  --rgb-border-strong: 40 51 71;
 
-  --text-title: #f5f3ff;
-  --text-body: #d2d0dc;
-  --text-muted: #9696a4;
+  --rgb-text-title: 241 245 249;
+  --rgb-text-body: 203 213 225;
+  --rgb-text-muted: 148 163 184;
 
+  --rgb-accent-primary: 56 189 248;
+  --rgb-accent-dark: 14 165 233;
+  --rgb-accent-darker: 2 132 199;
+  --rgb-accent-glow: 125 211 252;
+  --rgb-accent-lighter: 186 230 253;
+  --rgb-accent-contrast: 8 13 20;
+  --accent-soft: rgba(56, 189, 248, 0.09);
+
+  --code-inline-bg: rgba(56, 189, 248, 0.08);
+  --code-inline-fg: #bae6fd;
+  --code-inline-border: rgba(56, 189, 248, 0.22);
+
+  --rgb-status-success: 52 211 153;
+  --status-success-bg: rgba(6, 78, 59, 0.45);
+  --status-success-border: rgba(16, 185, 129, 0.35);
+
+  --rgb-status-warning: 251 191 36;
+  --status-warning-bg: rgba(120, 53, 15, 0.42);
+  --status-warning-border: rgba(245, 158, 11, 0.35);
+
+  --rgb-status-danger: 251 113 133;
+  --status-danger-bg: rgba(136, 19, 55, 0.42);
+  --status-danger-border: rgba(244, 63, 94, 0.35);
+
+  --rgb-status-info: 56 189 248;
+  --status-info-bg: rgba(12, 74, 110, 0.45);
+  --status-info-border: rgba(56, 189, 248, 0.35);
+
+  --rgb-status-indigo: 129 140 248;
+  --status-indigo-bg: rgba(49, 46, 129, 0.42);
+  --status-indigo-border: rgba(99, 102, 241, 0.35);
+
+  --scroll-track: #000000;
+  --scroll-thumb: #334155;
+  --scroll-thumb-hover: #38bdf8;
   color-scheme: dark;
+}
+
+html[data-theme='light'] {
+  --rgb-canvas: 255 255 255;
+  --rgb-surface-base: 248 250 252;
+  --rgb-surface-elevated: 241 245 249;
+  --rgb-surface-hover: 226 232 240;
+  --rgb-surface-code: 248 250 252;
+  --rgb-surface-input: 255 255 255;
+
+  --rgb-border: 226 232 240;
+  --rgb-border-subtle: 241 245 249;
+  --rgb-border-strong: 203 213 225;
+
+  --rgb-text-title: 15 23 42;
+  --rgb-text-body: 51 65 85;
+  --rgb-text-muted: 100 116 139;
+
+  --rgb-accent-primary: 3 105 161;
+  --rgb-accent-dark: 7 89 133;
+  --rgb-accent-darker: 12 74 110;
+  --rgb-accent-glow: 2 132 199;
+  --rgb-accent-lighter: 14 165 233;
+  --rgb-accent-contrast: 255 255 255;
+  --accent-soft: rgba(2, 132, 199, 0.08);
+
+  --code-inline-bg: rgba(14, 165, 233, 0.08);
+  --code-inline-fg: #075985;
+  --code-inline-border: rgba(2, 132, 199, 0.22);
+
+  --rgb-status-success: 4 120 87;
+  --status-success-bg: #ecfdf5;
+  --status-success-border: #a7f3d0;
+
+  --rgb-status-warning: 180 83 9;
+  --status-warning-bg: #fffbeb;
+  --status-warning-border: #fde68a;
+
+  --rgb-status-danger: 190 18 60;
+  --status-danger-bg: #fff1f2;
+  --status-danger-border: #fecdd3;
+
+  --rgb-status-info: 3 105 161;
+  --status-info-bg: #f0f9ff;
+  --status-info-border: #bae6fd;
+
+  --rgb-status-indigo: 67 56 202;
+  --status-indigo-bg: #eef2ff;
+  --status-indigo-border: #c7d2fe;
+
+  --scroll-track: #f8fafc;
+  --scroll-thumb: #cbd5e1;
+  --scroll-thumb-hover: #0369a1;
+  color-scheme: light;
 }
 
 @layer base {
   body {
-    background-color: #000000;
-    color: #d2d0dc;
+    background-color: rgb(var(--rgb-canvas));
+    color: rgb(var(--rgb-text-body));
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
   }
 
   h1, h2, h3, h4 {
-    color: #f5f3ff;
+    color: rgb(var(--rgb-text-title));
     letter-spacing: -0.025em;
   }
 
@@ -40,24 +130,55 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     padding: 0.16rem 0.38rem;
     border-radius: 0.35rem;
-    background: var(--brand-accent-soft);
-    color: var(--brand-code-color);
-    border: 1px solid rgba(124, 58, 237, 0.2);
+    background: var(--code-inline-bg);
+    color: var(--code-inline-fg);
+    border: 1px solid var(--code-inline-border);
   }
 }
 
-/* Custom Sleek Scrollbar */
+@layer components {
+  .status-success {
+    background-color: var(--status-success-bg);
+    color: rgb(var(--rgb-status-success));
+    border-color: var(--status-success-border);
+  }
+  .status-warning {
+    background-color: var(--status-warning-bg);
+    color: rgb(var(--rgb-status-warning));
+    border-color: var(--status-warning-border);
+  }
+  .status-danger {
+    background-color: var(--status-danger-bg);
+    color: rgb(var(--rgb-status-danger));
+    border-color: var(--status-danger-border);
+  }
+  .status-info {
+    background-color: var(--status-info-bg);
+    color: rgb(var(--rgb-status-info));
+    border-color: var(--status-info-border);
+  }
+  .status-indigo {
+    background-color: var(--status-indigo-bg);
+    color: rgb(var(--rgb-status-indigo));
+    border-color: var(--status-indigo-border);
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #000000;
+  background: var(--scroll-track);
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e1e24;
+  background: var(--scroll-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #b39aff;
+  background: var(--scroll-thumb-hover);
 }

@@ -105,7 +105,7 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.7.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.8.0
 ```
 
 ```go
@@ -135,7 +135,7 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 - **Model Catalogue & Routing Explorer**: Search and filter 100+ AI models across 12+ providers, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
 - **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team/user ownership, expiry, allowed MCP servers / A2A agents, monthly micro-dollar budget limits, and RPM/TPM rate limits.
 - **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, virtual key, model, and provider.
-- **Interactive Guardrail Simulator**: Test regex PII redaction and secret scanning against arbitrary text without invoking upstream models or incurring token charges.
+- **Guardrails Console & Usage Metrics**: Configure Layer 0 baseline rules (prompt injection, PII, secrets, 5 toxicity categories), register & bind any of the 19 built-in guardrail drivers (cloud, OSS, Starlark `custom_code`, webhooks, LLM judges), manage cross-turn tool trust policies, simulate via `/v1/guardrails/apply`, and track micro-dollar guardrail cost attribution.
 - **Upstream Credentials Vault**: Add and rotate AES-256-GCM encrypted provider credentials with live preflight validation against provider endpoints.
 
 ---
@@ -418,16 +418,21 @@ r2, _ := gw.Chat(ctx, "fast", "What is 2 + 2?", gateway.WithTemperature(0.0)) //
 
 ## Cross-Cutting Platform Modules (Guardrails, Validation & Observability)
 
-### Module A: Security Guardrails Engine (`POST /admin/v1/organizations/{orgID}/guardrails`)
+### Module A: Security Guardrails Engine & Multi-Provider Pipeline
 
-When policy storage confirms that an organization has no guardrail policy, inference continues without organization-level guardrails. If policy storage is unavailable, requests are rejected with `503 Service Unavailable`; chat and MCP output is withheld rather than returned without policy evaluation.
-Inspects prompts pre-flight and completions post-response with zero external ML dependencies:
-- **Prompt Injection & Jailbreak Detection**: Checks user prompts against a fixed set of known text signatures, such as `ignore previous instructions`, `disregard your system prompt`, and `you are now dan`.
-- **PII & Secret Detection/Redaction**: Detects email addresses, SSNs, payment card patterns, and selected API key patterns. Redaction uses type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, and `[REDACTED_SECRET]`.
-- **Configurable Actions**: `"block"`, `"redact"`, or `"audit"` for prompt-injection, PII, and secret checks. `audit` records a violation without blocking, and `redact` modifies matching content before upstream execution. Custom blocked keywords always block when matched.
-- **Endpoint coverage**: Text input checks run for Chat Completions, legacy Completions, Anthropic Messages, Responses, Embeddings, Rerank query/documents, Moderation, image prompts, text-to-speech input, Realtime text turns, and each Batch chat item. Text output redaction runs for non-streaming chat/completion/message/response results, transcription text, image revised prompts, rerank returned documents, Realtime text results, and Batch results.
-- **Fail-closed policy lookup**: If the policy store is unavailable, text inference returns `503 guardrail_policy_unavailable` before dispatch. A confirmed missing policy allows the request. Text streams are rejected before upstream dispatch with `503 guardrail_stream_redaction_unsupported` when output redaction is enabled, so partial chunks cannot expose unsanitized text.
-- **Text-only exclusions**: Raw audio input and image pixels (including image variations) are not decoded by this local text engine. Generated image pixels, audio speech bytes, embedding vectors, and moderation/rerank scores have no natural-language output to redact. The transcription prompt is checked and textual transcripts/segments are sanitized.
+GoRoute combines a **Layer 0** per-organization baseline policy (`POST /admin/v1/organizations/{orgID}/guardrails`) with a **Layer 1** Named Guardrail Registry & Hierarchical Binding Pipeline (`internal/guardrails`):
+
+- **Layer 0 Baseline Policy (`guardrail_policies`)**:
+  - **Prompt Injection & Jailbreak Detection**: Checks text against normalized override signatures (`ignore previous instructions`, `disregard your system prompt`, `you are now dan`, etc.).
+  - **PII & Secret Detection/Redaction**: Detects email addresses (`[REDACTED_EMAIL]`), SSNs (`[REDACTED_SSN]`), Luhn-validated credit cards (`[REDACTED_CARD]`), and sensitive API key patterns (`[REDACTED_SECRET]`).
+  - **Built-in Toxicity & Content Filtering**: Evaluates prompts and outputs across 5 selectable categories (`harm_toxic_abuse`, `harmful_violence`, `harmful_self_harm`, `denied_insults`, `bias`) with `low`/`medium`/`high` severity thresholds and custom `content_exceptions`, persisted in PostgreSQL (`0016`).
+  - **Configurable Modes & Actions**: `"block"`, `"redact"`, or `"audit"` actions under `"enforce"` or `"logging_only"` mode (`0010`), plus custom blocked keywords.
+- **Layer 1 Named Guardrail Registry & Hierarchical Bindings (`guardrail_definitions` & `guardrail_bindings`)**:
+  - **19 Built-In Drivers**: `local_content_filter`, `custom_code` (sandboxed Starlark executing `def apply_guardrail(inputs, request_data, input_type):` with deterministic step/timeout caps and SSRF-checked `http_get`/`http_post`), `generic_http` (rich webhook payload with `modify` support and independent per-scanner timeouts/fail-open policies), `llm_as_a_judge`, `decision_model`, `openai_moderation`, `bedrock` (SigV4), `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `tool_permission`, `tool_policy` (cross-turn untrusted->trusted taint tracking), `block_code_execution`, `mcp_security`, and `mcp_end_user_permission`. Upstream MCP hops also support `mcp_jwt_signer` token verification, claim transforms, and short-lived Vault JWT signing.
+  - **7 Lifecycle Hooks & Scopes**: Supports `pre_call`, parallel `during_call` (cancels upstream dispatch immediately on violation), `post_call`, async `logging_only`, `pre_mcp_call`, `during_mcp_call`, and `post_mcp_call`; configurable per-hook `stream_scope` (`both`, `streaming`, `non_streaming`), tag-driven `mode_rule` matrices, weighted load balancing with cooldowns across same-named definitions, and anti-bypass `default_on` / `is_locked` enforcement.
+- **Endpoint & Streaming Coverage**: Text input/output checks run across `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings`, `/v1/rerank`, `/v1/moderations`, `/v1/images/*`, `/v1/audio/*`, `/v1/realtime`, Batch items, MCP hubs, and A2A flows. SSE streaming responses are scanned chunk-by-chunk through bounded rolling-overlap buffers (`StreamRedactor` and `StreamWindowEvaluator`) plus incremental streamed `tool_calls` delta inspection, masking or halting the stream immediately if sensitive content crosses chunk boundaries.
+- **Fail-Closed Policy Lookup**: If policy storage is unavailable, requests fail closed with `503 guardrail_policy_unavailable` before dispatch (or withhold outputs). A confirmed missing policy allows the request cleanly unless named `default_on` or locked guardrails apply.
+- **Standalone Evaluation API**: Virtual Keys authorized for `POST /v1/guardrails/apply` can evaluate any active named guardrail against texts, messages, tools, or tool calls without upstream LLM calls.
 
 ```bash
 curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails \
@@ -439,16 +444,57 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails
     "pii_action": "redact",
     "enable_secret_detection": true,
     "secret_action": "redact",
-    "redact_output_pii": true
+    "redact_output_pii": true,
+    "enable_toxicity_filter": true,
+    "toxicity_action": "block",
+    "toxicity_threshold": "medium"
   }'
 ```
 
-Optional provider-neutral scanners are injected in Go before the server starts; no scanner implementation or outbound network call is enabled by default. A configured scanner receives a per-scan context with a two-second default timeout and can inspect user input and model output. The caller can set fail-closed or fail-open handling for scanner errors. Scanner implementations must honor context cancellation, avoid retaining submitted content, and route any network egress through the gateway network security policy.
+#### Declarative YAML Seeding (`configs/config.yaml`)
+Seed external HTTP webhooks (`guardrails.scanners[]`), named driver definitions (`guardrails.definitions[]` with Vault-encrypted `secrets`), and tool trust rules (`guardrails.tool_policies[]`) at startup:
+
+```yaml
+guardrails:
+  scanners:
+    - name: "dlp-webhook"
+      url: "https://guardrails.internal.corp/v1/scan"
+      timeout_ms: 2000
+      fail_open: false
+      headers:
+        Authorization: "os.environ/GUARDRAIL_SCANNER_TOKEN"
+  definitions:
+    - name: "pii-shield"
+      provider: "local_content_filter"
+      event_hooks: ["pre_call", "post_call"]
+      stream_scope: "both"
+      default_on: true
+      status: "active"
+      config:
+        action: "modify"
+      bindings:
+        - team_id: "team_security"
+          is_locked: true
+  tool_policies:
+    - tool_name: "shell_exec"
+      input_policy: "blocked"
+      output_policy: "untrusted"
+```
+
+#### Embedded Go SDK Guardrail Scanners (`pkg/gateway`)
+Applications embedding GoRoute can attach in-process `gateway.GuardrailScanner` implementations supporting `allow`, `block`, `flag`, and `modify` decisions, per-scanner timeouts, hooks, precedence, and fail-open control:
 
 ```go
-scanner := mySecurityScanner{}
-gatewayServer.ConfigureGuardrailScanners(1500*time.Millisecond, true, scanner)
+gw, err := gateway.New(
+    gateway.WithGuardrailScanner("custom-policy", gateway.GuardrailScannerFunc(
+        func(ctx context.Context, req gateway.GuardrailScanRequest) (gateway.GuardrailScanResult, error) {
+            return gateway.GuardrailScanResult{Decision: gateway.GuardrailDecisionAllow}, nil
+        },
+    ), gateway.WithGuardrailTimeout(1500*time.Millisecond), gateway.WithGuardrailDefaultOn(true)),
+)
 ```
+
+For lower-level internal embedding, `GatewayServer.ConfigureGuardrailScanners` continues to accept `guardrails.Scanner` implementations routed through the gateway network policy.
 
 ### Module B: Pre-Flight Request Validator
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
@@ -525,6 +571,9 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `cache.enabled` | — | `true` | Enables deterministic exact-match response caching. |
 | `cache.default_ttl` | — | `1h` | Default TTL for exact-match response cache entries. |
 | `cache.max_l1_entries` | — | `4096` | Maximum process-local response cache entries. LRU eviction bounds memory use. |
+| `guardrails.scanners[]` | — | `[]` | Legacy external webhook scanner list (`name`, `url`, `timeout_ms`, `fail_open`, `headers`). |
+| `guardrails.definitions[]` | — | `[]` | Declarative named guardrail definitions seeded into the registry on startup (encrypts `secrets` via Vault). |
+| `guardrails.tool_policies[]` | — | `[]` | Declarative per-tool `input_policy` / `output_policy` trust rules seeded on startup. |
 | `mcp.enabled` | `GATEWAY_MCP_ENABLED` | `true` | Enables Model Context Protocol (MCP) data plane & control plane. |
 | `mcp.allow_stdio_servers` | `GATEWAY_MCP_ALLOW_STDIO` | `false` | Enables local stdio subprocess MCP transport (requires explicit opt-in). |
 | `mcp.allowed_stdio_binaries` | — | `[]` | Explicit allowlist of absolute binary paths permitted for stdio transport. |

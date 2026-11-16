@@ -101,12 +101,15 @@ func (a *Adapter) resolveVertexConfig(dep *domain.Deployment) (baseURL, projectI
 		projectID = "default"
 	}
 
-	if dep.Credential.BaseURL != "" {
-		baseURL = strings.TrimRight(dep.Credential.BaseURL, "/")
-	} else if region == "global" {
-		baseURL = "https://aiplatform.googleapis.com"
+	var defaultBase string
+	if region == "global" {
+		defaultBase = "https://aiplatform.googleapis.com"
 	} else {
-		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
+		defaultBase = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
+	}
+	baseURL, err = adapter.ResolveCredentialBaseURL(dep.Credential, defaultBase, a.ssrfPolicy, domain.ProviderVertex)
+	if err != nil {
+		return "", "", "", nil, err
 	}
 
 	return baseURL, projectID, region, ts, nil

@@ -45,11 +45,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderOpenAI
 }
 
-func resolveBaseURL(cred *domain.ProviderCredential) string {
-	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-		return strings.TrimRight(cred.BaseURL, "/")
+func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
+	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBaseURL, a.ssrfPolicy, domain.ProviderOpenAI)
+	if err != nil {
+		return "", err
 	}
-	return defaultBaseURL
+	return base + suffix, nil
 }
 
 func isReasoningModel(model string) bool {
@@ -192,7 +193,10 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/chat/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -292,7 +296,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/chat/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -359,7 +366,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/embeddings"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/embeddings")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -412,21 +422,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 }
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
-	rawBase := ""
-	if cred != nil {
-		rawBase = cred.BaseURL
-	}
-	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultBaseURL, a.ssrfPolicy)
+	endpoint, err := a.resolveEndpoint(cred, "/models")
 	if err != nil {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_base_url",
-			Message:    err.Error(),
-			Provider:   domain.ProviderOpenAI,
-		}
+		return nil, err
 	}
-	endpoint := base + "/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -487,7 +486,10 @@ func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *dom
 		return nil, fmt.Errorf("marshal moderation request: %w", err)
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/moderations"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/moderations")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -593,7 +595,10 @@ func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, fmt.Errorf("marshal completion request: %w", err)
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -711,7 +716,10 @@ func (a *Adapter) StreamTextCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, fmt.Errorf("marshal completion stream request: %w", err)
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -882,7 +890,10 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	if req.IsTranslation {
 		subPath = "/audio/translations"
 	}
-	endpoint := resolveBaseURL(dep.Credential) + subPath
+	endpoint, err := a.resolveEndpoint(dep.Credential, subPath)
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bodyBuf)
 	if err != nil {
 		return nil, err
@@ -977,7 +988,10 @@ func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, re
 		return nil, "", fmt.Errorf("marshal speech request: %w", err)
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/audio/speech"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/audio/speech")
+	if err != nil {
+		return nil, "", err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
 	if err != nil {
 		return nil, "", err
@@ -1053,7 +1067,7 @@ func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req
 		bodyMap["user"] = req.User
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/images/generations"
+	imgPath := "/images/generations"
 	var requestBody io.Reader
 	contentType := "application/json"
 	if req.Operation == "edit" || req.Operation == "variation" {
@@ -1063,10 +1077,10 @@ func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		if req.Operation == "edit" {
-			endpoint = resolveBaseURL(dep.Credential) + "/images/edits"
+			imgPath = "/images/edits"
 			_ = writer.WriteField("prompt", req.Prompt)
 		} else {
-			endpoint = resolveBaseURL(dep.Credential) + "/images/variations"
+			imgPath = "/images/variations"
 		}
 		for key, value := range map[string]string{"model": model, "n": strconv.Itoa(req.N), "size": req.Size} {
 			if value != "" && value != "0" {
@@ -1114,6 +1128,11 @@ func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req
 			return nil, fmt.Errorf("marshal image request: %w", err)
 		}
 		requestBody = bytes.NewReader(b)
+	}
+
+	endpoint, err := a.resolveEndpoint(dep.Credential, imgPath)
+	if err != nil {
+		return nil, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, requestBody)
 	if err != nil {

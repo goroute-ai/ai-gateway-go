@@ -41,6 +41,22 @@ func OperatorFromContext(ctx context.Context) *domain.OperatorContext {
 	return nil
 }
 
+// CredentialSource identifies which HTTP request field supplied a gateway credential.
+type CredentialSource string
+
+const (
+	CredentialSourceNone      CredentialSource = ""
+	CredentialSourceBearer    CredentialSource = "bearer"
+	CredentialSourceHeaderKey CredentialSource = "header_key"
+	CredentialSourceWebSocket CredentialSource = "websocket"
+)
+
+// ExtractedCredentials carries a trimmed credential token alongside its transport source.
+type ExtractedCredentials struct {
+	Token  string
+	Source CredentialSource
+}
+
 // ExtractBearerToken extracts a token from `Authorization: Bearer <token>` or `x-api-key: <token>`.
 // If conflicting credentials are provided, it falls back to the Bearer token for backwards compatibility.
 func ExtractBearerToken(r *http.Request) string {
@@ -51,16 +67,22 @@ func ExtractBearerToken(r *http.Request) string {
 // ExtractGatewayCredentials extracts the caller token from `Authorization: Bearer <token>` or `x-api-key: <token>`.
 // If both headers are provided with conflicting values, it returns an ambiguous_gateway_credentials error (HTTP 400).
 func ExtractGatewayCredentials(r *http.Request) (string, error) {
-	var authBearer string
+	cred, err := ExtractGatewayCredentialsWithSource(r)
+	return cred.Token, err
+}
+
+// ExtractGatewayCredentialsWithSource extracts the caller credential together with its transport source.
+func ExtractGatewayCredentialsWithSource(r *http.Request) (ExtractedCredentials, error) {
+	var bearerToken string
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-		authBearer = strings.TrimSpace(authHeader[7:])
+		bearerToken = strings.TrimSpace(authHeader[7:])
 	}
 
-	apiKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+	headerToken := strings.TrimSpace(r.Header.Get("x-api-key"))
 
-	if authBearer != "" && apiKey != "" && authBearer != apiKey {
-		return "", &domain.GatewayError{
+	if bearerToken != "" && headerToken != "" && bearerToken != headerToken {
+		return ExtractedCredentials{}, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "ambiguous_gateway_credentials",
@@ -68,33 +90,36 @@ func ExtractGatewayCredentials(r *http.Request) (string, error) {
 		}
 	}
 
-	if authBearer != "" {
-		return authBearer, nil
+	if bearerToken != "" {
+		return ExtractedCredentials{Token: bearerToken, Source: CredentialSourceBearer}, nil
 	}
-	if apiKey != "" {
-		return apiKey, nil
+	if headerToken != "" {
+		return ExtractedCredentials{Token: headerToken, Source: CredentialSourceHeaderKey}, nil
 	}
 	if !isRealtimeWebSocketRequest(r) {
-		return "", nil
+		return ExtractedCredentials{}, nil
 	}
 
 	// Browser WebSocket clients can use the OpenAI-compatible subprotocol or query authentication.
 	for _, proto := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
 		proto = strings.TrimSpace(proto)
 		if strings.HasPrefix(proto, "openai-insecure-api-key.") {
-			return strings.TrimPrefix(proto, "openai-insecure-api-key."), nil
+			return ExtractedCredentials{
+				Token:  strings.TrimPrefix(proto, "openai-insecure-api-key."),
+				Source: CredentialSourceWebSocket,
+			}, nil
 		}
 	}
 
 	// Check query parameter for websocket connections
 	if qKey := r.URL.Query().Get("api_key"); qKey != "" {
-		return qKey, nil
+		return ExtractedCredentials{Token: qKey, Source: CredentialSourceWebSocket}, nil
 	}
 	if qToken := r.URL.Query().Get("token"); qToken != "" {
-		return qToken, nil
+		return ExtractedCredentials{Token: qToken, Source: CredentialSourceWebSocket}, nil
 	}
 
-	return "", nil
+	return ExtractedCredentials{}, nil
 }
 
 func isRealtimeWebSocketRequest(r *http.Request) bool {
@@ -143,16 +168,16 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 }
 
 // AdminControlPlaneMiddleware protects `/admin/v1/*` routes and resolves OperatorContext from
-// MasterAdminKey, admin-role VirtualKey, or validated inbound JWT/OIDC.
+// MasterAdminKey, admin-role VirtualKey, or validated inbound Bearer JWT/OIDC.
 func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := ExtractGatewayCredentials(r)
+			cred, err := ExtractGatewayCredentialsWithSource(r)
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return
 			}
-			op, err := svc.AuthenticateOperator(r.Context(), token)
+			op, err := svc.AuthenticateOperatorWithSource(r.Context(), cred)
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return

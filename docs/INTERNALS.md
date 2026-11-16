@@ -448,13 +448,13 @@ Invalidation increments the relevant shared epoch(s) and a monotonic revision in
 
 ## 10. Cross-Cutting Platform Modules
 
-### 10.1 Security Guardrails Engine (`internal/guardrails`)
-Zero external scanners are enabled by default. The engine operates locally using compiled regular expressions and signature matchers, and accepts optional provider-neutral `guardrails.Scanner` implementations through `GatewayServer.ConfigureGuardrailScanners`:
-- **Prompt Injection Defense**: Scans for known override signatures (`ignore previous instructions`, `disregard your system prompt`, `reveal your system prompt`, `<|im_start|>system`, `you are now DAN`).
-- **PII Redaction**: Detects and redacts Social Security Numbers (`[REDACTED_SSN]`), credit card numbers (`[REDACTED_CARD]`), and email addresses (`[REDACTED_EMAIL]`).
-- **Secret Leak Detection**: Identifies and masks leaked API keys (`sk-...`, AWS `AKIA...`, Google `AQ...`).
-- **Output Sanitization**: When `redact_output_pii` is enabled on the organization policy, model output completions are sanitized before returning to the client.
-- **Optional Scanner Hooks**: An injected scanner receives tenant ID, input/output direction, and content through a bounded context. The default timeout is two seconds; callers can set a custom timeout and choose fail-closed or fail-open handling for scanner errors. The production default remains no injected scanner and no network calls. Scanner implementations must honor context cancellation; any network-backed implementation must use the gateway's outbound network security policy.
+### 10.1 Security Guardrails Pipeline & Driver Engine (`internal/guardrails`)
+GoRoute evaluates requests and tool calls through a deterministic two-layer pipeline:
+- **Layer 0 Baseline Policy (`Engine`)**: Zero-external-dependency regex, signature, and lexicon checks for prompt injection (`normalizeTextForSignatureCheck`), PII (email, SSN, Luhn-verified cards -> `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`), API key leaks (`[REDACTED_SECRET]`), blocked keywords, and 5-category toxicity (`toxicity.go`), plus configured `guardrails.Scanner` / `gateway.GuardrailScanner` hooks with independent per-scanner timeouts and fail-open policies.
+- **Layer 1 Multi-Hook Pipeline (`Pipeline`, `Resolver`, `RouterLB`)**: Resolves org-scoped `GuardrailDefinition` and hierarchical `GuardrailBinding` rows across **Org -> Team -> Key -> EndUser -> ModelGroup -> Request Tag** (`ModeRule`), preventing `goroute_extensions` request overrides from disabling `default_on` or admin `is_locked` guardrails. Definitions sharing a logical `Name` are load-balanced via weighted shuffle and circuit-breaker cooldowns (`RouterLB`).
+- **Execution Lifecycle**: Runs `pre_call`, concurrent `during_call` (via `StartDuringCall`, canceling upstream LLM dispatch immediately upon violation), `post_call` (`modify`, `block`, `flag`), async `logging_only`, and MCP hooks (`pre_mcp_call`, `during_mcp_call`, `post_mcp_call`).
+- **19 Built-In Drivers (`internal/guardrails/drivers`)**: Includes `local_content_filter`, sandboxed Starlark `custom_code` (deterministic `50,000` step cap, `ctx` cancellation deadline, zero `import`/FS, SSRF-enforced `http_get`/`http_post`), SSRF-safe `generic_http`, `llm_as_a_judge` & `decision_model` (with `_internal_guardrail_origin` loop guard), 9 external/cloud engines (`openai_moderation`, `bedrock` SigV4, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`), and tool/MCP governance (`tool_permission`, `tool_policy` multi-turn taint chain tracking in `ToolLoopOrchestrator`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`).
+- **Streaming Chunk & Tool-Call Windowing (`stream_filter.go`)**: `StreamRedactor` and `StreamWindowEvaluator` hold back bounded byte/rune/token overlap windows across SSE chunks so split PII/secrets/patterns are masked or aborted mid-stream before downstream flush, alongside incremental streamed `tool_calls` JSON delta scanning.
 
 ### 10.2 Pre-Flight Validator (`internal/validation`)
 Validates request structures before consuming upstream quota:
@@ -468,27 +468,30 @@ Validates request structures before consuming upstream quota:
 - Automatically excludes failing backends from load balancing before client traffic is affected.
 
 ### 10.4 Observability & Distributed Tracing (`internal/observability`)
-- **Prometheus Metrics (`GET /metrics`)**: Exposes request counts, token counters, micro-dollar spend counters, cache hit rates, rate-limit trips, and latency quantiles (`p50`, `p95`, `p99`).
+- **Prometheus Metrics (`GET /metrics`)**: Exposes request counts, token counters, micro-dollar spend counters, cache hit rates, rate-limit trips, guardrail counters/timers (`gateway_guardrail_blocks_total`, `gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms_sum`, `gateway_guardrail_duration_ms_count`), and latency quantiles (`p50`, `p95`, `p99`).
 - **Runtime performance metrics**: Also exposes bounded response-cache L1 occupancy/evictions, upstream HTTP/1.1 vs HTTP/2 responses, fresh/reused connections, first-byte wait, idle-body timeouts, budgeted-model indexed lookups/catalog scans, and Postgres subscription/guardrail fallback query counts. Use these measurements before further pool or cache-consistency tuning.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Provides real-time stats computed via 1024-reservoir sampling.
-- **W3C Distributed Tracing**: Generates or propagates standard `traceparent` and `X-Trace-Id` headers across all log entries, spend records, and audit events.
+- **W3C Distributed Tracing & Guardrail Child Spans**: Generates or propagates standard `traceparent` and `X-Trace-Id` headers across log entries, spend records, and audit events, and emits scrubbed `guardrail.evaluate` OTEL child spans (guardrail name, hook, verdict, violation category labels, latency — without raw prompt/response payloads).
 
 ---
 
 ## 11. Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix
 
 ### 11.1 PostgreSQL Relational Hierarchy & Production Durability
-All entity operations (`teams`, `users`, `virtual_keys`, `spend_summaries`, `spend_logs`, `budget_resets`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
+All entity operations (`teams`, `users`, `virtual_keys`, `spend_summaries`, `spend_logs`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
 
 ```
 [organizations]
    |-- [teams]
    |     |-- [users]
-   |     |-- [virtual_keys] ---> [spend_logs] (Partitioned by created_at)
+   |     |-- [virtual_keys] ---> [spend_logs] ---> [spend_log_guardrails]
    |
    |-- [org_provider_subscriptions]
    |-- [org_model_policies]
-   |-- [guardrail_policies]
+   |-- [guardrail_policies] (baseline + toxicity columns, 0016)
+   |-- [guardrail_definitions] ---> [guardrail_bindings] (0017)
+   |                           ---> [daily_guardrail_metrics] / [daily_guardrail_usage_units] (0019)
+   |-- [tool_policies] (0018)
    |-- [provider_credentials] (AES-256-GCM encrypted)
    |-- [model_groups]
          |-- [model_deployments]
@@ -741,22 +744,17 @@ Client Request (GET /ui/playground)
 - `fs.Sub(embeddedDist, "dist")` creates a sub-tree filesystem at server bootstrap time.
 - Requests never touch the host filesystem or shell out to Node.js.
 - Static assets are served from the embedded filesystem; this avoids host filesystem lookups and runtime Node.js processes.
-- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the 420 KB uncompressed / 125 KB gzipped bundle budget enforced by `web/scripts/check-budget.mjs`.
+- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the `<= 500 KB` uncompressed / `<= 150 KB` gzipped total bundle budget (`<= 35 KB` CSS uncompressed / `<= 8 KB` gzipped) enforced by `web/scripts/check-budget.mjs`.
 
 ---
 
-## 19. Stateless Guardrails Simulation & Preflight Credential Validation Mechanics
+## 19. Guardrails Simulation, Standalone Apply & Preflight Credential Validation
 
-### 19.1 Stateless Guardrails Simulator (`internal/guardrails/engine.go`)
-The `EvaluateInputWithPolicy` method allows platform engineers to test security policies against user prompts without mutating persistent database records or sending outbound traffic to LLMs:
+### 19.1 Guardrails Simulator & `/v1/guardrails/apply` (`internal/server/handlers_guardrails.go`)
+Platform engineers and callers can evaluate guardrails without invoking upstream LLMs via two complementary endpoints:
 
-$$\text{Simulation Outcome} = \mathcal{G}(\text{Policy}_{\text{ephemeral}}, \text{Prompt}_{\text{raw}})$$
-
-1. **Policy Injection**: The caller submits an explicit, uncommitted `domain.GuardrailPolicy` alongside test prompts.
-2. **Pattern Pipeline**: The engine checks user messages against fixed prompt-injection signatures, custom blocked keywords, and regular expressions for email addresses, SSNs, payment card patterns, and selected API key patterns.
-3. **Action Simulation**: Violations use the configured action (`block`, `redact`, `audit`):
-   - For `redact`: Matching content is rewritten with type-specific tags such as `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, or `[REDACTED_SECRET]` in the returned canonical prompt copy.
-   - For `block`: The simulator response sets `allowed: false` and lists the matched violation types. Custom blocked keywords always block when matched.
+1. **Admin Dry-Run Simulator (`POST /admin/v1/organizations/{orgID}/guardrails/simulate`)**: Evaluates either an ephemeral draft `policy` (`EvaluateInputWithPolicy` / `EvaluateOutputWithPolicy`) or named org guardrails (`guardrail_name`, `tags`, `direction`) across `prompt`, `texts`, structured `messages`, `tools`, and `tool_calls`—including optional split-chunk `stream_chunk_size` windowing simulation (`StreamWindowEvaluator`)—without persisting mutations.
+2. **Data Plane Guardrail Apply (`POST /v1/guardrails/apply`)**: Authorizes Virtual API Keys to invoke a specific active `guardrail_name` (or effective hierarchical tenant pipeline) on `request`/`input` (`pre_call`) or `response`/`output` (`post_call`) payloads, returning `blocked`, `decision` (`allow`/`block`/`flag`/`modify`), `modified_texts`/`modified_messages`/`modified_tool_calls`, `violations`, `usage_units`, and integer micro-dollar telemetry.
 
 ### 19.2 Preflight Credential Validation (`internal/server/handlers_admin.go`)
 To prevent configuration errors and broken deployment routes, `handleAdminPreflightValidateCredential` tests upstream provider credentials before persistence:

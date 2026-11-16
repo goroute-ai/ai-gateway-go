@@ -78,8 +78,8 @@ export const OrganizationsView: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white flex items-center gap-2"><Building2 className="w-5 h-5 text-accent-primary" />Organizations, Teams & Policies</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Active org: <code className="text-accent-primary font-mono">{activeOrgId}</code></p>
+          <h1 className="text-xl font-bold text-brand-title flex items-center gap-2"><Building2 className="w-5 h-5 text-accent-primary" />Organizations, Teams & Policies</h1>
+          <p className="text-xs text-brand-muted mt-0.5">Active org: <code className="text-accent-primary font-mono">{activeOrgId}</code></p>
         </div>
         <div className="flex gap-2">
           {tab === 'orgs' && <button onClick={() => setModal('org')} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
@@ -94,7 +94,7 @@ export const OrganizationsView: React.FC = () => {
 
       <div className="flex gap-2 border-b border-border-subtle pb-2 overflow-x-auto">
         {([['orgs', `Orgs (${orgs.length})`, Building2], ['teams', `Teams (${teams.length})`, Layers], ['users', `Users (${users.length})`, Users], ['policies', 'Subscriptions & Policies', ShieldCheck]] as const).map(([id, label, Icon]) => (
-          <button key={id} onClick={() => setTab(id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${tab === id ? 'bg-accent-primary/15 text-accent-primary border border-accent-primary/30' : 'text-slate-400 hover:text-slate-200'}`}>
+          <button key={id} onClick={() => setTab(id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${tab === id ? 'bg-accent-soft text-accent-primary border border-accent-primary/30' : 'text-brand-muted hover:text-brand-title'}`}>
             <Icon className="w-3.5 h-3.5" />{label}
           </button>
         ))}
@@ -113,7 +113,7 @@ export const OrganizationsView: React.FC = () => {
       {tab !== 'policies' ? (
         <div className="bg-surface-base border border-border-subtle rounded-xl overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-surface-elevated border-b border-border-subtle text-slate-400 font-mono uppercase text-[10px]">
+            <thead className="bg-surface-elevated border-b border-border-subtle text-brand-muted font-mono uppercase text-[10px]">
               <tr>
                 {tab === 'orgs' && ['Name', 'ID', 'Budget', 'Spend', 'Reset', 'Status', 'Scope'].map((h) => <th key={h} className={cell}>{h}</th>)}
                 {tab === 'teams' && ['Team', 'ID', 'Budget', 'Spend', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
@@ -122,31 +122,31 @@ export const OrganizationsView: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-border-subtle">
               {tab === 'orgs' && orgs.map((o) => (
-                <tr key={o.id}><td className={`${cell} font-medium text-white`}>{o.name}</td><td className={`${cell} font-mono text-slate-400`}>{o.id}</td><td className={`${cell} font-mono`}>{o.max_budget_micros ? fmtUSD(o.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(o.spent_micros)}</td><td className={`${cell} font-mono capitalize text-slate-400`}>{o.budget_reset_period || 'monthly'}</td><td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td><td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td></tr>
+                <tr key={o.id}><td className={`${cell} font-medium text-brand-title`}>{o.name}</td><td className={`${cell} font-mono text-brand-muted`}>{o.id}</td><td className={`${cell} font-mono text-brand-body`}>{o.max_budget_micros ? fmtUSD(o.max_budget_micros) : 'Unlimited'}</td><td className={`${cell} font-mono text-status-success`}>{fmtUSD(o.spent_micros)}</td><td className={`${cell} font-mono capitalize text-brand-muted`}>{o.budget_reset_period || 'monthly'}</td><td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td><td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td></tr>
               ))}
               {tab === 'teams' && teams.map((t) => (
                 <tr key={t.id}>
-                  <td className={`${cell} font-medium text-white`}>{t.name}</td>
-                  <td className={`${cell} font-mono text-slate-400`}>{t.id}</td>
-                  <td className={`${cell} font-mono`}>{t.max_budget_micros ? fmtUSD(t.max_budget_micros) : 'Unlimited'}</td>
-                  <td className={`${cell} font-mono text-emerald-400`}>{fmtUSD(t.spent_micros)}</td>
+                  <td className={`${cell} font-medium text-brand-title`}>{t.name}</td>
+                  <td className={`${cell} font-mono text-brand-muted`}>{t.id}</td>
+                  <td className={`${cell} font-mono text-brand-body`}>{t.max_budget_micros ? fmtUSD(t.max_budget_micros) : 'Unlimited'}</td>
+                  <td className={`${cell} font-mono text-status-success`}>{fmtUSD(t.spent_micros)}</td>
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => { setF((p) => ({ ...p, editTeamId: t.id, teamName: t.name, teamBudget: t.max_budget_micros ? String(t.max_budget_micros / 1e6) : '', active: t.is_active })); setModal('team'); }} className="p-1 text-slate-400 hover:text-white rounded" title="Edit team"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) deleteTeam.mutate(t.id); }} disabled={deleteTeam.isPending} className="p-1 text-slate-400 hover:text-rose-400 rounded" title="Delete team"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { setF((p) => ({ ...p, editTeamId: t.id, teamName: t.name, teamBudget: t.max_budget_micros ? String(t.max_budget_micros / 1e6) : '', active: t.is_active })); setModal('team'); }} className="p-1 text-brand-muted hover:text-brand-title rounded" title="Edit team"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) deleteTeam.mutate(t.id); }} disabled={deleteTeam.isPending} className="p-1 text-brand-muted hover:text-status-danger rounded" title="Delete team"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
               ))}
               {tab === 'users' && users.map((u) => (
                 <tr key={u.id}>
-                  <td className={`${cell} font-medium text-white`}>{u.email}</td>
-                  <td className={`${cell} text-slate-300`}>{u.name || '—'}</td>
-                  <td className={`${cell} font-mono text-slate-400`}>{u.team_id || '—'}</td>
+                  <td className={`${cell} font-medium text-brand-title`}>{u.email}</td>
+                  <td className={`${cell} text-brand-body`}>{u.name || '—'}</td>
+                  <td className={`${cell} font-mono text-brand-muted`}>{u.team_id || '—'}</td>
                   <td className={cell}><Badge variant="info">{u.role}</Badge></td>
                   <td className={cell}><Badge variant={u.is_active ? 'success' : 'danger'}>{u.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => { setF((p) => ({ ...p, editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', role: u.role, active: u.is_active })); setModal('user'); }} className="p-1 text-slate-400 hover:text-white rounded" title="Edit user"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) deleteUser.mutate(u.id); }} disabled={deleteUser.isPending} className="p-1 text-slate-400 hover:text-rose-400 rounded" title="Delete user"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { setF((p) => ({ ...p, editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', role: u.role, active: u.is_active })); setModal('user'); }} className="p-1 text-brand-muted hover:text-brand-title rounded" title="Edit user"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) deleteUser.mutate(u.id); }} disabled={deleteUser.isPending} className="p-1 text-brand-muted hover:text-status-danger rounded" title="Delete user"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
               ))}
@@ -156,10 +156,10 @@ export const OrganizationsView: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <div className="bg-surface-base border border-border-subtle rounded-xl p-4 space-y-2">
-            <h3 className="text-sm font-semibold text-white">Layer 2: Provider Subscriptions</h3>
+            <h3 className="text-sm font-semibold text-brand-title">Layer 2: Provider Subscriptions</h3>
             {subs.map((s) => (
               <div key={s.provider} className="flex items-center justify-between p-2 rounded-lg bg-surface-elevated border border-border-subtle text-xs">
-                <span className="font-mono font-semibold text-white uppercase">{s.provider}</span>
+                <span className="font-mono font-semibold text-brand-title uppercase">{s.provider}</span>
                 <button onClick={() => setSub.mutate({ provider: s.provider, is_enabled: !s.is_enabled, auto_enable_new: s.auto_enable_new })}>
                   <Badge variant={s.is_enabled ? 'success' : 'danger'}>{s.is_enabled ? 'Enabled' : 'Disabled'}</Badge>
                 </button>
@@ -167,10 +167,10 @@ export const OrganizationsView: React.FC = () => {
             ))}
           </div>
           <div className="bg-surface-base border border-border-subtle rounded-xl p-4 space-y-2">
-            <h3 className="text-sm font-semibold text-white">Layer 3: Org Model Policies</h3>
+            <h3 className="text-sm font-semibold text-brand-title">Layer 3: Org Model Policies</h3>
             {pols.map((p) => (
               <div key={p.global_model_id} className="flex items-center justify-between p-2 rounded-lg bg-surface-elevated border border-border-subtle text-xs">
-                <span className="font-mono text-slate-200 truncate mr-2">{p.global_model_id}</span>
+                <span className="font-mono text-brand-body truncate mr-2">{p.global_model_id}</span>
                 <button onClick={() => setPol.mutate({ global_model_id: p.global_model_id, is_enabled: !p.is_enabled })}>
                   <Badge variant={p.is_enabled ? 'success' : 'danger'}>{p.is_enabled ? 'Allowed' : 'Blocked'}</Badge>
                 </button>
@@ -195,7 +195,7 @@ export const OrganizationsView: React.FC = () => {
           {!f.editTeamId && <input value={f.teamId || ''} onChange={(e) => set('teamId', e.target.value)} placeholder="Team ID (optional)" className={INPUT_CLS} />}
           <input type="number" step="0.01" value={f.teamBudget || ''} onChange={(e) => set('teamBudget', e.target.value)} placeholder="Max Budget USD (0=unlimited)" className={INPUT_CLS} />
         </div>
-        {f.editTeamId && <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
+        {f.editTeamId && <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
       </FormModal>
 
       <FormModal open={modal === 'user'} onClose={() => setModal(null)} title={f.editUserId ? `Edit User (${f.editUserId})` : `Create User (${activeOrgId})`} submitLabel={f.editUserId ? 'Save' : 'Create'} pending={saveUser.isPending} error={saveUser.error} onSubmit={() => saveUser.mutate({ _editId: f.editUserId || undefined, org_id: activeOrgId, email: (f.email || '').trim(), role: f.role, ...(!f.editUserId && f.userId?.trim() && { id: f.userId.trim() }), name: (f.userName || '').trim(), team_id: f.userTeamId || '', is_active: !!f.active })}>
@@ -208,18 +208,18 @@ export const OrganizationsView: React.FC = () => {
           <select value={f.userTeamId || ''} onChange={(e) => set('userTeamId', e.target.value)} className={INPUT_CLS}><option value="">No Team</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
           <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}>{['developer', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'service_account'].map((r) => <option key={r} value={r}>{r}</option>)}</select>
         </div>
-        {f.editUserId && <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
+        {f.editUserId && <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
       </FormModal>
 
       <FormModal open={modal === 'sub'} onClose={() => setModal(null)} title="Set Provider Subscription" pending={setSub.isPending} error={setSub.error} onSubmit={() => setSub.mutate({ provider: f.subProv, is_enabled: f.subOn, auto_enable_new: f.subAuto })}>
         <input required value={f.subProv} onChange={(e) => set('subProv', e.target.value)} placeholder="Provider (e.g. openai)" className={INPUT_CLS} />
-        <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.subOn} onChange={(e) => set('subOn', e.target.checked)} />Enabled</label>
-        <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.subAuto} onChange={(e) => set('subAuto', e.target.checked)} />Auto-enable new models</label>
+        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.subOn} onChange={(e) => set('subOn', e.target.checked)} />Enabled</label>
+        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.subAuto} onChange={(e) => set('subAuto', e.target.checked)} />Auto-enable new models</label>
       </FormModal>
 
       <FormModal open={modal === 'policy'} onClose={() => setModal(null)} title="Set Org Model Policy" pending={setPol.isPending} error={setPol.error} onSubmit={() => setPol.mutate({ global_model_id: (f.polModel || '').trim(), is_enabled: f.polOn })}>
         <input required value={f.polModel || ''} onChange={(e) => set('polModel', e.target.value)} placeholder="Global Model ID (e.g. openai/gpt-4.1)" className={INPUT_CLS} />
-        <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!f.polOn} onChange={(e) => set('polOn', e.target.checked)} />Allow Model</label>
+        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.polOn} onChange={(e) => set('polOn', e.target.checked)} />Allow Model</label>
       </FormModal>
     </div>
   );

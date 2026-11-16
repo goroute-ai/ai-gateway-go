@@ -208,25 +208,37 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 		// model streams. Bound connect/TLS/response-header waits on the transport;
 		// the body wrapper below enforces an idle timeout while allowing a stream
 		// to run for as long as it continues to make progress.
-		Transport: idleTimeoutRoundTripper{base: transport, policy: policy, requestTimeout: options.RequestTimeout, idleTimeout: options.StreamIdleTimeout, stats: stats},
-		Timeout:   0,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= policy.MaxRedirects {
-				return ErrTooManyRedirects
-			}
-			// Re-validate the target URL on every redirect
-			if err := policy.ValidateURL(req.URL); err != nil {
-				return fmt.Errorf("network: redirect target forbidden: %w", err)
-			}
-			if len(via) > 0 && (!sameOrigin(via[len(via)-1].URL, req.URL) || !sameOrigin(via[0].URL, req.URL)) {
-				req.Header.Del("x-api-key")
-				req.Header.Del("api-key")
-			}
-			return nil
-		},
+		Transport:     idleTimeoutRoundTripper{base: transport, policy: policy, requestTimeout: options.RequestTimeout, idleTimeout: options.StreamIdleTimeout, stats: stats},
+		Timeout:       0,
+		CheckRedirect: WrapCheckRedirect(policy, nil),
 	}
 
 	return client
+}
+
+// WrapCheckRedirect returns an http.Client CheckRedirect callback that enforces
+// policy.MaxRedirects, policy.ValidateURL on every redirect hop, cross-origin API key
+// header stripping, and any caller-provided next redirect hook.
+func WrapCheckRedirect(policy *Policy, next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	if policy == nil {
+		policy, _ = NewPolicy(config.OutboundSSRFConfig{})
+	}
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= policy.MaxRedirects {
+			return ErrTooManyRedirects
+		}
+		if err := policy.ValidateURL(req.URL); err != nil {
+			return fmt.Errorf("network: redirect target forbidden: %w", err)
+		}
+		if len(via) > 0 && (!sameOrigin(via[len(via)-1].URL, req.URL) || !sameOrigin(via[0].URL, req.URL)) {
+			req.Header.Del("x-api-key")
+			req.Header.Del("api-key")
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		return nil
+	}
 }
 
 // idleTimeoutRoundTripper applies total deadlines to ordinary calls and bounds

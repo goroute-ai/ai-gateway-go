@@ -10,8 +10,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	return pol
+}
 
 func TestOpenAI_ReasoningModels_GPT5_And_O4_EffortMapping(t *testing.T) {
 	var captured map[string]any
@@ -24,6 +38,7 @@ func TestOpenAI_ReasoningModels_GPT5_And_O4_EffortMapping(t *testing.T) {
 	defer srv.Close()
 
 	adp := openai.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-oai-ext",
 		GlobalModel: &domain.GlobalModel{ID: "openai/gpt-5", Provider: domain.ProviderOpenAI, ModelName: "gpt-5"},
@@ -65,6 +80,7 @@ func TestOpenAI_TranscribeAudio_IsTranslation(t *testing.T) {
 	defer srv.Close()
 
 	adp := openai.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-oai-audio",
 		GlobalModel: &domain.GlobalModel{ID: "openai/whisper-1", Provider: domain.ProviderOpenAI, ModelName: "whisper-1"},
@@ -117,6 +133,7 @@ func TestOpenAI_StreamTextCompletion(t *testing.T) {
 	defer srv.Close()
 
 	adp := openai.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-oai-cmpl",
 		GlobalModel: &domain.GlobalModel{ID: "openai/gpt-3.5-turbo-instruct", Provider: domain.ProviderOpenAI, ModelName: "gpt-3.5-turbo-instruct"},

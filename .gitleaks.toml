@@ -10,6 +10,7 @@ paths = [
   '''^internal/logger/scrub_test\.go$''',
   '''^internal/logger/hardening_test\.go$''',
   '''^internal/guardrails/.*_test\.go$''',
+  '''^tests/guardrails/.*_test\.go$''',
   '''^tests/e2e/.*_test\.go$''',
   '''^web/src/views/GuardrailsView\.tsx$''',
   '''^web/dist/assets/GuardrailsView-.*\.js$''',
@@ -23,4 +24,6 @@ regexes = [
   '''\$\{GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\}''',
   '''gpt-3\.5-turbo-instruct''',
   '''idNew1\.KeyRPMLimit''',
+  '''incoming-oidc-hs256-secret-32-bytes''',
+  '''vault-outbound-hs256-secret-32b''',
 ]

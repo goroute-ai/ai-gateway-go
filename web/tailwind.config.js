@@ -1,3 +1,5 @@
+const withOpacity = (varName) => `rgb(var(${varName}) / <alpha-value>)`;
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -8,41 +10,43 @@ export default {
   theme: {
     extend: {
       colors: {
-        canvas: '#000000', // OLED Pure Black Canvas
+        canvas: withOpacity('--rgb-canvas'),
         surface: {
-          base: '#0c0c0f',
-          elevated: '#141418',
-          hover: '#1e1e24',
-          code: '#0d0d12',
+          base: withOpacity('--rgb-surface-base'),
+          elevated: withOpacity('--rgb-surface-elevated'),
+          hover: withOpacity('--rgb-surface-hover'),
+          code: withOpacity('--rgb-surface-code'),
+          input: withOpacity('--rgb-surface-input'),
         },
         border: {
-          DEFAULT: '#1e1e24',
-          subtle: '#141418',
-          strong: '#2a2a34',
+          DEFAULT: withOpacity('--rgb-border'),
+          subtle: withOpacity('--rgb-border-subtle'),
+          strong: withOpacity('--rgb-border-strong'),
         },
         accent: {
-          primary: '#b39aff',      // Dark Theme Lavender (Primary - 10.2:1 AAA on #000000)
-          dark: '#9a79ff',         // Hover state
-          darker: '#8059f5',       // Active pressed
-          darkest: '#501ee8',      // Deep outline
-          glow: '#cbbafe',         // Interactive glow
-          lighter: '#dbceff',      // Monospace badge
-          lightest: '#f1ecfe',     // Text tint
-          soft: 'rgba(124, 58, 237, 0.09)', // Specialized accent tint
-          lavender: '#d8ccff',     // Inline code tint (13.5:1 on #000000)
-          violet: '#7c3aed',       // Violet accent
-          royal: '#6d28d9',        // Royal Violet
-          secondary: '#7c3aed',
+          primary: withOpacity('--rgb-accent-primary'),
+          dark: withOpacity('--rgb-accent-dark'),
+          darker: withOpacity('--rgb-accent-darker'),
+          darkest: withOpacity('--rgb-accent-darker'),
+          glow: withOpacity('--rgb-accent-glow'),
+          light: withOpacity('--rgb-accent-glow'),
+          lighter: withOpacity('--rgb-accent-lighter'),
+          lightest: withOpacity('--rgb-accent-lighter'),
+          contrast: withOpacity('--rgb-accent-contrast'),
+          soft: 'var(--accent-soft)',
+          secondary: withOpacity('--rgb-accent-dark'),
         },
         brand: {
-          title: '#f5f3ff',        // Crisp lavender-tinted white
-          body: '#d2d0dc',         // High-legibility neutral body
-          muted: '#9696a4',        // Secondary meta & labels
+          title: withOpacity('--rgb-text-title'),
+          body: withOpacity('--rgb-text-body'),
+          muted: withOpacity('--rgb-text-muted'),
         },
         status: {
-          healthy: '#10B981',
-          warning: '#F59E0B',
-          danger: '#EF4444',
+          healthy: withOpacity('--rgb-status-success'),
+          success: withOpacity('--rgb-status-success'),
+          warning: withOpacity('--rgb-status-warning'),
+          danger: withOpacity('--rgb-status-danger'),
+          info: withOpacity('--rgb-status-info'),
         },
       },
       fontFamily: {
@@ -61,4 +65,4 @@ export default {
     },
   },
   plugins: [],
-}
+};

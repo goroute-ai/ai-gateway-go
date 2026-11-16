@@ -180,6 +180,7 @@ func TestOpenAICompat_RerankWireShapes(t *testing.T) {
 				AuthStrategy:        &adapter.BearerAuthStrategy{},
 				SupportedOperations: &openaicompat.ProviderOperations{Rerank: true},
 			}, srv.Client())
+			adp.SetSSRFPolicy(loopbackTestPolicy(t))
 			topN := 1
 			resp, err := adp.Rerank(context.Background(), &domain.Deployment{
 				Credential: &domain.ProviderCredential{BaseURL: srv.URL},
@@ -254,6 +255,7 @@ func TestOpenAICompat_OptionalModalities_DispatchAndGuard(t *testing.T) {
 		},
 	}
 	adp := openaicompat.NewAdapter(profile, srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:         "dep-1",
 		Credential: &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "sk-test"},
@@ -356,6 +358,7 @@ func TestOpenAICompat_StreamTextCompletion(t *testing.T) {
 		AuthStrategy:        &adapter.BearerAuthStrategy{},
 		SupportedOperations: &openaicompat.ProviderOperations{Completion: true},
 	}, srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-compat-cmpl",
 		GlobalModel: &domain.GlobalModel{ID: "test_stream_cmpl/m1", Provider: "test_stream_cmpl", ModelName: "m1"},
@@ -400,6 +403,7 @@ func TestTranscribeAudio_TranslationRoutingAndCapabilityCheck(t *testing.T) {
 		AuthStrategy:        &adapter.BearerAuthStrategy{},
 		SupportedOperations: &openaicompat.ProviderOperations{AudioSTT: true, AudioTranslation: true},
 	}, srv.Client())
+	supported.SetSSRFPolicy(loopbackTestPolicy(t))
 
 	resp, err := supported.TranscribeAudio(context.Background(), dep, &domain.CanonicalAudioTranscriptionRequest{
 		Model:         "whisper-1",

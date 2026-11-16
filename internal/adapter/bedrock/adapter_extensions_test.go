@@ -11,8 +11,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/bedrock"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	return pol
+}
 
 func testBedrockDeployment(endpoint string) *domain.Deployment {
 	return &domain.Deployment{
@@ -59,7 +73,7 @@ func TestBedrock_ChatCompletion_PayloadAndUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	imgData := base64.StdEncoding.EncodeToString([]byte("pngbytes"))
 	pdfData := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4"))
 
@@ -229,7 +243,7 @@ func TestBedrock_RerankUsesAgentRuntimeWireFormat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	topN := 1
 	resp, err := adp.Rerank(context.Background(), testBedrockDeployment(srv.URL), &domain.CanonicalRerankRequest{
 		Model:     "arn:aws:bedrock:us-east-1:123456789012:inference-profile/reranker",
@@ -278,7 +292,7 @@ func TestBedrock_TitanV2EmbeddingPreservesInputsAndDimensions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	dimensions := 512
 	resp, err := adp.Embeddings(context.Background(), testBedrockDeployment(srv.URL), &domain.CanonicalEmbeddingRequest{
 		Model: "amazon.titan-embed-text-v2:0", Input: []string{"first", "second"}, Dimensions: &dimensions,
@@ -308,7 +322,7 @@ func TestBedrock_CohereV4EmbeddingUsesTextsAndInputType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	dimensions := 256
 	resp, err := adp.Embeddings(context.Background(), testBedrockDeployment(srv.URL), &domain.CanonicalEmbeddingRequest{
 		Model: "cohere.embed-v4:0", Input: []string{"one", "two"}, InputType: "search_query", Dimensions: &dimensions,
@@ -328,7 +342,7 @@ func TestBedrock_EmbeddingDoesNotBillByteLengthAsTokenUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	resp, err := adp.Embeddings(context.Background(), testBedrockDeployment(srv.URL), &domain.CanonicalEmbeddingRequest{
 		Model: "amazon.titan-embed-text-v1", Input: []string{"longer than a token"},
 	})
@@ -359,7 +373,7 @@ func TestBedrock_StreamChatCompletion_ToolUseAndCacheUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	req := &domain.CanonicalChatRequest{
 		Model:    "anthropic.claude-sonnet-4-5-v1:0",
 		Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},

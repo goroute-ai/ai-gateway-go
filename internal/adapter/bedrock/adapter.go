@@ -113,15 +113,20 @@ func parseCredentials(cred *domain.ProviderCredential) (*Credentials, error) {
 }
 
 func (a *Adapter) getEndpointURL(dep *domain.Deployment, creds *Credentials, path string) (string, error) {
-	if dep.Credential != nil && dep.Credential.BaseURL != "" {
-		baseURL := strings.TrimRight(dep.Credential.BaseURL, "/")
-		return baseURL + path, nil
-	}
 	region := creds.Region
 	if region == "" {
 		region = "us-east-1"
 	}
-	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com%s", region, path), nil
+	defaultBase := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
+	}
+	baseURL, err := adapter.ResolveCredentialBaseURL(cred, defaultBase, a.ssrfPolicy, domain.ProviderBedrock)
+	if err != nil {
+		return "", err
+	}
+	return baseURL + path, nil
 }
 
 func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
@@ -651,16 +656,16 @@ func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domai
 		return nil, fmt.Errorf("marshal bedrock rerank request: %w", err)
 	}
 
-	targetURL := ""
-	if dep.Credential.BaseURL != "" {
-		targetURL = strings.TrimRight(dep.Credential.BaseURL, "/") + "/rerank"
-	} else {
-		runtimeURL, err := a.getEndpointURL(dep, creds, "/rerank")
-		if err != nil {
-			return nil, err
-		}
-		targetURL = strings.Replace(runtimeURL, "bedrock-runtime.", "bedrock-agent-runtime.", 1)
+	region := creds.Region
+	if region == "" {
+		region = "us-east-1"
 	}
+	defaultRerankBase := fmt.Sprintf("https://bedrock-agent-runtime.%s.amazonaws.com", region)
+	rerankBase, err := adapter.ResolveCredentialBaseURL(dep.Credential, defaultRerankBase, a.ssrfPolicy, domain.ProviderBedrock)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := rerankBase + "/rerank"
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {

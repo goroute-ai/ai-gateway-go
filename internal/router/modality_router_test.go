@@ -16,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,8 +79,10 @@ func TestExecuteRerank(t *testing.T) {
 	}
 	require.NoError(t, repo.CreateDeployment(ctx, dep))
 
+	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, polErr)
 	reg := adapter.NewRegistry()
-	reg.Register(cohere.NewAdapter(cohereServer.Client(), nil))
+	reg.Register(cohere.NewAdapter(cohereServer.Client(), pol))
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = 1 * time.Millisecond
@@ -163,8 +166,12 @@ func TestExecuteModeration(t *testing.T) {
 	}
 	require.NoError(t, repo.CreateDeployment(ctx, dep))
 
+	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, polErr)
+	oaiAdp := openai.NewAdapter(oaiServer.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(oaiServer.Client()))
+	reg.Register(oaiAdp)
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = 1 * time.Millisecond
@@ -233,9 +240,13 @@ func TestExecuteCompletionStream_SuccessAndUnsupported(t *testing.T) {
 		ModelGroupID: mgCoh.ID, GlobalModelID: cohModel.ID, CredentialID: cohCred.ID, Weight: 1, Status: domain.DeploymentStatusActive,
 	}))
 
+	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, polErr)
+	oaiAdp := openai.NewAdapter(oaiServer.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(oaiServer.Client()))
-	reg.Register(cohere.NewAdapter(oaiServer.Client(), nil))
+	reg.Register(oaiAdp)
+	reg.Register(cohere.NewAdapter(oaiServer.Client(), pol))
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = time.Millisecond
@@ -309,8 +320,12 @@ func TestReliabilityManager_DeploymentTimeoutEnforcement(t *testing.T) {
 		ModelGroupID: mg.ID, GlobalModelID: model.ID, CredentialID: cred.ID, Weight: 1, TimeoutMs: 50, Status: domain.DeploymentStatusActive,
 	}))
 
+	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, polErr)
+	oaiAdp := openai.NewAdapter(slowSrv.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(slowSrv.Client()))
+	reg.Register(oaiAdp)
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = time.Millisecond

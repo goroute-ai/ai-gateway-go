@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, INPUT_CLS } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_CANCEL, BTN_PRIMARY } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { VirtualKey, Role, BudgetResetPeriod } from '../types';
@@ -36,7 +36,7 @@ const AllowlistField: React.FC<{
   placeholder: string;
 }> = ({ label, state, onChange, placeholder }) => (
   <div>
-    <label className="block text-xs font-medium text-slate-300 mb-1">{label}</label>
+    <label className="block text-xs font-medium text-brand-body mb-1">{label}</label>
     <div className="flex gap-2">
       <select
         value={state.mode}
@@ -238,10 +238,10 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       {/* Header bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold text-brand-title tracking-tight flex items-center gap-2">
             Virtual API Keys
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-brand-muted mt-1">
             Manage tenant-scoped virtual keys with budget limits, rate limiting, and model allowlists
           </p>
         </div>
@@ -249,7 +249,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         <div className="flex items-center gap-2">
           <button
             onClick={() => refetch()}
-            className="px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-slate-300 hover:text-white transition-colors"
+            className="px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong bg-surface-elevated text-xs font-medium text-brand-body hover:text-brand-title transition-colors"
           >
             Refresh
           </button>
@@ -260,7 +260,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
               resetForm();
               setShowIssueModal(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-glow text-xs font-semibold text-black transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-primary hover:bg-accent-dark text-xs font-semibold text-accent-contrast transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Issue Virtual Key</span>
@@ -282,7 +282,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-surface-elevated/60 text-slate-400 uppercase text-[10px] tracking-wider border-b border-border-subtle">
+            <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
               <tr>
                 <th className="px-6 py-3">Key Name</th>
                 <th className="px-6 py-3">Prefix / ID</th>
@@ -296,7 +296,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
             <tbody className="divide-y divide-border-subtle/40">
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-brand-muted">
                     Loading virtual keys...
                   </td>
                 </tr>
@@ -308,31 +308,31 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
                   return (
                     <tr key={k.id} className="hover:bg-surface-hover/30 transition-colors">
-                      <td className="px-6 py-3 font-medium text-slate-200">
+                      <td className="px-6 py-3 font-medium text-brand-title">
                         <div className="flex items-center gap-2">
                           <Key className="w-3.5 h-3.5 text-accent-primary shrink-0" />
                           <span>{k.name}</span>
                         </div>
                         {(k.team_id || k.user_id || k.expires_at) && (
-                          <div className="text-[10px] font-mono text-slate-500 mt-0.5 space-x-2">
+                          <div className="text-[10px] font-mono text-brand-muted mt-0.5 space-x-2">
                             {k.team_id && <span>team:{k.team_id}</span>}
                             {k.user_id && <span>user:{k.user_id}</span>}
                             {k.expires_at && <span>exp:{new Date(k.expires_at).toLocaleDateString()}</span>}
                           </div>
                         )}
                       </td>
-                      <td className="px-6 py-3 font-mono text-slate-300">
-                        <span className="bg-black/40 px-2 py-0.5 rounded border border-border-subtle">
+                      <td className="px-6 py-3 font-mono text-brand-body">
+                        <span className="bg-surface-code px-2 py-0.5 rounded border border-border-subtle">
                           {k.key_prefix}••••
                         </span>
                       </td>
                       <td className="px-6 py-3 font-mono">
-                        <div className="text-slate-200 font-semibold">${spendUSD.toFixed(4)}</div>
-                        <div className="text-[10px] text-slate-500">
+                        <div className="text-brand-title font-semibold">${spendUSD.toFixed(4)}</div>
+                        <div className="text-[10px] text-brand-muted">
                           {budgetUSD ? `Cap: $${budgetUSD.toFixed(2)}` : 'No budget cap'}
                         </div>
                       </td>
-                      <td className="px-6 py-3 font-mono text-[11px] text-slate-400">
+                      <td className="px-6 py-3 font-mono text-[11px] text-brand-muted">
                         <div>RPM: {k.rpm_limit ?? '∞'}</div>
                         <div>TPM: {k.tpm_limit ? k.tpm_limit.toLocaleString() : '∞'}</div>
                       </td>
@@ -346,7 +346,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                             ))}
                           </div>
                         ) : (
-                          <span className="text-slate-500 font-mono text-[11px]">All Models</span>
+                          <span className="text-brand-muted font-mono text-[11px]">All Models</span>
                         )}
                       </td>
                       <td className="px-6 py-3">
@@ -365,7 +365,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                           <div className="inline-flex items-center gap-1">
                             <button
                               onClick={() => openEditModal(k)}
-                              className="text-slate-400 hover:text-white p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                              className="text-brand-muted hover:text-brand-title p-1.5 rounded hover:bg-surface-elevated transition-colors"
                               title="Edit virtual key"
                             >
                               <Pencil className="w-3.5 h-3.5" />
@@ -377,7 +377,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                                 }
                               }}
                               disabled={rotateMutation.isPending}
-                              className="text-slate-400 hover:text-amber-400 p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                              className="text-brand-muted hover:text-status-warning p-1.5 rounded hover:bg-surface-elevated transition-colors"
                               title="Rotate virtual key secret"
                             >
                               <RotateCw className="w-3.5 h-3.5" />
@@ -389,7 +389,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                                 }
                               }}
                               disabled={revokeMutation.isPending}
-                              className="text-slate-400 hover:text-rose-400 p-1.5 rounded hover:bg-surface-elevated transition-colors"
+                              className="text-brand-muted hover:text-status-danger p-1.5 rounded hover:bg-surface-elevated transition-colors"
                               title="Revoke virtual key"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -402,7 +402,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-brand-muted">
                     No virtual keys found for organization {activeOrgId}. Click "Issue Virtual Key" above.
                   </td>
                 </tr>
@@ -428,8 +428,8 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
             <ErrorAlert error={issueMutation.error} title={editingKeyId ? 'Failed to update virtual key' : 'Failed to issue virtual key'} />
           )}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
-              Key Name <span className="text-rose-400">*</span>
+            <label className="block text-xs font-medium text-brand-body mb-1">
+              Key Name <span className="text-status-danger">*</span>
             </label>
             <input
               type="text"
@@ -437,40 +437,40 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. production-backend-app"
-              className="w-full bg-black/60 border border-border-strong rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent-primary"
+              className={INPUT_CLS}
             />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Team (optional)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Team (optional)</label>
               <select value={teamId} onChange={(e) => setTeamId(e.target.value)} className={INPUT_CLS}>
                 <option value="">Org-wide</option>
                 {(teamsData?.data || []).map((t) => <option key={t.id} value={t.id}>{t.name} ({t.id})</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">User (optional)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">User (optional)</label>
               <select value={userId} onChange={(e) => setUserId(e.target.value)} className={INPUT_CLS}>
                 <option value="">Unassigned</option>
                 {(usersData?.data || []).map((u) => <option key={u.id} value={u.id}>{u.email} ({u.id})</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Expires At</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Expires At</label>
               <input type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Role</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Role</label>
               <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={INPUT_CLS}>
                 {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Budget Reset Period</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Budget Reset Period</label>
               <select value={budgetResetPeriod} onChange={(e) => setBudgetResetPeriod(e.target.value as BudgetResetPeriod)} className={`${INPUT_CLS} capitalize`}>
                 {RESET_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
@@ -479,30 +479,30 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Budget Cap (USD)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Budget Cap (USD)</label>
               <input type="number" step="0.01" min="0" value={maxBudgetUSD} onChange={(e) => setMaxBudgetUSD(e.target.value)} placeholder="50.00" className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">RPM Limit</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">RPM Limit</label>
               <input type="number" min="0" value={rpmLimit} onChange={(e) => setRpmLimit(e.target.value)} placeholder="600" className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">TPM Limit</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">TPM Limit</label>
               <input type="number" min="0" value={tpmLimit} onChange={(e) => setTpmLimit(e.target.value)} placeholder="100000" className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Max Concurrent</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Max Concurrent</label>
               <input type="number" min="0" value={maxConcurrent} onChange={(e) => setMaxConcurrent(e.target.value)} placeholder="0 (∞)" className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Models (Comma-separated)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Allowed Models (Comma-separated)</label>
               <input type="text" value={allowedModels} onChange={(e) => setAllowedModels(e.target.value)} placeholder="fast, reasoning, openai/gpt-4o" className={`${INPUT_CLS} font-mono`} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Allowed Endpoints (Comma-separated)</label>
+              <label className="block text-xs font-medium text-brand-body mb-1">Allowed Endpoints (Comma-separated)</label>
               <input type="text" value={allowedEndpoints} onChange={(e) => setAllowedEndpoints(e.target.value)} placeholder="/v1/*, /chat/* (blank=default)" className={`${INPUT_CLS} font-mono`} />
             </div>
           </div>
@@ -520,14 +520,14 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                 setShowIssueModal(false);
                 setEditingKeyId(null);
               }}
-              className="px-3 py-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-elevated transition-colors"
+              className={BTN_CANCEL}
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={issueMutation.isPending || !name.trim()}
-              className="px-4 py-1.5 rounded-md text-xs font-medium bg-accent-primary hover:bg-accent-glow text-black transition-colors disabled:opacity-50"
+              className={BTN_PRIMARY}
             >
               {issueMutation.isPending ? 'Saving...' : editingKeyId ? 'Save Changes' : 'Issue Key'}
             </button>
@@ -544,25 +544,25 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         maxWidth="md"
       >
         <div className="space-y-4">
-          <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-300">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+          <div className="p-3 rounded-lg border status-warning flex items-start gap-2.5 text-xs">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-status-warning mt-0.5" />
             <div>
               <p className="font-semibold">Security Warning</p>
-              <p className="text-[11px] text-amber-300/80 mt-0.5">
+              <p className="text-[11px] opacity-85 mt-0.5">
                 GoRoute only stores the cryptographic SHA-256 hash of this key. If you lose this secret, you must issue or rotate the key.
               </p>
             </div>
           </div>
 
           <div className="relative">
-            <pre className="p-3 rounded-lg bg-black/80 border border-border-strong font-mono text-xs text-emerald-400 break-all select-all">
+            <pre className="p-3 rounded-lg bg-surface-code border border-border-strong font-mono text-xs text-status-success break-all select-all">
               {newKeySecret}
             </pre>
             <button
               onClick={handleCopySecret}
-              className="absolute right-2 top-2 px-2.5 py-1 rounded bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-slate-200 text-xs flex items-center gap-1.5 transition-colors"
+              className="absolute right-2 top-2 px-2.5 py-1 rounded bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body text-xs flex items-center gap-1.5 transition-colors"
             >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5" />}
               <span>{copied ? 'Copied' : 'Copy'}</span>
             </button>
           </div>
@@ -573,7 +573,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
                 setNewKeySecret(null);
                 onNavigateToPlayground();
               }}
-              className="flex items-center gap-1.5 text-xs text-accent-glow hover:underline font-medium"
+              className="flex items-center gap-1.5 text-xs text-accent-primary hover:underline font-medium"
             >
               <Zap className="w-3.5 h-3.5" />
               <span>Test with this key in Playground ↗</span>
@@ -581,7 +581,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
             <button
               onClick={() => setNewKeySecret(null)}
-              className="px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-glow text-black transition-colors"
+              className={BTN_PRIMARY}
             >
               Done & Close
             </button>

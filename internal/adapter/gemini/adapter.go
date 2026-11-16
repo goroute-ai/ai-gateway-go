@@ -57,19 +57,18 @@ func isVertexExpressKey(cred *domain.ProviderCredential) bool {
 		strings.HasSuffix(host, "-aiplatform.googleapis.com")
 }
 
-func buildActionEndpoint(cred *domain.ProviderCredential, model, action string) string {
+func (a *Adapter) buildActionEndpoint(cred *domain.ProviderCredential, model, action string) (string, error) {
+	defaultBase := defaultAIStudioBaseURL
+	versionPrefix := "/v1beta/models"
 	if isVertexExpressKey(cred) {
-		base := defaultVertexExpressURL
-		if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-			base = strings.TrimRight(cred.BaseURL, "/")
-		}
-		return fmt.Sprintf("%s/v1/publishers/google/models/%s:%s", base, model, action)
+		defaultBase = defaultVertexExpressURL
+		versionPrefix = "/v1/publishers/google/models"
 	}
-	base := defaultAIStudioBaseURL
-	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-		base = strings.TrimRight(cred.BaseURL, "/")
+	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBase, a.ssrfPolicy, domain.ProviderGemini)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("%s/v1beta/models/%s:%s", base, model, action)
+	return fmt.Sprintf("%s%s/%s:%s", base, versionPrefix, model, action), nil
 }
 
 func normalizeModelName(model string) string {
@@ -393,7 +392,10 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, err
 	}
 
-	endpoint := buildActionEndpoint(dep.Credential, model, "generateContent")
+	endpoint, err := a.buildActionEndpoint(dep.Credential, model, "generateContent")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -516,7 +518,11 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, err
 	}
 
-	endpoint := buildActionEndpoint(dep.Credential, model, "streamGenerateContent") + "?alt=sse"
+	endpoint, err := a.buildActionEndpoint(dep.Credential, model, "streamGenerateContent")
+	if err != nil {
+		return nil, err
+	}
+	endpoint += "?alt=sse"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -666,7 +672,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		if err != nil {
 			return nil, err
 		}
-		endpoint := buildActionEndpoint(dep.Credential, model, "embedContent")
+		endpoint, err := a.buildActionEndpoint(dep.Credential, model, "embedContent")
+		if err != nil {
+			return nil, err
+		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
@@ -723,6 +732,9 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
 	if isVertexExpressKey(cred) {
+		if _, err := adapter.ResolveCredentialBaseURL(cred, defaultVertexExpressURL, a.ssrfPolicy, domain.ProviderGemini); err != nil {
+			return nil, err
+		}
 		// Vertex AI Express Mode uses publisher model IDs directly without a project-scoped list endpoint
 		return []domain.DiscoveredModel{
 			{Provider: domain.ProviderGemini, ModelName: "gemini-2.5-flash", DisplayName: "Google Gemini 2.5 Flash (Vertex Express)"},
@@ -731,19 +743,9 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 		}, nil
 	}
 
-	rawBase := ""
-	if cred != nil {
-		rawBase = cred.BaseURL
-	}
-	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultAIStudioBaseURL, a.ssrfPolicy)
+	base, err := adapter.ResolveCredentialBaseURL(cred, defaultAIStudioBaseURL, a.ssrfPolicy, domain.ProviderGemini)
 	if err != nil {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_base_url",
-			Message:    err.Error(),
-			Provider:   domain.ProviderGemini,
-		}
+		return nil, err
 	}
 	endpoint := base + "/v1beta/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

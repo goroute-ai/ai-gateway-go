@@ -56,7 +56,7 @@ function isRedactedValue(val: unknown): boolean {
 
 const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
   if (value === null || value === undefined || value === '') {
-    return <span className="text-zinc-500 italic">—</span>;
+    return <span className="text-brand-muted italic">—</span>;
   }
   if (typeof value === 'boolean') {
     return (
@@ -66,29 +66,29 @@ const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
     );
   }
   if (typeof value === 'number') {
-    return <span className="text-[#f5f3ff] font-mono">{value.toLocaleString()}</span>;
+    return <span className="text-brand-title font-mono">{value.toLocaleString()}</span>;
   }
   if (typeof value === 'string') {
     if (isRedactedValue(value)) {
       return (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 font-mono text-[10px]">
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border status-warning font-mono text-[10px]">
           <Lock className="w-2.5 h-2.5" />
           {value}
         </span>
       );
     }
-    return <span className="text-[#f5f3ff] font-mono break-all">{value}</span>;
+    return <span className="text-brand-title font-mono break-all">{value}</span>;
   }
   if (Array.isArray(value)) {
     if (value.length === 0) {
-      return <span className="text-zinc-500 italic">[]</span>;
+      return <span className="text-brand-muted italic">[]</span>;
     }
     return (
       <div className="flex flex-wrap gap-1 justify-end">
         {value.map((item, idx) => (
           <span
             key={idx}
-            className="px-1.5 py-0.5 rounded bg-surface-elevated border border-border text-[10px] font-mono text-zinc-200 break-all"
+            className="px-1.5 py-0.5 rounded bg-surface-elevated border border-border text-[10px] font-mono text-brand-body break-all"
           >
             {typeof item === 'object' ? JSON.stringify(item) : String(item)}
           </span>
@@ -99,13 +99,13 @@ const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) {
-      return <span className="text-zinc-500 italic">{'{}'}</span>;
+      return <span className="text-brand-muted italic">{'{}'}</span>;
     }
     return (
       <div className="w-full mt-1.5 pl-3 border-l border-border/70 space-y-1">
         {entries.map(([k, v]) => (
           <div key={k} className="flex items-start justify-between gap-3 text-[11px]">
-            <span className="text-[#9696a4] font-mono shrink-0">{formatKey(k)}</span>
+            <span className="text-brand-muted font-mono shrink-0">{formatKey(k)}</span>
             <div className="text-right">
               <ConfigValue value={v} />
             </div>
@@ -114,8 +114,8 @@ const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
       </div>
     );
   }
-  return <span className="text-zinc-300 font-mono">{String(value)}</span>;
-}
+  return <span className="text-brand-body font-mono">{String(value)}</span>;
+};
 
 const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
   const isArr = Array.isArray(section.data);
@@ -129,19 +129,19 @@ const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
     <div className="bg-surface-base border border-border rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between border-b border-border pb-3">
         <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-lg bg-[rgba(124,58,237,0.1)] border border-accent-primary/25 text-accent-primary">
+          <div className="p-2 rounded-lg bg-accent-soft border border-accent-primary/25 text-accent-primary">
             {section.icon}
           </div>
           <div>
-            <h3 className="text-xs font-bold text-[#f5f3ff] tracking-tight">{section.title}</h3>
-            <p className="text-[11px] text-[#9696a4]">{section.subtitle}</p>
+            <h3 className="text-xs font-bold text-brand-title tracking-tight">{section.title}</h3>
+            <p className="text-[11px] text-brand-muted">{section.subtitle}</p>
           </div>
         </div>
         <Badge variant="neutral">{entries.length} {isArr ? 'items' : 'keys'}</Badge>
       </div>
 
       {entries.length === 0 ? (
-        <div className="text-xs text-[#9696a4] font-mono py-4 text-center">
+        <div className="text-xs text-brand-muted font-mono py-4 text-center">
           No configuration fields reported for this section.
         </div>
       ) : (
@@ -156,7 +156,7 @@ const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
                   isNestedObj ? 'flex flex-col gap-1' : 'flex items-start justify-between gap-4'
                 }`}
               >
-                <span className="text-[#9696a4] font-mono text-[11px] shrink-0">{formatKey(key)}</span>
+                <span className="text-brand-muted font-mono text-[11px] shrink-0">{formatKey(key)}</span>
                 <div className={isNestedObj ? 'w-full' : 'text-right'}>
                   <ConfigValue value={val} />
                 </div>
@@ -203,11 +203,11 @@ export const ConfigView: React.FC = () => {
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-bold text-[#f5f3ff] flex items-center gap-2 tracking-tight">
+          <h2 className="text-lg font-bold text-brand-title flex items-center gap-2 tracking-tight">
             <Settings className="w-5 h-5 text-accent-primary" />
             Gateway Runtime Configuration
           </h2>
-          <p className="text-xs text-[#9696a4] mt-1">
+          <p className="text-xs text-brand-muted mt-1">
             Sanitized read-only snapshot of active gateway configuration from <code className="font-mono text-accent-primary">/admin/v1/config</code>.
           </p>
         </div>
@@ -215,15 +215,15 @@ export const ConfigView: React.FC = () => {
         <button
           onClick={() => refetch()}
           disabled={isFetching}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-[#f5f3ff] hover:border-accent-primary/40 transition-colors disabled:opacity-50 self-start sm:self-auto"
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-brand-title hover:border-accent-primary/40 transition-colors disabled:opacity-50 self-start sm:self-auto"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin text-accent-primary' : ''}`} />
           <span>Refresh</span>
         </button>
       </div>
 
-      <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg bg-surface-base border border-border text-xs text-[#9696a4]">
-        <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+      <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg bg-surface-base border border-border text-xs text-brand-muted">
+        <Lock className="w-4 h-4 text-status-warning shrink-0" />
         <span>
           Read-only view. Master keys, JWT secrets, and database or Redis credentials are redacted server-side before leaving the control plane.
         </span>
@@ -236,7 +236,7 @@ export const ConfigView: React.FC = () => {
           <ErrorAlert error={error} title="Failed to load runtime configuration" />
         )
       ) : isLoading ? (
-        <div className="flex items-center justify-center h-48 text-[#9696a4] font-mono text-xs gap-2">
+        <div className="flex items-center justify-center h-48 text-brand-muted font-mono text-xs gap-2">
           <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
           <span>Fetching sanitized gateway configuration...</span>
         </div>

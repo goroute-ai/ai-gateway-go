@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestOllama_Tools_Vision_JSONSchema(t *testing.T) {
@@ -35,6 +37,14 @@ func TestOllama_Tools_Vision_JSONSchema(t *testing.T) {
 	defer srv.Close()
 
 	adp := ollama.NewAdapter(srv.Client())
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adp.SetSSRFPolicy(pol)
 	dep := &domain.Deployment{
 		ID:          "dep-oll-ext",
 		GlobalModel: &domain.GlobalModel{ID: "ollama/llama3.2-vision", Provider: domain.ProviderOllama, ModelName: "llama3.2-vision"},

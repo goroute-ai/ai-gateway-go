@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestToOpenAIRequest_ReasoningModelSanitization(t *testing.T) {
@@ -92,6 +94,14 @@ func TestOpenAIModeration(t *testing.T) {
 	defer srv.Close()
 
 	adp := NewAdapter(srv.Client())
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adp.SetSSRFPolicy(pol)
 	dep := &domain.Deployment{
 		ID: "dep-openai-mod",
 		GlobalModel: &domain.GlobalModel{
@@ -164,5 +174,39 @@ func TestMarshalOpenAIRequestWithExtras(t *testing.T) {
 	}
 	if decoded["logprobs"] != true {
 		t.Fatalf("expected logprobs true, got %v", decoded["logprobs"])
+	}
+}
+
+func TestOpenAIAdapter_FailClosedBaseURLWithoutSSRFPolicy(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Without SetSSRFPolicy, ValidateAndResolveBaseURL must fail closed on loopback/private/insecure URLs.
+	adp := NewAdapter(srv.Client())
+	dep := &domain.Deployment{
+		ID:          "dep-fail-closed",
+		GlobalModel: &domain.GlobalModel{Provider: domain.ProviderOpenAI, ModelName: "gpt-4o"},
+		Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "sk-test"},
+	}
+	req := &domain.CanonicalChatRequest{
+		Model:    "gpt-4o",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
+	}
+
+	if _, err := adp.ChatCompletion(context.Background(), dep, req); err == nil {
+		t.Fatal("expected ChatCompletion without SetSSRFPolicy to reject loopback BaseURL")
+	}
+	if _, err := adp.StreamChatCompletion(context.Background(), dep, req, func(*domain.CanonicalStreamChunk) error { return nil }); err == nil {
+		t.Fatal("expected StreamChatCompletion without SetSSRFPolicy to reject loopback BaseURL")
+	}
+	if _, err := adp.Embeddings(context.Background(), dep, &domain.CanonicalEmbeddingRequest{Model: "text-embedding-3-small", Input: []string{"hi"}}); err == nil {
+		t.Fatal("expected Embeddings without SetSSRFPolicy to reject loopback BaseURL")
+	}
+	if calls != 0 {
+		t.Fatalf("expected zero upstream dials when BaseURL fails validation, got %d", calls)
 	}
 }

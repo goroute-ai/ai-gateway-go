@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.7.0`  
+> **Version**: `v1.8.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -55,6 +55,12 @@ Chat request bodies are limited to 10 MiB; larger requests return `413 request_b
   "temperature": 0.7,
   "max_tokens": 1024,
   "stream": false,
+  "goroute_extensions": {
+    "tags": ["prod"],
+    "guardrails": [
+      {"name": "strict-pii", "enabled": true}
+    ]
+  },
   "tools": [
     {
       "type": "function",
@@ -73,6 +79,7 @@ Chat request bodies are limited to 10 MiB; larger requests return `413 request_b
   ]
 }
 ```
+Optional `goroute_extensions.tags` activates tag-scoped `mode_rule` routing and bindings, while `goroute_extensions.guardrails` can opt into additional active named guardrails. Request overrides can never disable `default_on` or admin-locked (`is_locked: true`) guardrails.
 
 #### Synchronous Response (HTTP 200 OK)
 ```json
@@ -392,6 +399,24 @@ Stateless translation bridge conforming to the OpenAI Responses API schema (`inp
 `GET /v1/realtime`, `GET /realtime`, `GET /openai/v1/realtime`
 
 Full-duplex bidirectional WebSocket session handler supporting real-time speech and text streaming over WebSockets. Authenticates via standard Bearer or `x-api-key` headers. Browser WebSocket clients can use `Sec-WebSocket-Protocol` (`openai-insecure-api-key.<key>`) or query parameters (`?api_key=` or `?token=`) on a valid WebSocket upgrade to a realtime route. Query and subprotocol credentials are ignored on ordinary HTTP routes. Prefer headers where the client supports them because URLs can be recorded by proxies and browser history.
+
+### 2.16 Standalone Guardrail Evaluation
+`POST /v1/guardrails/apply`
+
+Evaluates a specific active named guardrail (`guardrail_name`) or the caller's effective hierarchical tenant guardrails against arbitrary `text`, `texts`, `messages`, `tools`, or `tool_calls` without dispatching upstream inference. Requires a valid Virtual API Key authorized for `/v1/guardrails/apply`.
+
+#### Request Schema
+```json
+{
+  "guardrail_name": "prod-pii-shield",
+  "input_type": "request",
+  "texts": ["Customer SSN 000-11-2222 email alice@example.com"],
+  "tags": ["prod"],
+  "model": "fast"
+}
+```
+- `input_type`: `"request"` / `"input"` (`pre_call`) or `"response"` / `"output"` (`post_call`).
+- Returns `blocked`, `decision` (`"allow"`, `"block"`, `"flag"`, `"modify"`), `action`, `violations`, `texts` / `modified_texts`, `modified_messages`, `modified_tool_calls`, `applied_guardrails`, `usage_units`, and `latency_ms`.
 
 ---
 
@@ -844,10 +869,25 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 - `GET /admin/v1/organizations/{orgID}/models`: Lists Layer 3 model policies and overrides.
 - `POST /admin/v1/organizations/{orgID}/models`: Configures model access and token overrides for an organization.
 
-### 5.9 Security Guardrails & Simulator
-- `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active security guardrail policies.
-- `POST /admin/v1/organizations/{orgID}/guardrails`: Configures regex PII redaction, secret scanning, and prompt injection controls.
-- `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless prompt evaluator that tests safety rules without modifying records or incurring LLM token costs.
+### 5.9 Security Guardrails, Registry, Tool Policies & Simulator
+- **Org Baseline Policy (`guardrail_policies`):**
+  - `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active baseline guardrail policies (prompt injection, PII, secrets, blocked keywords, output redaction, `mode`, `scan_all_roles`, plus PostgreSQL-persisted toxicity fields: `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions`).
+  - `POST /admin/v1/organizations/{orgID}/guardrails`: Configures or updates the organization's baseline policy.
+- **Named Guardrails & Provider Registry (`guardrail_definitions`):**
+  - `POST /admin/v1/organizations/{orgID}/guardrail-definitions`: Creates a named guardrail backed by any of the 19 built-in drivers (`local_content_filter`, `custom_code`, `llm_as_a_judge`, `decision_model`, `openai_moderation`, `bedrock`, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `generic_http`, `tool_permission`, `tool_policy`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`) with Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, and load-balancing `weight`.
+  - `GET /admin/v1/organizations/{orgID}/guardrail-definitions`: Lists guardrail definitions (optional query filters: `status`, `name`; secrets remain redacted).
+  - `GET /admin/v1/guardrail-definitions/{guardrailID}`, `PUT /admin/v1/guardrail-definitions/{guardrailID}`, `PATCH /admin/v1/guardrail-definitions/{guardrailID}`, `DELETE /admin/v1/guardrail-definitions/{guardrailID}`: Inspects, replaces, patches, or deletes a definition.
+  - `POST /admin/v1/guardrail-definitions/{guardrailID}/status`: Transitions approval status (`active`, `pending_review`, `rejected`).
+- **Hierarchical Scope Bindings (`guardrail_bindings`):**
+  - `POST /admin/v1/guardrail-bindings`: Scopes a named guardrail to a `team_id`, `virtual_key_id`, `end_user_id`, `model_group_id`, and/or `tag` with optional `param_overrides` and anti-bypass `is_locked` enforcement.
+  - `GET /admin/v1/organizations/{orgID}/guardrail-bindings`: Lists bindings for an organization.
+  - `DELETE /admin/v1/guardrail-bindings/{bindingID}`: Removes a binding.
+- **Tool Trust Policies (`tool_policies`):**
+  - `POST /admin/v1/organizations/{orgID}/tool-policies`: Creates or updates cross-turn tool trust rules (`input_policy`: `"blocked" | "untrusted" | "trusted"`, `output_policy`: `"untrusted" | "trusted"`) scoped per org, team, or virtual key.
+  - `GET /admin/v1/organizations/{orgID}/tool-policies`: Lists tool trust policies.
+  - `DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID}`: Deletes a tool trust policy.
+- **Guardrail Simulator & Usage Telemetry:**
+  - `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless pipeline evaluator supporting both baseline draft policies and named definitions across `prompt` / `texts` / `messages` / `tools` / `tool_calls`, `direction` (`"input"` or `"output"`), `tags`, and simulated `stream_chunk_size` windowing without modifying records or incurring upstream LLM token costs.
   ```bash
   curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails/simulate \
     -H "Authorization: Bearer $MASTER_ADMIN_KEY" \
@@ -862,7 +902,7 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
       }
     }'
   ```
-  Returns `{ "allowed": true, "applied_action": "redact", "violations": ["secret_detected", "pii_detected"], "redacted": true, "redacted_prompt": "Here is my secret [REDACTED_SECRET] and SSN [REDACTED_SSN]" }`. PII checks currently cover email addresses, SSNs, and payment card patterns; replacement tags identify the detected type (for example, `[REDACTED_SSN]`).
+  - `GET /admin/v1/organizations/{orgID}/guardrail-usage`: Returns daily guardrail metrics, top triggered guardrails, usage units, and integer micro-dollar (`cost_micros`) attribution rollups (optional filters: `start_date`, `end_date`, `guardrail_id`, `team_id`, `virtual_key_id`, `top_limit`).
 
 ### 5.10 FinOps Spend & Governance Audit Ledgers
 - `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars. `unpriced_requests` and `unpriced_tokens` identify usage whose price is unknown or unrecorded and is not represented by the cost total.
@@ -925,6 +965,11 @@ gateway_response_cache_l1_evictions_total 12
 gateway_upstream_connections_reused_total 891
 gateway_streams_total 122
 gateway_stream_errors_total 2
+gateway_guardrail_blocks_total 4
+gateway_guardrail_evaluations_total{guardrail="prod-pii-shield",hook="pre_call"} 412
+gateway_guardrail_errors_total{guardrail="prod-pii-shield",hook="pre_call"} 0
+gateway_guardrail_duration_ms_sum{guardrail="prod-pii-shield",hook="pre_call"} 1850
+gateway_guardrail_duration_ms_count{guardrail="prod-pii-shield",hook="pre_call"} 412
 gateway_response_cache_epoch_lookups_total 340
 gateway_go_heap_alloc_bytes 41943040
 gateway_model_catalog_size 5493

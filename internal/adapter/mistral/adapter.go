@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
@@ -42,11 +41,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderMistral
 }
 
-func resolveBaseURL(cred *domain.ProviderCredential) string {
-	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-		return strings.TrimRight(cred.BaseURL, "/")
+func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
+	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBaseURL, a.ssrfPolicy, domain.ProviderMistral)
+	if err != nil {
+		return "", err
 	}
-	return defaultBaseURL
+	return base + suffix, nil
 }
 
 type wireMistralMessage struct {
@@ -173,7 +173,10 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/chat/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -262,7 +265,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/chat/completions"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -327,7 +333,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/embeddings"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/embeddings")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -380,21 +389,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 }
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
-	rawBase := ""
-	if cred != nil {
-		rawBase = cred.BaseURL
-	}
-	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultBaseURL, a.ssrfPolicy)
+	endpoint, err := a.resolveEndpoint(cred, "/models")
 	if err != nil {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_base_url",
-			Message:    err.Error(),
-			Provider:   domain.ProviderMistral,
-		}
+		return nil, err
 	}
-	endpoint := base + "/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -470,7 +468,10 @@ func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *dom
 	if dep != nil {
 		cred = dep.Credential
 	}
-	endpoint := resolveBaseURL(cred) + "/moderations"
+	endpoint, err := a.resolveEndpoint(cred, "/moderations")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -599,7 +600,10 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 	if dep != nil {
 		cred = dep.Credential
 	}
-	endpoint := resolveBaseURL(cred) + "/audio/transcriptions"
+	endpoint, err := a.resolveEndpoint(cred, "/audio/transcriptions")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
 	if err != nil {
 		return nil, err

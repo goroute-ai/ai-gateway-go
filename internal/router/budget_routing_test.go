@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,8 +101,12 @@ func TestBudgetAwareRouting_FallbackChain(t *testing.T) {
 		Status:         domain.DeploymentStatusActive,
 	})
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, err)
+	oaiAdp := openai.NewAdapter(srv.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(srv.Client()))
+	reg.Register(oaiAdp)
 
 	ir := router.NewIntelligentRouter(repo, config.RouterConfig{})
 	lb := router.NewLoadBalancer()
@@ -222,8 +227,12 @@ func TestBudgetAwareRouting_StreamingSelectedCallback(t *testing.T) {
 		Status:         domain.DeploymentStatusActive,
 	})
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, err)
+	oaiAdp := openai.NewAdapter(srv.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(srv.Client()))
+	reg.Register(oaiAdp)
 
 	ir := router.NewIntelligentRouter(repo, config.RouterConfig{})
 	lb := router.NewLoadBalancer()
@@ -302,15 +311,19 @@ func TestExecuteStreamHonorsRetryAfterBeforeFirstChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, err)
+	oaiAdp := openai.NewAdapter(srv.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(srv.Client()))
+	reg.Register(oaiAdp)
 	cfg := config.Default().Router
 	cfg.BaseRetryDelay = 10 * time.Millisecond
 	cfg.MaxRetryDelay = 2 * time.Second
 	rm := router.NewReliabilityManager(repo, reg, router.NewIntelligentRouter(repo, cfg), router.NewLoadBalancer(), vault, rbac, nil, cfg)
 
 	start := time.Now()
-	_, _, err := rm.ExecuteStream(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
+	_, _, err = rm.ExecuteStream(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
 		Model: "retry-after", Stream: true, Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}},
 	}, func(*domain.CanonicalStreamChunk) error { return nil }, nil)
 	if err != nil {

@@ -81,7 +81,9 @@ func (s *Service) SetJWTVerifier(v *JWTVerifier) {
 	s.jwtVerifier = v
 }
 
-// HashKey computes the hex-encoded SHA-256 digest of a raw Virtual API Key.
+// HashKey computes the hex-encoded SHA-256 lookup digest for a high-entropy (176-bit)
+// gateway Virtual API Key (`sk-gw-...`). Deterministic SHA-256 is required for O(1) indexed
+// DB/cache lookup on every inference request and is not used for low-entropy passwords.
 func HashKey(rawKey string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(rawKey)))
 	return hex.EncodeToString(sum[:])
@@ -758,7 +760,16 @@ func (s *Service) ValidateAdminKey(rawToken string) bool {
 // AuthenticateOperator resolves an OperatorContext for Control Plane (/admin/v1/*) requests from:
 // (a) MasterAdminKey (platform_admin), (b) admin-role VirtualKey, or (c) validated inbound JWT mapped to an active User.
 func (s *Service) AuthenticateOperator(ctx context.Context, rawToken string) (*domain.OperatorContext, error) {
-	rawToken = strings.TrimSpace(rawToken)
+	return s.AuthenticateOperatorWithSource(ctx, ExtractedCredentials{
+		Token:  rawToken,
+		Source: CredentialSourceBearer,
+	})
+}
+
+// AuthenticateOperatorWithSource resolves an OperatorContext while restricting OIDC/JWT
+// verification strictly to Authorization Bearer credentials (never x-api-key headers).
+func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred ExtractedCredentials) (*domain.OperatorContext, error) {
+	rawToken := strings.TrimSpace(cred.Token)
 	if rawToken == "" {
 		return nil, &domain.GatewayError{
 			StatusCode: http.StatusUnauthorized,
@@ -802,7 +813,7 @@ func (s *Service) AuthenticateOperator(ctx context.Context, rawToken string) (*d
 		}, nil
 	}
 
-	if s.jwtVerifier != nil && s.jwtVerifier.Enabled() && strings.Count(rawToken, ".") == 2 {
+	if cred.Source == CredentialSourceBearer && s.jwtVerifier != nil && s.jwtVerifier.Enabled() && strings.Count(rawToken, ".") == 2 {
 		claims, err := s.jwtVerifier.Verify(ctx, rawToken)
 		if err != nil {
 			return nil, &domain.GatewayError{

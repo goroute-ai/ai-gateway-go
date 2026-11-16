@@ -73,6 +73,8 @@ components:
           type: object
           additionalProperties:
             type: string
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     ChatMessage:
       type: object
       required:
@@ -293,6 +295,38 @@ components:
         input_type:
           type: string
           description: Optional provider-specific embedding intent such as search_query or search_document.
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
+    GoRouteExtensions:
+      type: object
+      properties:
+        task_id:
+          type: string
+        context_id:
+          type: string
+        guardrails:
+          type: array
+          items:
+            $ref: '#/components/schemas/GuardrailRequestOverride'
+        tags:
+          type: array
+          items:
+            type: string
+    GuardrailRequestOverride:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+        action:
+          type: string
+          enum: [block, redact, audit]
+        config:
+          type: object
+          additionalProperties: true
     EmbeddingResponse:
       type: object
       required:

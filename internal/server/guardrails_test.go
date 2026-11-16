@@ -45,6 +45,36 @@ func TestGuardrailTextInputAndOutputHelpers(t *testing.T) {
 	if err != nil || input[0] != "mail [REDACTED_EMAIL]" {
 		t.Fatalf("redacted input = %#v, err=%v", input, err)
 	}
+
+	// Verify Pipeline v2 named post_call drivers apply through sanitizeGuardrailText and sanitizeGuardrailValue.
+	if err := repo.CreateGuardrailDefinition(context.Background(), &domain.GuardrailDefinition{
+		ID:         "def-post-text-filter",
+		OrgID:      "org",
+		Name:       "post-text-filter",
+		Provider:   "local_content_filter",
+		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
+		DefaultOn:  true,
+		Status:     domain.GuardrailStatusActive,
+		Config: map[string]any{
+			"action":             "redact",
+			"redact_replacement": "[MASKED_INTERNAL]",
+			"patterns":           []string{`internal-secret-\d+`},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sWithRepo := &GatewayServer{repo: repo, guardrails: guardrails.NewEngine(repo)}
+	redactedText, err := sWithRepo.sanitizeGuardrailText(context.Background(), "org", "token internal-secret-99 ok")
+	if err != nil || redactedText != "token [MASKED_INTERNAL] ok" {
+		t.Fatalf("sanitizeGuardrailText with post_call driver = %q, err=%v", redactedText, err)
+	}
+	valOut, valRedacted, err := sWithRepo.sanitizeGuardrailValue(context.Background(), "org", map[string]any{"text": "internal-secret-7"})
+	if err != nil || !valRedacted {
+		t.Fatalf("sanitizeGuardrailValue with post_call driver = (%#v, %v), err=%v", valOut, valRedacted, err)
+	}
+	if m, ok := valOut.(map[string]any); !ok || m["text"] != "[MASKED_INTERNAL]" {
+		t.Fatalf("unexpected sanitizeGuardrailValue output: %#v", valOut)
+	}
 }
 
 func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {

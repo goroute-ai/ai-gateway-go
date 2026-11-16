@@ -16,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
@@ -96,9 +97,17 @@ func TestTwoStageRouterRetriesCooldownAndCrossProviderFallback(t *testing.T) {
 	}
 	_ = repo.CreateDeployment(ctx, oaiDep)
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	oaiAdp := openai.NewAdapter(flakyOAI.Client())
+	oaiAdp.SetSSRFPolicy(pol)
+	antAdp := anthropic.NewAdapter(healthyAnt.Client())
+	antAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(flakyOAI.Client()))
-	reg.Register(anthropic.NewAdapter(healthyAnt.Client()))
+	reg.Register(oaiAdp)
+	reg.Register(antAdp)
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = 1 * time.Millisecond

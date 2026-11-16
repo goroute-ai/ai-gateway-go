@@ -12,8 +12,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
@@ -74,8 +76,14 @@ func TestFourLayerModelIsolationAndAutomatedDiscovery(t *testing.T) {
 	_ = vault.EncryptCredential(cred, "sk-test-123")
 	_ = repo.CreateProviderCredential(ctx, cred)
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	oaiAdp := openai.NewAdapter(mockOAI.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(mockOAI.Client()))
+	reg.Register(oaiAdp)
 
 	worker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, nil, time.Hour, true)
 	report, err := worker.SyncNow(ctx)

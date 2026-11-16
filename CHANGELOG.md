@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.8.0] - 2026-11-16
+
+### Multi-Provider Guardrails Engine, Tool & MCP Governance, CodeQL Security Remediations & Light Blue Operator UI Theme
+
+#### Two-Layer Guardrails Pipeline & 19 Built-In Drivers (`internal/guardrails/`, `pkg/gateway/`, `internal/mcp/`, `internal/orchestrator/`)
+- **Toxicity Persistence & Named Registry (`migrations/0016`, `0017`)**: Added PostgreSQL persistence for `GuardrailPolicy` toxicity filter and content category lists (`enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions`) plus tenant-scoped `guardrail_definitions` (with Vault AES-256-GCM encrypted secrets & DEK rotation) and hierarchical `guardrail_bindings` (`Org` -> `Team` -> `VirtualKey` -> `EndUser` -> `ModelGroup` -> `Tag`, with anti-bypass `default_on` and `is_locked` enforcement).
+- **Pipeline v2, Hooks & Load Balancing**: Implemented all 7 lifecycle hooks (`pre_call`, concurrent canceling `during_call`, `post_call`, async `logging_only`, `pre_mcp_call`, `during_mcp_call`, `post_mcp_call`), `stream_scope`, `ModeRule` tag routing, weighted `RouterLB` cooldown load balancing, and `goroute_extensions` (`guardrails`, `tags`) across inference, non-chat, and OpenAPI contracts.
+- **SDK Plugins, Generic Webhook & Sandboxed Starlark Runtime**: Added public `pkg/gateway.GuardrailScanner` + `WithGuardrailScanner` options, upgraded `generic_http` with rich context/`modify` support and independent per-scanner timeouts/fail-open handling, and added sandboxed Starlark `custom_code` (`apply_guardrail`) with deterministic `50,000`-step execution caps, context deadlines, zero FS/imports, and SSRF-enforced `http_get`/`http_post`.
+- **19 Drivers, LLM Judges & Streaming Protection**: Implemented `openai_moderation`, `bedrock` (SigV4), `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `local_content_filter`, `llm_as_a_judge`, `decision_model` (with `_internal_guardrail_origin` loop guard), `StreamWindowEvaluator` cross-chunk buffering, and incremental streamed `delta.tool_calls` scanning.
+- **Tool-Level & Zero-Trust MCP Governance (`migrations/0018`)**: Added `tool_permission`, persistent cross-turn `tool_policy` trust-chain taint tracking inside `ToolLoopOrchestrator`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`, and formalized `mcp_jwt_signer` token exchange.
+- **Data/Control Plane APIs, Micro-Dollar Metrics & YAML Seeding (`migrations/0019`)**: Added `POST /v1/guardrails/apply`, expanded `/admin/v1/organizations/{orgID}/guardrails/simulate`, registry/binding/tool-policy/usage endpoints, startup `guardrails.definitions[]` / `guardrails.tool_policies[]` seeding, scrubbed `guardrail.evaluate` OTEL spans, and `gateway_guardrail_*` Prometheus metrics.
+
+#### CodeQL Security Remediations & SSRF Hardening (`internal/adapter/`, `internal/security/network/`, `internal/server/`, `internal/auth/`, `tests/fixtures/mock-upstream/`)
+- Closed open CodeQL security findings and strengthened defense-in-depth: unified `ValidateAndResolveBaseURL` across inference/embeddings/`cohere`/`bedrock`/`vertex`, enforced `platform_admin` checks on private-network credential create/rotate/validate, hardened `DefaultPublicMediaPolicy` & `ValidateURL` (global-unicast/localhost/port/redirect guards), verified ephemeral CA TLS certificates in `mock-upstream -healthcheck`, and centralized credential parsing in `ExtractGatewayCredentials`.
+
+#### Light Blue Dark & Light Operator Web UI Theme & Docs Sync (`web/`, `internal/ui/`, `docs/`)
+- Replaced dark-only purple/lavender UI styling with CSS-custom-property-backed Pure Black Obsidian & Light Blue (`#000000` / `#38bdf8`) Dark Theme and Pristine Slate & Sky Blue (`#ffffff` / `#0369a1`) Light Theme with a CSP-compliant synchronous `ThemeContext` and Header Sun/Moon toggle, plus lazy-loaded Guardrails Console tabs (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) within strict bundle budgets (`31.81 KB` CSS, `472.86 KB` / `135.42 KB` gzipped total dist).
+- Updated `Makefile` (`release-check` non-destructive gate), `.github/workflows/ci.yml` & `release.yml` (adding `./tests/guardrails/...`), `.gitleaks.toml`, `go.mod`, and all gateway documentation (`README.md`, `docs/*`).
+
+---
+
 ## [1.7.0] - 2026-11-14
 
 ### CodeQL Security Remediations, Pure-SDK Parity, Operator Web UI Wiring & Automated Release Packaging

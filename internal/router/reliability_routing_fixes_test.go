@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
@@ -113,8 +114,14 @@ func TestExecuteEmbeddings_RetryFallbackAndCircuitBreaker(t *testing.T) {
 	}
 	_ = repo.CreateDeployment(ctx, primaryDep)
 
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	oaiAdp := openai.NewAdapter(primarySrv.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(primarySrv.Client()))
+	reg.Register(oaiAdp)
 	lb := NewLoadBalancer()
 	ir := NewIntelligentRouter(repo, config.RouterConfig{})
 	rm := NewReliabilityManager(repo, reg, ir, lb, vault, rbac, nil, config.RouterConfig{

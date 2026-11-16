@@ -2,11 +2,14 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -22,26 +25,63 @@ var (
 
 const onePixelPNG = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 
+func loadHealthcheckCertPool(caFile, certFile string) (*x509.CertPool, error) {
+	pool := x509.NewCertPool()
+	for _, path := range []string{caFile, certFile} {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		pemBytes, err := os.ReadFile(path)
+		if err == nil && pool.AppendCertsFromPEM(pemBytes) {
+			return pool, nil
+		}
+	}
+	return nil, errors.New("no readable TLS CA or leaf certificate for healthcheck")
+}
+
+func healthcheckURL(addr string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil || port == "" {
+		port = "8443"
+	}
+	return fmt.Sprintf("https://127.0.0.1:%s/healthz", port)
+}
+
+func runHealthcheck(addr, caFile, certFile string) error {
+	pool, err := loadHealthcheckCertPool(caFile, certFile)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				RootCAs:    pool,
+			},
+		},
+	}
+	resp, err := client.Get(healthcheckURL(addr))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected healthcheck status: %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func main() {
 	addr := flag.String("addr", ":8443", "Listen address")
 	certFile := flag.String("tls-cert", "/etc/goroute/tls/mock-upstream.crt", "TLS certificate path")
 	keyFile := flag.String("tls-key", "/etc/goroute/tls/mock-upstream.key", "TLS private key path")
+	caFile := flag.String("tls-ca", "/etc/goroute/tls/ca.crt", "TLS CA certificate path for healthcheck")
 	healthcheck := flag.Bool("healthcheck", false, "Probe local /healthz over HTTPS and exit")
 	flag.Parse()
 
 	if *healthcheck {
-		client := &http.Client{
-			Timeout: 2 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Loopback container readiness probe only.
-			},
-		}
-		resp, err := client.Get("https://127.0.0.1:8443/healthz")
-		if err != nil {
-			os.Exit(1)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+		if err := runHealthcheck(*addr, *caFile, *certFile); err != nil {
 			os.Exit(1)
 		}
 		os.Exit(0)

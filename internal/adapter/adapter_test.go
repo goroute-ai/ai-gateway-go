@@ -15,7 +15,9 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/mistral"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestAllFiveProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
@@ -106,12 +108,31 @@ func TestAllFiveProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	}))
 	defer ollSrv.Close()
 
+	loopbackPol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(oaiSrv.Client()))
-	reg.Register(anthropic.NewAdapter(antSrv.Client()))
-	reg.Register(gemini.NewAdapter(gemSrv.Client()))
-	reg.Register(mistral.NewAdapter(misSrv.Client()))
-	reg.Register(ollama.NewAdapter(ollSrv.Client()))
+	oaiAdp := openai.NewAdapter(oaiSrv.Client())
+	oaiAdp.SetSSRFPolicy(loopbackPol)
+	antAdp := anthropic.NewAdapter(antSrv.Client())
+	antAdp.SetSSRFPolicy(loopbackPol)
+	gemAdp := gemini.NewAdapter(gemSrv.Client())
+	gemAdp.SetSSRFPolicy(loopbackPol)
+	misAdp := mistral.NewAdapter(misSrv.Client())
+	misAdp.SetSSRFPolicy(loopbackPol)
+	ollAdp := ollama.NewAdapter(ollSrv.Client())
+	ollAdp.SetSSRFPolicy(loopbackPol)
+
+	reg.Register(oaiAdp)
+	reg.Register(antAdp)
+	reg.Register(gemAdp)
+	reg.Register(misAdp)
+	reg.Register(ollAdp)
 
 	req := &domain.CanonicalChatRequest{
 		Model: "test-model",
@@ -164,9 +185,9 @@ func TestAllFiveProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	}
 
 	// Verify Anthropic SSE state machine & Ollama NDJSON -> SSE conversion
-	antAdp, _ := reg.Get(domain.ProviderAnthropic)
+	antStreamAdp, _ := reg.Get(domain.ProviderAnthropic)
 	var antStreamed string
-	antUsage, err := antAdp.StreamChatCompletion(ctx, &domain.Deployment{
+	antUsage, err := antStreamAdp.StreamChatCompletion(ctx, &domain.Deployment{
 		Credential: &domain.ProviderCredential{BaseURL: antSrv.URL, DecryptedAPIKey: "k"},
 	}, req, func(c *domain.CanonicalStreamChunk) error {
 		if len(c.Choices) > 0 {
@@ -178,9 +199,9 @@ func TestAllFiveProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 		t.Fatalf("Anthropic stream failed: err=%v text=%q usage=%+v", err, antStreamed, antUsage)
 	}
 
-	ollAdp, _ := reg.Get(domain.ProviderOllama)
+	ollStreamAdp, _ := reg.Get(domain.ProviderOllama)
 	var ollStreamed string
-	ollUsage, err := ollAdp.StreamChatCompletion(ctx, &domain.Deployment{
+	ollUsage, err := ollStreamAdp.StreamChatCompletion(ctx, &domain.Deployment{
 		Credential: &domain.ProviderCredential{BaseURL: ollSrv.URL},
 	}, req, func(c *domain.CanonicalStreamChunk) error {
 		if len(c.Choices) > 0 {

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to package and publish (e.g. v1.7.0)'
+        description: 'Release tag to package and publish (e.g. v1.8.0)'
         required: true
         type: string
 
@@ -60,7 +60,7 @@ jobs:
           go vet ./...
           go generate ./internal/openapi
           git diff --exit-code -- internal/openapi/gateway.gen.go
-          go test -race -count=1 ./internal/... ./pkg/... ./cmd/...
+          go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 
       - name: Verify Web UI Build, Budget & Embedded Dist Parity
         run: |
