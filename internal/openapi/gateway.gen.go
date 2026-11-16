@@ -554,6 +554,27 @@ func (e GuardrailPolicyToxicityThreshold) Valid() bool {
 	}
 }
 
+// Defines values for GuardrailRequestOverrideAction.
+const (
+	GuardrailRequestOverrideActionAudit  GuardrailRequestOverrideAction = "audit"
+	GuardrailRequestOverrideActionBlock  GuardrailRequestOverrideAction = "block"
+	GuardrailRequestOverrideActionRedact GuardrailRequestOverrideAction = "redact"
+)
+
+// Valid indicates whether the value is a known member of the GuardrailRequestOverrideAction enum.
+func (e GuardrailRequestOverrideAction) Valid() bool {
+	switch e {
+	case GuardrailRequestOverrideActionAudit:
+		return true
+	case GuardrailRequestOverrideActionBlock:
+		return true
+	case GuardrailRequestOverrideActionRedact:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GuardrailSimulateRequestDirection.
 const (
 	GuardrailSimulateRequestDirectionInput  GuardrailSimulateRequestDirection = "input"
@@ -1164,9 +1185,10 @@ type CacheControlType string
 
 // ChatCompletionRequest defines model for ChatCompletionRequest.
 type ChatCompletionRequest struct {
-	MaxTokens *int               `json:"max_tokens,omitempty"`
-	Messages  []ChatMessage      `json:"messages"`
-	Metadata  *map[string]string `json:"metadata,omitempty"`
+	GorouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
+	MaxTokens         *int               `json:"max_tokens,omitempty"`
+	Messages          []ChatMessage      `json:"messages"`
+	Metadata          *map[string]string `json:"metadata,omitempty"`
 
 	// Model Explicit model name (`gpt-4.1`, `claude-sonnet-4-20250514`, `gemini-2.5-pro`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
 	Model           string                                `json:"model"`
@@ -1306,9 +1328,10 @@ type DocumentPart struct {
 
 // EmbeddingRequest defines model for EmbeddingRequest.
 type EmbeddingRequest struct {
-	Dimensions     *int                            `json:"dimensions,omitempty"`
-	EncodingFormat *EmbeddingRequestEncodingFormat `json:"encoding_format,omitempty"`
-	Input          EmbeddingRequest_Input          `json:"input"`
+	Dimensions        *int                            `json:"dimensions,omitempty"`
+	EncodingFormat    *EmbeddingRequestEncodingFormat `json:"encoding_format,omitempty"`
+	GorouteExtensions *GoRouteExtensions              `json:"goroute_extensions,omitempty"`
+	Input             EmbeddingRequest_Input          `json:"input"`
 
 	// InputType Optional provider-specific embedding intent such as search_query or search_document.
 	InputType *string `json:"input_type,omitempty"`
@@ -1352,6 +1375,14 @@ type FileObject struct {
 	Id        string `json:"id"`
 	Purpose   string `json:"purpose"`
 	Status    string `json:"status"`
+}
+
+// GoRouteExtensions defines model for GoRouteExtensions.
+type GoRouteExtensions struct {
+	ContextId  *string                     `json:"context_id,omitempty"`
+	Guardrails *[]GuardrailRequestOverride `json:"guardrails,omitempty"`
+	Tags       *[]string                   `json:"tags,omitempty"`
+	TaskId     *string                     `json:"task_id,omitempty"`
 }
 
 // GuardrailApplyRequest defines model for GuardrailApplyRequest.
@@ -1533,6 +1564,17 @@ type GuardrailPolicyToxicityAction string
 
 // GuardrailPolicyToxicityThreshold defines model for GuardrailPolicy.ToxicityThreshold.
 type GuardrailPolicyToxicityThreshold string
+
+// GuardrailRequestOverride defines model for GuardrailRequestOverride.
+type GuardrailRequestOverride struct {
+	Action  *GuardrailRequestOverrideAction `json:"action,omitempty"`
+	Config  *map[string]interface{}         `json:"config,omitempty"`
+	Enabled *bool                           `json:"enabled,omitempty"`
+	Name    string                          `json:"name"`
+}
+
+// GuardrailRequestOverrideAction defines model for GuardrailRequestOverride.Action.
+type GuardrailRequestOverrideAction string
 
 // GuardrailSimulateRequest defines model for GuardrailSimulateRequest.
 type GuardrailSimulateRequest struct {

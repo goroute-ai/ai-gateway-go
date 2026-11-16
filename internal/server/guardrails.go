@@ -11,6 +11,7 @@ import (
 	"sync"
 	"weak"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails/drivers"
@@ -926,12 +927,20 @@ func (s *GatewayServer) guardrailTextValuesWithExtensions(
 	if len(msgs) == 0 {
 		return out, nil
 	}
+	idCtx := auth.IdentityFromContext(ctx)
+	if idCtx == nil {
+		idCtx = &domain.IdentityContext{OrgID: orgID}
+	} else if idCtx.OrgID == "" && orgID != "" {
+		cp := *idCtx
+		cp.OrgID = orgID
+		idCtx = &cp
+	}
 	probe := &domain.CanonicalChatRequest{
 		Model:             model,
 		Messages:          msgs,
 		GoRouteExtensions: ext,
 	}
-	prc := buildGuardrailRequestContext(nil, &domain.IdentityContext{OrgID: orgID}, probe)
+	prc := buildGuardrailRequestContext(nil, idCtx, probe)
 	pipeline := s.GuardrailPipeline()
 	if _, err := pipeline.EvaluatePreCall(ctx, prc, probe); err != nil {
 		return nil, err
@@ -985,20 +994,19 @@ func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, r
 }
 
 func (s *GatewayServer) sanitizeGuardrailValue(ctx context.Context, orgID string, raw any) (any, bool, error) {
-	if s.guardrails == nil || drivers.IsInternalGuardrailOrigin(ctx) {
+	if s == nil || drivers.IsInternalGuardrailOrigin(ctx) {
 		return raw, false, nil
 	}
 	switch v := raw.(type) {
 	case nil:
 		return nil, false, nil
 	case string:
-		next, redacted, err := s.guardrails.SanitizeTextOutput(ctx, orgID, v)
-		return next, redacted, err
+		return s.sanitizeGuardrailTextOutcome(ctx, orgID, v)
 	case []string:
 		out := make([]string, len(v))
 		anyRedacted := false
 		for i, item := range v {
-			next, redacted, err := s.guardrails.SanitizeTextOutput(ctx, orgID, item)
+			next, redacted, err := s.sanitizeGuardrailTextOutcome(ctx, orgID, item)
 			if err != nil {
 				return nil, anyRedacted, err
 			}
@@ -1041,10 +1049,44 @@ func (s *GatewayServer) sanitizeGuardrailValue(ctx context.Context, orgID string
 	}
 }
 
-func (s *GatewayServer) sanitizeGuardrailText(ctx context.Context, orgID, text string) (string, error) {
-	if s.guardrails == nil || drivers.IsInternalGuardrailOrigin(ctx) {
-		return text, nil
+func (s *GatewayServer) sanitizeGuardrailTextOutcome(ctx context.Context, orgID, text string) (string, bool, error) {
+	if s == nil || drivers.IsInternalGuardrailOrigin(ctx) {
+		return text, false, nil
 	}
-	updated, _, err := s.guardrails.SanitizeTextOutput(ctx, orgID, text)
+	pipeline := s.GuardrailPipeline()
+	if pipeline == nil {
+		if s.guardrails == nil {
+			return text, false, nil
+		}
+		return s.guardrails.SanitizeTextOutput(ctx, orgID, text)
+	}
+	idCtx := auth.IdentityFromContext(ctx)
+	if idCtx == nil {
+		idCtx = &domain.IdentityContext{OrgID: orgID}
+	} else if idCtx.OrgID == "" && orgID != "" {
+		cp := *idCtx
+		cp.OrgID = orgID
+		idCtx = &cp
+	}
+	prc := buildGuardrailRequestContext(nil, idCtx, nil)
+	probe := &domain.CanonicalChatResponse{
+		Choices: []domain.CanonicalChoice{
+			{Message: domain.CanonicalMessage{Role: "assistant", Content: text}},
+		},
+	}
+	out, err := pipeline.EvaluatePostCall(ctx, prc, probe)
+	if err != nil {
+		redacted := out != nil && out.Redacted
+		return "", redacted, err
+	}
+	redacted := out != nil && out.Redacted
+	if len(probe.Choices) > 0 {
+		return probe.Choices[0].Message.Content, redacted, nil
+	}
+	return text, redacted, nil
+}
+
+func (s *GatewayServer) sanitizeGuardrailText(ctx context.Context, orgID, text string) (string, error) {
+	updated, _, err := s.sanitizeGuardrailTextOutcome(ctx, orgID, text)
 	return updated, err
 }
