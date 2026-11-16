@@ -10,10 +10,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/cohere"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	require.NoError(t, err)
+	return pol
+}
 
 func TestCohereAdapter_ChatCompletion(t *testing.T) {
 	var capturedAuth string
@@ -56,7 +68,7 @@ func TestCohereAdapter_ChatCompletion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := cohere.NewAdapter(srv.Client(), nil)
+	adp := cohere.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	assert.Equal(t, domain.ProviderCohere, adp.Provider())
 
 	dep := &domain.Deployment{
@@ -119,7 +131,7 @@ func TestCohereAdapter_StreamChatCompletion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := cohere.NewAdapter(srv.Client(), nil)
+	adp := cohere.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-cohere-stream",
@@ -183,7 +195,7 @@ func TestCohereAdapter_Embeddings(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := cohere.NewAdapter(srv.Client(), nil)
+	adp := cohere.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-cohere-embed",
@@ -237,7 +249,7 @@ func TestCohereRerank(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := cohere.NewAdapter(srv.Client(), nil)
+	adp := cohere.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID: "dep-cohere-rerank",
 		GlobalModel: &domain.GlobalModel{
@@ -288,7 +300,7 @@ func TestCohereAdapter_ErrorStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.upstreamStatus)
 			_, _ = fmt.Fprint(w, `{"message":"err"}`)
 		}))
-		adp := cohere.NewAdapter(srv.Client(), nil)
+		adp := cohere.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 		dep := &domain.Deployment{
 			GlobalModel: &domain.GlobalModel{ModelName: "command-r"},
 			Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "k"},

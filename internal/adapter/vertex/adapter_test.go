@@ -118,7 +118,7 @@ func TestVertexAdapter_ChatCompletion(t *testing.T) {
 	}))
 	defer vertexSrv.Close()
 
-	adp := vertex.NewAdapter(vertexSrv.Client(), nil)
+	adp := vertex.NewAdapter(vertexSrv.Client(), loopbackTestPolicy(t))
 	assert.Equal(t, domain.ProviderVertex, adp.Provider())
 
 	dep := &domain.Deployment{
@@ -180,7 +180,7 @@ func TestVertexAdapter_StreamChatCompletion(t *testing.T) {
 	}))
 	defer vertexSrv.Close()
 
-	adp := vertex.NewAdapter(vertexSrv.Client(), nil)
+	adp := vertex.NewAdapter(vertexSrv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-vertex-stream",
@@ -240,7 +240,7 @@ func TestVertexAdapter_Embeddings(t *testing.T) {
 	}))
 	defer vertexSrv.Close()
 
-	adp := vertex.NewAdapter(vertexSrv.Client(), nil)
+	adp := vertex.NewAdapter(vertexSrv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-vertex-embed",

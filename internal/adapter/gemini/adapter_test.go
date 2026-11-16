@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestChatCompletion_SafetyBlockReturnsError(t *testing.T) {
@@ -27,6 +29,14 @@ func TestChatCompletion_SafetyBlockReturnsError(t *testing.T) {
 
 	client := ts.Client()
 	adapter := NewAdapter(client)
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adapter.SetSSRFPolicy(pol)
 
 	dep := &domain.Deployment{
 		ID: "dep-gemini",

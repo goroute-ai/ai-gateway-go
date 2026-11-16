@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/router"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -60,8 +61,14 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 		},
 	})
 
+	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if polErr != nil {
+		t.Fatalf("network.NewPolicy: %v", polErr)
+	}
+	oaiAdp := openai.NewAdapter(upstream.Client())
+	oaiAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
-	reg.Register(openai.NewAdapter(upstream.Client()))
+	reg.Register(oaiAdp)
 	ir := router.NewIntelligentRouter(repo, config.RouterConfig{})
 	lb := router.NewLoadBalancer()
 	rm := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, nil, config.RouterConfig{})

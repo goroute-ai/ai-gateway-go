@@ -168,6 +168,59 @@ func TestAdminPreflightValidate_PrivateNetworkRequiresPlatformAdmin(t *testing.T
 	adminRec := httptest.NewRecorder()
 	h.ServeHTTP(adminRec, adminReq)
 	assert.Equal(t, http.StatusOK, adminRec.Code)
+
+	// org_admin cannot create a credential pointing to a private base_url either.
+	createPrivateBody, _ := json.Marshal(map[string]any{
+		"org_id":   org.ID,
+		"provider": "openai",
+		"name":     "org-admin-private-cred",
+		"api_key":  "sk-test",
+		"base_url": upstreamSrv.URL,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials", bytes.NewReader(createPrivateBody))
+	createReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	assert.Equal(t, http.StatusForbidden, createRec.Code)
+	assert.Contains(t, createRec.Body.String(), "platform_admin_required")
+
+	// platform_admin creates a private-URL credential; org_admin must still be blocked from validating or rotating it to a private base_url.
+	adminCreateReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials", bytes.NewReader(createPrivateBody))
+	adminCreateReq.Header.Set("Authorization", "Bearer admin_master_secret")
+	adminCreateReq.Header.Set("Content-Type", "application/json")
+	adminCreateRec := httptest.NewRecorder()
+	h.ServeHTTP(adminCreateRec, adminCreateReq)
+	require.Equal(t, http.StatusCreated, adminCreateRec.Code)
+
+	var createdPriv domain.ProviderCredential
+	require.NoError(t, json.Unmarshal(adminCreateRec.Body.Bytes(), &createdPriv))
+
+	validateStoredReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/"+createdPriv.ID+"/validate", nil)
+	validateStoredReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	validateStoredRec := httptest.NewRecorder()
+	h.ServeHTTP(validateStoredRec, validateStoredReq)
+	assert.Equal(t, http.StatusForbidden, validateStoredRec.Code)
+	assert.Contains(t, validateStoredRec.Body.String(), "platform_admin_required")
+
+	rotateBody, _ := json.Marshal(map[string]any{
+		"api_key":  "sk-rotated",
+		"base_url": upstreamSrv.URL,
+	})
+	rotateReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/"+createdPriv.ID+"/rotate", bytes.NewReader(rotateBody))
+	rotateReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	rotateReq.Header.Set("Content-Type", "application/json")
+	rotateRec := httptest.NewRecorder()
+	h.ServeHTTP(rotateRec, rotateReq)
+	assert.Equal(t, http.StatusForbidden, rotateRec.Code)
+	assert.Contains(t, rotateRec.Body.String(), "platform_admin_required")
+
+	// platform_admin validation of stored private credential succeeds.
+	adminValidateStoredReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/"+createdPriv.ID+"/validate", nil)
+	adminValidateStoredReq.Header.Set("Authorization", "Bearer admin_master_secret")
+	adminValidateStoredRec := httptest.NewRecorder()
+	h.ServeHTTP(adminValidateStoredRec, adminValidateStoredReq)
+	assert.Equal(t, http.StatusOK, adminValidateStoredRec.Code)
 }
 
 func TestGenerateSpeech_ContentTypeSanitization(t *testing.T) {

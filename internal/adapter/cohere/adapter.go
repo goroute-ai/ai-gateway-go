@@ -39,11 +39,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderCohere
 }
 
-func (a *Adapter) getBaseURL(dep *domain.Deployment) string {
-	if dep.Credential != nil && dep.Credential.BaseURL != "" {
-		return strings.TrimRight(dep.Credential.BaseURL, "/")
+func (a *Adapter) getBaseURL(dep *domain.Deployment) (string, error) {
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
 	}
-	return defaultCohereBaseURL
+	return adapter.ResolveCredentialBaseURL(cred, defaultCohereBaseURL, a.ssrfPolicy, domain.ProviderCohere)
 }
 
 func (a *Adapter) getAPIKey(dep *domain.Deployment) (string, error) {
@@ -75,7 +76,11 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, fmt.Errorf("build cohere payload: %w", err)
 	}
 
-	targetURL := a.getBaseURL(dep) + "/v2/chat"
+	baseURL, err := a.getBaseURL(dep)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := baseURL + "/v2/chat"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -124,7 +129,11 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, fmt.Errorf("build cohere payload: %w", err)
 	}
 
-	targetURL := a.getBaseURL(dep) + "/v2/chat"
+	baseURL, err := a.getBaseURL(dep)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := baseURL + "/v2/chat"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -288,7 +297,11 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 	}
 	bodyBytes, _ := json.Marshal(embedPayload)
 
-	targetURL := a.getBaseURL(dep) + "/v2/embed"
+	baseURL, err := a.getBaseURL(dep)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := baseURL + "/v2/embed"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -665,7 +678,11 @@ func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domai
 		return nil, fmt.Errorf("marshal cohere rerank request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/v2/rerank", a.getBaseURL(dep))
+	baseURL, err := a.getBaseURL(dep)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/v2/rerank", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create cohere rerank request: %w", err)

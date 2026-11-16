@@ -131,13 +131,19 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	}
 
 	// Strictly block known cloud metadata hostnames
-	if hostname == "metadata.google.internal" || hostname == "metadata" || hostname == "instance-data" {
+	if hostname == "metadata.google.internal" || hostname == "metadata" || hostname == "instance-data" || hostname == "metadata.azure.internal" {
 		return ErrCloudMetadataBlocked
 	}
 
 	// If hostname is an IP literal, validate immediately
 	if ip := net.ParseIP(hostname); ip != nil {
 		return p.ValidateIP(ip)
+	}
+
+	if !p.AllowPrivateNetworks && len(p.AllowedPrivateCIDRs) == 0 {
+		if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || strings.HasSuffix(hostname, ".local") {
+			return fmt.Errorf("%w: local hostname %q is forbidden by SSRF policy", ErrPrivateNetworkBlocked, hostname)
+		}
 	}
 
 	return nil
@@ -160,6 +166,11 @@ func (p *Policy) ValidateIP(ip net.IP) error {
 		return ErrCloudMetadataBlocked
 	}
 
+	// Multicast and unspecified addresses are never valid upstream targets.
+	if cleanIP.IsMulticast() || cleanIP.IsUnspecified() {
+		return fmt.Errorf("%w: %s is multicast or unspecified", ErrPrivateNetworkBlocked, cleanIP.String())
+	}
+
 	// Blocked IPs check
 	for _, blocked := range p.BlockedIPs {
 		target := blocked
@@ -171,12 +182,14 @@ func (p *Policy) ValidateIP(ip net.IP) error {
 		}
 	}
 
-	// Check if IP falls into any standard private CIDR range
-	isPrivate := false
-	for _, ipNet := range privateCIDRs {
-		if ipNet.Contains(cleanIP) {
-			isPrivate = true
-			break
+	// Check non-global-unicast, private, link-local, loopback, and standard private/NAT64 CIDR ranges.
+	isPrivate := !cleanIP.IsGlobalUnicast() || cleanIP.IsPrivate() || cleanIP.IsLinkLocalUnicast() || cleanIP.IsLoopback()
+	if !isPrivate {
+		for _, ipNet := range privateCIDRs {
+			if ipNet.Contains(cleanIP) {
+				isPrivate = true
+				break
+			}
 		}
 	}
 

@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/mistral"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestMistral_Vision_Moderation_Audio(t *testing.T) {
@@ -35,6 +37,14 @@ func TestMistral_Vision_Moderation_Audio(t *testing.T) {
 	defer srv.Close()
 
 	adp := mistral.NewAdapter(srv.Client())
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adp.SetSSRFPolicy(pol)
 	dep := &domain.Deployment{
 		ID:          "dep-mis-ext",
 		GlobalModel: &domain.GlobalModel{ID: "mistral/pixtral-large-latest", Provider: domain.ProviderMistral, ModelName: "pixtral-large-latest"},

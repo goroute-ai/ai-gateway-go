@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -851,5 +852,90 @@ func TestService_UpdateVirtualKey_AllowedEndpointsNilVsEmpty(t *testing.T) {
 	}
 	if err := rbac.AuthorizeEndpoint(idCleared, "/v1/chat/completions"); err == nil {
 		t.Fatal("expected AuthorizeEndpoint to fail closed when AllowedEndpoints is []")
+	}
+}
+
+func TestAdminControlPlaneMiddleware_JWTSourceRestriction(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org_mw", Name: "Middleware Org", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{
+		ID:          "usr_mw_admin",
+		OrgID:       "org_mw",
+		Email:       "admin@mw.io",
+		Name:        "MW Admin",
+		Role:        domain.RoleOrgAdmin,
+		OIDCSubject: "sub-mw-admin",
+		IsActive:    true,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
+	jwtSecret := "mw-jwt-secret"
+	svc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{Secret: jwtSecret}))
+
+	adminVK, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID: "org_mw",
+		Name:  "MW Admin VK",
+		Role:  domain.RoleOrgAdmin,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+
+	jwtTok, err := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+		Subject:   "sub-mw-admin",
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("SignHS256: %v", err)
+	}
+
+	mw := auth.AdminControlPlaneMiddleware(svc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		op := auth.OperatorFromContext(r.Context())
+		if op == nil {
+			http.Error(w, "missing operator", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 1. Authorization: Bearer <jwt> succeeds.
+	reqBearerJWT := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
+	reqBearerJWT.Header.Set("Authorization", "Bearer "+jwtTok)
+	recBearerJWT := httptest.NewRecorder()
+	mw.ServeHTTP(recBearerJWT, reqBearerJWT)
+	if recBearerJWT.Code != http.StatusOK {
+		t.Fatalf("expected Bearer JWT to succeed, got %d (%s)", recBearerJWT.Code, recBearerJWT.Body.String())
+	}
+
+	// 2. x-api-key: <admin-vk> succeeds.
+	reqHeaderVK := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
+	reqHeaderVK.Header.Set("x-api-key", adminVK.RawKey)
+	recHeaderVK := httptest.NewRecorder()
+	mw.ServeHTTP(recHeaderVK, reqHeaderVK)
+	if recHeaderVK.Code != http.StatusOK {
+		t.Fatalf("expected x-api-key admin VirtualKey to succeed, got %d (%s)", recHeaderVK.Code, recHeaderVK.Body.String())
+	}
+
+	// 3. x-api-key: sk-gw-master-admin-secret succeeds.
+	reqHeaderMaster := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
+	reqHeaderMaster.Header.Set("x-api-key", "sk-gw-master-admin-secret")
+	recHeaderMaster := httptest.NewRecorder()
+	mw.ServeHTTP(recHeaderMaster, reqHeaderMaster)
+	if recHeaderMaster.Code != http.StatusOK {
+		t.Fatalf("expected x-api-key master key to succeed, got %d (%s)", recHeaderMaster.Code, recHeaderMaster.Body.String())
+	}
+
+	// 4. x-api-key: <jwt> is rejected (JWT verification is restricted to Authorization Bearer).
+	reqHeaderJWT := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
+	reqHeaderJWT.Header.Set("x-api-key", jwtTok)
+	recHeaderJWT := httptest.NewRecorder()
+	mw.ServeHTTP(recHeaderJWT, reqHeaderJWT)
+	if recHeaderJWT.Code != http.StatusUnauthorized {
+		t.Fatalf("expected JWT in x-api-key to be rejected with 401, got %d (%s)", recHeaderJWT.Code, recHeaderJWT.Body.String())
 	}
 }

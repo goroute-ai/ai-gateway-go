@@ -33,11 +33,22 @@ func FetchRemoteDataURI(ctx context.Context, client *http.Client, rawURL string,
 	return FetchRemoteDataURIWithPolicy(ctx, client, nil, rawURL, maxBytes, allowedTypes...)
 }
 
+func validateStrictMediaPort(policy *network.Policy, u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("media URL is nil")
+	}
+	if policy != nil && !policy.AllowPrivateNetworks && len(policy.AllowedPrivateCIDRs) == 0 {
+		if port := u.Port(); port != "" && port != "443" {
+			return fmt.Errorf("media URL port %q is not permitted by strict public HTTPS policy", port)
+		}
+	}
+	return nil
+}
+
 // FetchRemoteDataURIWithPolicy fetches user-supplied HTTPS media validated against
 // policy (defaulting to DefaultPublicMediaPolicy when nil) and returns a bounded
 // base64 data URI. When client is nil, an SSRF-enforcing HTTP client is built from policy.
-// Callers supplying a non-nil client MUST ensure its Transport/CheckRedirect enforces
-// the same policy (e.g., via network.NewHTTPClient(policy)).
+// When client is non-nil, a shallow clone is used with policy-enforcing redirect validation.
 func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, policy *network.Policy, rawURL string, maxBytes int64, allowedTypes ...string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || strings.ToLower(u.Scheme) != "https" || u.Hostname() == "" || u.User != nil {
@@ -52,8 +63,24 @@ func FetchRemoteDataURIWithPolicy(ctx context.Context, client *http.Client, poli
 	if err := policy.ValidateURL(u); err != nil {
 		return "", fmt.Errorf("media URL rejected by security policy: %w", err)
 	}
+	if err := validateStrictMediaPort(policy, u); err != nil {
+		return "", err
+	}
 	if client == nil {
 		client = network.NewHTTPClient(policy)
+	} else {
+		cloned := *client
+		baseCheck := cloned.CheckRedirect
+		cloned.CheckRedirect = network.WrapCheckRedirect(policy, func(req *http.Request, via []*http.Request) error {
+			if err := validateStrictMediaPort(policy, req.URL); err != nil {
+				return err
+			}
+			if baseCheck != nil {
+				return baseCheck(req, via)
+			}
+			return nil
+		})
+		client = &cloned
 	}
 	cleanURL := (&url.URL{
 		Scheme:   "https",

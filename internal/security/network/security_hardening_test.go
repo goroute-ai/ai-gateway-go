@@ -1,6 +1,7 @@
 package network_test
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,6 +98,65 @@ func TestPolicyValidateURL_IPv6UnspecifiedNAT64AndTrailingDot(t *testing.T) {
 		}
 		if err := p.ValidateURL(u); err == nil {
 			t.Fatalf("expected ValidateURL to block %q", raw)
+		}
+	}
+}
+
+func TestPolicyValidateURL_LocalhostAndAzureMetadata(t *testing.T) {
+	strictPol, err := network.NewPolicy(config.OutboundSSRFConfig{})
+	if err != nil {
+		t.Fatalf("new strict policy: %v", err)
+	}
+	for _, raw := range []string{
+		"https://localhost/v1",
+		"https://sub.localhost/v1",
+		"https://internal.local/v1",
+		"https://metadata.azure.internal/metadata/instance",
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if err := strictPol.ValidateURL(u); err == nil {
+			t.Fatalf("expected strict ValidateURL to block %q", raw)
+		}
+	}
+
+	privatePol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("new private policy: %v", err)
+	}
+	azureMeta, _ := url.Parse("https://metadata.azure.internal/metadata/instance")
+	if err := privatePol.ValidateURL(azureMeta); err == nil {
+		t.Fatal("expected metadata.azure.internal to remain blocked even when AllowPrivateNetworks is true")
+	}
+}
+
+func TestPolicyValidateIP_MulticastUnspecifiedAndNonGlobalUnicast(t *testing.T) {
+	strictPol, err := network.NewPolicy(config.OutboundSSRFConfig{})
+	if err != nil {
+		t.Fatalf("new strict policy: %v", err)
+	}
+	for _, rawIP := range []string{"224.0.0.1", "ff02::1", "0.0.0.0", "::", "255.255.255.255"} {
+		ip := net.ParseIP(rawIP)
+		if ip == nil {
+			t.Fatalf("ParseIP(%q) failed", rawIP)
+		}
+		if err := strictPol.ValidateIP(ip); err == nil {
+			t.Fatalf("expected strict ValidateIP to reject %s", rawIP)
+		}
+	}
+
+	privatePol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true})
+	if err != nil {
+		t.Fatalf("new private policy: %v", err)
+	}
+	for _, rawIP := range []string{"224.0.0.1", "ff02::1", "0.0.0.0", "::"} {
+		if err := privatePol.ValidateIP(net.ParseIP(rawIP)); err == nil {
+			t.Fatalf("expected ValidateIP with AllowPrivateNetworks=true to still reject %s", rawIP)
 		}
 	}
 }

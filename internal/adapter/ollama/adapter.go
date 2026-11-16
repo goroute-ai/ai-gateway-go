@@ -58,11 +58,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderOllama
 }
 
-func resolveBaseURL(cred *domain.ProviderCredential) string {
-	if cred != nil && strings.TrimSpace(cred.BaseURL) != "" {
-		return strings.TrimRight(cred.BaseURL, "/")
+func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
+	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBaseURL, a.ssrfPolicy, domain.ProviderOllama)
+	if err != nil {
+		return "", err
 	}
-	return defaultBaseURL
+	return base + suffix, nil
 }
 
 type wireOllamaToolCall struct {
@@ -300,7 +301,10 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/api/chat"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/api/chat")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -388,7 +392,10 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/api/chat"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/api/chat")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -480,7 +487,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		return nil, err
 	}
 
-	endpoint := resolveBaseURL(dep.Credential) + "/api/embed"
+	endpoint, err := a.resolveEndpoint(dep.Credential, "/api/embed")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -534,21 +544,10 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 }
 
 func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
-	rawBase := ""
-	if cred != nil {
-		rawBase = cred.BaseURL
-	}
-	base, err := adapter.ValidateAndResolveBaseURL(rawBase, defaultBaseURL, a.ssrfPolicy)
+	endpoint, err := a.resolveEndpoint(cred, "/api/tags")
 	if err != nil {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_base_url",
-			Message:    err.Error(),
-			Provider:   domain.ProviderOllama,
-		}
+		return nil, err
 	}
-	endpoint := base + "/api/tags"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

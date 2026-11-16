@@ -48,6 +48,20 @@ func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
 	return adapter.ValidateAndResolveBaseURL(raw, "", pol)
 }
 
+func (s *GatewayServer) authorizeCustomBaseURL(op *domain.OperatorContext, cleanBaseURL string) *domain.GatewayError {
+	if cleanBaseURL != "" && s.cfg != nil &&
+		(s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks || len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
+		op != nil && op.Role != domain.OperatorRolePlatformAdmin {
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "platform_admin_required",
+			Message:    "Custom BaseURL with private network access requires platform_admin role",
+		}
+	}
+	return nil
+}
+
 func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
 	if explicitOrgID != "" {
 		return explicitOrgID
@@ -457,7 +471,8 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		return
 	}
 	req.OrgID = resolveScopedOrgID(r, req.OrgID)
-	if _, ok := s.authorizeAdmin(w, r, req.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, req.OrgID, true)
+	if !ok {
 		return
 	}
 	cleanBaseURL, err := s.validateCredentialBaseURL(req.BaseURL)
@@ -468,6 +483,10 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 			Code:       "invalid_base_url",
 			Message:    err.Error(),
 		})
+		return
+	}
+	if gwErr := s.authorizeCustomBaseURL(op, cleanBaseURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 	cred := &domain.ProviderCredential{
@@ -526,7 +545,8 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Message: "Credential not found"})
 		return
 	}
-	if _, ok := s.authorizeAdmin(w, r, cred.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, cred.OrgID, true)
+	if !ok {
 		return
 	}
 	var cleanBaseURL string
@@ -540,6 +560,10 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 				Code:       "invalid_base_url",
 				Message:    err.Error(),
 			})
+			return
+		}
+		if gwErr := s.authorizeCustomBaseURL(op, cleanBaseURL); gwErr != nil {
+			domain.WriteHTTPError(w, gwErr)
 			return
 		}
 	}
@@ -571,7 +595,8 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Message: "Credential not found"})
 		return
 	}
-	if _, ok := s.authorizeAdmin(w, r, cred.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, cred.OrgID, true)
+	if !ok {
 		return
 	}
 	if cred.ExpiresAt != nil && time.Now().UTC().After(*cred.ExpiresAt) {
@@ -601,6 +626,10 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 			Code:       "invalid_base_url",
 			Message:    err.Error(),
 		})
+		return
+	}
+	if gwErr := s.authorizeCustomBaseURL(op, cleanBaseURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 	credCopy := *cred
@@ -672,14 +701,8 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		})
 		return
 	}
-	if cleanBaseURL != "" && s.cfg != nil && (s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks || len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
-		op.Role != domain.OperatorRolePlatformAdmin {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "platform_admin_required",
-			Message:    "Custom BaseURL preflight validation with private network access requires platform_admin role",
-		})
+	if gwErr := s.authorizeCustomBaseURL(op, cleanBaseURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 	if req.Provider == "" {

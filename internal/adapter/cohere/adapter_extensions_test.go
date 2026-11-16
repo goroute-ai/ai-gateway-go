@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/cohere"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
 func TestCohere_Extensions_ToolChoice_Schema_Thinking_Citations(t *testing.T) {
@@ -31,7 +33,14 @@ func TestCohere_Extensions_ToolChoice_Schema_Thinking_Citations(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := cohere.NewAdapter(srv.Client(), nil)
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adp := cohere.NewAdapter(srv.Client(), pol)
 	dep := &domain.Deployment{
 		ID:          "dep-coh-ext",
 		GlobalModel: &domain.GlobalModel{ID: "cohere/command-a-reasoning-08-2025", Provider: domain.ProviderCohere, ModelName: "command-a-reasoning-08-2025"},

@@ -97,7 +97,7 @@ func TestBedrockAdapter_ConverseNonStreaming(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	assert.Equal(t, domain.ProviderBedrock, adp.Provider())
 
 	dep := &domain.Deployment{
@@ -190,7 +190,7 @@ func TestBedrockAdapter_ConverseStreaming(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-bedrock-stream",
@@ -245,7 +245,7 @@ func TestBedrockAdapter_Embeddings(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := bedrock.NewAdapter(srv.Client(), nil)
+	adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 
 	dep := &domain.Deployment{
 		ID: "dep-bedrock-embed",
@@ -310,7 +310,7 @@ func TestBedrockAdapter_ErrorStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.upstreamStatus)
 			_, _ = w.Write([]byte(`{"message":"err"}`))
 		}))
-		adp := bedrock.NewAdapter(srv.Client(), nil)
+		adp := bedrock.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 		dep := &domain.Deployment{
 			GlobalModel: &domain.GlobalModel{ModelName: "anthropic.claude-3-5-sonnet"},
 			Credential: &domain.ProviderCredential{

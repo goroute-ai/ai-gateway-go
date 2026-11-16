@@ -10,8 +10,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	return pol
+}
 
 func TestAnthropic_Extensions_PayloadAndCacheAccounting(t *testing.T) {
 	var captured map[string]any
@@ -39,6 +53,7 @@ func TestAnthropic_Extensions_PayloadAndCacheAccounting(t *testing.T) {
 	defer srv.Close()
 
 	adp := anthropic.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID: "dep-ant-ext",
 		GlobalModel: &domain.GlobalModel{
@@ -142,6 +157,7 @@ func TestAnthropic_ReasoningPreservesExplicitMaxTokens(t *testing.T) {
 	defer srv.Close()
 
 	adp := anthropic.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	maxTokens := 1500
 	_, err := adp.ChatCompletion(context.Background(), &domain.Deployment{
 		GlobalModel: &domain.GlobalModel{Provider: domain.ProviderAnthropic, ModelName: "claude-3-7-sonnet"},
@@ -168,6 +184,7 @@ func TestAnthropic_ReasoningRejectsImpossibleExplicitMaxTokens(t *testing.T) {
 	defer srv.Close()
 
 	adp := anthropic.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	maxTokens := 1024
 	_, err := adp.ChatCompletion(context.Background(), &domain.Deployment{
 		GlobalModel: &domain.GlobalModel{Provider: domain.ProviderAnthropic, ModelName: "claude-3-7-sonnet"},
@@ -195,6 +212,7 @@ func TestAnthropic_LegacyThinkingBudgetAndStreamReverseMap(t *testing.T) {
 	defer srv.Close()
 
 	adp := anthropic.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID: "dep-ant-legacy",
 		GlobalModel: &domain.GlobalModel{

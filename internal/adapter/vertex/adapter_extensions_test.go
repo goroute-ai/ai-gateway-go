@@ -10,8 +10,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	return pol
+}
 
 func TestVertex_Gemini_Region_ToolResult_And_ThoughtTokens(t *testing.T) {
 	var capturedPath string
@@ -37,7 +51,7 @@ func TestVertex_Gemini_Region_ToolResult_And_ThoughtTokens(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := vertex.NewAdapter(srv.Client(), nil)
+	adp := vertex.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:     "dep-vertex-global",
 		Region: "global",
@@ -109,7 +123,7 @@ func TestVertex_PartnerClaude_RawPredict_And_StreamRawPredict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adp := vertex.NewAdapter(srv.Client(), nil)
+	adp := vertex.NewAdapter(srv.Client(), loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:     "dep-vertex-claude",
 		Region: "us-east5",

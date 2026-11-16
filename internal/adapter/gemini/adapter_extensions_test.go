@@ -10,8 +10,22 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
+
+func loopbackTestPolicy(t *testing.T) *network.Policy {
+	t.Helper()
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	return pol
+}
 
 func TestGemini_Extensions_ThinkingLevel_Schema_ToolChoice_Parts(t *testing.T) {
 	var captured map[string]any
@@ -30,6 +44,7 @@ func TestGemini_Extensions_ThinkingLevel_Schema_ToolChoice_Parts(t *testing.T) {
 	defer srv.Close()
 
 	adp := gemini.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID: "dep-gem-ext",
 		GlobalModel: &domain.GlobalModel{
@@ -117,6 +132,7 @@ func TestGemini_25_ThinkingBudget(t *testing.T) {
 	defer srv.Close()
 
 	adp := gemini.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-gem-25",
 		GlobalModel: &domain.GlobalModel{ID: "gemini/gemini-2.5-pro", Provider: domain.ProviderGemini, ModelName: "gemini-2.5-pro"},
@@ -147,6 +163,7 @@ func TestGemini_25_ReasoningNoneDisablesThinking(t *testing.T) {
 	defer srv.Close()
 
 	adp := gemini.NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(loopbackTestPolicy(t))
 	dep := &domain.Deployment{
 		ID:          "dep-gem-25-none",
 		GlobalModel: &domain.GlobalModel{ID: "gemini/gemini-2.5-pro", Provider: domain.ProviderGemini, ModelName: "gemini-2.5-pro"},
