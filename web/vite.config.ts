@@ -1,0 +1,55 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  base: '/ui/',
+  esbuild: {
+    legalComments: 'none',
+  },
+  build: {
+    target: 'es2022',
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          query: ['@tanstack/react-query', 'lucide-react'],
+          common: [
+            './src/components/common/Badge.tsx',
+            './src/components/common/CodeBlock.tsx',
+            './src/components/common/ErrorAlert.tsx',
+            './src/components/common/Modal.tsx',
+            './src/utils/budget.ts',
+          ],
+          auth: [
+            './src/views/LoginView.tsx',
+            './src/views/CLILoginView.tsx',
+          ],
+        },
+      },
+    },
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      '/auth': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/admin/v1': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/v1': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/mcp-rest': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+    },
+  },
+});
