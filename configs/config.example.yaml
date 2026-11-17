@@ -69,6 +69,56 @@ router:
   default_cooldown: 60s
   failure_window: 30s
   failure_threshold: 3
+  max_fallback_depth: 16
+  default_fallbacks: []
+  #  - target: "fast-backup"
+  #    overrides:
+  #      temperature: 0.2
+  retry_policy: {}
+  #  rate_limit_retries: 2
+  #  timeout_retries: 1
+  #  server_error_retries: 2
+  #  default_retries: 1
+  cooldown_policy: {}
+  #  allowed_fails:
+  #    rate_limit: 5
+  #    server_error: 3
+  #  failure_rate_threshold: 0.5
+  #  min_requests_per_minute: 10
+  #  max_cooldown_seconds: 300
+  enable_mid_stream_continuation: false
+  max_stream_continuations: 1
+  health_staleness_threshold: 0s     # 0s = disable health staleness check
+  strict_capacity_filtering: false
+  provider_budgets: {}               # Optional per-provider budget cap in micro-USD (e.g. openai: 100000000)
+  session_affinity_ttl: 30m
+  session_affinity_repin_on_failover: true
+  prompt_cache_affinity: false
+  pre_router_mode: ""                # "", "heuristic", "semantic", "bandit", or "quality"
+  semantic_router:
+    enabled: false
+    embedding_model: ""
+    similarity_threshold: 0.78
+    timeout: 2s
+    routes: []
+  cache_aware_routing: false
+  bandit:
+    enabled: false
+    default_alpha: 1.0
+    default_beta: 1.0
+    exploration_rate: 0.1
+    decay_half_life: 24h
+    latency_weight: 0.5
+    cost_weight: 0.5
+    sync_interval: 5s
+    candidate_models: []
+  hedge_delay_ms: 0                  # 0 = disabled; >0 enables staggered hedged racing
+  max_hedge_concurrency: 2
+  scheduler:
+    enabled: false
+    max_queue_depth: 256
+    max_wait_time: 5s
+    default_priority: 0
 
 rate_limit:
   enabled: true
@@ -221,12 +271,24 @@ model_list:
   - model_name: fast
     routing_strategy: weighted-shuffle
     fallbacks: ["fast-backup"]
+    # context_window_fallbacks:
+    #   - target: "long-context"
+    # content_policy_fallbacks:
+    #   - target: "fast-backup"
+    # fallback_targets:
+    #   - target: "fast-backup"
+    #     overrides:
+    #       max_tokens: 2048
     model_params:
       model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
       weight: 100
       rpm: 1000
       tpm: 1000000
+      # priority: 1
+      # tags: ["tier:fast", "region:us"]
+      # max_budget_micros: 0
+      # budget_reset_period: "monthly"
 
   - model_name: fast-backup
     model_params:

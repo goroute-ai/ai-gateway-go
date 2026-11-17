@@ -1,0 +1,7 @@
+ALTER TABLE model_deployments
+    ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS max_budget_micros BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS budget_reset_period TEXT NOT NULL DEFAULT 'monthly';
+
+ALTER TABLE global_models
+    ADD COLUMN IF NOT EXISTS quality_tier INTEGER NOT NULL DEFAULT 0;

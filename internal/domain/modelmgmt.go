@@ -20,6 +20,7 @@ const (
 	StrategyWeightedShuffle    RoutingStrategy = "weighted-shuffle"
 	StrategyLeastBusy          RoutingStrategy = "least-busy"
 	StrategyLatencyBased       RoutingStrategy = "latency-based"
+	StrategyFastestResponse    RoutingStrategy = "fastest-response"
 	StrategyUsageBasedHeadroom RoutingStrategy = "usage-based-headroom"
 	StrategyLowestCost         RoutingStrategy = "lowest-cost"
 	StrategyRoundRobin         RoutingStrategy = "round-robin"
@@ -83,6 +84,7 @@ type GlobalModel struct {
 	PricingStatus                 PricingStatus        `json:"pricing_status"`
 	PricingProvenanceSource       string               `json:"pricing_provenance_source,omitempty"`
 	PricingEffectiveDate          string               `json:"pricing_effective_date,omitempty"`
+	QualityTier                   int                  `json:"quality_tier,omitempty"`
 	LifecycleStatus               ModelLifecycleStatus `json:"lifecycle_status"`
 	DeprecationDate               *time.Time           `json:"deprecation_date,omitempty"`
 	DiscoveredAt                  time.Time            `json:"discovered_at"`
@@ -319,20 +321,50 @@ func (p *GuardrailPolicy) EffectiveMode() GuardrailMode {
 	return GuardrailModeEnforce
 }
 
+// FallbackTarget specifies a fallback model group target along with optional parameter overrides.
+type FallbackTarget struct {
+	GroupAliasOrID string         `json:"target" yaml:"target"`
+	Overrides      map[string]any `json:"overrides,omitempty" yaml:"overrides,omitempty"`
+}
+
+// RetryPolicy configures per-error-class retry budgets for routing and failover.
+type RetryPolicy struct {
+	RateLimitRetries   int `json:"rate_limit_retries,omitempty" yaml:"rate_limit_retries,omitempty"`
+	TimeoutRetries     int `json:"timeout_retries,omitempty" yaml:"timeout_retries,omitempty"`
+	ServerErrorRetries int `json:"server_error_retries,omitempty" yaml:"server_error_retries,omitempty"`
+	AuthErrorRetries   int `json:"auth_error_retries,omitempty" yaml:"auth_error_retries,omitempty"`
+	NotFoundRetries    int `json:"not_found_retries,omitempty" yaml:"not_found_retries,omitempty"`
+	BadRequestRetries  int `json:"bad_request_retries,omitempty" yaml:"bad_request_retries,omitempty"`
+	DefaultRetries     int `json:"default_retries,omitempty" yaml:"default_retries,omitempty"`
+}
+
+// CooldownPolicy configures adaptive circuit-breaker thresholds and cooldown bounds.
+type CooldownPolicy struct {
+	AllowedFails         map[string]int `json:"allowed_fails,omitempty" yaml:"allowed_fails,omitempty"`
+	FailureRateThreshold float64        `json:"failure_rate_threshold,omitempty" yaml:"failure_rate_threshold,omitempty"`
+	MinRequestsPerMinute int            `json:"min_requests_per_minute,omitempty" yaml:"min_requests_per_minute,omitempty"`
+	MaxCooldownSeconds   int            `json:"max_cooldown_seconds,omitempty" yaml:"max_cooldown_seconds,omitempty"`
+}
+
 // ModelGroup represents a logical routing target (e.g. "gpt-4.1", "fast", "reasoning", "auto").
 type ModelGroup struct {
-	ID               string          `json:"id"`
-	OrgID            string          `json:"org_id"`
-	Alias            string          `json:"alias"`
-	Description      string          `json:"description,omitempty"`
-	RoutingStrategy  RoutingStrategy `json:"routing_strategy"`
-	FallbackGroupIDs []string        `json:"fallback_group_ids,omitempty"`
-	MaxRetries       int             `json:"max_retries"`
-	CooldownSeconds  int             `json:"cooldown_seconds"`
-	FailureThreshold int             `json:"failure_threshold"`
-	IsActive         bool            `json:"is_active"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID                     string           `json:"id"`
+	OrgID                  string           `json:"org_id"`
+	Alias                  string           `json:"alias"`
+	Description            string           `json:"description,omitempty"`
+	RoutingStrategy        RoutingStrategy  `json:"routing_strategy"`
+	FallbackGroupIDs       []string         `json:"fallback_group_ids,omitempty"`
+	ContextWindowFallbacks []FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	ContentPolicyFallbacks []FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	FallbackTargets        []FallbackTarget `json:"fallback_targets,omitempty"`
+	RetryPolicy            *RetryPolicy     `json:"retry_policy,omitempty"`
+	CooldownPolicy         *CooldownPolicy  `json:"cooldown_policy,omitempty"`
+	MaxRetries             int              `json:"max_retries"`
+	CooldownSeconds        int              `json:"cooldown_seconds"`
+	FailureThreshold       int              `json:"failure_threshold"`
+	IsActive               bool             `json:"is_active"`
+	CreatedAt              time.Time        `json:"created_at"`
+	UpdatedAt              time.Time        `json:"updated_at"`
 }
 
 // Deployment represents Layer 4 of Model Management: a concrete physical endpoint inside a ModelGroup.
@@ -349,6 +381,9 @@ type Deployment struct {
 	TPMCapacity       int              `json:"tpm_capacity"`
 	TimeoutMs         int              `json:"timeout_ms"`
 	Priority          int              `json:"priority"`
+	Tags              []string         `json:"tags,omitempty"`
+	MaxBudgetMicros   int64            `json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod string           `json:"budget_reset_period,omitempty"`
 	Status            DeploymentStatus `json:"status"`
 	CreatedAt         time.Time        `json:"created_at"`
 	UpdatedAt         time.Time        `json:"updated_at"`

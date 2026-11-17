@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -150,5 +151,82 @@ func TestMetricsRequiresMasterAdminCredential(t *testing.T) {
 		if !strings.Contains(metricsBody, metric) {
 			t.Fatalf("expected runtime metric %q, got: %s", metric, metricsBody)
 		}
+	}
+}
+
+func TestBootstrapWiresRoutingFoundationFields(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "sk-gw-bootstrap-foundation-master"
+	cfg.ModelList = []config.ModelListEntry{
+		{
+			ModelName:       "tiered-fast",
+			RoutingStrategy: string(domain.StrategyFastestResponse),
+			ContextWindowFallbacks: []domain.FallbackTarget{
+				{GroupAliasOrID: "long-ctx", Overrides: map[string]any{"max_tokens": 8192}},
+			},
+			ContentPolicyFallbacks: []domain.FallbackTarget{
+				{GroupAliasOrID: "safe-tier"},
+			},
+			FallbackTargets: []domain.FallbackTarget{
+				{GroupAliasOrID: "backup-fast"},
+			},
+			ModelParams: config.ModelParams{
+				Model:             "openai/gpt-4.1-mini",
+				APIKey:            "sk-test-bootstrap-foundation",
+				Region:            "us-west",
+				Weight:            80,
+				RPM:               500,
+				TPM:               250000,
+				Priority:          3,
+				Tags:              []string{"tier:fast", "region:us"},
+				MaxBudgetMicros:   15000000,
+				BudgetResetPeriod: "daily",
+			},
+		},
+	}
+
+	gw, err := server.New(cfg, repo, nil, nil)
+	if err != nil {
+		t.Fatalf("server.New failed: %v", err)
+	}
+	gw.StartWorkers(ctx)
+	defer gw.Shutdown(ctx)
+
+	mg, err := repo.GetModelGroupByAlias(ctx, cfg.Auth.DefaultOrgID, "tiered-fast")
+	if err != nil {
+		t.Fatalf("GetModelGroupByAlias failed: %v", err)
+	}
+	if mg.RoutingStrategy != domain.StrategyFastestResponse {
+		t.Fatalf("RoutingStrategy = %q, want %q", mg.RoutingStrategy, domain.StrategyFastestResponse)
+	}
+	if len(mg.ContextWindowFallbacks) != 1 || mg.ContextWindowFallbacks[0].GroupAliasOrID != "long-ctx" {
+		t.Fatalf("ContextWindowFallbacks mismatch: %+v", mg.ContextWindowFallbacks)
+	}
+	if len(mg.ContentPolicyFallbacks) != 1 || mg.ContentPolicyFallbacks[0].GroupAliasOrID != "safe-tier" {
+		t.Fatalf("ContentPolicyFallbacks mismatch: %+v", mg.ContentPolicyFallbacks)
+	}
+	if len(mg.FallbackTargets) != 1 || mg.FallbackTargets[0].GroupAliasOrID != "backup-fast" {
+		t.Fatalf("FallbackTargets mismatch: %+v", mg.FallbackTargets)
+	}
+
+	deps, err := repo.ListDeploymentsByGroup(ctx, mg.ID)
+	if err != nil || len(deps) != 1 {
+		t.Fatalf("ListDeploymentsByGroup failed: len=%d err=%v", len(deps), err)
+	}
+	dep := deps[0]
+	if dep.Priority != 3 {
+		t.Fatalf("Deployment.Priority = %d, want 3", dep.Priority)
+	}
+	if !reflect.DeepEqual(dep.Tags, []string{"tier:fast", "region:us"}) {
+		t.Fatalf("Deployment.Tags = %#v, want [tier:fast region:us]", dep.Tags)
+	}
+	if dep.MaxBudgetMicros != 15000000 {
+		t.Fatalf("Deployment.MaxBudgetMicros = %d, want 15000000", dep.MaxBudgetMicros)
+	}
+	if dep.BudgetResetPeriod != "daily" {
+		t.Fatalf("Deployment.BudgetResetPeriod = %q, want daily", dep.BudgetResetPeriod)
 	}
 }

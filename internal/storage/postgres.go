@@ -264,6 +264,9 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 	if err := p.mem.UpsertGlobalModel(ctx, m); err != nil {
 		return err
 	}
+	if p.pool == nil {
+		return nil
+	}
 	capsJSON, _ := json.Marshal(m.ResolveCapabilities())
 	if len(capsJSON) == 0 {
 		capsJSON = []byte("{}")
@@ -285,9 +288,9 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd,
 			audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, modality_pricing_json,
 			pricing_version, pricing_status, pricing_provenance_source,
-			pricing_effective_date, lifecycle_status, deprecation_date, capabilities, supported_operations,
+			pricing_effective_date, quality_tier, lifecycle_status, deprecation_date, capabilities, supported_operations,
 			supports_inference, discovered_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW(),NOW())
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			max_input_tokens = EXCLUDED.max_input_tokens,
@@ -312,6 +315,7 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			pricing_status = EXCLUDED.pricing_status,
 			pricing_provenance_source = EXCLUDED.pricing_provenance_source,
 			pricing_effective_date = EXCLUDED.pricing_effective_date,
+			quality_tier = EXCLUDED.quality_tier,
 			lifecycle_status = EXCLUDED.lifecycle_status,
 			deprecation_date = EXCLUDED.deprecation_date,
 			capabilities = EXCLUDED.capabilities,
@@ -331,13 +335,13 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 		m.RerankCostMicrosPerSearchUnit, m.ImageCostMicrosBase, m.ImageCostMicrosHD,
 		m.AudioSTTCostMicrosPerSecond, m.AudioTTSCostMicrosPer1KChars, modPricingJSON,
 		pv, pricingStatus, m.PricingProvenanceSource,
-		m.PricingEffectiveDate, string(m.LifecycleStatus), m.DeprecationDate, capsJSON, opsJSON,
+		m.PricingEffectiveDate, m.QualityTier, string(m.LifecycleStatus), m.DeprecationDate, capsJSON, opsJSON,
 		m.SupportsInference,
 	)
 	return err
 }
 
-const globalModelSelectCols = `id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference`
+const globalModelSelectCols = `id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), COALESCE(quality_tier, 0), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference`
 
 func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 	var m domain.GlobalModel
@@ -351,7 +355,7 @@ func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 		&m.RerankCostMicrosPerSearchUnit, &m.ImageCostMicrosBase, &m.ImageCostMicrosHD,
 		&m.AudioSTTCostMicrosPerSecond, &m.AudioTTSCostMicrosPer1KChars, &rawModPricing,
 		&m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
-		&m.PricingEffectiveDate, &status, &m.DeprecationDate, &rawCaps, &rawOps, &m.SupportsInference,
+		&m.PricingEffectiveDate, &m.QualityTier, &status, &m.DeprecationDate, &rawCaps, &rawOps, &m.SupportsInference,
 	); err != nil {
 		return nil, err
 	}
@@ -1237,23 +1241,107 @@ func (p *PostgresRepository) ListProviderCredentials(ctx context.Context, orgID 
 	return out, nil
 }
 
+func isJSONObjectNonEmpty(raw []byte) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "{}" && trimmed != "null"
+}
+
+const modelGroupSelectCols = `id, org_id, alias, description, routing_strategy, fallback_group_ids, COALESCE(context_window_fallbacks, '[]'::jsonb), COALESCE(content_policy_fallbacks, '[]'::jsonb), COALESCE(fallback_targets, '[]'::jsonb), COALESCE(retry_policy, '{}'::jsonb), COALESCE(cooldown_policy, '{}'::jsonb), max_retries, cooldown_seconds, failure_threshold, is_active`
+
+func scanModelGroup(row rowScanner) (*domain.ModelGroup, error) {
+	var g domain.ModelGroup
+	var strat string
+	var fbs []string
+	var rawCtxFbs, rawContentFbs, rawTargets, rawRetry, rawCooldown []byte
+	if err := row.Scan(
+		&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs,
+		&rawCtxFbs, &rawContentFbs, &rawTargets, &rawRetry, &rawCooldown,
+		&g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
+	); err != nil {
+		return nil, err
+	}
+	g.RoutingStrategy = domain.RoutingStrategy(strat)
+	g.FallbackGroupIDs = fbs
+	if g.FallbackGroupIDs == nil {
+		g.FallbackGroupIDs = []string{}
+	}
+	if len(rawCtxFbs) > 0 {
+		_ = json.Unmarshal(rawCtxFbs, &g.ContextWindowFallbacks)
+	}
+	if len(rawContentFbs) > 0 {
+		_ = json.Unmarshal(rawContentFbs, &g.ContentPolicyFallbacks)
+	}
+	if len(rawTargets) > 0 {
+		_ = json.Unmarshal(rawTargets, &g.FallbackTargets)
+	}
+	if isJSONObjectNonEmpty(rawRetry) {
+		var rp domain.RetryPolicy
+		if err := json.Unmarshal(rawRetry, &rp); err == nil {
+			g.RetryPolicy = &rp
+		}
+	}
+	if isJSONObjectNonEmpty(rawCooldown) {
+		var cp domain.CooldownPolicy
+		if err := json.Unmarshal(rawCooldown, &cp); err == nil {
+			g.CooldownPolicy = &cp
+		}
+	}
+	return &g, nil
+}
+
 func (p *PostgresRepository) CreateModelGroup(ctx context.Context, mg *domain.ModelGroup) error {
 	if mg.ID == "" {
 		mg.ID = uuid.NewString()
+	}
+	if p.pool == nil {
+		return p.mem.CreateModelGroup(ctx, mg)
 	}
 	fbs := mg.FallbackGroupIDs
 	if fbs == nil {
 		fbs = []string{}
 	}
+	ctxFbsJSON, err := marshalJSONOrDefault(mg.ContextWindowFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal context_window_fallbacks: %w", err)
+	}
+	contentFbsJSON, err := marshalJSONOrDefault(mg.ContentPolicyFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal content_policy_fallbacks: %w", err)
+	}
+	targetsJSON, err := marshalJSONOrDefault(mg.FallbackTargets, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal fallback_targets: %w", err)
+	}
+	retryJSON, err := marshalJSONOrDefault(mg.RetryPolicy, "{}")
+	if err != nil {
+		return fmt.Errorf("marshal retry_policy: %w", err)
+	}
+	cooldownJSON, err := marshalJSONOrDefault(mg.CooldownPolicy, "{}")
+	if err != nil {
+		return fmt.Errorf("marshal cooldown_policy: %w", err)
+	}
 	const q = `
-		INSERT INTO model_groups (id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		INSERT INTO model_groups (
+			id, org_id, alias, description, routing_strategy, fallback_group_ids,
+			context_window_fallbacks, content_policy_fallbacks, fallback_targets,
+			retry_policy, cooldown_policy, max_retries, cooldown_seconds, failure_threshold, is_active
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (org_id, alias) DO UPDATE SET
 			routing_strategy = EXCLUDED.routing_strategy,
 			fallback_group_ids = EXCLUDED.fallback_group_ids,
+			context_window_fallbacks = EXCLUDED.context_window_fallbacks,
+			content_policy_fallbacks = EXCLUDED.content_policy_fallbacks,
+			fallback_targets = EXCLUDED.fallback_targets,
+			retry_policy = EXCLUDED.retry_policy,
+			cooldown_policy = EXCLUDED.cooldown_policy,
 			updated_at = NOW()
 		RETURNING id`
-	if err := p.pool.QueryRow(ctx, q, mg.ID, mg.OrgID, mg.Alias, mg.Description, string(mg.RoutingStrategy), fbs, mg.MaxRetries, mg.CooldownSeconds, mg.FailureThreshold, mg.IsActive).Scan(&mg.ID); err != nil {
+	if err := p.pool.QueryRow(ctx, q,
+		mg.ID, mg.OrgID, mg.Alias, mg.Description, string(mg.RoutingStrategy), fbs,
+		ctxFbsJSON, contentFbsJSON, targetsJSON, retryJSON, cooldownJSON,
+		mg.MaxRetries, mg.CooldownSeconds, mg.FailureThreshold, mg.IsActive,
+	).Scan(&mg.ID); err != nil {
 		return err
 	}
 	return p.mem.CreateModelGroup(ctx, mg)
@@ -1263,45 +1351,33 @@ func (p *PostgresRepository) GetModelGroupByAlias(ctx context.Context, orgID, al
 	if p.pool == nil {
 		return p.mem.GetModelGroupByAlias(ctx, orgID, alias)
 	}
-	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE org_id = $1 AND alias = $2`
-	var g domain.ModelGroup
-	var strat string
-	var fbs []string
-	if err := p.pool.QueryRow(ctx, q, orgID, alias).Scan(
-		&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs, &g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
-	); err != nil {
+	const q = `SELECT ` + modelGroupSelectCols + ` FROM model_groups WHERE org_id = $1 AND alias = $2`
+	g, err := scanModelGroup(p.pool.QueryRow(ctx, q, orgID, alias))
+	if err != nil {
 		return nil, fmt.Errorf("model group not found: %w", err)
 	}
-	g.RoutingStrategy = domain.RoutingStrategy(strat)
-	g.FallbackGroupIDs = fbs
-	_ = p.mem.CreateModelGroup(ctx, &g)
-	return &g, nil
+	_ = p.mem.CreateModelGroup(ctx, g)
+	return g, nil
 }
 
 func (p *PostgresRepository) GetModelGroupByID(ctx context.Context, id string) (*domain.ModelGroup, error) {
 	if p.pool == nil {
 		return p.mem.GetModelGroupByID(ctx, id)
 	}
-	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE id = $1`
-	var g domain.ModelGroup
-	var strat string
-	var fbs []string
-	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs, &g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
-	); err != nil {
+	const q = `SELECT ` + modelGroupSelectCols + ` FROM model_groups WHERE id = $1`
+	g, err := scanModelGroup(p.pool.QueryRow(ctx, q, id))
+	if err != nil {
 		return nil, fmt.Errorf("model group not found: %w", err)
 	}
-	g.RoutingStrategy = domain.RoutingStrategy(strat)
-	g.FallbackGroupIDs = fbs
-	_ = p.mem.CreateModelGroup(ctx, &g)
-	return &g, nil
+	_ = p.mem.CreateModelGroup(ctx, g)
+	return g, nil
 }
 
 func (p *PostgresRepository) ListModelGroups(ctx context.Context, orgID string) ([]*domain.ModelGroup, error) {
 	if p.pool == nil {
 		return p.mem.ListModelGroups(ctx, orgID)
 	}
-	const q = `SELECT id, org_id, alias, description, routing_strategy, fallback_group_ids, max_retries, cooldown_seconds, failure_threshold, is_active FROM model_groups WHERE ($1 = '' OR org_id = $1) ORDER BY alias ASC`
+	const q = `SELECT ` + modelGroupSelectCols + ` FROM model_groups WHERE ($1 = '' OR org_id = $1) ORDER BY alias ASC`
 	rows, err := p.pool.Query(ctx, q, orgID)
 	if err != nil {
 		return nil, err
@@ -1309,24 +1385,20 @@ func (p *PostgresRepository) ListModelGroups(ctx context.Context, orgID string) 
 	defer rows.Close()
 	var out []*domain.ModelGroup
 	for rows.Next() {
-		var g domain.ModelGroup
-		var strat string
-		var fbs []string
-		if err := rows.Scan(
-			&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs, &g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
-		); err != nil {
+		g, err := scanModelGroup(rows)
+		if err != nil {
 			return nil, err
 		}
-		g.RoutingStrategy = domain.RoutingStrategy(strat)
-		g.FallbackGroupIDs = fbs
-		_ = p.mem.CreateModelGroup(ctx, &g)
-		out = append(out, &g)
+		_ = p.mem.CreateModelGroup(ctx, g)
+		out = append(out, g)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
+
+const deploymentSelectCols = `id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status, COALESCE(tags, '{}'), max_budget_micros, COALESCE(budget_reset_period, 'monthly')`
 
 func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.Deployment) error {
 	if dep.ID == "" {
@@ -1338,10 +1410,21 @@ func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.D
 	if dep.Weight <= 0 {
 		dep.Weight = 100
 	}
+	if p.pool == nil {
+		return p.mem.CreateDeployment(ctx, dep)
+	}
+	resetPeriod := dep.BudgetResetPeriod
+	if resetPeriod == "" {
+		resetPeriod = string(domain.BudgetResetMonthly)
+	}
+	tags := dep.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	const q = `
-		INSERT INTO model_deployments (id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
-	if _, err := p.pool.Exec(ctx, q, dep.ID, dep.ModelGroupID, dep.GlobalModelID, dep.CredentialID, dep.DeploymentName, dep.Region, dep.Weight, dep.RPMCapacity, dep.TPMCapacity, dep.TimeoutMs, dep.Priority, string(dep.Status)); err != nil {
+		INSERT INTO model_deployments (id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status, tags, max_budget_micros, budget_reset_period)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
+	if _, err := p.pool.Exec(ctx, q, dep.ID, dep.ModelGroupID, dep.GlobalModelID, dep.CredentialID, dep.DeploymentName, dep.Region, dep.Weight, dep.RPMCapacity, dep.TPMCapacity, dep.TimeoutMs, dep.Priority, string(dep.Status), tags, dep.MaxBudgetMicros, resetPeriod); err != nil {
 		return err
 	}
 	if dep.GlobalModel == nil && dep.GlobalModelID != "" {
@@ -1365,8 +1448,11 @@ func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q st
 	for rows.Next() {
 		var d domain.Deployment
 		var status string
-		if err := rows.Scan(&d.ID, &d.ModelGroupID, &d.GlobalModelID, &d.CredentialID, &d.DeploymentName, &d.Region, &d.Weight, &d.RPMCapacity, &d.TPMCapacity, &d.TimeoutMs, &d.Priority, &status); err != nil {
+		if err := rows.Scan(&d.ID, &d.ModelGroupID, &d.GlobalModelID, &d.CredentialID, &d.DeploymentName, &d.Region, &d.Weight, &d.RPMCapacity, &d.TPMCapacity, &d.TimeoutMs, &d.Priority, &status, &d.Tags, &d.MaxBudgetMicros, &d.BudgetResetPeriod); err != nil {
 			continue
+		}
+		if d.Tags == nil {
+			d.Tags = []string{}
 		}
 		if status == "" {
 			d.Status = domain.DeploymentStatusActive
@@ -1420,7 +1506,7 @@ func (p *PostgresRepository) ListDeploymentsByGroup(ctx context.Context, groupID
 	if p.pool == nil {
 		return p.mem.ListDeploymentsByGroup(ctx, groupID)
 	}
-	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments WHERE model_group_id = $1`
+	const q = `SELECT ` + deploymentSelectCols + ` FROM model_deployments WHERE model_group_id = $1`
 	return p.loadAndHydrateDeployments(ctx, q, groupID)
 }
 
@@ -1428,7 +1514,7 @@ func (p *PostgresRepository) ListAllDeployments(ctx context.Context) ([]*domain.
 	if p.pool == nil {
 		return p.mem.ListAllDeployments(ctx)
 	}
-	const q = `SELECT id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status FROM model_deployments`
+	const q = `SELECT ` + deploymentSelectCols + ` FROM model_deployments`
 	return p.loadAndHydrateDeployments(ctx, q)
 }
 

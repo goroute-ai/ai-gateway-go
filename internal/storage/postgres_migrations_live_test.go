@@ -63,6 +63,7 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		"audio_tts_cost_micros_per_1k_chars",
 		"pricing_status",
 		"supports_inference",
+		"quality_tier",
 	}
 	for _, col := range requiredCols {
 		var exists bool
@@ -260,5 +261,28 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 	}
 	if gotNilPol.ContentExceptions == nil || len(gotNilPol.ContentExceptions) != 0 {
 		t.Fatalf("ContentExceptions = %#v, want non-nil empty slice", gotNilPol.ContentExceptions)
+	}
+
+	// 7. Assert routing foundation columns on model_groups & model_deployments and round-trip them.
+	for _, tc := range []struct {
+		table string
+		cols  []string
+	}{
+		{"model_groups", []string{"context_window_fallbacks", "content_policy_fallbacks", "fallback_targets", "retry_policy", "cooldown_policy"}},
+		{"model_deployments", []string{"tags", "max_budget_micros", "budget_reset_period"}},
+	} {
+		for _, col := range tc.cols {
+			var exists bool
+			if err := pool.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+				)`, tc.table, col).Scan(&exists); err != nil {
+				t.Fatalf("check %s.%s: %v", tc.table, col, err)
+			}
+			if !exists {
+				t.Fatalf("expected column %s.%s to exist after migrations", tc.table, col)
+			}
+		}
 	}
 }

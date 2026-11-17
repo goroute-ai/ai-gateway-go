@@ -38,6 +38,7 @@ func TestMemoryRepository_GlobalModelModalityAndOperationsRoundTrip(t *testing.T
 		ModalityPricingJSON:           map[string]any{"hd_1024x1024": float64(80000)},
 		PricingStatus:                 domain.PricingStatusCustom,
 		PricingProvenanceSource:       "operator-verified",
+		QualityTier:                   3,
 		LifecycleStatus:               domain.ModelStatusActive,
 		DeprecationDate:               &depDate,
 	}
@@ -65,6 +66,9 @@ func TestMemoryRepository_GlobalModelModalityAndOperationsRoundTrip(t *testing.T
 	}
 	if got.DeprecationDate == nil || !got.DeprecationDate.Equal(depDate) {
 		t.Errorf("DeprecationDate = %v, want %v", got.DeprecationDate, depDate)
+	}
+	if got.QualityTier != 3 {
+		t.Errorf("QualityTier = %d, want 3", got.QualityTier)
 	}
 	if !got.SupportsOperation(domain.OperationChat) || !got.SupportsOperation(domain.OperationImageGeneration) || got.SupportsOperation(domain.OperationRerank) {
 		t.Errorf("unexpected SupportedOperations: %v", got.SupportedOperations)
@@ -139,5 +143,143 @@ func TestMemoryRepository_GuardrailPolicyToxicityRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.ContentExceptions, []string{"safe_context"}) {
 		t.Errorf("ContentExceptions = %#v, want [safe_context]", got.ContentExceptions)
+	}
+}
+
+func TestMemoryRepository_ModelGroupAndDeploymentRoutingRoundTrip(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	mg := &domain.ModelGroup{
+		ID:              "mg-rt-1",
+		OrgID:           "org-rt-1",
+		Alias:           "fast",
+		RoutingStrategy: domain.StrategyFastestResponse,
+		FallbackGroupIDs: []string{
+			"mg-backup",
+		},
+		ContextWindowFallbacks: []domain.FallbackTarget{
+			{GroupAliasOrID: "long-ctx", Overrides: map[string]any{"max_tokens": 4096}},
+		},
+		ContentPolicyFallbacks: []domain.FallbackTarget{
+			{GroupAliasOrID: "safe-model"},
+		},
+		FallbackTargets: []domain.FallbackTarget{
+			{GroupAliasOrID: "backup-model", Overrides: map[string]any{"temperature": 0.2}},
+		},
+		RetryPolicy: &domain.RetryPolicy{
+			RateLimitRetries:   3,
+			TimeoutRetries:     2,
+			ServerErrorRetries: 1,
+			DefaultRetries:     1,
+		},
+		CooldownPolicy: &domain.CooldownPolicy{
+			AllowedFails:         map[string]int{"rate_limit": 5},
+			FailureRateThreshold: 0.5,
+			MinRequestsPerMinute: 10,
+			MaxCooldownSeconds:   300,
+		},
+		IsActive: true,
+	}
+	if err := repo.CreateModelGroup(ctx, mg); err != nil {
+		t.Fatalf("CreateModelGroup failed: %v", err)
+	}
+
+	// Mutate caller slices/maps/pointers to verify deep copy isolation.
+	mg.ContextWindowFallbacks[0].Overrides["max_tokens"] = 1
+	mg.RetryPolicy.RateLimitRetries = 99
+	mg.CooldownPolicy.AllowedFails["rate_limit"] = 99
+
+	gotMG, err := repo.GetModelGroupByAlias(ctx, "org-rt-1", "fast")
+	if err != nil {
+		t.Fatalf("GetModelGroupByAlias failed: %v", err)
+	}
+	if gotMG.RoutingStrategy != domain.StrategyFastestResponse {
+		t.Fatalf("RoutingStrategy = %q, want %q", gotMG.RoutingStrategy, domain.StrategyFastestResponse)
+	}
+	if gotMG.ContextWindowFallbacks[0].Overrides["max_tokens"] != 4096 {
+		t.Fatalf("ContextWindowFallbacks mutated: %+v", gotMG.ContextWindowFallbacks)
+	}
+	if len(gotMG.ContentPolicyFallbacks) != 1 || gotMG.ContentPolicyFallbacks[0].GroupAliasOrID != "safe-model" {
+		t.Fatalf("ContentPolicyFallbacks mismatch: %+v", gotMG.ContentPolicyFallbacks)
+	}
+	if len(gotMG.FallbackTargets) != 1 || gotMG.FallbackTargets[0].Overrides["temperature"] != 0.2 {
+		t.Fatalf("FallbackTargets mismatch: %+v", gotMG.FallbackTargets)
+	}
+	if gotMG.RetryPolicy == nil || gotMG.RetryPolicy.RateLimitRetries != 3 {
+		t.Fatalf("RetryPolicy mismatch: %+v", gotMG.RetryPolicy)
+	}
+	if gotMG.CooldownPolicy == nil || gotMG.CooldownPolicy.AllowedFails["rate_limit"] != 5 || gotMG.CooldownPolicy.MaxCooldownSeconds != 300 {
+		t.Fatalf("CooldownPolicy mismatch: %+v", gotMG.CooldownPolicy)
+	}
+
+	// Nil policies/slices round-trip safely.
+	nilMG := &domain.ModelGroup{
+		ID:       "mg-rt-nil",
+		OrgID:    "org-rt-1",
+		Alias:    "plain",
+		IsActive: true,
+	}
+	if err := repo.CreateModelGroup(ctx, nilMG); err != nil {
+		t.Fatalf("CreateModelGroup nilMG failed: %v", err)
+	}
+	gotNilMG, err := repo.GetModelGroupByID(ctx, "mg-rt-nil")
+	if err != nil {
+		t.Fatalf("GetModelGroupByID failed: %v", err)
+	}
+	if gotNilMG.RetryPolicy != nil || gotNilMG.CooldownPolicy != nil {
+		t.Fatalf("expected nil RetryPolicy/CooldownPolicy, got %+v / %+v", gotNilMG.RetryPolicy, gotNilMG.CooldownPolicy)
+	}
+
+	dep := &domain.Deployment{
+		ID:                "dep-rt-1",
+		ModelGroupID:      mg.ID,
+		GlobalModelID:     "openai/gpt-4.1",
+		CredentialID:      "cred-1",
+		DeploymentName:    "fast-1",
+		Region:            "us-east",
+		Priority:          2,
+		Tags:              []string{"tier:fast", "region:us"},
+		MaxBudgetMicros:   25000000,
+		BudgetResetPeriod: "daily",
+	}
+	if err := repo.CreateDeployment(ctx, dep); err != nil {
+		t.Fatalf("CreateDeployment failed: %v", err)
+	}
+	dep.Tags[0] = "mutated"
+
+	deps, err := repo.ListDeploymentsByGroup(ctx, mg.ID)
+	if err != nil || len(deps) != 1 {
+		t.Fatalf("ListDeploymentsByGroup failed: len=%d err=%v", len(deps), err)
+	}
+	if deps[0].Priority != 2 || !reflect.DeepEqual(deps[0].Tags, []string{"tier:fast", "region:us"}) || deps[0].MaxBudgetMicros != 25000000 || deps[0].BudgetResetPeriod != "daily" {
+		t.Fatalf("Deployment mismatch: %+v", deps[0])
+	}
+
+	// Empty BudgetResetPeriod and nil Tags remain empty/nil cleanly when omitted.
+	depDefault := &domain.Deployment{
+		ID:            "dep-rt-default",
+		ModelGroupID:  mg.ID,
+		GlobalModelID: "openai/gpt-4.1",
+		CredentialID:  "cred-1",
+	}
+	if err := repo.CreateDeployment(ctx, depDefault); err != nil {
+		t.Fatalf("CreateDeployment default failed: %v", err)
+	}
+	allDeps, err := repo.ListAllDeployments(ctx)
+	if err != nil || len(allDeps) != 2 {
+		t.Fatalf("ListAllDeployments failed: len=%d err=%v", len(allDeps), err)
+	}
+	var foundDefault bool
+	for _, d := range allDeps {
+		if d.ID == "dep-rt-default" {
+			foundDefault = true
+			if d.BudgetResetPeriod != "" || d.Tags != nil {
+				t.Fatalf("expected empty BudgetResetPeriod and nil Tags, got period=%q tags=%#v", d.BudgetResetPeriod, d.Tags)
+			}
+		}
+	}
+	if !foundDefault {
+		t.Fatalf("dep-rt-default not found in ListAllDeployments")
 	}
 }
