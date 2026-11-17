@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,4 +89,162 @@ func TestActiveHealthMonitorAndRecovery(t *testing.T) {
 	if reports[0].Status != StateHealthy || !mon.IsHealthy(dep.ID) {
 		t.Fatalf("expected deployment to recover to healthy, got %+v", reports[0])
 	}
+}
+
+func TestMonitorIsHealthyWithMaxAgeAndReportAge(t *testing.T) {
+	t.Run("nil monitor defaults to healthy", func(t *testing.T) {
+		var nilMon *Monitor
+		if !nilMon.IsHealthy("dep-1") {
+			t.Fatal("expected nil monitor IsHealthy to return true")
+		}
+		if !nilMon.IsHealthyWithMaxAge("dep-1", time.Minute) {
+			t.Fatal("expected nil monitor IsHealthyWithMaxAge to return true")
+		}
+		state, age, ok := nilMon.ReportAge("dep-1")
+		if ok || state != "" || age != 0 {
+			t.Fatalf("expected nil monitor ReportAge (\"\", 0, false), got (%q, %v, %v)", state, age, ok)
+		}
+	})
+
+	t.Run("unprobed deployment defaults to healthy", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		if !mon.IsHealthyWithMaxAge("missing", time.Minute) {
+			t.Fatal("expected unprobed deployment to be healthy")
+		}
+		state, age, ok := mon.ReportAge("missing")
+		if ok || state != "" || age != 0 {
+			t.Fatalf("expected unprobed ReportAge (\"\", 0, false), got (%q, %v, %v)", state, age, ok)
+		}
+	})
+
+	t.Run("healthy and degraded reports remain healthy regardless of age", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		mon.mu.Lock()
+		mon.reports["healthy-fresh"] = &DeploymentHealthReport{
+			DeploymentID:  "healthy-fresh",
+			Status:        StateHealthy,
+			LastCheckedAt: time.Now().UTC().Add(-5 * time.Second),
+		}
+		mon.reports["healthy-old"] = &DeploymentHealthReport{
+			DeploymentID:  "healthy-old",
+			Status:        StateHealthy,
+			LastCheckedAt: time.Now().UTC().Add(-10 * time.Minute),
+		}
+		mon.reports["degraded-old"] = &DeploymentHealthReport{
+			DeploymentID:  "degraded-old",
+			Status:        StateDegraded,
+			LastCheckedAt: time.Now().UTC().Add(-10 * time.Minute),
+		}
+		mon.mu.Unlock()
+
+		for _, id := range []string{"healthy-fresh", "healthy-old", "degraded-old"} {
+			if !mon.IsHealthyWithMaxAge(id, time.Minute) {
+				t.Fatalf("expected %s to be healthy", id)
+			}
+		}
+
+		state, age, ok := mon.ReportAge("healthy-old")
+		if !ok || state != StateHealthy || age < 9*time.Minute {
+			t.Fatalf("unexpected ReportAge for healthy-old: state=%q age=%v ok=%v", state, age, ok)
+		}
+	})
+
+	t.Run("unhealthy within maxAge stays unhealthy", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		mon.mu.Lock()
+		mon.reports["dep-recent-fail"] = &DeploymentHealthReport{
+			DeploymentID:  "dep-recent-fail",
+			Status:        StateUnhealthy,
+			LastCheckedAt: time.Now().UTC().Add(-10 * time.Second),
+		}
+		mon.mu.Unlock()
+
+		if mon.IsHealthyWithMaxAge("dep-recent-fail", time.Minute) {
+			t.Fatal("expected recent unhealthy report within maxAge to return false")
+		}
+		state, age, ok := mon.ReportAge("dep-recent-fail")
+		if !ok || state != StateUnhealthy || age < 9*time.Second || age > 30*time.Second {
+			t.Fatalf("unexpected ReportAge for dep-recent-fail: state=%q age=%v ok=%v", state, age, ok)
+		}
+	})
+
+	t.Run("unhealthy expired beyond maxAge returns healthy", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		mon.mu.Lock()
+		mon.reports["dep-stale-fail"] = &DeploymentHealthReport{
+			DeploymentID:  "dep-stale-fail",
+			Status:        StateUnhealthy,
+			LastCheckedAt: time.Now().UTC().Add(-2 * time.Minute),
+		}
+		mon.mu.Unlock()
+
+		if !mon.IsHealthyWithMaxAge("dep-stale-fail", time.Minute) {
+			t.Fatal("expected stale unhealthy report older than maxAge to expire and return true")
+		}
+		if mon.IsHealthy("dep-stale-fail") {
+			t.Fatal("expected IsHealthy without maxAge to still return false")
+		}
+		if mon.IsHealthyWithMaxAge("dep-stale-fail", 0) {
+			t.Fatal("expected maxAge=0 to disable staleness expiration")
+		}
+		if mon.IsHealthyWithMaxAge("dep-stale-fail", -time.Second) {
+			t.Fatal("expected negative maxAge to disable staleness expiration")
+		}
+	})
+
+	t.Run("unhealthy with zero LastCheckedAt does not expire", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		mon.mu.Lock()
+		mon.reports["dep-zero-ts"] = &DeploymentHealthReport{
+			DeploymentID: "dep-zero-ts",
+			Status:       StateUnhealthy,
+		}
+		mon.mu.Unlock()
+
+		if mon.IsHealthyWithMaxAge("dep-zero-ts", time.Minute) {
+			t.Fatal("expected unhealthy report with zero timestamp not to expire")
+		}
+		state, age, ok := mon.ReportAge("dep-zero-ts")
+		if !ok || state != StateUnhealthy || age != 0 {
+			t.Fatalf("expected (StateUnhealthy, 0, true), got (%q, %v, %v)", state, age, ok)
+		}
+	})
+
+	t.Run("concurrent readers and writers", func(t *testing.T) {
+		mon := NewMonitor(nil, nil, nil, 0, 0)
+		dep := &domain.Deployment{
+			ID:             "dep-race",
+			DeploymentName: "race-dep",
+			GlobalModel: &domain.GlobalModel{
+				Provider:  domain.ProviderOpenAI,
+				ModelName: "gpt-4.1-mini",
+			},
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for j := 0; j < 50; j++ {
+					if (id+j)%2 == 0 {
+						mon.recordOutcome(dep, 5, nil)
+					} else {
+						mon.recordOutcome(dep, 5, fmt.Errorf("probe error"))
+					}
+				}
+			}(i)
+		}
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 50; j++ {
+					_ = mon.IsHealthyWithMaxAge(dep.ID, time.Second)
+					_, _, _ = mon.ReportAge(dep.ID)
+				}
+			}()
+		}
+		wg.Wait()
+	})
 }
