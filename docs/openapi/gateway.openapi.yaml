@@ -312,6 +312,16 @@ components:
           type: array
           items:
             type: string
+        allowed_region:
+          type: string
+        session_id:
+          type: string
+        preferred_deployment_id:
+          type: string
+        priority:
+          type: integer
+        hedge_after_ms:
+          type: integer
     GuardrailRequestOverride:
       type: object
       required:
@@ -865,6 +875,15 @@ components:
           type: integer
         priority:
           type: integer
+        tags:
+          type: array
+          items:
+            type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
         status:
           type: string
           enum: [active, cooldown, disabled]
@@ -1282,6 +1301,47 @@ components:
       properties:
         secret:
           type: string
+    FallbackTarget:
+      type: object
+      required:
+        - target
+      properties:
+        target:
+          type: string
+        overrides:
+          type: object
+          additionalProperties: true
+    RetryPolicy:
+      type: object
+      properties:
+        rate_limit_retries:
+          type: integer
+        timeout_retries:
+          type: integer
+        server_error_retries:
+          type: integer
+        auth_error_retries:
+          type: integer
+        not_found_retries:
+          type: integer
+        bad_request_retries:
+          type: integer
+        default_retries:
+          type: integer
+    CooldownPolicy:
+      type: object
+      properties:
+        allowed_fails:
+          type: object
+          additionalProperties:
+            type: integer
+        failure_rate_threshold:
+          type: number
+          format: double
+        min_requests_per_minute:
+          type: integer
+        max_cooldown_seconds:
+          type: integer
     AdminModelGroup:
       type: object
       properties:
@@ -1293,12 +1353,42 @@ components:
           type: string
         alias:
           type: string
+        description:
+          type: string
         routing_strategy:
           type: string
         fallback_groups:
           type: array
           items:
             type: string
+        fallback_group_ids:
+          type: array
+          items:
+            type: string
+        context_window_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        content_policy_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        fallback_targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        retry_policy:
+          $ref: '#/components/schemas/RetryPolicy'
+        cooldown_policy:
+          $ref: '#/components/schemas/CooldownPolicy'
+        max_retries:
+          type: integer
+        cooldown_seconds:
+          type: integer
+        failure_threshold:
+          type: integer
+        is_active:
+          type: boolean
         created_at:
           type: string
           format: date-time

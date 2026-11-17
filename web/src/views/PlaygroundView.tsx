@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { adminApi } from '../api/admin';
 import { isPlatformAdminForbidden } from '../components/common/ErrorAlert';
 import { streamChatCompletion, ChatStreamChunk, ChatStreamHeaders } from '../api/sse';
+import type { GoRouteExtensions } from '../types';
 import { Badge } from '../components/common/Badge';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { Modal } from '../components/common/Modal';
@@ -61,6 +62,14 @@ export const PlaygroundView: React.FC = () => {
   const [maxTokens, setMaxTokens] = useState<number>(2048);
   const [topP, setTopP] = useState<number>(1.0);
 
+  // Routing Hint Controls (goroute_extensions)
+  const [isHintsOpen, setIsHintsOpen] = useState<boolean>(false);
+  const [hintRegion, setHintRegion] = useState<string>('');
+  const [hintTags, setHintTags] = useState<string>('');
+  const [hintSessionId, setHintSessionId] = useState<string>('');
+  const [hintPriority, setHintPriority] = useState<string>('');
+  const [hintHedgeMs, setHintHedgeMs] = useState<string>('');
+
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [userInput, setUserInput] = useState<string>('');
@@ -108,7 +117,7 @@ export const PlaygroundView: React.FC = () => {
   });
 
   const aliasOptions = useMemo(() => {
-    const base = ['fast', 'reasoning', 'coding', 'auto'];
+    const base = ['fast', 'reasoning', 'coding', 'auto', 'router/semantic', 'router/quality', 'router/adaptive'];
     const dynamic = (modelGroupsData?.data || []).map((g) => g.alias).filter(Boolean);
     return Array.from(new Set([...base, ...dynamic]));
   }, [modelGroupsData]);
@@ -131,6 +140,19 @@ export const PlaygroundView: React.FC = () => {
   }, [messages, isStreaming]);
 
   const activeModel = customModelInput.trim() || selectedModel;
+
+  const buildExtensions = (): GoRouteExtensions | undefined => {
+    const ext: GoRouteExtensions = {};
+    const tags = hintTags.split(',').map((t) => t.trim()).filter(Boolean);
+    if (tags.length > 0) ext.tags = tags;
+    if (hintRegion.trim()) ext.allowed_region = hintRegion.trim();
+    if (hintSessionId.trim()) ext.session_id = hintSessionId.trim();
+    const prio = parseInt(hintPriority, 10);
+    if (hintPriority.trim() && !isNaN(prio)) ext.priority = prio;
+    const hedge = parseInt(hintHedgeMs, 10);
+    if (hintHedgeMs.trim() && !isNaN(hedge) && hedge > 0) ext.hedge_after_ms = hedge;
+    return Object.keys(ext).length > 0 ? ext : undefined;
+  };
 
   const handleSendMessage = async () => {
     if (!userInput.trim() || isStreaming) return;
@@ -179,13 +201,15 @@ export const PlaygroundView: React.FC = () => {
       apiMessages.push({ role: m.role, content: m.content });
     }
 
-    const payload = {
+    const ext = buildExtensions();
+    const payload: Record<string, any> = {
       model: activeModel,
       messages: apiMessages,
       temperature,
       max_tokens: maxTokens,
       top_p: topP,
       stream: true,
+      ...(ext ? { goroute_extensions: ext } : {}),
     };
 
     try {
@@ -290,12 +314,22 @@ export const PlaygroundView: React.FC = () => {
       msgs.push({ role: 'user', content: 'Hello GoRoute Gateway!' });
     }
 
+    const ext = buildExtensions();
+    const reqBody = {
+      model: activeModel,
+      messages: msgs,
+      temperature,
+      max_tokens: maxTokens,
+      stream: true,
+      ...(ext ? { goroute_extensions: ext } : {}),
+    };
+
     switch (lang) {
       case 'curl':
         return `curl -X POST ${escapeShellSingle(endpoint)} \\
   -H ${escapeShellSingle(`Authorization: Bearer ${key}`)} \\
   -H 'Content-Type: application/json' \\
-  -d ${escapeShellSingle(JSON.stringify({ model: activeModel, messages: msgs, temperature, max_tokens: maxTokens, stream: true }, null, 2))}`;
+  -d ${escapeShellSingle(JSON.stringify(reqBody, null, 2))}`;
 
       case 'python':
         return `from openai import OpenAI
@@ -658,6 +692,60 @@ func main() {
               </div>
             ))}
           </div>
+
+          {/* Routing Hints */}
+          <div className="pt-2 border-t border-border-subtle text-xs font-mono">
+            <button
+              type="button"
+              onClick={() => setIsHintsOpen(!isHintsOpen)}
+              className="w-full flex items-center justify-between text-brand-muted hover:text-brand-title transition py-1"
+            >
+              <span>Routing Hints</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isHintsOpen ? '' : '-rotate-90'}`} />
+            </button>
+            {isHintsOpen && (
+              <div className="space-y-2 pt-2">
+                <input
+                  type="text"
+                  value={hintRegion}
+                  onChange={(e) => setHintRegion(e.target.value)}
+                  placeholder="Allowed region (e.g. us-east-1)"
+                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
+                />
+                <input
+                  type="text"
+                  value={hintTags}
+                  onChange={(e) => setHintTags(e.target.value)}
+                  placeholder="Tags (comma-sep: tier:fast, eu)"
+                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
+                />
+                <input
+                  type="text"
+                  value={hintSessionId}
+                  onChange={(e) => setHintSessionId(e.target.value)}
+                  placeholder="Session ID (sticky affinity)"
+                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
+                />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="number"
+                    value={hintPriority}
+                    onChange={(e) => setHintPriority(e.target.value)}
+                    placeholder="Priority"
+                    className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    value={hintHedgeMs}
+                    onChange={(e) => setHintHedgeMs(e.target.value)}
+                    placeholder="Hedge (ms)"
+                    className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Live Performance & Telemetry Card */}
@@ -688,6 +776,11 @@ func main() {
                 lastRequestMetrics.headers?.tokenEstimate !== undefined && ['Estimated Tokens:', String(lastRequestMetrics.headers.tokenEstimate), 'text-brand-body'],
                 lastRequestMetrics.headers?.costMicros !== undefined && ['Estimated Cost:', `$${(lastRequestMetrics.headers.costMicros / 1_000_000).toFixed(6)} (${lastRequestMetrics.headers.costMicros} µ$)`, 'text-status-success font-bold'],
                 lastRequestMetrics.headers?.guardrailAction && ['Guardrail Action:', lastRequestMetrics.headers.guardrailAction, 'text-status-warning font-semibold uppercase'],
+                lastRequestMetrics.headers?.routeReason && ['Route Reason:', lastRequestMetrics.headers.routeReason, 'text-accent-primary font-medium truncate max-w-[150px]'],
+                lastRequestMetrics.headers?.fallbackAttempted && ['Fallback Attempted:', lastRequestMetrics.headers.fallbackAttempted, lastRequestMetrics.headers.fallbackAttempted === 'true' ? 'text-status-warning font-bold' : 'text-brand-muted'],
+                lastRequestMetrics.headers?.streamContinued && ['Stream Continued:', lastRequestMetrics.headers.streamContinued, lastRequestMetrics.headers.streamContinued === 'true' ? 'text-status-warning font-bold' : 'text-brand-muted'],
+                lastRequestMetrics.headers?.routingMicros !== undefined && !isNaN(lastRequestMetrics.headers.routingMicros) && ['Routing Overhead:', `${lastRequestMetrics.headers.routingMicros} µs`, 'text-brand-body'],
+                lastRequestMetrics.headers?.tierStepdowns !== undefined && !isNaN(lastRequestMetrics.headers.tierStepdowns) && ['Tier Stepdowns:', String(lastRequestMetrics.headers.tierStepdowns), 'text-brand-body'],
                 ['Total Latency:', `${lastRequestMetrics.latencyMs} ms`, 'text-brand-body font-bold'],
                 lastRequestMetrics.ttftMs && ['Time-To-First-Token:', `${lastRequestMetrics.ttftMs} ms`, 'text-status-success font-bold'],
                 ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-brand-body'],

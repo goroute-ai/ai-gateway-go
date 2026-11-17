@@ -94,6 +94,11 @@ func TestCORSMiddleware(t *testing.T) {
 			"X-Gateway-Guardrail-Action",
 			"X-Gateway-Pricing-Status",
 			"X-Gateway-Latency-Ms",
+			"X-Gateway-Route-Reason",
+			"X-Gateway-Fallback-Attempted",
+			"X-Gateway-Routing-Micros",
+			"X-Gateway-Stream-Continued",
+			"X-Gateway-Tier-Stepdowns",
 		}
 
 		// Allowed preflight

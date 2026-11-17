@@ -92,7 +92,7 @@ func CORSMiddleware(allowedOrigins []string, allowCredentials bool) func(http.Ha
 					h.Set("Access-Control-Allow-Credentials", "true")
 				}
 			}
-			h.Set("Access-Control-Expose-Headers", "X-Gateway-Request-Id, X-Gateway-Provider, X-Gateway-Model, X-Gateway-Cost-Micros, X-Gateway-Cache, X-Gateway-Guardrail-Action, X-Gateway-Pricing-Status, X-Gateway-Latency-Ms")
+			h.Set("Access-Control-Expose-Headers", "X-Gateway-Request-Id, X-Gateway-Provider, X-Gateway-Model, X-Gateway-Cost-Micros, X-Gateway-Cache, X-Gateway-Guardrail-Action, X-Gateway-Pricing-Status, X-Gateway-Latency-Ms, X-Gateway-Route-Reason, X-Gateway-Fallback-Attempted, X-Gateway-Routing-Micros, X-Gateway-Stream-Continued, X-Gateway-Tier-Stepdowns")
 
 			if r.Method == http.MethodOptions {
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
