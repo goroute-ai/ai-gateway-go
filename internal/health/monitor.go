@@ -94,6 +94,14 @@ func (m *Monitor) Stop() {
 // IsHealthy returns false if active background probing has marked the deployment unhealthy.
 // Deployments that have not yet been probed default to healthy.
 func (m *Monitor) IsHealthy(depID string) bool {
+	return m.IsHealthyWithMaxAge(depID, 0)
+}
+
+// IsHealthyWithMaxAge reports whether a deployment is considered healthy, treating
+// unhealthy probe reports older than maxAge as expired so a deployment is not
+// permanently quarantined by a stale probe. When maxAge <= 0, no staleness
+// expiration is applied. Nil monitors and unprobed deployments default to healthy.
+func (m *Monitor) IsHealthyWithMaxAge(depID string, maxAge time.Duration) bool {
 	if m == nil {
 		return true
 	}
@@ -103,7 +111,35 @@ func (m *Monitor) IsHealthy(depID string) bool {
 	if !ok {
 		return true
 	}
-	return rep.Status != StateUnhealthy
+	if rep.Status == StateUnhealthy {
+		if maxAge > 0 && !rep.LastCheckedAt.IsZero() && time.Since(rep.LastCheckedAt) > maxAge {
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+// ReportAge returns the recorded health state and elapsed duration since the last
+// probe for depID, along with whether a report exists.
+func (m *Monitor) ReportAge(depID string) (HealthState, time.Duration, bool) {
+	if m == nil {
+		return "", 0, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rep, ok := m.reports[depID]
+	if !ok {
+		return "", 0, false
+	}
+	var age time.Duration
+	if !rep.LastCheckedAt.IsZero() {
+		age = time.Since(rep.LastCheckedAt)
+		if age < 0 {
+			age = 0
+		}
+	}
+	return rep.Status, age, true
 }
 
 // GetReports returns all deployment health reports sorted by deployment ID.
