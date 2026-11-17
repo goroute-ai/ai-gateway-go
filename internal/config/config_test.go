@@ -3,7 +3,9 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -352,5 +354,199 @@ rate_limit:
 	}
 	if err := badCfg.Validate(); err == nil {
 		t.Fatalf("expected error for duplicate scanner name")
+	}
+}
+
+func TestRouterFoundationDefaultsYAMLAndValidation(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "test")
+
+	def := config.Default()
+	if def.Router.MaxFallbackDepth != 16 {
+		t.Fatalf("MaxFallbackDepth = %d, want 16", def.Router.MaxFallbackDepth)
+	}
+	if def.Router.MaxStreamContinuations != 1 {
+		t.Fatalf("MaxStreamContinuations = %d, want 1", def.Router.MaxStreamContinuations)
+	}
+	if def.Router.SessionAffinityTTL != 30*time.Minute {
+		t.Fatalf("SessionAffinityTTL = %v, want 30m", def.Router.SessionAffinityTTL)
+	}
+	if !def.Router.SessionAffinityRepinOnFailover {
+		t.Fatalf("SessionAffinityRepinOnFailover = false, want true")
+	}
+	if def.Router.MaxHedgeConcurrency != 2 {
+		t.Fatalf("MaxHedgeConcurrency = %d, want 2", def.Router.MaxHedgeConcurrency)
+	}
+
+	yamlContent := `
+server:
+  port: 8080
+  environment: "test"
+router:
+  max_fallback_depth: 8
+  default_fallbacks:
+    - target: "backup-fast"
+      overrides:
+        temperature: 0.1
+  retry_policy:
+    rate_limit_retries: 3
+    timeout_retries: 2
+    server_error_retries: 2
+    auth_error_retries: 0
+    not_found_retries: 0
+    bad_request_retries: 0
+    default_retries: 1
+  cooldown_policy:
+    allowed_fails:
+      rate_limit: 5
+      server_error: 3
+    failure_rate_threshold: 0.4
+    min_requests_per_minute: 20
+    max_cooldown_seconds: 120
+  enable_mid_stream_continuation: true
+  max_stream_continuations: 2
+  health_staleness_threshold: 45s
+  strict_capacity_filtering: true
+  provider_budgets:
+    openai: 50000000
+  session_affinity_ttl: 15m
+  session_affinity_repin_on_failover: false
+  prompt_cache_affinity: true
+  pre_router_mode: "semantic"
+  semantic_router:
+    enabled: true
+    embedding_model: "text-embedding-3-small"
+    similarity_threshold: 0.82
+    timeout: 2s
+    routes:
+      - name: "coding"
+        target_model: "coding"
+        utterances: ["write unit tests"]
+  cache_aware_routing: true
+  bandit:
+    enabled: true
+    default_alpha: 2.0
+    default_beta: 1.0
+    exploration_rate: 0.05
+    decay_half_life: 12h
+    latency_weight: 0.6
+    cost_weight: 0.4
+    sync_interval: 10s
+    candidate_models: ["fast", "reasoning"]
+  hedge_delay_ms: 150
+  max_hedge_concurrency: 3
+  scheduler:
+    enabled: true
+    max_queue_depth: 512
+    max_wait_time: 3s
+    default_priority: 5
+model_list:
+  - model_name: fast
+    routing_strategy: fastest-response
+    context_window_fallbacks:
+      - target: "long-ctx"
+    content_policy_fallbacks:
+      - target: "safe-fallback"
+    fallback_targets:
+      - target: "backup-fast"
+        overrides:
+          max_tokens: 1024
+    model_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+      priority: 2
+      tags: ["tier:fast", "region:us"]
+      max_budget_micros: 10000000
+      budget_reset_period: "daily"
+`
+	tmpFile := filepath.Join(t.TempDir(), "router-config.yaml")
+	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	cfg, err := config.Load(tmpFile)
+	if err != nil {
+		t.Fatalf("config.Load failed: %v", err)
+	}
+	if cfg.Router.MaxFallbackDepth != 8 {
+		t.Fatalf("MaxFallbackDepth = %d, want 8", cfg.Router.MaxFallbackDepth)
+	}
+	if len(cfg.Router.DefaultFallbacks) != 1 || cfg.Router.DefaultFallbacks[0].GroupAliasOrID != "backup-fast" {
+		t.Fatalf("unexpected DefaultFallbacks: %+v", cfg.Router.DefaultFallbacks)
+	}
+	if cfg.Router.RetryPolicy.RateLimitRetries != 3 || cfg.Router.RetryPolicy.TimeoutRetries != 2 || cfg.Router.RetryPolicy.DefaultRetries != 1 {
+		t.Fatalf("unexpected RetryPolicy: %+v", cfg.Router.RetryPolicy)
+	}
+	if cfg.Router.CooldownPolicy.AllowedFails["rate_limit"] != 5 || cfg.Router.CooldownPolicy.FailureRateThreshold != 0.4 || cfg.Router.CooldownPolicy.MaxCooldownSeconds != 120 {
+		t.Fatalf("unexpected CooldownPolicy: %+v", cfg.Router.CooldownPolicy)
+	}
+	if !cfg.Router.EnableMidStreamContinuation || cfg.Router.MaxStreamContinuations != 2 {
+		t.Fatalf("unexpected mid-stream settings: %+v", cfg.Router)
+	}
+	if cfg.Router.HealthStalenessThreshold != 45*time.Second || !cfg.Router.StrictCapacityFiltering {
+		t.Fatalf("unexpected health/capacity settings: %+v", cfg.Router)
+	}
+	if cfg.Router.ProviderBudgets["openai"] != 50000000 {
+		t.Fatalf("unexpected ProviderBudgets: %+v", cfg.Router.ProviderBudgets)
+	}
+	if cfg.Router.SessionAffinityTTL != 15*time.Minute || cfg.Router.SessionAffinityRepinOnFailover || !cfg.Router.PromptCacheAffinity {
+		t.Fatalf("unexpected affinity settings: %+v", cfg.Router)
+	}
+	if cfg.Router.PreRouterMode != "semantic" || !cfg.Router.SemanticRouter.Enabled || len(cfg.Router.SemanticRouter.Routes) != 1 {
+		t.Fatalf("unexpected semantic router config: %+v", cfg.Router.SemanticRouter)
+	}
+	if !cfg.Router.CacheAwareRouting || !cfg.Router.Bandit.Enabled || cfg.Router.Bandit.DefaultAlpha != 2.0 {
+		t.Fatalf("unexpected cache/bandit config: %+v", cfg.Router.Bandit)
+	}
+	if cfg.Router.HedgeDelayMs != 150 || cfg.Router.MaxHedgeConcurrency != 3 || !cfg.Router.Scheduler.Enabled || cfg.Router.Scheduler.MaxQueueDepth != 512 {
+		t.Fatalf("unexpected hedge/scheduler config: %+v", cfg.Router.Scheduler)
+	}
+	entry := cfg.ModelList[0]
+	if entry.RoutingStrategy != string(domain.StrategyFastestResponse) {
+		t.Fatalf("RoutingStrategy = %q, want %q", entry.RoutingStrategy, domain.StrategyFastestResponse)
+	}
+	if len(entry.ContextWindowFallbacks) != 1 || entry.ContextWindowFallbacks[0].GroupAliasOrID != "long-ctx" {
+		t.Fatalf("unexpected ContextWindowFallbacks: %+v", entry.ContextWindowFallbacks)
+	}
+	if len(entry.ContentPolicyFallbacks) != 1 || entry.ContentPolicyFallbacks[0].GroupAliasOrID != "safe-fallback" {
+		t.Fatalf("unexpected ContentPolicyFallbacks: %+v", entry.ContentPolicyFallbacks)
+	}
+	if len(entry.FallbackTargets) != 1 || entry.FallbackTargets[0].GroupAliasOrID != "backup-fast" {
+		t.Fatalf("unexpected FallbackTargets: %+v", entry.FallbackTargets)
+	}
+	if entry.ModelParams.Priority != 2 || !reflect.DeepEqual(entry.ModelParams.Tags, []string{"tier:fast", "region:us"}) || entry.ModelParams.MaxBudgetMicros != 10000000 || entry.ModelParams.BudgetResetPeriod != "daily" {
+		t.Fatalf("unexpected ModelParams: %+v", entry.ModelParams)
+	}
+
+	// Verify env overrides
+	t.Setenv("GATEWAY_ROUTER_MAX_FALLBACK_DEPTH", "24")
+	t.Setenv("GATEWAY_ROUTER_ENABLE_MID_STREAM_CONTINUATION", "true")
+	t.Setenv("GATEWAY_ROUTER_HEDGE_DELAY_MS", "200")
+	t.Setenv("GATEWAY_ROUTER_PRE_ROUTER_MODE", "bandit")
+	envCfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load env override failed: %v", err)
+	}
+	if envCfg.Router.MaxFallbackDepth != 24 || !envCfg.Router.EnableMidStreamContinuation || envCfg.Router.HedgeDelayMs != 200 || envCfg.Router.PreRouterMode != "bandit" {
+		t.Fatalf("unexpected router env overrides: %+v", envCfg.Router)
+	}
+
+	// Negative validation checks
+	bad := config.Default()
+	bad.Server.Environment = "test"
+	bad.Router.MaxFallbackDepth = -1
+	if err := bad.Validate(); err == nil {
+		t.Fatalf("expected error for negative max_fallback_depth")
+	}
+	bad = config.Default()
+	bad.Server.Environment = "test"
+	bad.Router.ProviderBudgets = map[string]int64{"openai": -5}
+	if err := bad.Validate(); err == nil {
+		t.Fatalf("expected error for negative provider budget")
+	}
+	bad = config.Default()
+	bad.Server.Environment = "test"
+	bad.Router.SemanticRouter.SimilarityThreshold = 1.5
+	if err := bad.Validate(); err == nil {
+		t.Fatalf("expected error for similarity_threshold > 1")
 	}
 }

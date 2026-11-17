@@ -37,3 +37,27 @@ func TestCanonicalMessageUnmarshal_StringContent(t *testing.T) {
 		t.Fatalf("unexpected string content: %+v", message)
 	}
 }
+
+func TestGoRouteExtensions_JSONRoundTrip(t *testing.T) {
+	ext := GoRouteExtensions{
+		TaskID:                "task-1",
+		ContextID:             "ctx-1",
+		Tags:                  []string{"tier:fast"},
+		AllowedRegion:         "us-east",
+		SessionID:             "sess-abc",
+		PreferredDeploymentID: "dep-1",
+		Priority:              10,
+		HedgeAfterMs:          250,
+	}
+	b, err := json.Marshal(ext)
+	if err != nil {
+		t.Fatalf("marshal GoRouteExtensions: %v", err)
+	}
+	var got GoRouteExtensions
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal GoRouteExtensions: %v", err)
+	}
+	if got.AllowedRegion != "us-east" || got.SessionID != "sess-abc" || got.PreferredDeploymentID != "dep-1" || got.Priority != 10 || got.HedgeAfterMs != 250 {
+		t.Fatalf("GoRouteExtensions mismatch: %+v", got)
+	}
+}

@@ -110,10 +110,13 @@ type TracingConfig struct {
 // allowing developers to configure models, aliases ("fast", "reasoning"), and credentials
 // without imperative Control Plane HTTP setup calls.
 type ModelListEntry struct {
-	ModelName       string      `yaml:"model_name" json:"model_name"`
-	ModelParams     ModelParams `yaml:"model_params" json:"model_params"`
-	RoutingStrategy string      `yaml:"routing_strategy,omitempty" json:"routing_strategy,omitempty"`
-	Fallbacks       []string    `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
+	ModelName              string                  `yaml:"model_name" json:"model_name"`
+	ModelParams            ModelParams             `yaml:"model_params" json:"model_params"`
+	RoutingStrategy        string                  `yaml:"routing_strategy,omitempty" json:"routing_strategy,omitempty"`
+	Fallbacks              []string                `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
+	ContextWindowFallbacks []domain.FallbackTarget `yaml:"context_window_fallbacks,omitempty" json:"context_window_fallbacks,omitempty"`
+	ContentPolicyFallbacks []domain.FallbackTarget `yaml:"content_policy_fallbacks,omitempty" json:"content_policy_fallbacks,omitempty"`
+	FallbackTargets        []domain.FallbackTarget `yaml:"fallback_targets,omitempty" json:"fallback_targets,omitempty"`
 }
 
 // ModelParams holds upstream provider and model routing parameters for a deployment entry.
@@ -125,6 +128,10 @@ type ModelParams struct {
 	Weight              int               `yaml:"weight,omitempty" json:"weight,omitempty"`
 	RPM                 int               `yaml:"rpm,omitempty" json:"rpm,omitempty"`
 	TPM                 int               `yaml:"tpm,omitempty" json:"tpm,omitempty"`
+	Priority            int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Tags                []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
+	MaxBudgetMicros     int64             `yaml:"max_budget_micros,omitempty" json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod   string            `yaml:"budget_reset_period,omitempty" json:"budget_reset_period,omitempty"`
 	AzureDeploymentName string            `yaml:"azure_deployment_name,omitempty" json:"azure_deployment_name,omitempty"`
 	APIVersion          string            `yaml:"api_version,omitempty" json:"api_version,omitempty"`
 	Headers             map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
@@ -261,17 +268,74 @@ type AuthConfig struct {
 }
 
 type RouterConfig struct {
-	DefaultFastAlias      string        `yaml:"default_fast_alias"`
-	DefaultReasoningAlias string        `yaml:"default_reasoning_alias"`
-	DefaultCodingAlias    string        `yaml:"default_coding_alias"`
-	ComplexityThreshold   float64       `yaml:"complexity_threshold"`
-	LongContextTokens     int           `yaml:"long_context_tokens"`
-	DefaultMaxRetries     int           `yaml:"default_max_retries"`
-	BaseRetryDelay        time.Duration `yaml:"base_retry_delay"`
-	MaxRetryDelay         time.Duration `yaml:"max_retry_delay"`
-	DefaultCooldown       time.Duration `yaml:"default_cooldown"`
-	FailureWindow         time.Duration `yaml:"failure_window"`
-	FailureThreshold      int           `yaml:"failure_threshold"`
+	DefaultFastAlias               string                  `yaml:"default_fast_alias" json:"default_fast_alias"`
+	DefaultReasoningAlias          string                  `yaml:"default_reasoning_alias" json:"default_reasoning_alias"`
+	DefaultCodingAlias             string                  `yaml:"default_coding_alias" json:"default_coding_alias"`
+	ComplexityThreshold            float64                 `yaml:"complexity_threshold" json:"complexity_threshold"`
+	LongContextTokens              int                     `yaml:"long_context_tokens" json:"long_context_tokens"`
+	DefaultMaxRetries              int                     `yaml:"default_max_retries" json:"default_max_retries"`
+	BaseRetryDelay                 time.Duration           `yaml:"base_retry_delay" json:"base_retry_delay"`
+	MaxRetryDelay                  time.Duration           `yaml:"max_retry_delay" json:"max_retry_delay"`
+	DefaultCooldown                time.Duration           `yaml:"default_cooldown" json:"default_cooldown"`
+	FailureWindow                  time.Duration           `yaml:"failure_window" json:"failure_window"`
+	FailureThreshold               int                     `yaml:"failure_threshold" json:"failure_threshold"`
+	DefaultFallbacks               []domain.FallbackTarget `yaml:"default_fallbacks,omitempty" json:"default_fallbacks,omitempty"`
+	MaxFallbackDepth               int                     `yaml:"max_fallback_depth" json:"max_fallback_depth"`
+	RetryPolicy                    domain.RetryPolicy      `yaml:"retry_policy,omitempty" json:"retry_policy,omitempty"`
+	CooldownPolicy                 domain.CooldownPolicy   `yaml:"cooldown_policy,omitempty" json:"cooldown_policy,omitempty"`
+	EnableMidStreamContinuation    bool                    `yaml:"enable_mid_stream_continuation" json:"enable_mid_stream_continuation"`
+	MaxStreamContinuations         int                     `yaml:"max_stream_continuations" json:"max_stream_continuations"`
+	HealthStalenessThreshold       time.Duration           `yaml:"health_staleness_threshold" json:"health_staleness_threshold"`
+	StrictCapacityFiltering        bool                    `yaml:"strict_capacity_filtering" json:"strict_capacity_filtering"`
+	ProviderBudgets                map[string]int64        `yaml:"provider_budgets,omitempty" json:"provider_budgets,omitempty"`
+	SessionAffinityTTL             time.Duration           `yaml:"session_affinity_ttl" json:"session_affinity_ttl"`
+	SessionAffinityRepinOnFailover bool                    `yaml:"session_affinity_repin_on_failover" json:"session_affinity_repin_on_failover"`
+	PromptCacheAffinity            bool                    `yaml:"prompt_cache_affinity" json:"prompt_cache_affinity"`
+	PreRouterMode                  string                  `yaml:"pre_router_mode,omitempty" json:"pre_router_mode,omitempty"`
+	SemanticRouter                 SemanticRouterConfig    `yaml:"semantic_router,omitempty" json:"semantic_router,omitempty"`
+	CacheAwareRouting              bool                    `yaml:"cache_aware_routing" json:"cache_aware_routing"`
+	Bandit                         BanditConfig            `yaml:"bandit,omitempty" json:"bandit,omitempty"`
+	HedgeDelayMs                   int                     `yaml:"hedge_delay_ms" json:"hedge_delay_ms"`
+	MaxHedgeConcurrency            int                     `yaml:"max_hedge_concurrency" json:"max_hedge_concurrency"`
+	Scheduler                      SchedulerConfig         `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+}
+
+// SemanticRouterConfig configures embedding-based semantic pre-routing.
+type SemanticRouterConfig struct {
+	Enabled             bool                  `yaml:"enabled" json:"enabled"`
+	EmbeddingModel      string                `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty"`
+	SimilarityThreshold float64               `yaml:"similarity_threshold,omitempty" json:"similarity_threshold,omitempty"`
+	Timeout             time.Duration         `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Routes              []SemanticRouteConfig `yaml:"routes,omitempty" json:"routes,omitempty"`
+}
+
+// SemanticRouteConfig defines an intent route for semantic pre-routing.
+type SemanticRouteConfig struct {
+	Name        string   `yaml:"name" json:"name"`
+	TargetModel string   `yaml:"target_model" json:"target_model"`
+	Utterances  []string `yaml:"utterances,omitempty" json:"utterances,omitempty"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+}
+
+// BanditConfig configures Thompson-sampling adaptive bandit pre-routing.
+type BanditConfig struct {
+	Enabled         bool          `yaml:"enabled" json:"enabled"`
+	DefaultAlpha    float64       `yaml:"default_alpha,omitempty" json:"default_alpha,omitempty"`
+	DefaultBeta     float64       `yaml:"default_beta,omitempty" json:"default_beta,omitempty"`
+	ExplorationRate float64       `yaml:"exploration_rate,omitempty" json:"exploration_rate,omitempty"`
+	DecayHalfLife   time.Duration `yaml:"decay_half_life,omitempty" json:"decay_half_life,omitempty"`
+	LatencyWeight   float64       `yaml:"latency_weight,omitempty" json:"latency_weight,omitempty"`
+	CostWeight      float64       `yaml:"cost_weight,omitempty" json:"cost_weight,omitempty"`
+	SyncInterval    time.Duration `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
+	CandidateModels []string      `yaml:"candidate_models,omitempty" json:"candidate_models,omitempty"`
+}
+
+// SchedulerConfig configures bounded priority-queue request scheduling.
+type SchedulerConfig struct {
+	Enabled         bool          `yaml:"enabled" json:"enabled"`
+	MaxQueueDepth   int           `yaml:"max_queue_depth,omitempty" json:"max_queue_depth,omitempty"`
+	MaxWaitTime     time.Duration `yaml:"max_wait_time,omitempty" json:"max_wait_time,omitempty"`
+	DefaultPriority int           `yaml:"default_priority,omitempty" json:"default_priority,omitempty"`
 }
 
 type RateLimitConfig struct {
@@ -346,17 +410,22 @@ func Default() *Config {
 			L2CacheTTL:          5 * time.Minute,
 		},
 		Router: RouterConfig{
-			DefaultFastAlias:      "fast",
-			DefaultReasoningAlias: "reasoning",
-			DefaultCodingAlias:    "coding",
-			ComplexityThreshold:   0.40,
-			LongContextTokens:     32000,
-			DefaultMaxRetries:     2,
-			BaseRetryDelay:        50 * time.Millisecond,
-			MaxRetryDelay:         2 * time.Second,
-			DefaultCooldown:       60 * time.Second,
-			FailureWindow:         30 * time.Second,
-			FailureThreshold:      3,
+			DefaultFastAlias:               "fast",
+			DefaultReasoningAlias:          "reasoning",
+			DefaultCodingAlias:             "coding",
+			ComplexityThreshold:            0.40,
+			LongContextTokens:              32000,
+			DefaultMaxRetries:              2,
+			BaseRetryDelay:                 50 * time.Millisecond,
+			MaxRetryDelay:                  2 * time.Second,
+			DefaultCooldown:                60 * time.Second,
+			FailureWindow:                  30 * time.Second,
+			FailureThreshold:               3,
+			MaxFallbackDepth:               16,
+			MaxStreamContinuations:         1,
+			SessionAffinityTTL:             30 * time.Minute,
+			SessionAffinityRepinOnFailover: true,
+			MaxHedgeConcurrency:            2,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled:             true,
@@ -554,6 +623,64 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 			cfg.Router.MaxRetryDelay = d
 		}
 	}
+	if v := os.Getenv("GATEWAY_ROUTER_MAX_FALLBACK_DEPTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Router.MaxFallbackDepth = n
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_ENABLE_MID_STREAM_CONTINUATION"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.EnableMidStreamContinuation = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_MAX_STREAM_CONTINUATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Router.MaxStreamContinuations = n
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_HEALTH_STALENESS_THRESHOLD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Router.HealthStalenessThreshold = d
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_STRICT_CAPACITY_FILTERING"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.StrictCapacityFiltering = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_SESSION_AFFINITY_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Router.SessionAffinityTTL = d
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_SESSION_AFFINITY_REPIN_ON_FAILOVER"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.SessionAffinityRepinOnFailover = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_PROMPT_CACHE_AFFINITY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.PromptCacheAffinity = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_PRE_ROUTER_MODE"); v != "" {
+		cfg.Router.PreRouterMode = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_CACHE_AWARE_ROUTING"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.CacheAwareRouting = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_HEDGE_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Router.HedgeDelayMs = n
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_MAX_HEDGE_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Router.MaxHedgeConcurrency = n
+		}
+	}
 	if v := os.Getenv("GATEWAY_FINOPS_FLUSH_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.FinOps.FlushInterval = d
@@ -616,6 +743,53 @@ func (c *Config) Validate() error {
 	}
 	if c.Cache.DefaultTTL <= 0 {
 		c.Cache.DefaultTTL = time.Hour
+	}
+	if c.Router.MaxFallbackDepth < 0 {
+		return fmt.Errorf("invalid router.max_fallback_depth: %d", c.Router.MaxFallbackDepth)
+	}
+	if c.Router.MaxFallbackDepth == 0 {
+		c.Router.MaxFallbackDepth = 16
+	}
+	if c.Router.MaxStreamContinuations < 0 {
+		return fmt.Errorf("invalid router.max_stream_continuations: %d", c.Router.MaxStreamContinuations)
+	}
+	if c.Router.MaxStreamContinuations == 0 {
+		c.Router.MaxStreamContinuations = 1
+	}
+	if c.Router.HealthStalenessThreshold < 0 {
+		return fmt.Errorf("invalid router.health_staleness_threshold: %s", c.Router.HealthStalenessThreshold)
+	}
+	if c.Router.SessionAffinityTTL < 0 {
+		return fmt.Errorf("invalid router.session_affinity_ttl: %s", c.Router.SessionAffinityTTL)
+	}
+	if c.Router.SessionAffinityTTL == 0 {
+		c.Router.SessionAffinityTTL = 30 * time.Minute
+	}
+	if c.Router.HedgeDelayMs < 0 {
+		return fmt.Errorf("invalid router.hedge_delay_ms: %d", c.Router.HedgeDelayMs)
+	}
+	if c.Router.MaxHedgeConcurrency < 0 {
+		return fmt.Errorf("invalid router.max_hedge_concurrency: %d", c.Router.MaxHedgeConcurrency)
+	}
+	if c.Router.MaxHedgeConcurrency == 0 {
+		c.Router.MaxHedgeConcurrency = 2
+	}
+	for prov, budget := range c.Router.ProviderBudgets {
+		if budget < 0 {
+			return fmt.Errorf("invalid router.provider_budgets[%q]: %d", prov, budget)
+		}
+	}
+	if c.Router.Scheduler.MaxQueueDepth < 0 {
+		return fmt.Errorf("invalid router.scheduler.max_queue_depth: %d", c.Router.Scheduler.MaxQueueDepth)
+	}
+	if c.Router.Scheduler.MaxWaitTime < 0 {
+		return fmt.Errorf("invalid router.scheduler.max_wait_time: %s", c.Router.Scheduler.MaxWaitTime)
+	}
+	if c.Router.SemanticRouter.SimilarityThreshold < 0 || c.Router.SemanticRouter.SimilarityThreshold > 1 {
+		return fmt.Errorf("invalid router.semantic_router.similarity_threshold: %v", c.Router.SemanticRouter.SimilarityThreshold)
+	}
+	if c.Router.Bandit.DefaultAlpha < 0 || c.Router.Bandit.DefaultBeta < 0 {
+		return fmt.Errorf("invalid router.bandit priors: alpha=%v beta=%v", c.Router.Bandit.DefaultAlpha, c.Router.Bandit.DefaultBeta)
 	}
 	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
 		c.Tracing.ServiceName = "ai-gateway-go"

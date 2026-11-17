@@ -173,20 +173,34 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 		mg, err := s.repo.GetModelGroupByAlias(ctx, orgID, alias)
 		if err != nil || mg == nil {
 			mg = &domain.ModelGroup{
-				OrgID:            orgID,
-				Alias:            alias,
-				RoutingStrategy:  strategy,
-				FallbackGroupIDs: entry.Fallbacks,
-				MaxRetries:       s.cfg.Router.DefaultMaxRetries,
-				CooldownSeconds:  int(s.cfg.Router.DefaultCooldown.Seconds()),
-				FailureThreshold: s.cfg.Router.FailureThreshold,
-				IsActive:         true,
+				OrgID:                  orgID,
+				Alias:                  alias,
+				RoutingStrategy:        strategy,
+				FallbackGroupIDs:       entry.Fallbacks,
+				ContextWindowFallbacks: entry.ContextWindowFallbacks,
+				ContentPolicyFallbacks: entry.ContentPolicyFallbacks,
+				FallbackTargets:        entry.FallbackTargets,
+				MaxRetries:             s.cfg.Router.DefaultMaxRetries,
+				CooldownSeconds:        int(s.cfg.Router.DefaultCooldown.Seconds()),
+				FailureThreshold:       s.cfg.Router.FailureThreshold,
+				IsActive:               true,
 			}
 			if err := s.repo.CreateModelGroup(ctx, mg); err != nil {
 				return err
 			}
-		} else if len(entry.Fallbacks) > 0 {
-			mg.FallbackGroupIDs = entry.Fallbacks
+		} else if len(entry.Fallbacks) > 0 || len(entry.ContextWindowFallbacks) > 0 || len(entry.ContentPolicyFallbacks) > 0 || len(entry.FallbackTargets) > 0 {
+			if len(entry.Fallbacks) > 0 {
+				mg.FallbackGroupIDs = entry.Fallbacks
+			}
+			if len(entry.ContextWindowFallbacks) > 0 {
+				mg.ContextWindowFallbacks = entry.ContextWindowFallbacks
+			}
+			if len(entry.ContentPolicyFallbacks) > 0 {
+				mg.ContentPolicyFallbacks = entry.ContentPolicyFallbacks
+			}
+			if len(entry.FallbackTargets) > 0 {
+				mg.FallbackTargets = entry.FallbackTargets
+			}
 			_ = s.repo.CreateModelGroup(ctx, mg)
 		}
 
@@ -209,15 +223,19 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 			weight = 100
 		}
 		dep := &domain.Deployment{
-			ModelGroupID:   mg.ID,
-			GlobalModelID:  globalModelID,
-			CredentialID:   cred.ID,
-			DeploymentName: depName,
-			Region:         entry.ModelParams.Region,
-			Weight:         weight,
-			RPMCapacity:    entry.ModelParams.RPM,
-			TPMCapacity:    entry.ModelParams.TPM,
-			Status:         domain.DeploymentStatusActive,
+			ModelGroupID:      mg.ID,
+			GlobalModelID:     globalModelID,
+			CredentialID:      cred.ID,
+			DeploymentName:    depName,
+			Region:            entry.ModelParams.Region,
+			Weight:            weight,
+			RPMCapacity:       entry.ModelParams.RPM,
+			TPMCapacity:       entry.ModelParams.TPM,
+			Priority:          entry.ModelParams.Priority,
+			Tags:              entry.ModelParams.Tags,
+			MaxBudgetMicros:   entry.ModelParams.MaxBudgetMicros,
+			BudgetResetPeriod: entry.ModelParams.BudgetResetPeriod,
+			Status:            domain.DeploymentStatusActive,
 		}
 		if err := s.repo.CreateDeployment(ctx, dep); err != nil {
 			return err

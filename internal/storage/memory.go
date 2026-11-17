@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -1027,6 +1028,56 @@ func (r *MemoryRepository) ListProviderCredentials(ctx context.Context, orgID st
 	return out, nil
 }
 
+func cloneFallbackTargets(src []domain.FallbackTarget) []domain.FallbackTarget {
+	if src == nil {
+		return nil
+	}
+	out := make([]domain.FallbackTarget, len(src))
+	for i, ft := range src {
+		out[i] = ft
+		if ft.Overrides != nil {
+			out[i].Overrides = maps.Clone(ft.Overrides)
+		}
+	}
+	return out
+}
+
+func cloneModelGroup(mg *domain.ModelGroup) *domain.ModelGroup {
+	if mg == nil {
+		return nil
+	}
+	cp := *mg
+	if mg.FallbackGroupIDs != nil {
+		cp.FallbackGroupIDs = slices.Clone(mg.FallbackGroupIDs)
+	}
+	cp.ContextWindowFallbacks = cloneFallbackTargets(mg.ContextWindowFallbacks)
+	cp.ContentPolicyFallbacks = cloneFallbackTargets(mg.ContentPolicyFallbacks)
+	cp.FallbackTargets = cloneFallbackTargets(mg.FallbackTargets)
+	if mg.RetryPolicy != nil {
+		rp := *mg.RetryPolicy
+		cp.RetryPolicy = &rp
+	}
+	if mg.CooldownPolicy != nil {
+		cd := *mg.CooldownPolicy
+		if mg.CooldownPolicy.AllowedFails != nil {
+			cd.AllowedFails = maps.Clone(mg.CooldownPolicy.AllowedFails)
+		}
+		cp.CooldownPolicy = &cd
+	}
+	return &cp
+}
+
+func cloneDeployment(d *domain.Deployment) *domain.Deployment {
+	if d == nil {
+		return nil
+	}
+	cp := *d
+	if d.Tags != nil {
+		cp.Tags = slices.Clone(d.Tags)
+	}
+	return &cp
+}
+
 func (r *MemoryRepository) CreateModelGroup(ctx context.Context, mg *domain.ModelGroup) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1039,8 +1090,8 @@ func (r *MemoryRepository) CreateModelGroup(ctx context.Context, mg *domain.Mode
 	now := time.Now().UTC()
 	mg.CreatedAt = now
 	mg.UpdatedAt = now
-	cp := *mg
-	r.groupsByID[cp.ID] = &cp
+	cp := cloneModelGroup(mg)
+	r.groupsByID[cp.ID] = cp
 	return nil
 }
 
@@ -1049,8 +1100,7 @@ func (r *MemoryRepository) GetModelGroupByAlias(ctx context.Context, orgID, alia
 	defer r.mu.RUnlock()
 	for _, mg := range r.groupsByID {
 		if mg.OrgID == orgID && mg.Alias == alias && mg.IsActive {
-			cp := *mg
-			return &cp, nil
+			return cloneModelGroup(mg), nil
 		}
 	}
 	return nil, fmt.Errorf("model group %q not found for org %q", alias, orgID)
@@ -1063,8 +1113,7 @@ func (r *MemoryRepository) GetModelGroupByID(ctx context.Context, id string) (*d
 	if !ok {
 		return nil, fmt.Errorf("model group %q not found", id)
 	}
-	cp := *mg
-	return &cp, nil
+	return cloneModelGroup(mg), nil
 }
 
 func (r *MemoryRepository) ListModelGroups(ctx context.Context, orgID string) ([]*domain.ModelGroup, error) {
@@ -1073,8 +1122,7 @@ func (r *MemoryRepository) ListModelGroups(ctx context.Context, orgID string) ([
 	var out []*domain.ModelGroup
 	for _, mg := range r.groupsByID {
 		if orgID == "" || mg.OrgID == orgID {
-			cp := *mg
-			out = append(out, &cp)
+			out = append(out, cloneModelGroup(mg))
 		}
 	}
 	return out, nil
@@ -1095,8 +1143,8 @@ func (r *MemoryRepository) CreateDeployment(ctx context.Context, dep *domain.Dep
 	now := time.Now().UTC()
 	dep.CreatedAt = now
 	dep.UpdatedAt = now
-	cp := *dep
-	r.deployments[cp.ID] = &cp
+	cp := cloneDeployment(dep)
+	r.deployments[cp.ID] = cp
 	return nil
 }
 
@@ -1106,16 +1154,15 @@ func (r *MemoryRepository) ListDeploymentsByGroup(ctx context.Context, groupID s
 	var out []*domain.Deployment
 	for _, d := range r.deployments {
 		if d.ModelGroupID == groupID {
-			cp := *d
+			cp := cloneDeployment(d)
 			if gm, ok := r.globalModels[cp.GlobalModelID]; ok {
-				gmCopy := *gm
-				cp.GlobalModel = &gmCopy
+				cp.GlobalModel = cloneGlobalModel(gm)
 			}
 			if cred, ok := r.credentials[cp.CredentialID]; ok {
 				credCopy := *cred
 				cp.Credential = &credCopy
 			}
-			out = append(out, &cp)
+			out = append(out, cp)
 		}
 	}
 	return out, nil
@@ -1126,16 +1173,15 @@ func (r *MemoryRepository) ListAllDeployments(ctx context.Context) ([]*domain.De
 	defer r.mu.RUnlock()
 	var out []*domain.Deployment
 	for _, d := range r.deployments {
-		cp := *d
+		cp := cloneDeployment(d)
 		if gm, ok := r.globalModels[cp.GlobalModelID]; ok {
-			gmCopy := *gm
-			cp.GlobalModel = &gmCopy
+			cp.GlobalModel = cloneGlobalModel(gm)
 		}
 		if cred, ok := r.credentials[cp.CredentialID]; ok {
 			credCopy := *cred
 			cp.Credential = &credCopy
 		}
-		out = append(out, &cp)
+		out = append(out, cp)
 	}
 	return out, nil
 }
