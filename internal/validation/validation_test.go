@@ -164,3 +164,229 @@ func TestValidatorTriStateCapabilities(t *testing.T) {
 		t.Fatalf("expected 400 capability_not_supported, got %+v", err)
 	}
 }
+
+func TestValidatorContextWindowFallbackHandoff(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	val := NewValidator(repo)
+
+	orgID := "org-ctx-val"
+	smallModel := &domain.GlobalModel{
+		ID:              "openai/small-8k",
+		Provider:        domain.ProviderOpenAI,
+		ModelName:       "small-8k",
+		MaxInputTokens:  8192,
+		MaxOutputTokens: 4096,
+		LifecycleStatus: domain.ModelStatusActive,
+	}
+	largeModel := &domain.GlobalModel{
+		ID:              "anthropic/large-128k",
+		Provider:        domain.ProviderAnthropic,
+		ModelName:       "large-128k",
+		MaxInputTokens:  128000,
+		MaxOutputTokens: 8192,
+		LifecycleStatus: domain.ModelStatusActive,
+	}
+	_ = repo.UpsertGlobalModel(ctx, smallModel)
+	_ = repo.UpsertGlobalModel(ctx, largeModel)
+
+	// 1. Group with only an 8k deployment and no fallbacks MUST reject 50k prompt.
+	noFallbackGroup := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "no-fallback-8k",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		IsActive:        true,
+	}
+	if err := repo.CreateModelGroup(ctx, noFallbackGroup); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   noFallbackGroup.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-small-only",
+		Status:         domain.DeploymentStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reqNoFB := &domain.CanonicalChatRequest{
+		Model:    "no-fallback-8k",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "long prompt"}},
+	}
+	err := val.ValidateChatRequest(ctx, orgID, reqNoFB, 50000)
+	if gwErr, ok := err.(*domain.GatewayError); !ok || gwErr.StatusCode != 400 || gwErr.Code != "context_length_exceeded" {
+		t.Fatalf("expected 400 context_length_exceeded, got %+v", err)
+	}
+
+	// 2. Enabling allowDefaultFallbacks lets oversized prompt pass pre-flight validation.
+	val.SetAllowDefaultFallbacks(true)
+	if err := val.ValidateChatRequest(ctx, orgID, reqNoFB, 50000); err != nil {
+		t.Fatalf("expected request to pass with allowDefaultFallbacks=true, got: %v", err)
+	}
+	val.SetAllowDefaultFallbacks(false)
+	err = val.ValidateChatRequest(ctx, orgID, reqNoFB, 50000)
+	if gwErr, ok := err.(*domain.GatewayError); !ok || gwErr.Code != "context_length_exceeded" {
+		t.Fatalf("expected context_length_exceeded after disabling allowDefaultFallbacks, got %+v", err)
+	}
+
+	// 3. Group with ContextWindowFallbacks configured MUST pass pre-flight validation.
+	ctxFBGroup := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "ctx-fallback-group",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		ContextWindowFallbacks: []domain.FallbackTarget{
+			{GroupAliasOrID: "large-group"},
+		},
+		IsActive: true,
+	}
+	if err := repo.CreateModelGroup(ctx, ctxFBGroup); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   ctxFBGroup.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-small-ctx-fb",
+		Status:         domain.DeploymentStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := val.ValidateChatRequest(ctx, orgID, &domain.CanonicalChatRequest{
+		Model:    "ctx-fallback-group",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "long prompt"}},
+	}, 50000); err != nil {
+		t.Fatalf("expected request with ContextWindowFallbacks to pass validation, got: %v", err)
+	}
+
+	// 4. Group with a larger active deployment in the same group passes for 50k, rejects 200k.
+	mixedGroup := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "mixed-deployments",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		IsActive:        true,
+	}
+	if err := repo.CreateModelGroup(ctx, mixedGroup); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   mixedGroup.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-mixed-small",
+		Status:         domain.DeploymentStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   mixedGroup.ID,
+		GlobalModelID:  largeModel.ID,
+		DeploymentName: "dep-mixed-large",
+		Status:         domain.DeploymentStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mixedReq := &domain.CanonicalChatRequest{
+		Model:    "mixed-deployments",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "medium-long prompt"}},
+	}
+	if err := val.ValidateChatRequest(ctx, orgID, mixedReq, 50000); err != nil {
+		t.Fatalf("expected 50k prompt to pass with 128k deployment in group, got: %v", err)
+	}
+	err = val.ValidateChatRequest(ctx, orgID, mixedReq, 200000)
+	if gwErr, ok := err.(*domain.GatewayError); !ok || gwErr.Code != "context_length_exceeded" {
+		t.Fatalf("expected 200k prompt to still fail with context_length_exceeded, got %+v", err)
+	}
+
+	// 5. Disabled larger deployment does NOT bypass context_length_exceeded.
+	disabledLargeGroup := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "disabled-large-dep",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		IsActive:        true,
+	}
+	if err := repo.CreateModelGroup(ctx, disabledLargeGroup); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   disabledLargeGroup.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-active-small",
+		Status:         domain.DeploymentStatusActive,
+	})
+	_ = repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   disabledLargeGroup.ID,
+		GlobalModelID:  largeModel.ID,
+		DeploymentName: "dep-disabled-large",
+		Status:         domain.DeploymentStatusDisabled,
+	})
+	err = val.ValidateChatRequest(ctx, orgID, &domain.CanonicalChatRequest{
+		Model:    "disabled-large-dep",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "long prompt"}},
+	}, 50000)
+	if gwErr, ok := err.(*domain.GatewayError); !ok || gwErr.Code != "context_length_exceeded" {
+		t.Fatalf("expected disabled large deployment not to bypass context_length_exceeded, got %+v", err)
+	}
+
+	// 6. Regular FallbackTargets / FallbackGroupIDs: pass only when target group fits or has context fallbacks.
+	largeTargetGroup := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "large-target-group",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		IsActive:        true,
+	}
+	if err := repo.CreateModelGroup(ctx, largeTargetGroup); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   largeTargetGroup.ID,
+		GlobalModelID:  largeModel.ID,
+		DeploymentName: "dep-target-large",
+		Status:         domain.DeploymentStatusActive,
+	})
+
+	smallFallbackOnly := &domain.ModelGroup{
+		OrgID:            orgID,
+		Alias:            "small-fb-only",
+		RoutingStrategy:  domain.StrategyWeightedShuffle,
+		FallbackGroupIDs: []string{noFallbackGroup.ID},
+		IsActive:         true,
+	}
+	if err := repo.CreateModelGroup(ctx, smallFallbackOnly); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   smallFallbackOnly.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-small-fb-only",
+		Status:         domain.DeploymentStatusActive,
+	})
+	err = val.ValidateChatRequest(ctx, orgID, &domain.CanonicalChatRequest{
+		Model:    "small-fb-only",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "long prompt"}},
+	}, 50000)
+	if gwErr, ok := err.(*domain.GatewayError); !ok || gwErr.Code != "context_length_exceeded" {
+		t.Fatalf("expected small-only regular fallback to fail with context_length_exceeded, got %+v", err)
+	}
+
+	largeFallbackTarget := &domain.ModelGroup{
+		OrgID:           orgID,
+		Alias:           "large-fb-target",
+		RoutingStrategy: domain.StrategyWeightedShuffle,
+		FallbackTargets: []domain.FallbackTarget{{GroupAliasOrID: largeTargetGroup.Alias}},
+		IsActive:        true,
+	}
+	if err := repo.CreateModelGroup(ctx, largeFallbackTarget); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.CreateDeployment(ctx, &domain.Deployment{
+		ModelGroupID:   largeFallbackTarget.ID,
+		GlobalModelID:  smallModel.ID,
+		DeploymentName: "dep-large-fb-target",
+		Status:         domain.DeploymentStatusActive,
+	})
+	if err := val.ValidateChatRequest(ctx, orgID, &domain.CanonicalChatRequest{
+		Model:    "large-fb-target",
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "long prompt"}},
+	}, 50000); err != nil {
+		t.Fatalf("expected request with large FallbackTarget group to pass validation, got: %v", err)
+	}
+}
