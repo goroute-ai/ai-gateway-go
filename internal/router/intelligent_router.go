@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
+	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -22,16 +23,24 @@ type RouteDecision struct {
 	TargetGroupAlias string
 	ComplexityScore  float64
 	Reason           string
+	PreRouterName    string
+	BanditBucket     TaskBucket
 	ModelGroup       *domain.ModelGroup
 }
 
 // IntelligentRouter implements Stage 1 of the Two-Stage Routing Engine:
-// resolving smart aliases (`auto`, `fast`, `reasoning`, `coding`) and explicit model names
+// resolving smart aliases (`auto`, `router/*`, `fast`, `reasoning`, `coding`) and explicit model names
 // into concrete ModelGroups without calling an external LLM on the hot path.
 type IntelligentRouter struct {
 	repo             storage.Repository
 	cfg              config.RouterConfig
 	providerCallable func(domain.ProviderType) bool
+
+	mu         sync.RWMutex
+	preRouters *PreRouterRegistry
+	bandit     *BanditPreRouter
+	semantic   *SemanticPreRouter
+	quality    *QualityPreRouter
 }
 
 func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *IntelligentRouter {
@@ -50,7 +59,118 @@ func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *Int
 	if cfg.LongContextTokens <= 0 {
 		cfg.LongContextTokens = 32000
 	}
-	return &IntelligentRouter{repo: repo, cfg: cfg, providerCallable: catalog.IsCallableProvider}
+
+	ir := &IntelligentRouter{
+		repo:             repo,
+		cfg:              cfg,
+		providerCallable: catalog.IsCallableProvider,
+	}
+
+	reg := NewPreRouterRegistry(cfg.PreRouterMode)
+	reg.Register(NewHeuristicPreRouterWithRouter(ir))
+
+	qual := NewQualityPreRouter(repo, cfg, nil)
+	reg.Register(qual)
+
+	var bandit *BanditPreRouter
+	if cfg.Bandit.Enabled {
+		bandit = NewBanditPreRouter(cfg, nil, WithBanditRepository(repo))
+		reg.Register(bandit)
+	}
+
+	ir.preRouters = reg
+	ir.quality = qual
+	ir.bandit = bandit
+	return ir
+}
+
+// RegisterPreRouter registers a PreRouter implementation in the router's registry.
+func (ir *IntelligentRouter) RegisterPreRouter(pr PreRouter) {
+	if ir == nil || pr == nil {
+		return
+	}
+	ir.mu.Lock()
+	defer ir.mu.Unlock()
+	if ir.preRouters == nil {
+		ir.preRouters = NewPreRouterRegistry(ir.cfg.PreRouterMode)
+	}
+	ir.preRouters.Register(pr)
+	switch typed := pr.(type) {
+	case *SemanticPreRouter:
+		ir.semantic = typed
+	case *QualityPreRouter:
+		ir.quality = typed
+	case *BanditPreRouter:
+		ir.bandit = typed
+	}
+}
+
+// SetSemanticPreRouter attaches and registers a SemanticPreRouter instance.
+func (ir *IntelligentRouter) SetSemanticPreRouter(s *SemanticPreRouter) {
+	if ir == nil {
+		return
+	}
+	ir.mu.Lock()
+	defer ir.mu.Unlock()
+	ir.semantic = s
+	if s != nil {
+		if ir.preRouters == nil {
+			ir.preRouters = NewPreRouterRegistry(ir.cfg.PreRouterMode)
+		}
+		ir.preRouters.Register(s)
+	}
+}
+
+// SetQualityPreRouter attaches and registers a QualityPreRouter instance.
+func (ir *IntelligentRouter) SetQualityPreRouter(q *QualityPreRouter) {
+	if ir == nil {
+		return
+	}
+	ir.mu.Lock()
+	defer ir.mu.Unlock()
+	ir.quality = q
+	if q != nil {
+		if ir.preRouters == nil {
+			ir.preRouters = NewPreRouterRegistry(ir.cfg.PreRouterMode)
+		}
+		ir.preRouters.Register(q)
+	}
+}
+
+// SetBanditPreRouter attaches and registers a BanditPreRouter instance.
+func (ir *IntelligentRouter) SetBanditPreRouter(b *BanditPreRouter) {
+	if ir == nil {
+		return
+	}
+	ir.mu.Lock()
+	defer ir.mu.Unlock()
+	ir.bandit = b
+	if b != nil {
+		if ir.preRouters == nil {
+			ir.preRouters = NewPreRouterRegistry(ir.cfg.PreRouterMode)
+		}
+		ir.preRouters.Register(b)
+	}
+}
+
+// PreRouters returns the PreRouterRegistry managed by this router.
+func (ir *IntelligentRouter) PreRouters() *PreRouterRegistry {
+	if ir == nil {
+		return nil
+	}
+	ir.mu.RLock()
+	defer ir.mu.RUnlock()
+	return ir.preRouters
+}
+
+// Bandit returns the configured BanditPreRouter, if any.
+func (ir *IntelligentRouter) Bandit() *BanditPreRouter {
+	if ir == nil {
+		return nil
+	}
+	ir.mu.RLock()
+	defer ir.mu.RUnlock()
+	return ir.bandit
 }
 
 // SetProviderCallable lets server wiring use the live adapter registry, including
@@ -103,9 +223,12 @@ func (ir *IntelligentRouter) ResolveExplicitModel(ctx context.Context, orgID str
 
 // ResolveGroup determines the target ModelGroup for a chat completion request.
 func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*RouteDecision, error) {
+	if req == nil {
+		req = &domain.CanonicalChatRequest{Model: VirtualAliasAuto}
+	}
 	requested := strings.TrimSpace(req.Model)
 	if requested == "" {
-		requested = "auto"
+		requested = VirtualAliasAuto
 	}
 
 	decision := &RouteDecision{
@@ -114,12 +237,17 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 		Reason:           "explicit_model",
 	}
 
-	// If "auto" is requested, run the 3-Tier Intelligent Classification Cascade
-	if requested == "auto" {
-		alias, score, reason := ir.classifyPrompt(req)
+	reg := ir.PreRouters()
+	isVirtualAlias := strings.EqualFold(requested, VirtualAliasAuto) || (reg != nil && reg.IsVirtualAlias(requested))
+	if isVirtualAlias {
+		alias, score, reason, prName := ir.routeViaPreRouter(ctx, orgID, requested, req, reg)
 		decision.TargetGroupAlias = alias
 		decision.ComplexityScore = score
 		decision.Reason = reason
+		decision.PreRouterName = prName
+		if prName == PreRouterModeAdaptive {
+			decision.BanditBucket = ClassifyTaskBucket(req, ir.cfg.LongContextTokens)
+		}
 	}
 
 	// Lookup the resolved ModelGroup for the Organization
@@ -132,7 +260,7 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 	// Dynamic `provider/model` & Catalogue Resolution (wildcard behavior):
 	// If the user requested "gemini/gemini-2.5-flash" or "gemini-2.5-flash" directly and the organization
 	// has an active credential for that provider, resolve or auto-provision the ModelGroup on the fly.
-	isSmartAlias := requested == "auto" || slices.Contains(auth.SmartAliases, requested)
+	isSmartAlias := isVirtualAlias || slices.Contains(auth.SmartAliases, requested)
 	if !isSmartAlias {
 		if dynGroup := ir.resolveDynamicProviderModel(ctx, orgID, decision.TargetGroupAlias); dynGroup != nil {
 			decision.ModelGroup = dynGroup
@@ -147,7 +275,7 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 	// If not, explicit model requests MUST fail immediately with 404 (NEVER fall through to groups[0] or default alias).
 	groups, _ := ir.repo.ListModelGroups(ctx, orgID)
 	for _, g := range groups {
-		if g.IsActive && g.Alias == requested {
+		if g != nil && g.IsActive && (g.Alias == requested || g.Alias == decision.TargetGroupAlias) {
 			decision.ModelGroup = g
 			decision.TargetGroupAlias = g.Alias
 			return decision, nil
@@ -157,16 +285,18 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 	// Fallback to default fast/reasoning alias or first active group is STRICTLY reserved for smart aliases
 	if isSmartAlias {
 		for _, g := range groups {
-			if g.IsActive && (g.Alias == ir.cfg.DefaultFastAlias || g.Alias == ir.cfg.DefaultReasoningAlias) {
+			if g != nil && g.IsActive && (g.Alias == ir.cfg.DefaultFastAlias || g.Alias == ir.cfg.DefaultReasoningAlias) {
 				decision.ModelGroup = g
 				decision.TargetGroupAlias = g.Alias
 				return decision, nil
 			}
 		}
-		if len(groups) > 0 && groups[0].IsActive {
-			decision.ModelGroup = groups[0]
-			decision.TargetGroupAlias = groups[0].Alias
-			return decision, nil
+		for _, g := range groups {
+			if g != nil && g.IsActive {
+				decision.ModelGroup = g
+				decision.TargetGroupAlias = g.Alias
+				return decision, nil
+			}
 		}
 	}
 
@@ -176,6 +306,30 @@ func (ir *IntelligentRouter) ResolveGroup(ctx context.Context, orgID string, req
 		Code:       "model_group_not_found",
 		Message:    "No active model group configured for model or alias: " + requested,
 	}
+}
+
+func (ir *IntelligentRouter) routeViaPreRouter(
+	ctx context.Context,
+	orgID string,
+	requested string,
+	req *domain.CanonicalChatRequest,
+	reg *PreRouterRegistry,
+) (targetAlias string, score float64, reason string, prName string) {
+	if reg != nil {
+		if pr, ok := reg.ResolveAlias(requested); ok && pr != nil {
+			alias, rsn, sc, err := pr.Route(ctx, orgID, req)
+			if err == nil && strings.TrimSpace(alias) != "" {
+				return strings.TrimSpace(alias), sc, rsn, pr.Name()
+			}
+		}
+		if heur, ok := reg.Get(PreRouterModeHeuristic); ok && heur != nil {
+			if alias, rsn, sc, err := heur.Route(ctx, orgID, req); err == nil && strings.TrimSpace(alias) != "" {
+				return strings.TrimSpace(alias), sc, rsn, heur.Name()
+			}
+		}
+	}
+	alias, sc, rsn := ir.classifyPrompt(req)
+	return alias, sc, rsn, PreRouterModeHeuristic
 }
 
 // resolveDynamicProviderModel handles direct model requests (e.g. "gemini/gemini-2.5-flash"
