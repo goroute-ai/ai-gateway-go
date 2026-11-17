@@ -89,38 +89,40 @@ type DeploymentTelemetry struct {
 
 // TelemetrySnapshot provides a complete operational view of the gateway.
 type TelemetrySnapshot struct {
-	GeneratedAt              time.Time                      `json:"generated_at"`
-	TotalRequests            int64                          `json:"total_requests"`
-	TotalErrors              int64                          `json:"total_errors"`
-	GlobalErrorRate          float64                        `json:"global_error_rate"`
-	AvgLatencyMs             float64                        `json:"avg_latency_ms"`
-	P50LatencyMs             int64                          `json:"p50_latency_ms"`
-	P95LatencyMs             int64                          `json:"p95_latency_ms"`
-	P99LatencyMs             int64                          `json:"p99_latency_ms"`
-	AvgTTFTMs                float64                        `json:"avg_ttft_ms"`
-	P95TTFTMs                int64                          `json:"p95_ttft_ms"`
-	AvgRoutingOverheadMicros float64                        `json:"avg_routing_overhead_micros"`
-	P95RoutingOverheadMicros int64                          `json:"p95_routing_overhead_micros"`
-	TotalFallbacks           int64                          `json:"total_fallbacks"`
-	FallbackRate             float64                        `json:"fallback_rate"`
-	TotalRetries             int64                          `json:"total_retries"`
-	CacheHits                int64                          `json:"cache_hits"`
-	CacheMisses              int64                          `json:"cache_misses"`
-	RateLimitRejections      int64                          `json:"rate_limit_rejections"`
-	GuardrailBlocks          int64                          `json:"guardrail_blocks"`
-	GuardrailRedactions      int64                          `json:"guardrail_redactions"`
-	SpendRedisDriftTotal     int64                          `json:"spend_redis_drift_total"`
-	StreamRequests           int64                          `json:"stream_requests"`
-	StreamErrors             int64                          `json:"stream_errors"`
-	StreamDurationSumMs      int64                          `json:"stream_duration_sum_ms"`
-	StreamDurationCount      int64                          `json:"stream_duration_count"`
-	StreamTTFTSumMs          int64                          `json:"stream_ttft_sum_ms"`
-	StreamTTFTCount          int64                          `json:"stream_ttft_count"`
-	SlowestProvider          string                         `json:"slowest_provider,omitempty"`
-	HighestFailureDeployment string                         `json:"highest_failure_deployment,omitempty"`
-	Providers                map[string]ProviderTelemetry   `json:"providers"`
-	Deployments              map[string]DeploymentTelemetry `json:"deployments"`
-	GuardrailMetrics         []GuardrailMetricSummary       `json:"guardrail_metrics,omitempty"`
+	GeneratedAt                time.Time                      `json:"generated_at"`
+	TotalRequests              int64                          `json:"total_requests"`
+	TotalErrors                int64                          `json:"total_errors"`
+	GlobalErrorRate            float64                        `json:"global_error_rate"`
+	AvgLatencyMs               float64                        `json:"avg_latency_ms"`
+	P50LatencyMs               int64                          `json:"p50_latency_ms"`
+	P95LatencyMs               int64                          `json:"p95_latency_ms"`
+	P99LatencyMs               int64                          `json:"p99_latency_ms"`
+	AvgTTFTMs                  float64                        `json:"avg_ttft_ms"`
+	P95TTFTMs                  int64                          `json:"p95_ttft_ms"`
+	AvgRoutingOverheadMicros   float64                        `json:"avg_routing_overhead_micros"`
+	P95RoutingOverheadMicros   int64                          `json:"p95_routing_overhead_micros"`
+	TotalFallbacks             int64                          `json:"total_fallbacks"`
+	FallbackRate               float64                        `json:"fallback_rate"`
+	TotalRetries               int64                          `json:"total_retries"`
+	CacheHits                  int64                          `json:"cache_hits"`
+	CacheMisses                int64                          `json:"cache_misses"`
+	RateLimitRejections        int64                          `json:"rate_limit_rejections"`
+	GuardrailBlocks            int64                          `json:"guardrail_blocks"`
+	GuardrailRedactions        int64                          `json:"guardrail_redactions"`
+	SpendRedisDriftTotal       int64                          `json:"spend_redis_drift_total"`
+	RoutingSignalDegradedTotal int64                          `json:"routing_signal_degraded_total"`
+	RedisCBState               int                            `json:"redis_cb_state"`
+	StreamRequests             int64                          `json:"stream_requests"`
+	StreamErrors               int64                          `json:"stream_errors"`
+	StreamDurationSumMs        int64                          `json:"stream_duration_sum_ms"`
+	StreamDurationCount        int64                          `json:"stream_duration_count"`
+	StreamTTFTSumMs            int64                          `json:"stream_ttft_sum_ms"`
+	StreamTTFTCount            int64                          `json:"stream_ttft_count"`
+	SlowestProvider            string                         `json:"slowest_provider,omitempty"`
+	HighestFailureDeployment   string                         `json:"highest_failure_deployment,omitempty"`
+	Providers                  map[string]ProviderTelemetry   `json:"providers"`
+	Deployments                map[string]DeploymentTelemetry `json:"deployments"`
+	GuardrailMetrics           []GuardrailMetricSummary       `json:"guardrail_metrics,omitempty"`
 }
 
 type guardrailInternal struct {
@@ -180,32 +182,35 @@ type RequestObservation struct {
 
 // Collector aggregates metrics, latency percentiles, TTFT, and routing overhead across the gateway.
 type Collector struct {
-	mu                  sync.RWMutex
-	totalRequests       int64
-	totalErrors         int64
-	totalFallbacks      int64
-	totalRetries        int64
-	cacheHits           int64
-	cacheMisses         int64
-	rateLimitRejections int64
-	guardrailBlocks     int64
-	guardrailRedactions int64
-	spendRedisDrift     int64
-	streamRequests      int64
-	streamErrors        int64
-	streamDuration      reservoir
-	streamTTFT          reservoir
-	globalLatency       reservoir
-	globalTTFT          reservoir
-	routingMicros       reservoir
-	providers           map[string]*providerInternal
-	maxProviders        int
-	deployments         map[string]*deploymentInternal
-	maxDeployments      int
-	guardrails          map[GuardrailMetricKey]*guardrailInternal
-	maxGuardrails       int
-	accessSeq           uint64
-	additionalMetrics   func() map[string]float64
+	mu                    sync.RWMutex
+	totalRequests         int64
+	totalErrors           int64
+	totalFallbacks        int64
+	totalRetries          int64
+	cacheHits             int64
+	cacheMisses           int64
+	rateLimitRejections   int64
+	guardrailBlocks       int64
+	guardrailRedactions   int64
+	spendRedisDrift       int64
+	routingSignalDegraded int64
+	redisCBState          int
+	redisCBStateProvider  func() int
+	streamRequests        int64
+	streamErrors          int64
+	streamDuration        reservoir
+	streamTTFT            reservoir
+	globalLatency         reservoir
+	globalTTFT            reservoir
+	routingMicros         reservoir
+	providers             map[string]*providerInternal
+	maxProviders          int
+	deployments           map[string]*deploymentInternal
+	maxDeployments        int
+	guardrails            map[GuardrailMetricKey]*guardrailInternal
+	maxGuardrails         int
+	accessSeq             uint64
+	additionalMetrics     func() map[string]float64
 }
 
 func NewCollector() *Collector {
@@ -239,6 +244,39 @@ func (c *Collector) RecordSpendRedisDrift() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.spendRedisDrift++
+}
+
+// RecordRoutingSignalDegraded increments the counter for routing operations that
+// fell back to process-local state because shared Redis signals were unavailable.
+func (c *Collector) RecordRoutingSignalDegraded() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.routingSignalDegraded++
+}
+
+// SetRedisCBState sets the observed Redis circuit breaker state code
+// (0=closed, 1=half_open, 2=open).
+func (c *Collector) SetRedisCBState(stateCode int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.redisCBState = stateCode
+}
+
+// SetRedisCBStateProvider attaches a dynamic callback returning the Redis
+// circuit breaker state code (0=closed, 1=half_open, 2=open).
+func (c *Collector) SetRedisCBStateProvider(provider func() int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.redisCBStateProvider = provider
 }
 
 // RecordStream adds low-cardinality timing and failure measurements for one
@@ -492,7 +530,6 @@ func (c *Collector) RecordDeploymentAttempt(depID, depName, provider, model stri
 // Snapshot computes the full operational telemetry snapshot.
 func (c *Collector) Snapshot() TelemetrySnapshot {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 
 	avgLat, p50Lat, p95Lat, p99Lat := c.globalLatency.stats()
 	avgTTFT, _, p95TTFT, _ := c.globalTTFT.stats()
@@ -594,40 +631,50 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		return guardrailList[i].Hook < guardrailList[j].Hook
 	})
 
-	return TelemetrySnapshot{
-		GeneratedAt:              time.Now().UTC(),
-		TotalRequests:            c.totalRequests,
-		TotalErrors:              c.totalErrors,
-		GlobalErrorRate:          errRate,
-		AvgLatencyMs:             avgLat,
-		P50LatencyMs:             p50Lat,
-		P95LatencyMs:             p95Lat,
-		P99LatencyMs:             p99Lat,
-		AvgTTFTMs:                avgTTFT,
-		P95TTFTMs:                p95TTFT,
-		AvgRoutingOverheadMicros: avgRoute,
-		P95RoutingOverheadMicros: p95Route,
-		TotalFallbacks:           c.totalFallbacks,
-		FallbackRate:             fbRate,
-		TotalRetries:             c.totalRetries,
-		CacheHits:                c.cacheHits,
-		CacheMisses:              c.cacheMisses,
-		RateLimitRejections:      c.rateLimitRejections,
-		GuardrailBlocks:          c.guardrailBlocks,
-		GuardrailRedactions:      c.guardrailRedactions,
-		SpendRedisDriftTotal:     c.spendRedisDrift,
-		StreamRequests:           c.streamRequests,
-		StreamErrors:             c.streamErrors,
-		StreamDurationSumMs:      c.streamDuration.sum,
-		StreamDurationCount:      c.streamDuration.count,
-		StreamTTFTSumMs:          c.streamTTFT.sum,
-		StreamTTFTCount:          c.streamTTFT.count,
-		SlowestProvider:          slowestProv,
-		HighestFailureDeployment: highestFailDep,
-		Providers:                provMap,
-		Deployments:              depMap,
-		GuardrailMetrics:         guardrailList,
+	cbState := c.redisCBState
+	cbProvider := c.redisCBStateProvider
+
+	snap := TelemetrySnapshot{
+		GeneratedAt:                time.Now().UTC(),
+		TotalRequests:              c.totalRequests,
+		TotalErrors:                c.totalErrors,
+		GlobalErrorRate:            errRate,
+		AvgLatencyMs:               avgLat,
+		P50LatencyMs:               p50Lat,
+		P95LatencyMs:               p95Lat,
+		P99LatencyMs:               p99Lat,
+		AvgTTFTMs:                  avgTTFT,
+		P95TTFTMs:                  p95TTFT,
+		AvgRoutingOverheadMicros:   avgRoute,
+		P95RoutingOverheadMicros:   p95Route,
+		TotalFallbacks:             c.totalFallbacks,
+		FallbackRate:               fbRate,
+		TotalRetries:               c.totalRetries,
+		CacheHits:                  c.cacheHits,
+		CacheMisses:                c.cacheMisses,
+		RateLimitRejections:        c.rateLimitRejections,
+		GuardrailBlocks:            c.guardrailBlocks,
+		GuardrailRedactions:        c.guardrailRedactions,
+		SpendRedisDriftTotal:       c.spendRedisDrift,
+		RoutingSignalDegradedTotal: c.routingSignalDegraded,
+		RedisCBState:               cbState,
+		StreamRequests:             c.streamRequests,
+		StreamErrors:               c.streamErrors,
+		StreamDurationSumMs:        c.streamDuration.sum,
+		StreamDurationCount:        c.streamDuration.count,
+		StreamTTFTSumMs:            c.streamTTFT.sum,
+		StreamTTFTCount:            c.streamTTFT.count,
+		SlowestProvider:            slowestProv,
+		HighestFailureDeployment:   highestFailDep,
+		Providers:                  provMap,
+		Deployments:                depMap,
+		GuardrailMetrics:           guardrailList,
 	}
+	c.mu.RUnlock()
+	if cbProvider != nil {
+		snap.RedisCBState = cbProvider()
+	}
+	return snap
 }
 
 // PrometheusHandler renders metrics in standard Prometheus text exposition format (`GET /metrics`).
@@ -750,6 +797,22 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 		b.WriteString("# TYPE gateway_finops_redis_drift_total counter\n")
 		b.WriteString(fmt.Sprintf("gateway_finops_redis_drift_total %d\n", snap.SpendRedisDriftTotal))
 
+		redisCBState := snap.RedisCBState
+		if extraCB, ok := extra["gw_redis_cb_state"]; ok && redisCBState == 0 {
+			redisCBState = int(extraCB)
+		}
+		b.WriteString("# HELP gw_redis_cb_state Current Redis circuit breaker state (0=closed, 1=half_open, 2=open).\n")
+		b.WriteString("# TYPE gw_redis_cb_state gauge\n")
+		b.WriteString(fmt.Sprintf("gw_redis_cb_state %d\n", redisCBState))
+
+		degradedTotal := snap.RoutingSignalDegradedTotal
+		if extraDeg, ok := extra["gw_routing_signal_degraded_total"]; ok && degradedTotal == 0 {
+			degradedTotal = int64(extraDeg)
+		}
+		b.WriteString("# HELP gw_routing_signal_degraded_total Total routing operations degraded to process-local signals due to Redis unavailability.\n")
+		b.WriteString("# TYPE gw_routing_signal_degraded_total counter\n")
+		b.WriteString(fmt.Sprintf("gw_routing_signal_degraded_total %d\n", degradedTotal))
+
 		for prov, pm := range snap.Providers {
 			b.WriteString(fmt.Sprintf("gateway_provider_requests_total{provider=%q} %d\n", prov, pm.TotalRequests))
 			b.WriteString(fmt.Sprintf("gateway_provider_errors_total{provider=%q} %d\n", prov, pm.ErrorCount))
@@ -757,6 +820,9 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 			b.WriteString(fmt.Sprintf("gateway_provider_spend_micros_total{provider=%q} %d\n", prov, pm.TotalCostMicros))
 		}
 		for name, value := range extra {
+			if name == "gw_redis_cb_state" || name == "gw_routing_signal_degraded_total" {
+				continue
+			}
 			metricType := "gauge"
 			if strings.HasSuffix(name, "_total") || strings.HasSuffix(name, "_count") || strings.HasSuffix(name, "_sum") {
 				metricType = "counter"

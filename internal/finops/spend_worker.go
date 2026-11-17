@@ -28,6 +28,15 @@ const (
 // exceeds the configured high-watermark.
 var ErrOutboxBackpressure = errors.New("finops spend outbox backpressure limit exceeded")
 
+// DeploymentSpendRecorder settles per-deployment and per-provider spend
+// alongside tenant-level FinOps accounting.
+type DeploymentSpendRecorder interface {
+	RecordSpend(ctx context.Context, orgID, depID, provider, period string, costMicros int64)
+}
+
+// DeploymentBudgetHook is an alias for DeploymentSpendRecorder.
+type DeploymentBudgetHook = DeploymentSpendRecorder
+
 // SpendWorker commits events to the repository outbox before callers report success,
 // then retries ledger delivery from that durable queue.
 type SpendWorker struct {
@@ -39,6 +48,9 @@ type SpendWorker struct {
 	wg        sync.WaitGroup
 	stopOnce  sync.Once
 	stopCh    chan struct{}
+
+	hookMu               sync.RWMutex
+	deploymentBudgetHook DeploymentSpendRecorder
 
 	maxOutboxDepth     int64
 	pendingOutboxDepth atomic.Int64
@@ -66,6 +78,19 @@ func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg con
 // SetCollector attaches an observability collector for reporting Redis spend drift metrics.
 func (sw *SpendWorker) SetCollector(collector *observability.Collector) {
 	sw.collector = collector
+}
+
+// SetDeploymentSpendRecorder attaches an optional hook that settles per-deployment
+// and per-provider spend alongside tenant spend.
+func (sw *SpendWorker) SetDeploymentSpendRecorder(recorder DeploymentSpendRecorder) {
+	sw.hookMu.Lock()
+	sw.deploymentBudgetHook = recorder
+	sw.hookMu.Unlock()
+}
+
+// SetDeploymentBudgetHook attaches an optional DeploymentBudgetHook.
+func (sw *SpendWorker) SetDeploymentBudgetHook(hook DeploymentBudgetHook) {
+	sw.SetDeploymentSpendRecorder(hook)
 }
 
 // SetMaxOutboxDepth configures the pending outbox high-watermark for backpressure.
@@ -114,6 +139,18 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 		if err := sw.limiter.RecordSpendIncrementForUserEvent(redisCtx, ev.ID, ev.RequestID, ev.VirtualKeyID, ev.TeamID, ev.UserID, ev.OrgID, cost); err != nil {
 			logger.Warn("Immediate Redis spend settlement failed; outbox will retry", slog.String("component", "finops"), slog.String("event_id", ev.ID), slog.String("error", err.Error()))
 		}
+	}
+	sw.hookMu.RLock()
+	hook := sw.deploymentBudgetHook
+	sw.hookMu.RUnlock()
+	if hook != nil && (ev.DeploymentID != "" || ev.Provider != "") {
+		cost := ev.CostMicros
+		if cost < 0 {
+			cost = 0
+		}
+		hookCtx, cancel := context.WithTimeout(context.Background(), defaultRedisSettleTimeout)
+		defer cancel()
+		hook.RecordSpend(hookCtx, ev.OrgID, ev.DeploymentID, string(ev.Provider), "", cost)
 	}
 	select {
 	case sw.notify <- struct{}{}:
