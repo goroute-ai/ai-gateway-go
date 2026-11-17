@@ -946,20 +946,23 @@ type AdminDeleteStatusResponse struct {
 
 // AdminDeployment defines model for AdminDeployment.
 type AdminDeployment struct {
-	CreatedAt      time.Time             `json:"created_at"`
-	CredentialId   *string               `json:"credential_id,omitempty"`
-	DeploymentName *string               `json:"deployment_name,omitempty"`
-	GlobalModelId  string                `json:"global_model_id"`
-	Id             string                `json:"id"`
-	ModelGroupId   string                `json:"model_group_id"`
-	Priority       int                   `json:"priority"`
-	Region         *string               `json:"region,omitempty"`
-	RpmCapacity    *int                  `json:"rpm_capacity,omitempty"`
-	Status         AdminDeploymentStatus `json:"status"`
-	TimeoutMs      *int                  `json:"timeout_ms,omitempty"`
-	TpmCapacity    *int                  `json:"tpm_capacity,omitempty"`
-	UpdatedAt      time.Time             `json:"updated_at"`
-	Weight         *int                  `json:"weight,omitempty"`
+	BudgetResetPeriod *string               `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	CredentialId      *string               `json:"credential_id,omitempty"`
+	DeploymentName    *string               `json:"deployment_name,omitempty"`
+	GlobalModelId     string                `json:"global_model_id"`
+	Id                string                `json:"id"`
+	MaxBudgetMicros   *int64                `json:"max_budget_micros,omitempty"`
+	ModelGroupId      string                `json:"model_group_id"`
+	Priority          int                   `json:"priority"`
+	Region            *string               `json:"region,omitempty"`
+	RpmCapacity       *int                  `json:"rpm_capacity,omitempty"`
+	Status            AdminDeploymentStatus `json:"status"`
+	Tags              *[]string             `json:"tags,omitempty"`
+	TimeoutMs         *int                  `json:"timeout_ms,omitempty"`
+	TpmCapacity       *int                  `json:"tpm_capacity,omitempty"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+	Weight            *int                  `json:"weight,omitempty"`
 }
 
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
@@ -1003,14 +1006,25 @@ type AdminMCPUserCredentialRequest struct {
 
 // AdminModelGroup defines model for AdminModelGroup.
 type AdminModelGroup struct {
-	Alias           *string    `json:"alias,omitempty"`
-	CreatedAt       *time.Time `json:"created_at,omitempty"`
-	FallbackGroups  *[]string  `json:"fallback_groups,omitempty"`
-	Id              *string    `json:"id,omitempty"`
-	Name            *string    `json:"name,omitempty"`
-	OrgId           *string    `json:"org_id,omitempty"`
-	RoutingStrategy *string    `json:"routing_strategy,omitempty"`
-	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	Alias                  *string           `json:"alias,omitempty"`
+	ContentPolicyFallbacks *[]FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	ContextWindowFallbacks *[]FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	CooldownPolicy         *CooldownPolicy   `json:"cooldown_policy,omitempty"`
+	CooldownSeconds        *int              `json:"cooldown_seconds,omitempty"`
+	CreatedAt              *time.Time        `json:"created_at,omitempty"`
+	Description            *string           `json:"description,omitempty"`
+	FailureThreshold       *int              `json:"failure_threshold,omitempty"`
+	FallbackGroupIds       *[]string         `json:"fallback_group_ids,omitempty"`
+	FallbackGroups         *[]string         `json:"fallback_groups,omitempty"`
+	FallbackTargets        *[]FallbackTarget `json:"fallback_targets,omitempty"`
+	Id                     *string           `json:"id,omitempty"`
+	IsActive               *bool             `json:"is_active,omitempty"`
+	MaxRetries             *int              `json:"max_retries,omitempty"`
+	Name                   *string           `json:"name,omitempty"`
+	OrgId                  *string           `json:"org_id,omitempty"`
+	RetryPolicy            *RetryPolicy      `json:"retry_policy,omitempty"`
+	RoutingStrategy        *string           `json:"routing_strategy,omitempty"`
+	UpdatedAt              *time.Time        `json:"updated_at,omitempty"`
 }
 
 // AdminModelPricingHistory defines model for AdminModelPricingHistory.
@@ -1294,6 +1308,14 @@ type ContentPart_ImageUrl struct {
 // ContentPartType defines model for ContentPart.Type.
 type ContentPartType string
 
+// CooldownPolicy defines model for CooldownPolicy.
+type CooldownPolicy struct {
+	AllowedFails         *map[string]int `json:"allowed_fails,omitempty"`
+	FailureRateThreshold *float64        `json:"failure_rate_threshold,omitempty"`
+	MaxCooldownSeconds   *int            `json:"max_cooldown_seconds,omitempty"`
+	MinRequestsPerMinute *int            `json:"min_requests_per_minute,omitempty"`
+}
+
 // CredentialValidateRequest defines model for CredentialValidateRequest.
 type CredentialValidateRequest struct {
 	// ApiKey Required for providers that use API keys; may be omitted for Ollama.
@@ -1367,6 +1389,12 @@ type EmbeddingResponse struct {
 // EmbeddingResponseObject defines model for EmbeddingResponse.Object.
 type EmbeddingResponseObject string
 
+// FallbackTarget defines model for FallbackTarget.
+type FallbackTarget struct {
+	Overrides *map[string]interface{} `json:"overrides,omitempty"`
+	Target    string                  `json:"target"`
+}
+
 // FileObject defines model for FileObject.
 type FileObject struct {
 	Bytes     int    `json:"bytes"`
@@ -1379,10 +1407,15 @@ type FileObject struct {
 
 // GoRouteExtensions defines model for GoRouteExtensions.
 type GoRouteExtensions struct {
-	ContextId  *string                     `json:"context_id,omitempty"`
-	Guardrails *[]GuardrailRequestOverride `json:"guardrails,omitempty"`
-	Tags       *[]string                   `json:"tags,omitempty"`
-	TaskId     *string                     `json:"task_id,omitempty"`
+	AllowedRegion         *string                     `json:"allowed_region,omitempty"`
+	ContextId             *string                     `json:"context_id,omitempty"`
+	Guardrails            *[]GuardrailRequestOverride `json:"guardrails,omitempty"`
+	HedgeAfterMs          *int                        `json:"hedge_after_ms,omitempty"`
+	PreferredDeploymentId *string                     `json:"preferred_deployment_id,omitempty"`
+	Priority              *int                        `json:"priority,omitempty"`
+	SessionId             *string                     `json:"session_id,omitempty"`
+	Tags                  *[]string                   `json:"tags,omitempty"`
+	TaskId                *string                     `json:"task_id,omitempty"`
 }
 
 // GuardrailApplyRequest defines model for GuardrailApplyRequest.
@@ -1950,6 +1983,17 @@ type ResponsesMessageInputItemRole string
 
 // ResponsesMessageInputItemType defines model for ResponsesMessageInputItem.Type.
 type ResponsesMessageInputItemType string
+
+// RetryPolicy defines model for RetryPolicy.
+type RetryPolicy struct {
+	AuthErrorRetries   *int `json:"auth_error_retries,omitempty"`
+	BadRequestRetries  *int `json:"bad_request_retries,omitempty"`
+	DefaultRetries     *int `json:"default_retries,omitempty"`
+	NotFoundRetries    *int `json:"not_found_retries,omitempty"`
+	RateLimitRetries   *int `json:"rate_limit_retries,omitempty"`
+	ServerErrorRetries *int `json:"server_error_retries,omitempty"`
+	TimeoutRetries     *int `json:"timeout_retries,omitempty"`
+}
 
 // TokenUsage defines model for TokenUsage.
 type TokenUsage struct {

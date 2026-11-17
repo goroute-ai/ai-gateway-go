@@ -213,6 +213,8 @@ func TestAdminExtensions_OpenAPISchemaPayloadAlignment(t *testing.T) {
 	require.Contains(t, schemas, "OrgModelPolicy")
 	require.Contains(t, schemas, "AdminUser")
 	require.Contains(t, schemas, "AdminDeployment")
+	require.Contains(t, schemas, "AdminModelGroup")
+	require.Contains(t, schemas, "GoRouteExtensions")
 	require.Contains(t, schemas, "CredentialValidateResponse")
 
 	// Helper to verify that every JSON key in the response payload matches the schema properties,
@@ -340,19 +342,71 @@ func TestAdminExtensions_OpenAPISchemaPayloadAlignment(t *testing.T) {
 	require.True(t, ok)
 	assertPayloadMatchesSchema(t, "AdminUser", firstUser)
 
-	// Test 4: AdminDeployment alignment
-	mg := &domain.ModelGroup{ID: "mg_contract", OrgID: "org_contract", Alias: "contract", RoutingStrategy: domain.StrategyLowestCost, IsActive: true}
+	// Test 4: AdminDeployment & AdminModelGroup alignment (including v1.20 routing fields)
+	mg := &domain.ModelGroup{
+		ID:              "mg_contract",
+		OrgID:           "org_contract",
+		Alias:           "contract",
+		Description:     "Contract group",
+		RoutingStrategy: domain.StrategyFastestResponse,
+		FallbackGroupIDs: []string{
+			"mg_backup",
+		},
+		ContextWindowFallbacks: []domain.FallbackTarget{
+			{GroupAliasOrID: "long-ctx", Overrides: map[string]any{"max_tokens": 8192}},
+		},
+		ContentPolicyFallbacks: []domain.FallbackTarget{
+			{GroupAliasOrID: "safe-fallback"},
+		},
+		FallbackTargets: []domain.FallbackTarget{
+			{GroupAliasOrID: "mg_backup"},
+		},
+		RetryPolicy: &domain.RetryPolicy{
+			RateLimitRetries: 3,
+			TimeoutRetries:   2,
+			DefaultRetries:   1,
+		},
+		CooldownPolicy: &domain.CooldownPolicy{
+			AllowedFails:         map[string]int{"429": 2},
+			FailureRateThreshold: 0.25,
+			MinRequestsPerMinute: 10,
+			MaxCooldownSeconds:   120,
+		},
+		MaxRetries:       2,
+		CooldownSeconds:  30,
+		FailureThreshold: 3,
+		IsActive:         true,
+	}
 	require.NoError(t, repo.CreateModelGroup(ctx, mg))
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/v1/model-groups?org_id=org_contract", nil)
+	req.Header.Set("Authorization", "Bearer admin_master_secret")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var mgRespMap map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &mgRespMap))
+	mgDataSlice, ok := mgRespMap["data"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, mgDataSlice)
+	firstMG, ok := mgDataSlice[0].(map[string]any)
+	require.True(t, ok)
+	assertPayloadMatchesSchema(t, "AdminModelGroup", firstMG)
+
 	dep := &domain.Deployment{
-		ID:             "dep_contract",
-		ModelGroupID:   "mg_contract",
-		GlobalModelID:  "anthropic/claude-3-5-sonnet",
-		Priority:       1,
-		Status:         domain.DeploymentStatusActive,
-		DeploymentName: "dep-us-east",
-		Region:         "us-east-1",
-		CreatedAt:      org.CreatedAt,
-		UpdatedAt:      org.CreatedAt,
+		ID:                "dep_contract",
+		ModelGroupID:      "mg_contract",
+		GlobalModelID:     "anthropic/claude-3-5-sonnet",
+		Priority:          1,
+		Tags:              []string{"tier:primary", "compliance:eu"},
+		MaxBudgetMicros:   50_000_000,
+		BudgetResetPeriod: "daily",
+		Status:            domain.DeploymentStatusActive,
+		DeploymentName:    "dep-us-east",
+		Region:            "us-east-1",
+		CreatedAt:         org.CreatedAt,
+		UpdatedAt:         org.CreatedAt,
 	}
 	require.NoError(t, repo.CreateDeployment(ctx, dep))
 
@@ -395,4 +449,113 @@ func TestAdminExtensions_OpenAPISchemaPayloadAlignment(t *testing.T) {
 	var preflightMap map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &preflightMap))
 	assertPayloadMatchesSchema(t, "CredentialValidateResponse", preflightMap)
+}
+
+func TestAdminModelGroupAndDeployment_CreateListAndValidation(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "admin_master_secret"
+	gw, err := server.New(cfg, repo, nil, nil)
+	require.NoError(t, err)
+	handler := gw.Handler()
+
+	org := &domain.Organization{ID: "org_v120", Name: "v120 Org", IsActive: true}
+	require.NoError(t, repo.CreateOrganization(ctx, org))
+
+	// 1. POST /admin/v1/model-groups with specialized fallbacks, policies, and legacy fallback_groups compat
+	mgPayload := map[string]any{
+		"org_id":           "org_v120",
+		"alias":            "smart-fast",
+		"routing_strategy": "fastest-response",
+		"fallback_groups":  []string{"reasoning"},
+		"context_window_fallbacks": []map[string]any{
+			{"target": "long-context", "overrides": map[string]any{"max_tokens": 4096}},
+		},
+		"content_policy_fallbacks": []map[string]any{
+			{"target": "safe-models"},
+		},
+		"retry_policy": map[string]any{
+			"rate_limit_retries": 3,
+			"timeout_retries":    2,
+		},
+		"cooldown_policy": map[string]any{
+			"failure_rate_threshold":  0.3,
+			"min_requests_per_minute": 5,
+			"max_cooldown_seconds":    60,
+		},
+	}
+	mgBytes, _ := json.Marshal(mgPayload)
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/model-groups", bytes.NewReader(mgBytes))
+	req.Header.Set("Authorization", "Bearer admin_master_secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var createdMG domain.ModelGroup
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createdMG))
+	assert.Equal(t, domain.StrategyFastestResponse, createdMG.RoutingStrategy)
+	assert.Equal(t, []string{"reasoning"}, createdMG.FallbackGroupIDs)
+	require.Len(t, createdMG.ContextWindowFallbacks, 1)
+	assert.Equal(t, "long-context", createdMG.ContextWindowFallbacks[0].GroupAliasOrID)
+	require.Len(t, createdMG.ContentPolicyFallbacks, 1)
+	assert.Equal(t, "safe-models", createdMG.ContentPolicyFallbacks[0].GroupAliasOrID)
+	require.NotNil(t, createdMG.RetryPolicy)
+	assert.Equal(t, 3, createdMG.RetryPolicy.RateLimitRetries)
+	require.NotNil(t, createdMG.CooldownPolicy)
+	assert.InDelta(t, 0.3, createdMG.CooldownPolicy.FailureRateThreshold, 1e-9)
+
+	// 2. Reject invalid empty fallback target and invalid failure_rate_threshold
+	badMGBytes, _ := json.Marshal(map[string]any{
+		"org_id":                   "org_v120",
+		"alias":                    "bad-mg",
+		"context_window_fallbacks": []map[string]any{{"target": "  "}},
+	})
+	req = httptest.NewRequest(http.MethodPost, "/admin/v1/model-groups", bytes.NewReader(badMGBytes))
+	req.Header.Set("Authorization", "Bearer admin_master_secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	// 3. POST /admin/v1/deployments with tags, max_budget_micros, budget_reset_period, priority
+	depBytes, _ := json.Marshal(map[string]any{
+		"model_group_id":      createdMG.ID,
+		"global_model_id":     "openai/gpt-4.1",
+		"deployment_name":     "eu-primary",
+		"region":              "eu-west-1",
+		"priority":            2,
+		"weight":              80,
+		"tags":                []string{" tier:fast ", "", "eu-gdpr"},
+		"max_budget_micros":   15000000,
+		"budget_reset_period": "daily",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/admin/v1/deployments", bytes.NewReader(depBytes))
+	req.Header.Set("Authorization", "Bearer admin_master_secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var createdDep domain.Deployment
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createdDep))
+	assert.Equal(t, 2, createdDep.Priority)
+	assert.Equal(t, []string{"tier:fast", "eu-gdpr"}, createdDep.Tags)
+	assert.Equal(t, int64(15000000), createdDep.MaxBudgetMicros)
+	assert.Equal(t, "daily", createdDep.BudgetResetPeriod)
+
+	// 4. Reject negative max_budget_micros and invalid budget_reset_period
+	for _, badDep := range []map[string]any{
+		{"model_group_id": createdMG.ID, "global_model_id": "openai/gpt-4.1", "max_budget_micros": -100},
+		{"model_group_id": createdMG.ID, "global_model_id": "openai/gpt-4.1", "budget_reset_period": "weekly"},
+	} {
+		b, _ := json.Marshal(badDep)
+		req = httptest.NewRequest(http.MethodPost, "/admin/v1/deployments", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer admin_master_secret")
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	}
 }

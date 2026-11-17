@@ -38,6 +38,9 @@ export const ModelsView: React.FC = () => {
   const [groupMaxRetries, setGroupMaxRetries] = useState('');
   const [groupCooldown, setGroupCooldown] = useState('');
   const [groupFailureThreshold, setGroupFailureThreshold] = useState('');
+  const [groupFallbacks, setGroupFallbacks] = useState('');
+  const [groupCtxFallbacks, setGroupCtxFallbacks] = useState('');
+  const [groupPolicyFallbacks, setGroupPolicyFallbacks] = useState('');
 
   // Create Deployment modal
   const [deployGroupId, setDeployGroupId] = useState<string | null>(null);
@@ -47,6 +50,9 @@ export const ModelsView: React.FC = () => {
   const [deployRegion, setDeployRegion] = useState('');
   const [deployPriority, setDeployPriority] = useState('1');
   const [deployWeight, setDeployWeight] = useState('100');
+  const [deployTags, setDeployTags] = useState('');
+  const [deployBudgetUSD, setDeployBudgetUSD] = useState('');
+  const [deployBudgetPeriod, setDeployBudgetPeriod] = useState('');
   const [deployRpm, setDeployRpm] = useState('');
   const [deployTpm, setDeployTpm] = useState('');
   const [deployTimeoutMs, setDeployTimeoutMs] = useState('');
@@ -144,6 +150,9 @@ export const ModelsView: React.FC = () => {
       setGroupMaxRetries('');
       setGroupCooldown('');
       setGroupFailureThreshold('');
+      setGroupFallbacks('');
+      setGroupCtxFallbacks('');
+      setGroupPolicyFallbacks('');
     },
   });
 
@@ -159,6 +168,9 @@ export const ModelsView: React.FC = () => {
       setDeployRegion('');
       setDeployPriority('1');
       setDeployWeight('100');
+      setDeployTags('');
+      setDeployBudgetUSD('');
+      setDeployBudgetPeriod('');
       setDeployRpm('');
       setDeployTpm('');
       setDeployTimeoutMs('');
@@ -219,15 +231,25 @@ export const ModelsView: React.FC = () => {
     return v.trim() && !isNaN(n) ? n : undefined;
   };
 
+  const parseCsv = (v: string) =>
+    v.split(',').map((s) => s.trim()).filter(Boolean);
+
   const handleCreateGroup = (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupAlias.trim()) return;
+
+    const fbIds = parseCsv(groupFallbacks);
+    const ctxFbs = parseCsv(groupCtxFallbacks).map((target) => ({ target }));
+    const polFbs = parseCsv(groupPolicyFallbacks).map((target) => ({ target }));
 
     createGroupMutation.mutate({
       org_id: activeOrgId,
       alias: groupAlias.trim(),
       description: groupDesc.trim() || undefined,
       routing_strategy: routingStrategy,
+      fallback_group_ids: fbIds.length > 0 ? fbIds : undefined,
+      context_window_fallbacks: ctxFbs.length > 0 ? ctxFbs : undefined,
+      content_policy_fallbacks: polFbs.length > 0 ? polFbs : undefined,
       max_retries: optInt(groupMaxRetries),
       cooldown_seconds: optInt(groupCooldown),
       failure_threshold: optInt(groupFailureThreshold),
@@ -524,6 +546,26 @@ export const ModelsView: React.FC = () => {
                       <span className="text-[10px] font-mono text-brand-muted">ID: {g.id}</span>
                     </div>
 
+                    {(g.fallback_group_ids?.length || g.context_window_fallbacks?.length || g.content_policy_fallbacks?.length) ? (
+                      <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+                        {g.fallback_group_ids?.length ? (
+                          <span className="px-1.5 py-0.5 rounded bg-surface-elevated border border-border-subtle text-brand-muted">
+                            fb: {g.fallback_group_ids.join(' → ')}
+                          </span>
+                        ) : null}
+                        {g.context_window_fallbacks?.length ? (
+                          <span className="px-1.5 py-0.5 rounded status-info border">
+                            ctx-fb: {g.context_window_fallbacks.map((f) => f.target).join(', ')}
+                          </span>
+                        ) : null}
+                        {g.content_policy_fallbacks?.length ? (
+                          <span className="px-1.5 py-0.5 rounded status-warning border">
+                            policy-fb: {g.content_policy_fallbacks.map((f) => f.target).join(', ')}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     <div className="space-y-1.5 pt-2 border-t border-border-subtle/50">
                       <div className="flex items-center justify-between">
                         <div className="text-[10px] uppercase font-semibold text-brand-muted tracking-wider">
@@ -541,14 +583,31 @@ export const ModelsView: React.FC = () => {
                         deps.map((d) => (
                           <div
                             key={d.id}
-                            className="flex items-center justify-between p-2 rounded bg-surface-elevated/40 border border-border-subtle/60 text-xs font-mono"
+                            className="p-2 rounded bg-surface-elevated/40 border border-border-subtle/60 text-xs font-mono space-y-1"
                           >
-                            <span className="text-brand-body">{d.global_model_id}</span>
-                            <div className="flex items-center gap-2 text-[10px] text-brand-muted">
-                              <span>P:{d.priority}</span>
-                              <span>W:{d.weight}</span>
-                              <span className="text-status-success">{d.status}</span>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-brand-body truncate">{d.global_model_id}</span>
+                              <div className="flex items-center gap-2 text-[10px] text-brand-muted shrink-0">
+                                {d.region && <span>{d.region}</span>}
+                                <span className="px-1 rounded bg-surface-base border border-border-subtle text-brand-title">P:{d.priority}</span>
+                                <span>W:{d.weight}</span>
+                                <span className="text-status-success">{d.status}</span>
+                              </div>
                             </div>
+                            {(d.tags?.length || (d.max_budget_micros && d.max_budget_micros > 0)) ? (
+                              <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                                {(d.tags || []).map((tag) => (
+                                  <span key={tag} className="px-1.5 py-0.2 rounded bg-accent-soft text-accent-primary border border-accent-primary/30">
+                                    #{tag}
+                                  </span>
+                                ))}
+                                {d.max_budget_micros && d.max_budget_micros > 0 ? (
+                                  <span className="px-1.5 py-0.2 rounded status-success border">
+                                    ${(d.max_budget_micros / 1_000_000).toFixed(2)}/{d.budget_reset_period || 'never'}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
                         ))
                       ) : (
@@ -675,6 +734,7 @@ export const ModelsView: React.FC = () => {
               <option value="round-robin">round-robin (Cyclic distribution)</option>
               <option value="least-busy">least-busy (Lowest in-flight concurrency)</option>
               <option value="latency-based">latency-based (EWMA latency tracker)</option>
+              <option value="fastest-response">fastest-response (Hedged latency racing)</option>
               <option value="usage-based-headroom">usage-based-headroom (TPM limit protection)</option>
               <option value="lowest-cost">lowest-cost (Cheapest micro-dollar deployment)</option>
             </select>
@@ -684,6 +744,22 @@ export const ModelsView: React.FC = () => {
             <div><label className="block text-xs font-medium text-brand-body mb-1">Max Retries</label><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={`${INPUT_CLS} font-mono`} /></div>
             <div><label className="block text-xs font-medium text-brand-body mb-1">Cooldown (s)</label><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={`${INPUT_CLS} font-mono`} /></div>
             <div><label className="block text-xs font-medium text-brand-body mb-1">Failure Threshold</label><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={`${INPUT_CLS} font-mono`} /></div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-brand-body mb-1">Fallback Group IDs (comma-separated)</label>
+            <input type="text" value={groupFallbacks} onChange={(e) => setGroupFallbacks(e.target.value)} placeholder="reasoning, backup-fast" className={`${INPUT_CLS} font-mono`} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-brand-body mb-1">Context Window Fallbacks</label>
+              <input type="text" value={groupCtxFallbacks} onChange={(e) => setGroupCtxFallbacks(e.target.value)} placeholder="long-context" className={`${INPUT_CLS} font-mono`} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-brand-body mb-1">Content Policy Fallbacks</label>
+              <input type="text" value={groupPolicyFallbacks} onChange={(e) => setGroupPolicyFallbacks(e.target.value)} placeholder="safe-fallback" className={`${INPUT_CLS} font-mono`} />
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -709,6 +785,8 @@ export const ModelsView: React.FC = () => {
           onSubmit={(e) => {
             e.preventDefault();
             if (!deployGroupId || !deployGlobalModelId.trim()) return;
+            const parsedTags = parseCsv(deployTags);
+            const parsedBudget = parseFloat(deployBudgetUSD);
             const payload: Partial<Deployment> = {
               model_group_id: deployGroupId,
               global_model_id: deployGlobalModelId.trim(),
@@ -721,6 +799,11 @@ export const ModelsView: React.FC = () => {
             if (deployCredentialId.trim()) payload.credential_id = deployCredentialId.trim();
             if (deployName.trim()) payload.deployment_name = deployName.trim();
             if (deployRegion.trim()) payload.region = deployRegion.trim();
+            if (parsedTags.length > 0) payload.tags = parsedTags;
+            if (deployBudgetUSD.trim() && !isNaN(parsedBudget) && parsedBudget > 0) {
+              payload.max_budget_micros = Math.round(parsedBudget * 1_000_000);
+            }
+            if (deployBudgetPeriod) payload.budget_reset_period = deployBudgetPeriod;
             createDeploymentMutation.mutate(payload);
           }}
           className="space-y-4"
@@ -752,8 +835,21 @@ export const ModelsView: React.FC = () => {
             <div><label className="block text-xs font-medium text-brand-body mb-1">Region</label><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={`${INPUT_CLS} font-mono`} /></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Priority</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Priority Tier</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
             <div><label className="block text-xs font-medium text-brand-body mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Tags (comma-sep)</label><input type="text" value={deployTags} onChange={(e) => setDeployTags(e.target.value)} placeholder="tier:fast, eu" className={`${INPUT_CLS} font-mono`} /></div>
+            <div><label className="block text-xs font-medium text-brand-body mb-1">Max Budget (USD)</label><input type="number" min={0} step="0.01" value={deployBudgetUSD} onChange={(e) => setDeployBudgetUSD(e.target.value)} placeholder="unlimited" className={`${INPUT_CLS} font-mono`} /></div>
+            <div>
+              <label className="block text-xs font-medium text-brand-body mb-1">Reset Period</label>
+              <select value={deployBudgetPeriod} onChange={(e) => setDeployBudgetPeriod(e.target.value)} className={INPUT_CLS}>
+                <option value="">None</option>
+                <option value="daily">daily</option>
+                <option value="monthly">monthly</option>
+                <option value="never">never</option>
+              </select>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div><label className="block text-xs font-medium text-brand-body mb-1">RPM Cap</label><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>

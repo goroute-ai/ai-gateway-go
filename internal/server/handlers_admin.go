@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -758,10 +759,43 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 
 // --- Layer 4 Model Groups & Deployments ---
 
+func validateFallbackTargets(field string, targets []domain.FallbackTarget) error {
+	for _, ft := range targets {
+		if strings.TrimSpace(ft.GroupAliasOrID) == "" {
+			return fmt.Errorf("%s entries must specify a non-empty target", field)
+		}
+	}
+	return nil
+}
+
 func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *http.Request) {
-	var mg domain.ModelGroup
-	if err := decodeAdminJSON(w, r, &mg); err != nil {
+	var req struct {
+		domain.ModelGroup
+		LegacyFallbackGroups []string `json:"fallback_groups,omitempty"`
+	}
+	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	mg := req.ModelGroup
+	if len(mg.FallbackGroupIDs) == 0 && len(req.LegacyFallbackGroups) > 0 {
+		mg.FallbackGroupIDs = req.LegacyFallbackGroups
+	}
+	for _, pair := range []struct {
+		name    string
+		targets []domain.FallbackTarget
+	}{
+		{"context_window_fallbacks", mg.ContextWindowFallbacks},
+		{"content_policy_fallbacks", mg.ContentPolicyFallbacks},
+		{"fallback_targets", mg.FallbackTargets},
+	} {
+		if err := validateFallbackTargets(pair.name, pair.targets); err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+			return
+		}
+	}
+	if mg.CooldownPolicy != nil && (mg.CooldownPolicy.FailureRateThreshold < 0 || mg.CooldownPolicy.FailureRateThreshold > 1) {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "cooldown_policy.failure_rate_threshold must be between 0 and 1"})
 		return
 	}
 	mg.OrgID = resolveScopedOrgID(r, mg.OrgID)
@@ -795,6 +829,27 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 	if err := decodeAdminJSON(w, r, &dep); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
+	}
+	if dep.MaxBudgetMicros < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "max_budget_micros cannot be negative"})
+		return
+	}
+	if dep.BudgetResetPeriod != "" {
+		switch domain.BudgetResetPeriod(dep.BudgetResetPeriod) {
+		case domain.BudgetResetDaily, domain.BudgetResetMonthly, domain.BudgetResetNever:
+		default:
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "budget_reset_period must be daily, monthly, or never"})
+			return
+		}
+	}
+	if len(dep.Tags) > 0 {
+		cleanTags := make([]string, 0, len(dep.Tags))
+		for _, t := range dep.Tags {
+			if trimmed := strings.TrimSpace(t); trimmed != "" {
+				cleanTags = append(cleanTags, trimmed)
+			}
+		}
+		dep.Tags = cleanTags
 	}
 	targetOrgID := ""
 	if dep.ModelGroupID != "" {

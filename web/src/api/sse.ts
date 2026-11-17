@@ -26,6 +26,11 @@ export interface ChatStreamHeaders {
   costMicros?: number;
   tokenEstimate?: number;
   guardrailAction?: string;
+  routeReason?: string;
+  fallbackAttempted?: string;
+  routingMicros?: number;
+  streamContinued?: string;
+  tierStepdowns?: number;
 }
 
 export async function streamChatCompletion(
@@ -62,6 +67,8 @@ export async function streamChatCompletion(
   if (onHeaders) {
     const rawCost = response.headers.get('x-gateway-cost-micros');
     const rawEst = response.headers.get('x-gateway-token-estimate');
+    const rawRoutingMicros = response.headers.get('x-gateway-routing-micros');
+    const rawStepdowns = response.headers.get('x-gateway-tier-stepdowns');
     onHeaders({
       requestId: response.headers.get('x-gateway-request-id') || undefined,
       provider: response.headers.get('x-gateway-provider') || undefined,
@@ -70,6 +77,11 @@ export async function streamChatCompletion(
       costMicros: rawCost ? parseInt(rawCost, 10) : undefined,
       tokenEstimate: rawEst ? parseInt(rawEst, 10) : undefined,
       guardrailAction: response.headers.get('x-gateway-guardrail-action') || undefined,
+      routeReason: response.headers.get('x-gateway-route-reason') || undefined,
+      fallbackAttempted: response.headers.get('x-gateway-fallback-attempted') || undefined,
+      routingMicros: rawRoutingMicros ? parseInt(rawRoutingMicros, 10) : undefined,
+      streamContinued: response.headers.get('x-gateway-stream-continued') || undefined,
+      tierStepdowns: rawStepdowns ? parseInt(rawStepdowns, 10) : undefined,
     });
   }
 

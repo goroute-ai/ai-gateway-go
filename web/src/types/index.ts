@@ -174,6 +174,40 @@ export interface GlobalModel {
   lifecycle_status?: string;
 }
 
+export interface FallbackTarget {
+  target: string;
+  overrides?: Record<string, any>;
+}
+
+export interface RetryPolicy {
+  rate_limit_retries?: number;
+  timeout_retries?: number;
+  server_error_retries?: number;
+  auth_error_retries?: number;
+  not_found_retries?: number;
+  bad_request_retries?: number;
+  default_retries?: number;
+}
+
+export interface CooldownPolicy {
+  allowed_fails?: Record<string, number>;
+  failure_rate_threshold?: number;
+  min_requests_per_minute?: number;
+  max_cooldown_seconds?: number;
+}
+
+export interface GoRouteExtensions {
+  task_id?: string;
+  context_id?: string;
+  guardrails?: Array<Record<string, any>>;
+  tags?: string[];
+  allowed_region?: string;
+  session_id?: string;
+  preferred_deployment_id?: string;
+  priority?: number;
+  hedge_after_ms?: number;
+}
+
 export interface ModelGroup {
   id: string;
   org_id: string;
@@ -181,6 +215,11 @@ export interface ModelGroup {
   description?: string;
   routing_strategy: string;
   fallback_group_ids?: string[];
+  context_window_fallbacks?: FallbackTarget[];
+  content_policy_fallbacks?: FallbackTarget[];
+  fallback_targets?: FallbackTarget[];
+  retry_policy?: RetryPolicy;
+  cooldown_policy?: CooldownPolicy;
   max_retries?: number;
   cooldown_seconds?: number;
   failure_threshold?: number;
@@ -212,6 +251,9 @@ export interface Deployment {
   region?: string;
   priority: number;
   weight: number;
+  tags?: string[];
+  max_budget_micros?: number;
+  budget_reset_period?: BudgetResetPeriod | string;
   rpm_capacity?: number;
   tpm_capacity?: number;
   timeout_ms?: number;

@@ -1,4 +1,4 @@
-import{u as mt,a,b as I,k as S,j as e,c as xt,P as He,w as pt,K as Ke,m as bt,C as gt,n as ht,d as ft,f as jt,l as $e,L as vt}from"./query-Bc-4Co7n.js";import{u as _t,a as c,b as ue,I as n,E as me,M as Ve,B as Qe}from"./index-D-oDJVPr.js";import{B as o}from"./Badge-Hgwp3Zpw.js";import"./vendor-DhlGPtfo.js";const xe=["pre_call","during_call","post_call","logging_only","pre_mcp_call","during_mcp_call","post_mcp_call"],yt=["both","streaming","non_streaming"],w=`def apply_guardrail(inputs, request_data, input_type):
+import{u as mt,a,b as I,k as S,j as e,c as xt,P as He,w as pt,K as Ke,m as bt,C as gt,n as ht,d as ft,f as jt,l as $e,L as vt}from"./query-Bc-4Co7n.js";import{u as _t,a as c,b as ue,I as n,E as me,M as Ve,B as Qe}from"./index-BqLENbM-.js";import{B as o}from"./Badge-Hgwp3Zpw.js";import"./vendor-DhlGPtfo.js";const xe=["pre_call","during_call","post_call","logging_only","pre_mcp_call","during_mcp_call","post_mcp_call"],yt=["both","streaming","non_streaming"],w=`def apply_guardrail(inputs, request_data, input_type):
     texts = inputs.get("texts", [])
     for t in texts:
         if "forbidden_token" in t.lower():
