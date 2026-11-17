@@ -206,6 +206,57 @@ func TestCatalog_Search(t *testing.T) {
 	t.Logf("Found %d groq llama models", len(groqModels))
 }
 
+func TestCatalog_QualityTierInference(t *testing.T) {
+	catalogCases := []struct {
+		id       string
+		wantTier int
+	}{
+		{id: "openai/gpt-4o-mini", wantTier: catalog.QualityTierEconomy},
+		{id: "openai/gpt-4.1-nano", wantTier: catalog.QualityTierEconomy},
+		{id: "deepseek/deepseek-chat", wantTier: catalog.QualityTierEconomy},
+		{id: "gemini/gemini-2.5-flash", wantTier: catalog.QualityTierStandard},
+		{id: "openai/gpt-4o", wantTier: catalog.QualityTierFrontier},
+		{id: "openai/gpt-4.1", wantTier: catalog.QualityTierFrontier},
+		{id: "openai/o3-mini", wantTier: catalog.QualityTierReasoning},
+		{id: "openai/o1", wantTier: catalog.QualityTierReasoning},
+		{id: "deepseek/deepseek-reasoner", wantTier: catalog.QualityTierReasoning},
+	}
+
+	for _, tc := range catalogCases {
+		m, ok := catalog.Lookup(tc.id)
+		if !ok || m == nil {
+			t.Fatalf("expected %q to exist in catalog", tc.id)
+		}
+		if m.QualityTier != tc.wantTier {
+			t.Errorf("%s: QualityTier = %d, want %d", tc.id, m.QualityTier, tc.wantTier)
+		}
+	}
+
+	// Generalized/inferred family model also receives a non-zero QualityTier.
+	gen, ok := catalog.LookupByProviderAndModel(domain.ProviderOpenAI, "gpt-5.99-future")
+	if !ok || gen == nil {
+		t.Fatal("expected generalized gpt-5.99-future")
+	}
+	if gen.QualityTier != catalog.QualityTierReasoning {
+		t.Errorf("generalized gpt-5.99-future QualityTier = %d, want %d", gen.QualityTier, catalog.QualityTierReasoning)
+	}
+
+	// Explicit QualityTier must never be overwritten.
+	explicit := &domain.GlobalModel{
+		ModelName:   "gpt-4o-mini",
+		QualityTier: catalog.QualityTierFrontier,
+	}
+	if got := catalog.InferQualityTier(explicit); got != catalog.QualityTierFrontier {
+		t.Errorf("explicit QualityTier overwritten: got %d, want %d", got, catalog.QualityTierFrontier)
+	}
+	if got := catalog.InferQualityTier(nil); got != catalog.QualityTierUnknown {
+		t.Errorf("nil model QualityTier = %d, want %d", got, catalog.QualityTierUnknown)
+	}
+	if got := catalog.InferQualityTier(&domain.GlobalModel{ModelName: "custom-model"}); got != catalog.QualityTierStandard {
+		t.Errorf("unclassified custom model QualityTier = %d, want %d", got, catalog.QualityTierStandard)
+	}
+}
+
 func BenchmarkCatalog_Lookup(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()

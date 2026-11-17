@@ -16,6 +16,15 @@ import (
 //go:embed catalog.json.gz
 var defaultCatalogGz []byte
 
+// QualityTier constants categorize model capability and cost tiers for pre-routing.
+const (
+	QualityTierUnknown   = 0
+	QualityTierEconomy   = 1
+	QualityTierStandard  = 2
+	QualityTierFrontier  = 3
+	QualityTierReasoning = 4
+)
+
 var (
 	once         sync.Once
 	modelsByID   map[string]*domain.GlobalModel
@@ -46,6 +55,12 @@ func initCatalog() {
 
 	catalogList = make([]*domain.GlobalModel, 0, len(rawMap))
 	for id, m := range rawMap {
+		if m == nil {
+			continue
+		}
+		if m.QualityTier == 0 {
+			m.QualityTier = inferQualityTier(m)
+		}
 		modelsByID[id] = m
 		modelsByID[strings.ToLower(id)] = m
 		pnKey := fmt.Sprintf("%s/%s", strings.ToLower(string(m.Provider)), strings.ToLower(m.ModelName))
@@ -113,11 +128,17 @@ func Lookup(globalModelID string) (*domain.GlobalModel, bool) {
 	}
 	if m, ok := modelsByID[clean]; ok {
 		cp := *m
+		if cp.QualityTier == 0 {
+			cp.QualityTier = inferQualityTier(&cp)
+		}
 		return &cp, true
 	}
 	lower := strings.ToLower(clean)
 	if m, ok := modelsByID[lower]; ok {
 		cp := *m
+		if cp.QualityTier == 0 {
+			cp.QualityTier = inferQualityTier(&cp)
+		}
 		return &cp, true
 	}
 	if idx := strings.IndexByte(clean, '/'); idx > 0 {
@@ -126,11 +147,17 @@ func Lookup(globalModelID string) (*domain.GlobalModel, bool) {
 		pnKey := fmt.Sprintf("%s/%s", strings.ToLower(string(normProv)), strings.ToLower(bareModel))
 		if m, ok := modelsByPN[pnKey]; ok {
 			cp := *m
+			if cp.QualityTier == 0 {
+				cp.QualityTier = inferQualityTier(&cp)
+			}
 			return &cp, true
 		}
 	} else {
 		if m, ok := modelsByName[lower]; ok {
 			cp := *m
+			if cp.QualityTier == 0 {
+				cp.QualityTier = inferQualityTier(&cp)
+			}
 			return &cp, true
 		}
 	}
@@ -179,7 +206,7 @@ func ApplyGeneralizations(prov domain.ProviderType, modelName string) (*domain.G
 	if stripped := StripRegionalModelPrefix(cleanName); stripped != "" {
 		cleanName = stripped
 	}
-	return &domain.GlobalModel{
+	gm := &domain.GlobalModel{
 		ID:                fmt.Sprintf("%s/%s", normProv, cleanName),
 		Provider:          normProv,
 		ModelName:         cleanName,
@@ -198,7 +225,9 @@ func ApplyGeneralizations(prov domain.ProviderType, modelName string) (*domain.G
 		PricingStatus:           domain.PricingStatusUnknown,
 		PricingProvenanceSource: inf.Source,
 		LifecycleStatus:         domain.ModelStatusActive,
-	}, true
+	}
+	gm.QualityTier = inferQualityTier(gm)
+	return gm, true
 }
 
 func backfillInferredModelFields(model *domain.GlobalModel, modelName string) {
@@ -219,6 +248,105 @@ func backfillInferredModelFields(model *domain.GlobalModel, modelName string) {
 	model.SupportsTools = resolved.Tools == domain.CapabilitySupported
 	model.SupportsVision = resolved.Vision == domain.CapabilitySupported
 	model.SupportsReasoning = resolved.Reasoning == domain.CapabilitySupported
+	if model.QualityTier == 0 {
+		model.QualityTier = inferQualityTier(model)
+	}
+}
+
+// InferQualityTier returns a model's explicit QualityTier when set, or infers
+// one of 1=economy, 2=standard, 3=frontier, 4=reasoning from capabilities,
+// model family name, and pricing.
+func InferQualityTier(m *domain.GlobalModel) int {
+	return inferQualityTier(m)
+}
+
+func inferQualityTier(m *domain.GlobalModel) int {
+	if m == nil {
+		return QualityTierUnknown
+	}
+	if m.QualityTier > 0 {
+		return m.QualityTier
+	}
+
+	rawName := strings.TrimSpace(m.ModelName)
+	if rawName == "" {
+		rawName = strings.TrimSpace(m.ID)
+	}
+	if idx := strings.LastIndexByte(rawName, '/'); idx >= 0 && idx+1 < len(rawName) {
+		rawName = rawName[idx+1:]
+	}
+	base := strings.ToLower(StripRegionalModelPrefix(rawName))
+
+	// Dedicated reasoning families take precedence (including o3-mini / o4-mini).
+	if hasModelPrefix(base, "o1", "o3", "o4") ||
+		strings.Contains(base, "reasoner") ||
+		strings.Contains(base, "-r1") ||
+		strings.HasPrefix(base, "r1-") ||
+		base == "r1" ||
+		strings.Contains(base, "qwq") ||
+		strings.Contains(base, "thinking") ||
+		strings.Contains(base, "deep-research") {
+		return QualityTierReasoning
+	}
+
+	isEconomyName := strings.Contains(base, "nano") ||
+		strings.Contains(base, "mini") ||
+		strings.Contains(base, "flash") ||
+		strings.Contains(base, "lite") ||
+		strings.Contains(base, "haiku") ||
+		strings.Contains(base, "micro") ||
+		strings.Contains(base, "tiny") ||
+		strings.Contains(base, "instant") ||
+		strings.Contains(base, "gpt-3.5") ||
+		strings.Contains(base, "8b") ||
+		strings.Contains(base, "7b") ||
+		strings.Contains(base, "3b") ||
+		strings.Contains(base, "1b") ||
+		strings.Contains(base, "small")
+
+	if (m.SupportsReasoning || m.Capabilities.Reasoning == domain.CapabilitySupported) && !isEconomyName {
+		return QualityTierReasoning
+	}
+
+	if isEconomyName {
+		if m.OutputCostMicrosPer1M > 2_000_000 || m.InputCostMicrosPer1M > 1_000_000 {
+			return QualityTierStandard
+		}
+		return QualityTierEconomy
+	}
+
+	if m.InputCostMicrosPer1M >= 1_500_000 || m.OutputCostMicrosPer1M >= 6_000_000 {
+		return QualityTierFrontier
+	}
+
+	if strings.Contains(base, "opus") ||
+		strings.Contains(base, "sonnet") ||
+		strings.Contains(base, "gpt-4o") ||
+		strings.Contains(base, "gpt-4.1") ||
+		strings.Contains(base, "gpt-4-turbo") ||
+		strings.Contains(base, "gpt-5") ||
+		strings.Contains(base, "ultra") ||
+		strings.Contains(base, "large") ||
+		strings.Contains(base, "405b") ||
+		strings.Contains(base, "-pro") {
+		return QualityTierFrontier
+	}
+
+	if (m.InputCostMicrosPer1M > 0 || m.OutputCostMicrosPer1M > 0) &&
+		m.InputCostMicrosPer1M <= 500_000 && m.OutputCostMicrosPer1M <= 2_000_000 {
+		return QualityTierEconomy
+	}
+
+	return QualityTierStandard
+}
+
+func hasModelPrefix(name string, prefixes ...string) bool {
+	for _, pfx := range prefixes {
+		if name == pfx || strings.HasPrefix(name, pfx+"-") || strings.HasPrefix(name, pfx+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // Search returns all models matching provider and optional query substring.
