@@ -82,6 +82,34 @@ func (f *RedisFabric) Client() redis.UniversalClient {
 	return f.client
 }
 
+// CBState returns the Redis circuit breaker state label ("closed", "half_open", or "open").
+func (f *RedisFabric) CBState() string {
+	switch f.CBStateCode() {
+	case 1:
+		return "half_open"
+	case 2:
+		return "open"
+	default:
+		return "closed"
+	}
+}
+
+// CBStateCode returns the Redis circuit breaker state as an integer code:
+// 0 = closed, 1 = half_open, 2 = open.
+func (f *RedisFabric) CBStateCode() int {
+	if f == nil || f.cb == nil {
+		return 0
+	}
+	switch f.cb.State() {
+	case gobreaker.StateHalfOpen:
+		return 1
+	case gobreaker.StateOpen:
+		return 2
+	default:
+		return 0
+	}
+}
+
 // Ping checks Redis connectivity.
 func (f *RedisFabric) Ping(ctx context.Context) error {
 	if f == nil || f.client == nil {
