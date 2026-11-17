@@ -55,6 +55,8 @@ type ExecutionMeta struct {
 	WinningDeployment *domain.Deployment
 	RetryCount        int
 	FallbackAttempted bool
+	TierStepdowns     int
+	FallbackReason    string
 	LatencyMs         int64
 	TTFTMs            int64
 	RoutingMicros     int64
@@ -315,81 +317,85 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.Int("max_attempts", maxAttempts),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-					slog.String("model", dep.GlobalModel.ModelName),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := adp.ChatCompletion(depCtx, dep, &reqCopy)
-			depCancel()
-			var usage *domain.TokenUsage
-			if resp != nil {
-				usage = &resp.Usage
-			}
-			finishGenAIClientSpan(span, usage, err)
-			depLatency := time.Since(depStart).Milliseconds()
-
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(ctx, dep)
-				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.Int("max_attempts", maxAttempts),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+						slog.String("model", dep.GlobalModel.ModelName),
+					)
+				}
+
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := adp.ChatCompletion(depCtx, dep, &reqCopy)
+				depCancel()
+				var usage *domain.TokenUsage
+				if resp != nil {
+					usage = &resp.Usage
+				}
+				finishGenAIClientSpan(span, usage, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+				}
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -470,100 +476,104 @@ func (rm *ReliabilityManager) ExecuteStream(
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.Int("max_attempts", maxAttempts),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-					slog.String("model", dep.GlobalModel.ModelName),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			if onSelected != nil {
-				onSelected(dep)
-			}
-
-			depStart := time.Now()
-			firstChunkRecorded := false
-			rm.loadBalancer.OnRequestStart(dep.ID)
-
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			usage, err := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
-				if !firstChunkRecorded {
-					firstChunkRecorded = true
-					meta.TTFTMs = time.Since(depStart).Milliseconds()
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				return onChunk(chunk)
-			})
-			depCancel()
-			finishGenAIClientSpan(span, usage, err)
-
-			if err == nil {
-				depLatency := time.Since(depStart).Milliseconds()
-				totalTok := 0
-				if usage != nil {
-					totalTok = usage.TotalTokens
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
 				}
-				rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, totalTok)
-				rm.recordSuccess(ctx, dep)
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return usage, meta, nil
-			}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-
-			// If bytes were already flushed to the client, we cannot retry on another deployment
-			if firstChunkRecorded {
-				depLatency := time.Since(depStart).Milliseconds()
-				if rm.collector != nil && dep.GlobalModel != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.Int("max_attempts", maxAttempts),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+						slog.String("model", dep.GlobalModel.ModelName),
+					)
 				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return usage, meta, err
-			}
 
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				if onSelected != nil {
+					onSelected(dep)
+				}
+
+				depStart := time.Now()
+				firstChunkRecorded := false
+				rm.loadBalancer.OnRequestStart(dep.ID)
+
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				usage, err := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
+					if !firstChunkRecorded {
+						firstChunkRecorded = true
+						meta.TTFTMs = time.Since(depStart).Milliseconds()
+					}
+					return onChunk(chunk)
+				})
+				depCancel()
+				finishGenAIClientSpan(span, usage, err)
+
+				if err == nil {
+					depLatency := time.Since(depStart).Milliseconds()
+					totalTok := 0
+					if usage != nil {
+						totalTok = usage.TotalTokens
+					}
+					rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, totalTok)
+					rm.recordSuccess(ctx, dep)
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return usage, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+
+				// If bytes were already flushed to the client, we cannot retry on another deployment
+				if firstChunkRecorded {
+					depLatency := time.Since(depStart).Milliseconds()
+					if rm.collector != nil && dep.GlobalModel != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return usage, meta, err
+				}
+
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -658,79 +668,83 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group embeddings retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationEmbedding); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "embeddings", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := adp.Embeddings(depCtx, dep, &reqCopy)
-			depCancel()
-			var usage *domain.TokenUsage
-			if resp != nil {
-				usage = &resp.Usage
-			}
-			finishGenAIClientSpan(span, usage, err)
-			depLatency := time.Since(depStart).Milliseconds()
-
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(ctx, dep)
-				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group embeddings retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
+
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationEmbedding); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "embeddings", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := adp.Embeddings(depCtx, dep, &reqCopy)
+				depCancel()
+				var usage *domain.TokenUsage
+				if resp != nil {
+					usage = &resp.Usage
+				}
+				finishGenAIClientSpan(span, usage, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+				}
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -826,89 +840,93 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group rerank retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationRerank); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-			rerankAdp, ok := adp.(adapter.RerankAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "rerank_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support reranking",
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group rerank retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
 
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "rerank", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := rerankAdp.Rerank(depCtx, dep, &reqCopy)
-			depCancel()
-			var usage *domain.TokenUsage
-			if resp != nil {
-				usage = &domain.TokenUsage{TotalTokens: resp.Usage.TotalTokens}
-			}
-			finishGenAIClientSpan(span, usage, err)
-			depLatency := time.Since(depStart).Milliseconds()
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationRerank); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+				rerankAdp, ok := adp.(adapter.RerankAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusNotImplemented,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "rerank_not_supported",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support reranking",
+					}
+					continue
+				}
 
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(ctx, dep)
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "rerank", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := rerankAdp.Rerank(depCtx, dep, &reqCopy)
+				depCancel()
+				var usage *domain.TokenUsage
+				if resp != nil {
+					usage = &domain.TokenUsage{TotalTokens: resp.Usage.TotalTokens}
+				}
+				finishGenAIClientSpan(span, usage, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
-
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -1004,85 +1022,89 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group moderation retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationModeration); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-			modAdp, ok := adp.(adapter.ModerationAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "moderation_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support moderation",
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group moderation retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
 
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "moderation", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := modAdp.Moderate(depCtx, dep, &reqCopy)
-			depCancel()
-			finishGenAIClientSpan(span, nil, err)
-			depLatency := time.Since(depStart).Milliseconds()
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationModeration); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+				modAdp, ok := adp.(adapter.ModerationAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusNotImplemented,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "moderation_not_supported",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support moderation",
+					}
+					continue
+				}
 
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(ctx, dep)
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "moderation", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := modAdp.Moderate(depCtx, dep, &reqCopy)
+				depCancel()
+				finishGenAIClientSpan(span, nil, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
-
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -1170,132 +1192,136 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group completion retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-
-			var resp *domain.CanonicalCompletionResponse
-			// If adapter implements native CompletionAdapter, use it
-			if compAdp, ok := adp.(adapter.CompletionAdapter); ok {
-				spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
-				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-				resp, err = compAdp.TextCompletion(depCtx, dep, &reqCopy)
-				depCancel()
-				var usage *domain.TokenUsage
-				if resp != nil {
-					usage = &resp.Usage
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				finishGenAIClientSpan(span, usage, err)
-			} else {
-				// Transparent fallback: promote to ChatCompletion
-				promptText := strings.Join(req.Prompt.Strings, "\n\n")
-				chatReq := &domain.CanonicalChatRequest{
-					RequestID:     req.RequestID,
-					Model:         req.Model,
-					ResolvedModel: dep.GlobalModel.ModelName,
-					Messages: []domain.CanonicalMessage{
-						{
-							Role:    "user",
-							Content: promptText,
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
+
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group completion retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
+
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+
+				var resp *domain.CanonicalCompletionResponse
+				// If adapter implements native CompletionAdapter, use it
+				if compAdp, ok := adp.(adapter.CompletionAdapter); ok {
+					spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
+					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					resp, err = compAdp.TextCompletion(depCtx, dep, &reqCopy)
+					depCancel()
+					var usage *domain.TokenUsage
+					if resp != nil {
+						usage = &resp.Usage
+					}
+					finishGenAIClientSpan(span, usage, err)
+				} else {
+					// Transparent fallback: promote to ChatCompletion
+					promptText := strings.Join(req.Prompt.Strings, "\n\n")
+					chatReq := &domain.CanonicalChatRequest{
+						RequestID:     req.RequestID,
+						Model:         req.Model,
+						ResolvedModel: dep.GlobalModel.ModelName,
+						Messages: []domain.CanonicalMessage{
+							{
+								Role:    "user",
+								Content: promptText,
+							},
 						},
-					},
-					MaxTokens:   req.MaxTokens,
-					Temperature: req.Temperature,
-					TopP:        req.TopP,
-					Stop:        req.Stop,
-					User:        req.User,
-				}
-				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
-				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-				chatResp, chatErr := adp.ChatCompletion(depCtx, dep, chatReq)
-				depCancel()
-				var usage *domain.TokenUsage
-				if chatResp != nil {
-					usage = &chatResp.Usage
-				}
-				finishGenAIClientSpan(span, usage, chatErr)
-				if chatErr != nil {
-					err = chatErr
-				} else if chatResp != nil {
-					choices := make([]domain.CanonicalCompletionChoice, len(chatResp.Choices))
-					for i, c := range chatResp.Choices {
-						choices[i] = domain.CanonicalCompletionChoice{
-							Index:        c.Index,
-							Text:         c.Message.Content,
-							FinishReason: c.FinishReason,
+						MaxTokens:   req.MaxTokens,
+						Temperature: req.Temperature,
+						TopP:        req.TopP,
+						Stop:        req.Stop,
+						User:        req.User,
+					}
+					spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					chatResp, chatErr := adp.ChatCompletion(depCtx, dep, chatReq)
+					depCancel()
+					var usage *domain.TokenUsage
+					if chatResp != nil {
+						usage = &chatResp.Usage
+					}
+					finishGenAIClientSpan(span, usage, chatErr)
+					if chatErr != nil {
+						err = chatErr
+					} else if chatResp != nil {
+						choices := make([]domain.CanonicalCompletionChoice, len(chatResp.Choices))
+						for i, c := range chatResp.Choices {
+							choices[i] = domain.CanonicalCompletionChoice{
+								Index:        c.Index,
+								Text:         c.Message.Content,
+								FinishReason: c.FinishReason,
+							}
+						}
+						resp = &domain.CanonicalCompletionResponse{
+							ID:       chatResp.ID,
+							Model:    chatResp.Model,
+							Provider: chatResp.Provider,
+							Choices:  choices,
+							Usage:    chatResp.Usage,
 						}
 					}
-					resp = &domain.CanonicalCompletionResponse{
-						ID:       chatResp.ID,
-						Model:    chatResp.Model,
-						Provider: chatResp.Provider,
-						Choices:  choices,
-						Usage:    chatResp.Usage,
+				}
+
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
 				}
-			}
 
-			depLatency := time.Since(depStart).Milliseconds()
-
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
-				rm.recordSuccess(ctx, dep)
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
-
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -1383,108 +1409,112 @@ func (rm *ReliabilityManager) ExecuteCompletionStream(ctx context.Context, idCtx
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group completion stream retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			streamCompAdp, ok := adp.(adapter.StreamingCompletionAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusBadRequest,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "unsupported_capability",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support streaming text completions",
-					Provider:   dep.GlobalModel.Provider,
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			ch, err := streamCompAdp.StreamTextCompletion(depCtx, dep, &reqCopy)
-			finishGenAIClientSpan(span, nil, err)
-			depLatency := time.Since(depStart).Milliseconds()
-
-			if err == nil && ch != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(ctx, dep)
-				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-				outCh := make(chan domain.CanonicalStreamChunk, 16)
-				go func() {
-					defer depCancel()
-					defer close(outCh)
-					for {
-						select {
-						case chunk, open := <-ch:
-							if !open {
-								return
-							}
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group completion stream retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
+
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationCompletion); opErr != nil {
+					lastErr = opErr
+					continue
+				}
+
+				streamCompAdp, ok := adp.(adapter.StreamingCompletionAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusBadRequest,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "unsupported_capability",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support streaming text completions",
+						Provider:   dep.GlobalModel.Provider,
+					}
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "text_completion", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				ch, err := streamCompAdp.StreamTextCompletion(depCtx, dep, &reqCopy)
+				finishGenAIClientSpan(span, nil, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && ch != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+
+					outCh := make(chan domain.CanonicalStreamChunk, 16)
+					go func() {
+						defer depCancel()
+						defer close(outCh)
+						for {
 							select {
-							case outCh <- chunk:
+							case chunk, open := <-ch:
+								if !open {
+									return
+								}
+								select {
+								case outCh <- chunk:
+								case <-depCtx.Done():
+									return
+								}
 							case <-depCtx.Done():
 								return
 							}
-						case <-depCtx.Done():
-							return
 						}
-					}
-				}()
-				return outCh, meta, nil
-			}
-			depCancel()
+					}()
+					return outCh, meta, nil
+				}
+				depCancel()
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+				}
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -1580,86 +1610,90 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			if attempt > 0 {
-				meta.RetryCount++
-				logger.WarnContext(ctx, "Intra-group audio transcription retry attempt triggered",
-					slog.String("component", "router"),
-					slog.Int("attempt", attempt),
-					slog.String("group_alias", group.Alias),
-					slog.String("deployment_id", dep.ID),
-				)
-			}
-
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioSTT); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			audioAdp, ok := adp.(adapter.AudioAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "audio_stt_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support audio transcription",
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				if attempt > 0 {
+					meta.RetryCount++
+					logger.WarnContext(ctx, "Intra-group audio transcription retry attempt triggered",
+						slog.String("component", "router"),
+						slog.Int("attempt", attempt),
+						slog.String("group_alias", group.Alias),
+						slog.String("deployment_id", dep.ID),
+					)
+				}
 
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_transcription", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := audioAdp.TranscribeAudio(depCtx, dep, &reqCopy)
-			depCancel()
-			finishGenAIClientSpan(span, nil, err)
-			depLatency := time.Since(depStart).Milliseconds()
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioSTT); opErr != nil {
+					lastErr = opErr
+					continue
+				}
 
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(ctx, dep)
+				audioAdp, ok := adp.(adapter.AudioAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusNotImplemented,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "audio_stt_not_supported",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support audio transcription",
+					}
+					continue
+				}
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_transcription", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := audioAdp.TranscribeAudio(depCtx, dep, &reqCopy)
+				depCancel()
+				finishGenAIClientSpan(span, nil, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
-
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, meta, termErr
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, meta, termErr
+				}
 			}
 		}
 	}
@@ -1755,76 +1789,80 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioTTS); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			audioAdp, ok := adp.(adapter.AudioAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "audio_tts_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support text-to-speech",
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
+				}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationAudioTTS); opErr != nil {
+					lastErr = opErr
+					continue
+				}
 
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_speech", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			stream, contentType, err := audioAdp.GenerateSpeech(depCtx, dep, &reqCopy)
-			finishGenAIClientSpan(span, nil, err)
-			depLatency := time.Since(depStart).Milliseconds()
+				audioAdp, ok := adp.(adapter.AudioAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusNotImplemented,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "audio_tts_not_supported",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support text-to-speech",
+					}
+					continue
+				}
 
-			if err == nil && stream != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(ctx, dep)
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "audio_speech", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				stream, contentType, err := audioAdp.GenerateSpeech(depCtx, dep, &reqCopy)
+				finishGenAIClientSpan(span, nil, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && stream != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return &cancelReadCloser{ReadCloser: stream, cancel: depCancel}, contentType, meta, nil
+				}
+				depCancel()
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return &cancelReadCloser{ReadCloser: stream, cancel: depCancel}, contentType, meta, nil
-			}
-			depCancel()
-
-			rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-			termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
-			lastErr = normErr
-			if termErr != nil {
-				return nil, "", meta, termErr
+				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				lastErr = normErr
+				if termErr != nil {
+					return nil, "", meta, termErr
+				}
 			}
 		}
 	}
@@ -1920,107 +1958,118 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 			deployments = filtered
 		}
 
-		maxAttempts := group.MaxRetries + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-		triedDepIDs := make([]string, 0, len(deployments))
+		tiers := partitionByPriority(deployments)
+		maxAttempts := maxAttemptsForGroup(group)
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			candidates := filterUntried(deployments, triedDepIDs)
-			if len(candidates) == 0 {
-				candidates = deployments
+		for tierIdx, tierDeployments := range tiers {
+			if tierIdx > 0 {
+				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
-			if dep == nil {
-				break
-			}
-			triedDepIDs = append(triedDepIDs, dep.ID)
+			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			rm.hydrateCredential(dep)
-			adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			imgOp := domain.OperationImageGeneration
-			if req.Operation == "edit" {
-				imgOp = domain.OperationImageEdit
-			} else if req.Operation == "variation" {
-				imgOp = domain.OperationImageVariation
-			}
-			if opErr := checkDeploymentOperation(adp, dep, imgOp); opErr != nil {
-				lastErr = opErr
-				continue
-			}
-
-			imgAdp, ok := adp.(adapter.ImageAdapter)
-			if !ok {
-				lastErr = &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "image_gen_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support image generation",
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				candidates := filterUntried(tierDeployments, triedDepIDs)
+				if len(candidates) == 0 {
+					candidates = tierDeployments
 				}
-				continue
-			}
-
-			reqCopy := *req
-			reqCopy.ResolvedModel = dep.GlobalModel.ModelName
-
-			depStart := time.Now()
-			rm.loadBalancer.OnRequestStart(dep.ID)
-			spanCtx, span := rm.startGenAIClientSpan(ctx, "image_generation", dep)
-			depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-			resp, err := imgAdp.GenerateImage(depCtx, dep, &reqCopy)
-			depCancel()
-			finishGenAIClientSpan(span, nil, err)
-			depLatency := time.Since(depStart).Milliseconds()
-
-			if err == nil && resp != nil {
-				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-				rm.recordSuccess(ctx, dep)
-				if rm.collector != nil {
-					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				if dep == nil {
+					break
 				}
-				meta.WinningDeployment = dep
-				meta.LatencyMs = time.Since(start).Milliseconds()
-				return resp, meta, nil
-			}
+				triedDepIDs = append(triedDepIDs, dep.ID)
 
-			rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
-			lastErr = err
-			if rm.collector != nil {
-				rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
-			}
-
-			// Idempotency safety: never retry non-idempotent image generation unless explicitly retryable
-			gwErr, isGwErr := err.(*domain.GatewayError)
-			if isGwErr {
-				if gwErr.AuthFailure {
-					rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+				rm.hydrateCredential(dep)
+				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
+				if err != nil {
+					lastErr = err
 					continue
 				}
-				if !gwErr.Retryable {
-					return nil, meta, gwErr
+				imgOp := domain.OperationImageGeneration
+				if req.Operation == "edit" {
+					imgOp = domain.OperationImageEdit
+				} else if req.Operation == "variation" {
+					imgOp = domain.OperationImageVariation
 				}
-				rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
-			} else {
-				// Ambiguous network errors on image generation should not retry blindly without caller idempotency
-				return nil, meta, err
-			}
+				if opErr := checkDeploymentOperation(adp, dep, imgOp); opErr != nil {
+					lastErr = opErr
+					continue
+				}
 
-			if attempt < maxAttempts-1 {
-				retryAfter := 0
-				if isGwErr && gwErr != nil {
-					retryAfter = gwErr.RetryAfterSec
+				imgAdp, ok := adp.(adapter.ImageAdapter)
+				if !ok {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusNotImplemented,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "image_gen_not_supported",
+						Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support image generation",
+					}
+					continue
 				}
-				sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
-				if sleepDur > 0 {
-					select {
-					case <-ctx.Done():
-						return nil, meta, ctx.Err()
-					case <-time.After(sleepDur):
+
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(ctx, "image_generation", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				resp, err := imgAdp.GenerateImage(depCtx, dep, &reqCopy)
+				depCancel()
+				finishGenAIClientSpan(span, nil, err)
+				depLatency := time.Since(depStart).Milliseconds()
+
+				if err == nil && resp != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return resp, meta, nil
+				}
+
+				rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, 0)
+				lastErr = err
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+				}
+
+				if errors.Is(err, context.Canceled) {
+					return nil, meta, err
+				}
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil, meta, ctx.Err()
+				}
+
+				// Idempotency safety: never retry non-idempotent image generation unless explicitly retryable
+				gwErr, isGwErr := err.(*domain.GatewayError)
+				if isGwErr {
+					if gwErr.AuthFailure {
+						rm.tripCooldown(ctx, dep.ID, group.CooldownSeconds)
+						continue
+					}
+					if !gwErr.Retryable {
+						return nil, meta, gwErr
+					}
+					rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+				} else {
+					// Ambiguous network errors on image generation should not retry blindly without caller idempotency
+					return nil, meta, err
+				}
+
+				if attempt < maxAttempts-1 {
+					retryAfter := 0
+					if isGwErr && gwErr != nil {
+						retryAfter = gwErr.RetryAfterSec
+					}
+					sleepDur := CalculateBackoff(attempt, retryAfter, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+					if sleepDur > 0 {
+						select {
+						case <-ctx.Done():
+							return nil, meta, ctx.Err()
+						case <-time.After(sleepDur):
+						}
 					}
 				}
 			}
