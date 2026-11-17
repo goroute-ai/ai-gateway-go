@@ -91,3 +91,55 @@ func TestMistral_Vision_Moderation_Audio(t *testing.T) {
 		t.Fatalf("expected 400 unsupported_capability GatewayError, got %T %+v", err, err)
 	}
 }
+
+func TestMistral_TrailingAssistantSetsPrefix(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m1","model":"mistral-large-latest","choices":[{"index":0,"message":{"role":"assistant","content":"continued"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	adp := mistral.NewAdapter(srv.Client())
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	adp.SetSSRFPolicy(pol)
+	dep := &domain.Deployment{
+		ID:          "dep-mis-prefill",
+		GlobalModel: &domain.GlobalModel{ID: "mistral/mistral-large-latest", Provider: domain.ProviderMistral, ModelName: "mistral-large-latest"},
+		Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "mis-test"},
+	}
+
+	_, err = adp.ChatCompletion(context.Background(), dep, &domain.CanonicalChatRequest{
+		Model: "mistral-large-latest",
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Hi"},
+			{Role: "assistant", Content: "Hello"},
+			{Role: "user", Content: "Finish this JSON"},
+			{Role: "assistant", Content: `{"ok":`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	msgs, ok := captured["messages"].([]any)
+	if !ok || len(msgs) != 4 {
+		t.Fatalf("expected 4 serialized messages, got %#v", captured["messages"])
+	}
+	midAssistant := msgs[1].(map[string]any)
+	if _, hasPrefix := midAssistant["prefix"]; hasPrefix {
+		t.Fatalf("non-trailing assistant message must not set prefix, got %#v", midAssistant)
+	}
+	lastAssistant := msgs[3].(map[string]any)
+	if lastAssistant["role"] != "assistant" || lastAssistant["content"] != `{"ok":` || lastAssistant["prefix"] != true {
+		t.Fatalf("trailing assistant message must set role=assistant, content, and prefix=true, got %#v", lastAssistant)
+	}
+}

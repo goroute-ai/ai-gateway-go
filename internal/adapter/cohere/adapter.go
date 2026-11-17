@@ -39,6 +39,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderCohere
 }
 
+// SupportsAssistantPrefill reports false because Cohere /v2/chat expects
+// conversations to terminate with a user or tool turn.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return false
+}
+
 func (a *Adapter) getBaseURL(dep *domain.Deployment) (string, error) {
 	var cred *domain.ProviderCredential
 	if dep != nil {

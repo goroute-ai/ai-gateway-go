@@ -68,3 +68,62 @@ func TestToAnthropicRequest_ThinkingTemperatureOmission(t *testing.T) {
 		t.Fatalf("expected top_p to be nil when thinking is enabled, got %v", *antReq.TopP)
 	}
 }
+
+func TestToAnthropicRequest_AssistantPrefill(t *testing.T) {
+	t.Run("preserves clean trailing assistant message", func(t *testing.T) {
+		req := &domain.CanonicalChatRequest{
+			Model: "claude-3-5-sonnet",
+			Messages: []domain.CanonicalMessage{
+				{Role: "user", Content: "Return JSON"},
+				{Role: "assistant", Content: "{"},
+			},
+		}
+		antReq := toAnthropicRequest(req.Model, req, false)
+		if len(antReq.Messages) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(antReq.Messages))
+		}
+		last := antReq.Messages[1]
+		if last.Role != "assistant" || len(last.Content) != 1 || last.Content[0].Type != "text" || last.Content[0].Text != "{" {
+			t.Fatalf("unexpected trailing assistant message: %+v", last)
+		}
+	})
+
+	t.Run("trims trailing whitespace on final assistant prefill", func(t *testing.T) {
+		req := &domain.CanonicalChatRequest{
+			Model: "claude-3-5-sonnet",
+			Messages: []domain.CanonicalMessage{
+				{Role: "user", Content: "First"},
+				{Role: "assistant", Content: "Intermediate reply   "},
+				{Role: "user", Content: "Continue"},
+				{Role: "assistant", Content: "The answer is: \t\n "},
+			},
+		}
+		antReq := toAnthropicRequest(req.Model, req, false)
+		if len(antReq.Messages) != 4 {
+			t.Fatalf("expected 4 messages, got %d", len(antReq.Messages))
+		}
+		if antReq.Messages[1].Content[0].Text != "Intermediate reply   " {
+			t.Fatalf("non-trailing assistant message must remain untouched, got %q", antReq.Messages[1].Content[0].Text)
+		}
+		if antReq.Messages[3].Role != "assistant" || antReq.Messages[3].Content[0].Text != "The answer is:" {
+			t.Fatalf("expected trimmed trailing assistant prefill, got %+v", antReq.Messages[3])
+		}
+	})
+
+	t.Run("omits whitespace-only trailing assistant prefill", func(t *testing.T) {
+		req := &domain.CanonicalChatRequest{
+			Model: "claude-3-5-sonnet",
+			Messages: []domain.CanonicalMessage{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "   \n\t"},
+			},
+		}
+		antReq := toAnthropicRequest(req.Model, req, false)
+		if len(antReq.Messages) != 1 {
+			t.Fatalf("expected whitespace-only trailing assistant message to be omitted, got %d messages: %+v", len(antReq.Messages), antReq.Messages)
+		}
+		if antReq.Messages[0].Role != "user" {
+			t.Fatalf("expected user message, got %+v", antReq.Messages[0])
+		}
+	})
+}

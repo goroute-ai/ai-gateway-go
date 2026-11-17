@@ -41,6 +41,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderMistral
 }
 
+// SupportsAssistantPrefill reports that Mistral chat completions support
+// continuing from a trailing assistant prefix message.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return true
+}
+
 func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
 	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBaseURL, a.ssrfPolicy, domain.ProviderMistral)
 	if err != nil {
@@ -55,6 +61,7 @@ type wireMistralMessage struct {
 	Name       string                     `json:"name,omitempty"`
 	ToolCallID string                     `json:"tool_call_id,omitempty"`
 	ToolCalls  []providers.OpenAIToolCall `json:"tool_calls,omitempty"`
+	Prefix     bool                       `json:"prefix,omitempty"`
 }
 
 type wireMistralChatRequest struct {
@@ -81,7 +88,7 @@ func (a *Adapter) SupportsOperation(op domain.OperationType) bool {
 
 func toMistralRequest(model string, req *domain.CanonicalChatRequest, stream bool) wireMistralChatRequest {
 	msgs := make([]wireMistralMessage, 0, len(req.Messages))
-	for _, m := range req.Messages {
+	for i, m := range req.Messages {
 		role := m.Role
 		if role == "developer" {
 			role = "system"
@@ -111,6 +118,10 @@ func toMistralRequest(model string, req *domain.CanonicalChatRequest, stream boo
 			Content:    content,
 			Name:       m.Name,
 			ToolCallID: m.ToolCallID,
+		}
+		if i == len(req.Messages)-1 && role == "assistant" && len(m.ToolCalls) == 0 {
+			// Mistral requires prefix=true on a trailing assistant message to continue generation from it.
+			mm.Prefix = true
 		}
 		for _, tc := range m.ToolCalls {
 			mm.ToolCalls = append(mm.ToolCalls, providers.OpenAIToolCall{

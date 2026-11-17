@@ -45,6 +45,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderOpenAI
 }
 
+// SupportsAssistantPrefill reports that OpenAI chat completions support
+// continuing from a trailing assistant message.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return true
+}
+
 func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
 	base, err := adapter.ResolveCredentialBaseURL(cred, defaultBaseURL, a.ssrfPolicy, domain.ProviderOpenAI)
 	if err != nil {

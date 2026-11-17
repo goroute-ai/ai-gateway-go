@@ -43,6 +43,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderGemini
 }
 
+// SupportsAssistantPrefill reports false because Gemini generateContent maps
+// assistant turns to role "model" and rejects requests ending in a model turn.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return false
+}
+
 func isVertexExpressKey(cred *domain.ProviderCredential) bool {
 	if cred == nil || strings.TrimSpace(cred.BaseURL) == "" {
 		return false
