@@ -70,6 +70,25 @@ type OperationSupportChecker interface {
 	SupportsOperation(op domain.OperationType) bool
 }
 
+// PrefillSupportChecker is optionally implemented by adapters that support
+// continuing generation from a trailing assistant message (assistant prefill).
+type PrefillSupportChecker interface {
+	SupportsAssistantPrefill() bool
+}
+
+// SupportsAssistantPrefill reports whether adp supports continuing from a
+// trailing assistant message. Adapters that do not implement
+// PrefillSupportChecker return false.
+func SupportsAssistantPrefill(adp ProviderAdapter) bool {
+	if adp == nil {
+		return false
+	}
+	if chk, ok := adp.(PrefillSupportChecker); ok {
+		return chk.SupportsAssistantPrefill()
+	}
+	return false
+}
+
 // NewPooledHTTPClient returns a high-concurrency HTTP client tuned for upstream LLM API connections.
 func NewPooledHTTPClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {

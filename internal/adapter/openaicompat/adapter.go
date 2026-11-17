@@ -49,6 +49,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return a.profile.ID
 }
 
+// SupportsAssistantPrefill reports that OpenAI-compatible chat completions
+// support continuing from a trailing assistant message.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return true
+}
+
 func (a *Adapter) Profile() *DialectProfile {
 	return a.profile
 }

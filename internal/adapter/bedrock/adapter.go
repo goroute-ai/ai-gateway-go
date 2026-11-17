@@ -38,6 +38,12 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderBedrock
 }
 
+// SupportsAssistantPrefill reports false because Bedrock's unified Converse
+// API rejects trailing assistant messages on non-Claude foundation models.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return false
+}
+
 // Credentials holds AWS authentication details.
 type Credentials struct {
 	AccessKeyID     string `json:"aws_access_key_id"`

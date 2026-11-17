@@ -56,6 +56,13 @@ func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderVertex
 }
 
+// SupportsAssistantPrefill reports false because Vertex AI serves Gemini
+// models whose generateContent endpoint rejects trailing model turns, and the
+// adapter capability check is model-agnostic.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return false
+}
+
 func (a *Adapter) resolveVertexConfig(dep *domain.Deployment) (baseURL, projectID, region string, ts *TokenSource, err error) {
 	if dep.Credential == nil {
 		return "", "", "", nil, &domain.GatewayError{

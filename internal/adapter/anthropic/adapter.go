@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
@@ -41,6 +42,12 @@ func (a *Adapter) SetSSRFPolicy(policy *network.Policy) {
 
 func (a *Adapter) Provider() domain.ProviderType {
 	return domain.ProviderAnthropic
+}
+
+// SupportsAssistantPrefill reports that Anthropic Messages supports continuing
+// generation from a trailing assistant prefill message.
+func (a *Adapter) SupportsAssistantPrefill() bool {
+	return true
 }
 
 func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string) (string, error) {
@@ -389,6 +396,23 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 				Role:    "user",
 				Content: translateUserParts(m),
 			})
+		}
+	}
+
+	// Anthropic Messages rejects trailing whitespace in the final assistant prefill block.
+	if n := len(messages); n > 0 && messages[n-1].Role == "assistant" {
+		last := &messages[n-1]
+		if len(last.Content) > 0 {
+			lastBlock := &last.Content[len(last.Content)-1]
+			if lastBlock.Type == "text" {
+				lastBlock.Text = strings.TrimRightFunc(lastBlock.Text, unicode.IsSpace)
+				if lastBlock.Text == "" {
+					last.Content = last.Content[:len(last.Content)-1]
+				}
+			}
+		}
+		if len(last.Content) == 0 {
+			messages = messages[:n-1]
 		}
 	}
 
