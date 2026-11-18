@@ -149,6 +149,7 @@ type User struct {
 	Email                    string              `json:"email"`
 	Name                     string              `json:"name"`
 	Role                     Role                `json:"role"`
+	OIDCIssuer               string              `json:"oidc_issuer,omitempty"`
 	OIDCSubject              string              `json:"oidc_subject,omitempty"`
 	SCIMExternalID           string              `json:"scim_external_id,omitempty"`
 	SCIMActive               bool                `json:"scim_active"`

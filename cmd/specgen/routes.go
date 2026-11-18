@@ -18,7 +18,7 @@ var supportedHTTPMethods = map[string]bool{
 // groups aligned with the gateway OpenAPI contract. Alias, MCP, and A2A route
 // groups are tracked separately.
 func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) error {
-	for _, prefix := range []string{"/v1", "/admin/v1"} {
+	for _, prefix := range []string{"/v1", "/admin/v1", "/auth"} {
 		if err := checkRouteGroupCoverage(serverFile, prefix, specPaths); err != nil {
 			return err
 		}
@@ -58,32 +58,7 @@ func checkRouteGroupCoverage(serverFile, groupPrefix string, specPaths map[strin
 		}
 		foundGroup = true
 		routerName := callback.Type.Params.List[0].Names[0].Name
-		for _, statement := range callback.Body.List {
-			ast.Inspect(statement, func(child ast.Node) bool {
-				routeCall, ok := child.(*ast.CallExpr)
-				if !ok || len(routeCall.Args) == 0 {
-					return true
-				}
-				routeSelector, ok := routeCall.Fun.(*ast.SelectorExpr)
-				if !ok || routeSelector.Sel == nil {
-					return true
-				}
-				routeReceiver, ok := routeSelector.X.(*ast.Ident)
-				if !ok || routeReceiver.Name != routerName {
-					return true
-				}
-				method := routeSelector.Sel.Name
-				if !supportedHTTPMethods[lower(method)] {
-					return true
-				}
-				suffix, ok := stringLiteral(routeCall.Args[0])
-				if !ok {
-					return true
-				}
-				registered[lower(method)+" "+path.Join(prefix, suffix)] = true
-				return true
-			})
-		}
+		collectRouteGroup(callback.Body.List, prefix, routerName, registered)
 		return false
 	})
 	if !foundGroup {
@@ -123,6 +98,42 @@ func checkRouteGroupCoverage(serverFile, groupPrefix string, specPaths map[strin
 		return fmt.Errorf("%s route/spec mismatch: undocumented registered operations=%v; documented operations without %s handlers=%v", groupPrefix, missing, groupPrefix, stale)
 	}
 	return nil
+}
+
+func collectRouteGroup(stmts []ast.Stmt, prefix, routerName string, registered map[string]bool) {
+	for _, statement := range stmts {
+		ast.Inspect(statement, func(child ast.Node) bool {
+			routeCall, ok := child.(*ast.CallExpr)
+			if !ok || len(routeCall.Args) == 0 {
+				return true
+			}
+			routeSelector, ok := routeCall.Fun.(*ast.SelectorExpr)
+			if !ok || routeSelector.Sel == nil {
+				return true
+			}
+			routeReceiver, ok := routeSelector.X.(*ast.Ident)
+			if !ok || routeReceiver.Name != routerName {
+				return true
+			}
+			method := routeSelector.Sel.Name
+			if method == "Group" {
+				if subFn, ok := routeCall.Args[0].(*ast.FuncLit); ok && len(subFn.Type.Params.List) > 0 && len(subFn.Type.Params.List[0].Names) > 0 {
+					collectRouteGroup(subFn.Body.List, prefix, subFn.Type.Params.List[0].Names[0].Name, registered)
+					return false
+				}
+				return true
+			}
+			if !supportedHTTPMethods[lower(method)] {
+				return true
+			}
+			suffix, ok := stringLiteral(routeCall.Args[0])
+			if !ok {
+				return true
+			}
+			registered[lower(method)+" "+path.Join(prefix, suffix)] = true
+			return true
+		})
+	}
 }
 
 func stringLiteral(expr ast.Expr) (string, bool) {

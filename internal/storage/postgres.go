@@ -1193,14 +1193,14 @@ func (p *PostgresRepository) DeleteProject(ctx context.Context, id string) error
 	return nil
 }
 
-const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), COALESCE(scim_external_id, ''), scim_active, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
+const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), oidc_issuer, COALESCE(scim_external_id, ''), scim_active, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
 	var u domain.User
 	var role, period string
 	var rawFallbacks []byte
 	if err := row.Scan(
-		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.SCIMExternalID, &u.SCIMActive,
+		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.OIDCIssuer, &u.SCIMExternalID, &u.SCIMActive,
 		&u.MaxBudgetMicros, &u.TempBudgetIncreaseMicros, &u.TempBudgetExpiresAt, &u.SoftBudgetMicros, &u.ThrottleOnBudgetExceeded, &rawFallbacks, &u.SpentMicros, &period, &u.BudgetResetAt,
 		&u.RPMLimit, &u.TPMLimit, &u.MaxConcurrentRequests, &u.BatchEnqueuedTokenLimit, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
@@ -1225,12 +1225,12 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 	}
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
+			id, org_id, team_id, email, name, role, oidc_subject, oidc_issuer, scim_external_id, scim_active,
 			max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`
 	if _, err := p.pool.Exec(ctx, q,
-		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.SCIMExternalID, user.SCIMActive,
+		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.OIDCIssuer, user.SCIMExternalID, user.SCIMActive,
 		user.MaxBudgetMicros, user.TempBudgetIncreaseMicros, user.TempBudgetExpiresAt, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks), user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 		user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.BatchEnqueuedTokenLimit, user.IsActive,
 	); err != nil {
@@ -1246,17 +1246,17 @@ func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) 
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, time.Now().UTC())
 	const q = `
 		UPDATE users SET
-			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''),
-			scim_external_id = NULLIF($7,''), scim_active = $8,
-			max_budget_micros = $9, temp_budget_increase_micros = $10, temp_budget_expires_at = $11,
-			soft_budget_micros = $12, throttle_on_budget_exceeded = $13, budget_fallbacks = $14,
-			spent_micros = $15, budget_reset_period = $16, budget_reset_at = $17,
-			rpm_limit = $18, tpm_limit = $19, max_concurrent_requests = $20, batch_enqueued_token_limit = $21, is_active = $22,
+			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''), oidc_issuer = $7,
+			scim_external_id = NULLIF($8,''), scim_active = $9,
+			max_budget_micros = $10, temp_budget_increase_micros = $11, temp_budget_expires_at = $12,
+			soft_budget_micros = $13, throttle_on_budget_exceeded = $14, budget_fallbacks = $15,
+			spent_micros = $16, budget_reset_period = $17, budget_reset_at = $18,
+			rpm_limit = $19, tpm_limit = $20, max_concurrent_requests = $21, batch_enqueued_token_limit = $22, is_active = $23,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
-			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.OIDCIssuer,
 			user.SCIMExternalID, user.SCIMActive,
 			user.MaxBudgetMicros, user.TempBudgetIncreaseMicros, user.TempBudgetExpiresAt,
 			user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks),
@@ -1340,21 +1340,38 @@ func (p *PostgresRepository) DeleteUser(ctx context.Context, id string) error {
 }
 
 func (p *PostgresRepository) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
-	if orgID == "" || subject == "" {
-		return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	return p.GetUserByOIDCIdentity(ctx, orgID, "", subject)
+}
+
+func (p *PostgresRepository) GetUserByOIDCIdentity(ctx context.Context, orgID, issuer, subject string) (*domain.User, error) {
+	if subject == "" || (orgID == "" && issuer != "") {
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
 	}
 	if p.pool == nil {
-		return p.mem.GetUserByOrgAndOIDCSubject(ctx, orgID, subject)
+		return p.mem.GetUserByOIDCIdentity(ctx, orgID, issuer, subject)
 	}
-	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE org_id = $1 AND oidc_subject = $2 LIMIT 1`, orgID, subject))
+	query := `SELECT ` + userSelectCols + ` FROM users WHERE oidc_subject = $1 AND oidc_issuer = $2`
+	args := []any{subject, issuer}
+	if orgID != "" {
+		query += ` AND org_id = $3`
+		args = append(args, orgID)
+	}
+	rows, err := p.pool.Query(ctx, query+` LIMIT 2`, args...)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
-		}
 		return nil, err
 	}
-	_ = p.mem.CreateUser(ctx, u)
-	return u, nil
+	users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*domain.User, error) { return scanUser(row) })
+	if err != nil {
+		return nil, err
+	}
+	switch len(users) {
+	case 0:
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
+	case 1:
+		return users[0], nil
+	default:
+		return nil, fmt.Errorf("multiple users share oidc identity: %w", ErrConflict)
+	}
 }
 
 func (p *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
@@ -1416,13 +1433,13 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
+			id, org_id, team_id, email, name, role, oidc_subject, oidc_issuer, scim_external_id, scim_active,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		ON CONFLICT DO NOTHING`
 	tag, err := p.pool.Exec(ctx, q,
-		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject, cp.SCIMExternalID, cp.SCIMActive,
+		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject, cp.OIDCIssuer, cp.SCIMExternalID, cp.SCIMActive,
 		cp.MaxBudgetMicros, cp.SoftBudgetMicros, cp.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(cp.BudgetFallbacks), cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
 		cp.RPMLimit, cp.TPMLimit, cp.MaxConcurrentRequests, cp.BatchEnqueuedTokenLimit, cp.IsActive,
 	)
@@ -1438,9 +1455,9 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 		return &cp, true, nil
 	}
 
-	// Concurrent creation or pre-existing user: re-read deterministically by (org_id, oidc_subject), then email.
+	// Concurrent creation or pre-existing user: re-read deterministically by (org_id, oidc_issuer, oidc_subject), then email.
 	if cp.OIDCSubject != "" {
-		existing, err := p.GetUserByOrgAndOIDCSubject(ctx, cp.OrgID, cp.OIDCSubject)
+		existing, err := p.GetUserByOIDCIdentity(ctx, cp.OrgID, cp.OIDCIssuer, cp.OIDCSubject)
 		if err == nil && existing != nil {
 			return existing, false, nil
 		}
@@ -1454,8 +1471,8 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 			if existing.OrgID != cp.OrgID {
 				return nil, false, fmt.Errorf("email %q already belongs to another organization: %w", cp.Email, ErrConflict)
 			}
-			if existing.OIDCSubject != "" && cp.OIDCSubject != "" && existing.OIDCSubject != cp.OIDCSubject {
-				return nil, false, fmt.Errorf("email %q is bound to another OIDC subject: %w", cp.Email, ErrConflict)
+			if existing.OIDCIssuer != "" || cp.OIDCIssuer != "" || (existing.OIDCSubject != "" && cp.OIDCSubject != "" && existing.OIDCSubject != cp.OIDCSubject) {
+				return nil, false, fmt.Errorf("email %q is bound to another OIDC identity: %w", cp.Email, ErrConflict)
 			}
 			return existing, false, nil
 		}

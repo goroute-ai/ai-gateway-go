@@ -506,6 +506,24 @@ func (v *JWTVerifier) VerifierForIssuer(issuer string) *OIDCVerifier {
 	return v.defaultVerifier
 }
 
+// SingleIdentityIssuer reports whether pre-existing subject-only accounts can
+// be resolved without choosing between distinct configured identity providers.
+func (v *JWTVerifier) SingleIdentityIssuer() bool {
+	if v == nil {
+		return false
+	}
+	count := 0
+	for _, verifier := range v.issuers {
+		if verifier.Enabled() {
+			count++
+		}
+	}
+	if v.defaultVerifier != nil && v.defaultVerifier.issuer == "" && v.defaultVerifier.Enabled() {
+		count++
+	}
+	return count == 1
+}
+
 // Enabled reports whether at least one HMAC secret, static JWKS URL, or OIDC discovery issuer is configured.
 func (v *JWTVerifier) Enabled() bool {
 	if v == nil {

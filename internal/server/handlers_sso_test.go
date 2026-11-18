@@ -3,7 +3,9 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -304,7 +306,7 @@ func TestAuthSSO_UIAdminCredentialsAndThrottleAndLegacyUpgrade(t *testing.T) {
 
 func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
 	breachedPass := "CompromisedPass!2026"
-	breachedDigest := "5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8"
+	breachedDigest := fmt.Sprintf("%X", sha1.Sum([]byte(breachedPass)))
 	prefix := breachedDigest[:5]
 	suffix := breachedDigest[5:]
 
@@ -344,52 +346,40 @@ func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
 		t.Fatalf("UpsertUserPassword: %v", err)
 	}
 
-	// Logging in with a breached digest sets password_reset_required = true.
-	loginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":         user.Email,
-		"password":      breachedPass,
-		"password_sha1": breachedDigest,
-	}, nil)
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
-	}
-	var loginResp struct {
-		Token                 string `json:"token"`
-		CSRFToken             string `json:"csrf_token"`
-		PasswordResetRequired bool   `json:"password_reset_required"`
-	}
-	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
-		t.Fatalf("decode loginResp: %v", err)
-	}
-	if !loginResp.PasswordResetRequired {
-		t.Fatalf("expected password_reset_required=true on HIBP match")
+	// Logging in with a breached password is rejected server-side before issuing a session,
+	// regardless of any client-supplied password_sha1 value.
+	for _, fields := range []map[string]any{
+		{"email": user.Email, "password": breachedPass},
+		{"email": user.Email, "password": breachedPass, "password_sha1": strings.Repeat("A", 40)},
+	} {
+		loginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", fields, nil)
+		if loginRec.Code != http.StatusForbidden || len(loginRec.Result().Cookies()) != 0 {
+			t.Fatalf("expected 403 breached_password rejection without a cookie, got %d (%s)", loginRec.Code, loginRec.Body.String())
+		}
 	}
 
-	cred, err := repo.GetUserCredential(ctx, user.ID)
-	if err != nil || !cred.PasswordResetRequired {
-		t.Fatalf("expected persisted password_reset_required=true, got cred=%+v err=%v", cred, err)
+	session, err := srv.SessionManager().IssueSession(ctx, user.ID, user.OrgID, user.TeamID, domain.OperatorRoleOrgAdmin)
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
 	}
 
-	// Rotating to a breached password digest via POST /auth/password is rejected with 400.
+	// Rotating to a breached password via POST /auth/password is rejected with 400.
 	badRotateRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/password", map[string]any{
 		"current_password": breachedPass,
 		"new_password":     breachedPass,
-		"password_sha1":    breachedDigest,
 	}, map[string]string{
-		"Authorization": "Bearer " + loginResp.Token,
+		"Authorization": "Bearer " + session.Token,
 	})
-	if badRotateRec.Code != http.StatusBadRequest {
+	if badRotateRec.Code != http.StatusBadRequest || !strings.Contains(badRotateRec.Body.String(), "breached_password") {
 		t.Fatalf("expected 400 breached_password on rotation, got %d (%s)", badRotateRec.Code, badRotateRec.Body.String())
 	}
 
 	// Rotating to a clean password succeeds and revokes prior sessions.
-	cleanDigest := "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
 	okRotateRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/password", map[string]any{
 		"current_password": breachedPass,
 		"new_password":     "FreshUnbreachedPass!987",
-		"password_sha1":    cleanDigest,
 	}, map[string]string{
-		"Authorization": "Bearer " + loginResp.Token,
+		"Authorization": "Bearer " + session.Token,
 	})
 	if okRotateRec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on password rotation, got %d (%s)", okRotateRec.Code, okRotateRec.Body.String())
@@ -397,7 +387,7 @@ func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
 
 	// Old session token must be rejected with 401 after password rotation.
 	oldMeRec := doJSONReq(t, srv.Handler(), http.MethodGet, "/auth/me", nil, map[string]string{
-		"Authorization": "Bearer " + loginResp.Token,
+		"Authorization": "Bearer " + session.Token,
 	})
 	if oldMeRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected old session token to be revoked after password rotation, got %d", oldMeRec.Code)
@@ -405,9 +395,8 @@ func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
 
 	// Login with new password succeeds with password_reset_required = false.
 	newLoginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":         user.Email,
-		"password":      "FreshUnbreachedPass!987",
-		"password_sha1": cleanDigest,
+		"email":    user.Email,
+		"password": "FreshUnbreachedPass!987",
 	}, nil)
 	if newLoginRec.Code != http.StatusOK {
 		t.Fatalf("new login status = %d, body = %s", newLoginRec.Code, newLoginRec.Body.String())
@@ -420,5 +409,39 @@ func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
 	}
 	if newLoginResp.PasswordResetRequired {
 		t.Fatalf("expected password_reset_required=false after rotation")
+	}
+
+	// HIBP outage preserves login availability (fail-open with warning).
+	hibpDownSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer hibpDownSrv.Close()
+	downSrv, downRepo, _ := newSSOTestServer(t, func(c *config.Config) {
+		c.Auth.EnableHIBPCheck = true
+		c.Auth.HIBPBaseURL = hibpDownSrv.URL
+		c.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+		c.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	})
+	downUser := &domain.User{
+		ID:       "usr-hibp-down",
+		OrgID:    "org-sso",
+		Email:    "hibp-down@sso.example.com",
+		Name:     "HIBP Down User",
+		Role:     domain.RoleOrgAdmin,
+		IsActive: true,
+	}
+	if err := downRepo.CreateUser(ctx, downUser); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	downHash, _ := auth.HashPasswordScrypt("FreshUnbreachedPass!987")
+	if err := downRepo.UpsertUserPassword(ctx, downUser.ID, downHash, false); err != nil {
+		t.Fatalf("UpsertUserPassword: %v", err)
+	}
+	downLoginRec := doJSONReq(t, downSrv.Handler(), http.MethodPost, "/auth/login", map[string]any{
+		"email":    downUser.Email,
+		"password": "FreshUnbreachedPass!987",
+	}, nil)
+	if downLoginRec.Code != http.StatusOK {
+		t.Fatalf("expected HIBP service outage to fail open on login, got %d (%s)", downLoginRec.Code, downLoginRec.Body.String())
 	}
 }

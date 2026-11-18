@@ -25,6 +25,7 @@ type JWTMappingLookupRepository interface {
 
 // OIDCUserRepository is an optional Repository extension for tenant-scoped OIDC user lookup and race-safe JIT provisioning.
 type OIDCUserRepository interface {
+	GetUserByOIDCIdentity(ctx context.Context, orgID, issuer, subject string) (*domain.User, error)
 	GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetOrCreateUserByOIDCSubject(ctx context.Context, user *domain.User) (*domain.User, bool, error)

@@ -520,7 +520,6 @@ export const authApi = {
     email?: string;
     username?: string;
     password: string;
-    password_sha1?: string;
   }) =>
     apiFetch<AuthLoginResponse>('/auth/login', {
       method: 'POST',
@@ -534,7 +533,6 @@ export const authApi = {
     data: {
       current_password?: string;
       new_password: string;
-      password_sha1?: string;
       user_id?: string;
       email?: string;
     },

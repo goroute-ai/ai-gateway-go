@@ -80,7 +80,7 @@ func main() {
 				logger.Error("specgen route coverage failed", slog.Any("error", err))
 				os.Exit(1)
 			}
-			logger.Info("Verified /v1 and /admin/v1 route/spec parity")
+			logger.Info("Verified /v1, /admin/v1, and /auth route/spec parity")
 		}
 		pathList := make([]string, 0, len(doc.Paths))
 		for k := range doc.Paths {

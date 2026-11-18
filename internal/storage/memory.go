@@ -1182,18 +1182,28 @@ func (r *MemoryRepository) DeleteProject(_ context.Context, id string) error {
 }
 
 func (r *MemoryRepository) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
-	if orgID == "" || subject == "" {
-		return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	return r.GetUserByOIDCIdentity(ctx, orgID, "", subject)
+}
+
+func (r *MemoryRepository) GetUserByOIDCIdentity(_ context.Context, orgID, issuer, subject string) (*domain.User, error) {
+	if subject == "" || (orgID == "" && issuer != "") {
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	var matched *domain.User
 	for _, u := range r.users {
-		if u.OrgID == orgID && u.OIDCSubject == subject {
-			cp := *u
-			return &cp, nil
+		if (orgID == "" || u.OrgID == orgID) && u.OIDCIssuer == issuer && u.OIDCSubject == subject {
+			if matched != nil {
+				return nil, fmt.Errorf("multiple users share oidc identity: %w", ErrConflict)
+			}
+			matched = cloneUser(u)
 		}
 	}
-	return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	if matched == nil {
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
+	}
+	return matched, nil
 }
 
 func (r *MemoryRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
@@ -1236,7 +1246,7 @@ func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, use
 
 	if user.OIDCSubject != "" {
 		for _, u := range r.users {
-			if u.OrgID == user.OrgID && u.OIDCSubject == user.OIDCSubject {
+			if u.OrgID == user.OrgID && u.OIDCIssuer == user.OIDCIssuer && u.OIDCSubject == user.OIDCSubject {
 				cp := *u
 				return &cp, false, nil
 			}
@@ -1248,8 +1258,8 @@ func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, use
 				if u.OrgID != user.OrgID {
 					return nil, false, fmt.Errorf("email %q already belongs to another organization: %w", user.Email, ErrConflict)
 				}
-				if u.OIDCSubject != "" && user.OIDCSubject != "" && u.OIDCSubject != user.OIDCSubject {
-					return nil, false, fmt.Errorf("email %q is bound to another OIDC subject: %w", user.Email, ErrConflict)
+				if u.OIDCIssuer != "" || user.OIDCIssuer != "" || (u.OIDCSubject != "" && user.OIDCSubject != "" && u.OIDCSubject != user.OIDCSubject) {
+					return nil, false, fmt.Errorf("email %q is bound to another OIDC identity: %w", user.Email, ErrConflict)
 				}
 				cp := *u
 				return &cp, false, nil

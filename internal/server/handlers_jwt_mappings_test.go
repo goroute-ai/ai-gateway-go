@@ -437,9 +437,9 @@ func TestGatewayServer_DataPlaneOIDCMappingJITAndCustomHeader(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("expected 200 on /v1/models with JIT OIDC JWT, got %d", status)
 	}
-	jitUser, err := repo.GetUserByOrgAndOIDCSubject(ctx, "org_a", "bob-jit-sub")
-	if err != nil || jitUser == nil || jitUser.Email != "bob@orga.example" || jitUser.TeamID != "team_a" {
-		t.Fatalf("expected JIT provisioned user in org_a/team_a, got user=%+v err=%v", jitUser, err)
+	jitUser, err := repo.GetUserByOIDCIdentity(ctx, "org_a", oidcSrv.URL, "bob-jit-sub")
+	if err != nil || jitUser == nil || jitUser.OIDCIssuer != oidcSrv.URL || jitUser.Email != "bob@orga.example" || jitUser.TeamID != "team_a" {
+		t.Fatalf("expected JIT provisioned user in org_a/team_a with oidc_issuer, got user=%+v err=%v", jitUser, err)
 	}
 
 	// 4. Denied email domain returns 401
