@@ -331,7 +331,11 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 	}
 
 	// Stage 5: Tag filter.
-	if len(reqTags) > 0 {
+	// Plain request tags (e.g. guardrail mode rule tags like "shadow") can be attached to
+	// requests targeting model groups with no deployment tags configured. Skip plain-tag
+	// pruning when no candidate defines tags unless the request includes an explicit &tag
+	// requirement or * wildcard.
+	if len(reqTags) > 0 && shouldEnforceTagFilter(candidates, reqTags) {
 		var stage5 []*domain.Deployment
 		for i, d := range candidates {
 			if matchDeploymentTags(d.Tags, reqTags, tagMatchAll) {
@@ -467,6 +471,21 @@ func modelSupportsChatRequirements(gm *domain.GlobalModel, stream, tools, vision
 		return false
 	}
 	return true
+}
+
+func shouldEnforceTagFilter(candidates []*domain.Deployment, reqTags []string) bool {
+	for _, d := range candidates {
+		if len(d.Tags) > 0 {
+			return true
+		}
+	}
+	for _, raw := range reqTags {
+		tag := strings.TrimSpace(raw)
+		if tag == "*" || (len(tag) > 1 && tag[0] == '&' && strings.TrimSpace(tag[1:]) != "") {
+			return true
+		}
+	}
+	return false
 }
 
 // matchDeploymentTags evaluates deployment tags against requested tag filters.

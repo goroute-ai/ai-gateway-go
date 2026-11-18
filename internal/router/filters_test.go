@@ -506,6 +506,50 @@ func TestDeploymentFilter_TagMatching(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertDeploymentIDs(t, got, "d1")
+
+	t.Run("plain metadata tag on all-untagged pool retains candidates", func(t *testing.T) {
+		u1 := makeFilterTestDeployment("u1", "us-east", nil, nil)
+		u2 := makeFilterTestDeployment("u2", "eu-west", nil, nil)
+		got, err := p.FilterEligibleDeployments(ctx, "org-1", "alias", &domain.CanonicalChatRequest{
+			GoRouteExtensions: &domain.GoRouteExtensions{
+				Tags: []string{"shadow"},
+			},
+		}, []*domain.Deployment{u1, u2}, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertDeploymentIDs(t, got, "u1", "u2")
+	})
+
+	t.Run("required &tag on all-untagged pool prunes all candidates", func(t *testing.T) {
+		u1 := makeFilterTestDeployment("u1", "us-east", nil, nil)
+		u2 := makeFilterTestDeployment("u2", "eu-west", nil, nil)
+		got, err := p.FilterEligibleDeployments(ctx, "org-1", "alias", &domain.CanonicalChatRequest{
+			GoRouteExtensions: &domain.GoRouteExtensions{
+				Tags: []string{"&gpu"},
+			},
+		}, []*domain.Deployment{u1, u2}, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected 0 deployments when &gpu is required on untagged pool, got %d", len(got))
+		}
+	})
+
+	t.Run("plain tag on partially tagged pool filters strictly to matching deployments", func(t *testing.T) {
+		tagged := makeFilterTestDeployment("tagged-eu", "eu-west", []string{"eu"}, nil)
+		untagged := makeFilterTestDeployment("untagged", "us-east", nil, nil)
+		got, err := p.FilterEligibleDeployments(ctx, "org-1", "alias", &domain.CanonicalChatRequest{
+			GoRouteExtensions: &domain.GoRouteExtensions{
+				Tags: []string{"eu"},
+			},
+		}, []*domain.Deployment{tagged, untagged}, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertDeploymentIDs(t, got, "tagged-eu")
+	})
 }
 
 func TestDeploymentFilter_CapacitySaturationGate(t *testing.T) {

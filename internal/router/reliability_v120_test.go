@@ -1124,10 +1124,32 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 			ID: "openai/gpt-4o", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-a", srvA.URL)
-		depB := registerV120ModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
-			ID: "openai/gpt-4o", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o",
-			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
-		}, "dep-b", srvB.URL)
+		// Place dep-b in priority tier 1 so dep-a is deterministically tried first and dep-b handles continuation.
+		credB := &domain.ProviderCredential{
+			OrgID:    org.ID,
+			Provider: domain.ProviderOpenAI,
+			Name:     "cred-dep-b",
+			BaseURL:  srvB.URL,
+			IsActive: true,
+		}
+		if err := vault.EncryptCredential(credB, "sk-test-dep-b"); err != nil {
+			t.Fatalf("EncryptCredential: %v", err)
+		}
+		if err := repo.CreateProviderCredential(ctx, credB); err != nil {
+			t.Fatalf("CreateProviderCredential: %v", err)
+		}
+		depB := &domain.Deployment{
+			ModelGroupID:   group.ID,
+			GlobalModelID:  "openai/gpt-4o",
+			CredentialID:   credB.ID,
+			DeploymentName: "dep-b",
+			Weight:         100,
+			Priority:       1,
+			Status:         domain.DeploymentStatusActive,
+		}
+		if err := repo.CreateDeployment(ctx, depB); err != nil {
+			t.Fatalf("CreateDeployment: %v", err)
+		}
 
 		maxTok := 20
 		var emitted strings.Builder
