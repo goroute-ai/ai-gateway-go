@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"nhooyr.io/websocket"
 )
 
@@ -30,9 +32,6 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
-	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
-		return
-	}
 
 	model := r.URL.Query().Get("model")
 	if model == "" {
@@ -42,6 +41,15 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+
+	if s.limiter != nil {
+		releaseSession, err := s.limiter.AcquireSession(r.Context(), idCtx)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		defer releaseSession()
 	}
 
 	subprotocols := make([]string, 0)
@@ -77,9 +85,11 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 	}
 
 	var sessionMu sync.Mutex
+	var writeMu sync.Mutex
 	history := make([]domain.CanonicalMessage, 0)
-	var totalUsage domain.TokenUsage
-	var totalCostMicros int64
+
+	sessionCtx, sessionCancel := context.WithCancel(r.Context())
+	defer sessionCancel()
 
 	// Helper to send JSON event to client
 	sendEvent := func(ctx context.Context, ev map[string]any) error {
@@ -87,11 +97,13 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		if err != nil {
 			return err
 		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		return conn.Write(ctx, websocket.MessageText, b)
 	}
 
 	// 1. Send initial session.created event
-	_ = sendEvent(r.Context(), map[string]any{
+	_ = sendEvent(sessionCtx, map[string]any{
 		"event_id": "event_" + uuid.NewString(),
 		"type":     "session.created",
 		"session": map[string]any{
@@ -106,15 +118,32 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		},
 	})
 
-	// Message frame pump loop
-	for {
-		msgType, data, err := conn.Read(r.Context())
-		if err != nil {
-			// Client disconnected
-			break
+	// Read frames in a dedicated reader goroutine so client close/disconnect
+	// cancels sessionCtx even while an upstream response.create turn is in flight.
+	msgCh := make(chan []byte, 16)
+	go func() {
+		defer close(msgCh)
+		for {
+			msgType, data, readErr := conn.Read(sessionCtx)
+			if readErr != nil {
+				sessionCancel()
+				return
+			}
+			if msgType != websocket.MessageText {
+				continue
+			}
+			select {
+			case msgCh <- data:
+			case <-sessionCtx.Done():
+				return
+			}
 		}
-		if msgType != websocket.MessageText {
-			continue
+	}()
+
+	// Message frame pump loop
+	for data := range msgCh {
+		if sessionCtx.Err() != nil {
+			break
 		}
 
 		var clientEv struct {
@@ -130,6 +159,10 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 					Text string `json:"text"`
 				} `json:"content"`
 			} `json:"item,omitempty"`
+			Response *struct {
+				MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+				MaxTokens       *int `json:"max_tokens,omitempty"`
+			} `json:"response,omitempty"`
 			Audio string `json:"audio,omitempty"`
 		}
 
@@ -269,75 +302,121 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				Messages:    reqMsgs,
 				Temperature: temp,
 			}
+			maxOutput := 0
+			if clientEv.Response != nil {
+				if clientEv.Response.MaxOutputTokens != nil {
+					maxOutput = *clientEv.Response.MaxOutputTokens
+				} else if clientEv.Response.MaxTokens != nil {
+					maxOutput = *clientEv.Response.MaxTokens
+				}
+			}
+			if maxOutput < 0 {
+				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "invalid_request_error", "message": "max_output_tokens cannot be negative"}})
+				continue
+			}
+			if maxOutput > 0 {
+				chatReq.MaxTokens = &maxOutput
+			}
+
 			if _, guardrailErr := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, chatReq); guardrailErr != nil {
 				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Request rejected by organization guardrail policy"}})
 				continue
 			}
 
+			estTokens := ratelimit.EstimateRequestTokens(chatReq)
+			budgetInputTokens := estTokens
+			if identityHasBudget(idCtx) {
+				if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
+					_ = sendEvent(r.Context(), map[string]any{
+						"event_id": "event_" + uuid.NewString(),
+						"type":     "error",
+						"error": map[string]any{
+							"type":    string(domain.ErrorTypeBudgetExceeded),
+							"code":    "budget_estimate_unavailable",
+							"message": "A safe upper-bound cost could not be calculated before dispatch",
+						},
+					})
+					continue
+				} else if len(encoded) > budgetInputTokens {
+					budgetInputTokens = len(encoded)
+				}
+			}
+
 			respID := "resp_" + uuid.NewString()
 			itemMsgID := "msg_" + uuid.NewString()
 
-			// response.created
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "response.created",
-				"response": map[string]any{
-					"id":     respID,
-					"object": "realtime.response",
-					"status": "in_progress",
-				},
-			})
+			onAdmitted := func() {
+				// response.created
+				_ = sendEvent(r.Context(), map[string]any{
+					"event_id": "event_" + uuid.NewString(),
+					"type":     "response.created",
+					"response": map[string]any{
+						"id":     respID,
+						"object": "realtime.response",
+						"status": "in_progress",
+					},
+				})
 
-			// response.output_item.added
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id":     "event_" + uuid.NewString(),
-				"type":         "response.output_item.added",
-				"output_index": 0,
-				"item": map[string]any{
-					"id":      itemMsgID,
-					"type":    "message",
-					"status":  "in_progress",
-					"role":    "assistant",
-					"content": []any{},
-				},
-			})
+				// response.output_item.added
+				_ = sendEvent(r.Context(), map[string]any{
+					"event_id":     "event_" + uuid.NewString(),
+					"type":         "response.output_item.added",
+					"output_index": 0,
+					"item": map[string]any{
+						"id":      itemMsgID,
+						"type":    "message",
+						"status":  "in_progress",
+						"role":    "assistant",
+						"content": []any{},
+					},
+				})
 
-			// response.content_part.added
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id":      "event_" + uuid.NewString(),
-				"type":          "response.content_part.added",
-				"output_index":  0,
-				"content_index": 0,
-				"part": map[string]any{
-					"type": "text",
-					"text": "",
-				},
-			})
+				// response.content_part.added
+				_ = sendEvent(r.Context(), map[string]any{
+					"event_id":      "event_" + uuid.NewString(),
+					"type":          "response.content_part.added",
+					"output_index":  0,
+					"content_index": 0,
+					"part": map[string]any{
+						"type": "text",
+						"text": "",
+					},
+				})
+			}
 
-			resp, meta, err := s.reliability.ExecuteChat(r.Context(), idCtx, chatReq)
+			turnIDCtx := *idCtx
+			// The WebSocket session already holds the connection-level concurrency slot
+			// and executes turns sequentially, so per-turn quota must not double-count concurrency.
+			turnIDCtx.KeyMaxConcurrent = 0
+			turnIDCtx.TeamMaxConcurrent = 0
+			turnIDCtx.UserMaxConcurrent = 0
+			turnIDCtx.OrgMaxConcurrent = 0
+
+			resp, err := s.executeRealtimeTurn(sessionCtx, &turnIDCtx, sessionID, model, chatReq, estTokens, budgetInputTokens, maxOutput, onAdmitted)
 			if err != nil {
+				errPayload := map[string]any{
+					"type":    "execution_error",
+					"message": err.Error(),
+				}
+				var gwErr *domain.GatewayError
+				if errors.As(err, &gwErr) {
+					if gwErr.Type != "" {
+						errPayload["type"] = string(gwErr.Type)
+					}
+					if gwErr.Code != "" {
+						errPayload["code"] = gwErr.Code
+					}
+					if gwErr.Message != "" {
+						errPayload["message"] = gwErr.Message
+					}
+				}
 				_ = sendEvent(r.Context(), map[string]any{
 					"event_id": "event_" + uuid.NewString(),
 					"type":     "error",
-					"error": map[string]any{
-						"type":    "execution_error",
-						"message": err.Error(),
-					},
+					"error":    errPayload,
 				})
 				continue
 			}
-
-			var gm *domain.GlobalModel
-			if meta != nil && meta.WinningDeployment != nil {
-				gm = meta.WinningDeployment.GlobalModel
-			}
-			turnCost := finops.CalculateCostMicros(gm, resp.Usage)
-			sessionMu.Lock()
-			totalUsage.PromptTokens += resp.Usage.PromptTokens
-			totalUsage.CompletionTokens += resp.Usage.CompletionTokens
-			totalUsage.TotalTokens += resp.Usage.TotalTokens
-			totalCostMicros += turnCost
-			sessionMu.Unlock()
 
 			replyContent := ""
 			if len(resp.Choices) > 0 {
@@ -412,37 +491,134 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Session finished - record FinOps spend event
 	sessionDuration := time.Since(startTime)
-	if s.spendWorker != nil {
-		sessionMu.Lock()
-		finalUsage := totalUsage
-		finalCost := totalCostMicros
-		sessionMu.Unlock()
-
-		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
-			ID:             "sp_" + uuid.NewString(),
-			RequestID:      sessionID,
-			OrgID:          idCtx.OrgID,
-			TeamID:         idCtx.TeamID,
-			UserID:         idCtx.UserID,
-			VirtualKeyID:   idCtx.VirtualKeyID,
-			Endpoint:       "/v1/realtime",
-			RequestedModel: model,
-			ResolvedModel:  model,
-			Modality:       domain.ModalityRealtime,
-			Usage:          finalUsage,
-			CostMicros:     finalCost,
-			CreatedAt:      time.Now().UTC(),
-		}); err != nil {
-			logger.Error("Realtime session spend event persistence failed", "session_id", sessionID, "error", err.Error())
-			_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "server_error", "code": "spend_persistence_unavailable"}})
-		}
-	}
-
 	logger.Info("Realtime websocket session completed",
 		"session_id", sessionID,
 		"model", model,
 		"duration", sessionDuration.String(),
 	)
+}
+
+func (s *GatewayServer) executeRealtimeTurn(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	sessionID string,
+	model string,
+	chatReq *domain.CanonicalChatRequest,
+	estTokens int,
+	budgetInputTokens int,
+	maxOutput int,
+	onAdmitted func(),
+) (*domain.CanonicalChatResponse, error) {
+	turnReqID := sessionID + "_turn_" + uuid.NewString()
+	var releaseTurnQuota func(actualTokens int, overrideCostMicros int64)
+	if s.limiter != nil {
+		var quotaErr error
+		releaseTurnQuota, quotaErr = s.acquireRequestQuotaWithCost(ctx, idCtx, model, estTokens, budgetInputTokens, maxOutput, turnReqID)
+		if quotaErr != nil {
+			return nil, quotaErr
+		}
+	}
+
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          turnReqID,
+		endpoint:       "/v1/realtime",
+		modality:       domain.ModalityRealtime,
+		requestedModel: model,
+		estTokens:      estTokens,
+		reqCtx:         ctx,
+		releaseQuota:   releaseTurnQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
+
+	if onAdmitted != nil {
+		onAdmitted()
+	}
+
+	quotaSettlement.upstreamDispatched = true
+	resp, meta, err := s.reliability.ExecuteChat(ctx, idCtx, chatReq)
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
+	if err != nil {
+		return nil, err
+	}
+
+	var gm *domain.GlobalModel
+	var depID string
+	var provider domain.ProviderType
+	var pricingVer int
+	resolvedModel := model
+	if meta != nil && meta.WinningDeployment != nil {
+		depID = meta.WinningDeployment.ID
+		gm = meta.WinningDeployment.GlobalModel
+		if gm != nil {
+			provider = gm.Provider
+			pricingVer = gm.PricingVersion
+			if gm.ModelName != "" {
+				resolvedModel = gm.ModelName
+			}
+		}
+	}
+
+	turnCost := finops.CalculateCostMicros(gm, resp.Usage)
+	actualTokens := resp.Usage.TotalTokens
+	if actualTokens <= 0 {
+		actualTokens = estTokens
+	}
+	quotaSettlement.actualTokensReconciled = true
+	if releaseTurnQuota != nil {
+		releaseTurnQuota(actualTokens, turnCost)
+	}
+
+	if s.spendWorker != nil {
+		var provenance string
+		if gm != nil {
+			provenance = gm.PricingProvenanceSource
+		}
+		var latMs, ttftMs int64
+		var retries int
+		var fb bool
+		if meta != nil {
+			latMs = meta.LatencyMs
+			ttftMs = meta.TTFTMs
+			retries = meta.RetryCount
+			fb = meta.FallbackAttempted
+		}
+		if recErr := s.spendWorker.Record(context.WithoutCancel(ctx), domain.SpendEvent{
+			ID:                      "sp_" + uuid.NewString(),
+			RequestID:               turnReqID,
+			OrgID:                   idCtx.OrgID,
+			TeamID:                  idCtx.TeamID,
+			UserID:                  idCtx.UserID,
+			VirtualKeyID:            idCtx.VirtualKeyID,
+			Endpoint:                "/v1/realtime",
+			Modality:                domain.ModalityRealtime,
+			RequestedModel:          model,
+			ResolvedModel:           resolvedModel,
+			Provider:                provider,
+			DeploymentID:            depID,
+			PricingVersion:          pricingVer,
+			PricingStatus:           domain.ResolvePricingStatus(gm),
+			PricingProvenanceSource: provenance,
+			Usage:                   resp.Usage,
+			CostMicros:              turnCost,
+			LatencyMs:               latMs,
+			TTFTMs:                  ttftMs,
+			StatusCode:              http.StatusOK,
+			FallbackAttempted:       fb,
+			RetryCount:              retries,
+			CreatedAt:               time.Now().UTC(),
+		}); recErr != nil {
+			logger.Error("Realtime turn spend event persistence failed", "session_id", sessionID, "turn_request_id", turnReqID, "error", recErr.Error())
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "spend_persistence_unavailable",
+				Message:    "Failed to persist realtime turn spend accounting",
+			}
+		}
+	}
+
+	return resp, nil
 }

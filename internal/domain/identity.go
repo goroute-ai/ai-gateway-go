@@ -56,9 +56,10 @@ type Organization struct {
 	SpentMicros              int64               `json:"spent_micros"`
 	BudgetResetPeriod        BudgetResetPeriod   `json:"budget_reset_period"`
 	BudgetResetAt            *time.Time          `json:"budget_reset_at,omitempty"`
-	RPMLimit                 int                 `json:"rpm_limit"`               // 0 = unlimited
-	TPMLimit                 int                 `json:"tpm_limit"`               // 0 = unlimited
-	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"` // 0 = unlimited
+	RPMLimit                 int                 `json:"rpm_limit"`                            // 0 = unlimited
+	TPMLimit                 int                 `json:"tpm_limit"`                            // 0 = unlimited
+	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`              // 0 = unlimited
+	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"` // 0 = unlimited
 	IsActive                 bool                `json:"is_active"`
 	Metadata                 map[string]string   `json:"metadata,omitempty"`
 	CreatedAt                time.Time           `json:"created_at"`
@@ -80,6 +81,7 @@ type Team struct {
 	RPMLimit                 int                 `json:"rpm_limit"`
 	TPMLimit                 int                 `json:"tpm_limit"`
 	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`
+	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"`
 	AllowedModels            []string            `json:"allowed_models,omitempty"` // Empty = inherit Org enabled models
 	AllowedMCPServers        []string            `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
 	AllowedA2AAgents         []string            `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
@@ -108,6 +110,7 @@ type User struct {
 	RPMLimit                 int                 `json:"rpm_limit"`
 	TPMLimit                 int                 `json:"tpm_limit"`
 	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`
+	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"`
 	IsActive                 bool                `json:"is_active"`
 	CreatedAt                time.Time           `json:"created_at"`
 	UpdatedAt                time.Time           `json:"updated_at"`
@@ -162,6 +165,7 @@ type VirtualKey struct {
 	RPMLimit                 int                 `json:"rpm_limit"`
 	TPMLimit                 int                 `json:"tpm_limit"`
 	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`
+	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"`
 	ExpiresAt                *time.Time          `json:"expires_at,omitempty"`
 	IsActive                 bool                `json:"is_active"`
 	Metadata                 map[string]string   `json:"metadata,omitempty"`
@@ -211,6 +215,7 @@ type IdentityContext struct {
 	KeyRPMLimit                  int                 `json:"key_rpm_limit"`
 	KeyTPMLimit                  int                 `json:"key_tpm_limit"`
 	KeyMaxConcurrent             int                 `json:"key_max_concurrent"`
+	KeyBatchEnqueuedTokenLimit   int64               `json:"key_batch_enqueued_token_limit"`
 	KeyMaxBudgetMicros           int64               `json:"key_max_budget_micros"`
 	KeySoftBudgetMicros          int64               `json:"key_soft_budget_micros"`
 	KeyThrottleOnBudgetExceeded  bool                `json:"key_throttle_on_budget_exceeded"`
@@ -219,6 +224,7 @@ type IdentityContext struct {
 	TeamRPMLimit                 int                 `json:"team_rpm_limit"`
 	TeamTPMLimit                 int                 `json:"team_tpm_limit"`
 	TeamMaxConcurrent            int                 `json:"team_max_concurrent"`
+	TeamBatchEnqueuedTokenLimit  int64               `json:"team_batch_enqueued_token_limit"`
 	TeamMaxBudgetMicros          int64               `json:"team_max_budget_micros"`
 	TeamSoftBudgetMicros         int64               `json:"team_soft_budget_micros"`
 	TeamThrottleOnBudgetExceeded bool                `json:"team_throttle_on_budget_exceeded"`
@@ -227,6 +233,7 @@ type IdentityContext struct {
 	UserRPMLimit                 int                 `json:"user_rpm_limit"`
 	UserTPMLimit                 int                 `json:"user_tpm_limit"`
 	UserMaxConcurrent            int                 `json:"user_max_concurrent"`
+	UserBatchEnqueuedTokenLimit  int64               `json:"user_batch_enqueued_token_limit"`
 	UserMaxBudgetMicros          int64               `json:"user_max_budget_micros"`
 	UserSoftBudgetMicros         int64               `json:"user_soft_budget_micros"`
 	UserThrottleOnBudgetExceeded bool                `json:"user_throttle_on_budget_exceeded"`
@@ -235,6 +242,7 @@ type IdentityContext struct {
 	OrgRPMLimit                  int                 `json:"org_rpm_limit"`
 	OrgTPMLimit                  int                 `json:"org_tpm_limit"`
 	OrgMaxConcurrent             int                 `json:"org_max_concurrent"`
+	OrgBatchEnqueuedTokenLimit   int64               `json:"org_batch_enqueued_token_limit"`
 	OrgMaxBudgetMicros           int64               `json:"org_max_budget_micros"`
 	OrgSoftBudgetMicros          int64               `json:"org_soft_budget_micros"`
 	OrgThrottleOnBudgetExceeded  bool                `json:"org_throttle_on_budget_exceeded"`

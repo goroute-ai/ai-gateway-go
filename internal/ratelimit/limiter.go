@@ -38,6 +38,9 @@ var resetBudgetSpendLua string
 //go:embed scripts/renew_reservation.lua
 var renewReservationLua string
 
+//go:embed scripts/check_budget_available.lua
+var checkBudgetAvailableLua string
+
 // SpendIncrementEvent describes a single spend settlement for batched Redis pipelining.
 type SpendIncrementEvent struct {
 	EventID      string
@@ -61,6 +64,9 @@ type Limiter struct {
 	spendScr           *redis.Script
 	resetBudgetScr     *redis.Script
 	renewScr           *redis.Script
+	budgetAvailScr     *redis.Script
+	batchAcquireScr    *redis.Script
+	batchReleaseScr    *redis.Script
 	windowSec          int
 	concTTLSec         int
 
@@ -80,6 +86,8 @@ type Limiter struct {
 	localConc         map[string]int
 	localSpent        map[string]int64
 	localReservations map[string]map[string]int64
+	localBatchSum     map[string]int64
+	localBatchHolds   map[string]localBatchHold
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -99,6 +107,9 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		spendScr:           redis.NewScript(recordSpendLua),
 		resetBudgetScr:     redis.NewScript(resetBudgetSpendLua),
 		renewScr:           redis.NewScript(renewReservationLua),
+		budgetAvailScr:     redis.NewScript(checkBudgetAvailableLua),
+		batchAcquireScr:    redis.NewScript(batchEnqueuedAcquireLua),
+		batchReleaseScr:    redis.NewScript(batchEnqueuedReleaseLua),
 		windowSec:          windowSec,
 		concTTLSec:         concTTLSec,
 		enabled:            true,
@@ -107,6 +118,8 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		localConc:          make(map[string]int),
 		localSpent:         make(map[string]int64),
 		localReservations:  make(map[string]map[string]int64),
+		localBatchSum:      make(map[string]int64),
+		localBatchHolds:    make(map[string]localBatchHold),
 	}
 }
 
@@ -179,6 +192,102 @@ func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 		return nil, err
 	}
 	return func(actualTokens int) { release(actualTokens, 0) }, nil
+}
+
+// AcquireSession enforces rate/concurrency limits and verifies that any configured
+// budget still has remaining headroom before opening a long-lived session (e.g. Realtime WS),
+// without holding a synthetic budget reservation across idle session lifetime.
+func (l *Limiter) AcquireSession(ctx context.Context, idCtx *domain.IdentityContext) (func(), error) {
+	if l == nil || idCtx == nil {
+		return func() {}, nil
+	}
+	if !hasBudget(idCtx) {
+		release, err := l.Acquire(ctx, idCtx, 1)
+		if err != nil {
+			return nil, err
+		}
+		return func() { release(1) }, nil
+	}
+	enabled, fallbackLocal, _, _, _, _ := l.configSnapshot()
+	if !enabled {
+		return func() {}, nil
+	}
+	if err := l.checkBudgetHeadroom(ctx, idCtx, fallbackLocal); err != nil {
+		return nil, err
+	}
+	rateOnly := *idCtx
+	rateOnly.KeyMaxBudgetMicros = 0
+	rateOnly.TeamMaxBudgetMicros = 0
+	rateOnly.UserMaxBudgetMicros = 0
+	rateOnly.OrgMaxBudgetMicros = 0
+	release, err := l.Acquire(ctx, &rateOnly, 1)
+	if err != nil {
+		return nil, err
+	}
+	return func() { release(1) }, nil
+}
+
+func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.IdentityContext, fallbackLocal bool) error {
+	if l.redis != nil && l.redis.Client() != nil {
+		keys := spendKeys(idCtx.VirtualKeyID, idCtx.TeamID, idCtx.UserID, idCtx.OrgID)
+		argv := []any{
+			idCtx.KeyMaxBudgetMicros, idCtx.KeySpentMicros,
+			idCtx.TeamMaxBudgetMicros, idCtx.TeamSpentMicros,
+			idCtx.UserMaxBudgetMicros, idCtx.UserSpentMicros,
+			idCtx.OrgMaxBudgetMicros, idCtx.OrgSpentMicros,
+		}
+		res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			rCtx, cancel := l.withRedisTimeout(ctx)
+			defer cancel()
+			return l.budgetAvailScr.Run(rCtx, rdb, keys, argv...).Slice()
+		})
+		if err == nil {
+			if slice, ok := res.([]any); ok && len(slice) >= 2 {
+				allowed, _ := slice[0].(int64)
+				reason, _ := slice[1].(string)
+				if allowed == 0 {
+					return toQuotaError(reason)
+				}
+				return nil
+			}
+		}
+		if !fallbackLocal {
+			return limiterUnavailableError()
+		}
+	}
+
+	if !fallbackLocal {
+		return limiterUnavailableError()
+	}
+
+	l.localMu.Lock()
+	defer l.localMu.Unlock()
+	scopes := []struct {
+		key     string
+		maxB    int64
+		dbFloor int64
+		errCode string
+	}{
+		{key: "key:" + idCtx.VirtualKeyID, maxB: idCtx.KeyMaxBudgetMicros, dbFloor: idCtx.KeySpentMicros, errCode: "KEY_BUDGET_EXCEEDED"},
+		{key: "team:" + idCtx.TeamID, maxB: idCtx.TeamMaxBudgetMicros, dbFloor: idCtx.TeamSpentMicros, errCode: "TEAM_BUDGET_EXCEEDED"},
+		{key: "user:" + idCtx.UserID, maxB: idCtx.UserMaxBudgetMicros, dbFloor: idCtx.UserSpentMicros, errCode: "USER_BUDGET_EXCEEDED"},
+		{key: "org:" + idCtx.OrgID, maxB: idCtx.OrgMaxBudgetMicros, dbFloor: idCtx.OrgSpentMicros, errCode: "ORG_BUDGET_EXCEEDED"},
+	}
+	for _, sc := range scopes {
+		if sc.dbFloor > l.localSpent[sc.key] {
+			l.localSpent[sc.key] = sc.dbFloor
+		}
+		if sc.maxB > 0 {
+			var reserved int64
+			for _, amt := range l.localReservations[sc.key] {
+				reserved += amt
+			}
+			if l.localSpent[sc.key]+reserved >= sc.maxB {
+				return toQuotaError(sc.errCode)
+			}
+		}
+	}
+	return nil
 }
 
 // AcquireWithBudget atomically reserves a conservative upper-bound cost in
