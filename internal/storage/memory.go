@@ -29,6 +29,10 @@ type MemoryRepository struct {
 	orgSubs                map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
 	orgPolicies            map[string]map[string]*domain.OrgModelPolicy
 	teams                  map[string]*domain.Team
+	teamMemberships        map[string]*domain.TeamMembership
+	teamMembershipsByTuple map[string]string
+	projects               map[string]*domain.Project
+	projectsByTeamName     map[string]string
 	users                  map[string]*domain.User
 	keysByID               map[string]*domain.VirtualKey
 	keysByHash             map[string]*domain.VirtualKey
@@ -83,41 +87,45 @@ type spendOutboxEntry struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	r := &MemoryRepository{
-		globalModels:          make(map[string]*domain.GlobalModel),
-		globalModelsByName:    make(map[string]map[domain.ProviderType]map[string]struct{}),
-		orgs:                  make(map[string]*domain.Organization),
-		orgSubs:               make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
-		orgPolicies:           make(map[string]map[string]*domain.OrgModelPolicy),
-		teams:                 make(map[string]*domain.Team),
-		users:                 make(map[string]*domain.User),
-		keysByID:              make(map[string]*domain.VirtualKey),
-		keysByHash:            make(map[string]*domain.VirtualKey),
-		deprecatedKeyHashes:   make(map[string]*deprecatedKeyHashEntry),
-		jwtKeyMappings:        make(map[string]*domain.JWTKeyMapping),
-		jwtKeyMappingsByTuple: make(map[string]string),
-		quotaPolicies:         make(map[string]*domain.QuotaPolicy),
-		quotaPoliciesByTuple:  make(map[string]string),
-		accessGroupRules:      make(map[string]*domain.AccessGroupRule),
-		credentials:           make(map[string]*domain.ProviderCredential),
-		groupsByID:            make(map[string]*domain.ModelGroup),
-		deployments:           make(map[string]*domain.Deployment),
-		pricingHistory:        make(map[string][]*domain.ModelPricingHistory),
-		guardrails:            make(map[string]*domain.GuardrailPolicy),
-		guardrailDefs:         make(map[string]*domain.GuardrailDefinition),
-		guardrailBindings:     make(map[string]*domain.GuardrailBinding),
-		spendOutbox:           make(map[string]*spendOutboxEntry),
-		spendLogIDs:           make(map[string]struct{}),
-		budgetResetOutbox:     make(map[string]BudgetResetEvent),
-		files:                 make(map[string]*domain.CanonicalFile),
-		batches:               make(map[string]*domain.CanonicalBatch),
-		mcpServers:            make(map[string]*domain.MCPServer),
-		mcpTools:              make(map[string]*domain.MCPTool),
-		mcpToolsets:           make(map[string]*domain.MCPToolset),
-		mcpUserCreds:          make(map[string]*domain.MCPUserCredential),
-		a2aAgents:             make(map[string]*domain.A2AAgent),
-		a2aTasks:              make(map[string]*domain.A2ATask),
-		a2aTaskEvents:         make(map[string][]*domain.A2ATaskEvent),
-		a2aPushConfigs:        make(map[string]*domain.A2APushNotificationConfig),
+		globalModels:           make(map[string]*domain.GlobalModel),
+		globalModelsByName:     make(map[string]map[domain.ProviderType]map[string]struct{}),
+		orgs:                   make(map[string]*domain.Organization),
+		orgSubs:                make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
+		orgPolicies:            make(map[string]map[string]*domain.OrgModelPolicy),
+		teams:                  make(map[string]*domain.Team),
+		teamMemberships:        make(map[string]*domain.TeamMembership),
+		teamMembershipsByTuple: make(map[string]string),
+		projects:               make(map[string]*domain.Project),
+		projectsByTeamName:     make(map[string]string),
+		users:                  make(map[string]*domain.User),
+		keysByID:               make(map[string]*domain.VirtualKey),
+		keysByHash:             make(map[string]*domain.VirtualKey),
+		deprecatedKeyHashes:    make(map[string]*deprecatedKeyHashEntry),
+		jwtKeyMappings:         make(map[string]*domain.JWTKeyMapping),
+		jwtKeyMappingsByTuple:  make(map[string]string),
+		quotaPolicies:          make(map[string]*domain.QuotaPolicy),
+		quotaPoliciesByTuple:   make(map[string]string),
+		accessGroupRules:       make(map[string]*domain.AccessGroupRule),
+		credentials:            make(map[string]*domain.ProviderCredential),
+		groupsByID:             make(map[string]*domain.ModelGroup),
+		deployments:            make(map[string]*domain.Deployment),
+		pricingHistory:         make(map[string][]*domain.ModelPricingHistory),
+		guardrails:             make(map[string]*domain.GuardrailPolicy),
+		guardrailDefs:          make(map[string]*domain.GuardrailDefinition),
+		guardrailBindings:      make(map[string]*domain.GuardrailBinding),
+		spendOutbox:            make(map[string]*spendOutboxEntry),
+		spendLogIDs:            make(map[string]struct{}),
+		budgetResetOutbox:      make(map[string]BudgetResetEvent),
+		files:                  make(map[string]*domain.CanonicalFile),
+		batches:                make(map[string]*domain.CanonicalBatch),
+		mcpServers:             make(map[string]*domain.MCPServer),
+		mcpTools:               make(map[string]*domain.MCPTool),
+		mcpToolsets:            make(map[string]*domain.MCPToolset),
+		mcpUserCreds:           make(map[string]*domain.MCPUserCredential),
+		a2aAgents:              make(map[string]*domain.A2AAgent),
+		a2aTasks:               make(map[string]*domain.A2ATask),
+		a2aTaskEvents:          make(map[string][]*domain.A2ATaskEvent),
+		a2aPushConfigs:         make(map[string]*domain.A2APushNotificationConfig),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -786,6 +794,23 @@ func (r *MemoryRepository) DeleteTeam(ctx context.Context, id string) error {
 		return fmt.Errorf("team %q %w", id, ErrNotFound)
 	}
 	delete(r.teams, id)
+	for mID, m := range r.teamMemberships {
+		if m.TeamID == id {
+			delete(r.teamMembershipsByTuple, teamMembershipTupleKey(m.TeamID, m.UserID))
+			delete(r.teamMemberships, mID)
+		}
+	}
+	for pID, p := range r.projects {
+		if p.TeamID == id {
+			delete(r.projectsByTeamName, projectNameTupleKey(p.TeamID, p.Name))
+			delete(r.projects, pID)
+			for _, vk := range r.keysByID {
+				if vk.ProjectID == pID {
+					vk.ProjectID = ""
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -881,6 +906,205 @@ func (r *MemoryRepository) DeleteUser(ctx context.Context, id string) error {
 		return fmt.Errorf("user %q %w", id, ErrNotFound)
 	}
 	delete(r.users, id)
+	for mID, m := range r.teamMemberships {
+		if m.UserID == id {
+			delete(r.teamMembershipsByTuple, teamMembershipTupleKey(m.TeamID, m.UserID))
+			delete(r.teamMemberships, mID)
+		}
+	}
+	return nil
+}
+
+func (r *MemoryRepository) UpsertTeamMembership(_ context.Context, m *domain.TeamMembership) error {
+	if err := normalizeTeamMembership(m); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now().UTC()
+	tupleKey := teamMembershipTupleKey(m.TeamID, m.UserID)
+	if existingID, ok := r.teamMembershipsByTuple[tupleKey]; ok {
+		existing := r.teamMemberships[existingID]
+		m.ID = existing.ID
+		m.CreatedAt = existing.CreatedAt
+		if existing.SpentMicros > m.SpentMicros {
+			m.SpentMicros = existing.SpentMicros
+		}
+		m.UpdatedAt = now
+		r.teamMemberships[existing.ID] = cloneTeamMembership(m)
+		return nil
+	}
+
+	if m.ID == "" {
+		m.ID = uuid.NewString()
+	} else if _, exists := r.teamMemberships[m.ID]; exists {
+		return fmt.Errorf("team membership %q already exists: %w", m.ID, ErrConflict)
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+	r.teamMemberships[m.ID] = cloneTeamMembership(m)
+	r.teamMembershipsByTuple[tupleKey] = m.ID
+	return nil
+}
+
+func (r *MemoryRepository) GetTeamMembership(_ context.Context, teamID, userID string) (*domain.TeamMembership, error) {
+	teamID = strings.TrimSpace(teamID)
+	userID = strings.TrimSpace(userID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	id, ok := r.teamMembershipsByTuple[teamMembershipTupleKey(teamID, userID)]
+	if !ok {
+		return nil, fmt.Errorf("team membership (%q, %q) %w", teamID, userID, ErrNotFound)
+	}
+	m, ok := r.teamMemberships[id]
+	if !ok {
+		return nil, fmt.Errorf("team membership (%q, %q) %w", teamID, userID, ErrNotFound)
+	}
+	return cloneTeamMembership(m), nil
+}
+
+func (r *MemoryRepository) ListTeamMemberships(_ context.Context, orgID, teamID, userID string) ([]*domain.TeamMembership, error) {
+	orgID = strings.TrimSpace(orgID)
+	teamID = strings.TrimSpace(teamID)
+	userID = strings.TrimSpace(userID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.TeamMembership
+	for _, m := range r.teamMemberships {
+		if orgID != "" && m.OrgID != orgID {
+			continue
+		}
+		if teamID != "" && m.TeamID != teamID {
+			continue
+		}
+		if userID != "" && m.UserID != userID {
+			continue
+		}
+		out = append(out, cloneTeamMembership(m))
+	}
+	sortTeamMemberships(out)
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteTeamMembership(_ context.Context, teamID, userID string) error {
+	teamID = strings.TrimSpace(teamID)
+	userID = strings.TrimSpace(userID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tupleKey := teamMembershipTupleKey(teamID, userID)
+	id, ok := r.teamMembershipsByTuple[tupleKey]
+	if !ok {
+		return fmt.Errorf("team membership (%q, %q) %w", teamID, userID, ErrNotFound)
+	}
+	delete(r.teamMembershipsByTuple, tupleKey)
+	delete(r.teamMemberships, id)
+	return nil
+}
+
+func (r *MemoryRepository) CreateProject(_ context.Context, p *domain.Project) error {
+	if err := normalizeProject(p); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := projectNameTupleKey(p.TeamID, p.Name)
+	if _, exists := r.projectsByTeamName[tupleKey]; exists {
+		return fmt.Errorf("project %q already exists in team %q: %w", p.Name, p.TeamID, ErrConflict)
+	}
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	} else if _, exists := r.projects[p.ID]; exists {
+		return fmt.Errorf("project %q already exists: %w", p.ID, ErrConflict)
+	}
+	now := time.Now().UTC()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	p.UpdatedAt = now
+	r.projects[p.ID] = cloneProject(p)
+	r.projectsByTeamName[tupleKey] = p.ID
+	return nil
+}
+
+func (r *MemoryRepository) GetProject(_ context.Context, id string) (*domain.Project, error) {
+	id = strings.TrimSpace(id)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.projects[id]
+	if !ok {
+		return nil, fmt.Errorf("project %q %w", id, ErrNotFound)
+	}
+	return cloneProject(p), nil
+}
+
+func (r *MemoryRepository) ListProjects(_ context.Context, orgID, teamID string) ([]*domain.Project, error) {
+	orgID = strings.TrimSpace(orgID)
+	teamID = strings.TrimSpace(teamID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.Project
+	for _, p := range r.projects {
+		if orgID != "" && p.OrgID != orgID {
+			continue
+		}
+		if teamID != "" && p.TeamID != teamID {
+			continue
+		}
+		out = append(out, cloneProject(p))
+	}
+	sortProjects(out)
+	return out, nil
+}
+
+func (r *MemoryRepository) UpdateProject(_ context.Context, p *domain.Project) error {
+	if err := normalizeProject(p); err != nil {
+		return err
+	}
+	if p.ID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.projects[p.ID]
+	if !ok {
+		return fmt.Errorf("project %q %w", p.ID, ErrNotFound)
+	}
+	newTupleKey := projectNameTupleKey(p.TeamID, p.Name)
+	if otherID, exists := r.projectsByTeamName[newTupleKey]; exists && otherID != p.ID {
+		return fmt.Errorf("project %q already exists in team %q: %w", p.Name, p.TeamID, ErrConflict)
+	}
+	oldTupleKey := projectNameTupleKey(existing.TeamID, existing.Name)
+	if oldTupleKey != newTupleKey {
+		delete(r.projectsByTeamName, oldTupleKey)
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = existing.CreatedAt
+	}
+	p.UpdatedAt = time.Now().UTC()
+	r.projects[p.ID] = cloneProject(p)
+	r.projectsByTeamName[newTupleKey] = p.ID
+	return nil
+}
+
+func (r *MemoryRepository) DeleteProject(_ context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.projects[id]
+	if !ok {
+		return fmt.Errorf("project %q %w", id, ErrNotFound)
+	}
+	delete(r.projectsByTeamName, projectNameTupleKey(p.TeamID, p.Name))
+	delete(r.projects, id)
+	for _, vk := range r.keysByID {
+		if vk.ProjectID == id {
+			vk.ProjectID = ""
+		}
+	}
 	return nil
 }
 

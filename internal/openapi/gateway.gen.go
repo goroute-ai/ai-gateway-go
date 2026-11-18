@@ -131,6 +131,72 @@ func (e AdminMCPServerCreateRequestTransport) Valid() bool {
 	}
 }
 
+// Defines values for AdminTeamMembershipRole.
+const (
+	AdminTeamMembershipRoleDeveloper      AdminTeamMembershipRole = "developer"
+	AdminTeamMembershipRoleOrgAdmin       AdminTeamMembershipRole = "org_admin"
+	AdminTeamMembershipRoleOrgViewer      AdminTeamMembershipRole = "org_viewer"
+	AdminTeamMembershipRolePlatformAdmin  AdminTeamMembershipRole = "platform_admin"
+	AdminTeamMembershipRoleServiceAccount AdminTeamMembershipRole = "service_account"
+	AdminTeamMembershipRoleTeamAdmin      AdminTeamMembershipRole = "team_admin"
+	AdminTeamMembershipRoleViewer         AdminTeamMembershipRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the AdminTeamMembershipRole enum.
+func (e AdminTeamMembershipRole) Valid() bool {
+	switch e {
+	case AdminTeamMembershipRoleDeveloper:
+		return true
+	case AdminTeamMembershipRoleOrgAdmin:
+		return true
+	case AdminTeamMembershipRoleOrgViewer:
+		return true
+	case AdminTeamMembershipRolePlatformAdmin:
+		return true
+	case AdminTeamMembershipRoleServiceAccount:
+		return true
+	case AdminTeamMembershipRoleTeamAdmin:
+		return true
+	case AdminTeamMembershipRoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminTeamMembershipUpsertRequestRole.
+const (
+	AdminTeamMembershipUpsertRequestRoleDeveloper      AdminTeamMembershipUpsertRequestRole = "developer"
+	AdminTeamMembershipUpsertRequestRoleOrgAdmin       AdminTeamMembershipUpsertRequestRole = "org_admin"
+	AdminTeamMembershipUpsertRequestRoleOrgViewer      AdminTeamMembershipUpsertRequestRole = "org_viewer"
+	AdminTeamMembershipUpsertRequestRolePlatformAdmin  AdminTeamMembershipUpsertRequestRole = "platform_admin"
+	AdminTeamMembershipUpsertRequestRoleServiceAccount AdminTeamMembershipUpsertRequestRole = "service_account"
+	AdminTeamMembershipUpsertRequestRoleTeamAdmin      AdminTeamMembershipUpsertRequestRole = "team_admin"
+	AdminTeamMembershipUpsertRequestRoleViewer         AdminTeamMembershipUpsertRequestRole = "viewer"
+)
+
+// Valid indicates whether the value is a known member of the AdminTeamMembershipUpsertRequestRole enum.
+func (e AdminTeamMembershipUpsertRequestRole) Valid() bool {
+	switch e {
+	case AdminTeamMembershipUpsertRequestRoleDeveloper:
+		return true
+	case AdminTeamMembershipUpsertRequestRoleOrgAdmin:
+		return true
+	case AdminTeamMembershipUpsertRequestRoleOrgViewer:
+		return true
+	case AdminTeamMembershipUpsertRequestRolePlatformAdmin:
+		return true
+	case AdminTeamMembershipUpsertRequestRoleServiceAccount:
+		return true
+	case AdminTeamMembershipUpsertRequestRoleTeamAdmin:
+		return true
+	case AdminTeamMembershipUpsertRequestRoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminUserRole.
 const (
 	AdminUserRoleDeveloper      AdminUserRole = "developer"
@@ -1191,6 +1257,39 @@ type AdminPricingUpdateRequest struct {
 	Reason                    *string    `json:"reason,omitempty"`
 }
 
+// AdminProject defines model for AdminProject.
+type AdminProject struct {
+	AllowedModels            *[]string `json:"allowed_models,omitempty"`
+	CreatedAt                time.Time `json:"created_at"`
+	Description              *string   `json:"description,omitempty"`
+	EnforceProjectModelQuota bool      `json:"enforce_project_model_quota"`
+	Id                       string    `json:"id"`
+	IsActive                 bool      `json:"is_active"`
+	MaxBudgetMicros          *int64    `json:"max_budget_micros,omitempty"`
+	Name                     string    `json:"name"`
+	OrgId                    string    `json:"org_id"`
+	RpmLimit                 *int      `json:"rpm_limit,omitempty"`
+	SpentMicros              *int64    `json:"spent_micros,omitempty"`
+	TeamId                   string    `json:"team_id"`
+	TpmLimit                 *int      `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+// AdminProjectRequest defines model for AdminProjectRequest.
+type AdminProjectRequest struct {
+	AllowedModels            *[]string `json:"allowed_models,omitempty"`
+	Description              *string   `json:"description,omitempty"`
+	EnforceProjectModelQuota *bool     `json:"enforce_project_model_quota,omitempty"`
+	Id                       *string   `json:"id,omitempty"`
+	IsActive                 *bool     `json:"is_active,omitempty"`
+	MaxBudgetMicros          *int64    `json:"max_budget_micros,omitempty"`
+	Name                     *string   `json:"name,omitempty"`
+	OrgId                    *string   `json:"org_id,omitempty"`
+	RpmLimit                 *int      `json:"rpm_limit,omitempty"`
+	TeamId                   *string   `json:"team_id,omitempty"`
+	TpmLimit                 *int      `json:"tpm_limit,omitempty"`
+}
+
 // AdminProviderCredential defines model for AdminProviderCredential.
 type AdminProviderCredential struct {
 	AuthType        *string    `json:"auth_type,omitempty"`
@@ -1232,6 +1331,40 @@ type AdminTeam struct {
 	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
 	UpdatedAt                time.Time            `json:"updated_at"`
 }
+
+// AdminTeamMembership defines model for AdminTeamMembership.
+type AdminTeamMembership struct {
+	AllowedModels   *[]string               `json:"allowed_models,omitempty"`
+	CreatedAt       time.Time               `json:"created_at"`
+	Id              string                  `json:"id"`
+	MaxBudgetMicros *int64                  `json:"max_budget_micros,omitempty"`
+	OrgId           string                  `json:"org_id"`
+	Role            AdminTeamMembershipRole `json:"role"`
+	RpmLimit        *int                    `json:"rpm_limit,omitempty"`
+	SpentMicros     *int64                  `json:"spent_micros,omitempty"`
+	TeamId          string                  `json:"team_id"`
+	TpmLimit        *int                    `json:"tpm_limit,omitempty"`
+	UpdatedAt       time.Time               `json:"updated_at"`
+	UserId          string                  `json:"user_id"`
+}
+
+// AdminTeamMembershipRole defines model for AdminTeamMembership.Role.
+type AdminTeamMembershipRole string
+
+// AdminTeamMembershipUpsertRequest defines model for AdminTeamMembershipUpsertRequest.
+type AdminTeamMembershipUpsertRequest struct {
+	AllowedModels   *[]string                             `json:"allowed_models,omitempty"`
+	Id              *string                               `json:"id,omitempty"`
+	MaxBudgetMicros *int64                                `json:"max_budget_micros,omitempty"`
+	OrgId           *string                               `json:"org_id,omitempty"`
+	Role            *AdminTeamMembershipUpsertRequestRole `json:"role,omitempty"`
+	RpmLimit        *int                                  `json:"rpm_limit,omitempty"`
+	TpmLimit        *int                                  `json:"tpm_limit,omitempty"`
+	UserId          string                                `json:"user_id"`
+}
+
+// AdminTeamMembershipUpsertRequestRole defines model for AdminTeamMembershipUpsertRequest.Role.
+type AdminTeamMembershipUpsertRequestRole string
 
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
@@ -1286,6 +1419,7 @@ type AdminVirtualKey struct {
 	Metadata              *map[string]string      `json:"metadata,omitempty"`
 	Name                  string                  `json:"name"`
 	OrgId                 string                  `json:"org_id"`
+	ProjectId             *string                 `json:"project_id,omitempty"`
 
 	// RawKey Populated once upon key creation or rotation
 	RawKey *string             `json:"raw_key,omitempty"`
@@ -2351,6 +2485,17 @@ type ListToolPoliciesParams struct {
 	ToolName     *string `form:"tool_name,omitempty" json:"tool_name,omitempty"`
 }
 
+// ListProjectsParams defines parameters for ListProjects.
+type ListProjectsParams struct {
+	OrgId  *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	TeamId *string `form:"team_id,omitempty" json:"team_id,omitempty"`
+}
+
+// DeleteProjectParams defines parameters for DeleteProject.
+type DeleteProjectParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
 // ListSpendLogsParams defines parameters for ListSpendLogs.
 type ListSpendLogsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2364,6 +2509,17 @@ type GetSpendSummaryParams struct {
 
 // ListTeamsParams defines parameters for ListTeams.
 type ListTeamsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListTeamMembersParams defines parameters for ListTeamMembers.
+type ListTeamMembersParams struct {
+	OrgId  *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	UserId *string `form:"user_id,omitempty" json:"user_id,omitempty"`
+}
+
+// DeleteTeamMemberParams defines parameters for DeleteTeamMember.
+type DeleteTeamMemberParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
@@ -2477,11 +2633,20 @@ type SetOrgSubscriptionJSONRequestBody = OrgProviderSubscription
 // UpsertToolPolicyJSONRequestBody defines body for UpsertToolPolicy for application/json ContentType.
 type UpsertToolPolicyJSONRequestBody = ToolPolicyUpsertRequest
 
+// CreateProjectJSONRequestBody defines body for CreateProject for application/json ContentType.
+type CreateProjectJSONRequestBody = AdminProjectRequest
+
+// UpdateProjectJSONRequestBody defines body for UpdateProject for application/json ContentType.
+type UpdateProjectJSONRequestBody = AdminProjectRequest
+
 // CreateTeamJSONRequestBody defines body for CreateTeam for application/json ContentType.
 type CreateTeamJSONRequestBody = AdminTeam
 
 // UpdateTeamJSONRequestBody defines body for UpdateTeam for application/json ContentType.
 type UpdateTeamJSONRequestBody = AdminTeam
+
+// UpsertTeamMemberJSONRequestBody defines body for UpsertTeamMember for application/json ContentType.
+type UpsertTeamMemberJSONRequestBody = AdminTeamMembershipUpsertRequest
 
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = AdminUser
@@ -3380,6 +3545,18 @@ type ServerInterface interface {
 	// DeleteToolPolicy Delete a tool trust policy
 	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
 	DeleteToolPolicy(w http.ResponseWriter, r *http.Request, orgID string, policyID string)
+	// ListProjects List projects scoped by organization and optional team
+	// (GET /admin/v1/projects)
+	ListProjects(w http.ResponseWriter, r *http.Request, params ListProjectsParams)
+	// CreateProject Create a team-scoped project
+	// (POST /admin/v1/projects)
+	CreateProject(w http.ResponseWriter, r *http.Request)
+	// DeleteProject Delete a project
+	// (DELETE /admin/v1/projects/{projectID})
+	DeleteProject(w http.ResponseWriter, r *http.Request, projectID string, params DeleteProjectParams)
+	// UpdateProject Update a team-scoped project's metadata, budgets, rate limits, and model scopes
+	// (PUT /admin/v1/projects/{projectID})
+	UpdateProject(w http.ResponseWriter, r *http.Request, projectID string)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams)
@@ -3398,6 +3575,15 @@ type ServerInterface interface {
 	// UpdateTeam Update an existing team's metadata, budgets, rate limits, and allowlists
 	// (PUT /admin/v1/teams/{teamID})
 	UpdateTeam(w http.ResponseWriter, r *http.Request, teamID string)
+	// ListTeamMembers List M:N memberships for a team
+	// (GET /admin/v1/teams/{teamID}/members)
+	ListTeamMembers(w http.ResponseWriter, r *http.Request, teamID string, params ListTeamMembersParams)
+	// UpsertTeamMember Add or update an M:N user membership within a team
+	// (POST /admin/v1/teams/{teamID}/members)
+	UpsertTeamMember(w http.ResponseWriter, r *http.Request, teamID string)
+	// DeleteTeamMember Remove a user's membership from a team
+	// (DELETE /admin/v1/teams/{teamID}/members/{userID})
+	DeleteTeamMember(w http.ResponseWriter, r *http.Request, teamID string, userID string, params DeleteTeamMemberParams)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams)
@@ -5314,6 +5500,134 @@ func (siw *ServerInterfaceWrapper) DeleteToolPolicy(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ListProjects operation middleware
+func (siw *ServerInterfaceWrapper) ListProjects(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProjectsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "team_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "team_id", r.URL.Query(), &params.TeamId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProjects(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateProject operation middleware
+func (siw *ServerInterfaceWrapper) CreateProject(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateProject(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteProject operation middleware
+func (siw *ServerInterfaceWrapper) DeleteProject(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "projectID" -------------
+	var projectID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "projectID", r.PathValue("projectID"), &projectID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "projectID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteProjectParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteProject(w, r, projectID, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateProject operation middleware
+func (siw *ServerInterfaceWrapper) UpdateProject(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "projectID" -------------
+	var projectID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "projectID", r.PathValue("projectID"), &projectID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "projectID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateProject(w, r, projectID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSpendLogs operation middleware
 func (siw *ServerInterfaceWrapper) ListSpendLogs(w http.ResponseWriter, r *http.Request) {
 
@@ -5483,6 +5797,138 @@ func (siw *ServerInterfaceWrapper) UpdateTeam(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateTeam(w, r, teamID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListTeamMembers operation middleware
+func (siw *ServerInterfaceWrapper) ListTeamMembers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTeamMembersParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "user_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "user_id", r.URL.Query(), &params.UserId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "user_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTeamMembers(w, r, teamID, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertTeamMember operation middleware
+func (siw *ServerInterfaceWrapper) UpsertTeamMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertTeamMember(w, r, teamID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteTeamMember operation middleware
+func (siw *ServerInterfaceWrapper) DeleteTeamMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userID" -------------
+	var userID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userID", r.PathValue("userID"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteTeamMemberParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteTeamMember(w, r, teamID, userID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6187,6 +6633,13 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/validate", wrapper.PreflightValidateCredential)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.DeleteTeam)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.UpdateTeam)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/teams/{teamID}/members", wrapper.ListTeamMembers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/teams/{teamID}/members", wrapper.UpsertTeamMember)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/teams/{teamID}/members/{userID}", wrapper.DeleteTeamMember)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/projects", wrapper.ListProjects)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/projects", wrapper.CreateProject)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/projects/{projectID}", wrapper.DeleteProject)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/projects/{projectID}", wrapper.UpdateProject)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.DeleteUser)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.UpdateUser)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.RevokeVirtualKeyByID)
@@ -7842,6 +8295,106 @@ func (response DeleteToolPolicy200JSONResponse) VisitDeleteToolPolicyResponse(w 
 	return err
 }
 
+type ListProjectsRequestObject struct {
+	Params ListProjectsParams
+}
+
+type ListProjectsResponseObject interface {
+	VisitListProjectsResponse(w http.ResponseWriter) error
+}
+
+type ListProjects200JSONResponse struct {
+	Data *[]AdminProject `json:"data,omitempty"`
+}
+
+func (response ListProjects200JSONResponse) VisitListProjectsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProjectRequestObject struct {
+	Body *CreateProjectJSONRequestBody
+}
+
+type CreateProjectResponseObject interface {
+	VisitCreateProjectResponse(w http.ResponseWriter) error
+}
+
+type CreateProject201JSONResponse AdminProject
+
+func (response CreateProject201JSONResponse) VisitCreateProjectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProject409Response struct {
+}
+
+func (response CreateProject409Response) VisitCreateProjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(409)
+	return nil
+}
+
+type DeleteProjectRequestObject struct {
+	ProjectID string `json:"projectID"`
+	Params    DeleteProjectParams
+}
+
+type DeleteProjectResponseObject interface {
+	VisitDeleteProjectResponse(w http.ResponseWriter) error
+}
+
+type DeleteProject200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteProject200JSONResponse) VisitDeleteProjectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProjectRequestObject struct {
+	ProjectID string `json:"projectID"`
+	Body      *UpdateProjectJSONRequestBody
+}
+
+type UpdateProjectResponseObject interface {
+	VisitUpdateProjectResponse(w http.ResponseWriter) error
+}
+
+type UpdateProject200JSONResponse AdminProject
+
+func (response UpdateProject200JSONResponse) VisitUpdateProjectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListSpendLogsRequestObject struct {
 	Params ListSpendLogsParams
 }
@@ -7976,6 +8529,78 @@ type UpdateTeamResponseObject interface {
 type UpdateTeam200JSONResponse AdminTeam
 
 func (response UpdateTeam200JSONResponse) VisitUpdateTeamResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTeamMembersRequestObject struct {
+	TeamID string `json:"teamID"`
+	Params ListTeamMembersParams
+}
+
+type ListTeamMembersResponseObject interface {
+	VisitListTeamMembersResponse(w http.ResponseWriter) error
+}
+
+type ListTeamMembers200JSONResponse struct {
+	Data *[]AdminTeamMembership `json:"data,omitempty"`
+}
+
+func (response ListTeamMembers200JSONResponse) VisitListTeamMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertTeamMemberRequestObject struct {
+	TeamID string `json:"teamID"`
+	Body   *UpsertTeamMemberJSONRequestBody
+}
+
+type UpsertTeamMemberResponseObject interface {
+	VisitUpsertTeamMemberResponse(w http.ResponseWriter) error
+}
+
+type UpsertTeamMember200JSONResponse AdminTeamMembership
+
+func (response UpsertTeamMember200JSONResponse) VisitUpsertTeamMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteTeamMemberRequestObject struct {
+	TeamID string `json:"teamID"`
+	UserID string `json:"userID"`
+	Params DeleteTeamMemberParams
+}
+
+type DeleteTeamMemberResponseObject interface {
+	VisitDeleteTeamMemberResponse(w http.ResponseWriter) error
+}
+
+type DeleteTeamMember200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteTeamMember200JSONResponse) VisitDeleteTeamMemberResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -8822,6 +9447,18 @@ type StrictServerInterface interface {
 	// DeleteToolPolicy Delete a tool trust policy
 	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
 	DeleteToolPolicy(ctx context.Context, request DeleteToolPolicyRequestObject) (DeleteToolPolicyResponseObject, error)
+	// ListProjects List projects scoped by organization and optional team
+	// (GET /admin/v1/projects)
+	ListProjects(ctx context.Context, request ListProjectsRequestObject) (ListProjectsResponseObject, error)
+	// CreateProject Create a team-scoped project
+	// (POST /admin/v1/projects)
+	CreateProject(ctx context.Context, request CreateProjectRequestObject) (CreateProjectResponseObject, error)
+	// DeleteProject Delete a project
+	// (DELETE /admin/v1/projects/{projectID})
+	DeleteProject(ctx context.Context, request DeleteProjectRequestObject) (DeleteProjectResponseObject, error)
+	// UpdateProject Update a team-scoped project's metadata, budgets, rate limits, and model scopes
+	// (PUT /admin/v1/projects/{projectID})
+	UpdateProject(ctx context.Context, request UpdateProjectRequestObject) (UpdateProjectResponseObject, error)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(ctx context.Context, request ListSpendLogsRequestObject) (ListSpendLogsResponseObject, error)
@@ -8840,6 +9477,15 @@ type StrictServerInterface interface {
 	// UpdateTeam Update an existing team's metadata, budgets, rate limits, and allowlists
 	// (PUT /admin/v1/teams/{teamID})
 	UpdateTeam(ctx context.Context, request UpdateTeamRequestObject) (UpdateTeamResponseObject, error)
+	// ListTeamMembers List M:N memberships for a team
+	// (GET /admin/v1/teams/{teamID}/members)
+	ListTeamMembers(ctx context.Context, request ListTeamMembersRequestObject) (ListTeamMembersResponseObject, error)
+	// UpsertTeamMember Add or update an M:N user membership within a team
+	// (POST /admin/v1/teams/{teamID}/members)
+	UpsertTeamMember(ctx context.Context, request UpsertTeamMemberRequestObject) (UpsertTeamMemberResponseObject, error)
+	// DeleteTeamMember Remove a user's membership from a team
+	// (DELETE /admin/v1/teams/{teamID}/members/{userID})
+	DeleteTeamMember(ctx context.Context, request DeleteTeamMemberRequestObject) (DeleteTeamMemberResponseObject, error)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
@@ -10884,6 +11530,123 @@ func (sh *strictHandler) DeleteToolPolicy(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// ListProjects operation middleware
+func (sh *strictHandler) ListProjects(w http.ResponseWriter, r *http.Request, params ListProjectsParams) {
+	var request ListProjectsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListProjects(ctx, request.(ListProjectsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListProjects")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProjectsResponseObject); ok {
+		if err := validResponse.VisitListProjectsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateProject operation middleware
+func (sh *strictHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
+	var request CreateProjectRequestObject
+
+	var body CreateProjectJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateProject(ctx, request.(CreateProjectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateProject")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateProjectResponseObject); ok {
+		if err := validResponse.VisitCreateProjectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteProject operation middleware
+func (sh *strictHandler) DeleteProject(w http.ResponseWriter, r *http.Request, projectID string, params DeleteProjectParams) {
+	var request DeleteProjectRequestObject
+
+	request.ProjectID = projectID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteProject(ctx, request.(DeleteProjectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteProject")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteProjectResponseObject); ok {
+		if err := validResponse.VisitDeleteProjectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateProject operation middleware
+func (sh *strictHandler) UpdateProject(w http.ResponseWriter, r *http.Request, projectID string) {
+	var request UpdateProjectRequestObject
+
+	request.ProjectID = projectID
+
+	var body UpdateProjectJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateProject(ctx, request.(UpdateProjectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateProject")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateProjectResponseObject); ok {
+		if err := validResponse.VisitUpdateProjectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListSpendLogs operation middleware
 func (sh *strictHandler) ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams) {
 	var request ListSpendLogsRequestObject
@@ -11045,6 +11808,94 @@ func (sh *strictHandler) UpdateTeam(w http.ResponseWriter, r *http.Request, team
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateTeamResponseObject); ok {
 		if err := validResponse.VisitUpdateTeamResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTeamMembers operation middleware
+func (sh *strictHandler) ListTeamMembers(w http.ResponseWriter, r *http.Request, teamID string, params ListTeamMembersParams) {
+	var request ListTeamMembersRequestObject
+
+	request.TeamID = teamID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTeamMembers(ctx, request.(ListTeamMembersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTeamMembers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTeamMembersResponseObject); ok {
+		if err := validResponse.VisitListTeamMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertTeamMember operation middleware
+func (sh *strictHandler) UpsertTeamMember(w http.ResponseWriter, r *http.Request, teamID string) {
+	var request UpsertTeamMemberRequestObject
+
+	request.TeamID = teamID
+
+	var body UpsertTeamMemberJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertTeamMember(ctx, request.(UpsertTeamMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertTeamMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertTeamMemberResponseObject); ok {
+		if err := validResponse.VisitUpsertTeamMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteTeamMember operation middleware
+func (sh *strictHandler) DeleteTeamMember(w http.ResponseWriter, r *http.Request, teamID string, userID string, params DeleteTeamMemberParams) {
+	var request DeleteTeamMemberRequestObject
+
+	request.TeamID = teamID
+	request.UserID = userID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteTeamMember(ctx, request.(DeleteTeamMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteTeamMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteTeamMemberResponseObject); ok {
+		if err := validResponse.VisitDeleteTeamMemberResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

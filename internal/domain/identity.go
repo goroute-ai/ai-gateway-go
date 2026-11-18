@@ -130,6 +130,40 @@ type User struct {
 	UpdatedAt                time.Time           `json:"updated_at"`
 }
 
+// TeamMembership represents an M:N user-to-team membership with team-scoped role, budgets, rate limits, and model allowlists.
+type TeamMembership struct {
+	ID              string    `json:"id"`
+	OrgID           string    `json:"org_id"`
+	TeamID          string    `json:"team_id"`
+	UserID          string    `json:"user_id"`
+	Role            Role      `json:"role"`
+	MaxBudgetMicros int64     `json:"max_budget_micros"`
+	SpentMicros     int64     `json:"spent_micros"`
+	RPMLimit        int       `json:"rpm_limit"`
+	TPMLimit        int       `json:"tpm_limit"`
+	AllowedModels   []string  `json:"allowed_models,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// Project represents a team-scoped workload boundary under a Team with dedicated budgets, rate limits, and model scopes.
+type Project struct {
+	ID                       string    `json:"id"`
+	OrgID                    string    `json:"org_id"`
+	TeamID                   string    `json:"team_id"`
+	Name                     string    `json:"name"`
+	Description              string    `json:"description,omitempty"`
+	MaxBudgetMicros          int64     `json:"max_budget_micros"`
+	SpentMicros              int64     `json:"spent_micros"`
+	RPMLimit                 int       `json:"rpm_limit"`
+	TPMLimit                 int       `json:"tpm_limit"`
+	AllowedModels            []string  `json:"allowed_models,omitempty"`
+	EnforceProjectModelQuota bool      `json:"enforce_project_model_quota"`
+	IsActive                 bool      `json:"is_active"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
 // DefaultAllowedEndpoints contains the default data-plane endpoints permitted for newly issued Virtual Keys.
 var DefaultAllowedEndpoints = []string{
 	"/v1/*",
@@ -162,6 +196,7 @@ type VirtualKey struct {
 	Name                     string              `json:"name"`
 	OrgID                    string              `json:"org_id"`
 	TeamID                   string              `json:"team_id,omitempty"`
+	ProjectID                string              `json:"project_id,omitempty"`
 	UserID                   string              `json:"user_id,omitempty"`
 	Role                     Role                `json:"role"`
 	KeyType                  KeyType             `json:"key_type,omitempty"`
@@ -244,6 +279,7 @@ type IdentityContext struct {
 	KeyPrefix                    string              `json:"key_prefix"`
 	OrgID                        string              `json:"org_id"`
 	TeamID                       string              `json:"team_id,omitempty"`
+	ProjectID                    string              `json:"project_id,omitempty"`
 	UserID                       string              `json:"user_id,omitempty"`
 	Role                         Role                `json:"role"`
 	KeyType                      KeyType             `json:"key_type,omitempty"`
@@ -252,7 +288,9 @@ type IdentityContext struct {
 	DeprecatedKeyRevokeAt        *time.Time          `json:"deprecated_key_revoke_at,omitempty"`
 	Principal                    *Principal          `json:"principal,omitempty"`
 	KeyAllowedModels             []string            `json:"key_allowed_models,omitempty"`
+	ProjectAllowedModels         []string            `json:"project_allowed_models,omitempty"`
 	TeamAllowedModels            []string            `json:"team_allowed_models,omitempty"`
+	TeamMemberAllowedModels      []string            `json:"team_member_allowed_models,omitempty"`
 	DynamicAllowedModels         []string            `json:"dynamic_allowed_models,omitempty"`
 	AccessGroups                 []string            `json:"access_groups,omitempty"`
 	AllowedEndpoints             []string            `json:"allowed_endpoints"`
@@ -280,6 +318,15 @@ type IdentityContext struct {
 	TeamThrottleOnBudgetExceeded bool                `json:"team_throttle_on_budget_exceeded"`
 	TeamBudgetFallbacks          map[string][]string `json:"team_budget_fallbacks,omitempty"`
 	TeamSpentMicros              int64               `json:"team_spent_micros"`
+	ProjectRPMLimit              int                 `json:"project_rpm_limit"`
+	ProjectTPMLimit              int                 `json:"project_tpm_limit"`
+	ProjectMaxBudgetMicros       int64               `json:"project_max_budget_micros"`
+	ProjectSpentMicros           int64               `json:"project_spent_micros"`
+	ProjectEnforceModelQuota     bool                `json:"project_enforce_model_quota,omitempty"`
+	TeamMemberRPMLimit           int                 `json:"team_member_rpm_limit"`
+	TeamMemberTPMLimit           int                 `json:"team_member_tpm_limit"`
+	TeamMemberMaxBudgetMicros    int64               `json:"team_member_max_budget_micros"`
+	TeamMemberSpentMicros        int64               `json:"team_member_spent_micros"`
 	UserRPMLimit                 int                 `json:"user_rpm_limit"`
 	UserTPMLimit                 int                 `json:"user_tpm_limit"`
 	UserMaxConcurrent            int                 `json:"user_max_concurrent"`

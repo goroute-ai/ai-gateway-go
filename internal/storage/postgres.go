@@ -852,6 +852,303 @@ func (p *PostgresRepository) DeleteTeam(ctx context.Context, id string) error {
 	return nil
 }
 
+const teamMembershipSelectCols = `id, org_id, team_id, user_id, role, max_budget_micros, spent_micros, rpm_limit, tpm_limit, COALESCE(allowed_models, '{}'), created_at, updated_at`
+
+func scanTeamMembership(row rowScanner) (*domain.TeamMembership, error) {
+	var m domain.TeamMembership
+	var role string
+	if err := row.Scan(
+		&m.ID, &m.OrgID, &m.TeamID, &m.UserID, &role,
+		&m.MaxBudgetMicros, &m.SpentMicros, &m.RPMLimit, &m.TPMLimit,
+		&m.AllowedModels, &m.CreatedAt, &m.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	m.Role = domain.Role(role)
+	if m.AllowedModels == nil {
+		m.AllowedModels = []string{}
+	}
+	return &m, nil
+}
+
+func (p *PostgresRepository) UpsertTeamMembership(ctx context.Context, m *domain.TeamMembership) error {
+	if err := normalizeTeamMembership(m); err != nil {
+		return err
+	}
+	if p.pool == nil {
+		return p.mem.UpsertTeamMembership(ctx, m)
+	}
+	if m.ID == "" {
+		m.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO team_memberships (
+			id, org_id, team_id, user_id, role,
+			max_budget_micros, spent_micros, rpm_limit, tpm_limit, allowed_models
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (team_id, user_id) DO UPDATE SET
+			org_id = EXCLUDED.org_id,
+			role = EXCLUDED.role,
+			max_budget_micros = EXCLUDED.max_budget_micros,
+			spent_micros = GREATEST(team_memberships.spent_micros, EXCLUDED.spent_micros),
+			rpm_limit = EXCLUDED.rpm_limit,
+			tpm_limit = EXCLUDED.tpm_limit,
+			allowed_models = EXCLUDED.allowed_models,
+			updated_at = NOW()
+		RETURNING id, spent_micros, created_at, updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		m.ID, m.OrgID, m.TeamID, m.UserID, string(m.Role),
+		m.MaxBudgetMicros, m.SpentMicros, m.RPMLimit, m.TPMLimit, m.AllowedModels,
+	).Scan(&m.ID, &m.SpentMicros, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("team membership conflict: %w", ErrConflict)
+		}
+		return err
+	}
+	_ = p.mem.UpsertTeamMembership(ctx, m)
+	return nil
+}
+
+func (p *PostgresRepository) GetTeamMembership(ctx context.Context, teamID, userID string) (*domain.TeamMembership, error) {
+	if p.pool == nil {
+		return p.mem.GetTeamMembership(ctx, teamID, userID)
+	}
+	m, err := scanTeamMembership(p.pool.QueryRow(ctx,
+		`SELECT `+teamMembershipSelectCols+` FROM team_memberships WHERE team_id = $1 AND user_id = $2`,
+		strings.TrimSpace(teamID), strings.TrimSpace(userID),
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("team membership (%q, %q) %w", teamID, userID, ErrNotFound)
+		}
+		return nil, err
+	}
+	return m, nil
+}
+
+func (p *PostgresRepository) ListTeamMemberships(ctx context.Context, orgID, teamID, userID string) ([]*domain.TeamMembership, error) {
+	if p.pool == nil {
+		return p.mem.ListTeamMemberships(ctx, orgID, teamID, userID)
+	}
+	var conds []string
+	var args []any
+	addCond := func(col, val string) {
+		if v := strings.TrimSpace(val); v != "" {
+			args = append(args, v)
+			conds = append(conds, fmt.Sprintf("%s = $%d", col, len(args)))
+		}
+	}
+	addCond("org_id", orgID)
+	addCond("team_id", teamID)
+	addCond("user_id", userID)
+
+	q := `SELECT ` + teamMembershipSelectCols + ` FROM team_memberships`
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY created_at ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.TeamMembership
+	for rows.Next() {
+		m, scanErr := scanTeamMembership(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteTeamMembership(ctx context.Context, teamID, userID string) error {
+	if p.pool == nil {
+		return p.mem.DeleteTeamMembership(ctx, teamID, userID)
+	}
+	tag, err := p.pool.Exec(ctx,
+		`DELETE FROM team_memberships WHERE team_id = $1 AND user_id = $2`,
+		strings.TrimSpace(teamID), strings.TrimSpace(userID),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("team membership (%q, %q) %w", teamID, userID, ErrNotFound)
+	}
+	_ = p.mem.DeleteTeamMembership(ctx, teamID, userID)
+	return nil
+}
+
+const projectSelectCols = `id, org_id, team_id, name, description, max_budget_micros, spent_micros, rpm_limit, tpm_limit, COALESCE(allowed_models, '{}'), enforce_project_model_quota, is_active, created_at, updated_at`
+
+func scanProject(row rowScanner) (*domain.Project, error) {
+	var pr domain.Project
+	if err := row.Scan(
+		&pr.ID, &pr.OrgID, &pr.TeamID, &pr.Name, &pr.Description,
+		&pr.MaxBudgetMicros, &pr.SpentMicros, &pr.RPMLimit, &pr.TPMLimit,
+		&pr.AllowedModels, &pr.EnforceProjectModelQuota, &pr.IsActive,
+		&pr.CreatedAt, &pr.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if pr.AllowedModels == nil {
+		pr.AllowedModels = []string{}
+	}
+	return &pr, nil
+}
+
+func (p *PostgresRepository) CreateProject(ctx context.Context, pr *domain.Project) error {
+	if err := normalizeProject(pr); err != nil {
+		return err
+	}
+	if p.pool == nil {
+		return p.mem.CreateProject(ctx, pr)
+	}
+	if pr.ID == "" {
+		pr.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO projects (
+			id, org_id, team_id, name, description,
+			max_budget_micros, spent_micros, rpm_limit, tpm_limit,
+			allowed_models, enforce_project_model_quota, is_active
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING created_at, updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		pr.ID, pr.OrgID, pr.TeamID, pr.Name, pr.Description,
+		pr.MaxBudgetMicros, pr.SpentMicros, pr.RPMLimit, pr.TPMLimit,
+		pr.AllowedModels, pr.EnforceProjectModelQuota, pr.IsActive,
+	).Scan(&pr.CreatedAt, &pr.UpdatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("project already exists: %w", ErrConflict)
+		}
+		return err
+	}
+	_ = p.mem.CreateProject(ctx, pr)
+	return nil
+}
+
+func (p *PostgresRepository) GetProject(ctx context.Context, id string) (*domain.Project, error) {
+	if p.pool == nil {
+		return p.mem.GetProject(ctx, id)
+	}
+	pr, err := scanProject(p.pool.QueryRow(ctx,
+		`SELECT `+projectSelectCols+` FROM projects WHERE id = $1`,
+		strings.TrimSpace(id),
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("project %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	return pr, nil
+}
+
+func (p *PostgresRepository) ListProjects(ctx context.Context, orgID, teamID string) ([]*domain.Project, error) {
+	if p.pool == nil {
+		return p.mem.ListProjects(ctx, orgID, teamID)
+	}
+	var conds []string
+	var args []any
+	addCond := func(col, val string) {
+		if v := strings.TrimSpace(val); v != "" {
+			args = append(args, v)
+			conds = append(conds, fmt.Sprintf("%s = $%d", col, len(args)))
+		}
+	}
+	addCond("org_id", orgID)
+	addCond("team_id", teamID)
+
+	q := `SELECT ` + projectSelectCols + ` FROM projects`
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY created_at ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.Project
+	for rows.Next() {
+		pr, scanErr := scanProject(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, pr)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) UpdateProject(ctx context.Context, pr *domain.Project) error {
+	if err := normalizeProject(pr); err != nil {
+		return err
+	}
+	if pr.ID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if p.pool == nil {
+		return p.mem.UpdateProject(ctx, pr)
+	}
+	const q = `
+		UPDATE projects SET
+			team_id = $2,
+			name = $3,
+			description = $4,
+			max_budget_micros = $5,
+			spent_micros = $6,
+			rpm_limit = $7,
+			tpm_limit = $8,
+			allowed_models = $9,
+			enforce_project_model_quota = $10,
+			is_active = $11,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING created_at, updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		pr.ID, pr.TeamID, pr.Name, pr.Description,
+		pr.MaxBudgetMicros, pr.SpentMicros, pr.RPMLimit, pr.TPMLimit,
+		pr.AllowedModels, pr.EnforceProjectModelQuota, pr.IsActive,
+	).Scan(&pr.CreatedAt, &pr.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("project %q %w", pr.ID, ErrNotFound)
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("project conflict: %w", ErrConflict)
+		}
+		return err
+	}
+	if err := p.mem.UpdateProject(ctx, pr); err != nil {
+		_ = p.mem.CreateProject(ctx, pr)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) DeleteProject(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteProject(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM projects WHERE id = $1`, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteProject(ctx, id)
+	return nil
+}
+
 const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
@@ -1536,9 +1833,9 @@ func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id strin
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default')`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, '')`
 
-const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default')`
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, '')`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
@@ -1550,7 +1847,7 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID,
 	); err != nil {
 		return nil, err
 	}
@@ -1575,7 +1872,7 @@ func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, er
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID,
 		&revokeAt,
 	); err != nil {
 		return nil, time.Time{}, err
@@ -1616,15 +1913,15 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active,
-			rotation_interval_sec, key_rotation_at, key_type
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`
+			rotation_interval_sec, key_rotation_at, key_type, project_id
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NULLIF($30,''))`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 		vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
-		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType),
+		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID,
 	); err != nil {
 		return err
 	}
@@ -1674,6 +1971,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			rotation_interval_sec = $26,
 			key_rotation_at = $27,
 			key_type = COALESCE(NULLIF($28, ''), key_type),
+			project_id = NULLIF($29, ''),
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -1683,7 +1981,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
-			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType),
+			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID,
 		)
 		if err != nil {
 			return err

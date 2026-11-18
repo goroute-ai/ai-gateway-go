@@ -488,7 +488,72 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 	}
 	req.OrgID = resolveScopedOrgID(r, req.OrgID)
 	req.TeamID = strings.TrimSpace(req.TeamID)
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
 	req.UserID = strings.TrimSpace(req.UserID)
+
+	if req.ProjectID != "" {
+		pmRepo, ok := s.projectMembershipRepo()
+		if !ok {
+			if _, authOK := s.authorizeTeamAdmin(w, r, req.OrgID, req.TeamID, true); !authOK {
+				return
+			}
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusNotImplemented,
+				Type:       domain.ErrorTypeServer,
+				Code:       "projects_unsupported",
+				Message:    "Configured storage repository does not support projects",
+			})
+			return
+		}
+		proj, pErr := pmRepo.GetProject(r.Context(), req.ProjectID)
+		if pErr != nil || proj == nil {
+			if _, authOK := s.authorizeTeamAdmin(w, r, req.OrgID, req.TeamID, true); !authOK {
+				return
+			}
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusNotFound,
+				Type:       domain.ErrorTypeNotFound,
+				Code:       "project_not_found",
+				Message:    "Project not found",
+			})
+			return
+		}
+		if req.TeamID == "" {
+			req.TeamID = proj.TeamID
+		}
+		opCheck, authOK := s.authorizeTeamAdmin(w, r, req.OrgID, req.TeamID, true)
+		if !authOK {
+			return
+		}
+		if proj.OrgID != req.OrgID {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_org_access_denied",
+				Message:    "Project does not belong to the requested organization",
+			})
+			return
+		}
+		if proj.TeamID != req.TeamID {
+			if opCheck.Role == domain.OperatorRoleTeamAdmin {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_team_access_denied",
+					Message:    "Project does not belong to your team",
+				})
+				return
+			}
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "project_team_mismatch",
+				Message:    "Project does not belong to the specified team",
+			})
+			return
+		}
+	}
+
 	op, ok := s.authorizeTeamAdmin(w, r, req.OrgID, req.TeamID, true)
 	if !ok {
 		return
@@ -507,17 +572,14 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
-		if req.UserID != "" {
-			user, err := s.lookupUserByID(r.Context(), req.UserID)
-			if err != nil || user == nil || user.OrgID != req.OrgID || user.TeamID != op.TeamID {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "cross_team_access_denied",
-					Message:    "team_admin can only issue virtual keys for users belonging to their own team",
-				})
-				return
-			}
+		if req.UserID != "" && !s.userBelongsToTeam(r.Context(), req.OrgID, op.TeamID, req.UserID) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_team_access_denied",
+				Message:    "team_admin can only issue virtual keys for users belonging to their own team",
+			})
+			return
 		}
 	}
 	if req.KeyType != "" && !auth.IsValidKeyType(req.KeyType) {

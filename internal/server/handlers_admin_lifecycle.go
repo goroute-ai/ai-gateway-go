@@ -682,6 +682,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		OrgID                    *string                   `json:"org_id,omitempty"`
 		Name                     *string                   `json:"name,omitempty"`
 		TeamID                   *string                   `json:"team_id,omitempty"`
+		ProjectID                *string                   `json:"project_id,omitempty"`
 		UserID                   *string                   `json:"user_id,omitempty"`
 		Role                     *domain.Role              `json:"role,omitempty"`
 		KeyType                  *domain.KeyType           `json:"key_type,omitempty"`
@@ -744,19 +745,71 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		}
 		updated.TeamID = newTeamID
 	}
-	if req.UserID != nil {
-		newUserID := strings.TrimSpace(*req.UserID)
-		if op.Role == domain.OperatorRoleTeamAdmin && newUserID != "" {
-			user, uErr := s.lookupUserByID(r.Context(), newUserID)
-			if uErr != nil || user == nil || user.OrgID != existing.OrgID || user.TeamID != op.TeamID {
+	if req.ProjectID != nil {
+		newProjectID := strings.TrimSpace(*req.ProjectID)
+		if newProjectID != "" {
+			pmRepo, ok := s.projectMembershipRepo()
+			if !ok {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeServer,
+					Code:       "projects_unsupported",
+					Message:    "Configured storage repository does not support projects",
+				})
+				return
+			}
+			proj, pErr := pmRepo.GetProject(r.Context(), newProjectID)
+			if pErr != nil || proj == nil {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusNotFound,
+					Type:       domain.ErrorTypeNotFound,
+					Code:       "project_not_found",
+					Message:    "Project not found",
+				})
+				return
+			}
+			if proj.OrgID != existing.OrgID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_org_access_denied",
+					Message:    "Project does not belong to the virtual key's organization",
+				})
+				return
+			}
+			if op.Role == domain.OperatorRoleTeamAdmin && proj.TeamID != op.TeamID {
 				domain.WriteHTTPError(w, &domain.GatewayError{
 					StatusCode: http.StatusForbidden,
 					Type:       domain.ErrorTypePermission,
 					Code:       "cross_team_access_denied",
-					Message:    "team_admin can only bind virtual keys to users belonging to their own team",
+					Message:    "team_admin cannot bind a virtual key to a project outside their own team",
 				})
 				return
 			}
+			if updated.TeamID == "" {
+				updated.TeamID = proj.TeamID
+			} else if proj.TeamID != updated.TeamID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "project_team_mismatch",
+					Message:    "Project does not belong to the virtual key's team",
+				})
+				return
+			}
+		}
+		updated.ProjectID = newProjectID
+	}
+	if req.UserID != nil {
+		newUserID := strings.TrimSpace(*req.UserID)
+		if op.Role == domain.OperatorRoleTeamAdmin && newUserID != "" && !s.userBelongsToTeam(r.Context(), existing.OrgID, op.TeamID, newUserID) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_team_access_denied",
+				Message:    "team_admin can only bind virtual keys to users belonging to their own team",
+			})
+			return
 		}
 		updated.UserID = newUserID
 	}
@@ -936,6 +989,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	s.audit(r.Context(), saved.OrgID, "virtual_key.updated", "virtual_key", saved.ID, map[string]any{
 		"name":                  saved.Name,
 		"team_id":               saved.TeamID,
+		"project_id":            saved.ProjectID,
 		"user_id":               saved.UserID,
 		"key_type":              saved.KeyType,
 		"rotation_interval_sec": saved.RotationIntervalSec,

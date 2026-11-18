@@ -128,8 +128,8 @@ func (e *RBACEngine) AuthorizeEndpoint(idCtx *domain.IdentityContext, path strin
 	}
 }
 
-// AuthorizeRequestedModel verifies Virtual Key, Team, and dynamic access group model allowlists
-// for the requested model or smart alias.
+// AuthorizeRequestedModel verifies Virtual Key, Project, Team Member, Team, and dynamic access group model allowlists
+// for the requested model or smart alias, and enforces project model quota declaration requirements when configured.
 func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requestedModel string) error {
 	if idCtx == nil {
 		return &domain.GatewayError{
@@ -140,35 +140,99 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 		}
 	}
 	keyRestricted := len(idCtx.KeyAllowedModels) > 0 && !matchesModelAllowlist(idCtx.KeyAllowedModels, requestedModel)
+	projectRestricted := len(idCtx.ProjectAllowedModels) > 0 && !matchesModelAllowlist(idCtx.ProjectAllowedModels, requestedModel)
+	memberRestricted := len(idCtx.TeamMemberAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamMemberAllowedModels, requestedModel)
 	teamRestricted := len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel)
-	if !keyRestricted && !teamRestricted {
-		return nil
-	}
-
-	// Dynamic access group rules may grant additional models for matching trusted attributes.
-	if len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel) {
-		return nil
-	}
-	if e != nil {
-		if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil && matchesModelAllowlist(eval.AllowedModels, requestedModel) {
-			return nil
+	if keyRestricted || projectRestricted || memberRestricted || teamRestricted {
+		// Dynamic access group rules may grant additional models for matching trusted attributes.
+		dynamicallyAllowed := len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel)
+		if !dynamicallyAllowed && e != nil {
+			if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil && matchesModelAllowlist(eval.AllowedModels, requestedModel) {
+				dynamicallyAllowed = true
+			}
+		}
+		if !dynamicallyAllowed {
+			if keyRestricted {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "key_model_restricted",
+					Message:    fmt.Sprintf("Virtual key %s is not authorized to use model %q", idCtx.KeyPrefix, requestedModel),
+				}
+			}
+			if projectRestricted {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "project_model_restricted",
+					Message:    fmt.Sprintf("Project %q is not authorized to use model %q", idCtx.ProjectID, requestedModel),
+				}
+			}
+			if memberRestricted {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "team_member_model_restricted",
+					Message:    fmt.Sprintf("Team member is not authorized to use model %q", requestedModel),
+				}
+			}
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_model_restricted",
+				Message:    fmt.Sprintf("Team is not authorized to use model %q", requestedModel),
+			}
 		}
 	}
 
-	if keyRestricted {
-		return &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "key_model_restricted",
-			Message:    fmt.Sprintf("Virtual key %s is not authorized to use model %q", idCtx.KeyPrefix, requestedModel),
+	if idCtx.ProjectID != "" && idCtx.ProjectEnforceModelQuota {
+		if !e.hasDeclaredProjectModelQuota(idCtx, requestedModel) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "project_model_quota_required",
+				Message:    fmt.Sprintf("Project %q requires positive model RPM/TPM quota limits for key %s before admitting model %q", idCtx.ProjectID, idCtx.KeyPrefix, requestedModel),
+			}
 		}
 	}
-	return &domain.GatewayError{
-		StatusCode: http.StatusForbidden,
-		Type:       domain.ErrorTypePermission,
-		Code:       "team_model_restricted",
-		Message:    fmt.Sprintf("Team is not authorized to use model %q", requestedModel),
+	return nil
+}
+
+func (e *RBACEngine) hasDeclaredProjectModelQuota(idCtx *domain.IdentityContext, requestedModel string) bool {
+	if idCtx == nil {
+		return false
 	}
+	if idCtx.KeyRPMLimit > 0 || idCtx.KeyTPMLimit > 0 {
+		return true
+	}
+	if e != nil && e.repo != nil {
+		if qRepo, ok := e.repo.(storage.QuotaPolicyRepository); ok && qRepo != nil {
+			policies, err := qRepo.ListQuotaPolicies(context.Background(), storage.QuotaPolicyFilter{
+				OrgID:      idCtx.OrgID,
+				ActiveOnly: true,
+			})
+			if err == nil {
+				for _, qp := range policies {
+					if qp == nil || !qp.IsActive {
+						continue
+					}
+					matchesScope := ((qp.ScopeType == domain.QuotaScopeProject || qp.ScopeType == domain.QuotaScopeModelPerProject) && qp.ScopeID == idCtx.ProjectID) ||
+						(qp.ScopeType == domain.QuotaScopeModelPerKey && idCtx.VirtualKeyID != "" && qp.ScopeID == idCtx.VirtualKeyID)
+					if !matchesScope {
+						continue
+					}
+					pattern := strings.TrimSpace(qp.ModelPattern)
+					if pattern != "" && pattern != "*" && !matchesModelAllowlist([]string{pattern}, requestedModel) {
+						continue
+					}
+					if qp.RPMLimit > 0 || qp.TPMLimit > 0 || qp.ITPMLimit > 0 || qp.OTPMLimit > 0 || qp.TPDLimit > 0 {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // AuthorizeMCPServer checks 3-state RBAC allowlists for the requested MCP server slug.
