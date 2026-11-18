@@ -42,6 +42,7 @@ type Service struct {
 	masterAdminKey          string
 	masterEncryptionKey     string
 	allowMasterKeyDataPlane bool
+	customAPIKeyHeader      string
 	jwtVerifier             *JWTVerifier
 	l1TTL                   time.Duration
 	l2TTL                   time.Duration
@@ -79,6 +80,21 @@ func (s *Service) SetAllowMasterKeyDataPlane(allow bool) {
 // SetJWTVerifier configures inbound JWT/OIDC verification for Control Plane authentication.
 func (s *Service) SetJWTVerifier(v *JWTVerifier) {
 	s.jwtVerifier = v
+}
+
+// SetCustomAPIKeyHeader configures an optional custom HTTP header name used to extract inbound gateway API keys.
+func (s *Service) SetCustomAPIKeyHeader(name string) {
+	s.customAPIKeyHeader = strings.TrimSpace(name)
+}
+
+// ExtractorOptions returns the inbound credential extraction options configured for this service.
+func (s *Service) ExtractorOptions() ExtractorOptions {
+	if s == nil {
+		return ExtractorOptions{}
+	}
+	return ExtractorOptions{
+		CustomHeaderName: s.customAPIKeyHeader,
+	}
 }
 
 // HashKey computes the hex-encoded SHA-256 lookup digest for a high-entropy (176-bit)
