@@ -752,17 +752,19 @@ func extractStringClaim(raw map[string]any, path string) (string, bool) {
 
 func extractStringSliceClaim(raw map[string]any, path string) ([]string, bool) {
 	val, ok := resolveClaimPath(raw, path)
-	if !ok || val == nil {
+	if !ok {
 		return nil, false
 	}
-	switch v := val.(type) {
+	return extractStringSliceValue(val, true)
+}
+
+func extractStringSliceValue(raw any, splitComma bool) ([]string, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	switch v := raw.(type) {
 	case []string:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if trimmed := strings.TrimSpace(item); trimmed != "" {
-				out = append(out, trimmed)
-			}
-		}
+		out := trimNonEmptyStrings(v)
 		return out, len(out) > 0
 	case []any:
 		out := make([]string, 0, len(v))
@@ -775,17 +777,24 @@ func extractStringSliceClaim(raw map[string]any, path string) ([]string, bool) {
 		}
 		return out, len(out) > 0
 	case string:
-		parts := strings.Split(v, ",")
-		out := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if trimmed := strings.TrimSpace(p); trimmed != "" {
-				out = append(out, trimmed)
-			}
+		if !splitComma {
+			return nil, false
 		}
+		out := trimNonEmptyStrings(strings.Split(v, ","))
 		return out, len(out) > 0
 	default:
 		return nil, false
 	}
+}
+
+func trimNonEmptyStrings(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func (o *OIDCVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signingInput string, sigBytes []byte) error {
