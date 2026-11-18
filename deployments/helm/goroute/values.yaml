@@ -1,0 +1,145 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/goroute-ai/ai-gateway-go
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+  grpcPort: 0
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: goroute-tls
+  #    hosts:
+  #      - gateway.example.local
+
+env:
+  GATEWAY_PORT: "8080"
+  GATEWAY_ENV: "production"
+  GATEWAY_STORAGE_MODE: "postgres"
+  GATEWAY_REDIS_ADDR: "redis:6379"
+
+# Optional inline config.yaml mounted at /etc/goroute/config.yaml via ConfigMap.
+# Use os.environ/VAR references for OIDC client secrets and supply values via secrets.extraSecrets or secrets.existingSecret.
+config: ""
+
+secrets:
+  create: true
+  existingSecret: ""
+  postgresDSN: "postgres://gateway:CHANGE_ME@postgres:5432/aigateway?sslmode=require"
+  masterAdminKey: ""
+  masterEncryptionKey: ""
+  sessionSecret: ""
+  redisPassword: ""
+  extraSecrets: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+terminationGracePeriodSeconds: 30
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  ingressFrom: []
+  egressPorts:
+    postgres: 5432
+    redis: 6379
+    https: 443
+    # Set to a non-zero port (e.g., 8443) if your internal OIDC IdP listens on a custom TLS port.
+    oidc: 0
+
+migration:
+  enabled: false
+  image:
+    repository: ghcr.io/goroute-ai/ai-gateway-go
+    tag: ""
+    pullPolicy: IfNotPresent
+  command: ["/app/ai-gateway", "-config", "/app/configs/config.yaml", "-migrate-only"]
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
