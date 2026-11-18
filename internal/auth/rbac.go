@@ -145,15 +145,15 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 	memberRestricted := len(idCtx.TeamMemberAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamMemberAllowedModels, requestedModel)
 	teamRestricted := len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel)
 
-	allowDynamic := idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
+	allowDynamic := !projectRestricted && !memberRestricted && idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
 	accessGroups := idCtx.AccessGroups
 	dynamicAllowedModels := idCtx.DynamicAllowedModels
-	if allowDynamic && e != nil && (len(accessGroups) == 0 || (len(dynamicAllowedModels) == 0 && (keyRestricted || projectRestricted || memberRestricted || teamRestricted))) {
+	if idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == "" && e != nil && (len(accessGroups) == 0 || (allowDynamic && len(dynamicAllowedModels) == 0 && (keyRestricted || teamRestricted))) {
 		if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil {
 			if len(accessGroups) == 0 && len(eval.AccessGroups) > 0 {
 				accessGroups = eval.AccessGroups
 			}
-			if len(dynamicAllowedModels) == 0 && len(eval.AllowedModels) > 0 {
+			if allowDynamic && len(dynamicAllowedModels) == 0 && len(eval.AllowedModels) > 0 {
 				dynamicAllowedModels = eval.AllowedModels
 			}
 		}
@@ -185,12 +185,12 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 
 	if keyRestricted || projectRestricted || memberRestricted || teamRestricted {
 		// Dynamic access group rules or ModelAccessGroup memberships may grant additional models,
-		// unless the identity has been narrowed for a delegated agent caller.
+		// unless explicitly restricted by project, team-member, or delegated agent narrowing.
 		dynamicallyAllowed := allowDynamic && len(dynamicAllowedModels) > 0 && matchesModelAllowlist(dynamicAllowedModels, requestedModel)
 		if !dynamicallyAllowed {
 			dynamicallyAllowed = (!keyRestricted || magEval.GrantedForKey) &&
 				(!projectRestricted || magEval.GrantedForProject) &&
-				(!memberRestricted || magEval.GrantedForAny) &&
+				(!memberRestricted || magEval.GrantedForMember) &&
 				(!teamRestricted || magEval.GrantedForTeam) &&
 				magEval.GrantedForAny
 		}
@@ -624,6 +624,7 @@ type ModelAccessGroupEvaluation struct {
 	GrantedForKey     bool
 	GrantedForTeam    bool
 	GrantedForProject bool
+	GrantedForMember  bool
 	GrantedForAny     bool
 }
 
@@ -734,8 +735,11 @@ func EvaluateModelAccessGroups(
 			if teamMatch || teamRef || ruleGroupMatch || len(idCtx.TeamAllowedModels) == 0 {
 				eval.GrantedForTeam = true
 			}
-			if projectMatch || projRef || ruleGroupMatch || len(idCtx.ProjectAllowedModels) == 0 {
+			if projectMatch || projRef || len(idCtx.ProjectAllowedModels) == 0 {
 				eval.GrantedForProject = true
+			}
+			if userMatch || memberRef || len(idCtx.TeamMemberAllowedModels) == 0 {
+				eval.GrantedForMember = true
 			}
 			continue
 		}
@@ -751,8 +755,11 @@ func EvaluateModelAccessGroups(
 			if teamRef || ruleGroupMatch || len(idCtx.TeamAllowedModels) == 0 {
 				eval.GrantedForTeam = true
 			}
-			if projectMatch || projRef || ruleGroupMatch || len(idCtx.ProjectAllowedModels) == 0 {
+			if projRef || len(idCtx.ProjectAllowedModels) == 0 {
 				eval.GrantedForProject = true
+			}
+			if memberRef || len(idCtx.TeamMemberAllowedModels) == 0 {
+				eval.GrantedForMember = true
 			}
 		}
 	}
