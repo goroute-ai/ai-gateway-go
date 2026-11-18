@@ -24,6 +24,8 @@ var (
 	// Default blocked cloud metadata IPs
 	metadataIPv4 = net.ParseIP("169.254.169.254")
 	metadataIPv6 = net.ParseIP("fd00:ec2::254")
+	ecsIPv4A     = net.ParseIP("169.254.170.2")
+	ecsIPv4B     = net.ParseIP("169.254.170.23")
 
 	// Standard private/local IP CIDR ranges
 	privateCIDRs []*net.IPNet
@@ -62,6 +64,10 @@ type Policy struct {
 	DialTimeout          time.Duration
 	MaxRedirects         int
 	EgressProxyURL       string
+
+	// allowCloudMetadata is unexported and may ONLY be enabled via NewAmbientIAMPolicy
+	// when the caller has explicitly opted into AllowAmbientCloudIAM == true.
+	allowCloudMetadata bool
 }
 
 // NewPolicy constructs an active network security policy from configuration.
@@ -130,9 +136,11 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 		return errors.New("network: missing hostname in URL")
 	}
 
-	// Strictly block known cloud metadata hostnames
-	if hostname == "metadata.google.internal" || hostname == "metadata" || hostname == "instance-data" || hostname == "metadata.azure.internal" {
-		return ErrCloudMetadataBlocked
+	// Strictly block known cloud metadata hostnames unless explicitly opted into ambient cloud IAM
+	if !p.allowCloudMetadata {
+		if hostname == "metadata.google.internal" || hostname == "metadata" || hostname == "instance-data" || hostname == "metadata.azure.internal" {
+			return ErrCloudMetadataBlocked
+		}
 	}
 
 	// If hostname is an IP literal, validate immediately
@@ -141,6 +149,9 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	}
 
 	if !p.AllowPrivateNetworks && len(p.AllowedPrivateCIDRs) == 0 {
+		if p.allowCloudMetadata && hostname == "localhost" {
+			return nil
+		}
 		if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || strings.HasSuffix(hostname, ".local") {
 			return fmt.Errorf("%w: local hostname %q is forbidden by SSRF policy", ErrPrivateNetworkBlocked, hostname)
 		}
@@ -161,9 +172,15 @@ func (p *Policy) ValidateIP(ip net.IP) error {
 		cleanIP = unmapped
 	}
 
-	// Cloud metadata check is absolute and non-bypassable
+	// Cloud metadata check is absolute and non-bypassable unless explicitly opted into ambient cloud IAM.
 	if cleanIP.Equal(metadataIPv4) || cleanIP.Equal(metadataIPv6) {
+		if p.allowCloudMetadata {
+			return nil
+		}
 		return ErrCloudMetadataBlocked
+	}
+	if p.allowCloudMetadata && (cleanIP.Equal(ecsIPv4A) || cleanIP.Equal(ecsIPv4B) || cleanIP.IsLoopback()) {
+		return nil
 	}
 
 	// Multicast and unspecified addresses are never valid upstream targets.

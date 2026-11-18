@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
@@ -24,6 +25,11 @@ type Adapter struct {
 	ssrfPolicy  *network.Policy
 	mediaClient *http.Client
 	mediaPolicy *network.Policy
+
+	ambientMu            sync.RWMutex
+	allowAmbientCloudIAM bool
+	ambientADCCfg        AmbientADCConfig
+	ambientTS            *TokenSource
 }
 
 // NewAdapter creates a new Google Cloud Vertex AI adapter.
@@ -38,6 +44,25 @@ func NewAdapter(httpClient *http.Client, ssrfPolicy *network.Policy) *Adapter {
 		mediaPolicy: mediaPol,
 		mediaClient: network.NewHTTPClient(mediaPol),
 	}
+}
+
+// SetAllowAmbientCloudIAM opts this Vertex AI adapter in or out of ambient GCP ADC
+// and Compute Metadata Server credential resolution. Disabled (false) by default.
+func (a *Adapter) SetAllowAmbientCloudIAM(allow bool) {
+	a.ambientMu.Lock()
+	defer a.ambientMu.Unlock()
+	a.allowAmbientCloudIAM = allow
+	a.ambientADCCfg.AllowAmbientCloudIAM = allow
+	a.ambientTS = nil
+}
+
+// SetAmbientADCConfig configures ambient GCP ADC / Metadata Server options.
+func (a *Adapter) SetAmbientADCConfig(cfg AmbientADCConfig) {
+	a.ambientMu.Lock()
+	defer a.ambientMu.Unlock()
+	a.allowAmbientCloudIAM = cfg.AllowAmbientCloudIAM
+	a.ambientADCCfg = cfg
+	a.ambientTS = nil
 }
 
 // SetMediaFetcher overrides the HTTP client and network policy used for fetching user media URLs.
@@ -64,29 +89,83 @@ func (a *Adapter) SupportsAssistantPrefill() bool {
 }
 
 func (a *Adapter) resolveVertexConfig(dep *domain.Deployment) (baseURL, projectID, region string, ts *TokenSource, err error) {
-	if dep.Credential == nil {
-		return "", "", "", nil, &domain.GatewayError{
-			StatusCode:  http.StatusUnauthorized,
-			Type:        domain.ErrorTypeAuthentication,
-			Code:        "missing_credential",
-			Message:     "vertex ai credentials missing",
-			AuthFailure: true,
+	var rawCred string
+	var authMode string
+	if dep != nil && dep.Credential != nil {
+		rawCred = strings.TrimSpace(dep.Credential.DecryptedAPIKey)
+		if dep.Credential.Headers != nil {
+			authMode = strings.ToLower(strings.TrimSpace(dep.Credential.Headers["auth_mode"]))
 		}
 	}
 
-	rawCred := strings.TrimSpace(dep.Credential.DecryptedAPIKey)
-	ts, err = NewTokenSource(a.httpClient, rawCred)
-	if err != nil {
-		return "", "", "", nil, &domain.GatewayError{
-			StatusCode:  http.StatusUnauthorized,
-			Type:        domain.ErrorTypeAuthentication,
-			Code:        "invalid_vertex_credential",
-			Message:     fmt.Sprintf("invalid vertex credentials: %v", err),
-			AuthFailure: true,
+	isAmbientSentinel := rawCred == "" || strings.EqualFold(rawCred, "ambient") || strings.EqualFold(rawCred, "adc") || authMode == "ambient_iam"
+
+	if !isAmbientSentinel {
+		ts, err = NewTokenSource(a.httpClient, rawCred)
+		if err != nil {
+			return "", "", "", nil, &domain.GatewayError{
+				StatusCode:  http.StatusUnauthorized,
+				Type:        domain.ErrorTypeAuthentication,
+				Code:        "invalid_vertex_credential",
+				Message:     fmt.Sprintf("invalid vertex credentials: %v", err),
+				AuthFailure: true,
+			}
+		}
+	} else {
+		a.ambientMu.RLock()
+		allowed := a.allowAmbientCloudIAM
+		cachedTS := a.ambientTS
+		a.ambientMu.RUnlock()
+
+		if !allowed {
+			if dep == nil || dep.Credential == nil {
+				return "", "", "", nil, &domain.GatewayError{
+					StatusCode:  http.StatusUnauthorized,
+					Type:        domain.ErrorTypeAuthentication,
+					Code:        "missing_credential",
+					Message:     "vertex ai credentials missing",
+					AuthFailure: true,
+				}
+			}
+			return "", "", "", nil, &domain.GatewayError{
+				StatusCode:  http.StatusUnauthorized,
+				Type:        domain.ErrorTypeAuthentication,
+				Code:        "invalid_vertex_credential",
+				Message:     "invalid vertex credentials: empty credentials",
+				AuthFailure: true,
+			}
+		}
+
+		ts = cachedTS
+		if ts == nil {
+			a.ambientMu.Lock()
+			if a.ambientTS == nil {
+				cfg := a.ambientADCCfg
+				cfg.AllowAmbientCloudIAM = true
+				if cfg.SSRFPolicy == nil {
+					cfg.SSRFPolicy = a.ssrfPolicy
+				}
+				newTS, tsErr := NewAmbientTokenSource(cfg)
+				if tsErr != nil {
+					a.ambientMu.Unlock()
+					return "", "", "", nil, &domain.GatewayError{
+						StatusCode:  http.StatusUnauthorized,
+						Type:        domain.ErrorTypeAuthentication,
+						Code:        "invalid_vertex_credential",
+						Message:     fmt.Sprintf("ambient vertex credentials failed: %v", tsErr),
+						AuthFailure: true,
+					}
+				}
+				a.ambientTS = newTS
+			}
+			ts = a.ambientTS
+			a.ambientMu.Unlock()
 		}
 	}
 
-	region = strings.TrimSpace(dep.Region)
+	if dep != nil {
+		region = strings.TrimSpace(dep.Region)
+	}
 	if region == "" {
 		region = os.Getenv("VERTEX_LOCATION")
 	}
@@ -103,6 +182,8 @@ func (a *Adapter) resolveVertexConfig(dep *domain.Deployment) (baseURL, projectI
 	}
 	if ts.saKey != nil && ts.saKey.ProjectID != "" {
 		projectID = ts.saKey.ProjectID
+	} else if ts.authorizedUser != nil && ts.authorizedUser.QuotaProjectID != "" && projectID == "" {
+		projectID = ts.authorizedUser.QuotaProjectID
 	}
 	if projectID == "" {
 		projectID = "default"
@@ -114,7 +195,11 @@ func (a *Adapter) resolveVertexConfig(dep *domain.Deployment) (baseURL, projectI
 	} else {
 		defaultBase = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
 	}
-	baseURL, err = adapter.ResolveCredentialBaseURL(dep.Credential, defaultBase, a.ssrfPolicy, domain.ProviderVertex)
+	var cred *domain.ProviderCredential
+	if dep != nil {
+		cred = dep.Credential
+	}
+	baseURL, err = adapter.ResolveCredentialBaseURL(cred, defaultBase, a.ssrfPolicy, domain.ProviderVertex)
 	if err != nil {
 		return "", "", "", nil, err
 	}

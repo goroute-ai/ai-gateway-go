@@ -35,11 +35,7 @@ type TokenExchangeConfig struct {
 	SubjectTokenType string
 	HeaderName       string
 	NetPolicy        *network.Policy
-}
-
-type cachedExchangedToken struct {
-	accessToken string
-	expiresAt   time.Time
+	TokenCache       *DistributedTokenCache
 }
 
 // TokenExchangeStrategy implements RFC 8693 On-Behalf-Of (OBO) token exchange.
@@ -54,8 +50,8 @@ type TokenExchangeStrategy struct {
 	headerName       string
 	httpClient       *http.Client
 
-	mu    sync.RWMutex
-	cache map[string]cachedExchangedToken
+	mu         sync.RWMutex
+	tokenCache *DistributedTokenCache
 }
 
 // NewTokenExchangeStrategy creates a new TokenExchangeStrategy.
@@ -83,6 +79,11 @@ func NewTokenExchangeStrategy(cfg TokenExchangeConfig) (*TokenExchangeStrategy, 
 	client := network.NewHTTPClient(cfg.NetPolicy)
 	client.Timeout = 15 * time.Second
 
+	cache := cfg.TokenCache
+	if cache == nil {
+		cache = NewDistributedTokenCache(nil, DistributedTokenCacheConfig{})
+	}
+
 	return &TokenExchangeStrategy{
 		tokenEndpoint:    cfg.TokenEndpoint,
 		clientID:         cfg.ClientID,
@@ -93,8 +94,30 @@ func NewTokenExchangeStrategy(cfg TokenExchangeConfig) (*TokenExchangeStrategy, 
 		subjectTokenType: subType,
 		headerName:       headerName,
 		httpClient:       client,
-		cache:            make(map[string]cachedExchangedToken),
+		tokenCache:       cache,
 	}, nil
+}
+
+// SetTokenCache configures the DistributedTokenCache used by this strategy.
+func (s *TokenExchangeStrategy) SetTokenCache(cache *DistributedTokenCache) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenCache = cache
+}
+
+func (s *TokenExchangeStrategy) getOrInitTokenCache() *DistributedTokenCache {
+	s.mu.RLock()
+	cache := s.tokenCache
+	s.mu.RUnlock()
+	if cache != nil {
+		return cache
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokenCache == nil {
+		s.tokenCache = NewDistributedTokenCache(nil, DistributedTokenCacheConfig{})
+	}
+	return s.tokenCache
 }
 
 func (s *TokenExchangeStrategy) Type() string {
@@ -120,90 +143,76 @@ func (s *TokenExchangeStrategy) Apply(ctx context.Context, req *http.Request, au
 
 	subjectToken := strings.TrimSpace(authCtx.DelegatedToken)
 
-	// Compute deterministic cache key
-	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s", subjectToken, s.resource, s.audience, s.scope)))
-	cacheKey := hex.EncodeToString(cacheKeyHash[:])
+	// Compute deterministic cache key (hashed inside DistributedTokenCache)
+	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s",
+		s.tokenEndpoint, s.clientID, subjectToken, s.resource, s.audience, s.scope)))
+	cacheKey := "rfc8693|" + hex.EncodeToString(cacheKeyHash[:])
 
-	// 1. Check cached exchange token
-	s.mu.RLock()
-	cached, found := s.cache[cacheKey]
-	s.mu.RUnlock()
+	accessToken, err := s.getOrInitTokenCache().GetOrRefresh(ctx, cacheKey, func(refreshCtx context.Context) (string, time.Duration, error) {
+		// Perform RFC 8693 Token Exchange POST
+		form := url.Values{}
+		form.Set("grant_type", GrantTypeTokenExchange)
+		form.Set("subject_token", subjectToken)
+		form.Set("subject_token_type", s.subjectTokenType)
 
-	if found && time.Now().Before(cached.expiresAt) {
-		req.Header.Set(s.headerName, "Bearer "+cached.accessToken)
-		return nil
-	}
+		if s.resource != "" {
+			form.Set("resource", s.resource)
+		}
+		if s.audience != "" {
+			form.Set("audience", s.audience)
+		}
+		if s.scope != "" {
+			form.Set("scope", s.scope)
+		}
+		if s.clientID != "" && s.clientSecret == "" {
+			form.Set("client_id", s.clientID)
+		}
 
-	// 2. Perform RFC 8693 Token Exchange POST
-	form := url.Values{}
-	form.Set("grant_type", GrantTypeTokenExchange)
-	form.Set("subject_token", subjectToken)
-	form.Set("subject_token_type", s.subjectTokenType)
+		httpReq, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, s.tokenEndpoint, strings.NewReader(form.Encode()))
+		if err != nil {
+			return "", 0, fmt.Errorf("token_exchange: create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		httpReq.Header.Set("Accept", "application/json")
 
-	if s.resource != "" {
-		form.Set("resource", s.resource)
-	}
-	if s.audience != "" {
-		form.Set("audience", s.audience)
-	}
-	if s.scope != "" {
-		form.Set("scope", s.scope)
-	}
+		if s.clientID != "" && s.clientSecret != "" {
+			httpReq.SetBasicAuth(s.clientID, s.clientSecret)
+		}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenEndpoint, strings.NewReader(form.Encode()))
+		resp, err := s.httpClient.Do(httpReq)
+		if err != nil {
+			return "", 0, fmt.Errorf("token_exchange: post to token endpoint: %w", err)
+		}
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if err != nil {
+			return "", 0, fmt.Errorf("token_exchange: read response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return "", 0, fmt.Errorf("token_exchange: endpoint returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		var exResp tokenExchangeResponse
+		if err := json.Unmarshal(bodyBytes, &exResp); err != nil {
+			return "", 0, fmt.Errorf("token_exchange: decode json response: %w", err)
+		}
+
+		if exResp.AccessToken == "" {
+			return "", 0, fmt.Errorf("token_exchange: missing access_token in response: %s", string(bodyBytes))
+		}
+
+		ttl := 3600 * time.Second
+		if exResp.ExpiresIn > 0 {
+			ttl = time.Duration(exResp.ExpiresIn) * time.Second
+		}
+		return exResp.AccessToken, ttl, nil
+	})
 	if err != nil {
-		return fmt.Errorf("token_exchange: create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Accept", "application/json")
-
-	if s.clientID != "" && s.clientSecret != "" {
-		httpReq.SetBasicAuth(s.clientID, s.clientSecret)
-	} else if s.clientID != "" {
-		form.Set("client_id", s.clientID)
+		return err
 	}
 
-	resp, err := s.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("token_exchange: post to token endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if err != nil {
-		return fmt.Errorf("token_exchange: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("token_exchange: endpoint returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var exResp tokenExchangeResponse
-	if err := json.Unmarshal(bodyBytes, &exResp); err != nil {
-		return fmt.Errorf("token_exchange: decode json response: %w", err)
-	}
-
-	if exResp.AccessToken == "" {
-		return fmt.Errorf("token_exchange: missing access_token in response: %s", string(bodyBytes))
-	}
-
-	// Cache with TTL
-	ttl := 3600 * time.Second
-	if exResp.ExpiresIn > 0 {
-		ttl = time.Duration(exResp.ExpiresIn) * time.Second
-	}
-	// Buffer 30 seconds before expiration
-	if ttl > 45*time.Second {
-		ttl -= 30 * time.Second
-	}
-
-	s.mu.Lock()
-	s.cache[cacheKey] = cachedExchangedToken{
-		accessToken: exResp.AccessToken,
-		expiresAt:   time.Now().Add(ttl),
-	}
-	s.mu.Unlock()
-
-	req.Header.Set(s.headerName, "Bearer "+exResp.AccessToken)
+	req.Header.Set(s.headerName, "Bearer "+accessToken)
 	return nil
 }
