@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -441,4 +444,268 @@ func TestAdminLifecycle_ThreeStateAllowlistsSerializationAndUpdate(t *testing.T)
 	assert.Equal(t, []string{"agent-x"}, storedKey.AllowedA2AAgents)
 	assert.NotNil(t, storedKey.AllowedClientApps)
 	assert.Empty(t, storedKey.AllowedClientApps)
+}
+
+func TestAdminLifecycle_KeyRotationGracePeriodHeadersAndExpiry(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "admin_master_secret"
+
+	gw, err := server.New(cfg, repo, nil, nil)
+	require.NoError(t, err)
+	defer gw.Shutdown(ctx)
+	handler := gw.Handler()
+
+	var clockMu sync.RWMutex
+	now := time.Date(2026, 11, 18, 14, 0, 0, 0, time.UTC)
+	gw.AuthService().SetNowFunc(func() time.Time {
+		clockMu.RLock()
+		defer clockMu.RUnlock()
+		return now
+	})
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		now = now.Add(d)
+		clockMu.Unlock()
+	}
+
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_grace", Name: "Grace Org", IsActive: true}))
+
+	// 1. Issue key with key_type=llm_api and rotation_interval_sec=3600
+	rec := doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":                "org_grace",
+		"name":                  "rotatable-llm-key",
+		"key_type":              "llm_api",
+		"rotation_interval_sec": 3600,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var issued domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issued))
+	assert.Equal(t, domain.KeyTypeLLMAPI, issued.KeyType)
+	assert.Equal(t, int64(3600), issued.RotationIntervalSec)
+	require.NotNil(t, issued.KeyRotationAt)
+	assert.True(t, issued.KeyRotationAt.Equal(now.Add(3600*time.Second)))
+	oldRawKey := issued.RawKey
+	require.True(t, strings.HasPrefix(oldRawKey, "sk-gw-"))
+
+	// Negative grace_period_seconds must be rejected with 400
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys/"+issued.ID+"/rotate", cfg.Auth.MasterAdminKey, map[string]any{
+		"grace_period_seconds": -10,
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_grace_period")
+
+	// 2. Rotate with 300s grace period
+	advance(60 * time.Second)
+	expectedRevokeAt := now.Add(300 * time.Second)
+	expectedNextRotation := now.Add(3600 * time.Second)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys/"+issued.ID+"/rotate", cfg.Auth.MasterAdminKey, map[string]any{
+		"grace_period_seconds": 300,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var rotated domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rotated))
+	newRawKey := rotated.RawKey
+	assert.NotEqual(t, oldRawKey, newRawKey)
+	require.NotNil(t, rotated.KeyRotationAt)
+	assert.True(t, rotated.KeyRotationAt.Equal(expectedNextRotation))
+
+	// 3. Old key still works on Data Plane during grace period and emits deprecation headers
+	recOld := doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", oldRawKey, nil)
+	require.Equal(t, http.StatusOK, recOld.Code)
+	assert.Equal(t, "true", recOld.Header().Get(auth.HeaderKeyDeprecated))
+	assert.Equal(t, expectedRevokeAt.Format(time.RFC3339), recOld.Header().Get(auth.HeaderKeyRevokeAt))
+
+	// New key works on Data Plane without deprecation headers
+	recNew := doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", newRawKey, nil)
+	require.Equal(t, http.StatusOK, recNew.Code)
+	assert.Empty(t, recNew.Header().Get(auth.HeaderKeyDeprecated))
+	assert.Empty(t, recNew.Header().Get(auth.HeaderKeyRevokeAt))
+
+	// 4. Advance past revoke_at: old key fails with 401, new key remains valid
+	advance(301 * time.Second)
+	recExpired := doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", oldRawKey, nil)
+	assert.Equal(t, http.StatusUnauthorized, recExpired.Code)
+
+	recNewAfter := doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", newRawKey, nil)
+	assert.Equal(t, http.StatusOK, recNewAfter.Code)
+
+	// 5. PUT /admin/v1/keys/{keyID} updates rotation_interval_sec (and clears schedule when set to 0)
+	rec = doAdminJSONRequest(t, handler, http.MethodPut, "/admin/v1/keys/"+issued.ID, cfg.Auth.MasterAdminKey, map[string]any{
+		"rotation_interval_sec": -1,
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodPut, "/admin/v1/keys/"+issued.ID, cfg.Auth.MasterAdminKey, map[string]any{
+		"rotation_interval_sec": 7200,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var updated domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	assert.Equal(t, int64(7200), updated.RotationIntervalSec)
+	assert.NotNil(t, updated.KeyRotationAt)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodPut, "/admin/v1/keys/"+issued.ID, cfg.Auth.MasterAdminKey, map[string]any{
+		"rotation_interval_sec": 0,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var disabled domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &disabled))
+	assert.Equal(t, int64(0), disabled.RotationIntervalSec)
+	assert.Nil(t, disabled.KeyRotationAt)
+}
+
+func TestAdminLifecycle_KeyTypePresetsEnforcement(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "admin_master_secret"
+
+	gw, err := server.New(cfg, repo, nil, nil)
+	require.NoError(t, err)
+	defer gw.Shutdown(ctx)
+	handler := gw.Handler()
+
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_presets", Name: "Presets Org", IsActive: true}))
+	require.NoError(t, repo.CreateUser(ctx, &domain.User{
+		ID:       "usr_preset_1",
+		OrgID:    "org_presets",
+		Email:    "dev@presets.io",
+		Name:     "Preset Dev",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	}))
+
+	// Invalid key_type rejected with 400 on POST
+	rec := doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":   "org_presets",
+		"name":     "bad-type",
+		"key_type": "unknown_preset",
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_key_type")
+
+	// 1. llm_api key: allowed on Data Plane (/v1/models), denied on Control Plane (/admin/v1/keys)
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":   "org_presets",
+		"name":     "llm-only-key",
+		"key_type": "llm_api",
+		"role":     "org_admin", // Preset must enforce non-admin role for llm_api
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var llmKey domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &llmKey))
+	assert.Equal(t, domain.KeyTypeLLMAPI, llmKey.KeyType)
+	assert.Equal(t, domain.RoleServiceAccount, llmKey.Role)
+	assert.Equal(t, domain.DefaultAllowedEndpoints, llmKey.AllowedEndpoints)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", llmKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", llmKey.RawKey, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	// 2. management key: allowed on /admin/v1/*, denied on Data Plane (/v1/models)
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":   "org_presets",
+		"name":     "mgmt-key",
+		"key_type": "management",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var mgmtKey domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &mgmtKey))
+	assert.Equal(t, domain.KeyTypeManagement, mgmtKey.KeyType)
+	assert.Equal(t, domain.RoleOrgAdmin, mgmtKey.Role)
+	assert.Equal(t, []string{"/admin/v1/*"}, mgmtKey.AllowedEndpoints)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", mgmtKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", mgmtKey.RawKey, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "endpoint_not_allowed")
+
+	// Rotate management key with grace period and verify deprecation header on /admin/v1/keys too
+	oldMgmtRawKey := mgmtKey.RawKey
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys/"+mgmtKey.ID+"/rotate", cfg.Auth.MasterAdminKey, map[string]any{
+		"grace_period_seconds": 120,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", oldMgmtRawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "true", rec.Header().Get(auth.HeaderKeyDeprecated))
+	assert.NotEmpty(t, rec.Header().Get(auth.HeaderKeyRevokeAt))
+
+	// 3. read_only key: GET /v1/models & GET /admin/v1/keys allowed; POST /v1/chat/completions, POST /v1/files, POST /admin/v1/keys blocked
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":   "org_presets",
+		"name":     "ro-key",
+		"key_type": "read_only",
+		"role":     "org_admin", // Preset must clamp to org_viewer
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var roKey domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &roKey))
+	assert.Equal(t, domain.KeyTypeReadOnly, roKey.KeyType)
+	assert.Equal(t, domain.RoleOrgViewer, roKey.Role)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", roKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", roKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/v1/chat/completions", roKey.RawKey, map[string]any{
+		"model":    "gpt-4.1",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/v1/files", roKey.RawKey, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "read_only_key")
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", roKey.RawKey, map[string]any{
+		"org_id": "org_presets",
+		"name":   "should-fail",
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "read_only_role")
+
+	// 4. service_account key: enforces RoleServiceAccount and clears UserID
+	rec = doAdminJSONRequest(t, handler, http.MethodPost, "/admin/v1/keys", cfg.Auth.MasterAdminKey, map[string]any{
+		"org_id":   "org_presets",
+		"name":     "sa-key",
+		"key_type": "service_account",
+		"user_id":  "usr_preset_1",
+		"role":     "developer",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var saKey domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &saKey))
+	assert.Equal(t, domain.KeyTypeServiceAccount, saKey.KeyType)
+	assert.Equal(t, domain.RoleServiceAccount, saKey.Role)
+	assert.Empty(t, saKey.UserID)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", saKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", saKey.RawKey, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	// 5. PUT /admin/v1/keys/{keyID} changing key_type from llm_api -> management updates preset routes & role
+	rec = doAdminJSONRequest(t, handler, http.MethodPut, "/admin/v1/keys/"+llmKey.ID, cfg.Auth.MasterAdminKey, map[string]any{
+		"key_type": "invalid_preset",
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodPut, "/admin/v1/keys/"+llmKey.ID, cfg.Auth.MasterAdminKey, map[string]any{
+		"key_type": "management",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var switched domain.VirtualKey
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &switched))
+	assert.Equal(t, domain.KeyTypeManagement, switched.KeyType)
+	assert.Equal(t, domain.RoleOrgAdmin, switched.Role)
+	assert.Equal(t, []string{"/admin/v1/*"}, switched.AllowedEndpoints)
+
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/v1/models", llmKey.RawKey, nil)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	rec = doAdminJSONRequest(t, handler, http.MethodGet, "/admin/v1/keys?org_id=org_presets", llmKey.RawKey, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }

@@ -50,6 +50,7 @@ type Service struct {
 	l1Cache                 sync.Map // keyHash -> l1CacheEntry
 	invalidationMu          sync.Mutex
 	invalidationCancel      context.CancelFunc
+	nowFn                   func() time.Time
 }
 
 func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, masterAdminKey string, l1TTL, l2TTL time.Duration) *Service {
@@ -66,6 +67,20 @@ func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, maste
 		l1TTL:          l1TTL,
 		l2TTL:          l2TTL,
 	}
+}
+
+// SetNowFunc overrides the clock used by Service (intended for deterministic tests).
+func (s *Service) SetNowFunc(fn func() time.Time) {
+	if s != nil {
+		s.nowFn = fn
+	}
+}
+
+func (s *Service) now() time.Time {
+	if s != nil && s.nowFn != nil {
+		return s.nowFn().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // SetMasterEncryptionKey configures the master encryption key used for secret isolation and self-credential checks.
@@ -145,31 +160,51 @@ func HashKey(rawKey string) string {
 // IssueVirtualKey generates a cryptographically random Virtual Key (`sk-gw-<8char>-<36char>`),
 // stores only its SHA-256 hash in the repository, and returns the VirtualKey with `RawKey` populated once.
 func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (*domain.VirtualKey, error) {
-	if req.OrgID == "" {
+	if req == nil || req.OrgID == "" {
 		return nil, fmt.Errorf("org_id is required to issue a virtual key")
+	}
+	if !IsValidKeyType(req.KeyType) {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_key_type",
+			Message:    fmt.Sprintf("unsupported key_type %q", req.KeyType),
+		}
+	}
+	if req.RotationIntervalSec < 0 {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_rotation_interval",
+			Message:    "rotation_interval_sec cannot be negative",
+		}
 	}
 	if _, err := s.repo.GetOrganization(ctx, req.OrgID); err != nil {
 		return nil, err
 	}
-	if req.TeamID != "" {
-		team, err := s.repo.GetTeam(ctx, req.TeamID)
+
+	vk := *req
+	ApplyKeyTypePreset(&vk)
+
+	if vk.TeamID != "" {
+		team, err := s.repo.GetTeam(ctx, vk.TeamID)
 		if err != nil {
-			return nil, fmt.Errorf("verify team %q: %w", req.TeamID, err)
+			return nil, fmt.Errorf("verify team %q: %w", vk.TeamID, err)
 		}
-		if team.OrgID != req.OrgID {
-			return nil, fmt.Errorf("team %q does not belong to organization %q", req.TeamID, req.OrgID)
+		if team.OrgID != vk.OrgID {
+			return nil, fmt.Errorf("team %q does not belong to organization %q", vk.TeamID, vk.OrgID)
 		}
 	}
-	if req.UserID != "" {
-		user, err := s.lookupUser(ctx, req.OrgID, req.UserID)
+	if vk.UserID != "" {
+		user, err := s.lookupUser(ctx, vk.OrgID, vk.UserID)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
-				return nil, fmt.Errorf("user %q does not belong to organization %q", req.UserID, req.OrgID)
+				return nil, fmt.Errorf("user %q does not belong to organization %q", vk.UserID, vk.OrgID)
 			}
-			return nil, fmt.Errorf("verify user %q: %w", req.UserID, err)
+			return nil, fmt.Errorf("verify user %q: %w", vk.UserID, err)
 		}
-		if user == nil || user.OrgID != req.OrgID {
-			return nil, fmt.Errorf("user %q does not belong to organization %q", req.UserID, req.OrgID)
+		if user == nil || user.OrgID != vk.OrgID {
+			return nil, fmt.Errorf("user %q does not belong to organization %q", vk.UserID, vk.OrgID)
 		}
 	}
 
@@ -182,7 +217,6 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 	secretPart := randHex[8:]
 	rawKey := fmt.Sprintf("sk-gw-%s-%s", shortID, secretPart)
 
-	vk := *req
 	if vk.ID == "" {
 		vk.ID = uuid.NewString()
 	}
@@ -197,6 +231,10 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 	}
 	if len(vk.AllowedEndpoints) == 0 {
 		vk.AllowedEndpoints = []string{"*"}
+	}
+	if vk.RotationIntervalSec > 0 && vk.KeyRotationAt == nil {
+		nextRotation := s.now().Add(time.Duration(vk.RotationIntervalSec) * time.Second)
+		vk.KeyRotationAt = &nextRotation
 	}
 	// Confirmed Default: newly provisioned keys default to DenyAll ([]string{}) for MCP and A2A
 	if vk.AllowedMCPServers == nil {
@@ -221,6 +259,22 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	if vk == nil || strings.TrimSpace(vk.ID) == "" {
 		return fmt.Errorf("virtual key id is required")
 	}
+	if vk.KeyType != "" && !IsValidKeyType(vk.KeyType) {
+		return &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_key_type",
+			Message:    fmt.Sprintf("unsupported key_type %q", vk.KeyType),
+		}
+	}
+	if vk.RotationIntervalSec < 0 {
+		return &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_rotation_interval",
+			Message:    "rotation_interval_sec cannot be negative",
+		}
+	}
 	existing, err := s.repo.GetVirtualKeyByID(ctx, vk.ID)
 	if err != nil {
 		return err
@@ -236,6 +290,11 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	}
 	if vk.Role == "" {
 		vk.Role = existing.Role
+	}
+	if vk.KeyType == "" {
+		vk.KeyType = NormalizeKeyType(existing.KeyType)
+	} else {
+		vk.KeyType = NormalizeKeyType(vk.KeyType)
 	}
 	if vk.BudgetResetPeriod == "" {
 		vk.BudgetResetPeriod = existing.BudgetResetPeriod
@@ -280,43 +339,14 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 }
 
 // RotateVirtualKey generates a new cryptographically random `sk-gw-...` key for an existing VirtualKey,
-// updates its key hash and prefix in storage, invalidates the old key hash across L1/L2/PubSub,
+// updates its key hash and prefix in storage, immediately invalidates the old key hash across L1/L2/PubSub,
 // and returns the updated VirtualKey with RawKey populated once.
 func (s *Service) RotateVirtualKey(ctx context.Context, id string) (*domain.VirtualKey, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, fmt.Errorf("virtual key id is required")
-	}
-	existing, err := s.repo.GetVirtualKeyByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	randBytes := make([]byte, 22)
-	if _, err := rand.Read(randBytes); err != nil {
-		return nil, fmt.Errorf("generate random key bytes: %w", err)
-	}
-	randHex := hex.EncodeToString(randBytes)
-	shortID := randHex[:8]
-	secretPart := randHex[8:]
-	rawKey := fmt.Sprintf("sk-gw-%s-%s", shortID, secretPart)
-
-	oldHash := existing.KeyHash
-	rotated := *existing
-	rotated.KeyPrefix = fmt.Sprintf("sk-gw-%s", shortID)
-	rotated.KeyHash = HashKey(rawKey)
-	rotated.IsActive = true
-
-	if err := s.repo.UpdateVirtualKey(ctx, &rotated); err != nil {
-		return nil, err
-	}
-	if oldHash != "" {
-		s.InvalidateKeyHash(ctx, oldHash)
-	}
-	rotated.RawKey = rawKey
-	return &rotated, nil
+	return s.RotateVirtualKeyWithGrace(ctx, id, 0)
 }
 
-// RevokeKey marks a Virtual Key inactive and immediately evicts it from L1 and L2 caches across all pods.
+// RevokeKey marks a Virtual Key inactive and immediately evicts it (and any deprecated grace hashes)
+// from L1 and L2 caches across all pods.
 func (s *Service) RevokeKey(ctx context.Context, id string) error {
 	vk, err := s.repo.GetVirtualKeyByID(ctx, id)
 	if err != nil {
@@ -326,6 +356,15 @@ func (s *Service) RevokeKey(ctx context.Context, id string) error {
 		return err
 	}
 	s.InvalidateKeyHash(ctx, vk.KeyHash)
+	if depRev, ok := s.repo.(storage.DeprecatedKeyRevocationRepository); ok && depRev != nil {
+		if deprecatedHashes, err := depRev.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, id); err == nil {
+			for _, h := range deprecatedHashes {
+				if h != "" && h != vk.KeyHash {
+					s.InvalidateKeyHash(ctx, h)
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -501,7 +540,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	}
 
 	keyHash := HashKey(rawToken)
-	now := time.Now().UTC()
+	now := s.now()
 
 	// 1. Check L1 In-Memory Cache
 	if val, ok := s.l1Cache.Load(keyHash); ok {
@@ -511,9 +550,14 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				s.l1Cache.Delete(keyHash)
 				return nil, expiredVirtualKeyError()
 			}
-			return entry.identity, nil
+			if entry.identity != nil && entry.identity.DeprecatedKeyRevokeAt != nil && !now.Before(*entry.identity.DeprecatedKeyRevokeAt) {
+				s.l1Cache.Delete(keyHash)
+			} else {
+				return entry.identity, nil
+			}
+		} else {
+			s.l1Cache.Delete(keyHash)
 		}
-		s.l1Cache.Delete(keyHash)
 	}
 
 	// 2. Check L2 Redis Cache
@@ -529,24 +573,42 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 						s.l1Cache.Delete(keyHash)
 						return nil, expiredVirtualKeyError()
 					}
-					orgEpoch, teamEpoch := s.fetchEpochs(ctx, cached.Identity.OrgID, cached.Identity.TeamID)
-					if orgEpoch == cached.OrgEpoch && teamEpoch == cached.TeamEpoch {
-						idCtx := cached.Identity
-						s.l1Cache.Store(keyHash, l1CacheEntry{
-							identity:     &idCtx,
-							expiresAt:    now.Add(s.l1TTL),
-							keyExpiresAt: cached.KeyExpiresAt,
-						})
-						return &idCtx, nil
+					deprecatedExpired := cached.Identity.DeprecatedKeyRevokeAt != nil && !now.Before(*cached.Identity.DeprecatedKeyRevokeAt)
+					if !deprecatedExpired {
+						orgEpoch, teamEpoch := s.fetchEpochs(ctx, cached.Identity.OrgID, cached.Identity.TeamID)
+						if orgEpoch == cached.OrgEpoch && teamEpoch == cached.TeamEpoch {
+							idCtx := cached.Identity
+							l1Exp := now.Add(s.l1TTL)
+							if idCtx.DeprecatedKeyRevokeAt != nil && idCtx.DeprecatedKeyRevokeAt.Before(l1Exp) {
+								l1Exp = *idCtx.DeprecatedKeyRevokeAt
+							}
+							s.l1Cache.Store(keyHash, l1CacheEntry{
+								identity:     &idCtx,
+								expiresAt:    l1Exp,
+								keyExpiresAt: cached.KeyExpiresAt,
+							})
+							return &idCtx, nil
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// 3. Query Durable Repository
+	// 3. Query Durable Repository (primary key hash, then active deprecated grace hash)
+	var deprecatedRevokeAt *time.Time
 	vk, err := s.repo.GetVirtualKeyByHash(ctx, keyHash)
-	if err != nil || !vk.IsActive {
+	if err != nil {
+		if rotRepo, ok := s.repo.(storage.KeyRotationRepository); ok && rotRepo != nil {
+			if depVK, revokeAt, depErr := rotRepo.GetActiveDeprecatedVirtualKey(ctx, keyHash, now); depErr == nil && depVK != nil && now.Before(revokeAt) {
+				vk = depVK
+				err = nil
+				revUTC := revokeAt.UTC()
+				deprecatedRevokeAt = &revUTC
+			}
+		}
+	}
+	if err != nil || vk == nil || !vk.IsActive {
 		// Admin convenience: allow MasterAdminKey on /v1/* Data Plane only when explicitly enabled
 		if err != nil && s.allowMasterKeyDataPlane && s.ValidateAdminKey(rawToken) {
 			if org := s.resolveDefaultActiveOrg(ctx); org != nil {
@@ -555,6 +617,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 					KeyPrefix:                   "master-admin",
 					OrgID:                       org.ID,
 					Role:                        domain.RoleOrgAdmin,
+					KeyType:                     domain.KeyTypeDefault,
 					AllowedEndpoints:            []string{"*"},
 					KeyAllowedMCPServers:        []string{"*"},
 					KeyAllowedA2AAgents:         []string{"*"},
@@ -590,12 +653,34 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	if err != nil {
 		return nil, err
 	}
+	if deprecatedRevokeAt != nil {
+		idCtx.DeprecatedKeyRevokeAt = deprecatedRevokeAt
+	}
 
-	// Hydrate L2 Redis + L1 Memory
+	// Hydrate L2 Redis + L1 Memory (capping TTLs to deprecatedRevokeAt when in grace window)
 	var keyExpiresAt *time.Time
 	if vk.ExpiresAt != nil {
 		expiresAt := vk.ExpiresAt.UTC()
 		keyExpiresAt = &expiresAt
+	}
+	l1ExpiresAt := now.Add(s.l1TTL)
+	l2TTL := s.l2TTL
+	if deprecatedRevokeAt != nil {
+		remaining := deprecatedRevokeAt.Sub(now)
+		if remaining <= 0 {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_api_key",
+				Message:    "Invalid or revoked virtual API key",
+			}
+		}
+		if deprecatedRevokeAt.Before(l1ExpiresAt) {
+			l1ExpiresAt = *deprecatedRevokeAt
+		}
+		if remaining < l2TTL {
+			l2TTL = remaining
+		}
 	}
 	orgEpoch, teamEpoch := s.fetchEpochs(ctx, idCtx.OrgID, idCtx.TeamID)
 	cacheEntry := cachedIdentity{
@@ -604,16 +689,16 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		OrgEpoch:     orgEpoch,
 		TeamEpoch:    teamEpoch,
 	}
-	if s.redis != nil {
+	if s.redis != nil && l2TTL > 0 {
 		if b, err := json.Marshal(cacheEntry); err == nil {
 			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-				return rdb.Set(ctx, authCacheKey(keyHash), b, s.l2TTL).Result()
+				return rdb.Set(ctx, authCacheKey(keyHash), b, l2TTL).Result()
 			})
 		}
 	}
 	s.l1Cache.Store(keyHash, l1CacheEntry{
 		identity:     idCtx,
-		expiresAt:    now.Add(s.l1TTL),
+		expiresAt:    l1ExpiresAt,
 		keyExpiresAt: keyExpiresAt,
 	})
 
@@ -640,7 +725,7 @@ func (s *Service) AuthenticateVirtualKeyByID(ctx context.Context, id string) (*d
 			Message:    "Mapped virtual API key is invalid or revoked",
 		}
 	}
-	if isKeyExpired(vk.ExpiresAt, time.Now().UTC()) {
+	if isKeyExpired(vk.ExpiresAt, s.now()) {
 		return nil, expiredVirtualKeyError()
 	}
 	return s.resolveVirtualKeyIdentity(ctx, vk)
@@ -657,6 +742,12 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		}
 	}
 
+	var keyRotationAt *time.Time
+	if vk.KeyRotationAt != nil {
+		t := vk.KeyRotationAt.UTC()
+		keyRotationAt = &t
+	}
+
 	idCtx := &domain.IdentityContext{
 		VirtualKeyID:                vk.ID,
 		KeyPrefix:                   vk.KeyPrefix,
@@ -664,6 +755,9 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		TeamID:                      vk.TeamID,
 		UserID:                      vk.UserID,
 		Role:                        vk.Role,
+		KeyType:                     NormalizeKeyType(vk.KeyType),
+		RotationIntervalSec:         vk.RotationIntervalSec,
+		KeyRotationAt:               keyRotationAt,
 		KeyAllowedModels:            vk.AllowedModels,
 		AllowedEndpoints:            vk.AllowedEndpoints,
 		KeyAllowedMCPServers:        vk.AllowedMCPServers,
@@ -900,6 +994,14 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 		if err != nil {
 			return nil, err
 		}
+		if idCtx.KeyType == domain.KeyTypeLLMAPI {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "key_type_not_allowed",
+				Message:    "Virtual keys with key_type \"llm_api\" are restricted to data-plane inference endpoints",
+			}
+		}
 		opRole, ok := mapDomainRoleToOperatorRole(idCtx.Role)
 		if !ok {
 			return nil, &domain.GatewayError{
@@ -914,10 +1016,11 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			actorID = idCtx.UserID
 		}
 		return &domain.OperatorContext{
-			ActorID:    actorID,
-			Role:       opRole,
-			OrgID:      idCtx.OrgID,
-			AuthMethod: "virtual_key",
+			ActorID:               actorID,
+			Role:                  opRole,
+			OrgID:                 idCtx.OrgID,
+			AuthMethod:            "virtual_key",
+			DeprecatedKeyRevokeAt: idCtx.DeprecatedKeyRevokeAt,
 		}, nil
 	}
 

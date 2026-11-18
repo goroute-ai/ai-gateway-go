@@ -3,9 +3,42 @@ package auth
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
+
+const (
+	// HeaderKeyDeprecated is emitted when a request authenticates with a deprecated virtual key during its rotation grace period.
+	HeaderKeyDeprecated = "X-Gateway-Key-Deprecated"
+	// HeaderKeyRevokeAt communicates the RFC3339 UTC timestamp when a deprecated virtual key will stop working.
+	HeaderKeyRevokeAt = "X-Gateway-Key-Revoke-At"
+)
+
+func writeDeprecatedKeyHeaders(w http.ResponseWriter, revokeAt *time.Time) {
+	if w == nil || revokeAt == nil {
+		return
+	}
+	w.Header().Set(HeaderKeyDeprecated, "true")
+	w.Header().Set(HeaderKeyRevokeAt, revokeAt.UTC().Format(time.RFC3339))
+}
+
+func enforceReadOnlyKeyMethod(idCtx *domain.IdentityContext, method string) error {
+	if idCtx == nil || idCtx.KeyType != domain.KeyTypeReadOnly {
+		return nil
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return nil
+	default:
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "read_only_key",
+			Message:    "Virtual keys with key_type \"read_only\" only permit read-only HTTP methods",
+		}
+	}
+}
 
 type ctxKey int
 
@@ -87,11 +120,18 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 				domain.WriteHTTPError(w, err)
 				return
 			}
+			if idCtx != nil {
+				writeDeprecatedKeyHeaders(w, idCtx.DeprecatedKeyRevokeAt)
+			}
 			if rbac != nil {
 				if err := rbac.AuthorizeEndpoint(idCtx, r.URL.Path); err != nil {
 					domain.WriteHTTPError(w, err)
 					return
 				}
+			}
+			if err := enforceReadOnlyKeyMethod(idCtx, r.Method); err != nil {
+				domain.WriteHTTPError(w, err)
+				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})
@@ -108,11 +148,18 @@ func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) f
 				domain.WriteHTTPError(w, err)
 				return
 			}
+			if idCtx != nil {
+				writeDeprecatedKeyHeaders(w, idCtx.DeprecatedKeyRevokeAt)
+			}
 			if rbac != nil {
 				if err := rbac.AuthorizeEndpoint(idCtx, r.URL.Path); err != nil {
 					domain.WriteHTTPError(w, err)
 					return
 				}
+			}
+			if err := enforceReadOnlyKeyMethod(idCtx, r.Method); err != nil {
+				domain.WriteHTTPError(w, err)
+				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})
@@ -137,6 +184,9 @@ func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return
+			}
+			if op != nil {
+				writeDeprecatedKeyHeaders(w, op.DeprecatedKeyRevokeAt)
 			}
 			next.ServeHTTP(w, r.WithContext(WithOperator(r.Context(), op)))
 		})

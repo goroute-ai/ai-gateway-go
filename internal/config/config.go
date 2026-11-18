@@ -322,6 +322,8 @@ type AuthConfig struct {
 	DefaultVirtualKey       string              `yaml:"default_virtual_key"`
 	L1CacheTTL              time.Duration       `yaml:"l1_cache_ttl"`
 	L2CacheTTL              time.Duration       `yaml:"l2_cache_ttl"`
+	KeyRotationPollInterval time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
+	KeyRotationGracePeriod  time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
 }
 
 type RouterConfig struct {
@@ -462,12 +464,14 @@ func Default() *Config {
 			RedisDB:     0,
 		},
 		Auth: AuthConfig{
-			MasterAdminKey:      "sk-gw-master-admin-default-key-change-me",
-			MasterEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			JWTSecret:           "",
-			DefaultOrgID:        "org_default",
-			L1CacheTTL:          15 * time.Second,
-			L2CacheTTL:          5 * time.Minute,
+			MasterAdminKey:          "sk-gw-master-admin-default-key-change-me",
+			MasterEncryptionKey:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			JWTSecret:               "",
+			DefaultOrgID:            "org_default",
+			L1CacheTTL:              15 * time.Second,
+			L2CacheTTL:              5 * time.Minute,
+			KeyRotationPollInterval: 1 * time.Minute,
+			KeyRotationGracePeriod:  24 * time.Hour,
 		},
 		Router: RouterConfig{
 			DefaultFastAlias:               "fast",
@@ -677,6 +681,16 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	}
 	if v := os.Getenv("GATEWAY_OIDC_JWKS_URL"); v != "" {
 		cfg.Auth.OIDCJWKSURL = v
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Auth.KeyRotationPollInterval = d
+		}
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_GRACE_PERIOD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Auth.KeyRotationGracePeriod = d
+		}
 	}
 	if v := os.Getenv("GATEWAY_ROUTER_DEFAULT_COOLDOWN"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

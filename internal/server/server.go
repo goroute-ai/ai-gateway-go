@@ -55,6 +55,7 @@ type GatewayServer struct {
 	vault              *auth.Vault
 	authSvc            *auth.Service
 	authResolver       *auth.AuthResolver
+	keyRotation        *auth.KeyRotationManager
 	rbac               *auth.RBACEngine
 	limiter            *ratelimit.Limiter
 	respCache          *cache.ResponseCache
@@ -282,6 +283,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
+	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
+		PollInterval: cfg.Auth.KeyRotationPollInterval,
+		GracePeriod:  cfg.Auth.KeyRotationGracePeriod,
+	})
 	rbac := auth.NewRBACEngine(repo)
 	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
@@ -517,6 +522,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		vault:              vault,
 		authSvc:            authSvc,
 		authResolver:       authResolver,
+		keyRotation:        keyRotation,
 		rbac:               rbac,
 		limiter:            limiter,
 		respCache:          respCache,
@@ -972,13 +978,23 @@ func (s *GatewayServer) AuthResolver() *auth.AuthResolver {
 	return s.authResolver
 }
 
+func (s *GatewayServer) KeyRotationManager() *auth.KeyRotationManager {
+	if s == nil {
+		return nil
+	}
+	return s.keyRotation
+}
+
 func (s *GatewayServer) RBAC() *auth.RBACEngine {
 	return s.rbac
 }
 
-// StartWorkers starts background daemons (Async Spend Batch Writer, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
+// StartWorkers starts background daemons (Async Spend Batch Writer, Key Rotation Manager, Automated Model Discovery, Active Health Monitor, A2A Stream Publisher & Outbox Worker).
 func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	s.authSvc.StartInvalidationListener(ctx)
+	if s.keyRotation != nil {
+		s.keyRotation.Start(ctx)
+	}
 	s.spendWorker.Start(ctx)
 	s.healthMon.Start(ctx)
 	if s.cfg.Discovery.Enabled {
@@ -1053,6 +1069,9 @@ func (s *GatewayServer) warmupSemanticPreRouter(ctx context.Context) {
 
 // Shutdown drains background workers cleanly.
 func (s *GatewayServer) Shutdown(ctx context.Context) {
+	if s.keyRotation != nil {
+		s.keyRotation.Stop()
+	}
 	s.authSvc.StopInvalidationListener()
 	if s.a2aPublisher != nil {
 		s.a2aPublisher.Stop()

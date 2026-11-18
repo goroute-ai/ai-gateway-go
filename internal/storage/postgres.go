@@ -1411,11 +1411,13 @@ func (p *PostgresRepository) IncrementQuotaPolicySpend(ctx context.Context, id s
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default')`
+
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default')`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
-	var role, period string
+	var role, period, keyType string
 	var rawFallbacks []byte
 	if err := row.Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
@@ -1423,13 +1425,44 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType,
 	); err != nil {
 		return nil, err
 	}
 	k.Role = domain.Role(role)
 	k.BudgetResetPeriod = domain.BudgetResetPeriod(period)
 	k.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
+	k.KeyType = domain.KeyType(keyType)
+	if k.KeyType == "" {
+		k.KeyType = domain.KeyTypeDefault
+	}
 	return &k, nil
+}
+
+func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, error) {
+	var k domain.VirtualKey
+	var role, period, keyType string
+	var rawFallbacks []byte
+	var revokeAt time.Time
+	if err := row.Scan(
+		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
+		&k.AllowedModels, &k.AllowedEndpoints,
+		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
+		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
+		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType,
+		&revokeAt,
+	); err != nil {
+		return nil, time.Time{}, err
+	}
+	k.Role = domain.Role(role)
+	k.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	k.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
+	k.KeyType = domain.KeyType(keyType)
+	if k.KeyType == "" {
+		k.KeyType = domain.KeyTypeDefault
+	}
+	return &k, revokeAt.UTC(), nil
 }
 
 func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.VirtualKey) error {
@@ -1445,20 +1478,28 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 	if vk.Role == "" {
 		vk.Role = domain.RoleServiceAccount
 	}
+	if vk.KeyType == "" {
+		vk.KeyType = domain.KeyTypeDefault
+	}
 	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, time.Now().UTC())
+	if p.pool == nil {
+		return p.mem.CreateVirtualKey(ctx, vk)
+	}
 	const q = `
 		INSERT INTO virtual_keys (
 			id, key_prefix, key_hash, name, org_id, team_id, user_id, role, allowed_models, allowed_endpoints,
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
-			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`
+			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active,
+			rotation_interval_sec, key_rotation_at, key_type
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 		vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
+		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType),
 	); err != nil {
 		return err
 	}
@@ -1505,6 +1546,9 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			batch_enqueued_token_limit = $23,
 			expires_at = $24,
 			is_active = $25,
+			rotation_interval_sec = $26,
+			key_rotation_at = $27,
+			key_type = COALESCE(NULLIF($28, ''), key_type),
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -1514,6 +1558,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
+			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType),
 		)
 		if err != nil {
 			return err
@@ -1532,6 +1577,9 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 }
 
 func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash string) (*domain.VirtualKey, error) {
+	if p.pool == nil {
+		return p.mem.GetVirtualKeyByHash(ctx, keyHash)
+	}
 	k, err := scanVirtualKey(p.pool.QueryRow(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE key_hash = $1`, keyHash))
 	if err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
@@ -1540,6 +1588,9 @@ func (p *PostgresRepository) GetVirtualKeyByHash(ctx context.Context, keyHash st
 }
 
 func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error) {
+	if p.pool == nil {
+		return p.mem.GetVirtualKeyByID(ctx, id)
+	}
 	k, err := scanVirtualKey(p.pool.QueryRow(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE id = $1`, id))
 	if err != nil {
 		return nil, fmt.Errorf("virtual key not found: %w", err)
@@ -1548,6 +1599,9 @@ func (p *PostgresRepository) GetVirtualKeyByID(ctx context.Context, id string) (
 }
 
 func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error) {
+	if p.pool == nil {
+		return p.mem.ListVirtualKeys(ctx, orgID)
+	}
 	rows, err := p.pool.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
@@ -1575,6 +1629,130 @@ func (p *PostgresRepository) RevokeVirtualKey(ctx context.Context, id string) er
 	}
 	_ = p.mem.RevokeVirtualKey(ctx, id)
 	return nil
+}
+
+func (p *PostgresRepository) AddDeprecatedVirtualKeyHash(ctx context.Context, keyHash, virtualKeyID string, revokeAt time.Time) error {
+	keyHash = strings.TrimSpace(keyHash)
+	virtualKeyID = strings.TrimSpace(virtualKeyID)
+	if keyHash == "" || virtualKeyID == "" {
+		return fmt.Errorf("key_hash and virtual_key_id are required")
+	}
+	revUTC := revokeAt.UTC()
+	if p.pool == nil {
+		return p.mem.AddDeprecatedVirtualKeyHash(ctx, keyHash, virtualKeyID, revUTC)
+	}
+	const q = `
+		INSERT INTO virtual_key_deprecated_hashes (key_hash, virtual_key_id, revoke_at, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (key_hash) DO UPDATE SET
+			virtual_key_id = EXCLUDED.virtual_key_id,
+			revoke_at = EXCLUDED.revoke_at`
+	if _, err := p.pool.Exec(ctx, q, keyHash, virtualKeyID, revUTC); err != nil {
+		return err
+	}
+	_ = p.mem.AddDeprecatedVirtualKeyHash(ctx, keyHash, virtualKeyID, revUTC)
+	return nil
+}
+
+func (p *PostgresRepository) GetActiveDeprecatedVirtualKey(ctx context.Context, keyHash string, now time.Time) (*domain.VirtualKey, time.Time, error) {
+	keyHash = strings.TrimSpace(keyHash)
+	if keyHash == "" {
+		return nil, time.Time{}, fmt.Errorf("deprecated virtual key %w", ErrNotFound)
+	}
+	nowUTC := now.UTC()
+	if p.pool == nil {
+		return p.mem.GetActiveDeprecatedVirtualKey(ctx, keyHash, nowUTC)
+	}
+	const q = `
+		SELECT ` + virtualKeySelectColsAliased + `, d.revoke_at
+		FROM virtual_key_deprecated_hashes d
+		JOIN virtual_keys vk ON vk.id = d.virtual_key_id
+		WHERE d.key_hash = $1 AND d.revoke_at > $2`
+	vk, revokeAt, err := scanDeprecatedVirtualKey(p.pool.QueryRow(ctx, q, keyHash, nowUTC))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, time.Time{}, fmt.Errorf("deprecated virtual key %w", ErrNotFound)
+		}
+		return nil, time.Time{}, err
+	}
+	return vk, revokeAt, nil
+}
+
+func (p *PostgresRepository) DeleteExpiredDeprecatedVirtualKeyHashes(ctx context.Context, now time.Time) (int64, error) {
+	nowUTC := now.UTC()
+	if p.pool == nil {
+		return p.mem.DeleteExpiredDeprecatedVirtualKeyHashes(ctx, nowUTC)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM virtual_key_deprecated_hashes WHERE revoke_at <= $1`, nowUTC)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = p.mem.DeleteExpiredDeprecatedVirtualKeyHashes(ctx, nowUTC)
+	return tag.RowsAffected(), nil
+}
+
+func (p *PostgresRepository) DeleteDeprecatedVirtualKeyHashesByKeyID(ctx context.Context, virtualKeyID string) ([]string, error) {
+	virtualKeyID = strings.TrimSpace(virtualKeyID)
+	if virtualKeyID == "" {
+		return nil, nil
+	}
+	if p.pool == nil {
+		return p.mem.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, virtualKeyID)
+	}
+	rows, err := p.pool.Query(ctx, `DELETE FROM virtual_key_deprecated_hashes WHERE virtual_key_id = $1 RETURNING TRIM(key_hash)`, virtualKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hashes []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		if h != "" {
+			hashes = append(hashes, h)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_, _ = p.mem.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, virtualKeyID)
+	return hashes, nil
+}
+
+func (p *PostgresRepository) ListVirtualKeysDueForRotation(ctx context.Context, now time.Time, limit int) ([]*domain.VirtualKey, error) {
+	nowUTC := now.UTC()
+	if p.pool == nil {
+		return p.mem.ListVirtualKeysDueForRotation(ctx, nowUTC, limit)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	const q = `
+		SELECT ` + virtualKeySelectCols + `
+		FROM virtual_keys
+		WHERE is_active = TRUE
+		  AND rotation_interval_sec > 0
+		  AND key_rotation_at IS NOT NULL
+		  AND key_rotation_at <= $1
+		  AND (expires_at IS NULL OR expires_at > $1)
+		ORDER BY key_rotation_at ASC, id ASC
+		LIMIT $2`
+	rows, err := p.pool.Query(ctx, q, nowUTC, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*domain.VirtualKey
+	for rows.Next() {
+		k, err := scanVirtualKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, k)
+	}
+	return list, rows.Err()
 }
 
 func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error {
