@@ -34,6 +34,8 @@ type MemoryRepository struct {
 	keysByHash             map[string]*domain.VirtualKey
 	jwtKeyMappings         map[string]*domain.JWTKeyMapping
 	jwtKeyMappingsByTuple  map[string]string
+	quotaPolicies          map[string]*domain.QuotaPolicy
+	quotaPoliciesByTuple   map[string]string
 	credentials            map[string]*domain.ProviderCredential
 	groupsByID             map[string]*domain.ModelGroup
 	deployments            map[string]*domain.Deployment
@@ -83,6 +85,8 @@ func NewMemoryRepository() *MemoryRepository {
 		keysByHash:            make(map[string]*domain.VirtualKey),
 		jwtKeyMappings:        make(map[string]*domain.JWTKeyMapping),
 		jwtKeyMappingsByTuple: make(map[string]string),
+		quotaPolicies:         make(map[string]*domain.QuotaPolicy),
+		quotaPoliciesByTuple:  make(map[string]string),
 		credentials:           make(map[string]*domain.ProviderCredential),
 		groupsByID:            make(map[string]*domain.ModelGroup),
 		deployments:           make(map[string]*domain.Deployment),
@@ -1032,6 +1036,114 @@ func (r *MemoryRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, cla
 	}
 	cp := *m
 	return &cp, nil
+}
+
+func (r *MemoryRepository) UpsertQuotaPolicy(_ context.Context, policy *domain.QuotaPolicy) error {
+	now := time.Now().UTC()
+	if err := normalizeQuotaPolicy(policy, now); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := quotaPolicyTupleKey(policy.OrgID, policy.ScopeType, policy.ScopeID, policy.ModelPattern)
+	if existingID, ok := r.quotaPoliciesByTuple[tupleKey]; ok {
+		existing := r.quotaPolicies[existingID]
+		policy.ID = existing.ID
+		policy.CreatedAt = existing.CreatedAt
+		if existing.SpentMicros > policy.SpentMicros {
+			policy.SpentMicros = existing.SpentMicros
+		}
+		policy.UpdatedAt = now
+		r.quotaPolicies[existing.ID] = policy.Clone()
+		return nil
+	}
+
+	if policy.ID == "" {
+		policy.ID = uuid.NewString()
+	} else if _, exists := r.quotaPolicies[policy.ID]; exists {
+		return fmt.Errorf("quota policy %q already exists: %w", policy.ID, ErrConflict)
+	}
+	if policy.CreatedAt.IsZero() {
+		policy.CreatedAt = now
+	}
+	policy.UpdatedAt = now
+	r.quotaPolicies[policy.ID] = policy.Clone()
+	r.quotaPoliciesByTuple[tupleKey] = policy.ID
+	return nil
+}
+
+func (r *MemoryRepository) GetQuotaPolicy(_ context.Context, id string) (*domain.QuotaPolicy, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.quotaPolicies[id]
+	if !ok {
+		return nil, fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+	}
+	return p.Clone(), nil
+}
+
+func (r *MemoryRepository) ListQuotaPolicies(_ context.Context, filter QuotaPolicyFilter) ([]*domain.QuotaPolicy, error) {
+	orgID := strings.TrimSpace(filter.OrgID)
+	scopeType := domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(filter.ScopeType))))
+	scopeID := strings.TrimSpace(filter.ScopeID)
+	modelPattern := strings.TrimSpace(filter.ModelPattern)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []*domain.QuotaPolicy
+	for _, p := range r.quotaPolicies {
+		if orgID != "" && p.OrgID != orgID {
+			continue
+		}
+		if scopeType != "" && p.ScopeType != scopeType {
+			continue
+		}
+		if scopeID != "" && p.ScopeID != scopeID {
+			continue
+		}
+		if modelPattern != "" && p.ModelPattern != modelPattern {
+			continue
+		}
+		if filter.ActiveOnly && !p.IsActive {
+			continue
+		}
+		out = append(out, p.Clone())
+	}
+	sortQuotaPolicies(out)
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteQuotaPolicy(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.quotaPolicies[id]
+	if !ok {
+		return fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+	}
+	delete(r.quotaPoliciesByTuple, quotaPolicyTupleKey(p.OrgID, p.ScopeType, p.ScopeID, p.ModelPattern))
+	delete(r.quotaPolicies, id)
+	return nil
+}
+
+func (r *MemoryRepository) IncrementQuotaPolicySpend(_ context.Context, id string, deltaMicros int64) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("quota policy id is required")
+	}
+	if deltaMicros < 0 {
+		return fmt.Errorf("delta_micros must be non-negative")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.quotaPolicies[id]
+	if !ok {
+		return fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+	}
+	p.SpentMicros += deltaMicros
+	p.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {

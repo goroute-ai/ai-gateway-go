@@ -55,20 +55,23 @@ type SpendIncrementEvent struct {
 // Limiter enforces RPM, TPM, Concurrency, and Budget limits across Virtual Key, Team, User, Organization, and Global scopes.
 // Uses atomic Redis Lua scripts; configured quotas fail closed when Redis is unavailable.
 type Limiter struct {
-	redis              *storage.RedisFabric
-	checkScript        *redis.Script
-	checkGlobalScript  *redis.Script
-	reconcileScr       *redis.Script
-	reconcileGlobalScr *redis.Script
-	rollbackScr        *redis.Script
-	spendScr           *redis.Script
-	resetBudgetScr     *redis.Script
-	renewScr           *redis.Script
-	budgetAvailScr     *redis.Script
-	batchAcquireScr    *redis.Script
-	batchReleaseScr    *redis.Script
-	windowSec          int
-	concTTLSec         int
+	redis                   *storage.RedisFabric
+	checkScript             *redis.Script
+	checkGlobalScript       *redis.Script
+	reconcileScr            *redis.Script
+	reconcileGlobalScr      *redis.Script
+	rollbackScr             *redis.Script
+	spendScr                *redis.Script
+	resetBudgetScr          *redis.Script
+	renewScr                *redis.Script
+	budgetAvailScr          *redis.Script
+	batchAcquireScr         *redis.Script
+	batchReleaseScr         *redis.Script
+	checkDescriptorsScr     *redis.Script
+	reconcileDescriptorsScr *redis.Script
+	windowSec               int
+	concTTLSec              int
+	nowFunc                 func() time.Time
 
 	mu                      sync.RWMutex
 	enabled                 bool
@@ -79,15 +82,26 @@ type Limiter struct {
 	globalTPM               int
 	globalMaxConc           int
 
-	localMu           sync.Mutex
-	localWindowMin    int64
-	localRPM          map[string]int
-	localTPM          map[string]int
-	localConc         map[string]int
-	localSpent        map[string]int64
-	localReservations map[string]map[string]int64
-	localBatchSum     map[string]int64
-	localBatchHolds   map[string]localBatchHold
+	localMu               sync.Mutex
+	localWindowMin        int64
+	localRPM              map[string]int
+	localTPM              map[string]int
+	localConc             map[string]int
+	localSpent            map[string]int64
+	localReservations     map[string]map[string]int64
+	localBatchSum         map[string]int64
+	localBatchHolds       map[string]localBatchHold
+	localDescWindowMin    int64
+	localDescDay          string
+	localDescRPM          map[string]int
+	localDescTPM          map[string]int
+	localDescITPM         map[string]int
+	localDescOTPM         map[string]int
+	localDescTPD          map[string]int64
+	localDescConc         map[string]int
+	localDescIter         map[string]localIterCounter
+	localDescSpent        map[string]int64
+	localDescReservations map[string]map[string]localReservationEntry
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -98,28 +112,39 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		concTTLSec = 300
 	}
 	return &Limiter{
-		redis:              redisFabric,
-		checkScript:        redis.NewScript(checkAndIncrementLua),
-		checkGlobalScript:  redis.NewScript(checkAndIncrementGlobalLua),
-		reconcileScr:       redis.NewScript(reconcileLua),
-		reconcileGlobalScr: redis.NewScript(reconcileGlobalLua),
-		rollbackScr:        redis.NewScript(rollbackAcquireLua),
-		spendScr:           redis.NewScript(recordSpendLua),
-		resetBudgetScr:     redis.NewScript(resetBudgetSpendLua),
-		renewScr:           redis.NewScript(renewReservationLua),
-		budgetAvailScr:     redis.NewScript(checkBudgetAvailableLua),
-		batchAcquireScr:    redis.NewScript(batchEnqueuedAcquireLua),
-		batchReleaseScr:    redis.NewScript(batchEnqueuedReleaseLua),
-		windowSec:          windowSec,
-		concTTLSec:         concTTLSec,
-		enabled:            true,
-		localRPM:           make(map[string]int),
-		localTPM:           make(map[string]int),
-		localConc:          make(map[string]int),
-		localSpent:         make(map[string]int64),
-		localReservations:  make(map[string]map[string]int64),
-		localBatchSum:      make(map[string]int64),
-		localBatchHolds:    make(map[string]localBatchHold),
+		redis:                   redisFabric,
+		checkScript:             redis.NewScript(checkAndIncrementLua),
+		checkGlobalScript:       redis.NewScript(checkAndIncrementGlobalLua),
+		reconcileScr:            redis.NewScript(reconcileLua),
+		reconcileGlobalScr:      redis.NewScript(reconcileGlobalLua),
+		rollbackScr:             redis.NewScript(rollbackAcquireLua),
+		spendScr:                redis.NewScript(recordSpendLua),
+		resetBudgetScr:          redis.NewScript(resetBudgetSpendLua),
+		renewScr:                redis.NewScript(renewReservationLua),
+		budgetAvailScr:          redis.NewScript(checkBudgetAvailableLua),
+		batchAcquireScr:         redis.NewScript(batchEnqueuedAcquireLua),
+		batchReleaseScr:         redis.NewScript(batchEnqueuedReleaseLua),
+		checkDescriptorsScr:     redis.NewScript(checkDescriptorsLua),
+		reconcileDescriptorsScr: redis.NewScript(reconcileDescriptorsLua),
+		windowSec:               windowSec,
+		concTTLSec:              concTTLSec,
+		enabled:                 true,
+		localRPM:                make(map[string]int),
+		localTPM:                make(map[string]int),
+		localConc:               make(map[string]int),
+		localSpent:              make(map[string]int64),
+		localReservations:       make(map[string]map[string]int64),
+		localBatchSum:           make(map[string]int64),
+		localBatchHolds:         make(map[string]localBatchHold),
+		localDescRPM:            make(map[string]int),
+		localDescTPM:            make(map[string]int),
+		localDescITPM:           make(map[string]int),
+		localDescOTPM:           make(map[string]int),
+		localDescTPD:            make(map[string]int64),
+		localDescConc:           make(map[string]int),
+		localDescIter:           make(map[string]localIterCounter),
+		localDescSpent:          make(map[string]int64),
+		localDescReservations:   make(map[string]map[string]localReservationEntry),
 	}
 }
 
