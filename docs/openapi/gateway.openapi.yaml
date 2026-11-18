@@ -1317,6 +1317,90 @@ components:
         created_at:
           type: string
           format: date-time
+    AdminAccessGroupRuleCreateRequest:
+      type: object
+      required:
+        - name
+        - attribute
+        - operator
+        - value
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        attribute:
+          type: string
+          description: Trusted Principal or IdentityContext attribute (jwt_claims.<path>, user_id, email, user_role, team_id, issuer)
+        operator:
+          type: string
+          enum:
+            - equals
+            - contains
+            - prefix
+            - in_list
+        value:
+          type: string
+        allowed_models:
+          type: array
+          items:
+            type: string
+        access_group_id:
+          type: string
+        priority:
+          type: integer
+        is_active:
+          type: boolean
+    AdminAccessGroupRule:
+      type: object
+      required:
+        - id
+        - org_id
+        - name
+        - attribute
+        - operator
+        - value
+        - allowed_models
+        - priority
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        attribute:
+          type: string
+        operator:
+          type: string
+          enum:
+            - equals
+            - contains
+            - prefix
+            - in_list
+        value:
+          type: string
+        allowed_models:
+          type: array
+          items:
+            type: string
+        access_group_id:
+          type: string
+        priority:
+          type: integer
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     AdminOrganization:
       type: object
       properties:
@@ -3090,6 +3174,70 @@ paths:
       responses:
         '200':
           description: JWT key mapping deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/access-group-rules:
+    post:
+      operationId: createAccessGroupRule
+      summary: Create a dynamic attribute-based access group rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAccessGroupRuleCreateRequest'
+      responses:
+        '201':
+          description: Created access group rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessGroupRule'
+        '400':
+          description: Invalid rule definition
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listAccessGroupRules
+      summary: List dynamic attribute-based access group rules
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of access group rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminAccessGroupRule'
+  /admin/v1/access-group-rules/{id}:
+    delete:
+      operationId: deleteAccessGroupRule
+      summary: Delete a dynamic attribute-based access group rule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Access group rule deleted
           content:
             application/json:
               schema:

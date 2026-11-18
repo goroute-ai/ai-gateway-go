@@ -267,9 +267,14 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 	}
 
+	rbac := auth.NewRBACEngine(repo)
+	rbac.SetRedis(redisFabric)
+	authSvc.AddInvalidationHandler(rbac.HandleInvalidation)
+
 	authResolver := auth.NewAuthResolver(auth.ResolverConfig{
 		Service:                    authSvc,
 		Repo:                       repo,
+		RBAC:                       rbac,
 		JWTVerifier:                jwtVerifier,
 		Introspector:               introspector,
 		ProxyAuth:                  proxyAuth,
@@ -287,8 +292,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		PollInterval: cfg.Auth.KeyRotationPollInterval,
 		GracePeriod:  cfg.Auth.KeyRotationGracePeriod,
 	})
-	rbac := auth.NewRBACEngine(repo)
-	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
 	limiter.SetEnabled(cfg.RateLimit.Enabled)
 	limiter.SetFallbackToLocalOnOutage(cfg.RateLimit.FallbackToLocalOnOutage)
@@ -811,6 +814,9 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Post("/jwt-mappings", s.handleAdminCreateJWTMapping)
 		adm.Get("/jwt-mappings", s.handleAdminListJWTMappings)
 		adm.Delete("/jwt-mappings/{id}", s.handleAdminDeleteJWTMapping)
+		adm.Post("/access-group-rules", s.handleAdminCreateAccessGroupRule)
+		adm.Get("/access-group-rules", s.handleAdminListAccessGroupRules)
+		adm.Delete("/access-group-rules/{id}", s.handleAdminDeleteAccessGroupRule)
 
 		// Provider Credentials Vault & Lifecycle (Rotation & Live Validation)
 		adm.Post("/credentials", s.handleAdminCreateCredential)

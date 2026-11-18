@@ -2,7 +2,7 @@ package modelmgmt
 
 import (
 	"context"
-	"slices"
+	"strings"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi"
@@ -78,13 +78,16 @@ func (s *Service) ListVisibleModelsForIdentity(ctx context.Context, idCtx *domai
 				continue
 			}
 		}
-		// Team & Virtual Key allowlist check
+		// Team & Virtual Key allowlist check (plus dynamically granted access group models)
 		if idCtx != nil {
-			if len(idCtx.TeamAllowedModels) > 0 && !allowsModel(idCtx.TeamAllowedModels, gm.ModelName, gm.ID) {
-				continue
-			}
-			if len(idCtx.KeyAllowedModels) > 0 && !allowsModel(idCtx.KeyAllowedModels, gm.ModelName, gm.ID) {
-				continue
+			dynamicAllowed := len(idCtx.DynamicAllowedModels) > 0 && allowsModel(idCtx.DynamicAllowedModels, gm.ModelName, gm.ID)
+			if !dynamicAllowed {
+				if len(idCtx.TeamAllowedModels) > 0 && !allowsModel(idCtx.TeamAllowedModels, gm.ModelName, gm.ID) {
+					continue
+				}
+				if len(idCtx.KeyAllowedModels) > 0 && !allowsModel(idCtx.KeyAllowedModels, gm.ModelName, gm.ID) {
+					continue
+				}
 			}
 		}
 
@@ -126,5 +129,16 @@ func (s *Service) ListVisibleModelsForIdentity(ctx context.Context, idCtx *domai
 }
 
 func allowsModel(allowlist []string, modelName, globalID string) bool {
-	return slices.Contains(allowlist, "*") || slices.Contains(allowlist, modelName) || slices.Contains(allowlist, globalID)
+	for _, item := range allowlist {
+		if item == "*" || item == modelName || item == globalID {
+			return true
+		}
+		if strings.HasSuffix(item, "*") {
+			prefix := strings.TrimSuffix(item, "*")
+			if prefix != "" && (strings.HasPrefix(modelName, prefix) || strings.HasPrefix(globalID, prefix)) {
+				return true
+			}
+		}
+	}
+	return false
 }

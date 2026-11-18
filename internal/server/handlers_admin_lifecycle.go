@@ -138,7 +138,7 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 
 	existing, err := s.repo.GetTeam(r.Context(), teamID)
 	if err != nil || existing == nil {
-		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+		if _, ok := s.authorizeTeamAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), teamID, true); !ok {
 			return
 		}
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -150,7 +150,7 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+	if _, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.ID, true); !ok {
 		return
 	}
 
@@ -661,7 +661,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 
 	existing, err := s.repo.GetVirtualKeyByID(r.Context(), keyID)
 	if err != nil || existing == nil {
-		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+		if _, ok := s.authorizeTeamAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), resolveScopedTeamID(r, r.URL.Query().Get("team_id")), true); !ok {
 			return
 		}
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -673,7 +673,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	op, ok := s.authorizeAdmin(w, r, existing.OrgID, true)
+	op, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.TeamID, true)
 	if !ok {
 		return
 	}
@@ -732,10 +732,33 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		updated.Name = name
 	}
 	if req.TeamID != nil {
-		updated.TeamID = strings.TrimSpace(*req.TeamID)
+		newTeamID := strings.TrimSpace(*req.TeamID)
+		if op.Role == domain.OperatorRoleTeamAdmin && newTeamID != op.TeamID {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_team_access_denied",
+				Message:    "team_admin cannot reassign a virtual key outside their own team",
+			})
+			return
+		}
+		updated.TeamID = newTeamID
 	}
 	if req.UserID != nil {
-		updated.UserID = strings.TrimSpace(*req.UserID)
+		newUserID := strings.TrimSpace(*req.UserID)
+		if op.Role == domain.OperatorRoleTeamAdmin && newUserID != "" {
+			user, uErr := s.lookupUserByID(r.Context(), newUserID)
+			if uErr != nil || user == nil || user.OrgID != existing.OrgID || user.TeamID != op.TeamID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_team_access_denied",
+					Message:    "team_admin can only bind virtual keys to users belonging to their own team",
+				})
+				return
+			}
+		}
+		updated.UserID = newUserID
 	}
 	if req.Role != nil && *req.Role != "" {
 		if *req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
@@ -744,6 +767,15 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 				Type:       domain.ErrorTypePermission,
 				Code:       "platform_admin_required",
 				Message:    "Only platform_admin can assign platform_admin role to virtual keys",
+			})
+			return
+		}
+		if op.Role == domain.OperatorRoleTeamAdmin && isPrivilegedOrgOrPlatformRole(*req.Role) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot assign organization-wide or platform roles to virtual keys",
 			})
 			return
 		}
@@ -930,7 +962,7 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 
 	existing, err := s.repo.GetVirtualKeyByID(r.Context(), keyID)
 	if err != nil || existing == nil {
-		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+		if _, ok := s.authorizeTeamAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), resolveScopedTeamID(r, r.URL.Query().Get("team_id")), true); !ok {
 			return
 		}
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -942,7 +974,7 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+	if _, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.TeamID, true); !ok {
 		return
 	}
 

@@ -1320,6 +1320,22 @@ func SignHS256(secret string, claims *JWTClaims) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if claims != nil && len(claims.RawClaims) > 0 {
+		merged := make(map[string]any, len(claims.RawClaims)+8)
+		for k, v := range claims.RawClaims {
+			merged[k] = v
+		}
+		var base map[string]any
+		if err := json.Unmarshal(claimsJSON, &base); err == nil {
+			for k, v := range base {
+				merged[k] = v
+			}
+		}
+		claimsJSON, err = json.Marshal(merged)
+		if err != nil {
+			return "", err
+		}
+	}
 	signingInput := base64.RawURLEncoding.EncodeToString(hdrJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
 	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
 	_, _ = mac.Write([]byte(signingInput))

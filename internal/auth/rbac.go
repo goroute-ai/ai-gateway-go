@@ -28,14 +28,22 @@ type cachedOrgPolicies struct {
 	expiresAt time.Time
 }
 
+type cachedAccessRules struct {
+	rules     []*domain.AccessGroupRule
+	expiresAt time.Time
+}
+
 // RBACEngine enforces Endpoint permissions, Virtual Key model scopes, Team model scopes,
-// Organization Model Policies (Layer 3), and Organization Provider Subscriptions (Layer 2).
+// Dynamic Access Group Rules, Organization Model Policies (Layer 3), and Organization Provider Subscriptions (Layer 2).
 type RBACEngine struct {
-	repo     storage.Repository
-	redis    *storage.RedisFabric
-	cacheTTL time.Duration
-	subCache sync.Map // orgID -> cachedOrgSubs
-	polCache sync.Map // orgID -> cachedOrgPolicies
+	repo               storage.Repository
+	redis              *storage.RedisFabric
+	cacheTTL           time.Duration
+	subCache           sync.Map // orgID -> cachedOrgSubs
+	polCache           sync.Map // orgID -> cachedOrgPolicies
+	ruleCache          sync.Map // orgID -> cachedAccessRules
+	invalidationMu     sync.Mutex
+	invalidationCancel context.CancelFunc
 }
 
 func NewRBACEngine(repo storage.Repository) *RBACEngine {
@@ -68,11 +76,18 @@ func (e *RBACEngine) InvalidateOrgPolicies(ctx context.Context, orgID string) {
 	}
 }
 
-// HandleInvalidation processes a pub/sub invalidation event for org policies.
+// HandleInvalidation processes a pub/sub invalidation event for org policies and dynamic access rules.
 func (e *RBACEngine) HandleInvalidation(ev storage.InvalidationEvent) {
-	if (ev.Type == "rbac_org" || ev.Type == "org") && ev.OrgID != "" {
+	if ev.OrgID == "" {
+		return
+	}
+	switch ev.Type {
+	case "rbac_org", "org":
 		e.subCache.Delete(ev.OrgID)
 		e.polCache.Delete(ev.OrgID)
+		e.ruleCache.Delete(ev.OrgID)
+	case "rbac_access_rules":
+		e.ruleCache.Delete(ev.OrgID)
 	}
 }
 
@@ -113,7 +128,8 @@ func (e *RBACEngine) AuthorizeEndpoint(idCtx *domain.IdentityContext, path strin
 	}
 }
 
-// AuthorizeRequestedModel verifies Virtual Key and Team model allowlists for the requested model or smart alias.
+// AuthorizeRequestedModel verifies Virtual Key, Team, and dynamic access group model allowlists
+// for the requested model or smart alias.
 func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requestedModel string) error {
 	if idCtx == nil {
 		return &domain.GatewayError{
@@ -123,7 +139,23 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 			Message:    "No identity context present on request",
 		}
 	}
-	if len(idCtx.KeyAllowedModels) > 0 && !matchesModelAllowlist(idCtx.KeyAllowedModels, requestedModel) {
+	keyRestricted := len(idCtx.KeyAllowedModels) > 0 && !matchesModelAllowlist(idCtx.KeyAllowedModels, requestedModel)
+	teamRestricted := len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel)
+	if !keyRestricted && !teamRestricted {
+		return nil
+	}
+
+	// Dynamic access group rules may grant additional models for matching trusted attributes.
+	if len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel) {
+		return nil
+	}
+	if e != nil {
+		if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil && matchesModelAllowlist(eval.AllowedModels, requestedModel) {
+			return nil
+		}
+	}
+
+	if keyRestricted {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,
@@ -131,15 +163,12 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 			Message:    fmt.Sprintf("Virtual key %s is not authorized to use model %q", idCtx.KeyPrefix, requestedModel),
 		}
 	}
-	if len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel) {
-		return &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "team_model_restricted",
-			Message:    fmt.Sprintf("Team is not authorized to use model %q", requestedModel),
-		}
+	return &domain.GatewayError{
+		StatusCode: http.StatusForbidden,
+		Type:       domain.ErrorTypePermission,
+		Code:       "team_model_restricted",
+		Message:    fmt.Sprintf("Team is not authorized to use model %q", requestedModel),
 	}
-	return nil
 }
 
 // AuthorizeMCPServer checks 3-state RBAC allowlists for the requested MCP server slug.
@@ -395,6 +424,66 @@ func AuthorizeAdminAction(op *domain.OperatorContext, targetOrgID string, write 
 			}
 		}
 		return nil
+	case domain.OperatorRoleTeamAdmin:
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "insufficient_permissions",
+			Message:    "Operator role \"team_admin\" is not authorized for organization-wide or platform control plane operations",
+		}
+	default:
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "insufficient_permissions",
+			Message:    fmt.Sprintf("Operator role %q is not authorized for control plane access", op.Role),
+		}
+	}
+}
+
+// AuthorizeTeamAdminAction enforces team-scoped Control Plane RBAC.
+// Platform admins, org admins (within own org), and org viewers (read-only within own org)
+// follow AuthorizeAdminAction semantics; team_admin operators strictly require
+// op.OrgID == targetOrgID && op.TeamID != "" && op.TeamID == targetTeamID.
+func AuthorizeTeamAdminAction(op *domain.OperatorContext, targetOrgID, targetTeamID string, write bool) error {
+	if op == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "No operator context present on request",
+		}
+	}
+
+	switch op.Role {
+	case domain.OperatorRolePlatformAdmin, domain.OperatorRoleOrgAdmin, domain.OperatorRoleOrgViewer:
+		return AuthorizeAdminAction(op, targetOrgID, write)
+	case domain.OperatorRoleTeamAdmin:
+		if op.OrgID == "" || targetOrgID == "" || op.OrgID != targetOrgID {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_org_access_denied",
+				Message:    fmt.Sprintf("Operator in organization %q is not authorized to access organization %q", op.OrgID, targetOrgID),
+			}
+		}
+		if op.TeamID == "" {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_scope_required",
+				Message:    "Operator with role team_admin must be scoped to an active team",
+			}
+		}
+		if targetTeamID == "" || op.TeamID != targetTeamID {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_team_access_denied",
+				Message:    fmt.Sprintf("Operator in team %q is not authorized to access team %q", op.TeamID, targetTeamID),
+			}
+		}
+		return nil
 	default:
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
@@ -409,6 +498,12 @@ func matchesModelAllowlist(allowed []string, target string) bool {
 	for _, item := range allowed {
 		if item == "*" || item == target {
 			return true
+		}
+		if strings.HasSuffix(item, "*") {
+			prefix := strings.TrimSuffix(item, "*")
+			if prefix != "" && strings.HasPrefix(target, prefix) {
+				return true
+			}
 		}
 	}
 	return false
