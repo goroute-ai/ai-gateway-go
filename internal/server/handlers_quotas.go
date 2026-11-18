@@ -39,23 +39,24 @@ func (s *GatewayServer) tempBudgetRepo() (storage.TempBudgetRepository, bool) {
 // handleAdminUpsertQuotaPolicy handles `PUT /admin/v1/quotas`.
 func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID                string                   `json:"id,omitempty"`
-		OrgID             string                   `json:"org_id"`
-		ScopeType         domain.QuotaScopeType    `json:"scope_type"`
-		ScopeID           string                   `json:"scope_id"`
-		ModelPattern      string                   `json:"model_pattern,omitempty"`
-		RPMLimit          int                      `json:"rpm_limit,omitempty"`
-		TPMLimit          int                      `json:"tpm_limit,omitempty"`
-		ITPMLimit         int                      `json:"itpm_limit,omitempty"`
-		OTPMLimit         int                      `json:"otpm_limit,omitempty"`
-		TPDLimit          int64                    `json:"tpd_limit,omitempty"`
-		MaxConcurrent     int                      `json:"max_concurrent,omitempty"`
-		MaxBudgetMicros   int64                    `json:"max_budget_micros,omitempty"`
-		BudgetResetPeriod domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
-		BudgetResetAt     *time.Time               `json:"budget_reset_at,omitempty"`
-		MaxIterations     int                      `json:"max_iterations,omitempty"`
-		WindowTTLSec      int                      `json:"window_ttl_sec,omitempty"`
-		IsActive          *bool                    `json:"is_active,omitempty"`
+		ID                        string                   `json:"id,omitempty"`
+		OrgID                     string                   `json:"org_id"`
+		ScopeType                 domain.QuotaScopeType    `json:"scope_type"`
+		ScopeID                   string                   `json:"scope_id"`
+		ModelPattern              string                   `json:"model_pattern,omitempty"`
+		RPMLimit                  int                      `json:"rpm_limit,omitempty"`
+		TPMLimit                  int                      `json:"tpm_limit,omitempty"`
+		ITPMLimit                 int                      `json:"itpm_limit,omitempty"`
+		OTPMLimit                 int                      `json:"otpm_limit,omitempty"`
+		TPDLimit                  int64                    `json:"tpd_limit,omitempty"`
+		MaxConcurrent             int                      `json:"max_concurrent,omitempty"`
+		MaxBudgetMicros           int64                    `json:"max_budget_micros,omitempty"`
+		MaxBudgetPerSessionMicros int64                    `json:"max_budget_per_session_micros,omitempty"`
+		BudgetResetPeriod         domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
+		BudgetResetAt             *time.Time               `json:"budget_reset_at,omitempty"`
+		MaxIterations             int                      `json:"max_iterations,omitempty"`
+		WindowTTLSec              int                      `json:"window_ttl_sec,omitempty"`
+		IsActive                  *bool                    `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -87,6 +88,10 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 	if req.IsActive != nil {
 		isActive = *req.IsActive
 	}
+	maxBudget := req.MaxBudgetMicros
+	if maxBudget == 0 && req.MaxBudgetPerSessionMicros != 0 {
+		maxBudget = req.MaxBudgetPerSessionMicros
+	}
 	policy := &domain.QuotaPolicy{
 		ID:                strings.TrimSpace(req.ID),
 		OrgID:             req.OrgID,
@@ -99,7 +104,7 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 		OTPMLimit:         req.OTPMLimit,
 		TPDLimit:          req.TPDLimit,
 		MaxConcurrent:     req.MaxConcurrent,
-		MaxBudgetMicros:   req.MaxBudgetMicros,
+		MaxBudgetMicros:   maxBudget,
 		BudgetResetPeriod: req.BudgetResetPeriod,
 		BudgetResetAt:     req.BudgetResetAt,
 		MaxIterations:     req.MaxIterations,

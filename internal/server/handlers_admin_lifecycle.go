@@ -227,22 +227,25 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	}
 
 	var req struct {
-		OrgID                    *string                   `json:"org_id,omitempty"`
-		Name                     *string                   `json:"name,omitempty"`
-		MaxBudgetMicros          *int64                    `json:"max_budget_micros,omitempty"`
-		SoftBudgetMicros         *int64                    `json:"soft_budget_micros,omitempty"`
-		ThrottleOnBudgetExceeded *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
-		BudgetFallbacks          map[string][]string       `json:"budget_fallbacks,omitempty"`
-		BudgetResetPeriod        *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
-		RPMLimit                 *int                      `json:"rpm_limit,omitempty"`
-		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
-		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
-		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
-		AllowedModels            optionalStringSlice       `json:"allowed_models"`
-		AllowedMCPServers        optionalStringSlice       `json:"allowed_mcp_servers"`
-		AllowedA2AAgents         optionalStringSlice       `json:"allowed_a2a_agents"`
-		AllowedClientApps        optionalStringSlice       `json:"allowed_client_apps"`
-		IsActive                 *bool                     `json:"is_active,omitempty"`
+		OrgID                     *string                   `json:"org_id,omitempty"`
+		Name                      *string                   `json:"name,omitempty"`
+		MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
+		SoftBudgetMicros          *int64                    `json:"soft_budget_micros,omitempty"`
+		ThrottleOnBudgetExceeded  *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
+		BudgetFallbacks           map[string][]string       `json:"budget_fallbacks,omitempty"`
+		BudgetResetPeriod         *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
+		RPMLimit                  *int                      `json:"rpm_limit,omitempty"`
+		TPMLimit                  *int                      `json:"tpm_limit,omitempty"`
+		MCPRPMLimit               *int                      `json:"mcp_rpm_limit,omitempty"`
+		MaxConcurrentRequests     *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit   *int64                    `json:"batch_enqueued_token_limit,omitempty"`
+		MaxIterations             *int                      `json:"max_iterations,omitempty"`
+		MaxBudgetPerSessionMicros *int64                    `json:"max_budget_per_session_micros,omitempty"`
+		AllowedModels             optionalStringSlice       `json:"allowed_models"`
+		AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
+		AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
+		AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
+		IsActive                  *bool                     `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -347,6 +350,42 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 			return
 		}
 		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
+	}
+	if req.MCPRPMLimit != nil {
+		if *req.MCPRPMLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_mcp_rpm_limit",
+				Message:    "mcp_rpm_limit cannot be negative",
+			})
+			return
+		}
+		updated.MCPRPMLimit = *req.MCPRPMLimit
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_max_iterations",
+				Message:    "max_iterations cannot be negative",
+			})
+			return
+		}
+		updated.MaxIterations = *req.MaxIterations
+	}
+	if req.MaxBudgetPerSessionMicros != nil {
+		if *req.MaxBudgetPerSessionMicros < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_session_budget",
+				Message:    "max_budget_per_session_micros cannot be negative",
+			})
+			return
+		}
+		updated.MaxBudgetPerSessionMicros = *req.MaxBudgetPerSessionMicros
 	}
 	if req.AllowedModels.Set {
 		updated.AllowedModels = req.AllowedModels.Value
@@ -797,33 +836,37 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req struct {
-		OrgID                    *string                   `json:"org_id,omitempty"`
-		Name                     *string                   `json:"name,omitempty"`
-		TeamID                   *string                   `json:"team_id,omitempty"`
-		ProjectID                *string                   `json:"project_id,omitempty"`
-		UserID                   *string                   `json:"user_id,omitempty"`
-		Role                     *domain.Role              `json:"role,omitempty"`
-		KeyType                  *domain.KeyType           `json:"key_type,omitempty"`
-		AllowedModels            optionalStringSlice       `json:"allowed_models"`
-		AllowedEndpoints         optionalStringSlice       `json:"allowed_endpoints"`
-		AllowedMCPServers        optionalStringSlice       `json:"allowed_mcp_servers"`
-		AllowedA2AAgents         optionalStringSlice       `json:"allowed_a2a_agents"`
-		AllowedClientApps        optionalStringSlice       `json:"allowed_client_apps"`
-		MaxBudgetMicros          *int64                    `json:"max_budget_micros,omitempty"`
-		SoftBudgetMicros         *int64                    `json:"soft_budget_micros,omitempty"`
-		ThrottleOnBudgetExceeded *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
-		BudgetFallbacks          map[string][]string       `json:"budget_fallbacks,omitempty"`
-		BudgetResetPeriod        *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
-		RPMLimit                 *int                      `json:"rpm_limit,omitempty"`
-		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
-		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
-		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
-		RotationIntervalSec      *int64                    `json:"rotation_interval_sec,omitempty"`
-		KeyRotationAt            *time.Time                `json:"key_rotation_at,omitempty"`
-		ExpiresAt                *time.Time                `json:"expires_at,omitempty"`
-		CanImpersonate           *bool                     `json:"can_impersonate,omitempty"`
-		IsActive                 *bool                     `json:"is_active,omitempty"`
-		Metadata                 map[string]string         `json:"metadata,omitempty"`
+		OrgID                     *string                   `json:"org_id,omitempty"`
+		Name                      *string                   `json:"name,omitempty"`
+		TeamID                    *string                   `json:"team_id,omitempty"`
+		ProjectID                 *string                   `json:"project_id,omitempty"`
+		UserID                    *string                   `json:"user_id,omitempty"`
+		Role                      *domain.Role              `json:"role,omitempty"`
+		KeyType                   *domain.KeyType           `json:"key_type,omitempty"`
+		AllowedModels             optionalStringSlice       `json:"allowed_models"`
+		AllowedEndpoints          optionalStringSlice       `json:"allowed_endpoints"`
+		AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
+		AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
+		AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
+		MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
+		SoftBudgetMicros          *int64                    `json:"soft_budget_micros,omitempty"`
+		ThrottleOnBudgetExceeded  *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
+		BudgetFallbacks           map[string][]string       `json:"budget_fallbacks,omitempty"`
+		BudgetResetPeriod         *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
+		RPMLimit                  *int                      `json:"rpm_limit,omitempty"`
+		TPMLimit                  *int                      `json:"tpm_limit,omitempty"`
+		MCPRPMLimit               *int                      `json:"mcp_rpm_limit,omitempty"`
+		MaxConcurrentRequests     *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit   *int64                    `json:"batch_enqueued_token_limit,omitempty"`
+		MaxIterations             *int                      `json:"max_iterations,omitempty"`
+		MaxBudgetPerSessionMicros *int64                    `json:"max_budget_per_session_micros,omitempty"`
+		RotationIntervalSec       *int64                    `json:"rotation_interval_sec,omitempty"`
+		KeyRotationAt             *time.Time                `json:"key_rotation_at,omitempty"`
+		ExpiresAt                 *time.Time                `json:"expires_at,omitempty"`
+		CanImpersonate            *bool                     `json:"can_impersonate,omitempty"`
+		IsActive                  *bool                     `json:"is_active,omitempty"`
+		Tags                      optionalStringSlice       `json:"tags"`
+		Metadata                  map[string]string         `json:"metadata,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -1066,6 +1109,45 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
+	}
+	if req.MCPRPMLimit != nil {
+		if *req.MCPRPMLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_mcp_rpm_limit",
+				Message:    "mcp_rpm_limit cannot be negative",
+			})
+			return
+		}
+		updated.MCPRPMLimit = *req.MCPRPMLimit
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_max_iterations",
+				Message:    "max_iterations cannot be negative",
+			})
+			return
+		}
+		updated.MaxIterations = *req.MaxIterations
+	}
+	if req.MaxBudgetPerSessionMicros != nil {
+		if *req.MaxBudgetPerSessionMicros < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_session_budget",
+				Message:    "max_budget_per_session_micros cannot be negative",
+			})
+			return
+		}
+		updated.MaxBudgetPerSessionMicros = *req.MaxBudgetPerSessionMicros
+	}
+	if req.Tags.Set {
+		updated.Tags = req.Tags.Value
 	}
 	if req.RotationIntervalSec != nil {
 		if *req.RotationIntervalSec < 0 {

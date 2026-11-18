@@ -566,7 +566,7 @@ func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
 			retries = p.meta.RetryCount
 			fb = p.meta.FallbackAttempted
 		}
-		_ = s.spendWorker.Record(settleCtx, domain.SpendEvent{
+		_ = s.spendWorker.Record(settleCtx, enrichSpendEventFromContext(p.reqCtx, domain.SpendEvent{
 			RequestID:               p.reqID,
 			TraceID:                 p.traceID,
 			OrgID:                   p.idCtx.OrgID,
@@ -594,6 +594,6 @@ func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
 			FallbackAttempted: fb,
 			RetryCount:        retries,
 			CreatedAt:         time.Now().UTC(),
-		})
+		}))
 	}
 }

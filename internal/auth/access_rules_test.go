@@ -579,3 +579,130 @@ func TestAuthorizeTeamAdminAction_AndOperatorAuthentication(t *testing.T) {
 		t.Fatal("expected team_admin with empty TeamID to fail closed")
 	}
 }
+
+func TestRBAC_ModelAccessGroupAuthorization(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	_ = repo.CreateOrganization(ctx, &domain.Organization{ID: "org-1", Name: "Org 1", Slug: "org-1", IsActive: true})
+	_ = repo.CreateOrganization(ctx, &domain.Organization{ID: "org-2", Name: "Org 2", Slug: "org-2", IsActive: true})
+
+	// Gated group: o1-pro restricted to team-vip (and dynamic access group "ml-tier").
+	if err := repo.UpsertModelAccessGroup(ctx, &domain.ModelAccessGroup{
+		ID:       "mag-vip",
+		OrgID:    "org-1",
+		Name:     "vip-reasoning",
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("UpsertModelAccessGroup(vip): %v", err)
+	}
+	if err := repo.AddModelAccessGroupMember(ctx, &domain.ModelAccessGroupMember{
+		ID:         "mem-vip-model",
+		OrgID:      "org-1",
+		GroupID:    "mag-vip",
+		MemberType: domain.ModelAccessGroupMemberModel,
+		MemberID:   "o1-pro",
+	}); err != nil {
+		t.Fatalf("AddModelAccessGroupMember(model): %v", err)
+	}
+	if err := repo.AddModelAccessGroupMember(ctx, &domain.ModelAccessGroupMember{
+		ID:         "mem-vip-team",
+		OrgID:      "org-1",
+		GroupID:    "mag-vip",
+		MemberType: domain.ModelAccessGroupMemberTeam,
+		MemberID:   "team-vip",
+	}); err != nil {
+		t.Fatalf("AddModelAccessGroupMember: %v", err)
+	}
+
+	// Ungated group named "tier-gold" granting claude-3-5-sonnet via member row.
+	if err := repo.UpsertModelAccessGroup(ctx, &domain.ModelAccessGroup{
+		ID:       "mag-gold",
+		OrgID:    "org-1",
+		Name:     "tier-gold",
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("UpsertModelAccessGroup(gold): %v", err)
+	}
+	if err := repo.AddModelAccessGroupMember(ctx, &domain.ModelAccessGroupMember{
+		ID:         "mem-gold-model",
+		OrgID:      "org-1",
+		GroupID:    "mag-gold",
+		MemberType: domain.ModelAccessGroupMemberModel,
+		MemberID:   "claude-3-5-*",
+	}); err != nil {
+		t.Fatalf("AddModelAccessGroupMember(model): %v", err)
+	}
+
+	// Other org group should not bleed into org-1.
+	if err := repo.UpsertModelAccessGroup(ctx, &domain.ModelAccessGroup{
+		ID:       "mag-org2",
+		OrgID:    "org-2",
+		Name:     "vip-reasoning",
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("UpsertModelAccessGroup(org2): %v", err)
+	}
+	if err := repo.AddModelAccessGroupMember(ctx, &domain.ModelAccessGroupMember{
+		ID:         "mem-org2-model",
+		OrgID:      "org-2",
+		GroupID:    "mag-org2",
+		MemberType: domain.ModelAccessGroupMemberModel,
+		MemberID:   "gpt-4o",
+	}); err != nil {
+		t.Fatalf("AddModelAccessGroupMember(org2-model): %v", err)
+	}
+	if err := repo.AddModelAccessGroupMember(ctx, &domain.ModelAccessGroupMember{
+		ID:         "mem-org2-key",
+		OrgID:      "org-2",
+		GroupID:    "mag-org2",
+		MemberType: domain.ModelAccessGroupMemberKey,
+		MemberID:   "vk-org2",
+	}); err != nil {
+		t.Fatalf("AddModelAccessGroupMember(org2): %v", err)
+	}
+
+	rbac := auth.NewRBACEngine(repo)
+
+	// 1. Member team can access o1-pro.
+	vipCtx := &domain.IdentityContext{
+		VirtualKeyID: "vk-vip",
+		KeyPrefix:    "sk-gw-vip",
+		OrgID:        "org-1",
+		TeamID:       "team-vip",
+	}
+	if err := rbac.AuthorizeRequestedModel(vipCtx, "o1-pro"); err != nil {
+		t.Fatalf("expected team-vip to access o1-pro: %v", err)
+	}
+
+	// 2. Non-member in org-1 is denied o1-pro with model_access_group_denied.
+	otherCtx := &domain.IdentityContext{
+		VirtualKeyID: "vk-other",
+		KeyPrefix:    "sk-gw-other",
+		OrgID:        "org-1",
+		TeamID:       "team-regular",
+	}
+	err := rbac.AuthorizeRequestedModel(otherCtx, "o1-pro")
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) || gwErr.StatusCode != http.StatusForbidden || gwErr.Code != "model_access_group_denied" {
+		t.Fatalf("expected 403 model_access_group_denied, got %v", err)
+	}
+
+	// 3. Key referencing ungated group name "tier-gold" in KeyAllowedModels can access claude-3-5-sonnet.
+	goldCtx := &domain.IdentityContext{
+		VirtualKeyID:     "vk-gold",
+		KeyPrefix:        "sk-gw-gold",
+		OrgID:            "org-1",
+		KeyAllowedModels: []string{"tier-gold"},
+	}
+	if err := rbac.AuthorizeRequestedModel(goldCtx, "claude-3-5-sonnet"); err != nil {
+		t.Fatalf("expected tier-gold key to access claude-3-5-sonnet: %v", err)
+	}
+	if err := rbac.AuthorizeRequestedModel(goldCtx, "gpt-4o"); err == nil {
+		t.Fatal("expected tier-gold key to be denied gpt-4o")
+	}
+
+	// 4. Org-2 gating on gpt-4o does not block org-1.
+	if err := rbac.AuthorizeRequestedModel(otherCtx, "gpt-4o"); err != nil {
+		t.Fatalf("expected org-1 to access gpt-4o unaffected by org-2 group: %v", err)
+	}
+}

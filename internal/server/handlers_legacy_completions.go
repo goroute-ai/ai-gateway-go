@@ -89,17 +89,40 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	if req.MaxTokens != nil {
 		maxOutput = *req.MaxTokens
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, req.Model, estTokens, totalPromptChars, maxOutput, reqID)
+	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, req.User, req.Metadata, req.GoRouteExtensions)
+	r = r.WithContext(qCtx)
+	origRequestedModel := req.Model
+	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, req.Model, estTokens, totalPromptChars, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if acq.FallbackApplied && acq.EffectiveModel != "" {
+		req.Model = acq.EffectiveModel
+	}
+	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
+	releaseQuota := acq.ReleaseQuota
+	releaseUsage := acq.ReleaseUsage
 
 	if req.Stream {
-		s.handleLegacyCompletionsStream(w, r, idCtx, &req, reqID, traceID, estTokens, releaseQuota)
+		s.handleLegacyCompletionsStream(w, r, idCtx, &req, reqID, traceID, estTokens, releaseUsage)
 		return
 	}
+
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          reqID,
+		traceID:        traceID,
+		endpoint:       r.URL.Path,
+		modality:       domain.ModalityCompletion,
+		requestedModel: origRequestedModel,
+		estTokens:      estTokens,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	cacheHeader := r.Header.Get("X-Gateway-Cache-Control")
 	var cacheKey string
@@ -111,12 +134,14 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 					var sanitizeErr error
 					cachedResp.Choices[i].Text, sanitizeErr = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, cachedResp.Choices[i].Text)
 					if sanitizeErr != nil {
-						releaseQuota(0)
+						quotaSettlement.actualTokensReconciled = true
+						releaseUsage(0, 0, -2)
 						domain.WriteHTTPError(w, sanitizeErr)
 						return
 					}
 				}
-				releaseQuota(0)
+				quotaSettlement.actualTokensReconciled = true
+				releaseUsage(0, 0, -2)
 				s.collector.Record(observability.RequestObservation{
 					Provider:   string(cachedResp.Provider),
 					Model:      cachedResp.Model,
@@ -143,16 +168,17 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
+	quotaSettlement.upstreamDispatched = true
 	resp, meta, err := s.reliability.ExecuteCompletion(r.Context(), idCtx, &req)
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	if err != nil {
-		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(resp.Usage.TotalTokens)
 	for i := range resp.Choices {
 		resp.Choices[i].Text, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Choices[i].Text)
 		if err != nil {
@@ -177,6 +203,8 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	}
 
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+	quotaSettlement.actualTokensReconciled = true
+	releaseUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
 	s.collector.Record(observability.RequestObservation{
@@ -258,8 +286,15 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	reqID string,
 	traceID string,
 	estTokens int,
-	releaseQuota func(int),
+	releaseUsage func(actualInput, actualOutput int, overrideCostMicros int64),
 ) {
+	releaseQuota := func(tok int) {
+		if tok < 0 {
+			releaseUsage(-1, -1, -1)
+			return
+		}
+		releaseUsage(tok, 0, -2)
+	}
 	prc := buildGuardrailRequestContext(r, idCtx, &domain.CanonicalChatRequest{
 		Model:  req.Model,
 		Stream: true,
@@ -401,7 +436,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 				cacheProvenance = cachedGM.PricingProvenanceSource
 			}
 			if s.spendWorker != nil {
-				if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+				if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 					RequestID:               reqID,
 					TraceID:                 traceID,
 					OrgID:                   idCtx.OrgID,
@@ -420,7 +455,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 					CacheHit:                true,
 					IsStream:                true,
 					CreatedAt:               time.Now().UTC(),
-				}); err != nil {
+				})); err != nil {
 					_ = sseWriter.WriteError(&domain.GatewayError{
 						StatusCode: http.StatusServiceUnavailable,
 						Type:       domain.ErrorTypeServer,
@@ -621,7 +656,6 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		usageVal.TotalTokens = estTokens
 		totalTok = estTokens
 	}
-	releaseQuota(totalTok)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -653,6 +687,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
 	}
 	costMicros := finops.CalculateCostMicros(gm, usageVal)
+	releaseUsage(usageVal.PromptTokens, usageVal.CompletionTokens, costMicros)
 
 	var streamTTFT time.Duration
 	if ttftMs > 0 {
@@ -689,7 +724,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		provenance = gm.PricingProvenanceSource
 	}
 	if s.spendWorker != nil {
-		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 			RequestID:               reqID,
 			TraceID:                 traceID,
 			OrgID:                   idCtx.OrgID,
@@ -713,7 +748,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			FallbackAttempted:       fb,
 			RetryCount:              retries,
 			CreatedAt:               time.Now().UTC(),
-		}); err != nil {
+		})); err != nil {
 			_ = sseWriter.WriteError(&domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
 				Type:       domain.ErrorTypeServer,

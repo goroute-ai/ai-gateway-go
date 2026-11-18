@@ -189,6 +189,10 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 	effID := applyEffectiveTempBudgets(id, now)
 	extDescriptors, descErr := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
 	if descErr != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(descErr, &gwErr) {
+			return nil, gwErr
+		}
 		return nil, &domain.GatewayError{
 			StatusCode:    http.StatusServiceUnavailable,
 			Type:          domain.ErrorTypeRateLimit,
@@ -297,7 +301,7 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 				descRel(actualInput, actualOutput, descCost)
 			}
 			if s.spendWorker == nil && overrideCostMicros > 0 {
-				s.incrementBudgetWindowSpendBestEffort(effID, overrideCostMicros)
+				s.incrementBudgetWindowSpendBestEffort(ctx, effID, overrideCostMicros)
 			}
 		})
 	}, nil

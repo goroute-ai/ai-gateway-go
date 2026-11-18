@@ -221,6 +221,48 @@ func (e AdminDeploymentStatus) Valid() bool {
 	}
 }
 
+// Defines values for AdminEndUserBudgetResetPeriod.
+const (
+	AdminEndUserBudgetResetPeriodDaily   AdminEndUserBudgetResetPeriod = "daily"
+	AdminEndUserBudgetResetPeriodMonthly AdminEndUserBudgetResetPeriod = "monthly"
+	AdminEndUserBudgetResetPeriodNever   AdminEndUserBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminEndUserBudgetResetPeriod enum.
+func (e AdminEndUserBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminEndUserBudgetResetPeriodDaily:
+		return true
+	case AdminEndUserBudgetResetPeriodMonthly:
+		return true
+	case AdminEndUserBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminEndUserUpsertRequestBudgetResetPeriod.
+const (
+	AdminEndUserUpsertRequestBudgetResetPeriodDaily   AdminEndUserUpsertRequestBudgetResetPeriod = "daily"
+	AdminEndUserUpsertRequestBudgetResetPeriodMonthly AdminEndUserUpsertRequestBudgetResetPeriod = "monthly"
+	AdminEndUserUpsertRequestBudgetResetPeriodNever   AdminEndUserUpsertRequestBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminEndUserUpsertRequestBudgetResetPeriod enum.
+func (e AdminEndUserUpsertRequestBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminEndUserUpsertRequestBudgetResetPeriodDaily:
+		return true
+	case AdminEndUserUpsertRequestBudgetResetPeriodMonthly:
+		return true
+	case AdminEndUserUpsertRequestBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminMCPServerCreateRequestTransport.
 const (
 	Sse            AdminMCPServerCreateRequestTransport = "sse"
@@ -236,6 +278,108 @@ func (e AdminMCPServerCreateRequestTransport) Valid() bool {
 	case Stdio:
 		return true
 	case StreamableHttp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminModelAccessGroupBudgetResetPeriod.
+const (
+	AdminModelAccessGroupBudgetResetPeriodDaily   AdminModelAccessGroupBudgetResetPeriod = "daily"
+	AdminModelAccessGroupBudgetResetPeriodMonthly AdminModelAccessGroupBudgetResetPeriod = "monthly"
+	AdminModelAccessGroupBudgetResetPeriodNever   AdminModelAccessGroupBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminModelAccessGroupBudgetResetPeriod enum.
+func (e AdminModelAccessGroupBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminModelAccessGroupBudgetResetPeriodDaily:
+		return true
+	case AdminModelAccessGroupBudgetResetPeriodMonthly:
+		return true
+	case AdminModelAccessGroupBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminModelAccessGroupMemberMemberType.
+const (
+	AdminModelAccessGroupMemberMemberTypeKey     AdminModelAccessGroupMemberMemberType = "key"
+	AdminModelAccessGroupMemberMemberTypeModel   AdminModelAccessGroupMemberMemberType = "model"
+	AdminModelAccessGroupMemberMemberTypeOrg     AdminModelAccessGroupMemberMemberType = "org"
+	AdminModelAccessGroupMemberMemberTypeProject AdminModelAccessGroupMemberMemberType = "project"
+	AdminModelAccessGroupMemberMemberTypeTeam    AdminModelAccessGroupMemberMemberType = "team"
+	AdminModelAccessGroupMemberMemberTypeUser    AdminModelAccessGroupMemberMemberType = "user"
+)
+
+// Valid indicates whether the value is a known member of the AdminModelAccessGroupMemberMemberType enum.
+func (e AdminModelAccessGroupMemberMemberType) Valid() bool {
+	switch e {
+	case AdminModelAccessGroupMemberMemberTypeKey:
+		return true
+	case AdminModelAccessGroupMemberMemberTypeModel:
+		return true
+	case AdminModelAccessGroupMemberMemberTypeOrg:
+		return true
+	case AdminModelAccessGroupMemberMemberTypeProject:
+		return true
+	case AdminModelAccessGroupMemberMemberTypeTeam:
+		return true
+	case AdminModelAccessGroupMemberMemberTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminModelAccessGroupMemberCreateRequestMemberType.
+const (
+	AdminModelAccessGroupMemberCreateRequestMemberTypeKey     AdminModelAccessGroupMemberCreateRequestMemberType = "key"
+	AdminModelAccessGroupMemberCreateRequestMemberTypeModel   AdminModelAccessGroupMemberCreateRequestMemberType = "model"
+	AdminModelAccessGroupMemberCreateRequestMemberTypeOrg     AdminModelAccessGroupMemberCreateRequestMemberType = "org"
+	AdminModelAccessGroupMemberCreateRequestMemberTypeProject AdminModelAccessGroupMemberCreateRequestMemberType = "project"
+	AdminModelAccessGroupMemberCreateRequestMemberTypeTeam    AdminModelAccessGroupMemberCreateRequestMemberType = "team"
+	AdminModelAccessGroupMemberCreateRequestMemberTypeUser    AdminModelAccessGroupMemberCreateRequestMemberType = "user"
+)
+
+// Valid indicates whether the value is a known member of the AdminModelAccessGroupMemberCreateRequestMemberType enum.
+func (e AdminModelAccessGroupMemberCreateRequestMemberType) Valid() bool {
+	switch e {
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeKey:
+		return true
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeModel:
+		return true
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeOrg:
+		return true
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeProject:
+		return true
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeTeam:
+		return true
+	case AdminModelAccessGroupMemberCreateRequestMemberTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminModelAccessGroupUpsertRequestBudgetResetPeriod.
+const (
+	AdminModelAccessGroupUpsertRequestBudgetResetPeriodDaily   AdminModelAccessGroupUpsertRequestBudgetResetPeriod = "daily"
+	AdminModelAccessGroupUpsertRequestBudgetResetPeriodMonthly AdminModelAccessGroupUpsertRequestBudgetResetPeriod = "monthly"
+	AdminModelAccessGroupUpsertRequestBudgetResetPeriodNever   AdminModelAccessGroupUpsertRequestBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminModelAccessGroupUpsertRequestBudgetResetPeriod enum.
+func (e AdminModelAccessGroupUpsertRequestBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminModelAccessGroupUpsertRequestBudgetResetPeriodDaily:
+		return true
+	case AdminModelAccessGroupUpsertRequestBudgetResetPeriodMonthly:
+		return true
+	case AdminModelAccessGroupUpsertRequestBudgetResetPeriodNever:
 		return true
 	default:
 		return false
@@ -425,6 +569,48 @@ func (e AdminQuotaPolicyUpsertRequestScopeType) Valid() bool {
 	case AdminQuotaPolicyUpsertRequestScopeTypeTeamMember:
 		return true
 	case AdminQuotaPolicyUpsertRequestScopeTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminTagBudgetResetPeriod.
+const (
+	AdminTagBudgetResetPeriodDaily   AdminTagBudgetResetPeriod = "daily"
+	AdminTagBudgetResetPeriodMonthly AdminTagBudgetResetPeriod = "monthly"
+	AdminTagBudgetResetPeriodNever   AdminTagBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminTagBudgetResetPeriod enum.
+func (e AdminTagBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminTagBudgetResetPeriodDaily:
+		return true
+	case AdminTagBudgetResetPeriodMonthly:
+		return true
+	case AdminTagBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminTagUpsertRequestBudgetResetPeriod.
+const (
+	AdminTagUpsertRequestBudgetResetPeriodDaily   AdminTagUpsertRequestBudgetResetPeriod = "daily"
+	AdminTagUpsertRequestBudgetResetPeriodMonthly AdminTagUpsertRequestBudgetResetPeriod = "monthly"
+	AdminTagUpsertRequestBudgetResetPeriodNever   AdminTagUpsertRequestBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminTagUpsertRequestBudgetResetPeriod enum.
+func (e AdminTagUpsertRequestBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminTagUpsertRequestBudgetResetPeriodDaily:
+		return true
+	case AdminTagUpsertRequestBudgetResetPeriodMonthly:
+		return true
+	case AdminTagUpsertRequestBudgetResetPeriodNever:
 		return true
 	default:
 		return false
@@ -1325,6 +1511,36 @@ func (e ToolPolicyUpsertRequestOutputPolicy) Valid() bool {
 	}
 }
 
+// Defines values for RemoveModelAccessGroupMemberParamsMemberType.
+const (
+	RemoveModelAccessGroupMemberParamsMemberTypeKey     RemoveModelAccessGroupMemberParamsMemberType = "key"
+	RemoveModelAccessGroupMemberParamsMemberTypeModel   RemoveModelAccessGroupMemberParamsMemberType = "model"
+	RemoveModelAccessGroupMemberParamsMemberTypeOrg     RemoveModelAccessGroupMemberParamsMemberType = "org"
+	RemoveModelAccessGroupMemberParamsMemberTypeProject RemoveModelAccessGroupMemberParamsMemberType = "project"
+	RemoveModelAccessGroupMemberParamsMemberTypeTeam    RemoveModelAccessGroupMemberParamsMemberType = "team"
+	RemoveModelAccessGroupMemberParamsMemberTypeUser    RemoveModelAccessGroupMemberParamsMemberType = "user"
+)
+
+// Valid indicates whether the value is a known member of the RemoveModelAccessGroupMemberParamsMemberType enum.
+func (e RemoveModelAccessGroupMemberParamsMemberType) Valid() bool {
+	switch e {
+	case RemoveModelAccessGroupMemberParamsMemberTypeKey:
+		return true
+	case RemoveModelAccessGroupMemberParamsMemberTypeModel:
+		return true
+	case RemoveModelAccessGroupMemberParamsMemberTypeOrg:
+		return true
+	case RemoveModelAccessGroupMemberParamsMemberTypeProject:
+		return true
+	case RemoveModelAccessGroupMemberParamsMemberTypeTeam:
+		return true
+	case RemoveModelAccessGroupMemberParamsMemberTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
 // AdminA2AAgentCreateRequest defines model for AdminA2AAgentCreateRequest.
 type AdminA2AAgentCreateRequest struct {
 	AuthToken *string `json:"auth_token,omitempty"`
@@ -1501,6 +1717,55 @@ type AdminDeploymentPTUShareUpsertRequest struct {
 	TeamId      string  `json:"team_id"`
 }
 
+// AdminEndUser defines model for AdminEndUser.
+type AdminEndUser struct {
+	Alias             *string                        `json:"alias,omitempty"`
+	AllowedModels     *[]string                      `json:"allowed_models,omitempty"`
+	BudgetResetAt     *time.Time                     `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminEndUserBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time                      `json:"created_at"`
+	EndUserId         string                         `json:"end_user_id"`
+	Id                string                         `json:"id"`
+	IsBlocked         bool                           `json:"is_blocked"`
+	ItpmLimit         *int                           `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                         `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                           `json:"max_concurrent,omitempty"`
+	Metadata          *map[string]string             `json:"metadata,omitempty"`
+	OrgId             string                         `json:"org_id"`
+	OtpmLimit         *int                           `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                           `json:"rpm_limit,omitempty"`
+	SpentMicros       *int64                         `json:"spent_micros,omitempty"`
+	TpdLimit          *int64                         `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                           `json:"tpm_limit,omitempty"`
+	UpdatedAt         time.Time                      `json:"updated_at"`
+}
+
+// AdminEndUserBudgetResetPeriod defines model for AdminEndUser.BudgetResetPeriod.
+type AdminEndUserBudgetResetPeriod string
+
+// AdminEndUserUpsertRequest defines model for AdminEndUserUpsertRequest.
+type AdminEndUserUpsertRequest struct {
+	Alias             *string                                     `json:"alias,omitempty"`
+	AllowedModels     *[]string                                   `json:"allowed_models,omitempty"`
+	BudgetResetAt     *time.Time                                  `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminEndUserUpsertRequestBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	EndUserId         string                                      `json:"end_user_id"`
+	Id                *string                                     `json:"id,omitempty"`
+	IsBlocked         *bool                                       `json:"is_blocked,omitempty"`
+	ItpmLimit         *int                                        `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                                      `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                                        `json:"max_concurrent,omitempty"`
+	Metadata          *map[string]string                          `json:"metadata,omitempty"`
+	OrgId             *string                                     `json:"org_id,omitempty"`
+	OtpmLimit         *int                                        `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                                        `json:"rpm_limit,omitempty"`
+	TpdLimit          *int64                                      `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                                        `json:"tpm_limit,omitempty"`
+}
+
+// AdminEndUserUpsertRequestBudgetResetPeriod defines model for AdminEndUserUpsertRequest.BudgetResetPeriod.
+type AdminEndUserUpsertRequestBudgetResetPeriod string
+
 // AdminJWTKeyMapping defines model for AdminJWTKeyMapping.
 type AdminJWTKeyMapping struct {
 	ClaimName    string    `json:"claim_name"`
@@ -1556,6 +1821,79 @@ type AdminMCPUserCredentialRequest struct {
 	ServerId string  `json:"server_id"`
 	UserId   string  `json:"user_id"`
 }
+
+// AdminModelAccessGroup defines model for AdminModelAccessGroup.
+type AdminModelAccessGroup struct {
+	BudgetResetAt     *time.Time                              `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminModelAccessGroupBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time                               `json:"created_at"`
+	Description       *string                                 `json:"description,omitempty"`
+	Id                string                                  `json:"id"`
+	IsActive          bool                                    `json:"is_active"`
+	ItpmLimit         *int                                    `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                                  `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                                    `json:"max_concurrent,omitempty"`
+	Members           *[]AdminModelAccessGroupMember          `json:"members,omitempty"`
+	Metadata          *map[string]string                      `json:"metadata,omitempty"`
+	Name              string                                  `json:"name"`
+	OrgId             string                                  `json:"org_id"`
+	OtpmLimit         *int                                    `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                                    `json:"rpm_limit,omitempty"`
+	SpentMicros       *int64                                  `json:"spent_micros,omitempty"`
+	TpdLimit          *int64                                  `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                                    `json:"tpm_limit,omitempty"`
+	UpdatedAt         time.Time                               `json:"updated_at"`
+}
+
+// AdminModelAccessGroupBudgetResetPeriod defines model for AdminModelAccessGroup.BudgetResetPeriod.
+type AdminModelAccessGroupBudgetResetPeriod string
+
+// AdminModelAccessGroupMember defines model for AdminModelAccessGroupMember.
+type AdminModelAccessGroupMember struct {
+	CreatedAt  time.Time                             `json:"created_at"`
+	GroupId    string                                `json:"group_id"`
+	Id         string                                `json:"id"`
+	MemberId   string                                `json:"member_id"`
+	MemberType AdminModelAccessGroupMemberMemberType `json:"member_type"`
+	OrgId      string                                `json:"org_id"`
+}
+
+// AdminModelAccessGroupMemberMemberType defines model for AdminModelAccessGroupMember.MemberType.
+type AdminModelAccessGroupMemberMemberType string
+
+// AdminModelAccessGroupMemberCreateRequest defines model for AdminModelAccessGroupMemberCreateRequest.
+type AdminModelAccessGroupMemberCreateRequest struct {
+	Id         *string                                            `json:"id,omitempty"`
+	MemberId   string                                             `json:"member_id"`
+	MemberType AdminModelAccessGroupMemberCreateRequestMemberType `json:"member_type"`
+	OrgId      *string                                            `json:"org_id,omitempty"`
+}
+
+// AdminModelAccessGroupMemberCreateRequestMemberType defines model for AdminModelAccessGroupMemberCreateRequest.MemberType.
+type AdminModelAccessGroupMemberCreateRequestMemberType string
+
+// AdminModelAccessGroupUpsertRequest defines model for AdminModelAccessGroupUpsertRequest.
+type AdminModelAccessGroupUpsertRequest struct {
+	BudgetResetAt     *time.Time                                           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminModelAccessGroupUpsertRequestBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	Description       *string                                              `json:"description,omitempty"`
+	Id                *string                                              `json:"id,omitempty"`
+	IsActive          *bool                                                `json:"is_active,omitempty"`
+	ItpmLimit         *int                                                 `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                                               `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                                                 `json:"max_concurrent,omitempty"`
+	Members           *[]AdminModelAccessGroupMemberCreateRequest          `json:"members,omitempty"`
+	Metadata          *map[string]string                                   `json:"metadata,omitempty"`
+	Name              string                                               `json:"name"`
+	OrgId             *string                                              `json:"org_id,omitempty"`
+	OtpmLimit         *int                                                 `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                                                 `json:"rpm_limit,omitempty"`
+	TpdLimit          *int64                                               `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                                                 `json:"tpm_limit,omitempty"`
+}
+
+// AdminModelAccessGroupUpsertRequestBudgetResetPeriod defines model for AdminModelAccessGroupUpsertRequest.BudgetResetPeriod.
+type AdminModelAccessGroupUpsertRequestBudgetResetPeriod string
 
 // AdminModelGroup defines model for AdminModelGroup.
 type AdminModelGroup struct {
@@ -1745,6 +2083,55 @@ type AdminQuotaPolicyUpsertRequestScopeType string
 
 // AdminSpendSummary defines model for AdminSpendSummary.
 type AdminSpendSummary map[string]interface{}
+
+// AdminTag defines model for AdminTag.
+type AdminTag struct {
+	AllowedModels     *[]string                  `json:"allowed_models,omitempty"`
+	BudgetResetAt     *time.Time                 `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminTagBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time                  `json:"created_at"`
+	Description       *string                    `json:"description,omitempty"`
+	Id                string                     `json:"id"`
+	IsActive          bool                       `json:"is_active"`
+	ItpmLimit         *int                       `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                     `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                       `json:"max_concurrent,omitempty"`
+	Metadata          *map[string]string         `json:"metadata,omitempty"`
+	OrgId             string                     `json:"org_id"`
+	OtpmLimit         *int                       `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                       `json:"rpm_limit,omitempty"`
+	SpentMicros       *int64                     `json:"spent_micros,omitempty"`
+	Tag               string                     `json:"tag"`
+	TpdLimit          *int64                     `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                       `json:"tpm_limit,omitempty"`
+	UpdatedAt         time.Time                  `json:"updated_at"`
+}
+
+// AdminTagBudgetResetPeriod defines model for AdminTag.BudgetResetPeriod.
+type AdminTagBudgetResetPeriod string
+
+// AdminTagUpsertRequest defines model for AdminTagUpsertRequest.
+type AdminTagUpsertRequest struct {
+	AllowedModels     *[]string                               `json:"allowed_models,omitempty"`
+	BudgetResetAt     *time.Time                              `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminTagUpsertRequestBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	Description       *string                                 `json:"description,omitempty"`
+	Id                *string                                 `json:"id,omitempty"`
+	IsActive          *bool                                   `json:"is_active,omitempty"`
+	ItpmLimit         *int                                    `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                                  `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                                    `json:"max_concurrent,omitempty"`
+	Metadata          *map[string]string                      `json:"metadata,omitempty"`
+	OrgId             *string                                 `json:"org_id,omitempty"`
+	OtpmLimit         *int                                    `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                                    `json:"rpm_limit,omitempty"`
+	Tag               string                                  `json:"tag"`
+	TpdLimit          *int64                                  `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                                    `json:"tpm_limit,omitempty"`
+}
+
+// AdminTagUpsertRequestBudgetResetPeriod defines model for AdminTagUpsertRequest.BudgetResetPeriod.
+type AdminTagUpsertRequestBudgetResetPeriod string
 
 // AdminTeam defines model for AdminTeam.
 type AdminTeam struct {
@@ -2900,6 +3287,23 @@ type DeleteDeploymentPTUShareParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// ListEndUsersParams defines parameters for ListEndUsers.
+type ListEndUsersParams struct {
+	OrgId       *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	EndUserId   *string `form:"end_user_id,omitempty" json:"end_user_id,omitempty"`
+	BlockedOnly *bool   `form:"blocked_only,omitempty" json:"blocked_only,omitempty"`
+}
+
+// DeleteEndUserParams defines parameters for DeleteEndUser.
+type DeleteEndUserParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// GetEndUserParams defines parameters for GetEndUser.
+type GetEndUserParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
 // ListJWTKeyMappingsParams defines parameters for ListJWTKeyMappings.
 type ListJWTKeyMappingsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2925,6 +3329,37 @@ type ListMCPToolsParams struct {
 type ListMCPToolsetsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
+
+// ListModelAccessGroupsParams defines parameters for ListModelAccessGroups.
+type ListModelAccessGroupsParams struct {
+	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Name       *string `form:"name,omitempty" json:"name,omitempty"`
+	ActiveOnly *bool   `form:"active_only,omitempty" json:"active_only,omitempty"`
+}
+
+// DeleteModelAccessGroupParams defines parameters for DeleteModelAccessGroup.
+type DeleteModelAccessGroupParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// GetModelAccessGroupParams defines parameters for GetModelAccessGroup.
+type GetModelAccessGroupParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListModelAccessGroupMembersParams defines parameters for ListModelAccessGroupMembers.
+type ListModelAccessGroupMembersParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// RemoveModelAccessGroupMemberParams defines parameters for RemoveModelAccessGroupMember.
+type RemoveModelAccessGroupMemberParams struct {
+	MemberType *RemoveModelAccessGroupMemberParamsMemberType `form:"member_type,omitempty" json:"member_type,omitempty"`
+	OrgId      *string                                       `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// RemoveModelAccessGroupMemberParamsMemberType defines parameters for RemoveModelAccessGroupMember.
+type RemoveModelAccessGroupMemberParamsMemberType string
 
 // ListModelGroupsParams defines parameters for ListModelGroups.
 type ListModelGroupsParams struct {
@@ -2995,6 +3430,23 @@ type ListSpendLogsParams struct {
 
 // GetSpendSummaryParams defines parameters for GetSpendSummary.
 type GetSpendSummaryParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// ListTagsParams defines parameters for ListTags.
+type ListTagsParams struct {
+	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Tag        *string `form:"tag,omitempty" json:"tag,omitempty"`
+	ActiveOnly *bool   `form:"active_only,omitempty" json:"active_only,omitempty"`
+}
+
+// DeleteTagParams defines parameters for DeleteTag.
+type DeleteTagParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// GetTagParams defines parameters for GetTag.
+type GetTagParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
@@ -3073,6 +3525,12 @@ type CreateDeploymentJSONRequestBody = AdminDeployment
 // UpsertDeploymentPTUShareJSONRequestBody defines body for UpsertDeploymentPTUShare for application/json ContentType.
 type UpsertDeploymentPTUShareJSONRequestBody = AdminDeploymentPTUShareUpsertRequest
 
+// CreateEndUserJSONRequestBody defines body for CreateEndUser for application/json ContentType.
+type CreateEndUserJSONRequestBody = AdminEndUserUpsertRequest
+
+// UpsertEndUserJSONRequestBody defines body for UpsertEndUser for application/json ContentType.
+type UpsertEndUserJSONRequestBody = AdminEndUserUpsertRequest
+
 // CreateGuardrailBindingJSONRequestBody defines body for CreateGuardrailBinding for application/json ContentType.
 type CreateGuardrailBindingJSONRequestBody = GuardrailBindingCreateRequest
 
@@ -3109,6 +3567,15 @@ type CreateMCPServerJSONRequestBody = AdminMCPServerCreateRequest
 // CreateMCPToolsetJSONRequestBody defines body for CreateMCPToolset for application/json ContentType.
 type CreateMCPToolsetJSONRequestBody = AdminMCPToolsetCreateRequest
 
+// CreateModelAccessGroupJSONRequestBody defines body for CreateModelAccessGroup for application/json ContentType.
+type CreateModelAccessGroupJSONRequestBody = AdminModelAccessGroupUpsertRequest
+
+// UpsertModelAccessGroupJSONRequestBody defines body for UpsertModelAccessGroup for application/json ContentType.
+type UpsertModelAccessGroupJSONRequestBody = AdminModelAccessGroupUpsertRequest
+
+// AddModelAccessGroupMemberJSONRequestBody defines body for AddModelAccessGroupMember for application/json ContentType.
+type AddModelAccessGroupMemberJSONRequestBody = AdminModelAccessGroupMemberCreateRequest
+
 // CreateModelGroupJSONRequestBody defines body for CreateModelGroup for application/json ContentType.
 type CreateModelGroupJSONRequestBody = AdminModelGroup
 
@@ -3144,6 +3611,12 @@ type UpdateProjectJSONRequestBody = AdminProjectRequest
 
 // UpsertQuotaPolicyJSONRequestBody defines body for UpsertQuotaPolicy for application/json ContentType.
 type UpsertQuotaPolicyJSONRequestBody = AdminQuotaPolicyUpsertRequest
+
+// CreateTagJSONRequestBody defines body for CreateTag for application/json ContentType.
+type CreateTagJSONRequestBody = AdminTagUpsertRequest
+
+// UpsertTagJSONRequestBody defines body for UpsertTag for application/json ContentType.
+type UpsertTagJSONRequestBody = AdminTagUpsertRequest
 
 // CreateTeamJSONRequestBody defines body for CreateTeam for application/json ContentType.
 type CreateTeamJSONRequestBody = AdminTeam
@@ -3934,6 +4407,21 @@ type ServerInterface interface {
 	// DeleteDeploymentPTUShare Remove a team's reserved PTU capacity share from a deployment
 	// (DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID})
 	DeleteDeploymentPTUShare(w http.ResponseWriter, r *http.Request, depID string, teamID string, params DeleteDeploymentPTUShareParams)
+	// ListEndUsers List end user quota profiles for an organization
+	// (GET /admin/v1/end-users)
+	ListEndUsers(w http.ResponseWriter, r *http.Request, params ListEndUsersParams)
+	// CreateEndUser Create or update an organization-scoped end user quota profile
+	// (POST /admin/v1/end-users)
+	CreateEndUser(w http.ResponseWriter, r *http.Request)
+	// UpsertEndUser Upsert an organization-scoped end user quota profile
+	// (PUT /admin/v1/end-users)
+	UpsertEndUser(w http.ResponseWriter, r *http.Request)
+	// DeleteEndUser Delete an end user quota profile
+	// (DELETE /admin/v1/end-users/{id})
+	DeleteEndUser(w http.ResponseWriter, r *http.Request, id string, params DeleteEndUserParams)
+	// GetEndUser Retrieve an end user quota profile by ID or external end_user_id
+	// (GET /admin/v1/end-users/{id})
+	GetEndUser(w http.ResponseWriter, r *http.Request, id string, params GetEndUserParams)
 	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
 	// (POST /admin/v1/guardrail-bindings)
 	CreateGuardrailBinding(w http.ResponseWriter, r *http.Request)
@@ -4012,6 +4500,30 @@ type ServerInterface interface {
 	// CreateMCPToolset Create a curated MCP toolset
 	// (POST /admin/v1/mcp/toolsets)
 	CreateMCPToolset(w http.ResponseWriter, r *http.Request)
+	// ListModelAccessGroups List model access groups for an organization
+	// (GET /admin/v1/model-access-groups)
+	ListModelAccessGroups(w http.ResponseWriter, r *http.Request, params ListModelAccessGroupsParams)
+	// CreateModelAccessGroup Create or update an organization-scoped model access group
+	// (POST /admin/v1/model-access-groups)
+	CreateModelAccessGroup(w http.ResponseWriter, r *http.Request)
+	// UpsertModelAccessGroup Upsert an organization-scoped model access group
+	// (PUT /admin/v1/model-access-groups)
+	UpsertModelAccessGroup(w http.ResponseWriter, r *http.Request)
+	// DeleteModelAccessGroup Delete a model access group
+	// (DELETE /admin/v1/model-access-groups/{id})
+	DeleteModelAccessGroup(w http.ResponseWriter, r *http.Request, id string, params DeleteModelAccessGroupParams)
+	// GetModelAccessGroup Retrieve a model access group by ID or name
+	// (GET /admin/v1/model-access-groups/{id})
+	GetModelAccessGroup(w http.ResponseWriter, r *http.Request, id string, params GetModelAccessGroupParams)
+	// ListModelAccessGroupMembers List members of a model access group
+	// (GET /admin/v1/model-access-groups/{id}/members)
+	ListModelAccessGroupMembers(w http.ResponseWriter, r *http.Request, id string, params ListModelAccessGroupMembersParams)
+	// AddModelAccessGroupMember Add a model pattern or tenant/principal member to a model access group
+	// (POST /admin/v1/model-access-groups/{id}/members)
+	AddModelAccessGroupMember(w http.ResponseWriter, r *http.Request, id string)
+	// RemoveModelAccessGroupMember Remove a member from a model access group
+	// (DELETE /admin/v1/model-access-groups/{id}/members/{memberID})
+	RemoveModelAccessGroupMember(w http.ResponseWriter, r *http.Request, id string, memberID string, params RemoveModelAccessGroupMemberParams)
 	// ListModelGroups List model groups for an organization
 	// (GET /admin/v1/model-groups)
 	ListModelGroups(w http.ResponseWriter, r *http.Request, params ListModelGroupsParams)
@@ -4102,6 +4614,21 @@ type ServerInterface interface {
 	// GetSpendSummary Retrieve aggregated spend summary for an organization
 	// (GET /admin/v1/spend/summary)
 	GetSpendSummary(w http.ResponseWriter, r *http.Request, params GetSpendSummaryParams)
+	// ListTags List tag quota profiles for an organization
+	// (GET /admin/v1/tags)
+	ListTags(w http.ResponseWriter, r *http.Request, params ListTagsParams)
+	// CreateTag Create or update an organization-scoped tag quota profile
+	// (POST /admin/v1/tags)
+	CreateTag(w http.ResponseWriter, r *http.Request)
+	// UpsertTag Upsert an organization-scoped tag quota profile
+	// (PUT /admin/v1/tags)
+	UpsertTag(w http.ResponseWriter, r *http.Request)
+	// DeleteTag Delete a tag quota profile
+	// (DELETE /admin/v1/tags/{id})
+	DeleteTag(w http.ResponseWriter, r *http.Request, id string, params DeleteTagParams)
+	// GetTag Retrieve a tag quota profile by ID or tag name
+	// (GET /admin/v1/tags/{id})
+	GetTag(w http.ResponseWriter, r *http.Request, id string, params GetTagParams)
 	// ListTeams List teams for an organization
 	// (GET /admin/v1/teams)
 	ListTeams(w http.ResponseWriter, r *http.Request, params ListTeamsParams)
@@ -4973,6 +5500,177 @@ func (siw *ServerInterfaceWrapper) DeleteDeploymentPTUShare(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// ListEndUsers operation middleware
+func (siw *ServerInterfaceWrapper) ListEndUsers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListEndUsersParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "end_user_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "end_user_id", r.URL.Query(), &params.EndUserId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end_user_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end_user_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "blocked_only" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "blocked_only", r.URL.Query(), &params.BlockedOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "blocked_only"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "blocked_only", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListEndUsers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateEndUser operation middleware
+func (siw *ServerInterfaceWrapper) CreateEndUser(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateEndUser(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertEndUser operation middleware
+func (siw *ServerInterfaceWrapper) UpsertEndUser(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertEndUser(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteEndUser operation middleware
+func (siw *ServerInterfaceWrapper) DeleteEndUser(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteEndUserParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteEndUser(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetEndUser operation middleware
+func (siw *ServerInterfaceWrapper) GetEndUser(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetEndUserParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetEndUser(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateGuardrailBinding operation middleware
 func (siw *ServerInterfaceWrapper) CreateGuardrailBinding(w http.ResponseWriter, r *http.Request) {
 
@@ -5592,6 +6290,309 @@ func (siw *ServerInterfaceWrapper) CreateMCPToolset(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateMCPToolset(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListModelAccessGroups operation middleware
+func (siw *ServerInterfaceWrapper) ListModelAccessGroups(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListModelAccessGroupsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "name" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "name", r.URL.Query(), &params.Name, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "name"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "active_only" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "active_only", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "active_only"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "active_only", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListModelAccessGroups(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateModelAccessGroup operation middleware
+func (siw *ServerInterfaceWrapper) CreateModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateModelAccessGroup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertModelAccessGroup operation middleware
+func (siw *ServerInterfaceWrapper) UpsertModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertModelAccessGroup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteModelAccessGroup operation middleware
+func (siw *ServerInterfaceWrapper) DeleteModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteModelAccessGroupParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteModelAccessGroup(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetModelAccessGroup operation middleware
+func (siw *ServerInterfaceWrapper) GetModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetModelAccessGroupParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetModelAccessGroup(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListModelAccessGroupMembers operation middleware
+func (siw *ServerInterfaceWrapper) ListModelAccessGroupMembers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListModelAccessGroupMembersParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListModelAccessGroupMembers(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddModelAccessGroupMember operation middleware
+func (siw *ServerInterfaceWrapper) AddModelAccessGroupMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddModelAccessGroupMember(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveModelAccessGroupMember operation middleware
+func (siw *ServerInterfaceWrapper) RemoveModelAccessGroupMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "memberID" -------------
+	var memberID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memberID", r.PathValue("memberID"), &memberID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memberID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RemoveModelAccessGroupMemberParams
+
+	// ------------- Optional query parameter "member_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "member_type", r.URL.Query(), &params.MemberType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "member_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "member_type", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveModelAccessGroupMember(w, r, id, memberID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6649,6 +7650,177 @@ func (siw *ServerInterfaceWrapper) GetSpendSummary(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListTags operation middleware
+func (siw *ServerInterfaceWrapper) ListTags(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTagsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "tag" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tag", r.URL.Query(), &params.Tag, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tag"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tag", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "active_only" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "active_only", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "active_only"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "active_only", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTags(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateTag operation middleware
+func (siw *ServerInterfaceWrapper) CreateTag(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateTag(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertTag operation middleware
+func (siw *ServerInterfaceWrapper) UpsertTag(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertTag(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteTag operation middleware
+func (siw *ServerInterfaceWrapper) DeleteTag(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteTagParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteTag(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTag operation middleware
+func (siw *ServerInterfaceWrapper) GetTag(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTagParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTag(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListTeams operation middleware
 func (siw *ServerInterfaceWrapper) ListTeams(w http.ResponseWriter, r *http.Request) {
 
@@ -7629,6 +8801,24 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/quotas/{policyID}", wrapper.DeleteQuotaPolicy)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/budget-windows", wrapper.ListBudgetWindows)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/budget-windows", wrapper.UpsertBudgetWindow)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/end-users", wrapper.ListEndUsers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/end-users", wrapper.CreateEndUser)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/end-users", wrapper.UpsertEndUser)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/end-users/{id}", wrapper.DeleteEndUser)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/end-users/{id}", wrapper.GetEndUser)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/tags", wrapper.ListTags)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/tags", wrapper.CreateTag)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/tags", wrapper.UpsertTag)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/tags/{id}", wrapper.DeleteTag)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/tags/{id}", wrapper.GetTag)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-access-groups", wrapper.ListModelAccessGroups)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/model-access-groups", wrapper.CreateModelAccessGroup)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/model-access-groups", wrapper.UpsertModelAccessGroup)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/model-access-groups/{id}", wrapper.DeleteModelAccessGroup)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-access-groups/{id}", wrapper.GetModelAccessGroup)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-access-groups/{id}/members", wrapper.ListModelAccessGroupMembers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/model-access-groups/{id}/members", wrapper.AddModelAccessGroupMember)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/model-access-groups/{id}/members/{memberID}", wrapper.RemoveModelAccessGroupMember)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/summary", wrapper.GetSpendSummary)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/logs", wrapper.ListSpendLogs)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/audit/logs", wrapper.ListAuditLogs)
@@ -8411,6 +9601,168 @@ func (response DeleteDeploymentPTUShare404Response) VisitDeleteDeploymentPTUShar
 	return nil
 }
 
+type ListEndUsersRequestObject struct {
+	Params ListEndUsersParams
+}
+
+type ListEndUsersResponseObject interface {
+	VisitListEndUsersResponse(w http.ResponseWriter) error
+}
+
+type ListEndUsers200JSONResponse struct {
+	Data *[]AdminEndUser `json:"data,omitempty"`
+}
+
+func (response ListEndUsers200JSONResponse) VisitListEndUsersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateEndUserRequestObject struct {
+	Body *CreateEndUserJSONRequestBody
+}
+
+type CreateEndUserResponseObject interface {
+	VisitCreateEndUserResponse(w http.ResponseWriter) error
+}
+
+type CreateEndUser201JSONResponse AdminEndUser
+
+func (response CreateEndUser201JSONResponse) VisitCreateEndUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateEndUser400Response struct {
+}
+
+func (response CreateEndUser400Response) VisitCreateEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type CreateEndUser403Response struct {
+}
+
+func (response CreateEndUser403Response) VisitCreateEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type UpsertEndUserRequestObject struct {
+	Body *UpsertEndUserJSONRequestBody
+}
+
+type UpsertEndUserResponseObject interface {
+	VisitUpsertEndUserResponse(w http.ResponseWriter) error
+}
+
+type UpsertEndUser200JSONResponse AdminEndUser
+
+func (response UpsertEndUser200JSONResponse) VisitUpsertEndUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertEndUser400Response struct {
+}
+
+func (response UpsertEndUser400Response) VisitUpsertEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertEndUser403Response struct {
+}
+
+func (response UpsertEndUser403Response) VisitUpsertEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteEndUserRequestObject struct {
+	Id     string `json:"id"`
+	Params DeleteEndUserParams
+}
+
+type DeleteEndUserResponseObject interface {
+	VisitDeleteEndUserResponse(w http.ResponseWriter) error
+}
+
+type DeleteEndUser200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteEndUser200JSONResponse) VisitDeleteEndUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteEndUser404Response struct {
+}
+
+func (response DeleteEndUser404Response) VisitDeleteEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type GetEndUserRequestObject struct {
+	Id     string `json:"id"`
+	Params GetEndUserParams
+}
+
+type GetEndUserResponseObject interface {
+	VisitGetEndUserResponse(w http.ResponseWriter) error
+}
+
+type GetEndUser200JSONResponse AdminEndUser
+
+func (response GetEndUser200JSONResponse) VisitGetEndUserResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetEndUser404Response struct {
+}
+
+func (response GetEndUser404Response) VisitGetEndUserResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
 type CreateGuardrailBindingRequestObject struct {
 	Body *CreateGuardrailBindingJSONRequestBody
 }
@@ -9046,6 +10398,264 @@ func (response CreateMCPToolset201JSONResponse) VisitCreateMCPToolsetResponse(w 
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type ListModelAccessGroupsRequestObject struct {
+	Params ListModelAccessGroupsParams
+}
+
+type ListModelAccessGroupsResponseObject interface {
+	VisitListModelAccessGroupsResponse(w http.ResponseWriter) error
+}
+
+type ListModelAccessGroups200JSONResponse struct {
+	Data *[]AdminModelAccessGroup `json:"data,omitempty"`
+}
+
+func (response ListModelAccessGroups200JSONResponse) VisitListModelAccessGroupsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateModelAccessGroupRequestObject struct {
+	Body *CreateModelAccessGroupJSONRequestBody
+}
+
+type CreateModelAccessGroupResponseObject interface {
+	VisitCreateModelAccessGroupResponse(w http.ResponseWriter) error
+}
+
+type CreateModelAccessGroup201JSONResponse AdminModelAccessGroup
+
+func (response CreateModelAccessGroup201JSONResponse) VisitCreateModelAccessGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateModelAccessGroup400Response struct {
+}
+
+func (response CreateModelAccessGroup400Response) VisitCreateModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type CreateModelAccessGroup403Response struct {
+}
+
+func (response CreateModelAccessGroup403Response) VisitCreateModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type UpsertModelAccessGroupRequestObject struct {
+	Body *UpsertModelAccessGroupJSONRequestBody
+}
+
+type UpsertModelAccessGroupResponseObject interface {
+	VisitUpsertModelAccessGroupResponse(w http.ResponseWriter) error
+}
+
+type UpsertModelAccessGroup200JSONResponse AdminModelAccessGroup
+
+func (response UpsertModelAccessGroup200JSONResponse) VisitUpsertModelAccessGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertModelAccessGroup400Response struct {
+}
+
+func (response UpsertModelAccessGroup400Response) VisitUpsertModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertModelAccessGroup403Response struct {
+}
+
+func (response UpsertModelAccessGroup403Response) VisitUpsertModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteModelAccessGroupRequestObject struct {
+	Id     string `json:"id"`
+	Params DeleteModelAccessGroupParams
+}
+
+type DeleteModelAccessGroupResponseObject interface {
+	VisitDeleteModelAccessGroupResponse(w http.ResponseWriter) error
+}
+
+type DeleteModelAccessGroup200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteModelAccessGroup200JSONResponse) VisitDeleteModelAccessGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteModelAccessGroup404Response struct {
+}
+
+func (response DeleteModelAccessGroup404Response) VisitDeleteModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type GetModelAccessGroupRequestObject struct {
+	Id     string `json:"id"`
+	Params GetModelAccessGroupParams
+}
+
+type GetModelAccessGroupResponseObject interface {
+	VisitGetModelAccessGroupResponse(w http.ResponseWriter) error
+}
+
+type GetModelAccessGroup200JSONResponse AdminModelAccessGroup
+
+func (response GetModelAccessGroup200JSONResponse) VisitGetModelAccessGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetModelAccessGroup404Response struct {
+}
+
+func (response GetModelAccessGroup404Response) VisitGetModelAccessGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type ListModelAccessGroupMembersRequestObject struct {
+	Id     string `json:"id"`
+	Params ListModelAccessGroupMembersParams
+}
+
+type ListModelAccessGroupMembersResponseObject interface {
+	VisitListModelAccessGroupMembersResponse(w http.ResponseWriter) error
+}
+
+type ListModelAccessGroupMembers200JSONResponse struct {
+	Data *[]AdminModelAccessGroupMember `json:"data,omitempty"`
+}
+
+func (response ListModelAccessGroupMembers200JSONResponse) VisitListModelAccessGroupMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddModelAccessGroupMemberRequestObject struct {
+	Id   string `json:"id"`
+	Body *AddModelAccessGroupMemberJSONRequestBody
+}
+
+type AddModelAccessGroupMemberResponseObject interface {
+	VisitAddModelAccessGroupMemberResponse(w http.ResponseWriter) error
+}
+
+type AddModelAccessGroupMember201JSONResponse AdminModelAccessGroupMember
+
+func (response AddModelAccessGroupMember201JSONResponse) VisitAddModelAccessGroupMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddModelAccessGroupMember400Response struct {
+}
+
+func (response AddModelAccessGroupMember400Response) VisitAddModelAccessGroupMemberResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type AddModelAccessGroupMember404Response struct {
+}
+
+func (response AddModelAccessGroupMember404Response) VisitAddModelAccessGroupMemberResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type RemoveModelAccessGroupMemberRequestObject struct {
+	Id       string `json:"id"`
+	MemberID string `json:"memberID"`
+	Params   RemoveModelAccessGroupMemberParams
+}
+
+type RemoveModelAccessGroupMemberResponseObject interface {
+	VisitRemoveModelAccessGroupMemberResponse(w http.ResponseWriter) error
+}
+
+type RemoveModelAccessGroupMember200JSONResponse AdminDeleteStatusResponse
+
+func (response RemoveModelAccessGroupMember200JSONResponse) VisitRemoveModelAccessGroupMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveModelAccessGroupMember404Response struct {
+}
+
+func (response RemoveModelAccessGroupMember404Response) VisitRemoveModelAccessGroupMemberResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type ListModelGroupsRequestObject struct {
@@ -9795,6 +11405,168 @@ func (response GetSpendSummary200JSONResponse) VisitGetSpendSummaryResponse(w ht
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type ListTagsRequestObject struct {
+	Params ListTagsParams
+}
+
+type ListTagsResponseObject interface {
+	VisitListTagsResponse(w http.ResponseWriter) error
+}
+
+type ListTags200JSONResponse struct {
+	Data *[]AdminTag `json:"data,omitempty"`
+}
+
+func (response ListTags200JSONResponse) VisitListTagsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTagRequestObject struct {
+	Body *CreateTagJSONRequestBody
+}
+
+type CreateTagResponseObject interface {
+	VisitCreateTagResponse(w http.ResponseWriter) error
+}
+
+type CreateTag201JSONResponse AdminTag
+
+func (response CreateTag201JSONResponse) VisitCreateTagResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTag400Response struct {
+}
+
+func (response CreateTag400Response) VisitCreateTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type CreateTag403Response struct {
+}
+
+func (response CreateTag403Response) VisitCreateTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type UpsertTagRequestObject struct {
+	Body *UpsertTagJSONRequestBody
+}
+
+type UpsertTagResponseObject interface {
+	VisitUpsertTagResponse(w http.ResponseWriter) error
+}
+
+type UpsertTag200JSONResponse AdminTag
+
+func (response UpsertTag200JSONResponse) VisitUpsertTagResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertTag400Response struct {
+}
+
+func (response UpsertTag400Response) VisitUpsertTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertTag403Response struct {
+}
+
+func (response UpsertTag403Response) VisitUpsertTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteTagRequestObject struct {
+	Id     string `json:"id"`
+	Params DeleteTagParams
+}
+
+type DeleteTagResponseObject interface {
+	VisitDeleteTagResponse(w http.ResponseWriter) error
+}
+
+type DeleteTag200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteTag200JSONResponse) VisitDeleteTagResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteTag404Response struct {
+}
+
+func (response DeleteTag404Response) VisitDeleteTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type GetTagRequestObject struct {
+	Id     string `json:"id"`
+	Params GetTagParams
+}
+
+type GetTagResponseObject interface {
+	VisitGetTagResponse(w http.ResponseWriter) error
+}
+
+type GetTag200JSONResponse AdminTag
+
+func (response GetTag200JSONResponse) VisitGetTagResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTag404Response struct {
+}
+
+func (response GetTag404Response) VisitGetTagResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type ListTeamsRequestObject struct {
@@ -10686,6 +12458,21 @@ type StrictServerInterface interface {
 	// DeleteDeploymentPTUShare Remove a team's reserved PTU capacity share from a deployment
 	// (DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID})
 	DeleteDeploymentPTUShare(ctx context.Context, request DeleteDeploymentPTUShareRequestObject) (DeleteDeploymentPTUShareResponseObject, error)
+	// ListEndUsers List end user quota profiles for an organization
+	// (GET /admin/v1/end-users)
+	ListEndUsers(ctx context.Context, request ListEndUsersRequestObject) (ListEndUsersResponseObject, error)
+	// CreateEndUser Create or update an organization-scoped end user quota profile
+	// (POST /admin/v1/end-users)
+	CreateEndUser(ctx context.Context, request CreateEndUserRequestObject) (CreateEndUserResponseObject, error)
+	// UpsertEndUser Upsert an organization-scoped end user quota profile
+	// (PUT /admin/v1/end-users)
+	UpsertEndUser(ctx context.Context, request UpsertEndUserRequestObject) (UpsertEndUserResponseObject, error)
+	// DeleteEndUser Delete an end user quota profile
+	// (DELETE /admin/v1/end-users/{id})
+	DeleteEndUser(ctx context.Context, request DeleteEndUserRequestObject) (DeleteEndUserResponseObject, error)
+	// GetEndUser Retrieve an end user quota profile by ID or external end_user_id
+	// (GET /admin/v1/end-users/{id})
+	GetEndUser(ctx context.Context, request GetEndUserRequestObject) (GetEndUserResponseObject, error)
 	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
 	// (POST /admin/v1/guardrail-bindings)
 	CreateGuardrailBinding(ctx context.Context, request CreateGuardrailBindingRequestObject) (CreateGuardrailBindingResponseObject, error)
@@ -10764,6 +12551,30 @@ type StrictServerInterface interface {
 	// CreateMCPToolset Create a curated MCP toolset
 	// (POST /admin/v1/mcp/toolsets)
 	CreateMCPToolset(ctx context.Context, request CreateMCPToolsetRequestObject) (CreateMCPToolsetResponseObject, error)
+	// ListModelAccessGroups List model access groups for an organization
+	// (GET /admin/v1/model-access-groups)
+	ListModelAccessGroups(ctx context.Context, request ListModelAccessGroupsRequestObject) (ListModelAccessGroupsResponseObject, error)
+	// CreateModelAccessGroup Create or update an organization-scoped model access group
+	// (POST /admin/v1/model-access-groups)
+	CreateModelAccessGroup(ctx context.Context, request CreateModelAccessGroupRequestObject) (CreateModelAccessGroupResponseObject, error)
+	// UpsertModelAccessGroup Upsert an organization-scoped model access group
+	// (PUT /admin/v1/model-access-groups)
+	UpsertModelAccessGroup(ctx context.Context, request UpsertModelAccessGroupRequestObject) (UpsertModelAccessGroupResponseObject, error)
+	// DeleteModelAccessGroup Delete a model access group
+	// (DELETE /admin/v1/model-access-groups/{id})
+	DeleteModelAccessGroup(ctx context.Context, request DeleteModelAccessGroupRequestObject) (DeleteModelAccessGroupResponseObject, error)
+	// GetModelAccessGroup Retrieve a model access group by ID or name
+	// (GET /admin/v1/model-access-groups/{id})
+	GetModelAccessGroup(ctx context.Context, request GetModelAccessGroupRequestObject) (GetModelAccessGroupResponseObject, error)
+	// ListModelAccessGroupMembers List members of a model access group
+	// (GET /admin/v1/model-access-groups/{id}/members)
+	ListModelAccessGroupMembers(ctx context.Context, request ListModelAccessGroupMembersRequestObject) (ListModelAccessGroupMembersResponseObject, error)
+	// AddModelAccessGroupMember Add a model pattern or tenant/principal member to a model access group
+	// (POST /admin/v1/model-access-groups/{id}/members)
+	AddModelAccessGroupMember(ctx context.Context, request AddModelAccessGroupMemberRequestObject) (AddModelAccessGroupMemberResponseObject, error)
+	// RemoveModelAccessGroupMember Remove a member from a model access group
+	// (DELETE /admin/v1/model-access-groups/{id}/members/{memberID})
+	RemoveModelAccessGroupMember(ctx context.Context, request RemoveModelAccessGroupMemberRequestObject) (RemoveModelAccessGroupMemberResponseObject, error)
 	// ListModelGroups List model groups for an organization
 	// (GET /admin/v1/model-groups)
 	ListModelGroups(ctx context.Context, request ListModelGroupsRequestObject) (ListModelGroupsResponseObject, error)
@@ -10854,6 +12665,21 @@ type StrictServerInterface interface {
 	// GetSpendSummary Retrieve aggregated spend summary for an organization
 	// (GET /admin/v1/spend/summary)
 	GetSpendSummary(ctx context.Context, request GetSpendSummaryRequestObject) (GetSpendSummaryResponseObject, error)
+	// ListTags List tag quota profiles for an organization
+	// (GET /admin/v1/tags)
+	ListTags(ctx context.Context, request ListTagsRequestObject) (ListTagsResponseObject, error)
+	// CreateTag Create or update an organization-scoped tag quota profile
+	// (POST /admin/v1/tags)
+	CreateTag(ctx context.Context, request CreateTagRequestObject) (CreateTagResponseObject, error)
+	// UpsertTag Upsert an organization-scoped tag quota profile
+	// (PUT /admin/v1/tags)
+	UpsertTag(ctx context.Context, request UpsertTagRequestObject) (UpsertTagResponseObject, error)
+	// DeleteTag Delete a tag quota profile
+	// (DELETE /admin/v1/tags/{id})
+	DeleteTag(ctx context.Context, request DeleteTagRequestObject) (DeleteTagResponseObject, error)
+	// GetTag Retrieve a tag quota profile by ID or tag name
+	// (GET /admin/v1/tags/{id})
+	GetTag(ctx context.Context, request GetTagRequestObject) (GetTagResponseObject, error)
 	// ListTeams List teams for an organization
 	// (GET /admin/v1/teams)
 	ListTeams(ctx context.Context, request ListTeamsRequestObject) (ListTeamsResponseObject, error)
@@ -11803,6 +13629,148 @@ func (sh *strictHandler) DeleteDeploymentPTUShare(w http.ResponseWriter, r *http
 	}
 }
 
+// ListEndUsers operation middleware
+func (sh *strictHandler) ListEndUsers(w http.ResponseWriter, r *http.Request, params ListEndUsersParams) {
+	var request ListEndUsersRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListEndUsers(ctx, request.(ListEndUsersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListEndUsers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListEndUsersResponseObject); ok {
+		if err := validResponse.VisitListEndUsersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateEndUser operation middleware
+func (sh *strictHandler) CreateEndUser(w http.ResponseWriter, r *http.Request) {
+	var request CreateEndUserRequestObject
+
+	var body CreateEndUserJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateEndUser(ctx, request.(CreateEndUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateEndUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateEndUserResponseObject); ok {
+		if err := validResponse.VisitCreateEndUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertEndUser operation middleware
+func (sh *strictHandler) UpsertEndUser(w http.ResponseWriter, r *http.Request) {
+	var request UpsertEndUserRequestObject
+
+	var body UpsertEndUserJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertEndUser(ctx, request.(UpsertEndUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertEndUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertEndUserResponseObject); ok {
+		if err := validResponse.VisitUpsertEndUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteEndUser operation middleware
+func (sh *strictHandler) DeleteEndUser(w http.ResponseWriter, r *http.Request, id string, params DeleteEndUserParams) {
+	var request DeleteEndUserRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteEndUser(ctx, request.(DeleteEndUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteEndUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteEndUserResponseObject); ok {
+		if err := validResponse.VisitDeleteEndUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetEndUser operation middleware
+func (sh *strictHandler) GetEndUser(w http.ResponseWriter, r *http.Request, id string, params GetEndUserParams) {
+	var request GetEndUserRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetEndUser(ctx, request.(GetEndUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetEndUser")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetEndUserResponseObject); ok {
+		if err := validResponse.VisitGetEndUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateGuardrailBinding operation middleware
 func (sh *strictHandler) CreateGuardrailBinding(w http.ResponseWriter, r *http.Request) {
 	var request CreateGuardrailBindingRequestObject
@@ -12543,6 +14511,236 @@ func (sh *strictHandler) CreateMCPToolset(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateMCPToolsetResponseObject); ok {
 		if err := validResponse.VisitCreateMCPToolsetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListModelAccessGroups operation middleware
+func (sh *strictHandler) ListModelAccessGroups(w http.ResponseWriter, r *http.Request, params ListModelAccessGroupsParams) {
+	var request ListModelAccessGroupsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListModelAccessGroups(ctx, request.(ListModelAccessGroupsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListModelAccessGroups")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListModelAccessGroupsResponseObject); ok {
+		if err := validResponse.VisitListModelAccessGroupsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateModelAccessGroup operation middleware
+func (sh *strictHandler) CreateModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+	var request CreateModelAccessGroupRequestObject
+
+	var body CreateModelAccessGroupJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateModelAccessGroup(ctx, request.(CreateModelAccessGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateModelAccessGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateModelAccessGroupResponseObject); ok {
+		if err := validResponse.VisitCreateModelAccessGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertModelAccessGroup operation middleware
+func (sh *strictHandler) UpsertModelAccessGroup(w http.ResponseWriter, r *http.Request) {
+	var request UpsertModelAccessGroupRequestObject
+
+	var body UpsertModelAccessGroupJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertModelAccessGroup(ctx, request.(UpsertModelAccessGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertModelAccessGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertModelAccessGroupResponseObject); ok {
+		if err := validResponse.VisitUpsertModelAccessGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteModelAccessGroup operation middleware
+func (sh *strictHandler) DeleteModelAccessGroup(w http.ResponseWriter, r *http.Request, id string, params DeleteModelAccessGroupParams) {
+	var request DeleteModelAccessGroupRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteModelAccessGroup(ctx, request.(DeleteModelAccessGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteModelAccessGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteModelAccessGroupResponseObject); ok {
+		if err := validResponse.VisitDeleteModelAccessGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetModelAccessGroup operation middleware
+func (sh *strictHandler) GetModelAccessGroup(w http.ResponseWriter, r *http.Request, id string, params GetModelAccessGroupParams) {
+	var request GetModelAccessGroupRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetModelAccessGroup(ctx, request.(GetModelAccessGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetModelAccessGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetModelAccessGroupResponseObject); ok {
+		if err := validResponse.VisitGetModelAccessGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListModelAccessGroupMembers operation middleware
+func (sh *strictHandler) ListModelAccessGroupMembers(w http.ResponseWriter, r *http.Request, id string, params ListModelAccessGroupMembersParams) {
+	var request ListModelAccessGroupMembersRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListModelAccessGroupMembers(ctx, request.(ListModelAccessGroupMembersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListModelAccessGroupMembers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListModelAccessGroupMembersResponseObject); ok {
+		if err := validResponse.VisitListModelAccessGroupMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AddModelAccessGroupMember operation middleware
+func (sh *strictHandler) AddModelAccessGroupMember(w http.ResponseWriter, r *http.Request, id string) {
+	var request AddModelAccessGroupMemberRequestObject
+
+	request.Id = id
+
+	var body AddModelAccessGroupMemberJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AddModelAccessGroupMember(ctx, request.(AddModelAccessGroupMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AddModelAccessGroupMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AddModelAccessGroupMemberResponseObject); ok {
+		if err := validResponse.VisitAddModelAccessGroupMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveModelAccessGroupMember operation middleware
+func (sh *strictHandler) RemoveModelAccessGroupMember(w http.ResponseWriter, r *http.Request, id string, memberID string, params RemoveModelAccessGroupMemberParams) {
+	var request RemoveModelAccessGroupMemberRequestObject
+
+	request.Id = id
+	request.MemberID = memberID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveModelAccessGroupMember(ctx, request.(RemoveModelAccessGroupMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveModelAccessGroupMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveModelAccessGroupMemberResponseObject); ok {
+		if err := validResponse.VisitRemoveModelAccessGroupMemberResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -13399,6 +15597,148 @@ func (sh *strictHandler) GetSpendSummary(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSpendSummaryResponseObject); ok {
 		if err := validResponse.VisitGetSpendSummaryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTags operation middleware
+func (sh *strictHandler) ListTags(w http.ResponseWriter, r *http.Request, params ListTagsParams) {
+	var request ListTagsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTags(ctx, request.(ListTagsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTags")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTagsResponseObject); ok {
+		if err := validResponse.VisitListTagsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateTag operation middleware
+func (sh *strictHandler) CreateTag(w http.ResponseWriter, r *http.Request) {
+	var request CreateTagRequestObject
+
+	var body CreateTagJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateTag(ctx, request.(CreateTagRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateTag")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateTagResponseObject); ok {
+		if err := validResponse.VisitCreateTagResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertTag operation middleware
+func (sh *strictHandler) UpsertTag(w http.ResponseWriter, r *http.Request) {
+	var request UpsertTagRequestObject
+
+	var body UpsertTagJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertTag(ctx, request.(UpsertTagRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertTag")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertTagResponseObject); ok {
+		if err := validResponse.VisitUpsertTagResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteTag operation middleware
+func (sh *strictHandler) DeleteTag(w http.ResponseWriter, r *http.Request, id string, params DeleteTagParams) {
+	var request DeleteTagRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteTag(ctx, request.(DeleteTagRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteTag")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteTagResponseObject); ok {
+		if err := validResponse.VisitDeleteTagResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetTag operation middleware
+func (sh *strictHandler) GetTag(w http.ResponseWriter, r *http.Request, id string, params GetTagParams) {
+	var request GetTagRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetTag(ctx, request.(GetTagRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetTag")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTagResponseObject); ok {
+		if err := validResponse.VisitGetTagResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

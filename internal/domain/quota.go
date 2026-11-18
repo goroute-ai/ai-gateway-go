@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"maps"
+	"slices"
+	"time"
+)
 
 // QuotaScopeType identifies the entity or composite dimension a quota policy or
 // runtime rate-limit descriptor applies to.
@@ -235,4 +239,254 @@ func EffectiveMaxBudgetMicros(baseMax, tempIncrease int64, expiresAt *time.Time,
 		return baseMax + tempIncrease
 	}
 	return baseMax
+}
+
+// EndUser represents an external end user identified by `req.User` within an Organization,
+// supporting per-end-user budgets, rate limits, and spend attribution.
+type EndUser struct {
+	ID                string            `json:"id"`
+	OrgID             string            `json:"org_id"`
+	EndUserID         string            `json:"end_user_id"`
+	Alias             string            `json:"alias,omitempty"`
+	MaxBudgetMicros   int64             `json:"max_budget_micros"`
+	SpentMicros       int64             `json:"spent_micros"`
+	BudgetResetPeriod BudgetResetPeriod `json:"budget_reset_period"`
+	BudgetResetAt     *time.Time        `json:"budget_reset_at,omitempty"`
+	RPMLimit          int               `json:"rpm_limit"`
+	TPMLimit          int               `json:"tpm_limit"`
+	ITPMLimit         int               `json:"itpm_limit"`
+	OTPMLimit         int               `json:"otpm_limit"`
+	TPDLimit          int64             `json:"tpd_limit"`
+	MaxConcurrent     int               `json:"max_concurrent"`
+	AllowedModels     []string          `json:"allowed_models,omitempty"`
+	IsActive          bool              `json:"is_active"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+}
+
+// Clone returns a deep copy of the EndUser.
+func (e *EndUser) Clone() *EndUser {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	if e.BudgetResetAt != nil {
+		t := *e.BudgetResetAt
+		cp.BudgetResetAt = &t
+	}
+	cp.AllowedModels = slices.Clone(e.AllowedModels)
+	if len(e.Metadata) > 0 {
+		cp.Metadata = maps.Clone(e.Metadata)
+	}
+	return &cp
+}
+
+// HasLimits reports whether the EndUser configures at least one positive quota dimension.
+func (e *EndUser) HasLimits() bool {
+	return e != nil && e.ToDescriptor().HasLimits()
+}
+
+// ToDescriptor compiles an EndUser into a runtime RateLimitDescriptor.
+func (e *EndUser) ToDescriptor() RateLimitDescriptor {
+	if e == nil {
+		return RateLimitDescriptor{}
+	}
+	return RateLimitDescriptor{
+		PolicyID:         e.ID,
+		ScopeType:        QuotaScopeEndUser,
+		ScopeID:          e.EndUserID,
+		ModelPattern:     "*",
+		RPMLimit:         e.RPMLimit,
+		TPMLimit:         e.TPMLimit,
+		ITPMLimit:        e.ITPMLimit,
+		OTPMLimit:        e.OTPMLimit,
+		TPDLimit:         e.TPDLimit,
+		MaxConcurrent:    e.MaxConcurrent,
+		MaxBudgetMicros:  e.MaxBudgetMicros,
+		SpentFloorMicros: e.SpentMicros,
+	}
+}
+
+// Tag configures org-scoped rate limits, budgets, and spend tracking for a request/key tag.
+type Tag struct {
+	ID                string            `json:"id"`
+	OrgID             string            `json:"org_id"`
+	Tag               string            `json:"tag"`
+	Description       string            `json:"description,omitempty"`
+	MaxBudgetMicros   int64             `json:"max_budget_micros"`
+	SpentMicros       int64             `json:"spent_micros"`
+	BudgetResetPeriod BudgetResetPeriod `json:"budget_reset_period"`
+	BudgetResetAt     *time.Time        `json:"budget_reset_at,omitempty"`
+	RPMLimit          int               `json:"rpm_limit"`
+	TPMLimit          int               `json:"tpm_limit"`
+	ITPMLimit         int               `json:"itpm_limit"`
+	OTPMLimit         int               `json:"otpm_limit"`
+	TPDLimit          int64             `json:"tpd_limit"`
+	MaxConcurrent     int               `json:"max_concurrent"`
+	AllowedModels     []string          `json:"allowed_models,omitempty"`
+	IsActive          bool              `json:"is_active"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+}
+
+// Clone returns a deep copy of the Tag.
+func (t *Tag) Clone() *Tag {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	if t.BudgetResetAt != nil {
+		ts := *t.BudgetResetAt
+		cp.BudgetResetAt = &ts
+	}
+	cp.AllowedModels = slices.Clone(t.AllowedModels)
+	if len(t.Metadata) > 0 {
+		cp.Metadata = maps.Clone(t.Metadata)
+	}
+	return &cp
+}
+
+// HasLimits reports whether the Tag configures at least one positive quota dimension.
+func (t *Tag) HasLimits() bool {
+	return t != nil && t.ToDescriptor().HasLimits()
+}
+
+// ToDescriptor compiles a Tag into a runtime RateLimitDescriptor.
+func (t *Tag) ToDescriptor() RateLimitDescriptor {
+	if t == nil {
+		return RateLimitDescriptor{}
+	}
+	return RateLimitDescriptor{
+		PolicyID:         t.ID,
+		ScopeType:        QuotaScopeTag,
+		ScopeID:          t.Tag,
+		ModelPattern:     "*",
+		RPMLimit:         t.RPMLimit,
+		TPMLimit:         t.TPMLimit,
+		ITPMLimit:        t.ITPMLimit,
+		OTPMLimit:        t.OTPMLimit,
+		TPDLimit:         t.TPDLimit,
+		MaxConcurrent:    t.MaxConcurrent,
+		MaxBudgetMicros:  t.MaxBudgetMicros,
+		SpentFloorMicros: t.SpentMicros,
+	}
+}
+
+// ModelAccessGroupMemberType identifies the kind of member attached to a ModelAccessGroup.
+type ModelAccessGroupMemberType string
+
+const (
+	ModelAccessGroupMemberModel   ModelAccessGroupMemberType = "model"
+	ModelAccessGroupMemberKey     ModelAccessGroupMemberType = "key"
+	ModelAccessGroupMemberTeam    ModelAccessGroupMemberType = "team"
+	ModelAccessGroupMemberUser    ModelAccessGroupMemberType = "user"
+	ModelAccessGroupMemberProject ModelAccessGroupMemberType = "project"
+	ModelAccessGroupMemberOrg     ModelAccessGroupMemberType = "org"
+)
+
+// IsValid reports whether m is a supported ModelAccessGroupMemberType.
+func (m ModelAccessGroupMemberType) IsValid() bool {
+	switch m {
+	case ModelAccessGroupMemberModel,
+		ModelAccessGroupMemberKey,
+		ModelAccessGroupMemberTeam,
+		ModelAccessGroupMemberUser,
+		ModelAccessGroupMemberProject,
+		ModelAccessGroupMemberOrg:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelAccessGroupMember links a model pattern or tenant/principal to a ModelAccessGroup.
+type ModelAccessGroupMember struct {
+	ID         string                     `json:"id"`
+	OrgID      string                     `json:"org_id"`
+	GroupID    string                     `json:"group_id"`
+	MemberType ModelAccessGroupMemberType `json:"member_type"`
+	MemberID   string                     `json:"member_id"`
+	CreatedAt  time.Time                  `json:"created_at"`
+}
+
+// Clone returns a copy of the ModelAccessGroupMember.
+func (m *ModelAccessGroupMember) Clone() *ModelAccessGroupMember {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	return &cp
+}
+
+// ModelAccessGroup represents a shared model access pool with collective budgets and rate limits.
+type ModelAccessGroup struct {
+	ID                string                    `json:"id"`
+	OrgID             string                    `json:"org_id"`
+	Name              string                    `json:"name"`
+	Description       string                    `json:"description,omitempty"`
+	MaxBudgetMicros   int64                     `json:"max_budget_micros"`
+	SpentMicros       int64                     `json:"spent_micros"`
+	BudgetResetPeriod BudgetResetPeriod         `json:"budget_reset_period"`
+	BudgetResetAt     *time.Time                `json:"budget_reset_at,omitempty"`
+	RPMLimit          int                       `json:"rpm_limit"`
+	TPMLimit          int                       `json:"tpm_limit"`
+	ITPMLimit         int                       `json:"itpm_limit"`
+	OTPMLimit         int                       `json:"otpm_limit"`
+	TPDLimit          int64                     `json:"tpd_limit"`
+	MaxConcurrent     int                       `json:"max_concurrent"`
+	IsActive          bool                      `json:"is_active"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	Members           []*ModelAccessGroupMember `json:"members,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	UpdatedAt         time.Time                 `json:"updated_at"`
+}
+
+// Clone returns a deep copy of the ModelAccessGroup.
+func (g *ModelAccessGroup) Clone() *ModelAccessGroup {
+	if g == nil {
+		return nil
+	}
+	cp := *g
+	if g.BudgetResetAt != nil {
+		ts := *g.BudgetResetAt
+		cp.BudgetResetAt = &ts
+	}
+	if len(g.Metadata) > 0 {
+		cp.Metadata = maps.Clone(g.Metadata)
+	}
+	if len(g.Members) > 0 {
+		cp.Members = make([]*ModelAccessGroupMember, len(g.Members))
+		for i, m := range g.Members {
+			cp.Members[i] = m.Clone()
+		}
+	}
+	return &cp
+}
+
+// HasLimits reports whether the ModelAccessGroup configures at least one positive quota dimension.
+func (g *ModelAccessGroup) HasLimits() bool {
+	return g != nil && g.ToDescriptor().HasLimits()
+}
+
+// ToDescriptor compiles a ModelAccessGroup into a runtime RateLimitDescriptor.
+func (g *ModelAccessGroup) ToDescriptor() RateLimitDescriptor {
+	if g == nil {
+		return RateLimitDescriptor{}
+	}
+	return RateLimitDescriptor{
+		PolicyID:         g.ID,
+		ScopeType:        QuotaScopeModelAccessGroup,
+		ScopeID:          g.ID,
+		ModelPattern:     "*",
+		RPMLimit:         g.RPMLimit,
+		TPMLimit:         g.TPMLimit,
+		ITPMLimit:        g.ITPMLimit,
+		OTPMLimit:        g.OTPMLimit,
+		TPDLimit:         g.TPDLimit,
+		MaxConcurrent:    g.MaxConcurrent,
+		MaxBudgetMicros:  g.MaxBudgetMicros,
+		SpentFloorMicros: g.SpentMicros,
+	}
 }

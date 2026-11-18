@@ -17,49 +17,57 @@ import (
 // MemoryRepository provides a thread-safe, high-performance in-memory implementation of Repository
 // seeded with the default Global Model Catalogue, suitable for standalone execution and fast integration testing.
 type MemoryRepository struct {
-	mu                     sync.RWMutex
-	globalModels           map[string]*domain.GlobalModel
-	globalModelsByName     map[string]map[domain.ProviderType]map[string]struct{}
-	globalModelRevision    uint64
-	pricingSummaryRevision uint64
-	pricingSummary         GlobalModelPricingSummary
-	pricingSummaryValid    bool
-	pricingSummaryRebuilds uint64
-	orgs                   map[string]*domain.Organization
-	orgSubs                map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
-	orgPolicies            map[string]map[string]*domain.OrgModelPolicy
-	teams                  map[string]*domain.Team
-	teamMemberships        map[string]*domain.TeamMembership
-	teamMembershipsByTuple map[string]string
-	projects               map[string]*domain.Project
-	projectsByTeamName     map[string]string
-	users                  map[string]*domain.User
-	keysByID               map[string]*domain.VirtualKey
-	keysByHash             map[string]*domain.VirtualKey
-	deprecatedKeyHashes    map[string]*deprecatedKeyHashEntry
-	jwtKeyMappings         map[string]*domain.JWTKeyMapping
-	jwtKeyMappingsByTuple  map[string]string
-	quotaPolicies          map[string]*domain.QuotaPolicy
-	quotaPoliciesByTuple   map[string]string
-	ptuShares              map[string]*domain.DeploymentPTUShare
-	ptuSharesByTuple       map[string]string
-	priorityClasses        map[string]*domain.PriorityClass
-	priorityClassesByTuple map[string]string
-	budgetWindows          map[string]*domain.BudgetWindowLimit
-	budgetWindowsByTuple   map[string]string
-	accessGroupRules       map[string]*domain.AccessGroupRule
-	credentials            map[string]*domain.ProviderCredential
-	groupsByID             map[string]*domain.ModelGroup
-	deployments            map[string]*domain.Deployment
-	pricingHistory         map[string][]*domain.ModelPricingHistory
-	guardrails             map[string]*domain.GuardrailPolicy
-	guardrailDefs          map[string]*domain.GuardrailDefinition
-	guardrailBindings      map[string]*domain.GuardrailBinding
-	spendLogs              []domain.SpendEvent
-	spendOutbox            map[string]*spendOutboxEntry
-	spendLogIDs            map[string]struct{}
-	budgetResetOutbox      map[string]BudgetResetEvent
-	auditLogs              []*domain.AuditLog
+	mu                             sync.RWMutex
+	globalModels                   map[string]*domain.GlobalModel
+	globalModelsByName             map[string]map[domain.ProviderType]map[string]struct{}
+	globalModelRevision            uint64
+	pricingSummaryRevision         uint64
+	pricingSummary                 GlobalModelPricingSummary
+	pricingSummaryValid            bool
+	pricingSummaryRebuilds         uint64
+	orgs                           map[string]*domain.Organization
+	orgSubs                        map[string]map[domain.ProviderType]*domain.OrgProviderSubscription
+	orgPolicies                    map[string]map[string]*domain.OrgModelPolicy
+	teams                          map[string]*domain.Team
+	teamMemberships                map[string]*domain.TeamMembership
+	teamMembershipsByTuple         map[string]string
+	projects                       map[string]*domain.Project
+	projectsByTeamName             map[string]string
+	users                          map[string]*domain.User
+	keysByID                       map[string]*domain.VirtualKey
+	keysByHash                     map[string]*domain.VirtualKey
+	deprecatedKeyHashes            map[string]*deprecatedKeyHashEntry
+	jwtKeyMappings                 map[string]*domain.JWTKeyMapping
+	jwtKeyMappingsByTuple          map[string]string
+	quotaPolicies                  map[string]*domain.QuotaPolicy
+	quotaPoliciesByTuple           map[string]string
+	ptuShares                      map[string]*domain.DeploymentPTUShare
+	ptuSharesByTuple               map[string]string
+	priorityClasses                map[string]*domain.PriorityClass
+	priorityClassesByTuple         map[string]string
+	budgetWindows                  map[string]*domain.BudgetWindowLimit
+	budgetWindowsByTuple           map[string]string
+	endUsers                       map[string]*domain.EndUser
+	endUsersByTuple                map[string]string
+	tags                           map[string]*domain.Tag
+	tagsByTuple                    map[string]string
+	modelAccessGroups              map[string]*domain.ModelAccessGroup
+	modelAccessGroupsByTuple       map[string]string
+	modelAccessGroupMembers        map[string]*domain.ModelAccessGroupMember
+	modelAccessGroupMembersByTuple map[string]string
+	accessGroupRules               map[string]*domain.AccessGroupRule
+	credentials                    map[string]*domain.ProviderCredential
+	groupsByID                     map[string]*domain.ModelGroup
+	deployments                    map[string]*domain.Deployment
+	pricingHistory                 map[string][]*domain.ModelPricingHistory
+	guardrails                     map[string]*domain.GuardrailPolicy
+	guardrailDefs                  map[string]*domain.GuardrailDefinition
+	guardrailBindings              map[string]*domain.GuardrailBinding
+	spendLogs                      []domain.SpendEvent
+	spendOutbox                    map[string]*spendOutboxEntry
+	spendLogIDs                    map[string]struct{}
+	budgetResetOutbox              map[string]BudgetResetEvent
+	auditLogs                      []*domain.AuditLog
 
 	mcpServers       map[string]*domain.MCPServer
 	mcpTools         map[string]*domain.MCPTool
@@ -95,53 +103,61 @@ type spendOutboxEntry struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	r := &MemoryRepository{
-		globalModels:           make(map[string]*domain.GlobalModel),
-		globalModelsByName:     make(map[string]map[domain.ProviderType]map[string]struct{}),
-		orgs:                   make(map[string]*domain.Organization),
-		orgSubs:                make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
-		orgPolicies:            make(map[string]map[string]*domain.OrgModelPolicy),
-		teams:                  make(map[string]*domain.Team),
-		teamMemberships:        make(map[string]*domain.TeamMembership),
-		teamMembershipsByTuple: make(map[string]string),
-		projects:               make(map[string]*domain.Project),
-		projectsByTeamName:     make(map[string]string),
-		users:                  make(map[string]*domain.User),
-		keysByID:               make(map[string]*domain.VirtualKey),
-		keysByHash:             make(map[string]*domain.VirtualKey),
-		deprecatedKeyHashes:    make(map[string]*deprecatedKeyHashEntry),
-		jwtKeyMappings:         make(map[string]*domain.JWTKeyMapping),
-		jwtKeyMappingsByTuple:  make(map[string]string),
-		quotaPolicies:          make(map[string]*domain.QuotaPolicy),
-		quotaPoliciesByTuple:   make(map[string]string),
-		ptuShares:              make(map[string]*domain.DeploymentPTUShare),
-		ptuSharesByTuple:       make(map[string]string),
-		priorityClasses:        make(map[string]*domain.PriorityClass),
-		priorityClassesByTuple: make(map[string]string),
-		budgetWindows:          make(map[string]*domain.BudgetWindowLimit),
-		budgetWindowsByTuple:   make(map[string]string),
-		accessGroupRules:       make(map[string]*domain.AccessGroupRule),
-		credentials:            make(map[string]*domain.ProviderCredential),
-		groupsByID:             make(map[string]*domain.ModelGroup),
-		deployments:            make(map[string]*domain.Deployment),
-		pricingHistory:         make(map[string][]*domain.ModelPricingHistory),
-		guardrails:             make(map[string]*domain.GuardrailPolicy),
-		guardrailDefs:          make(map[string]*domain.GuardrailDefinition),
-		guardrailBindings:      make(map[string]*domain.GuardrailBinding),
-		spendOutbox:            make(map[string]*spendOutboxEntry),
-		spendLogIDs:            make(map[string]struct{}),
-		budgetResetOutbox:      make(map[string]BudgetResetEvent),
-		files:                  make(map[string]*domain.CanonicalFile),
-		batches:                make(map[string]*domain.CanonicalBatch),
-		mcpServers:             make(map[string]*domain.MCPServer),
-		mcpTools:               make(map[string]*domain.MCPTool),
-		mcpToolsets:            make(map[string]*domain.MCPToolset),
-		mcpUserCreds:           make(map[string]*domain.MCPUserCredential),
-		a2aAgents:              make(map[string]*domain.A2AAgent),
-		a2aTasks:               make(map[string]*domain.A2ATask),
-		a2aTaskEvents:          make(map[string][]*domain.A2ATaskEvent),
-		a2aPushConfigs:         make(map[string]*domain.A2APushNotificationConfig),
-		userCredentials:        make(map[string]*domain.UserCredential),
-		operatorSessions:       make(map[string]*domain.OperatorSession),
+		globalModels:                   make(map[string]*domain.GlobalModel),
+		globalModelsByName:             make(map[string]map[domain.ProviderType]map[string]struct{}),
+		orgs:                           make(map[string]*domain.Organization),
+		orgSubs:                        make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
+		orgPolicies:                    make(map[string]map[string]*domain.OrgModelPolicy),
+		teams:                          make(map[string]*domain.Team),
+		teamMemberships:                make(map[string]*domain.TeamMembership),
+		teamMembershipsByTuple:         make(map[string]string),
+		projects:                       make(map[string]*domain.Project),
+		projectsByTeamName:             make(map[string]string),
+		users:                          make(map[string]*domain.User),
+		keysByID:                       make(map[string]*domain.VirtualKey),
+		keysByHash:                     make(map[string]*domain.VirtualKey),
+		deprecatedKeyHashes:            make(map[string]*deprecatedKeyHashEntry),
+		jwtKeyMappings:                 make(map[string]*domain.JWTKeyMapping),
+		jwtKeyMappingsByTuple:          make(map[string]string),
+		quotaPolicies:                  make(map[string]*domain.QuotaPolicy),
+		quotaPoliciesByTuple:           make(map[string]string),
+		ptuShares:                      make(map[string]*domain.DeploymentPTUShare),
+		ptuSharesByTuple:               make(map[string]string),
+		priorityClasses:                make(map[string]*domain.PriorityClass),
+		priorityClassesByTuple:         make(map[string]string),
+		budgetWindows:                  make(map[string]*domain.BudgetWindowLimit),
+		budgetWindowsByTuple:           make(map[string]string),
+		endUsers:                       make(map[string]*domain.EndUser),
+		endUsersByTuple:                make(map[string]string),
+		tags:                           make(map[string]*domain.Tag),
+		tagsByTuple:                    make(map[string]string),
+		modelAccessGroups:              make(map[string]*domain.ModelAccessGroup),
+		modelAccessGroupsByTuple:       make(map[string]string),
+		modelAccessGroupMembers:        make(map[string]*domain.ModelAccessGroupMember),
+		modelAccessGroupMembersByTuple: make(map[string]string),
+		accessGroupRules:               make(map[string]*domain.AccessGroupRule),
+		credentials:                    make(map[string]*domain.ProviderCredential),
+		groupsByID:                     make(map[string]*domain.ModelGroup),
+		deployments:                    make(map[string]*domain.Deployment),
+		pricingHistory:                 make(map[string][]*domain.ModelPricingHistory),
+		guardrails:                     make(map[string]*domain.GuardrailPolicy),
+		guardrailDefs:                  make(map[string]*domain.GuardrailDefinition),
+		guardrailBindings:              make(map[string]*domain.GuardrailBinding),
+		spendOutbox:                    make(map[string]*spendOutboxEntry),
+		spendLogIDs:                    make(map[string]struct{}),
+		budgetResetOutbox:              make(map[string]BudgetResetEvent),
+		files:                          make(map[string]*domain.CanonicalFile),
+		batches:                        make(map[string]*domain.CanonicalBatch),
+		mcpServers:                     make(map[string]*domain.MCPServer),
+		mcpTools:                       make(map[string]*domain.MCPTool),
+		mcpToolsets:                    make(map[string]*domain.MCPToolset),
+		mcpUserCreds:                   make(map[string]*domain.MCPUserCredential),
+		a2aAgents:                      make(map[string]*domain.A2AAgent),
+		a2aTasks:                       make(map[string]*domain.A2ATask),
+		a2aTaskEvents:                  make(map[string][]*domain.A2ATaskEvent),
+		a2aPushConfigs:                 make(map[string]*domain.A2APushNotificationConfig),
+		userCredentials:                make(map[string]*domain.UserCredential),
+		operatorSessions:               make(map[string]*domain.OperatorSession),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -1857,6 +1873,7 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
+	cp.Tags = slices.Clone(vk.Tags)
 	cp.BudgetResetAt = cloneTimePtr(vk.BudgetResetAt)
 	cp.TempBudgetExpiresAt = cloneTimePtr(vk.TempBudgetExpiresAt)
 	cp.KeyRotationAt = cloneTimePtr(vk.KeyRotationAt)
@@ -2520,6 +2537,39 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 			}
 			if ev.TeamID != "" && ev.UserID != "" {
 				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeamMember, ev.TeamID+":"+ev.UserID, ev.CostMicros, ev.CreatedAt)
+			}
+			if ev.EndUserID != "" {
+				if euID, ok := r.endUsersByTuple[endUserTupleKey(ev.OrgID, ev.EndUserID)]; ok {
+					if eu, exists := r.endUsers[euID]; exists {
+						eu.SpentMicros += ev.CostMicros
+						eu.UpdatedAt = ev.CreatedAt
+					}
+				}
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeEndUser, ev.EndUserID, ev.CostMicros, ev.CreatedAt)
+			}
+			for _, tagName := range ev.Tags {
+				tagName = strings.TrimSpace(tagName)
+				if tagName == "" {
+					continue
+				}
+				if tID, ok := r.tagsByTuple[tagTupleKey(ev.OrgID, tagName)]; ok {
+					if t, exists := r.tags[tID]; exists {
+						t.SpentMicros += ev.CostMicros
+						t.UpdatedAt = ev.CreatedAt
+					}
+				}
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTag, tagName, ev.CostMicros, ev.CreatedAt)
+			}
+			for _, magID := range ev.ModelAccessGroupIDs {
+				magID = strings.TrimSpace(magID)
+				if magID == "" {
+					continue
+				}
+				if g, exists := r.modelAccessGroups[magID]; exists && g.OrgID == ev.OrgID {
+					g.SpentMicros += ev.CostMicros
+					g.UpdatedAt = ev.CreatedAt
+				}
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeModelAccessGroup, magID, ev.CostMicros, ev.CreatedAt)
 			}
 		}
 	}

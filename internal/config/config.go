@@ -441,15 +441,18 @@ type PriorityCapacityConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled                 bool          `yaml:"enabled" json:"enabled"`
-	FallbackToLocalOnOutage bool          `yaml:"fallback_to_local_on_outage" json:"fallback_to_local_on_outage"`
-	WindowSeconds           int           `yaml:"window_seconds" json:"window_seconds"`
-	ConcurrencyTTLSec       int           `yaml:"concurrency_ttl_sec" json:"concurrency_ttl_sec"`
-	DefaultEstimatedTPM     int           `yaml:"default_estimated_tpm" json:"default_estimated_tpm"`
-	RedisTimeout            time.Duration `yaml:"redis_timeout" json:"redis_timeout"`
-	GlobalRPMLimit          int           `yaml:"global_rpm_limit" json:"global_rpm_limit"`
-	GlobalTPMLimit          int           `yaml:"global_tpm_limit" json:"global_tpm_limit"`
-	GlobalMaxConcurrent     int           `yaml:"global_max_concurrent" json:"global_max_concurrent"`
+	Enabled                            bool          `yaml:"enabled" json:"enabled"`
+	FallbackToLocalOnOutage            bool          `yaml:"fallback_to_local_on_outage" json:"fallback_to_local_on_outage"`
+	WindowSeconds                      int           `yaml:"window_seconds" json:"window_seconds"`
+	ConcurrencyTTLSec                  int           `yaml:"concurrency_ttl_sec" json:"concurrency_ttl_sec"`
+	DefaultEstimatedTPM                int           `yaml:"default_estimated_tpm" json:"default_estimated_tpm"`
+	RedisTimeout                       time.Duration `yaml:"redis_timeout" json:"redis_timeout"`
+	GlobalRPMLimit                     int           `yaml:"global_rpm_limit" json:"global_rpm_limit"`
+	GlobalTPMLimit                     int           `yaml:"global_tpm_limit" json:"global_tpm_limit"`
+	GlobalMaxConcurrent                int           `yaml:"global_max_concurrent" json:"global_max_concurrent"`
+	DefaultAgentSessionMaxIterations   int           `yaml:"default_agent_session_max_iterations" json:"default_agent_session_max_iterations"`
+	DefaultAgentSessionMaxBudgetMicros int64         `yaml:"default_agent_session_max_budget_micros" json:"default_agent_session_max_budget_micros"`
+	DefaultAgentSessionTTLSec          int           `yaml:"default_agent_session_ttl_sec" json:"default_agent_session_ttl_sec"`
 }
 
 type FinOpsConfig struct {

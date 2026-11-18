@@ -2583,6 +2583,357 @@ components:
         updated_at:
           type: string
           format: date-time
+    AdminEndUser:
+      type: object
+      required:
+        - id
+        - org_id
+        - end_user_id
+        - is_blocked
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        end_user_id:
+          type: string
+        alias:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        is_blocked:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminEndUserUpsertRequest:
+      type: object
+      required:
+        - end_user_id
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        end_user_id:
+          type: string
+        alias:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        is_blocked:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    AdminTag:
+      type: object
+      required:
+        - id
+        - org_id
+        - tag
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        tag:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminTagUpsertRequest:
+      type: object
+      required:
+        - tag
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        tag:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    AdminModelAccessGroupMember:
+      type: object
+      required:
+        - id
+        - org_id
+        - group_id
+        - member_type
+        - member_id
+        - created_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        group_id:
+          type: string
+        member_type:
+          type: string
+          enum: [model, key, team, user, project, org]
+        member_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    AdminModelAccessGroupMemberCreateRequest:
+      type: object
+      required:
+        - member_type
+        - member_id
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        member_type:
+          type: string
+          enum: [model, key, team, user, project, org]
+        member_id:
+          type: string
+    AdminModelAccessGroup:
+      type: object
+      required:
+        - id
+        - org_id
+        - name
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        is_active:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminModelAccessGroupMember'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminModelAccessGroupUpsertRequest:
+      type: object
+      required:
+        - name
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        is_active:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminModelAccessGroupMemberCreateRequest'
     AdminQuotaPolicyUpsertRequest:
       type: object
       required:
@@ -4454,6 +4805,451 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AdminBudgetWindowLimit'
+  /admin/v1/end-users:
+    post:
+      operationId: createEndUser
+      summary: Create or update an organization-scoped end user quota profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminEndUserUpsertRequest'
+      responses:
+        '201':
+          description: Created end user quota profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminEndUser'
+        '400':
+          description: Invalid end user request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    put:
+      operationId: upsertEndUser
+      summary: Upsert an organization-scoped end user quota profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminEndUserUpsertRequest'
+      responses:
+        '200':
+          description: Upserted end user quota profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminEndUser'
+        '400':
+          description: Invalid end user request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listEndUsers
+      summary: List end user quota profiles for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: end_user_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: blocked_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of end user profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminEndUser'
+  /admin/v1/end-users/{id}:
+    get:
+      operationId: getEndUser
+      summary: Retrieve an end user quota profile by ID or external end_user_id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: End user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminEndUser'
+        '404':
+          description: End user not found
+    delete:
+      operationId: deleteEndUser
+      summary: Delete an end user quota profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: End user deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: End user not found
+  /admin/v1/tags:
+    post:
+      operationId: createTag
+      summary: Create or update an organization-scoped tag quota profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTagUpsertRequest'
+      responses:
+        '201':
+          description: Created tag quota profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTag'
+        '400':
+          description: Invalid tag request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    put:
+      operationId: upsertTag
+      summary: Upsert an organization-scoped tag quota profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTagUpsertRequest'
+      responses:
+        '200':
+          description: Upserted tag quota profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTag'
+        '400':
+          description: Invalid tag request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listTags
+      summary: List tag quota profiles for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tag
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of tag profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminTag'
+  /admin/v1/tags/{id}:
+    get:
+      operationId: getTag
+      summary: Retrieve a tag quota profile by ID or tag name
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tag profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTag'
+        '404':
+          description: Tag not found
+    delete:
+      operationId: deleteTag
+      summary: Delete a tag quota profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tag deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Tag not found
+  /admin/v1/model-access-groups:
+    post:
+      operationId: createModelAccessGroup
+      summary: Create or update an organization-scoped model access group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupUpsertRequest'
+      responses:
+        '201':
+          description: Created model access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '400':
+          description: Invalid model access group request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    put:
+      operationId: upsertModelAccessGroup
+      summary: Upsert an organization-scoped model access group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupUpsertRequest'
+      responses:
+        '200':
+          description: Upserted model access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '400':
+          description: Invalid model access group request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listModelAccessGroups
+      summary: List model access groups for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of model access groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelAccessGroup'
+  /admin/v1/model-access-groups/{id}:
+    get:
+      operationId: getModelAccessGroup
+      summary: Retrieve a model access group by ID or name
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '404':
+          description: Model access group not found
+    delete:
+      operationId: deleteModelAccessGroup
+      summary: Delete a model access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model access group deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Model access group not found
+  /admin/v1/model-access-groups/{id}/members:
+    post:
+      operationId: addModelAccessGroupMember
+      summary: Add a model pattern or tenant/principal member to a model access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupMemberCreateRequest'
+      responses:
+        '201':
+          description: Created model access group member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroupMember'
+        '400':
+          description: Invalid member request
+        '404':
+          description: Model access group not found
+    get:
+      operationId: listModelAccessGroupMembers
+      summary: List members of a model access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of model access group members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelAccessGroupMember'
+  /admin/v1/model-access-groups/{id}/members/{memberID}:
+    delete:
+      operationId: removeModelAccessGroupMember
+      summary: Remove a member from a model access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: memberID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: member_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [model, key, team, user, project, org]
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Member or group not found
   /admin/v1/spend/summary:
     get:
       operationId: getSpendSummary
