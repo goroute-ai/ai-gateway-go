@@ -41,6 +41,10 @@ type MemoryRepository struct {
 	jwtKeyMappingsByTuple  map[string]string
 	quotaPolicies          map[string]*domain.QuotaPolicy
 	quotaPoliciesByTuple   map[string]string
+	ptuShares              map[string]*domain.DeploymentPTUShare
+	ptuSharesByTuple       map[string]string
+	priorityClasses        map[string]*domain.PriorityClass
+	priorityClassesByTuple map[string]string
 	accessGroupRules       map[string]*domain.AccessGroupRule
 	credentials            map[string]*domain.ProviderCredential
 	groupsByID             map[string]*domain.ModelGroup
@@ -107,6 +111,10 @@ func NewMemoryRepository() *MemoryRepository {
 		jwtKeyMappingsByTuple:  make(map[string]string),
 		quotaPolicies:          make(map[string]*domain.QuotaPolicy),
 		quotaPoliciesByTuple:   make(map[string]string),
+		ptuShares:              make(map[string]*domain.DeploymentPTUShare),
+		ptuSharesByTuple:       make(map[string]string),
+		priorityClasses:        make(map[string]*domain.PriorityClass),
+		priorityClassesByTuple: make(map[string]string),
 		accessGroupRules:       make(map[string]*domain.AccessGroupRule),
 		credentials:            make(map[string]*domain.ProviderCredential),
 		groupsByID:             make(map[string]*domain.ModelGroup),
@@ -813,6 +821,11 @@ func (r *MemoryRepository) DeleteTeam(ctx context.Context, id string) error {
 	if _, ok := r.teams[id]; !ok {
 		return fmt.Errorf("team %q %w", id, ErrNotFound)
 	}
+	for _, share := range r.ptuShares {
+		if share != nil && share.TeamID == id {
+			return fmt.Errorf("team %q cannot be deleted while it holds active PTU shares: %w", id, ErrTeamHasActivePTUShares)
+		}
+	}
 	delete(r.teams, id)
 	for mID, m := range r.teamMemberships {
 		if m.TeamID == id {
@@ -1426,6 +1439,124 @@ func (r *MemoryRepository) IncrementQuotaPolicySpend(_ context.Context, id strin
 	p.SpentMicros += deltaMicros
 	p.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+func (r *MemoryRepository) UpsertDeploymentPTUShare(_ context.Context, share *domain.DeploymentPTUShare) error {
+	now := time.Now().UTC()
+	if err := normalizePTUShare(share, now); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := ptuShareTupleKey(share.DeploymentID, share.TeamID)
+	if existingID, ok := r.ptuSharesByTuple[tupleKey]; ok {
+		existing := r.ptuShares[existingID]
+		share.ID = existing.ID
+		share.CreatedAt = existing.CreatedAt
+		share.UpdatedAt = now
+		r.ptuShares[existing.ID] = share.Clone()
+		return nil
+	}
+
+	if share.ID == "" {
+		share.ID = uuid.NewString()
+	} else if _, exists := r.ptuShares[share.ID]; exists {
+		return fmt.Errorf("deployment PTU share %q already exists: %w", share.ID, ErrConflict)
+	}
+	r.ptuShares[share.ID] = share.Clone()
+	r.ptuSharesByTuple[tupleKey] = share.ID
+	return nil
+}
+
+func (r *MemoryRepository) ListDeploymentPTUShares(_ context.Context, deploymentID string) ([]*domain.DeploymentPTUShare, error) {
+	deploymentID = strings.TrimSpace(deploymentID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []*domain.DeploymentPTUShare
+	for _, s := range r.ptuShares {
+		if deploymentID != "" && s.DeploymentID != deploymentID {
+			continue
+		}
+		out = append(out, s.Clone())
+	}
+	sortPTUShares(out)
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteDeploymentPTUShare(_ context.Context, deploymentID, teamID string) error {
+	deploymentID = strings.TrimSpace(deploymentID)
+	teamID = strings.TrimSpace(teamID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := ptuShareTupleKey(deploymentID, teamID)
+	id, ok := r.ptuSharesByTuple[tupleKey]
+	if !ok {
+		return fmt.Errorf("deployment PTU share (%s, %s) %w", deploymentID, teamID, ErrNotFound)
+	}
+	delete(r.ptuSharesByTuple, tupleKey)
+	delete(r.ptuShares, id)
+	return nil
+}
+
+func (r *MemoryRepository) HasTeamPTUShares(_ context.Context, teamID string) (bool, error) {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return false, nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, s := range r.ptuShares {
+		if s != nil && s.TeamID == teamID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *MemoryRepository) UpsertPriorityClass(_ context.Context, pc *domain.PriorityClass) error {
+	now := time.Now().UTC()
+	if err := normalizePriorityClass(pc, now); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := priorityClassTupleKey(pc.OrgID, pc.Name)
+	if existingID, ok := r.priorityClassesByTuple[tupleKey]; ok {
+		existing := r.priorityClasses[existingID]
+		pc.ID = existing.ID
+		pc.CreatedAt = existing.CreatedAt
+		r.priorityClasses[existing.ID] = pc.Clone()
+		return nil
+	}
+
+	if pc.ID == "" {
+		pc.ID = uuid.NewString()
+	} else if _, exists := r.priorityClasses[pc.ID]; exists {
+		return fmt.Errorf("priority class %q already exists: %w", pc.ID, ErrConflict)
+	}
+	r.priorityClasses[pc.ID] = pc.Clone()
+	r.priorityClassesByTuple[tupleKey] = pc.ID
+	return nil
+}
+
+func (r *MemoryRepository) ListPriorityClasses(_ context.Context, orgID string) ([]*domain.PriorityClass, error) {
+	orgID = strings.TrimSpace(orgID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []*domain.PriorityClass
+	for _, pc := range r.priorityClasses {
+		if orgID != "" && pc.OrgID != orgID {
+			continue
+		}
+		out = append(out, pc.Clone())
+	}
+	sortPriorityClasses(out)
+	return out, nil
 }
 
 func cloneAccessGroupRule(rule *domain.AccessGroupRule) *domain.AccessGroupRule {

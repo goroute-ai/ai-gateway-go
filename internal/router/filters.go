@@ -104,13 +104,14 @@ func (e *ContextWindowExhaustedError) Unwrap() error {
 // RoutingPlugins before load-balancer selection. Configuration methods should be
 // called during initialization before concurrent FilterEligibleDeployments calls.
 type FilterPipeline struct {
-	healthMon   *health.Monitor
-	lb          *LoadBalancer
-	cfg         config.RouterConfig
-	budgetCheck BudgetCheckFn
-	tagMatchAll bool
-	plugins     []RoutingPlugin
-	now         func() time.Time
+	healthMon       *health.Monitor
+	lb              *LoadBalancer
+	cfg             config.RouterConfig
+	budgetCheck     BudgetCheckFn
+	priorityLimiter *DynamicPriorityLimiter
+	tagMatchAll     bool
+	plugins         []RoutingPlugin
+	now             func() time.Time
 }
 
 // NewFilterPipeline constructs a FilterPipeline with optional initial RoutingPlugins.
@@ -134,6 +135,13 @@ func NewFilterPipeline(healthMon *health.Monitor, lb *LoadBalancer, cfg config.R
 func (p *FilterPipeline) SetBudgetCheck(fn BudgetCheckFn) {
 	if p != nil {
 		p.budgetCheck = fn
+	}
+}
+
+// SetPriorityLimiter configures an optional DynamicPriorityLimiter for PTU reservation filtering.
+func (p *FilterPipeline) SetPriorityLimiter(l *DynamicPriorityLimiter) {
+	if p != nil {
+		p.priorityLimiter = l
 	}
 }
 
@@ -188,19 +196,21 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 	}
 
 	var (
-		healthMon   *health.Monitor
-		lb          *LoadBalancer
-		cfg         config.RouterConfig
-		budgetCheck BudgetCheckFn
-		tagMatchAll bool
-		plugins     []RoutingPlugin
-		nowFn       = time.Now
+		healthMon       *health.Monitor
+		lb              *LoadBalancer
+		cfg             config.RouterConfig
+		budgetCheck     BudgetCheckFn
+		priorityLimiter *DynamicPriorityLimiter
+		tagMatchAll     bool
+		plugins         []RoutingPlugin
+		nowFn           = time.Now
 	)
 	if p != nil {
 		healthMon = p.healthMon
 		lb = p.lb
 		cfg = p.cfg
 		budgetCheck = p.budgetCheck
+		priorityLimiter = p.priorityLimiter
 		tagMatchAll = p.tagMatchAll
 		plugins = p.plugins
 		if p.now != nil {
@@ -360,6 +370,12 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 	// Stage 6: Live RPM/TPM saturation gate across all routing strategies.
 	if lb != nil && hasCapacityLimits(candidates) {
 		candidates = filterByCapacity(lb, candidates, estimatedTokens, cfg.StrictCapacityFiltering, nowFn())
+		if len(candidates) == 0 {
+			return nil, nil
+		}
+	}
+	if priorityLimiter != nil && priorityLimiter.getPTURepo() != nil {
+		candidates = filterByPTUReservations(ctx, lb, priorityLimiter, candidates, estimatedTokens, nowFn())
 		if len(candidates) == 0 {
 			return nil, nil
 		}
@@ -635,4 +651,51 @@ func isCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, estTokens int) 
 		return true
 	}
 	return false
+}
+
+func filterByPTUReservations(
+	ctx context.Context,
+	lb *LoadBalancer,
+	limiter *DynamicPriorityLimiter,
+	candidates []*domain.Deployment,
+	estTokens int,
+	now time.Time,
+) []*domain.Deployment {
+	if limiter == nil || len(candidates) == 0 {
+		return candidates
+	}
+	teamID := CallerTeamIDFromContext(ctx)
+	var filtered []*domain.Deployment
+	for i, d := range candidates {
+		alloc, err := limiter.EvaluateDeploymentPTU(ctx, d, teamID)
+		exclude := false
+		if err == nil && alloc.HasAnyShares && alloc.TeamShare == nil {
+			if d.RPMCapacity > 0 && alloc.AvailableRPMForTeam <= 0 {
+				exclude = true
+			} else if d.TPMCapacity > 0 && alloc.AvailableTPMForTeam <= 0 {
+				exclude = true
+			} else if lb != nil && (d.RPMCapacity > 0 || d.TPMCapacity > 0) {
+				usedRPM, usedTPM := lb.DeploymentWindowUsage(d.ID, now)
+				if d.RPMCapacity > 0 && usedRPM >= alloc.AvailableRPMForTeam {
+					exclude = true
+				} else if d.TPMCapacity > 0 && usedTPM+estTokens > alloc.AvailableTPMForTeam {
+					exclude = true
+				}
+			}
+		}
+		if !exclude {
+			if filtered != nil {
+				filtered = append(filtered, d)
+			}
+			continue
+		}
+		if filtered == nil {
+			filtered = make([]*domain.Deployment, i, len(candidates)-1)
+			copy(filtered, candidates[:i])
+		}
+	}
+	if filtered == nil {
+		return candidates
+	}
+	return filtered
 }

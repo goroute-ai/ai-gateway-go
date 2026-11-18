@@ -68,6 +68,7 @@ type GatewayServer struct {
 	reliability        *router.ReliabilityManager
 	affinityStore      *router.AffinityStore
 	depBudgets         *router.DeploymentBudgetTracker
+	priorityLimiter    *router.DynamicPriorityLimiter
 	semanticPreRouter  *router.SemanticPreRouter
 	semanticWarmed     sync.Map
 	spendWorker        *finops.SpendWorker
@@ -422,6 +423,20 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		relMgr.SetScheduler(sched)
 	}
 
+	var ptuShareRepo storage.PTUShareRepository
+	if pr, ok := repo.(storage.PTUShareRepository); ok {
+		ptuShareRepo = pr
+	}
+	priorityLimiter := router.NewDynamicPriorityLimiter(redisFabric, ptuShareRepo, router.DynamicPriorityConfig{
+		Enabled:               cfg.Router.PriorityCapacity.Enabled,
+		SaturationThreshold:   cfg.Router.PriorityCapacity.SaturationThreshold,
+		ActiveCallerTTL:       cfg.Router.PriorityCapacity.ActiveCallerTTL,
+		WindowDuration:        cfg.Router.PriorityCapacity.WindowDuration,
+		DefaultWeight:         cfg.Router.PriorityCapacity.DefaultWeight,
+		DefaultBorrowMultiple: cfg.Router.PriorityCapacity.DefaultBorrowMultiple,
+	})
+	relMgr.SetPriorityCapacityLimiter(priorityLimiter)
+
 	var semanticPreRouter *router.SemanticPreRouter
 	if cfg.Router.SemanticRouter.Enabled {
 		embedFn := func(ctx context.Context, orgID, model string, inputs []string) ([][]float32, error) {
@@ -550,6 +565,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reliability:        relMgr,
 		affinityStore:      affinityStore,
 		depBudgets:         depBudgets,
+		priorityLimiter:    priorityLimiter,
 		semanticPreRouter:  semanticPreRouter,
 		spendWorker:        spendWorker,
 		softBudgetNotifier: softBudgetNotifier,
@@ -881,6 +897,11 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Get("/model-groups", s.handleAdminListModelGroups)
 		adm.Post("/deployments", s.handleAdminCreateDeployment)
 		adm.Get("/deployments", s.handleAdminListDeployments)
+		adm.Post("/deployments/{depID}/ptu-shares", s.handleAdminUpsertDeploymentPTUShare)
+		adm.Get("/deployments/{depID}/ptu-shares", s.handleAdminListDeploymentPTUShares)
+		adm.Delete("/deployments/{depID}/ptu-shares/{teamID}", s.handleAdminDeleteDeploymentPTUShare)
+		adm.Post("/priority-classes", s.handleAdminUpsertPriorityClass)
+		adm.Get("/priority-classes", s.handleAdminListPriorityClasses)
 
 		// Automated Model Discovery, Global Catalogue & Versioned Model Pricing
 		adm.Get("/catalogue", s.handleAdminListCatalogue)

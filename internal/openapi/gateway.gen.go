@@ -1147,6 +1147,26 @@ type AdminDeployment struct {
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
 type AdminDeploymentStatus string
 
+// AdminDeploymentPTUShare defines model for AdminDeploymentPTUShare.
+type AdminDeploymentPTUShare struct {
+	CreatedAt    time.Time `json:"created_at"`
+	DeploymentId string    `json:"deployment_id"`
+	Id           string    `json:"id"`
+	OrgId        string    `json:"org_id"`
+	ReservedRpm  int       `json:"reserved_rpm"`
+	ReservedTpm  int       `json:"reserved_tpm"`
+	TeamId       string    `json:"team_id"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// AdminDeploymentPTUShareUpsertRequest defines model for AdminDeploymentPTUShareUpsertRequest.
+type AdminDeploymentPTUShareUpsertRequest struct {
+	OrgId       *string `json:"org_id,omitempty"`
+	ReservedRpm *int    `json:"reserved_rpm,omitempty"`
+	ReservedTpm *int    `json:"reserved_tpm,omitempty"`
+	TeamId      string  `json:"team_id"`
+}
+
 // AdminJWTKeyMapping defines model for AdminJWTKeyMapping.
 type AdminJWTKeyMapping struct {
 	ClaimName    string    `json:"claim_name"`
@@ -1255,6 +1275,27 @@ type AdminPricingUpdateRequest struct {
 	InputCostPerMillionMicro  int64      `json:"input_cost_per_million_micro"`
 	OutputCostPerMillionMicro int64      `json:"output_cost_per_million_micro"`
 	Reason                    *string    `json:"reason,omitempty"`
+}
+
+// AdminPriorityClass defines model for AdminPriorityClass.
+type AdminPriorityClass struct {
+	CreatedAt         time.Time `json:"created_at"`
+	Id                string    `json:"id"`
+	MaxBorrowMultiple float64   `json:"max_borrow_multiple"`
+	Name              string    `json:"name"`
+	OrgId             string    `json:"org_id"`
+	PriorityRank      int       `json:"priority_rank"`
+	Weight            float64   `json:"weight"`
+}
+
+// AdminPriorityClassUpsertRequest defines model for AdminPriorityClassUpsertRequest.
+type AdminPriorityClassUpsertRequest struct {
+	Id                *string  `json:"id,omitempty"`
+	MaxBorrowMultiple *float64 `json:"max_borrow_multiple,omitempty"`
+	Name              string   `json:"name"`
+	OrgId             *string  `json:"org_id,omitempty"`
+	PriorityRank      *int     `json:"priority_rank,omitempty"`
+	Weight            *float64 `json:"weight,omitempty"`
 }
 
 // AdminProject defines model for AdminProject.
@@ -2428,6 +2469,16 @@ type ListDeploymentsParams struct {
 	ModelGroupId *string `form:"model_group_id,omitempty" json:"model_group_id,omitempty"`
 }
 
+// ListDeploymentPTUSharesParams defines parameters for ListDeploymentPTUShares.
+type ListDeploymentPTUSharesParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
+// DeleteDeploymentPTUShareParams defines parameters for DeleteDeploymentPTUShare.
+type DeleteDeploymentPTUShareParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
 // ListJWTKeyMappingsParams defines parameters for ListJWTKeyMappings.
 type ListJWTKeyMappingsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2488,6 +2539,11 @@ type ListToolPoliciesParams struct {
 	TeamId       *string `form:"team_id,omitempty" json:"team_id,omitempty"`
 	VirtualKeyId *string `form:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
 	ToolName     *string `form:"tool_name,omitempty" json:"tool_name,omitempty"`
+}
+
+// ListPriorityClassesParams defines parameters for ListPriorityClasses.
+type ListPriorityClassesParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
 // ListProjectsParams defines parameters for ListProjects.
@@ -2581,6 +2637,9 @@ type RotateCredentialJSONRequestBody = AdminCredentialRotateRequest
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = AdminDeployment
 
+// UpsertDeploymentPTUShareJSONRequestBody defines body for UpsertDeploymentPTUShare for application/json ContentType.
+type UpsertDeploymentPTUShareJSONRequestBody = AdminDeploymentPTUShareUpsertRequest
+
 // CreateGuardrailBindingJSONRequestBody defines body for CreateGuardrailBinding for application/json ContentType.
 type CreateGuardrailBindingJSONRequestBody = GuardrailBindingCreateRequest
 
@@ -2637,6 +2696,9 @@ type SetOrgSubscriptionJSONRequestBody = OrgProviderSubscription
 
 // UpsertToolPolicyJSONRequestBody defines body for UpsertToolPolicy for application/json ContentType.
 type UpsertToolPolicyJSONRequestBody = ToolPolicyUpsertRequest
+
+// UpsertPriorityClassJSONRequestBody defines body for UpsertPriorityClass for application/json ContentType.
+type UpsertPriorityClassJSONRequestBody = AdminPriorityClassUpsertRequest
 
 // CreateProjectJSONRequestBody defines body for CreateProject for application/json ContentType.
 type CreateProjectJSONRequestBody = AdminProjectRequest
@@ -3418,6 +3480,15 @@ type ServerInterface interface {
 	// CreateDeployment Create a model deployment within a model group
 	// (POST /admin/v1/deployments)
 	CreateDeployment(w http.ResponseWriter, r *http.Request)
+	// ListDeploymentPTUShares List team PTU capacity shares allocated on a deployment
+	// (GET /admin/v1/deployments/{depID}/ptu-shares)
+	ListDeploymentPTUShares(w http.ResponseWriter, r *http.Request, depID string, params ListDeploymentPTUSharesParams)
+	// UpsertDeploymentPTUShare Allocate or update a team's reserved PTU capacity share on a deployment
+	// (POST /admin/v1/deployments/{depID}/ptu-shares)
+	UpsertDeploymentPTUShare(w http.ResponseWriter, r *http.Request, depID string)
+	// DeleteDeploymentPTUShare Remove a team's reserved PTU capacity share from a deployment
+	// (DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID})
+	DeleteDeploymentPTUShare(w http.ResponseWriter, r *http.Request, depID string, teamID string, params DeleteDeploymentPTUShareParams)
 	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
 	// (POST /admin/v1/guardrail-bindings)
 	CreateGuardrailBinding(w http.ResponseWriter, r *http.Request)
@@ -3550,6 +3621,12 @@ type ServerInterface interface {
 	// DeleteToolPolicy Delete a tool trust policy
 	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
 	DeleteToolPolicy(w http.ResponseWriter, r *http.Request, orgID string, policyID string)
+	// ListPriorityClasses List priority classes configured for an organization
+	// (GET /admin/v1/priority-classes)
+	ListPriorityClasses(w http.ResponseWriter, r *http.Request, params ListPriorityClassesParams)
+	// UpsertPriorityClass Create or update an organization priority class for dynamic capacity sharing
+	// (POST /admin/v1/priority-classes)
+	UpsertPriorityClass(w http.ResponseWriter, r *http.Request)
 	// ListProjects List projects scoped by organization and optional team
 	// (GET /admin/v1/projects)
 	ListProjects(w http.ResponseWriter, r *http.Request, params ListProjectsParams)
@@ -4225,6 +4302,125 @@ func (siw *ServerInterfaceWrapper) CreateDeployment(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateDeployment(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDeploymentPTUShares operation middleware
+func (siw *ServerInterfaceWrapper) ListDeploymentPTUShares(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDeploymentPTUSharesParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDeploymentPTUShares(w, r, depID, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertDeploymentPTUShare operation middleware
+func (siw *ServerInterfaceWrapper) UpsertDeploymentPTUShare(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertDeploymentPTUShare(w, r, depID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteDeploymentPTUShare operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDeploymentPTUShare(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteDeploymentPTUShareParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteDeploymentPTUShare(w, r, depID, teamID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5505,6 +5701,53 @@ func (siw *ServerInterfaceWrapper) DeleteToolPolicy(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ListPriorityClasses operation middleware
+func (siw *ServerInterfaceWrapper) ListPriorityClasses(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPriorityClassesParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPriorityClasses(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertPriorityClass operation middleware
+func (siw *ServerInterfaceWrapper) UpsertPriorityClass(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertPriorityClass(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListProjects operation middleware
 func (siw *ServerInterfaceWrapper) ListProjects(w http.ResponseWriter, r *http.Request) {
 
@@ -6634,6 +6877,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/models", wrapper.SetOrgModelPolicy)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments", wrapper.ListDeployments)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/deployments", wrapper.CreateDeployment)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares", wrapper.ListDeploymentPTUShares)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares", wrapper.UpsertDeploymentPTUShare)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares/{teamID}", wrapper.DeleteDeploymentPTUShare)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/priority-classes", wrapper.ListPriorityClasses)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/priority-classes", wrapper.UpsertPriorityClass)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrails/simulate", wrapper.SimulateGuardrails)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/validate", wrapper.PreflightValidateCredential)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/teams/{teamID}", wrapper.DeleteTeam)
@@ -7267,6 +7515,138 @@ func (response CreateDeployment201JSONResponse) VisitCreateDeploymentResponse(w 
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type ListDeploymentPTUSharesRequestObject struct {
+	DepID  string `json:"depID"`
+	Params ListDeploymentPTUSharesParams
+}
+
+type ListDeploymentPTUSharesResponseObject interface {
+	VisitListDeploymentPTUSharesResponse(w http.ResponseWriter) error
+}
+
+type ListDeploymentPTUShares200JSONResponse struct {
+	Data *[]AdminDeploymentPTUShare `json:"data,omitempty"`
+}
+
+func (response ListDeploymentPTUShares200JSONResponse) VisitListDeploymentPTUSharesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDeploymentPTUShares403Response struct {
+}
+
+func (response ListDeploymentPTUShares403Response) VisitListDeploymentPTUSharesResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type ListDeploymentPTUShares404Response struct {
+}
+
+func (response ListDeploymentPTUShares404Response) VisitListDeploymentPTUSharesResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type UpsertDeploymentPTUShareRequestObject struct {
+	DepID string `json:"depID"`
+	Body  *UpsertDeploymentPTUShareJSONRequestBody
+}
+
+type UpsertDeploymentPTUShareResponseObject interface {
+	VisitUpsertDeploymentPTUShareResponse(w http.ResponseWriter) error
+}
+
+type UpsertDeploymentPTUShare200JSONResponse AdminDeploymentPTUShare
+
+func (response UpsertDeploymentPTUShare200JSONResponse) VisitUpsertDeploymentPTUShareResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertDeploymentPTUShare400Response struct {
+}
+
+func (response UpsertDeploymentPTUShare400Response) VisitUpsertDeploymentPTUShareResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertDeploymentPTUShare403Response struct {
+}
+
+func (response UpsertDeploymentPTUShare403Response) VisitUpsertDeploymentPTUShareResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type UpsertDeploymentPTUShare404Response struct {
+}
+
+func (response UpsertDeploymentPTUShare404Response) VisitUpsertDeploymentPTUShareResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type DeleteDeploymentPTUShareRequestObject struct {
+	DepID  string `json:"depID"`
+	TeamID string `json:"teamID"`
+	Params DeleteDeploymentPTUShareParams
+}
+
+type DeleteDeploymentPTUShareResponseObject interface {
+	VisitDeleteDeploymentPTUShareResponse(w http.ResponseWriter) error
+}
+
+type DeleteDeploymentPTUShare200JSONResponse struct {
+	DeploymentId *string `json:"deployment_id,omitempty"`
+	Status       *string `json:"status,omitempty"`
+	TeamId       *string `json:"team_id,omitempty"`
+}
+
+func (response DeleteDeploymentPTUShare200JSONResponse) VisitDeleteDeploymentPTUShareResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteDeploymentPTUShare403Response struct {
+}
+
+func (response DeleteDeploymentPTUShare403Response) VisitDeleteDeploymentPTUShareResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteDeploymentPTUShare404Response struct {
+}
+
+func (response DeleteDeploymentPTUShare404Response) VisitDeleteDeploymentPTUShareResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type CreateGuardrailBindingRequestObject struct {
@@ -8300,6 +8680,76 @@ func (response DeleteToolPolicy200JSONResponse) VisitDeleteToolPolicyResponse(w 
 	return err
 }
 
+type ListPriorityClassesRequestObject struct {
+	Params ListPriorityClassesParams
+}
+
+type ListPriorityClassesResponseObject interface {
+	VisitListPriorityClassesResponse(w http.ResponseWriter) error
+}
+
+type ListPriorityClasses200JSONResponse struct {
+	Data *[]AdminPriorityClass `json:"data,omitempty"`
+}
+
+func (response ListPriorityClasses200JSONResponse) VisitListPriorityClassesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertPriorityClassRequestObject struct {
+	Body *UpsertPriorityClassJSONRequestBody
+}
+
+type UpsertPriorityClassResponseObject interface {
+	VisitUpsertPriorityClassResponse(w http.ResponseWriter) error
+}
+
+type UpsertPriorityClass200JSONResponse AdminPriorityClass
+
+func (response UpsertPriorityClass200JSONResponse) VisitUpsertPriorityClassResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertPriorityClass400Response struct {
+}
+
+func (response UpsertPriorityClass400Response) VisitUpsertPriorityClassResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertPriorityClass403Response struct {
+}
+
+func (response UpsertPriorityClass403Response) VisitUpsertPriorityClassResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type UpsertPriorityClass404Response struct {
+}
+
+func (response UpsertPriorityClass404Response) VisitUpsertPriorityClassResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
 type ListProjectsRequestObject struct {
 	Params ListProjectsParams
 }
@@ -9320,6 +9770,15 @@ type StrictServerInterface interface {
 	// CreateDeployment Create a model deployment within a model group
 	// (POST /admin/v1/deployments)
 	CreateDeployment(ctx context.Context, request CreateDeploymentRequestObject) (CreateDeploymentResponseObject, error)
+	// ListDeploymentPTUShares List team PTU capacity shares allocated on a deployment
+	// (GET /admin/v1/deployments/{depID}/ptu-shares)
+	ListDeploymentPTUShares(ctx context.Context, request ListDeploymentPTUSharesRequestObject) (ListDeploymentPTUSharesResponseObject, error)
+	// UpsertDeploymentPTUShare Allocate or update a team's reserved PTU capacity share on a deployment
+	// (POST /admin/v1/deployments/{depID}/ptu-shares)
+	UpsertDeploymentPTUShare(ctx context.Context, request UpsertDeploymentPTUShareRequestObject) (UpsertDeploymentPTUShareResponseObject, error)
+	// DeleteDeploymentPTUShare Remove a team's reserved PTU capacity share from a deployment
+	// (DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID})
+	DeleteDeploymentPTUShare(ctx context.Context, request DeleteDeploymentPTUShareRequestObject) (DeleteDeploymentPTUShareResponseObject, error)
 	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
 	// (POST /admin/v1/guardrail-bindings)
 	CreateGuardrailBinding(ctx context.Context, request CreateGuardrailBindingRequestObject) (CreateGuardrailBindingResponseObject, error)
@@ -9452,6 +9911,12 @@ type StrictServerInterface interface {
 	// DeleteToolPolicy Delete a tool trust policy
 	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
 	DeleteToolPolicy(ctx context.Context, request DeleteToolPolicyRequestObject) (DeleteToolPolicyResponseObject, error)
+	// ListPriorityClasses List priority classes configured for an organization
+	// (GET /admin/v1/priority-classes)
+	ListPriorityClasses(ctx context.Context, request ListPriorityClassesRequestObject) (ListPriorityClassesResponseObject, error)
+	// UpsertPriorityClass Create or update an organization priority class for dynamic capacity sharing
+	// (POST /admin/v1/priority-classes)
+	UpsertPriorityClass(ctx context.Context, request UpsertPriorityClassRequestObject) (UpsertPriorityClassResponseObject, error)
 	// ListProjects List projects scoped by organization and optional team
 	// (GET /admin/v1/projects)
 	ListProjects(ctx context.Context, request ListProjectsRequestObject) (ListProjectsResponseObject, error)
@@ -10267,6 +10732,94 @@ func (sh *strictHandler) CreateDeployment(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateDeploymentResponseObject); ok {
 		if err := validResponse.VisitCreateDeploymentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListDeploymentPTUShares operation middleware
+func (sh *strictHandler) ListDeploymentPTUShares(w http.ResponseWriter, r *http.Request, depID string, params ListDeploymentPTUSharesParams) {
+	var request ListDeploymentPTUSharesRequestObject
+
+	request.DepID = depID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListDeploymentPTUShares(ctx, request.(ListDeploymentPTUSharesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListDeploymentPTUShares")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListDeploymentPTUSharesResponseObject); ok {
+		if err := validResponse.VisitListDeploymentPTUSharesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertDeploymentPTUShare operation middleware
+func (sh *strictHandler) UpsertDeploymentPTUShare(w http.ResponseWriter, r *http.Request, depID string) {
+	var request UpsertDeploymentPTUShareRequestObject
+
+	request.DepID = depID
+
+	var body UpsertDeploymentPTUShareJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertDeploymentPTUShare(ctx, request.(UpsertDeploymentPTUShareRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertDeploymentPTUShare")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertDeploymentPTUShareResponseObject); ok {
+		if err := validResponse.VisitUpsertDeploymentPTUShareResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteDeploymentPTUShare operation middleware
+func (sh *strictHandler) DeleteDeploymentPTUShare(w http.ResponseWriter, r *http.Request, depID string, teamID string, params DeleteDeploymentPTUShareParams) {
+	var request DeleteDeploymentPTUShareRequestObject
+
+	request.DepID = depID
+	request.TeamID = teamID
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteDeploymentPTUShare(ctx, request.(DeleteDeploymentPTUShareRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteDeploymentPTUShare")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteDeploymentPTUShareResponseObject); ok {
+		if err := validResponse.VisitDeleteDeploymentPTUShareResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -11528,6 +12081,63 @@ func (sh *strictHandler) DeleteToolPolicy(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteToolPolicyResponseObject); ok {
 		if err := validResponse.VisitDeleteToolPolicyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListPriorityClasses operation middleware
+func (sh *strictHandler) ListPriorityClasses(w http.ResponseWriter, r *http.Request, params ListPriorityClassesParams) {
+	var request ListPriorityClassesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPriorityClasses(ctx, request.(ListPriorityClassesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPriorityClasses")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListPriorityClassesResponseObject); ok {
+		if err := validResponse.VisitListPriorityClassesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertPriorityClass operation middleware
+func (sh *strictHandler) UpsertPriorityClass(w http.ResponseWriter, r *http.Request) {
+	var request UpsertPriorityClassRequestObject
+
+	var body UpsertPriorityClassJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertPriorityClass(ctx, request.(UpsertPriorityClassRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertPriorityClass")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertPriorityClassResponseObject); ok {
+		if err := validResponse.VisitUpsertPriorityClassResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
