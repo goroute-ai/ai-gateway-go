@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -18,8 +19,22 @@ const defaultBudgetExceededThrottlePct = 0.10
 type budgetPolicyAcquisition struct {
 	EffectiveModel  string
 	ReleaseQuota    func(actualTokens int, overrideCostMicros int64)
+	ReleaseUsage    func(actualInput, actualOutput int, overrideCostMicros int64)
 	Throttled       bool
 	FallbackApplied bool
+}
+
+func legacyReleaseFromUsage(releaseUsage func(actualInput, actualOutput int, overrideCostMicros int64)) func(actualTokens int, overrideCostMicros int64) {
+	if releaseUsage == nil {
+		return nil
+	}
+	return func(actualTokens int, overrideCostMicros int64) {
+		if actualTokens < 0 {
+			releaseUsage(-1, -1, -1)
+			return
+		}
+		releaseUsage(actualTokens, 0, overrideCostMicros)
+	}
 }
 
 func (s *GatewayServer) budgetExceededThrottlePct() float64 {
@@ -166,48 +181,131 @@ func (s *GatewayServer) checkModelDeploymentBudget(ctx context.Context, orgID, m
 	return nil
 }
 
-func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), error) {
+func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), error) {
 	if s == nil {
-		return func(int, int64) {}, nil
+		return func(int, int, int64) {}, nil
 	}
-	if !identityHasBudget(id) {
-		if s.limiter == nil {
-			return func(int, int64) {}, nil
+	now := time.Now().UTC()
+	effID := applyEffectiveTempBudgets(id, now)
+	extDescriptors, descErr := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
+	if descErr != nil {
+		return nil, &domain.GatewayError{
+			StatusCode:    http.StatusServiceUnavailable,
+			Type:          domain.ErrorTypeRateLimit,
+			Code:          "quota_policy_unavailable",
+			Message:       "Unable to evaluate configured quota policies",
+			RetryAfterSec: 5,
 		}
-		release, err := s.limiter.Acquire(ctx, id, rateTokens)
+	}
+
+	legacyHasBudget := hasLegacyBudget(effID)
+	extHasBudget := descriptorsHaveBudget(extDescriptors)
+	needsBudget := legacyHasBudget || extHasBudget
+
+	var reserve int64
+	if needsBudget {
+		if s.budgetStats != nil {
+			s.budgetStats.budgetedChecks.Add(1)
+		}
+		orgID := ""
+		if effID != nil {
+			orgID = effID.OrgID
+		}
+		var err error
+		reserve, err = s.tokenBudgetUpperBound(ctx, orgID, model, budgetInputTokens, requestedOutput)
+		if err != nil {
+			if errors.Is(err, errBudgetPricingUnverified) {
+				return nil, &domain.GatewayError{StatusCode: http.StatusForbidden, Type: domain.ErrorTypeBudgetExceeded, Code: "pricing_unknown_budget_restricted", Message: "Budgeted requests require known model pricing"}
+			}
+			return nil, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"}
+		}
+	}
+	if s.limiter == nil {
+		return func(int, int, int64) {}, nil
+	}
+
+	var legacyRel func(actualTokens int, overrideCostMicros int64)
+	if legacyHasBudget {
+		rel, err := s.limiter.AcquireWithBudget(ctx, effID, rateTokens, reserve, requestID)
 		if err != nil {
 			return nil, err
 		}
-		var once sync.Once
-		return func(actualTokens int, _ int64) {
-			once.Do(func() {
-				release(actualTokens)
-			})
-		}, nil
-	}
-	if s.budgetStats != nil {
-		s.budgetStats.budgetedChecks.Add(1)
-	}
-	reserve, err := s.tokenBudgetUpperBound(ctx, id.OrgID, model, budgetInputTokens, requestedOutput)
-	if err != nil {
-		if errors.Is(err, errBudgetPricingUnverified) {
-			return nil, &domain.GatewayError{StatusCode: http.StatusForbidden, Type: domain.ErrorTypeBudgetExceeded, Code: "pricing_unknown_budget_restricted", Message: "Budgeted requests require known model pricing"}
+		legacyRel = s.wrapBudgetRelease(ctx, effID, requestID, rel)
+	} else {
+		rel, err := s.limiter.Acquire(ctx, effID, rateTokens)
+		if err != nil {
+			return nil, err
 		}
-		return nil, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"}
+		var legacyOnce sync.Once
+		legacyRel = func(actualTokens int, _ int64) {
+			legacyOnce.Do(func() {
+				rel(actualTokens)
+			})
+		}
 	}
-	if s.limiter == nil {
-		return func(int, int64) {}, nil
+
+	var descRel func(actualInput, actualOutput int, actualCostMicros int64)
+	if len(extDescriptors) > 0 {
+		estInput := rateTokens
+		if estInput < 0 {
+			estInput = 0
+		}
+		estOutput := requestedOutput
+		if estOutput < 0 {
+			estOutput = 0
+		}
+		orgID := ""
+		if effID != nil {
+			orgID = effID.OrgID
+		}
+		var err error
+		descRel, err = s.limiter.AcquireDescriptors(ctx, orgID, requestID, estInput, estOutput, reserve, extDescriptors)
+		if err != nil {
+			legacyRel(-1, -1)
+			return nil, err
+		}
 	}
-	release, err := s.limiter.AcquireWithBudget(ctx, id, rateTokens, reserve, requestID)
-	if err != nil {
-		return nil, err
-	}
-	return s.wrapBudgetRelease(ctx, id, requestID, release), nil
+
+	var once sync.Once
+	return func(actualInput, actualOutput int, overrideCostMicros int64) {
+		once.Do(func() {
+			if actualInput < 0 {
+				if legacyRel != nil {
+					legacyRel(-1, -1)
+				}
+				if descRel != nil {
+					descRel(-1, -1, -1)
+				}
+				return
+			}
+			if actualOutput < 0 {
+				actualOutput = 0
+			}
+			totalTokens := actualInput + actualOutput
+			if legacyRel != nil {
+				legacyCost := overrideCostMicros
+				if s.spendWorker != nil && overrideCostMicros >= 0 {
+					legacyCost = -2
+				}
+				legacyRel(totalTokens, legacyCost)
+			}
+			if descRel != nil {
+				descCost := overrideCostMicros
+				if descCost < 0 {
+					descCost = 0
+				}
+				descRel(actualInput, actualOutput, descCost)
+			}
+			if s.spendWorker == nil && overrideCostMicros > 0 {
+				s.incrementBudgetWindowSpendBestEffort(effID, overrideCostMicros)
+			}
+		})
+	}, nil
 }
 
-func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), bool, error) {
+func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), bool, error) {
 	pct := s.budgetExceededThrottlePct()
-	currID := id
+	currID := applyEffectiveTempBudgets(id, time.Now().UTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {
@@ -314,7 +412,8 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 			if err == nil {
 				return budgetPolicyAcquisition{
 					EffectiveModel: requestedModel,
-					ReleaseQuota:   release,
+					ReleaseQuota:   legacyReleaseFromUsage(release),
+					ReleaseUsage:   release,
 				}, nil
 			}
 			if !isBudgetRejectionError(err) {
@@ -322,7 +421,7 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 			}
 		}
 
-		var winningRelease func(int, int64)
+		var winningRelease func(int, int, int64)
 		if fbModel, ok := finops.ResolveBudgetFallbackModel(ctx, id, requestedModel, func(checkCtx context.Context, candidate string) error {
 			if s.rbac != nil {
 				if err := s.rbac.AuthorizeRequestedModel(id, candidate); err != nil {
@@ -341,7 +440,8 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 		}); ok {
 			return budgetPolicyAcquisition{
 				EffectiveModel:  fbModel,
-				ReleaseQuota:    winningRelease,
+				ReleaseQuota:    legacyReleaseFromUsage(winningRelease),
+				ReleaseUsage:    winningRelease,
 				FallbackApplied: true,
 			}, nil
 		}
@@ -353,7 +453,8 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 	}
 	return budgetPolicyAcquisition{
 		EffectiveModel: requestedModel,
-		ReleaseQuota:   release,
+		ReleaseQuota:   legacyReleaseFromUsage(release),
+		ReleaseUsage:   release,
 		Throttled:      throttled,
 	}, nil
 }

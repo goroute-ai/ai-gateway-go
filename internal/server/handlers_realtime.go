@@ -511,10 +511,10 @@ func (s *GatewayServer) executeRealtimeTurn(
 	onAdmitted func(),
 ) (*domain.CanonicalChatResponse, error) {
 	turnReqID := sessionID + "_turn_" + uuid.NewString()
-	var releaseTurnQuota func(actualTokens int, overrideCostMicros int64)
+	var releaseTurnQuota func(actualInput, actualOutput int, overrideCostMicros int64)
 	if s.limiter != nil {
 		var quotaErr error
-		releaseTurnQuota, quotaErr = s.acquireRequestQuotaWithCost(ctx, idCtx, model, estTokens, budgetInputTokens, maxOutput, turnReqID)
+		releaseTurnQuota, quotaErr = s.acquireRequestQuotaWithUsage(ctx, idCtx, model, estTokens, budgetInputTokens, maxOutput, turnReqID)
 		if quotaErr != nil {
 			return nil, quotaErr
 		}
@@ -528,7 +528,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 		requestedModel: model,
 		estTokens:      estTokens,
 		reqCtx:         ctx,
-		releaseQuota:   releaseTurnQuota,
+		releaseUsage:   releaseTurnQuota,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -562,13 +562,14 @@ func (s *GatewayServer) executeRealtimeTurn(
 	}
 
 	turnCost := finops.CalculateCostMicros(gm, resp.Usage)
-	actualTokens := resp.Usage.TotalTokens
-	if actualTokens <= 0 {
-		actualTokens = estTokens
+	actualInput := resp.Usage.PromptTokens
+	actualOutput := resp.Usage.CompletionTokens
+	if actualInput+actualOutput <= 0 {
+		actualInput = estTokens
 	}
 	quotaSettlement.actualTokensReconciled = true
 	if releaseTurnQuota != nil {
-		releaseTurnQuota(actualTokens, turnCost)
+		releaseTurnQuota(actualInput, actualOutput, turnCost)
 	}
 
 	if s.spendWorker != nil {

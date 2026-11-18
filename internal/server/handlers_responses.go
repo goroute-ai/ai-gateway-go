@@ -135,6 +135,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	}
 	applyBudgetPolicyHeaders(w, req.Model, acq)
 	releaseQuota := acq.ReleaseQuota
+	releaseUsage := acq.ReleaseUsage
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          respReqID,
@@ -146,6 +147,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		isStream:       req.Stream,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -212,20 +214,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			domain.WriteHTTPError(w, err)
 			return
 		}
-		quotaSettlement.actualTokensReconciled = true
-		releaseQuota(resp.Usage.TotalTokens, -2)
-		if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "responses"); sanitizeErr != nil {
-			domain.WriteHTTPError(w, sanitizeErr)
-			return
-		}
-		s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
-		if cacheKey != "" {
-			s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
-			w.Header().Set("X-Gateway-Cache", "MISS")
-		}
-
-		out := buildResponsesOutput(resp)
-		respID := out.ID
 
 		var gm *domain.GlobalModel
 		var depID string
@@ -238,6 +226,25 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+
+		quotaSettlement.actualTokensReconciled = true
+		if releaseUsage != nil {
+			releaseUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
+		} else {
+			releaseQuota(resp.Usage.TotalTokens, -2)
+		}
+		if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "responses"); sanitizeErr != nil {
+			domain.WriteHTTPError(w, sanitizeErr)
+			return
+		}
+		s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
+		if cacheKey != "" {
+			s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+			w.Header().Set("X-Gateway-Cache", "MISS")
+		}
+
+		out := buildResponsesOutput(resp)
+		respID := out.ID
 		logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
 			Model:            resp.Model,
 			Provider:         string(resp.Provider),
@@ -641,8 +648,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
-		quotaSettlement.actualTokensReconciled = true
-		releaseQuota(streamUsage.TotalTokens, -2)
 		if meta != nil && meta.WinningDeployment != nil {
 			depID = meta.WinningDeployment.ID
 			gm = meta.WinningDeployment.GlobalModel
@@ -655,6 +660,12 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros = finops.CalculateCostMicros(gm, streamUsage)
+		quotaSettlement.actualTokensReconciled = true
+		if releaseUsage != nil {
+			releaseUsage(streamUsage.PromptTokens, streamUsage.CompletionTokens, costMicros)
+		} else {
+			releaseQuota(streamUsage.TotalTokens, -2)
+		}
 		if s.affinityStore != nil && respID != "" && depID != "" {
 			s.affinityStore.PinAsync(idCtx.OrgID, router.ResponseAffinityKey(idCtx.OrgID, respID), depID, s.affinityStore.DefaultTTL())
 		}

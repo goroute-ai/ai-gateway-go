@@ -49,7 +49,7 @@ func rejectBudgetedUnsupported(w http.ResponseWriter, id *domain.IdentityContext
 }
 
 func identityHasBudget(id *domain.IdentityContext) bool {
-	return id != nil && (id.KeyMaxBudgetMicros > 0 || id.TeamMaxBudgetMicros > 0 || id.UserMaxBudgetMicros > 0 || id.OrgMaxBudgetMicros > 0)
+	return id != nil && (id.KeyMaxBudgetMicros > 0 || id.TeamMaxBudgetMicros > 0 || id.UserMaxBudgetMicros > 0 || id.OrgMaxBudgetMicros > 0 || id.ProjectMaxBudgetMicros > 0 || id.TeamMemberMaxBudgetMicros > 0)
 }
 
 func (s *GatewayServer) budgetModelCandidates(ctx context.Context, provider domain.ProviderType, model string) ([]*domain.GlobalModel, error) {
@@ -200,7 +200,7 @@ func (s *GatewayServer) reservationLeaseRenewInterval() time.Duration {
 // startReservationLeaseRenewer periodically extends active budget reservation
 // leases while a budgeted request is in flight.
 func (s *GatewayServer) startReservationLeaseRenewer(ctx context.Context, id *domain.IdentityContext, requestID string) func() {
-	if s == nil || s.limiter == nil || !identityHasBudget(id) || requestID == "" {
+	if s == nil || s.limiter == nil || !hasLegacyBudget(id) || requestID == "" {
 		return func() {}
 	}
 	if ctx == nil {
@@ -437,6 +437,20 @@ func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *do
 
 func (s *GatewayServer) acquireRequestQuotaWithCost(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), error) {
 	release, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	if err != nil {
+		return nil, err
+	}
+	return func(actualTokens int, overrideCostMicros int64) {
+		if actualTokens < 0 {
+			release(-1, -1, -1)
+			return
+		}
+		release(actualTokens, 0, overrideCostMicros)
+	}, nil
+}
+
+func (s *GatewayServer) acquireRequestQuotaWithUsage(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), error) {
+	release, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
 	return release, err
 }
 
@@ -478,14 +492,19 @@ type postDispatchSettlement struct {
 	dispatchErr            error
 	reqCtx                 context.Context
 	releaseQuota           func(actualTokens int, overrideCostMicros int64)
+	releaseUsage           func(actualInput, actualOutput int, overrideCostMicros int64)
 }
 
 func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
-	if p == nil || p.releaseQuota == nil || p.actualTokensReconciled {
+	if p == nil || (p.releaseQuota == nil && p.releaseUsage == nil) || p.actualTokensReconciled {
 		return
 	}
 	if !p.upstreamDispatched {
-		p.releaseQuota(-1, -1)
+		if p.releaseUsage != nil {
+			p.releaseUsage(-1, -1, -1)
+		} else {
+			p.releaseQuota(-1, -1)
+		}
 		return
 	}
 	var gm *domain.GlobalModel
@@ -513,7 +532,11 @@ func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
 		orgID = p.idCtx.OrgID
 	}
 	inputCostMicros := s.estimateInputCostMicros(orgID, p.requestedModel, gm, p.estTokens)
-	p.releaseQuota(p.estTokens, inputCostMicros)
+	if p.releaseUsage != nil {
+		p.releaseUsage(p.estTokens, 0, inputCostMicros)
+	} else {
+		p.releaseQuota(p.estTokens, inputCostMicros)
+	}
 
 	if s != nil && s.spendWorker != nil && p.idCtx != nil {
 		statusCode := http.StatusBadGateway

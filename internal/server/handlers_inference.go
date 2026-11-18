@@ -332,7 +332,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		maxOutput = *chatReq.MaxTokens
 	}
 	budgetInputTokens := estTokens
-	if identityHasBudget(idCtx) {
+	if s.requestHasBudget(r.Context(), idCtx, chatReq.Model) {
 		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
 			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
 			return
@@ -352,6 +352,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
 	releaseQuota := acq.ReleaseQuota
+	releaseUsage := acq.ReleaseUsage
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          reqID,
@@ -363,6 +364,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		isStream:       chatReq.Stream,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -777,8 +779,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			usageVal.TotalTokens = estTokens
 			totalTok = estTokens
 		}
-		quotaSettlement.actualTokensReconciled = true
-		releaseQuota(totalTok, -2)
 
 		var gm *domain.GlobalModel
 		var depID, depName string
@@ -800,6 +800,12 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
 		}
 		costMicros := finops.CalculateCostMicros(gm, usageVal)
+		quotaSettlement.actualTokensReconciled = true
+		if releaseUsage != nil {
+			releaseUsage(usageVal.PromptTokens, usageVal.CompletionTokens, costMicros)
+		} else {
+			releaseQuota(totalTok, -2)
+		}
 		s.collector.Record(observability.RequestObservation{
 			Provider:          string(provider),
 			DeploymentID:      depID,
@@ -936,15 +942,6 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	quotaSettlement.actualTokensReconciled = true
-	releaseQuota(resp.Usage.TotalTokens, -2)
-
-	// Output Guardrail Evaluation (Layer 0 Engine + Layer 1 post_call Pipeline)
-	redacted, guardrailOutputErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "chat_completion")
-	if redacted {
-		guardrailRedacted = true
-	}
-
 	var gm *domain.GlobalModel
 	var depID, depName string
 	var pricingVer int
@@ -960,6 +957,19 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		pricingVer = 1
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+
+	quotaSettlement.actualTokensReconciled = true
+	if releaseUsage != nil {
+		releaseUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
+	} else {
+		releaseQuota(resp.Usage.TotalTokens, -2)
+	}
+
+	// Output Guardrail Evaluation (Layer 0 Engine + Layer 1 post_call Pipeline)
+	redacted, guardrailOutputErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "chat_completion")
+	if redacted {
+		guardrailRedacted = true
+	}
 
 	if cacheKey != "" && guardrailOutputErr == nil {
 		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
@@ -1135,6 +1145,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	}
 	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
 	releaseQuota := acq.ReleaseQuota
+	releaseUsage := acq.ReleaseUsage
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          reqID,
@@ -1145,6 +1156,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		estTokens:      estTokens,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -1200,11 +1212,6 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	quotaSettlement.actualTokensReconciled = true
-	releaseQuota(resp.Usage.TotalTokens, -2)
-	if cacheKey != "" {
-		s.respCache.SetEmbeddingWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
-	}
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -1218,6 +1225,16 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+
+	quotaSettlement.actualTokensReconciled = true
+	if releaseUsage != nil {
+		releaseUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
+	} else {
+		releaseQuota(resp.Usage.TotalTokens, -2)
+	}
+	if cacheKey != "" {
+		s.respCache.SetEmbeddingWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+	}
 
 	s.collector.Record(observability.RequestObservation{
 		Provider:         string(resp.Provider),

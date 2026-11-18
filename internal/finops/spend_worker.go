@@ -279,6 +279,26 @@ func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time
 			return resetCount, err
 		}
 	}
+	if bwResetter, ok := sw.repo.(storage.BudgetWindowResetRepository); ok && bwResetter != nil {
+		resetWindows, err := bwResetter.ResetExpiredBudgetWindowsWithResults(ctx, now)
+		if err != nil {
+			return resetCount, err
+		}
+		if len(resetWindows) > 0 {
+			resetCount += len(resetWindows)
+			if sw.limiter != nil {
+				if err := sw.limiter.ResetBudgetWindowSpend(ctx, resetWindows); err != nil {
+					logger.Warn("Redis budget window spend reset failed", slog.String("component", "finops"), slog.String("error", err.Error()))
+				}
+			}
+		}
+	} else if bwRepo, ok := sw.repo.(storage.BudgetWindowRepository); ok && bwRepo != nil {
+		count, err := bwRepo.ResetExpiredBudgetWindows(ctx, now)
+		if err != nil {
+			return resetCount, err
+		}
+		resetCount += count
+	}
 	return resetCount, nil
 }
 

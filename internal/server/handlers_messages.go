@@ -157,7 +157,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	// 3. Rate Limiting Quota
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
 	budgetInputTokens := estTokens
-	if identityHasBudget(idCtx) {
+	if s.requestHasBudget(r.Context(), idCtx, chatReq.Model) {
 		if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
 			domain.WriteAnthropicHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"})
 			return
@@ -176,10 +176,11 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 	applyBudgetPolicyHeaders(w, payload.Model, acq)
 	releaseQuota := acq.ReleaseQuota
+	releaseUsage := acq.ReleaseUsage
 
 	// 4. Dispatch Execution
 	if payload.Stream {
-		s.streamAnthropicMessages(w, r, idCtx, prc, &chatReq, estTokens, releaseQuota, traceID, reqID)
+		s.streamAnthropicMessages(w, r, idCtx, prc, &chatReq, estTokens, releaseQuota, releaseUsage, traceID, reqID)
 		return
 	}
 	quotaSettlement := &postDispatchSettlement{
@@ -193,6 +194,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		isStream:       false,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -260,18 +262,6 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
-	quotaSettlement.actualTokensReconciled = true
-	releaseQuota(resp.Usage.TotalTokens, -2)
-	if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "messages"); sanitizeErr != nil {
-		domain.WriteAnthropicHTTPError(w, sanitizeErr)
-		return
-	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
-	if cacheKey != "" {
-		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
-		w.Header().Set("X-Gateway-Cache", "MISS")
-	}
-
 	var gm *domain.GlobalModel
 	var depID, depName string
 	var pricingVer int
@@ -286,6 +276,22 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)
 	pricingStatus := domain.ResolvePricingStatus(gm)
+
+	quotaSettlement.actualTokensReconciled = true
+	if releaseUsage != nil {
+		releaseUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
+	} else {
+		releaseQuota(resp.Usage.TotalTokens, -2)
+	}
+	if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "messages"); sanitizeErr != nil {
+		domain.WriteAnthropicHTTPError(w, sanitizeErr)
+		return
+	}
+	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
+	if cacheKey != "" {
+		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+		w.Header().Set("X-Gateway-Cache", "MISS")
+	}
 
 	s.collector.Record(observability.RequestObservation{
 		Provider:         string(resp.Provider),
@@ -369,6 +375,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	chatReq *domain.CanonicalChatRequest,
 	estTokens int,
 	releaseQuota func(int, int64),
+	releaseUsage func(int, int, int64),
 	traceID, reqID string,
 ) {
 	quotaSettlement := &postDispatchSettlement{
@@ -382,6 +389,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		isStream:       true,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
+		releaseUsage:   releaseUsage,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
@@ -655,8 +663,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
-		quotaSettlement.actualTokensReconciled = true
-		releaseQuota(totalTokens, -2)
 		if winningDep == nil && meta != nil && meta.WinningDeployment != nil {
 			winningDep = meta.WinningDeployment
 		}
@@ -675,6 +681,12 @@ func (s *GatewayServer) streamAnthropicMessages(
 			latMs = meta.LatencyMs
 		}
 		costMicros = finops.CalculateCostMicros(gm, finalUsage)
+		quotaSettlement.actualTokensReconciled = true
+		if releaseUsage != nil {
+			releaseUsage(finalUsage.PromptTokens, finalUsage.CompletionTokens, costMicros)
+		} else {
+			releaseQuota(totalTokens, -2)
+		}
 		if streamCacheKey != "" && !streamSession.Blocked() && sawTerminalChunk && len(sanitizedChunks) > 0 {
 			finalizeStreamChunksForCache(sanitizedChunks, resolvedModel, finalUsage)
 			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
