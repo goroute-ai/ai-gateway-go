@@ -88,7 +88,8 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 	var writeMu sync.Mutex
 	history := make([]domain.CanonicalMessage, 0)
 
-	sessionCtx, sessionCancel := context.WithCancel(r.Context())
+	rtQCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, r.URL.Query().Get("user"), nil, nil)
+	sessionCtx, sessionCancel := context.WithCancel(rtQCtx)
 	defer sessionCancel()
 
 	// Helper to send JSON event to client
@@ -325,7 +326,7 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 
 			estTokens := ratelimit.EstimateRequestTokens(chatReq)
 			budgetInputTokens := estTokens
-			if identityHasBudget(idCtx) {
+			if s.requestHasBudget(sessionCtx, idCtx, model) {
 				if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
 					_ = sendEvent(r.Context(), map[string]any{
 						"event_id": "event_" + uuid.NewString(),
@@ -586,7 +587,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 			retries = meta.RetryCount
 			fb = meta.FallbackAttempted
 		}
-		if recErr := s.spendWorker.Record(context.WithoutCancel(ctx), domain.SpendEvent{
+		if recErr := s.spendWorker.Record(context.WithoutCancel(ctx), enrichSpendEventFromContext(ctx, domain.SpendEvent{
 			ID:                      "sp_" + uuid.NewString(),
 			RequestID:               turnReqID,
 			OrgID:                   idCtx.OrgID,
@@ -610,7 +611,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 			FallbackAttempted:       fb,
 			RetryCount:              retries,
 			CreatedAt:               time.Now().UTC(),
-		}); recErr != nil {
+		})); recErr != nil {
 			logger.Error("Realtime turn spend event persistence failed", "session_id", sessionID, "turn_request_id", turnReqID, "error", recErr.Error())
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,

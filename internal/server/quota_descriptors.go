@@ -2,13 +2,133 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
+
+type requestQuotaStateContextKey struct{}
+
+type requestQuotaState struct {
+	EndUserID           string
+	Tags                []string
+	TagCandidates       []string
+	SessionID           string
+	ModelAccessGroupIDs []string
+}
+
+func appendUniqueQuotaStr(dst []string, vals ...string) []string {
+	for _, raw := range vals {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || slices.Contains(dst, trimmed) {
+			continue
+		}
+		dst = append(dst, trimmed)
+	}
+	return dst
+}
+
+func appendCSVQuotaTags(dst []string, raw string) []string {
+	for _, part := range strings.Split(raw, ",") {
+		dst = appendUniqueQuotaStr(dst, part)
+	}
+	return dst
+}
+
+func extractMetadataTagParts(md map[string]string, explicit []string, candidates []string) ([]string, []string) {
+	for k, v := range md {
+		key := strings.TrimSpace(k)
+		val := strings.TrimSpace(v)
+		if key == "" || val == "" {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "tags":
+			explicit = appendCSVQuotaTags(explicit, val)
+			candidates = appendCSVQuotaTags(candidates, val)
+		case "tag":
+			explicit = appendUniqueQuotaStr(explicit, val)
+			candidates = appendUniqueQuotaStr(candidates, val)
+		default:
+			candidates = appendUniqueQuotaStr(candidates, key+":"+val)
+		}
+	}
+	return explicit, candidates
+}
+
+// withRequestQuotaState extracts end-user, tag, and session quota attributes from the
+// request headers, identity context, and parsed request payload, attaching them to ctx.
+func withRequestQuotaState(
+	ctx context.Context,
+	r *http.Request,
+	id *domain.IdentityContext,
+	bodyUser string,
+	bodyMetadata map[string]string,
+	ext *domain.GoRouteExtensions,
+) (context.Context, *requestQuotaState) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state := &requestQuotaState{
+		EndUserID: strings.TrimSpace(bodyUser),
+	}
+	if ext != nil {
+		state.SessionID = strings.TrimSpace(ext.SessionID)
+		state.Tags = appendUniqueQuotaStr(state.Tags, ext.Tags...)
+	}
+	if r != nil {
+		if state.SessionID == "" {
+			state.SessionID = strings.TrimSpace(r.Header.Get("X-Gateway-Session-Id"))
+		}
+		for _, raw := range r.Header.Values("X-Gateway-Tags") {
+			state.Tags = appendCSVQuotaTags(state.Tags, raw)
+		}
+	}
+	if id != nil {
+		state.Tags = appendUniqueQuotaStr(state.Tags, id.KeyTags...)
+	}
+	state.TagCandidates = appendUniqueQuotaStr(state.TagCandidates, state.Tags...)
+	state.Tags, state.TagCandidates = extractMetadataTagParts(bodyMetadata, state.Tags, state.TagCandidates)
+	if id != nil {
+		state.Tags, state.TagCandidates = extractMetadataTagParts(id.KeyMetadata, state.Tags, state.TagCandidates)
+	}
+	return context.WithValue(ctx, requestQuotaStateContextKey{}, state), state
+}
+
+func requestQuotaStateFromContext(ctx context.Context) *requestQuotaState {
+	if ctx == nil {
+		return nil
+	}
+	state, _ := ctx.Value(requestQuotaStateContextKey{}).(*requestQuotaState)
+	return state
+}
+
+func enrichSpendEventFromContext(ctx context.Context, ev domain.SpendEvent) domain.SpendEvent {
+	state := requestQuotaStateFromContext(ctx)
+	if state == nil {
+		return ev
+	}
+	if ev.EndUserID == "" && state.EndUserID != "" {
+		ev.EndUserID = state.EndUserID
+	}
+	if len(ev.Tags) == 0 && len(state.Tags) > 0 {
+		ev.Tags = slices.Clone(state.Tags)
+	}
+	if ev.SessionID == "" && state.SessionID != "" {
+		ev.SessionID = state.SessionID
+	}
+	if len(ev.ModelAccessGroupIDs) == 0 && len(state.ModelAccessGroupIDs) > 0 {
+		ev.ModelAccessGroupIDs = slices.Clone(state.ModelAccessGroupIDs)
+	}
+	return ev
+}
 
 // applyEffectiveTempBudgets returns a shallow copy of id with active temporary
 // budget boosts applied to key, team, user, and org limits when now < expires_at.
@@ -156,14 +276,15 @@ func buildIdentityBaseDescriptors(effID *domain.IdentityContext) []domain.RateLi
 }
 
 // buildExtendedQuotaDescriptors builds descriptors not covered by the legacy 4-scope
-// limiter: team_member, project, active QuotaPolicy entries (including per-model
-// ITPM/OTPM/TPD/RPM/TPM/concurrency/budget policies), and BudgetWindowLimit entries
-// across daily/weekly/monthly/rolling_24h windows.
+// limiter: team_member, project, end_user, tag, model_access_group, agent_session,
+// active QuotaPolicy entries (including per-model ITPM/OTPM/TPD/RPM/TPM/concurrency/budget
+// policies), and BudgetWindowLimit entries across daily/weekly/monthly/rolling_24h windows.
 func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID *domain.IdentityContext, model string, now time.Time) ([]domain.RateLimitDescriptor, error) {
 	if effID == nil {
 		return nil, nil
 	}
 	var out []domain.RateLimitDescriptor
+	state := requestQuotaStateFromContext(ctx)
 
 	if tmID := teamMemberScopeID(effID.TeamID, effID.UserID); tmID != "" {
 		d := domain.RateLimitDescriptor{
@@ -194,8 +315,115 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 		}
 	}
 
+	if state != nil && state.SessionID != "" {
+		maxIter := minPositiveInt(effID.KeyMaxIterations, effID.TeamMaxIterations, effID.OrgMaxIterations)
+		maxSessBudget := minPositiveInt64(effID.KeyMaxBudgetPerSessionMicros, effID.TeamMaxBudgetPerSessionMicros, effID.OrgMaxBudgetPerSessionMicros)
+		ttlSec := 0
+		if s != nil && s.cfg != nil {
+			if maxIter == 0 && s.cfg.RateLimit.DefaultAgentSessionMaxIterations > 0 {
+				maxIter = s.cfg.RateLimit.DefaultAgentSessionMaxIterations
+			}
+			if maxSessBudget == 0 && s.cfg.RateLimit.DefaultAgentSessionMaxBudgetMicros > 0 {
+				maxSessBudget = s.cfg.RateLimit.DefaultAgentSessionMaxBudgetMicros
+			}
+			ttlSec = s.cfg.RateLimit.DefaultAgentSessionTTLSec
+		}
+		sessDesc := domain.RateLimitDescriptor{
+			ScopeType:       domain.QuotaScopeAgentSession,
+			ScopeID:         state.SessionID,
+			ModelPattern:    "*",
+			MaxIterations:   maxIter,
+			MaxBudgetMicros: maxSessBudget,
+			WindowTTLSec:    ttlSec,
+		}
+		if sessDesc.HasLimits() {
+			out = append(out, sessDesc)
+		}
+	}
+
 	if s == nil || s.repo == nil || effID.OrgID == "" {
-		return out, nil
+		return mergeExtendedDescriptors(out), nil
+	}
+
+	// EndUser auto-create / lookup strictly scoped by (org_id, end_user_id).
+	if state != nil && state.EndUserID != "" {
+		if euRepo, ok := s.repo.(storage.EndUserRepository); ok && euRepo != nil {
+			eu, err := euRepo.GetOrCreateEndUser(ctx, effID.OrgID, state.EndUserID)
+			if err != nil {
+				return nil, err
+			}
+			if !eu.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "end_user_blocked",
+					Message:    fmt.Sprintf("End user %q is blocked", eu.EndUserID),
+				}
+			}
+			if len(eu.AllowedModels) > 0 && !matchesQuotaModelList(eu.AllowedModels, model) {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "end_user_model_restricted",
+					Message:    fmt.Sprintf("End user %q is not authorized to use model %q", eu.EndUserID, model),
+				}
+			}
+			if d := eu.ToDescriptor(); d.HasLimits() {
+				out = append(out, d)
+			}
+		}
+	}
+
+	// Active Tag quotas within org_id.
+	if state != nil && len(state.TagCandidates) > 0 {
+		if tagRepo, ok := s.repo.(storage.TagRepository); ok && tagRepo != nil {
+			tags, err := tagRepo.ListTags(ctx, storage.TagFilter{
+				OrgID:      effID.OrgID,
+				ActiveOnly: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, t := range tags {
+				if t == nil || !t.IsActive || t.OrgID != effID.OrgID {
+					continue
+				}
+				if !slices.Contains(state.TagCandidates, t.Tag) {
+					continue
+				}
+				state.Tags = appendUniqueQuotaStr(state.Tags, t.Tag)
+				if len(t.AllowedModels) > 0 && !matchesQuotaModelList(t.AllowedModels, model) {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "tag_model_restricted",
+						Message:    fmt.Sprintf("Tag %q is not authorized to use model %q", t.Tag, model),
+					}
+				}
+				if d := t.ToDescriptor(); d.HasLimits() {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+
+	// Active ModelAccessGroup quotas & spend attribution within org_id.
+	magEval, err := auth.EvaluateModelAccessGroups(ctx, s.repo, effID, model, effID.AccessGroups)
+	if err != nil {
+		return nil, err
+	}
+	if len(magEval.MatchingGroups) > 0 {
+		for _, g := range magEval.MatchingGroups {
+			if g == nil {
+				continue
+			}
+			if state != nil {
+				state.ModelAccessGroupIDs = appendUniqueQuotaStr(state.ModelAccessGroupIDs, g.ID)
+			}
+			if d := g.ToDescriptor(); d.HasLimits() {
+				out = append(out, d)
+			}
+		}
 	}
 
 	if qRepo, ok := s.repo.(storage.QuotaPolicyRepository); ok && qRepo != nil {
@@ -210,13 +438,16 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 			if qp == nil || !qp.IsActive {
 				continue
 			}
-			if !matchesQuotaScope(effID, qp.ScopeType, qp.ScopeID) {
-				continue
-			}
 			if !matchesQuotaModelPattern(qp.ModelPattern, model) {
 				continue
 			}
 			desc := qp.ToDescriptor()
+			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
+				continue
+			}
+			if desc.ScopeType == domain.QuotaScopeAgentSession && desc.WindowTTLSec <= 0 && s.cfg != nil && s.cfg.RateLimit.DefaultAgentSessionTTLSec > 0 {
+				desc.WindowTTLSec = s.cfg.RateLimit.DefaultAgentSessionTTLSec
+			}
 			if desc.HasLimits() {
 				out = append(out, desc)
 			}
@@ -234,10 +465,10 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 			if bw == nil || bw.MaxBudgetMicros <= 0 {
 				continue
 			}
-			if !matchesQuotaScope(effID, bw.ScopeType, bw.ScopeID) {
+			desc := bw.ToDescriptor()
+			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
 				continue
 			}
-			desc := bw.ToDescriptor()
 			if !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
 				// Window has expired and is awaiting background reset.
 				desc.SpentFloorMicros = 0
@@ -248,7 +479,136 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 		}
 	}
 
-	return out, nil
+	return mergeExtendedDescriptors(out), nil
+}
+
+func matchesQuotaModelList(allowed []string, model string) bool {
+	for _, pat := range allowed {
+		if matchesQuotaModelPattern(pat, model) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveScopeDescriptorID(
+	effID *domain.IdentityContext,
+	state *requestQuotaState,
+	groups []*domain.ModelAccessGroup,
+	desc *domain.RateLimitDescriptor,
+) bool {
+	if desc == nil {
+		return false
+	}
+	switch desc.ScopeType {
+	case domain.QuotaScopeEndUser, domain.QuotaScopeModelPerEndUser:
+		if state == nil || state.EndUserID == "" {
+			return false
+		}
+		if desc.ScopeID != "*" && desc.ScopeID != state.EndUserID {
+			return false
+		}
+		desc.ScopeID = state.EndUserID
+		return true
+	case domain.QuotaScopeTag:
+		if state == nil || !slices.Contains(state.TagCandidates, desc.ScopeID) {
+			return false
+		}
+		state.Tags = appendUniqueQuotaStr(state.Tags, desc.ScopeID)
+		return true
+	case domain.QuotaScopeModelAccessGroup:
+		for _, g := range groups {
+			if g != nil && (desc.ScopeID == g.ID || desc.ScopeID == g.Name) {
+				desc.ScopeID = g.ID
+				if state != nil {
+					state.ModelAccessGroupIDs = appendUniqueQuotaStr(state.ModelAccessGroupIDs, g.ID)
+				}
+				return true
+			}
+		}
+		return false
+	case domain.QuotaScopeAgentSession:
+		if state == nil || state.SessionID == "" {
+			return false
+		}
+		if desc.ScopeID != "*" && desc.ScopeID != state.SessionID {
+			return false
+		}
+		desc.ScopeID = state.SessionID
+		return true
+	default:
+		return matchesQuotaScope(effID, desc.ScopeType, desc.ScopeID)
+	}
+}
+
+func minPositiveInt(vals ...int) int {
+	best := 0
+	for _, v := range vals {
+		if v > 0 && (best == 0 || v < best) {
+			best = v
+		}
+	}
+	return best
+}
+
+func minPositiveInt64(vals ...int64) int64 {
+	best := int64(0)
+	for _, v := range vals {
+		if v > 0 && (best == 0 || v < best) {
+			best = v
+		}
+	}
+	return best
+}
+
+type descriptorMergeKey struct {
+	ScopeType    domain.QuotaScopeType
+	ScopeID      string
+	ModelPattern string
+	WindowType   domain.BudgetWindowType
+}
+
+func mergeExtendedDescriptors(descriptors []domain.RateLimitDescriptor) []domain.RateLimitDescriptor {
+	if len(descriptors) <= 1 {
+		return descriptors
+	}
+	out := make([]domain.RateLimitDescriptor, 0, len(descriptors))
+	indexByKey := make(map[descriptorMergeKey]int, len(descriptors))
+	for _, d := range descriptors {
+		if !d.HasLimits() {
+			continue
+		}
+		if d.ModelPattern == "" {
+			d.ModelPattern = "*"
+		}
+		key := descriptorMergeKey{
+			ScopeType:    d.ScopeType,
+			ScopeID:      d.ScopeID,
+			ModelPattern: d.ModelPattern,
+			WindowType:   d.WindowType,
+		}
+		if idx, exists := indexByKey[key]; exists {
+			existing := &out[idx]
+			existing.RPMLimit = minPositiveInt(existing.RPMLimit, d.RPMLimit)
+			existing.TPMLimit = minPositiveInt(existing.TPMLimit, d.TPMLimit)
+			existing.ITPMLimit = minPositiveInt(existing.ITPMLimit, d.ITPMLimit)
+			existing.OTPMLimit = minPositiveInt(existing.OTPMLimit, d.OTPMLimit)
+			existing.TPDLimit = minPositiveInt64(existing.TPDLimit, d.TPDLimit)
+			existing.MaxConcurrent = minPositiveInt(existing.MaxConcurrent, d.MaxConcurrent)
+			existing.MaxIterations = minPositiveInt(existing.MaxIterations, d.MaxIterations)
+			existing.MaxBudgetMicros = minPositiveInt64(existing.MaxBudgetMicros, d.MaxBudgetMicros)
+			if d.SpentFloorMicros > existing.SpentFloorMicros {
+				existing.SpentFloorMicros = d.SpentFloorMicros
+			}
+			if d.WindowTTLSec > existing.WindowTTLSec {
+				existing.WindowTTLSec = d.WindowTTLSec
+			}
+			continue
+		}
+		indexByKey[key] = len(out)
+		out = append(out, d)
+	}
+	return out
 }
 
 // buildRequestQuotaDescriptors builds the full descriptor set across key, team,
@@ -302,30 +662,61 @@ func (s *GatewayServer) requestHasBudget(ctx context.Context, id *domain.Identit
 	return descriptorsHaveBudget(ext)
 }
 
-func (s *GatewayServer) incrementBudgetWindowSpendBestEffort(id *domain.IdentityContext, deltaMicros int64) {
+func (s *GatewayServer) incrementBudgetWindowSpendBestEffort(reqCtx context.Context, id *domain.IdentityContext, deltaMicros int64) {
 	if s == nil || s.repo == nil || id == nil || id.OrgID == "" || deltaMicros <= 0 {
 		return
 	}
-	bwRepo, ok := s.repo.(storage.BudgetWindowRepository)
-	if !ok || bwRepo == nil {
-		return
-	}
+	state := requestQuotaStateFromContext(reqCtx)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeOrg, id.OrgID, deltaMicros)
-	if id.TeamID != "" {
-		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeTeam, id.TeamID, deltaMicros)
+	if bwRepo, ok := s.repo.(storage.BudgetWindowRepository); ok && bwRepo != nil {
+		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeOrg, id.OrgID, deltaMicros)
+		if id.TeamID != "" {
+			_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeTeam, id.TeamID, deltaMicros)
+		}
+		if id.UserID != "" {
+			_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeUser, id.UserID, deltaMicros)
+		}
+		if id.VirtualKeyID != "" {
+			_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeKey, id.VirtualKeyID, deltaMicros)
+		}
+		if id.ProjectID != "" {
+			_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeProject, id.ProjectID, deltaMicros)
+		}
+		if tmID := teamMemberScopeID(id.TeamID, id.UserID); tmID != "" {
+			_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeTeamMember, tmID, deltaMicros)
+		}
+		if state != nil {
+			if state.EndUserID != "" {
+				_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeEndUser, state.EndUserID, deltaMicros)
+			}
+			for _, tag := range state.Tags {
+				_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeTag, tag, deltaMicros)
+			}
+			for _, magID := range state.ModelAccessGroupIDs {
+				_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeModelAccessGroup, magID, deltaMicros)
+			}
+		}
 	}
-	if id.UserID != "" {
-		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeUser, id.UserID, deltaMicros)
-	}
-	if id.VirtualKeyID != "" {
-		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeKey, id.VirtualKeyID, deltaMicros)
-	}
-	if id.ProjectID != "" {
-		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeProject, id.ProjectID, deltaMicros)
-	}
-	if tmID := teamMemberScopeID(id.TeamID, id.UserID); tmID != "" {
-		_ = bwRepo.IncrementBudgetWindowSpend(ctx, id.OrgID, domain.QuotaScopeTeamMember, tmID, deltaMicros)
+	if state != nil {
+		if state.EndUserID != "" {
+			if euRepo, ok := s.repo.(storage.EndUserRepository); ok && euRepo != nil {
+				_ = euRepo.IncrementEndUserSpend(ctx, id.OrgID, state.EndUserID, deltaMicros)
+			}
+		}
+		if len(state.Tags) > 0 {
+			if tagRepo, ok := s.repo.(storage.TagRepository); ok && tagRepo != nil {
+				for _, tag := range state.Tags {
+					_ = tagRepo.IncrementTagSpend(ctx, id.OrgID, tag, deltaMicros)
+				}
+			}
+		}
+		if len(state.ModelAccessGroupIDs) > 0 {
+			if magRepo, ok := s.repo.(storage.ModelAccessGroupRepository); ok && magRepo != nil {
+				for _, magID := range state.ModelAccessGroupIDs {
+					_ = magRepo.IncrementModelAccessGroupSpend(ctx, magID, deltaMicros)
+				}
+			}
+		}
 	}
 }

@@ -32,6 +32,8 @@ type anthropicMessagesPayload struct {
 	Tools             []anthropicToolDef        `json:"tools,omitempty"`
 	ToolChoice        any                       `json:"tool_choice,omitempty"`
 	Thinking          map[string]any            `json:"thinking,omitempty"`
+	User              string                    `json:"user,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
 	GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
@@ -155,6 +157,14 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 
 	// 3. Rate Limiting Quota
+	msgUser := strings.TrimSpace(payload.User)
+	if msgUser == "" && payload.Metadata != nil {
+		msgUser = strings.TrimSpace(payload.Metadata["user_id"])
+	}
+	chatReq.User = msgUser
+	chatReq.Metadata = payload.Metadata
+	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, msgUser, payload.Metadata, chatReq.GoRouteExtensions)
+	r = r.WithContext(qCtx)
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
 	budgetInputTokens := estTokens
 	if s.requestHasBudget(r.Context(), idCtx, chatReq.Model) {
@@ -702,7 +712,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	})
 
 	if s.spendWorker != nil {
-		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 			RequestID:      reqID,
 			TraceID:        traceID,
 			OrgID:          idCtx.OrgID,
@@ -723,7 +733,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			IsStream:       true,
 			Modality:       domain.ModalityChat,
 			CreatedAt:      time.Now().UTC(),
-		}); err != nil {
+		})); err != nil {
 			fmt.Fprintf(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"message\":\"unable to persist request accounting\"}}\n\n")
 			flusher.Flush()
 			return

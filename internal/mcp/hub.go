@@ -16,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
@@ -26,6 +27,13 @@ type HubOption func(*Hub)
 func WithGuardrailPipeline(p *guardrails.Pipeline) HubOption {
 	return func(h *Hub) {
 		h.SetGuardrailPipeline(p)
+	}
+}
+
+// WithLimiter attaches a rate/quota Limiter to the MCP Hub for per-server, per-key, and per-team MCP RPM enforcement.
+func WithLimiter(l *ratelimit.Limiter) HubOption {
+	return func(h *Hub) {
+		h.SetLimiter(l)
 	}
 }
 
@@ -41,6 +49,7 @@ type Hub struct {
 	subs          *SubscriptionManager
 	guardrails    *guardrails.Engine
 	pipeline      *guardrails.Pipeline
+	limiter       *ratelimit.Limiter
 	spendRecorder SpendRecorder
 	progressive   *ProgressiveDiscoveryManager
 }
@@ -49,6 +58,7 @@ func (h *Hub) SetCache(c *MCPCache)                    { h.cache = c }
 func (h *Hub) SetMRTR(m *MRTRManager)                  { h.mrtr = m }
 func (h *Hub) SetSubscriptions(s *SubscriptionManager) { h.subs = s }
 func (h *Hub) SetGuardrails(g *guardrails.Engine)      { h.guardrails = g }
+func (h *Hub) SetLimiter(l *ratelimit.Limiter)         { h.limiter = l }
 func (h *Hub) SetGuardrailPipeline(p *guardrails.Pipeline) {
 	h.pipeline = p
 	if h.guardrails == nil && p != nil && p.Engine() != nil {
@@ -74,6 +84,7 @@ func (h *Hub) MRTR() *MRTRManager                                 { return h.mrt
 func (h *Hub) Subscriptions() *SubscriptionManager                { return h.subs }
 func (h *Hub) Guardrails() *guardrails.Engine                     { return h.guardrails }
 func (h *Hub) GuardrailPipeline() *guardrails.Pipeline            { return h.pipeline }
+func (h *Hub) Limiter() *ratelimit.Limiter                        { return h.limiter }
 func (h *Hub) SpendRecorder() SpendRecorder                       { return h.spendRecorder }
 func (h *Hub) ProgressiveDiscovery() *ProgressiveDiscoveryManager { return h.progressive }
 func (h *Hub) Dispatcher() *TransportDispatcher                   { return h.dispatcher }
@@ -348,6 +359,12 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	if reqID == "" {
 		reqID = "req_" + uuid.NewString()
 	}
+
+	releaseMCPQuota, quotaErr := h.acquireMCPToolQuota(ctx, idCtx, targetServer, reqID)
+	if quotaErr != nil {
+		return nil, quotaErr
+	}
+	defer releaseMCPQuota(0, 0, 0)
 
 	var mcpPRC guardrails.PipelineRequestContext
 	var mcpCallCtx *guardrails.MCPCallContext
@@ -1323,6 +1340,127 @@ func auditActorID(idCtx *domain.IdentityContext) string {
 		return idCtx.UserID
 	}
 	return idCtx.KeyPrefix
+}
+
+func minPositiveMCPInt(a, b int) int {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
+func matchesMCPModelPattern(pattern, serverSlug string) bool {
+	p := strings.ToLower(strings.TrimSpace(pattern))
+	slug := strings.ToLower(strings.TrimSpace(serverSlug))
+	switch p {
+	case "mcp", "mcp/*", "mcp:*":
+		return true
+	}
+	if slug != "" && (p == slug || p == "mcp/"+slug || p == "mcp:"+slug) {
+		return true
+	}
+	return false
+}
+
+func (h *Hub) acquireMCPToolQuota(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	targetServer *domain.MCPServer,
+	reqID string,
+) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
+	noop := func(int, int, int64) {}
+	if h == nil || h.limiter == nil || targetServer == nil {
+		return noop, nil
+	}
+	orgID := targetServer.OrgID
+	if orgID == "" && idCtx != nil {
+		orgID = idCtx.OrgID
+	}
+
+	serverDesc := domain.RateLimitDescriptor{
+		PolicyID:     targetServer.ID,
+		ScopeType:    domain.QuotaScopeMCPServer,
+		ScopeID:      targetServer.ID,
+		ModelPattern: "*",
+		RPMLimit:     targetServer.RPMLimit,
+	}
+	var keyDesc, teamDesc domain.RateLimitDescriptor
+	if idCtx != nil && idCtx.VirtualKeyID != "" {
+		keyDesc = domain.RateLimitDescriptor{
+			PolicyID:     idCtx.VirtualKeyID,
+			ScopeType:    domain.QuotaScopeKey,
+			ScopeID:      idCtx.VirtualKeyID,
+			ModelPattern: "mcp",
+			RPMLimit:     idCtx.KeyMCPRPMLimit,
+		}
+	}
+	if idCtx != nil && idCtx.TeamID != "" {
+		teamDesc = domain.RateLimitDescriptor{
+			PolicyID:     idCtx.TeamID,
+			ScopeType:    domain.QuotaScopeTeam,
+			ScopeID:      idCtx.TeamID,
+			ModelPattern: "mcp",
+			RPMLimit:     idCtx.TeamMCPRPMLimit,
+		}
+	}
+
+	if h.repo != nil && orgID != "" {
+		if qRepo, ok := h.repo.(storage.QuotaPolicyRepository); ok && qRepo != nil {
+			policies, err := qRepo.ListQuotaPolicies(ctx, storage.QuotaPolicyFilter{
+				OrgID:      orgID,
+				ActiveOnly: true,
+			})
+			if err != nil {
+				return nil, &domain.GatewayError{
+					StatusCode:    http.StatusServiceUnavailable,
+					Type:          domain.ErrorTypeRateLimit,
+					Code:          "quota_policy_unavailable",
+					Message:       "Unable to evaluate MCP quota policies",
+					RetryAfterSec: 5,
+				}
+			}
+			for _, qp := range policies {
+				if qp == nil || !qp.IsActive {
+					continue
+				}
+				switch qp.ScopeType {
+				case domain.QuotaScopeMCPServer:
+					if qp.ScopeID == "*" || qp.ScopeID == targetServer.ID || qp.ScopeID == targetServer.Slug {
+						serverDesc.RPMLimit = minPositiveMCPInt(serverDesc.RPMLimit, qp.RPMLimit)
+						serverDesc.MaxConcurrent = minPositiveMCPInt(serverDesc.MaxConcurrent, qp.MaxConcurrent)
+					}
+				case domain.QuotaScopeKey, domain.QuotaScopeModelPerKey:
+					if idCtx != nil && idCtx.VirtualKeyID != "" && (qp.ScopeID == idCtx.VirtualKeyID || qp.ScopeID == "*") && matchesMCPModelPattern(qp.ModelPattern, targetServer.Slug) {
+						keyDesc.RPMLimit = minPositiveMCPInt(keyDesc.RPMLimit, qp.RPMLimit)
+						keyDesc.MaxConcurrent = minPositiveMCPInt(keyDesc.MaxConcurrent, qp.MaxConcurrent)
+					}
+				case domain.QuotaScopeTeam, domain.QuotaScopeModelPerTeam:
+					if idCtx != nil && idCtx.TeamID != "" && (qp.ScopeID == idCtx.TeamID || qp.ScopeID == "*") && matchesMCPModelPattern(qp.ModelPattern, targetServer.Slug) {
+						teamDesc.RPMLimit = minPositiveMCPInt(teamDesc.RPMLimit, qp.RPMLimit)
+						teamDesc.MaxConcurrent = minPositiveMCPInt(teamDesc.MaxConcurrent, qp.MaxConcurrent)
+					}
+				}
+			}
+		}
+	}
+
+	var descriptors []domain.RateLimitDescriptor
+	if serverDesc.ScopeID != "" && serverDesc.HasLimits() {
+		descriptors = append(descriptors, serverDesc)
+	}
+	if keyDesc.ScopeID != "" && keyDesc.HasLimits() {
+		descriptors = append(descriptors, keyDesc)
+	}
+	if teamDesc.ScopeID != "" && teamDesc.HasLimits() {
+		descriptors = append(descriptors, teamDesc)
+	}
+	if len(descriptors) == 0 {
+		return noop, nil
+	}
+	return h.limiter.AcquireDescriptors(ctx, orgID, reqID, 0, 0, 0, descriptors)
 }
 
 func (h *Hub) recordAudit(ctx context.Context, idCtx *domain.IdentityContext, action, resource, resourceID string, details map[string]any) {

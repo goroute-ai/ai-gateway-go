@@ -327,6 +327,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	// 2. Atomic Rate Limit / Budget Check
+	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, chatReq.User, chatReq.Metadata, chatReq.GoRouteExtensions)
+	r = r.WithContext(qCtx)
 	maxOutput := 0
 	if chatReq.MaxTokens != nil {
 		maxOutput = *chatReq.MaxTokens
@@ -623,7 +625,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 					cacheProvenance = cachedGM.PricingProvenanceSource
 				}
 				if s.spendWorker != nil {
-					if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+					if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 						RequestID:               reqID,
 						TraceID:                 traceID,
 						OrgID:                   idCtx.OrgID,
@@ -642,7 +644,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						CacheHit:                true,
 						IsStream:                true,
 						CreatedAt:               time.Now().UTC(),
-					}); err != nil {
+					})); err != nil {
 						_ = sseWriter.WriteError(&domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
 						return
 					}
@@ -835,7 +837,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			provenance = gm.PricingProvenanceSource
 		}
 		if s.spendWorker != nil {
-			if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+			if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 				RequestID:               reqID,
 				TraceID:                 traceID,
 				OrgID:                   idCtx.OrgID,
@@ -859,7 +861,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				FallbackAttempted:       meta.FallbackAttempted,
 				RetryCount:              meta.RetryCount,
 				CreatedAt:               time.Now().UTC(),
-			}); err != nil {
+			})); err != nil {
 				_ = sseWriter.WriteError(&domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
 				return
 			}
@@ -1087,6 +1089,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		Dimensions        *int                      `json:"dimensions,omitempty"`
 		InputType         string                    `json:"input_type,omitempty"`
 		User              string                    `json:"user,omitempty"`
+		Metadata          map[string]string         `json:"metadata,omitempty"`
 		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
@@ -1134,6 +1137,8 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		inputByteBound += len(input)
 	}
 	origRequestedModel := raw.Model
+	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, raw.User, raw.Metadata, raw.GoRouteExtensions)
+	r = r.WithContext(qCtx)
 	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))

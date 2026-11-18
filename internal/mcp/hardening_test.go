@@ -23,12 +23,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/stretchr/testify/assert"
@@ -721,4 +723,139 @@ func TestHub_PipelineHooksAlongsideToolPinning(t *testing.T) {
 	}, mcp.CallMetadata{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool pinning violation")
+}
+
+func TestHub_CallTool_RateLimitsPerServerKeyAndTeam(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	mr := miniredis.RunT(t)
+	fabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+
+	var upstreamHits atomic.Int32
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		var rpcReq mcp.JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&rpcReq)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mcp.JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      rpcReq.ID,
+			Result: map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "ok"}},
+			},
+		})
+	}))
+	defer upstreamSrv.Close()
+
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org-mcp", Name: "Org MCP", Slug: "org-mcp", IsActive: true}))
+	require.NoError(t, repo.CreateMCPServer(ctx, &domain.MCPServer{
+		ID:            "srv-rl-1",
+		OrgID:         "org-mcp",
+		Slug:          "srv-rl-1",
+		Name:          "Rate Limited Server 1",
+		TransportType: domain.MCPTransportStreamableHTTP,
+		EndpointURL:   upstreamSrv.URL,
+		AuthType:      domain.MCPAuthNone,
+		RPMLimit:      2,
+		IsActive:      true,
+	}))
+	require.NoError(t, repo.CreateMCPServer(ctx, &domain.MCPServer{
+		ID:            "srv-rl-2",
+		OrgID:         "org-mcp",
+		Slug:          "srv-rl-2",
+		Name:          "Server 2 Unlimited",
+		TransportType: domain.MCPTransportStreamableHTTP,
+		EndpointURL:   upstreamSrv.URL,
+		AuthType:      domain.MCPAuthNone,
+		IsActive:      true,
+	}))
+
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+		AllowedSchemes:       []string{"http", "https"},
+	})
+	require.NoError(t, err)
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	rbac := auth.NewRBACEngine(repo)
+	disp := mcp.NewTransportDispatcher(netPolicy, fabric, false)
+	resolver := mcp.NewAuthResolver(vault, netPolicy)
+	limiter := ratelimit.NewLimiter(fabric, 60, 30)
+
+	hub := mcp.NewHub(repo, vault, rbac, disp, resolver)
+	hub.SetLimiter(limiter)
+
+	// 1. Per-MCP-server RPM limit (RPMLimit=2 on srv-rl-1)
+	idServerTest := &domain.IdentityContext{
+		OrgID:        "org-mcp",
+		VirtualKeyID: "vk-srv-test",
+		TeamID:       "team-srv-test",
+	}
+	for i := 0; i < 2; i++ {
+		_, err := hub.CallTool(ctx, idServerTest, mcp.ToolCallInput{
+			ServerSlug: "srv-rl-1",
+			ToolName:   "echo",
+		}, mcp.CallMetadata{})
+		require.NoError(t, err)
+	}
+	_, err = hub.CallTool(ctx, idServerTest, mcp.ToolCallInput{
+		ServerSlug: "srv-rl-1",
+		ToolName:   "echo",
+	}, mcp.CallMetadata{})
+	var gwErr *domain.GatewayError
+	require.ErrorAs(t, err, &gwErr)
+	assert.Equal(t, http.StatusTooManyRequests, gwErr.StatusCode)
+	assert.Equal(t, "mcp_server_rpm_exceeded", gwErr.Code)
+	assert.Equal(t, int32(2), upstreamHits.Load(), "rate-limited call must not reach upstream")
+
+	// 2. Per-virtual-key MCP RPM limit (KeyMCPRPMLimit=1 on srv-rl-2)
+	idKeyLimited := &domain.IdentityContext{
+		OrgID:          "org-mcp",
+		VirtualKeyID:   "vk-mcp-1",
+		TeamID:         "team-unlimited",
+		KeyMCPRPMLimit: 1,
+	}
+	_, err = hub.CallTool(ctx, idKeyLimited, mcp.ToolCallInput{
+		ServerSlug: "srv-rl-2",
+		ToolName:   "echo",
+	}, mcp.CallMetadata{})
+	require.NoError(t, err)
+
+	_, err = hub.CallTool(ctx, idKeyLimited, mcp.ToolCallInput{
+		ServerSlug: "srv-rl-2",
+		ToolName:   "echo",
+	}, mcp.CallMetadata{})
+	gwErr = nil
+	require.ErrorAs(t, err, &gwErr)
+	assert.Equal(t, http.StatusTooManyRequests, gwErr.StatusCode)
+	assert.Equal(t, "key_rpm_exceeded", gwErr.Code)
+
+	// 3. Per-team MCP RPM limit (TeamMCPRPMLimit=1 across keys in team-mcp-1)
+	idTeamKeyA := &domain.IdentityContext{
+		OrgID:           "org-mcp",
+		VirtualKeyID:    "vk-team-a",
+		TeamID:          "team-mcp-1",
+		TeamMCPRPMLimit: 1,
+	}
+	idTeamKeyB := &domain.IdentityContext{
+		OrgID:           "org-mcp",
+		VirtualKeyID:    "vk-team-b",
+		TeamID:          "team-mcp-1",
+		TeamMCPRPMLimit: 1,
+	}
+	_, err = hub.CallTool(ctx, idTeamKeyA, mcp.ToolCallInput{
+		ServerSlug: "srv-rl-2",
+		ToolName:   "echo",
+	}, mcp.CallMetadata{})
+	require.NoError(t, err)
+
+	_, err = hub.CallTool(ctx, idTeamKeyB, mcp.ToolCallInput{
+		ServerSlug: "srv-rl-2",
+		ToolName:   "echo",
+	}, mcp.CallMetadata{})
+	gwErr = nil
+	require.ErrorAs(t, err, &gwErr)
+	assert.Equal(t, http.StatusTooManyRequests, gwErr.StatusCode)
+	assert.Equal(t, "team_rpm_exceeded", gwErr.Code)
 }

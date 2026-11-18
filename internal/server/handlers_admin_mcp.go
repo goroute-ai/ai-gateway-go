@@ -33,6 +33,7 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		OAuth2ClientID  string            `json:"oauth2_client_id,omitempty"`
 		OAuth2Scopes    []string          `json:"oauth2_scopes,omitempty"`
 		PinnedToolHash  string            `json:"pinned_tool_hash,omitempty"`
+		RPMLimit        int               `json:"rpm_limit,omitempty"`
 	}
 
 	if err := decodeAdminJSON(w, r, &input); err != nil {
@@ -71,6 +72,16 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		return
 	}
 
+	if input.RPMLimit < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_rpm_limit",
+			Message:    "rpm_limit cannot be negative",
+		})
+		return
+	}
+
 	server := &domain.MCPServer{
 		ID:              "mcp_srv_" + uuid.NewString(),
 		OrgID:           input.OrgID,
@@ -86,6 +97,7 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		OAuth2ClientID:  input.OAuth2ClientID,
 		OAuth2Scopes:    input.OAuth2Scopes,
 		PinnedToolHash:  input.PinnedToolHash,
+		RPMLimit:        input.RPMLimit,
 		IsActive:        true,
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),

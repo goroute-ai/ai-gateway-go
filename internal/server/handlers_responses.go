@@ -124,6 +124,19 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if req.MaxOutputTokens != nil {
 		maxOut = *req.MaxOutputTokens
 	}
+	var respMetadata map[string]string
+	if len(req.Metadata) > 0 {
+		respMetadata = make(map[string]string, len(req.Metadata))
+		for k, v := range req.Metadata {
+			if sVal, ok := v.(string); ok {
+				respMetadata[k] = sVal
+			}
+		}
+	}
+	chatReq.User = req.User
+	chatReq.Metadata = respMetadata
+	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, req.User, respMetadata, chatReq.GoRouteExtensions)
+	r = r.WithContext(qCtx)
 	acq, quotaErr := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, req.Model, estInputTokens, estInputTokens, maxOut, respReqID)
 	if quotaErr != nil {
 		s.collector.Record(admissionFailureObservation(quotaErr))
@@ -683,7 +696,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		CacheHit:         streamCacheHit,
 	})
 	if s.spendWorker != nil {
-		if err := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
 			RequestID:      respID,
 			OrgID:          idCtx.OrgID,
@@ -703,7 +716,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			CacheHit:       streamCacheHit,
 			IsStream:       true,
 			CreatedAt:      time.Now().UTC(),
-		}); err != nil {
+		})); err != nil {
 			failure := map[string]any{"error": map[string]any{"code": "spend_persistence_unavailable", "message": "unable to persist request accounting"}}
 			failedBytes, _ := json.Marshal(failure)
 			fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(failedBytes))

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -886,45 +887,52 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 	}
 
 	idCtx := &domain.IdentityContext{
-		VirtualKeyID:                vk.ID,
-		KeyPrefix:                   vk.KeyPrefix,
-		OrgID:                       vk.OrgID,
-		TeamID:                      vk.TeamID,
-		ProjectID:                   vk.ProjectID,
-		UserID:                      vk.UserID,
-		Role:                        vk.Role,
-		KeyType:                     NormalizeKeyType(vk.KeyType),
-		SCIMActive:                  true,
-		CanImpersonate:              vk.CanImpersonate,
-		RotationIntervalSec:         vk.RotationIntervalSec,
-		KeyRotationAt:               keyRotationAt,
-		KeyAllowedModels:            vk.AllowedModels,
-		AllowedEndpoints:            vk.AllowedEndpoints,
-		KeyAllowedMCPServers:        vk.AllowedMCPServers,
-		KeyAllowedA2AAgents:         vk.AllowedA2AAgents,
-		KeyAllowedClientApps:        vk.AllowedClientApps,
-		KeyRPMLimit:                 vk.RPMLimit,
-		KeyTPMLimit:                 vk.TPMLimit,
-		KeyMaxConcurrent:            vk.MaxConcurrentRequests,
-		KeyBatchEnqueuedTokenLimit:  vk.BatchEnqueuedTokenLimit,
-		KeyMaxBudgetMicros:          vk.MaxBudgetMicros,
-		KeyTempBudgetIncreaseMicros: vk.TempBudgetIncreaseMicros,
-		KeyTempBudgetExpiresAt:      vk.TempBudgetExpiresAt,
-		KeySoftBudgetMicros:         vk.SoftBudgetMicros,
-		KeyThrottleOnBudgetExceeded: vk.ThrottleOnBudgetExceeded,
-		KeyBudgetFallbacks:          domain.CloneBudgetFallbacks(vk.BudgetFallbacks),
-		KeySpentMicros:              vk.SpentMicros,
-		OrgRPMLimit:                 org.RPMLimit,
-		OrgTPMLimit:                 org.TPMLimit,
-		OrgMaxConcurrent:            org.MaxConcurrentRequests,
-		OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
-		OrgMaxBudgetMicros:          org.MaxBudgetMicros,
-		OrgTempBudgetIncreaseMicros: org.TempBudgetIncreaseMicros,
-		OrgTempBudgetExpiresAt:      org.TempBudgetExpiresAt,
-		OrgSoftBudgetMicros:         org.SoftBudgetMicros,
-		OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
-		OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
-		OrgSpentMicros:              org.SpentMicros,
+		VirtualKeyID:                 vk.ID,
+		KeyPrefix:                    vk.KeyPrefix,
+		OrgID:                        vk.OrgID,
+		TeamID:                       vk.TeamID,
+		ProjectID:                    vk.ProjectID,
+		UserID:                       vk.UserID,
+		Role:                         vk.Role,
+		KeyType:                      NormalizeKeyType(vk.KeyType),
+		SCIMActive:                   true,
+		CanImpersonate:               vk.CanImpersonate,
+		RotationIntervalSec:          vk.RotationIntervalSec,
+		KeyRotationAt:                keyRotationAt,
+		KeyAllowedModels:             vk.AllowedModels,
+		AllowedEndpoints:             vk.AllowedEndpoints,
+		KeyAllowedMCPServers:         vk.AllowedMCPServers,
+		KeyAllowedA2AAgents:          vk.AllowedA2AAgents,
+		KeyAllowedClientApps:         vk.AllowedClientApps,
+		KeyRPMLimit:                  vk.RPMLimit,
+		KeyTPMLimit:                  vk.TPMLimit,
+		KeyMCPRPMLimit:               vk.MCPRPMLimit,
+		KeyMaxConcurrent:             vk.MaxConcurrentRequests,
+		KeyBatchEnqueuedTokenLimit:   vk.BatchEnqueuedTokenLimit,
+		KeyMaxIterations:             vk.MaxIterations,
+		KeyMaxBudgetPerSessionMicros: vk.MaxBudgetPerSessionMicros,
+		KeyTags:                      slices.Clone(vk.Tags),
+		KeyMetadata:                  maps.Clone(vk.Metadata),
+		KeyMaxBudgetMicros:           vk.MaxBudgetMicros,
+		KeyTempBudgetIncreaseMicros:  vk.TempBudgetIncreaseMicros,
+		KeyTempBudgetExpiresAt:       vk.TempBudgetExpiresAt,
+		KeySoftBudgetMicros:          vk.SoftBudgetMicros,
+		KeyThrottleOnBudgetExceeded:  vk.ThrottleOnBudgetExceeded,
+		KeyBudgetFallbacks:           domain.CloneBudgetFallbacks(vk.BudgetFallbacks),
+		KeySpentMicros:               vk.SpentMicros,
+		OrgRPMLimit:                  org.RPMLimit,
+		OrgTPMLimit:                  org.TPMLimit,
+		OrgMaxConcurrent:             org.MaxConcurrentRequests,
+		OrgBatchEnqueuedTokenLimit:   org.BatchEnqueuedTokenLimit,
+		OrgMaxIterations:             org.MaxIterations,
+		OrgMaxBudgetPerSessionMicros: org.MaxBudgetPerSessionMicros,
+		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
+		OrgTempBudgetIncreaseMicros:  org.TempBudgetIncreaseMicros,
+		OrgTempBudgetExpiresAt:       org.TempBudgetExpiresAt,
+		OrgSoftBudgetMicros:          org.SoftBudgetMicros,
+		OrgThrottleOnBudgetExceeded:  org.ThrottleOnBudgetExceeded,
+		OrgBudgetFallbacks:           domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+		OrgSpentMicros:               org.SpentMicros,
 	}
 
 	if vk.ProjectID != "" {
@@ -1024,8 +1032,11 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.TeamAllowedClientApps = team.AllowedClientApps
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
+		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
+		idCtx.TeamMaxIterations = team.MaxIterations
+		idCtx.TeamMaxBudgetPerSessionMicros = team.MaxBudgetPerSessionMicros
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
 		idCtx.TeamTempBudgetIncreaseMicros = team.TempBudgetIncreaseMicros
 		idCtx.TeamTempBudgetExpiresAt = team.TempBudgetExpiresAt

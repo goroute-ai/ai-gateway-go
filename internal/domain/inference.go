@@ -461,6 +461,10 @@ type SpendEvent struct {
 	TeamID                  string         `json:"team_id,omitempty"`
 	UserID                  string         `json:"user_id,omitempty"`
 	VirtualKeyID            string         `json:"virtual_key_id"`
+	EndUserID               string         `json:"end_user_id,omitempty"`
+	Tags                    []string       `json:"tags,omitempty"`
+	ModelAccessGroupIDs     []string       `json:"model_access_group_ids,omitempty"`
+	SessionID               string         `json:"session_id,omitempty"`
 	Endpoint                string         `json:"endpoint"`
 	Modality                ModalityType   `json:"modality,omitempty"`
 	ModalityUnits           map[string]any `json:"modality_units,omitempty"`
@@ -589,16 +593,18 @@ func (p CompletionPrompt) MarshalJSON() ([]byte, error) {
 }
 
 type CanonicalCompletionRequest struct {
-	RequestID     string           `json:"request_id,omitempty"`
-	Model         string           `json:"model"`
-	ResolvedModel string           `json:"resolved_model,omitempty"`
-	Prompt        CompletionPrompt `json:"prompt"`
-	MaxTokens     *int             `json:"max_tokens,omitempty"`
-	Temperature   *float64         `json:"temperature,omitempty"`
-	TopP          *float64         `json:"top_p,omitempty"`
-	Stream        bool             `json:"stream,omitempty"`
-	Stop          []string         `json:"stop,omitempty"`
-	User          string           `json:"user,omitempty"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	Prompt            CompletionPrompt   `json:"prompt"`
+	MaxTokens         *int               `json:"max_tokens,omitempty"`
+	Temperature       *float64           `json:"temperature,omitempty"`
+	TopP              *float64           `json:"top_p,omitempty"`
+	Stream            bool               `json:"stream,omitempty"`
+	Stop              []string           `json:"stop,omitempty"`
+	User              string             `json:"user,omitempty"`
+	Metadata          map[string]string  `json:"metadata,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type CanonicalCompletionChoice struct {
@@ -750,6 +756,7 @@ type CanonicalResponseRequest struct {
 	ToolChoice      any                      `json:"tool_choice,omitempty"`
 	Reasoning       *ResponseReasoningConfig `json:"reasoning,omitempty"`
 	Text            *ResponseTextConfig      `json:"text,omitempty"`
+	User            string                   `json:"user,omitempty"`
 	Metadata        map[string]any           `json:"metadata,omitempty"`
 }
 

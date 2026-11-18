@@ -539,6 +539,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	mcpHub.SetMRTR(mcp.NewMRTRManager(vault, redisFabric, "mrtr_v1"))
 	mcpHub.SetSubscriptions(mcp.NewSubscriptionManager(redisFabric))
 	mcpHub.SetGuardrails(guardrailsEng)
+	mcpHub.SetLimiter(limiter)
 	mcpHub.SetSpendRecorder(spendWorker)
 
 	a2aSigner := a2a.NewGatewayCardSigner(cfg.A2A.SigningKeyID, "ES256", nil, vault)
@@ -944,6 +945,24 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Delete("/quotas/{policyID}", s.handleAdminDeleteQuotaPolicy)
 		adm.Put("/budget-windows", s.handleAdminUpsertBudgetWindow)
 		adm.Get("/budget-windows", s.handleAdminListBudgetWindows)
+		adm.Post("/end-users", s.handleAdminUpsertEndUser)
+		adm.Put("/end-users", s.handleAdminUpsertEndUser)
+		adm.Get("/end-users", s.handleAdminListEndUsers)
+		adm.Get("/end-users/{id}", s.handleAdminGetEndUser)
+		adm.Delete("/end-users/{id}", s.handleAdminDeleteEndUser)
+		adm.Post("/tags", s.handleAdminUpsertTag)
+		adm.Put("/tags", s.handleAdminUpsertTag)
+		adm.Get("/tags", s.handleAdminListTags)
+		adm.Get("/tags/{id}", s.handleAdminGetTag)
+		adm.Delete("/tags/{id}", s.handleAdminDeleteTag)
+		adm.Post("/model-access-groups", s.handleAdminUpsertModelAccessGroup)
+		adm.Put("/model-access-groups", s.handleAdminUpsertModelAccessGroup)
+		adm.Get("/model-access-groups", s.handleAdminListModelAccessGroups)
+		adm.Get("/model-access-groups/{id}", s.handleAdminGetModelAccessGroup)
+		adm.Delete("/model-access-groups/{id}", s.handleAdminDeleteModelAccessGroup)
+		adm.Post("/model-access-groups/{id}/members", s.handleAdminAddModelAccessGroupMember)
+		adm.Get("/model-access-groups/{id}/members", s.handleAdminListModelAccessGroupMembers)
+		adm.Delete("/model-access-groups/{id}/members/{memberID}", s.handleAdminRemoveModelAccessGroupMember)
 		adm.Post("/keys/{keyID}/temp-budget", s.handleAdminSetKeyTempBudget)
 		adm.Get("/spend/summary", s.handleAdminSpendSummary)
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
@@ -1001,6 +1020,7 @@ func (s *GatewayServer) persistSpendEvent(w http.ResponseWriter, r *http.Request
 	if s.spendWorker == nil {
 		return true
 	}
+	ev = enrichSpendEventFromContext(r.Context(), ev)
 	if err := s.spendWorker.Record(r.Context(), ev); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "spend_persistence_unavailable", Message: "unable to persist request accounting"})
 		return false

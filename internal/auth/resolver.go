@@ -865,6 +865,8 @@ func (r *AuthResolver) projectUserIdentity(
 		OrgTPMLimit:                  org.TPMLimit,
 		OrgMaxConcurrent:             org.MaxConcurrentRequests,
 		OrgBatchEnqueuedTokenLimit:   org.BatchEnqueuedTokenLimit,
+		OrgMaxIterations:             org.MaxIterations,
+		OrgMaxBudgetPerSessionMicros: org.MaxBudgetPerSessionMicros,
 		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
 		OrgTempBudgetIncreaseMicros:  org.TempBudgetIncreaseMicros,
 		OrgTempBudgetExpiresAt:       org.TempBudgetExpiresAt,
@@ -891,8 +893,11 @@ func (r *AuthResolver) projectUserIdentity(
 		}
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
+		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
+		idCtx.TeamMaxIterations = team.MaxIterations
+		idCtx.TeamMaxBudgetPerSessionMicros = team.MaxBudgetPerSessionMicros
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
 		idCtx.TeamTempBudgetIncreaseMicros = team.TempBudgetIncreaseMicros
 		idCtx.TeamTempBudgetExpiresAt = team.TempBudgetExpiresAt

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -143,15 +144,55 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 	projectRestricted := len(idCtx.ProjectAllowedModels) > 0 && !matchesModelAllowlist(idCtx.ProjectAllowedModels, requestedModel)
 	memberRestricted := len(idCtx.TeamMemberAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamMemberAllowedModels, requestedModel)
 	teamRestricted := len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel)
-	if keyRestricted || projectRestricted || memberRestricted || teamRestricted {
-		// Dynamic access group rules may grant additional models for matching trusted attributes,
-		// unless the identity has been narrowed for a delegated agent caller.
-		allowDynamic := idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
-		dynamicallyAllowed := allowDynamic && len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel)
-		if !dynamicallyAllowed && allowDynamic && e != nil {
-			if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil && matchesModelAllowlist(eval.AllowedModels, requestedModel) {
-				dynamicallyAllowed = true
+
+	allowDynamic := idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
+	accessGroups := idCtx.AccessGroups
+	dynamicAllowedModels := idCtx.DynamicAllowedModels
+	if allowDynamic && e != nil && (len(accessGroups) == 0 || (len(dynamicAllowedModels) == 0 && (keyRestricted || projectRestricted || memberRestricted || teamRestricted))) {
+		if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil {
+			if len(accessGroups) == 0 && len(eval.AccessGroups) > 0 {
+				accessGroups = eval.AccessGroups
 			}
+			if len(dynamicAllowedModels) == 0 && len(eval.AllowedModels) > 0 {
+				dynamicAllowedModels = eval.AllowedModels
+			}
+		}
+	}
+
+	var magEval ModelAccessGroupEvaluation
+	if e != nil && e.repo != nil {
+		eval, err := EvaluateModelAccessGroups(context.Background(), e.repo, idCtx, requestedModel, accessGroups)
+		if err != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "model_access_group_unavailable",
+				Message:    "Unable to evaluate model access group policies",
+				Retryable:  true,
+			}
+		}
+		magEval = eval
+	}
+
+	if magEval.GatedByGroup && !magEval.MatchedGatedGroup {
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "model_access_group_denied",
+			Message:    fmt.Sprintf("Identity %s is not a member of any model access group authorizing model %q", idCtx.KeyPrefix, requestedModel),
+		}
+	}
+
+	if keyRestricted || projectRestricted || memberRestricted || teamRestricted {
+		// Dynamic access group rules or ModelAccessGroup memberships may grant additional models,
+		// unless the identity has been narrowed for a delegated agent caller.
+		dynamicallyAllowed := allowDynamic && len(dynamicAllowedModels) > 0 && matchesModelAllowlist(dynamicAllowedModels, requestedModel)
+		if !dynamicallyAllowed {
+			dynamicallyAllowed = (!keyRestricted || magEval.GrantedForKey) &&
+				(!projectRestricted || magEval.GrantedForProject) &&
+				(!memberRestricted || magEval.GrantedForAny) &&
+				(!teamRestricted || magEval.GrantedForTeam) &&
+				magEval.GrantedForAny
 		}
 		if !dynamicallyAllowed {
 			if keyRestricted {
@@ -573,4 +614,155 @@ func matchesModelAllowlist(allowed []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// ModelAccessGroupEvaluation summarizes active ModelAccessGroup matches for an identity and model.
+type ModelAccessGroupEvaluation struct {
+	MatchingGroups    []*domain.ModelAccessGroup
+	GatedByGroup      bool
+	MatchedGatedGroup bool
+	GrantedForKey     bool
+	GrantedForTeam    bool
+	GrantedForProject bool
+	GrantedForAny     bool
+}
+
+// EvaluateModelAccessGroups evaluates active org-scoped ModelAccessGroups and their members
+// against an authenticated IdentityContext and requested model.
+func EvaluateModelAccessGroups(
+	ctx context.Context,
+	repo storage.Repository,
+	idCtx *domain.IdentityContext,
+	requestedModel string,
+	accessGroups []string,
+) (ModelAccessGroupEvaluation, error) {
+	var eval ModelAccessGroupEvaluation
+	if repo == nil || idCtx == nil || idCtx.OrgID == "" || strings.TrimSpace(requestedModel) == "" {
+		return eval, nil
+	}
+	magRepo, ok := repo.(storage.ModelAccessGroupRepository)
+	if !ok || magRepo == nil {
+		return eval, nil
+	}
+	groups, err := magRepo.ListModelAccessGroups(ctx, storage.ModelAccessGroupFilter{
+		OrgID:      idCtx.OrgID,
+		ActiveOnly: true,
+	})
+	if err != nil {
+		return eval, err
+	}
+	if len(groups) == 0 {
+		return eval, nil
+	}
+	members, err := magRepo.ListModelAccessGroupMembersByOrg(ctx, idCtx.OrgID)
+	if err != nil {
+		return eval, err
+	}
+
+	modelMembersByGroup := make(map[string][]string)
+	principalMembersByGroup := make(map[string][]*domain.ModelAccessGroupMember)
+	for _, m := range members {
+		if m == nil || m.OrgID != idCtx.OrgID || m.GroupID == "" {
+			continue
+		}
+		if m.MemberType == domain.ModelAccessGroupMemberModel {
+			modelMembersByGroup[m.GroupID] = append(modelMembersByGroup[m.GroupID], m.MemberID)
+			continue
+		}
+		principalMembersByGroup[m.GroupID] = append(principalMembersByGroup[m.GroupID], m)
+	}
+
+	allowDynamic := idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
+	for _, g := range groups {
+		if g == nil || !g.IsActive || g.OrgID != idCtx.OrgID {
+			continue
+		}
+		if !matchesModelAllowlist(modelMembersByGroup[g.ID], requestedModel) {
+			continue
+		}
+
+		principals := principalMembersByGroup[g.ID]
+		keyMatch := false
+		teamMatch := false
+		userMatch := false
+		projectMatch := false
+		orgMatch := false
+		for _, m := range principals {
+			switch m.MemberType {
+			case domain.ModelAccessGroupMemberKey:
+				if idCtx.VirtualKeyID != "" && m.MemberID == idCtx.VirtualKeyID {
+					keyMatch = true
+				}
+			case domain.ModelAccessGroupMemberTeam:
+				if idCtx.TeamID != "" && idCtx.DelegatedTeamID == "" && m.MemberID == idCtx.TeamID {
+					teamMatch = true
+				}
+			case domain.ModelAccessGroupMemberUser:
+				if idCtx.UserID != "" && idCtx.DelegatedUserID == "" && m.MemberID == idCtx.UserID {
+					userMatch = true
+				}
+			case domain.ModelAccessGroupMemberProject:
+				if idCtx.ProjectID != "" && m.MemberID == idCtx.ProjectID {
+					projectMatch = true
+				}
+			case domain.ModelAccessGroupMemberOrg:
+				if idCtx.OrgID != "" && m.MemberID == idCtx.OrgID {
+					orgMatch = true
+				}
+			}
+		}
+		ruleGroupMatch := allowDynamic && hasModelAccessGroupRef(accessGroups, g)
+		principalMatched := keyMatch || teamMatch || userMatch || projectMatch || orgMatch || ruleGroupMatch
+
+		keyRef := hasModelAccessGroupRef(idCtx.KeyAllowedModels, g)
+		teamRef := hasModelAccessGroupRef(idCtx.TeamAllowedModels, g)
+		projRef := hasModelAccessGroupRef(idCtx.ProjectAllowedModels, g)
+		memberRef := hasModelAccessGroupRef(idCtx.TeamMemberAllowedModels, g)
+		dynRef := allowDynamic && hasModelAccessGroupRef(idCtx.DynamicAllowedModels, g)
+
+		if len(principals) > 0 {
+			eval.GatedByGroup = true
+			if !principalMatched {
+				continue
+			}
+			eval.MatchedGatedGroup = true
+			eval.MatchingGroups = append(eval.MatchingGroups, g)
+			eval.GrantedForAny = true
+			if keyMatch || keyRef || ruleGroupMatch || len(idCtx.KeyAllowedModels) == 0 {
+				eval.GrantedForKey = true
+			}
+			if teamMatch || teamRef || ruleGroupMatch || len(idCtx.TeamAllowedModels) == 0 {
+				eval.GrantedForTeam = true
+			}
+			if projectMatch || projRef || ruleGroupMatch || len(idCtx.ProjectAllowedModels) == 0 {
+				eval.GrantedForProject = true
+			}
+			continue
+		}
+
+		// Ungated group: applies as a shared org-wide quota pool and also grants access
+		// when referenced by name or ID in an identity allowlist or AccessGroups.
+		eval.MatchingGroups = append(eval.MatchingGroups, g)
+		if keyRef || teamRef || projRef || memberRef || dynRef || ruleGroupMatch {
+			eval.GrantedForAny = true
+			if keyRef || ruleGroupMatch || len(idCtx.KeyAllowedModels) == 0 {
+				eval.GrantedForKey = true
+			}
+			if teamRef || ruleGroupMatch || len(idCtx.TeamAllowedModels) == 0 {
+				eval.GrantedForTeam = true
+			}
+			if projectMatch || projRef || ruleGroupMatch || len(idCtx.ProjectAllowedModels) == 0 {
+				eval.GrantedForProject = true
+			}
+		}
+	}
+
+	return eval, nil
+}
+
+func hasModelAccessGroupRef(list []string, g *domain.ModelAccessGroup) bool {
+	if g == nil || len(list) == 0 {
+		return false
+	}
+	return slices.Contains(list, g.Name) || slices.Contains(list, g.ID)
 }

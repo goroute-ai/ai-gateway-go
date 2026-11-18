@@ -36,6 +36,7 @@ type MCPServer struct {
 	OAuth2ClientID      string            `json:"oauth2_client_id,omitempty"`
 	OAuth2Scopes        []string          `json:"oauth2_scopes,omitempty"`
 	PinnedToolHash      string            `json:"pinned_tool_hash,omitempty"` // Expected hash for tool integrity check
+	RPMLimit            int               `json:"rpm_limit,omitempty"`        // 0 = unlimited
 	IsActive            bool              `json:"is_active"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`

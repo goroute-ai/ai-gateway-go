@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -563,6 +564,8 @@ func cloneIdentityContext(idCtx *domain.IdentityContext) *domain.IdentityContext
 	cp.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(idCtx.TeamBudgetFallbacks)
 	cp.UserBudgetFallbacks = domain.CloneBudgetFallbacks(idCtx.UserBudgetFallbacks)
 	cp.OrgBudgetFallbacks = domain.CloneBudgetFallbacks(idCtx.OrgBudgetFallbacks)
+	cp.KeyTags = slices.Clone(idCtx.KeyTags)
+	cp.KeyMetadata = maps.Clone(idCtx.KeyMetadata)
 	return &cp
 }
 
