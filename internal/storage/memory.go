@@ -32,6 +32,7 @@ type MemoryRepository struct {
 	users                  map[string]*domain.User
 	keysByID               map[string]*domain.VirtualKey
 	keysByHash             map[string]*domain.VirtualKey
+	deprecatedKeyHashes    map[string]*deprecatedKeyHashEntry
 	jwtKeyMappings         map[string]*domain.JWTKeyMapping
 	jwtKeyMappingsByTuple  map[string]string
 	quotaPolicies          map[string]*domain.QuotaPolicy
@@ -63,6 +64,13 @@ type MemoryRepository struct {
 	batches        map[string]*domain.CanonicalBatch
 }
 
+type deprecatedKeyHashEntry struct {
+	keyHash      string
+	virtualKeyID string
+	revokeAt     time.Time
+	createdAt    time.Time
+}
+
 type spendOutboxEntry struct {
 	event       domain.SpendEvent
 	status      string
@@ -83,6 +91,7 @@ func NewMemoryRepository() *MemoryRepository {
 		users:                 make(map[string]*domain.User),
 		keysByID:              make(map[string]*domain.VirtualKey),
 		keysByHash:            make(map[string]*domain.VirtualKey),
+		deprecatedKeyHashes:   make(map[string]*deprecatedKeyHashEntry),
 		jwtKeyMappings:        make(map[string]*domain.JWTKeyMapping),
 		jwtKeyMappingsByTuple: make(map[string]string),
 		quotaPolicies:         make(map[string]*domain.QuotaPolicy),
@@ -1162,6 +1171,10 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 		t := *vk.BudgetResetAt
 		cp.BudgetResetAt = &t
 	}
+	if vk.KeyRotationAt != nil {
+		t := *vk.KeyRotationAt
+		cp.KeyRotationAt = &t
+	}
 	if vk.ExpiresAt != nil {
 		t := *vk.ExpiresAt
 		cp.ExpiresAt = &t
@@ -1180,6 +1193,9 @@ func (r *MemoryRepository) CreateVirtualKey(ctx context.Context, vk *domain.Virt
 	defer r.mu.Unlock()
 	if vk.ID == "" {
 		vk.ID = uuid.NewString()
+	}
+	if vk.KeyType == "" {
+		vk.KeyType = domain.KeyTypeDefault
 	}
 	now := time.Now().UTC()
 	vk.BudgetResetPeriod, vk.BudgetResetAt = resolveBudgetResetSchedule(vk.BudgetResetPeriod, vk.BudgetResetAt, now)
@@ -1210,6 +1226,13 @@ func (r *MemoryRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Virt
 	}
 	if vk.KeyPrefix == "" {
 		vk.KeyPrefix = existing.KeyPrefix
+	}
+	if vk.KeyType == "" {
+		if existing.KeyType != "" {
+			vk.KeyType = existing.KeyType
+		} else {
+			vk.KeyType = domain.KeyTypeDefault
+		}
 	}
 	if vk.CreatedAt.IsZero() {
 		vk.CreatedAt = existing.CreatedAt
@@ -1267,6 +1290,112 @@ func (r *MemoryRepository) RevokeVirtualKey(ctx context.Context, id string) erro
 	vk.IsActive = false
 	vk.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+func (r *MemoryRepository) AddDeprecatedVirtualKeyHash(ctx context.Context, keyHash, virtualKeyID string, revokeAt time.Time) error {
+	keyHash = strings.TrimSpace(keyHash)
+	virtualKeyID = strings.TrimSpace(virtualKeyID)
+	if keyHash == "" || virtualKeyID == "" {
+		return fmt.Errorf("key_hash and virtual_key_id are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.keysByID[virtualKeyID]; !ok {
+		return fmt.Errorf("virtual key %q %w", virtualKeyID, ErrNotFound)
+	}
+	if r.deprecatedKeyHashes == nil {
+		r.deprecatedKeyHashes = make(map[string]*deprecatedKeyHashEntry)
+	}
+	r.deprecatedKeyHashes[keyHash] = &deprecatedKeyHashEntry{
+		keyHash:      keyHash,
+		virtualKeyID: virtualKeyID,
+		revokeAt:     revokeAt.UTC(),
+		createdAt:    time.Now().UTC(),
+	}
+	return nil
+}
+
+func (r *MemoryRepository) GetActiveDeprecatedVirtualKey(ctx context.Context, keyHash string, now time.Time) (*domain.VirtualKey, time.Time, error) {
+	keyHash = strings.TrimSpace(keyHash)
+	if keyHash == "" {
+		return nil, time.Time{}, fmt.Errorf("deprecated virtual key %w", ErrNotFound)
+	}
+	nowUTC := now.UTC()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.deprecatedKeyHashes[keyHash]
+	if !ok || entry == nil || !nowUTC.Before(entry.revokeAt) {
+		return nil, time.Time{}, fmt.Errorf("deprecated virtual key %w", ErrNotFound)
+	}
+	vk, ok := r.keysByID[entry.virtualKeyID]
+	if !ok || vk == nil {
+		return nil, time.Time{}, fmt.Errorf("deprecated virtual key %w", ErrNotFound)
+	}
+	return cloneVirtualKey(vk), entry.revokeAt, nil
+}
+
+func (r *MemoryRepository) DeleteExpiredDeprecatedVirtualKeyHashes(ctx context.Context, now time.Time) (int64, error) {
+	nowUTC := now.UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var deleted int64
+	for h, entry := range r.deprecatedKeyHashes {
+		if entry == nil || !nowUTC.Before(entry.revokeAt) {
+			delete(r.deprecatedKeyHashes, h)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+func (r *MemoryRepository) DeleteDeprecatedVirtualKeyHashesByKeyID(ctx context.Context, virtualKeyID string) ([]string, error) {
+	virtualKeyID = strings.TrimSpace(virtualKeyID)
+	if virtualKeyID == "" {
+		return nil, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var hashes []string
+	for h, entry := range r.deprecatedKeyHashes {
+		if entry != nil && entry.virtualKeyID == virtualKeyID {
+			hashes = append(hashes, h)
+			delete(r.deprecatedKeyHashes, h)
+		}
+	}
+	sort.Strings(hashes)
+	return hashes, nil
+}
+
+func (r *MemoryRepository) ListVirtualKeysDueForRotation(ctx context.Context, now time.Time, limit int) ([]*domain.VirtualKey, error) {
+	nowUTC := now.UTC()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var due []*domain.VirtualKey
+	for _, vk := range r.keysByID {
+		if vk == nil || !vk.IsActive {
+			continue
+		}
+		if vk.ExpiresAt != nil && !nowUTC.Before(*vk.ExpiresAt) {
+			continue
+		}
+		if vk.RotationIntervalSec <= 0 || vk.KeyRotationAt == nil {
+			continue
+		}
+		if !vk.KeyRotationAt.UTC().After(nowUTC) {
+			due = append(due, cloneVirtualKey(vk))
+		}
+	}
+	sort.Slice(due, func(i, j int) bool {
+		ti, tj := due[i].KeyRotationAt.UTC(), due[j].KeyRotationAt.UTC()
+		if !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return due[i].ID < due[j].ID
+	})
+	if limit > 0 && len(due) > limit {
+		due = due[:limit]
+	}
+	return due, nil
 }
 
 func (r *MemoryRepository) CreateProviderCredential(ctx context.Context, cred *domain.ProviderCredential) error {

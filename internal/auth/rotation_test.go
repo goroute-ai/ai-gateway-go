@@ -1,0 +1,520 @@
+package auth_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
+)
+
+func TestApplyKeyTypePreset(t *testing.T) {
+	t.Run("llm_api preset sets data-plane inference routes and non-admin role", func(t *testing.T) {
+		vk := &domain.VirtualKey{
+			KeyType: domain.KeyTypeLLMAPI,
+			Role:    domain.RoleOrgAdmin,
+		}
+		auth.ApplyKeyTypePreset(vk)
+		if vk.KeyType != domain.KeyTypeLLMAPI {
+			t.Fatalf("KeyType = %q, want %q", vk.KeyType, domain.KeyTypeLLMAPI)
+		}
+		if vk.Role != domain.RoleServiceAccount {
+			t.Fatalf("Role = %q, want %q", vk.Role, domain.RoleServiceAccount)
+		}
+		if !slices.Equal(vk.AllowedEndpoints, domain.DefaultAllowedEndpoints) {
+			t.Fatalf("AllowedEndpoints = %v, want %v", vk.AllowedEndpoints, domain.DefaultAllowedEndpoints)
+		}
+
+		// Preserves narrower explicit data-plane subset
+		narrow := &domain.VirtualKey{
+			KeyType:          domain.KeyTypeLLMAPI,
+			AllowedEndpoints: []string{"/v1/chat/completions"},
+		}
+		auth.ApplyKeyTypePreset(narrow)
+		if !slices.Equal(narrow.AllowedEndpoints, []string{"/v1/chat/completions"}) {
+			t.Fatalf("expected narrow llm_api endpoints preserved, got %v", narrow.AllowedEndpoints)
+		}
+
+		// Replaces admin endpoints if previously set
+		wasAdmin := &domain.VirtualKey{
+			KeyType:          domain.KeyTypeLLMAPI,
+			AllowedEndpoints: []string{"/admin/v1/*"},
+		}
+		auth.ApplyKeyTypePreset(wasAdmin)
+		if !slices.Equal(wasAdmin.AllowedEndpoints, domain.DefaultAllowedEndpoints) {
+			t.Fatalf("expected admin endpoints replaced for llm_api, got %v", wasAdmin.AllowedEndpoints)
+		}
+	})
+
+	t.Run("management preset restricts to /admin/v1/* and ensures operator role", func(t *testing.T) {
+		vk := &domain.VirtualKey{
+			KeyType:          domain.KeyTypeManagement,
+			AllowedEndpoints: []string{"/v1/chat/completions"},
+		}
+		auth.ApplyKeyTypePreset(vk)
+		if vk.KeyType != domain.KeyTypeManagement {
+			t.Fatalf("KeyType = %q, want %q", vk.KeyType, domain.KeyTypeManagement)
+		}
+		if vk.Role != domain.RoleOrgAdmin {
+			t.Fatalf("Role = %q, want %q", vk.Role, domain.RoleOrgAdmin)
+		}
+		if !slices.Equal(vk.AllowedEndpoints, []string{"/admin/v1/*"}) {
+			t.Fatalf("AllowedEndpoints = %v, want [/admin/v1/*]", vk.AllowedEndpoints)
+		}
+
+		// Preserves explicit platform_admin role
+		plat := &domain.VirtualKey{
+			KeyType: domain.KeyTypeManagement,
+			Role:    domain.RolePlatformAdmin,
+		}
+		auth.ApplyKeyTypePreset(plat)
+		if plat.Role != domain.RolePlatformAdmin {
+			t.Fatalf("expected platform_admin role preserved, got %q", plat.Role)
+		}
+	})
+
+	t.Run("read_only preset restricts to GET/info routes and viewer/org_viewer role", func(t *testing.T) {
+		vk := &domain.VirtualKey{
+			KeyType:          domain.KeyTypeReadOnly,
+			Role:             domain.RoleOrgAdmin,
+			AllowedEndpoints: []string{"*"},
+		}
+		auth.ApplyKeyTypePreset(vk)
+		if vk.Role != domain.RoleOrgViewer {
+			t.Fatalf("Role = %q, want %q", vk.Role, domain.RoleOrgViewer)
+		}
+		if !slices.Equal(vk.AllowedEndpoints, auth.ReadOnlyAllowedEndpoints) {
+			t.Fatalf("AllowedEndpoints = %v, want %v", vk.AllowedEndpoints, auth.ReadOnlyAllowedEndpoints)
+		}
+
+		// Keeps RoleViewer if explicitly chosen
+		viewer := &domain.VirtualKey{
+			KeyType:          domain.KeyTypeReadOnly,
+			Role:             domain.RoleViewer,
+			AllowedEndpoints: []string{"/v1/models"},
+		}
+		auth.ApplyKeyTypePreset(viewer)
+		if viewer.Role != domain.RoleViewer {
+			t.Fatalf("expected RoleViewer preserved, got %q", viewer.Role)
+		}
+		if !slices.Equal(viewer.AllowedEndpoints, []string{"/v1/models"}) {
+			t.Fatalf("expected narrow read-only endpoint preserved, got %v", viewer.AllowedEndpoints)
+		}
+	})
+
+	t.Run("service_account preset sets RoleServiceAccount and clears UserID", func(t *testing.T) {
+		vk := &domain.VirtualKey{
+			KeyType: domain.KeyTypeServiceAccount,
+			Role:    domain.RoleDeveloper,
+			UserID:  "usr_human_123",
+		}
+		auth.ApplyKeyTypePreset(vk)
+		if vk.Role != domain.RoleServiceAccount {
+			t.Fatalf("Role = %q, want %q", vk.Role, domain.RoleServiceAccount)
+		}
+		if vk.UserID != "" {
+			t.Fatalf("expected UserID cleared for service_account, got %q", vk.UserID)
+		}
+	})
+
+	t.Run("default preset normalizes empty key_type and preserves caller fields", func(t *testing.T) {
+		vk := &domain.VirtualKey{
+			Role:             domain.RoleDeveloper,
+			UserID:           "usr_1",
+			AllowedEndpoints: []string{"/v1/embeddings"},
+		}
+		auth.ApplyKeyTypePreset(vk)
+		if vk.KeyType != domain.KeyTypeDefault {
+			t.Fatalf("KeyType = %q, want %q", vk.KeyType, domain.KeyTypeDefault)
+		}
+		if vk.Role != domain.RoleDeveloper || vk.UserID != "usr_1" || !slices.Equal(vk.AllowedEndpoints, []string{"/v1/embeddings"}) {
+			t.Fatalf("default preset should preserve fields, got %+v", vk)
+		}
+	})
+
+	t.Run("IsValidKeyType validates supported values", func(t *testing.T) {
+		for _, valid := range []domain.KeyType{"", domain.KeyTypeDefault, domain.KeyTypeLLMAPI, domain.KeyTypeManagement, domain.KeyTypeReadOnly, domain.KeyTypeServiceAccount} {
+			if !auth.IsValidKeyType(valid) {
+				t.Fatalf("expected %q to be valid", valid)
+			}
+		}
+		if auth.IsValidKeyType("super_admin") {
+			t.Fatal("expected unknown key_type to be invalid")
+		}
+	})
+}
+
+func TestRotateVirtualKeyWithGrace_DualActiveHeadersExpiryAndRevocation(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	defer func() { _ = redisFabric.Client().Close() }()
+
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org_rot", Name: "Rot Org", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	var clockMu sync.RWMutex
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	getNow := func() time.Time {
+		clockMu.RLock()
+		defer clockMu.RUnlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		now = now.Add(d)
+		clockMu.Unlock()
+	}
+
+	svc1 := auth.NewService(repo, redisFabric, "master-secret", 30*time.Second, 5*time.Minute)
+	svc2 := auth.NewService(repo, redisFabric, "master-secret", 30*time.Second, 5*time.Minute)
+	svc1.SetNowFunc(getNow)
+	svc2.SetNowFunc(getNow)
+	svc1.StartInvalidationListener(ctx)
+	svc2.StartInvalidationListener(ctx)
+	defer svc1.StopInvalidationListener()
+	defer svc2.StopInvalidationListener()
+
+	// Issue key with 1h scheduled rotation interval
+	issued, err := svc1.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org_rot",
+		Name:                "grace-key",
+		KeyType:             domain.KeyTypeLLMAPI,
+		RotationIntervalSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+	oldRawKey := issued.RawKey
+	expectedFirstRot := getNow().Add(3600 * time.Second)
+	if issued.KeyRotationAt == nil || !issued.KeyRotationAt.Equal(expectedFirstRot) {
+		t.Fatalf("expected initial KeyRotationAt=%v, got %v", expectedFirstRot, issued.KeyRotationAt)
+	}
+
+	// Warm both pods' L1 and L2 caches with oldRawKey before rotation
+	if id, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey); err != nil || id.DeprecatedKeyRevokeAt != nil {
+		t.Fatalf("pre-rotation svc1 auth: id=%+v err=%v", id, err)
+	}
+	if id, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err != nil || id.DeprecatedKeyRevokeAt != nil {
+		t.Fatalf("pre-rotation svc2 auth: id=%+v err=%v", id, err)
+	}
+
+	// Advance 5 minutes, then rotate with 10 minute grace period
+	advance(5 * time.Minute)
+	grace := 10 * time.Minute
+	expectedRevokeAt := getNow().Add(grace)
+	expectedNextRot := getNow().Add(3600 * time.Second)
+
+	rotated, err := svc1.RotateVirtualKeyWithGrace(ctx, issued.ID, grace)
+	if err != nil {
+		t.Fatalf("RotateVirtualKeyWithGrace: %v", err)
+	}
+	newRawKey := rotated.RawKey
+	if newRawKey == "" || newRawKey == oldRawKey {
+		t.Fatalf("expected distinct rotated RawKey, got %q", newRawKey)
+	}
+	if rotated.KeyRotationAt == nil || !rotated.KeyRotationAt.Equal(expectedNextRot) {
+		t.Fatalf("expected advanced KeyRotationAt=%v, got %v", expectedNextRot, rotated.KeyRotationAt)
+	}
+
+	// Negative grace period rejected
+	if _, err := svc1.RotateVirtualKeyWithGrace(ctx, issued.ID, -1*time.Second); err == nil {
+		t.Fatal("expected error for negative grace period")
+	}
+
+	// On svc1: old key still works during grace window and carries DeprecatedKeyRevokeAt
+	depID1, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey)
+	if err != nil {
+		t.Fatalf("expected old key to authenticate during grace window on svc1: %v", err)
+	}
+	if depID1.DeprecatedKeyRevokeAt == nil || !depID1.DeprecatedKeyRevokeAt.Equal(expectedRevokeAt) {
+		t.Fatalf("expected DeprecatedKeyRevokeAt=%v, got %v", expectedRevokeAt, depID1.DeprecatedKeyRevokeAt)
+	}
+
+	// On svc2: wait briefly for Pub/Sub invalidation so stale non-deprecated entry is replaced with deprecated metadata
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var depID2 *domain.IdentityContext
+	for time.Now().Before(deadline) {
+		depID2, err = svc2.AuthenticateVirtualKey(ctx, oldRawKey)
+		if err == nil && depID2 != nil && depID2.DeprecatedKeyRevokeAt != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil || depID2 == nil || depID2.DeprecatedKeyRevokeAt == nil || !depID2.DeprecatedKeyRevokeAt.Equal(expectedRevokeAt) {
+		t.Fatalf("expected svc2 to observe DeprecatedKeyRevokeAt=%v, got id=%+v err=%v", expectedRevokeAt, depID2, err)
+	}
+
+	// Verify DataPlaneMiddleware emits X-Gateway-Key-Deprecated and X-Gateway-Key-Revoke-At for old key,
+	// and omits them for the new primary key.
+	rbac := auth.NewRBACEngine(repo)
+	mw := auth.DataPlaneMiddleware(svc1, rbac)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	reqOld := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqOld.Header.Set("Authorization", "Bearer "+oldRawKey)
+	recOld := httptest.NewRecorder()
+	mw.ServeHTTP(recOld, reqOld)
+	if recOld.Code != http.StatusOK {
+		t.Fatalf("old key status = %d, want 200 (%s)", recOld.Code, recOld.Body.String())
+	}
+	if recOld.Header().Get(auth.HeaderKeyDeprecated) != "true" {
+		t.Fatalf("X-Gateway-Key-Deprecated = %q, want \"true\"", recOld.Header().Get(auth.HeaderKeyDeprecated))
+	}
+	if recOld.Header().Get(auth.HeaderKeyRevokeAt) != expectedRevokeAt.Format(time.RFC3339) {
+		t.Fatalf("X-Gateway-Key-Revoke-At = %q, want %q", recOld.Header().Get(auth.HeaderKeyRevokeAt), expectedRevokeAt.Format(time.RFC3339))
+	}
+
+	reqNew := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqNew.Header.Set("Authorization", "Bearer "+newRawKey)
+	recNew := httptest.NewRecorder()
+	mw.ServeHTTP(recNew, reqNew)
+	if recNew.Code != http.StatusOK {
+		t.Fatalf("new key status = %d, want 200 (%s)", recNew.Code, recNew.Body.String())
+	}
+	if recNew.Header().Get(auth.HeaderKeyDeprecated) != "" || recNew.Header().Get(auth.HeaderKeyRevokeAt) != "" {
+		t.Fatalf("expected no deprecation headers for new key, got deprecated=%q revoke_at=%q",
+			recNew.Header().Get(auth.HeaderKeyDeprecated), recNew.Header().Get(auth.HeaderKeyRevokeAt))
+	}
+
+	// Advance clock to exact revoke_at: old key must fail immediately (even when cached in L1/L2)
+	advance(grace)
+	if _, err := svc1.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatal("expected old key to be rejected once clock reaches revoke_at")
+	}
+	if _, err := svc2.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatal("expected old key to be rejected on svc2 once clock reaches revoke_at")
+	}
+	// New key continues working
+	if id, err := svc1.AuthenticateVirtualKey(ctx, newRawKey); err != nil || id.DeprecatedKeyRevokeAt != nil {
+		t.Fatalf("expected new key to remain valid after old key expiry: id=%+v err=%v", id, err)
+	}
+
+	// Explicit RevokeKey immediately invalidates both primary AND any active deprecated grace hash
+	rotated2, err := svc1.RotateVirtualKeyWithGrace(ctx, issued.ID, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("second RotateVirtualKeyWithGrace: %v", err)
+	}
+	// Warm L1/L2 for deprecated hash (newRawKey) and primary hash (rotated2.RawKey)
+	if _, err := svc1.AuthenticateVirtualKey(ctx, newRawKey); err != nil {
+		t.Fatalf("expected previous key to authenticate during second grace period: %v", err)
+	}
+	if _, err := svc1.AuthenticateVirtualKey(ctx, rotated2.RawKey); err != nil {
+		t.Fatalf("expected latest key to authenticate: %v", err)
+	}
+	if err := svc1.RevokeKey(ctx, issued.ID); err != nil {
+		t.Fatalf("RevokeKey: %v", err)
+	}
+	if _, err := svc1.AuthenticateVirtualKey(ctx, rotated2.RawKey); err == nil {
+		t.Fatal("expected primary key rejected after RevokeKey")
+	}
+	if _, err := svc1.AuthenticateVirtualKey(ctx, newRawKey); err == nil {
+		t.Fatal("expected deprecated grace key rejected immediately after RevokeKey")
+	}
+}
+
+func TestKeyRotationManager_DistributedRedisLockAndAutoRotation(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	defer func() { _ = redisFabric.Client().Close() }()
+
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org_auto", Name: "Auto Org", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	var clockMu sync.RWMutex
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	getNow := func() time.Time {
+		clockMu.RLock()
+		defer clockMu.RUnlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		now = now.Add(d)
+		clockMu.Unlock()
+	}
+
+	svc := auth.NewService(repo, redisFabric, "master-secret", 30*time.Second, 5*time.Minute)
+	svc.SetNowFunc(getNow)
+
+	dueAt := getNow().Add(-10 * time.Second)
+	futureAt := getNow().Add(30 * time.Minute)
+
+	dueKey, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org_auto",
+		Name:                "auto-due-key",
+		KeyType:             domain.KeyTypeLLMAPI,
+		RotationIntervalSec: 600,
+		KeyRotationAt:       &dueAt,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey(due): %v", err)
+	}
+	oldDueRawKey := dueKey.RawKey
+	oldDueHash := dueKey.KeyHash
+
+	futureKey, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org_auto",
+		Name:                "auto-future-key",
+		KeyType:             domain.KeyTypeLLMAPI,
+		RotationIntervalSec: 600,
+		KeyRotationAt:       &futureAt,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey(future): %v", err)
+	}
+
+	// Seed an already-expired deprecated hash so RunOnce purges it
+	staleHash := strings.Repeat("c", 64)
+	if err := repo.AddDeprecatedVirtualKeyHash(ctx, staleHash, futureKey.ID, getNow().Add(-5*time.Second)); err != nil {
+		t.Fatalf("AddDeprecatedVirtualKeyHash(stale): %v", err)
+	}
+
+	grace := 5 * time.Minute
+	mgr := auth.NewKeyRotationManager(svc, repo, redisFabric, auth.KeyRotationConfig{
+		PollInterval: 50 * time.Millisecond,
+		GracePeriod:  grace,
+		LockTTL:      55 * time.Second,
+		PodID:        "pod-alpha",
+		Now:          getNow,
+	})
+
+	// 1. Contention test: another pod already holds gw:lock:key_rotation
+	if err := mr.Set(auth.KeyRotationLockKey, "pod-beta"); err != nil {
+		t.Fatalf("mr.Set lock: %v", err)
+	}
+	resContended, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce under contention returned error: %v", err)
+	}
+	if resContended.LockAcquired || resContended.RotatedKeys != 0 {
+		t.Fatalf("expected skipped sweep when lock held by another pod, got %+v", resContended)
+	}
+	// Lua release must NOT have touched pod-beta's lock!
+	lockVal, err := mr.Get(auth.KeyRotationLockKey)
+	if err != nil || lockVal != "pod-beta" {
+		t.Fatalf("expected pod-beta lock untouched, got val=%q err=%v", lockVal, err)
+	}
+
+	// 2. Clear lock -> pod-alpha acquires lock, purges stale hash, rotates dueKey, records audit log, and releases lock
+	mr.Del(auth.KeyRotationLockKey)
+
+	res, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !res.LockAcquired || res.RotatedKeys != 1 || len(res.RotatedKeyIDs) != 1 || res.RotatedKeyIDs[0] != dueKey.ID {
+		t.Fatalf("unexpected RunOnce result: %+v", res)
+	}
+	if res.PurgedHashes != 1 {
+		t.Fatalf("PurgedHashes = %d, want 1", res.PurgedHashes)
+	}
+	if mr.Exists(auth.KeyRotationLockKey) {
+		t.Fatal("expected Redis distributed lock to be released by Lua script after RunOnce")
+	}
+
+	// Verify dueKey hash changed & KeyRotationAt advanced, while futureKey is untouched
+	updatedDue, err := repo.GetVirtualKeyByID(ctx, dueKey.ID)
+	if err != nil {
+		t.Fatalf("GetVirtualKeyByID(due): %v", err)
+	}
+	if updatedDue.KeyHash == oldDueHash {
+		t.Fatal("expected dueKey KeyHash to change after auto-rotation")
+	}
+	expectedNextRot := getNow().Add(600 * time.Second)
+	if updatedDue.KeyRotationAt == nil || !updatedDue.KeyRotationAt.Equal(expectedNextRot) {
+		t.Fatalf("expected updated KeyRotationAt=%v, got %v", expectedNextRot, updatedDue.KeyRotationAt)
+	}
+
+	updatedFuture, err := repo.GetVirtualKeyByID(ctx, futureKey.ID)
+	if err != nil {
+		t.Fatalf("GetVirtualKeyByID(future): %v", err)
+	}
+	if updatedFuture.KeyHash != futureKey.KeyHash {
+		t.Fatal("expected futureKey to remain untouched")
+	}
+
+	// Old dueKey remains usable during 5m grace period with deprecation metadata
+	depID, err := svc.AuthenticateVirtualKey(ctx, oldDueRawKey)
+	if err != nil {
+		t.Fatalf("expected old dueKey to work during auto-rotation grace period: %v", err)
+	}
+	expectedRevoke := getNow().Add(grace)
+	if depID.DeprecatedKeyRevokeAt == nil || !depID.DeprecatedKeyRevokeAt.Equal(expectedRevoke) {
+		t.Fatalf("DeprecatedKeyRevokeAt = %v, want %v", depID.DeprecatedKeyRevokeAt, expectedRevoke)
+	}
+
+	// Audit log recorded without leaking any raw key material
+	logs, err := repo.ListAuditLogs(ctx, "org_auto", 20)
+	if err != nil {
+		t.Fatalf("ListAuditLogs: %v", err)
+	}
+	var foundAudit *domain.AuditLog
+	for _, l := range logs {
+		if l.Action == "virtual_key.auto_rotated" && l.ResourceID == dueKey.ID {
+			foundAudit = l
+			break
+		}
+	}
+	if foundAudit == nil {
+		t.Fatalf("expected virtual_key.auto_rotated audit log, got %+v", logs)
+	}
+	if foundAudit.ActorID != "key-rotation-worker" {
+		t.Fatalf("ActorID = %q, want key-rotation-worker", foundAudit.ActorID)
+	}
+	for k, v := range foundAudit.Details {
+		if str, ok := v.(string); ok && len(str) > 20 && strings.HasPrefix(str, "sk-gw-") {
+			t.Fatalf("audit detail %q must never contain raw secret: %q", k, str)
+		}
+	}
+
+	// 3. Advance past grace period: old key rejected and next sweep purges expired deprecated hash
+	advance(grace + time.Second)
+	if _, err := svc.AuthenticateVirtualKey(ctx, oldDueRawKey); err == nil {
+		t.Fatal("expected old dueKey rejected after grace period elapsed")
+	}
+	resPurge, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce(purge): %v", err)
+	}
+	if !resPurge.LockAcquired || resPurge.PurgedHashes != 1 || resPurge.RotatedKeys != 0 {
+		t.Fatalf("expected 1 purged hash and 0 rotations, got %+v", resPurge)
+	}
+
+	// 4. Advance past next rotation interval and verify background Start/Stop loop rotates automatically
+	advance(600 * time.Second)
+	hashBeforeLoop := updatedDue.KeyHash
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	defer bgCancel()
+	mgr.Start(bgCtx)
+
+	waitDeadline := time.Now().Add(2 * time.Second)
+	rotatedInBG := false
+	for time.Now().Before(waitDeadline) {
+		k, err := repo.GetVirtualKeyByID(ctx, dueKey.ID)
+		if err == nil && k != nil && k.KeyHash != hashBeforeLoop {
+			rotatedInBG = true
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	mgr.Stop()
+	mgr.Stop() // idempotent stop
+	if !rotatedInBG {
+		t.Fatal("expected KeyRotationManager background loop to auto-rotate due key")
+	}
+}

@@ -1177,6 +1177,10 @@ components:
         role:
           type: string
           enum: [platform_admin, org_admin, org_viewer, team_admin, developer, service_account, viewer]
+        key_type:
+          type: string
+          enum: [default, llm_api, management, read_only, service_account]
+          description: Capability preset controlling default allowed endpoints, role, and user binding
         allowed_models:
           type: array
           items:
@@ -1225,6 +1229,15 @@ components:
           type: integer
         max_concurrent_requests:
           type: integer
+        rotation_interval_sec:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Automatic key rotation interval in seconds (0 disables scheduled rotation)
+        key_rotation_at:
+          type: string
+          format: date-time
+          description: Next scheduled automatic rotation timestamp in UTC
         expires_at:
           type: string
           format: date-time
@@ -1240,6 +1253,16 @@ components:
         updated_at:
           type: string
           format: date-time
+    AdminVirtualKeyRotateRequest:
+      type: object
+      properties:
+        org_id:
+          type: string
+        grace_period_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Optional dual-active grace window in seconds during which the previous key remains valid with deprecation headers
     AdminDeleteStatusResponse:
       type: object
       required:
@@ -2818,13 +2841,19 @@ paths:
   /admin/v1/keys/{keyID}/rotate:
     post:
       operationId: rotateVirtualKey
-      summary: Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
+      summary: Rotate a virtual API key secret, optionally keeping the previous key active during a grace window and returning the new raw secret once
       parameters:
         - name: keyID
           in: path
           required: true
           schema:
             type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVirtualKeyRotateRequest'
       responses:
         '200':
           description: Rotated virtual API key with one-time raw_key secret

@@ -29,11 +29,23 @@ const (
 
 // OperatorContext represents an authenticated Control Plane operator attached to `r.Context()`.
 type OperatorContext struct {
-	ActorID    string       `json:"actor_id"`
-	Role       OperatorRole `json:"role"`
-	OrgID      string       `json:"org_id,omitempty"`
-	AuthMethod string       `json:"auth_method"` // "master_key", "virtual_key", "jwt"
+	ActorID               string       `json:"actor_id"`
+	Role                  OperatorRole `json:"role"`
+	OrgID                 string       `json:"org_id,omitempty"`
+	AuthMethod            string       `json:"auth_method"` // "master_key", "virtual_key", "jwt"
+	DeprecatedKeyRevokeAt *time.Time   `json:"deprecated_key_revoke_at,omitempty"`
 }
+
+// KeyType defines capability presets applied to Virtual API Keys.
+type KeyType string
+
+const (
+	KeyTypeDefault        KeyType = "default"
+	KeyTypeLLMAPI         KeyType = "llm_api"
+	KeyTypeManagement     KeyType = "management"
+	KeyTypeReadOnly       KeyType = "read_only"
+	KeyTypeServiceAccount KeyType = "service_account"
+)
 
 // BudgetResetPeriod defines when accumulated spend counters automatically reset.
 type BudgetResetPeriod string
@@ -150,6 +162,7 @@ type VirtualKey struct {
 	TeamID                   string              `json:"team_id,omitempty"`
 	UserID                   string              `json:"user_id,omitempty"`
 	Role                     Role                `json:"role"`
+	KeyType                  KeyType             `json:"key_type,omitempty"`
 	AllowedModels            []string            `json:"allowed_models,omitempty"`
 	AllowedEndpoints         []string            `json:"allowed_endpoints,omitempty"`
 	AllowedMCPServers        []string            `json:"allowed_mcp_servers"` // nil = inherit, [] = DenyAll, [...] = allowlist
@@ -166,6 +179,8 @@ type VirtualKey struct {
 	TPMLimit                 int                 `json:"tpm_limit"`
 	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`
 	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"`
+	RotationIntervalSec      int64               `json:"rotation_interval_sec,omitempty"`
+	KeyRotationAt            *time.Time          `json:"key_rotation_at,omitempty"`
 	ExpiresAt                *time.Time          `json:"expires_at,omitempty"`
 	IsActive                 bool                `json:"is_active"`
 	Metadata                 map[string]string   `json:"metadata,omitempty"`
@@ -202,6 +217,10 @@ type IdentityContext struct {
 	TeamID                       string              `json:"team_id,omitempty"`
 	UserID                       string              `json:"user_id,omitempty"`
 	Role                         Role                `json:"role"`
+	KeyType                      KeyType             `json:"key_type,omitempty"`
+	RotationIntervalSec          int64               `json:"rotation_interval_sec,omitempty"`
+	KeyRotationAt                *time.Time          `json:"key_rotation_at,omitempty"`
+	DeprecatedKeyRevokeAt        *time.Time          `json:"deprecated_key_revoke_at,omitempty"`
 	Principal                    *Principal          `json:"principal,omitempty"`
 	KeyAllowedModels             []string            `json:"key_allowed_models,omitempty"`
 	TeamAllowedModels            []string            `json:"team_allowed_models,omitempty"`

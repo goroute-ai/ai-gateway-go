@@ -113,6 +113,33 @@ func (e AdminUserRole) Valid() bool {
 	}
 }
 
+// Defines values for AdminVirtualKeyKeyType.
+const (
+	AdminVirtualKeyKeyTypeDefault        AdminVirtualKeyKeyType = "default"
+	AdminVirtualKeyKeyTypeLlmApi         AdminVirtualKeyKeyType = "llm_api"
+	AdminVirtualKeyKeyTypeManagement     AdminVirtualKeyKeyType = "management"
+	AdminVirtualKeyKeyTypeReadOnly       AdminVirtualKeyKeyType = "read_only"
+	AdminVirtualKeyKeyTypeServiceAccount AdminVirtualKeyKeyType = "service_account"
+)
+
+// Valid indicates whether the value is a known member of the AdminVirtualKeyKeyType enum.
+func (e AdminVirtualKeyKeyType) Valid() bool {
+	switch e {
+	case AdminVirtualKeyKeyTypeDefault:
+		return true
+	case AdminVirtualKeyKeyTypeLlmApi:
+		return true
+	case AdminVirtualKeyKeyTypeManagement:
+		return true
+	case AdminVirtualKeyKeyTypeReadOnly:
+		return true
+	case AdminVirtualKeyKeyTypeServiceAccount:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminVirtualKeyRole.
 const (
 	AdminVirtualKeyRoleDeveloper      AdminVirtualKeyRole = "developer"
@@ -1149,40 +1176,59 @@ type AdminUserRole string
 
 // AdminVirtualKey defines model for AdminVirtualKey.
 type AdminVirtualKey struct {
-	AllowedA2aAgents      *[]string            `json:"allowed_a2a_agents,omitempty"`
-	AllowedClientApps     *[]string            `json:"allowed_client_apps,omitempty"`
-	AllowedEndpoints      *[]string            `json:"allowed_endpoints,omitempty"`
-	AllowedMcpServers     *[]string            `json:"allowed_mcp_servers,omitempty"`
-	AllowedModels         *[]string            `json:"allowed_models,omitempty"`
-	BudgetFallbacks       *map[string][]string `json:"budget_fallbacks,omitempty"`
-	BudgetResetAt         *time.Time           `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod     *string              `json:"budget_reset_period,omitempty"`
-	CreatedAt             time.Time            `json:"created_at"`
-	ExpiresAt             *time.Time           `json:"expires_at,omitempty"`
-	Id                    string               `json:"id"`
-	IsActive              bool                 `json:"is_active"`
-	KeyPrefix             string               `json:"key_prefix"`
-	MaxBudgetMicros       *int64               `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests *int                 `json:"max_concurrent_requests,omitempty"`
-	Metadata              *map[string]string   `json:"metadata,omitempty"`
-	Name                  string               `json:"name"`
-	OrgId                 string               `json:"org_id"`
+	AllowedA2aAgents  *[]string            `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps *[]string            `json:"allowed_client_apps,omitempty"`
+	AllowedEndpoints  *[]string            `json:"allowed_endpoints,omitempty"`
+	AllowedMcpServers *[]string            `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels     *[]string            `json:"allowed_models,omitempty"`
+	BudgetFallbacks   *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt     *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time            `json:"created_at"`
+	ExpiresAt         *time.Time           `json:"expires_at,omitempty"`
+	Id                string               `json:"id"`
+	IsActive          bool                 `json:"is_active"`
+	KeyPrefix         string               `json:"key_prefix"`
+
+	// KeyRotationAt Next scheduled automatic rotation timestamp in UTC
+	KeyRotationAt *time.Time `json:"key_rotation_at,omitempty"`
+
+	// KeyType Capability preset controlling default allowed endpoints, role, and user binding
+	KeyType               *AdminVirtualKeyKeyType `json:"key_type,omitempty"`
+	MaxBudgetMicros       *int64                  `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int                    `json:"max_concurrent_requests,omitempty"`
+	Metadata              *map[string]string      `json:"metadata,omitempty"`
+	Name                  string                  `json:"name"`
+	OrgId                 string                  `json:"org_id"`
 
 	// RawKey Populated once upon key creation or rotation
-	RawKey                   *string             `json:"raw_key,omitempty"`
-	Role                     AdminVirtualKeyRole `json:"role"`
-	RpmLimit                 *int                `json:"rpm_limit,omitempty"`
-	SoftBudgetMicros         *int64              `json:"soft_budget_micros,omitempty"`
-	SpentMicros              *int64              `json:"spent_micros,omitempty"`
-	TeamId                   *string             `json:"team_id,omitempty"`
-	ThrottleOnBudgetExceeded *bool               `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int                `json:"tpm_limit,omitempty"`
-	UpdatedAt                time.Time           `json:"updated_at"`
-	UserId                   *string             `json:"user_id,omitempty"`
+	RawKey *string             `json:"raw_key,omitempty"`
+	Role   AdminVirtualKeyRole `json:"role"`
+
+	// RotationIntervalSec Automatic key rotation interval in seconds (0 disables scheduled rotation)
+	RotationIntervalSec      *int64    `json:"rotation_interval_sec,omitempty"`
+	RpmLimit                 *int      `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros         *int64    `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64    `json:"spent_micros,omitempty"`
+	TeamId                   *string   `json:"team_id,omitempty"`
+	ThrottleOnBudgetExceeded *bool     `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int      `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at"`
+	UserId                   *string   `json:"user_id,omitempty"`
 }
+
+// AdminVirtualKeyKeyType Capability preset controlling default allowed endpoints, role, and user binding
+type AdminVirtualKeyKeyType string
 
 // AdminVirtualKeyRole defines model for AdminVirtualKey.Role.
 type AdminVirtualKeyRole string
+
+// AdminVirtualKeyRotateRequest defines model for AdminVirtualKeyRotateRequest.
+type AdminVirtualKeyRotateRequest struct {
+	// GracePeriodSeconds Optional dual-active grace window in seconds during which the previous key remains valid with deprecation headers
+	GracePeriodSeconds *int64  `json:"grace_period_seconds,omitempty"`
+	OrgId              *string `json:"org_id,omitempty"`
+}
 
 // Annotation defines model for Annotation.
 type Annotation struct {
@@ -2300,6 +2346,9 @@ type IssueVirtualKeyJSONRequestBody = AdminVirtualKey
 // UpdateVirtualKeyJSONRequestBody defines body for UpdateVirtualKey for application/json ContentType.
 type UpdateVirtualKeyJSONRequestBody = AdminVirtualKey
 
+// RotateVirtualKeyJSONRequestBody defines body for RotateVirtualKey for application/json ContentType.
+type RotateVirtualKeyJSONRequestBody = AdminVirtualKeyRotateRequest
+
 // SetMCPUserCredentialJSONRequestBody defines body for SetMCPUserCredential for application/json ContentType.
 type SetMCPUserCredentialJSONRequestBody = AdminMCPUserCredentialRequest
 
@@ -3146,7 +3195,7 @@ type ServerInterface interface {
 	// RevokeVirtualKey Revoke a virtual API key
 	// (POST /admin/v1/keys/{keyID}/revoke)
 	RevokeVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
-	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
+	// RotateVirtualKey Rotate a virtual API key secret, optionally keeping the previous key active during a grace window and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
@@ -6879,6 +6928,7 @@ func (response RevokeVirtualKey200JSONResponse) VisitRevokeVirtualKeyResponse(w 
 
 type RotateVirtualKeyRequestObject struct {
 	KeyID string `json:"keyID"`
+	Body  *RotateVirtualKeyJSONRequestBody
 }
 
 type RotateVirtualKeyResponseObject interface {
@@ -8405,7 +8455,7 @@ type StrictServerInterface interface {
 	// RevokeVirtualKey Revoke a virtual API key
 	// (POST /admin/v1/keys/{keyID}/revoke)
 	RevokeVirtualKey(ctx context.Context, request RevokeVirtualKeyRequestObject) (RevokeVirtualKeyResponseObject, error)
-	// RotateVirtualKey Rotate a virtual API key secret, invalidating the old key hash and returning the new raw secret once
+	// RotateVirtualKey Rotate a virtual API key secret, optionally keeping the previous key active during a grace window and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(ctx context.Context, request RotateVirtualKeyRequestObject) (RotateVirtualKeyResponseObject, error)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
@@ -9690,6 +9740,16 @@ func (sh *strictHandler) RotateVirtualKey(w http.ResponseWriter, r *http.Request
 	var request RotateVirtualKeyRequestObject
 
 	request.KeyID = keyID
+
+	var body RotateVirtualKeyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.RotateVirtualKey(ctx, request.(RotateVirtualKeyRequestObject))

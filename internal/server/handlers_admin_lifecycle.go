@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
@@ -683,6 +684,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		TeamID                   *string                   `json:"team_id,omitempty"`
 		UserID                   *string                   `json:"user_id,omitempty"`
 		Role                     *domain.Role              `json:"role,omitempty"`
+		KeyType                  *domain.KeyType           `json:"key_type,omitempty"`
 		AllowedModels            optionalStringSlice       `json:"allowed_models"`
 		AllowedEndpoints         optionalStringSlice       `json:"allowed_endpoints"`
 		AllowedMCPServers        optionalStringSlice       `json:"allowed_mcp_servers"`
@@ -697,6 +699,8 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
 		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
 		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
+		RotationIntervalSec      *int64                    `json:"rotation_interval_sec,omitempty"`
+		KeyRotationAt            *time.Time                `json:"key_rotation_at,omitempty"`
 		ExpiresAt                *time.Time                `json:"expires_at,omitempty"`
 		IsActive                 *bool                     `json:"is_active,omitempty"`
 		Metadata                 map[string]string         `json:"metadata,omitempty"`
@@ -759,6 +763,27 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	}
 	if req.AllowedClientApps.Set {
 		updated.AllowedClientApps = req.AllowedClientApps.Value
+	}
+	if req.KeyType != nil {
+		if !auth.IsValidKeyType(*req.KeyType) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_key_type",
+				Message:    "Unsupported key_type preset",
+			})
+			return
+		}
+		kt := auth.NormalizeKeyType(*req.KeyType)
+		updated.KeyType = kt
+		if !req.AllowedEndpoints.Set && kt != auth.NormalizeKeyType(existing.KeyType) {
+			if kt == domain.KeyTypeDefault {
+				updated.AllowedEndpoints = []string{"*"}
+			} else {
+				updated.AllowedEndpoints = nil
+			}
+		}
+		auth.ApplyKeyTypePreset(&updated)
 	}
 	if req.MaxBudgetMicros != nil {
 		if *req.MaxBudgetMicros < 0 {
@@ -826,6 +851,28 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		}
 		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
 	}
+	if req.RotationIntervalSec != nil {
+		if *req.RotationIntervalSec < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_rotation_interval",
+				Message:    "rotation_interval_sec cannot be negative",
+			})
+			return
+		}
+		updated.RotationIntervalSec = *req.RotationIntervalSec
+		if *req.RotationIntervalSec == 0 {
+			updated.KeyRotationAt = nil
+		} else if req.KeyRotationAt == nil && (updated.KeyRotationAt == nil || existing.RotationIntervalSec != *req.RotationIntervalSec) {
+			nextRot := time.Now().UTC().Add(time.Duration(*req.RotationIntervalSec) * time.Second)
+			updated.KeyRotationAt = &nextRot
+		}
+	}
+	if req.KeyRotationAt != nil {
+		rotAt := req.KeyRotationAt.UTC()
+		updated.KeyRotationAt = &rotAt
+	}
 	if req.ExpiresAt != nil {
 		updated.ExpiresAt = req.ExpiresAt
 	}
@@ -855,13 +902,15 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		saved = &updated
 	}
 	s.audit(r.Context(), saved.OrgID, "virtual_key.updated", "virtual_key", saved.ID, map[string]any{
-		"name":              saved.Name,
-		"team_id":           saved.TeamID,
-		"user_id":           saved.UserID,
-		"max_budget_micros": saved.MaxBudgetMicros,
-		"rpm_limit":         saved.RPMLimit,
-		"tpm_limit":         saved.TPMLimit,
-		"is_active":         saved.IsActive,
+		"name":                  saved.Name,
+		"team_id":               saved.TeamID,
+		"user_id":               saved.UserID,
+		"key_type":              saved.KeyType,
+		"rotation_interval_sec": saved.RotationIntervalSec,
+		"max_budget_micros":     saved.MaxBudgetMicros,
+		"rpm_limit":             saved.RPMLimit,
+		"tpm_limit":             saved.TPMLimit,
+		"is_active":             saved.IsActive,
 	})
 	writeJSON(w, http.StatusOK, saved)
 }
@@ -898,7 +947,8 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req struct {
-		OrgID *string `json:"org_id,omitempty"`
+		OrgID              *string `json:"org_id,omitempty"`
+		GracePeriodSeconds *int64  `json:"grace_period_seconds,omitempty"`
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -914,14 +964,29 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	rotated, err := s.authSvc.RotateVirtualKey(r.Context(), keyID)
+	var gracePeriod time.Duration
+	if req.GracePeriodSeconds != nil {
+		if *req.GracePeriodSeconds < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_grace_period",
+				Message:    "grace_period_seconds cannot be negative",
+			})
+			return
+		}
+		gracePeriod = time.Duration(*req.GracePeriodSeconds) * time.Second
+	}
+
+	rotated, err := s.authSvc.RotateVirtualKeyWithGrace(r.Context(), keyID, gracePeriod)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
 	s.audit(r.Context(), rotated.OrgID, "virtual_key.rotated", "virtual_key", rotated.ID, map[string]any{
-		"key_prefix": rotated.KeyPrefix,
-		"name":       rotated.Name,
+		"key_prefix":           rotated.KeyPrefix,
+		"name":                 rotated.Name,
+		"grace_period_seconds": int64(gracePeriod / time.Second),
 	})
 	writeJSON(w, http.StatusOK, rotated)
 }

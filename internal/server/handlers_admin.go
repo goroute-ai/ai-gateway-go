@@ -425,6 +425,14 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can issue platform_admin keys"})
 		return
 	}
+	if req.KeyType != "" && !auth.IsValidKeyType(req.KeyType) {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_key_type", Message: fmt.Sprintf("unsupported key_type %q", req.KeyType)})
+		return
+	}
+	if req.RotationIntervalSec < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_rotation_interval", Message: "rotation_interval_sec cannot be negative"})
+		return
+	}
 	if req.SoftBudgetMicros < 0 {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
@@ -434,7 +442,12 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), vk.OrgID, "virtual_key.issued", "virtual_key", vk.ID, map[string]any{"key_prefix": vk.KeyPrefix, "name": vk.Name})
+	s.audit(r.Context(), vk.OrgID, "virtual_key.issued", "virtual_key", vk.ID, map[string]any{
+		"key_prefix":            vk.KeyPrefix,
+		"name":                  vk.Name,
+		"key_type":              vk.KeyType,
+		"rotation_interval_sec": vk.RotationIntervalSec,
+	})
 	writeJSON(w, http.StatusCreated, vk)
 }
 
@@ -1341,6 +1354,8 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"default_virtual_key":         redactSecret(cfg.Auth.DefaultVirtualKey),
 			"l1_cache_ttl":                cfg.Auth.L1CacheTTL.String(),
 			"l2_cache_ttl":                cfg.Auth.L2CacheTTL.String(),
+			"key_rotation_poll_interval":  cfg.Auth.KeyRotationPollInterval.String(),
+			"key_rotation_grace_period":   cfg.Auth.KeyRotationGracePeriod.String(),
 		},
 		"router": map[string]any{
 			"default_fast_alias":      cfg.Router.DefaultFastAlias,
