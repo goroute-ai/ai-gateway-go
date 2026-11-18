@@ -14,6 +14,8 @@
 --   KEYS[kbase + 10]: res_sum_key     (O(1) active reserved micro-dollars sum)
 --   KEYS[kbase + 11]: res_amounts_key (request_id -> reserved micro-dollars hash)
 --
+-- KEYS[count * 11 + 1]: unique admission receipt for Redis command retries.
+--
 -- Fixed header ARGV[1..9]:
 --   ARGV[1]: count (number of descriptors)
 --   ARGV[2]: est_input (estimated input tokens, >= 0)
@@ -40,6 +42,11 @@
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
+    return {1, "OK"}
+end
+
+local receipt_key = KEYS[count * 11 + 1]
+if receipt_key and receipt_key ~= "" and redis.call("EXISTS", receipt_key) == 1 then
     return {1, "OK"}
 end
 
@@ -295,4 +302,8 @@ for idx = 0, count - 1 do
     end
 end
 
+-- Cover Redis client's retry window without extending any quota leases.
+if receipt_key and receipt_key ~= "" then
+    redis.call("SET", receipt_key, "1", "EX", 5)
+end
 return {1, "OK"}

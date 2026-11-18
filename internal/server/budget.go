@@ -200,11 +200,26 @@ func (s *GatewayServer) reservationLeaseRenewInterval() time.Duration {
 // startReservationLeaseRenewer periodically extends active budget reservation
 // leases while a budgeted request is in flight.
 func (s *GatewayServer) startReservationLeaseRenewer(ctx context.Context, id *domain.IdentityContext, requestID string) func() {
-	if s == nil || s.limiter == nil || !hasLegacyBudget(id) || requestID == "" {
+	return s.startReservationLeaseRenewerWithDescriptors(ctx, id, nil, requestID)
+}
+
+func (s *GatewayServer) startReservationLeaseRenewerWithDescriptors(
+	ctx context.Context,
+	id *domain.IdentityContext,
+	descriptors []domain.RateLimitDescriptor,
+	requestID string,
+) func() {
+	hasLegacy := hasLegacyBudget(id)
+	hasDesc := descriptorsHaveBudget(descriptors)
+	if s == nil || s.limiter == nil || (!hasLegacy && !hasDesc) || requestID == "" {
 		return func() {}
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	orgID := ""
+	if id != nil {
+		orgID = id.OrgID
 	}
 	interval := s.reservationLeaseRenewInterval()
 	leaseCtx, cancelLease := context.WithCancel(ctx)
@@ -220,7 +235,15 @@ func (s *GatewayServer) startReservationLeaseRenewer(ctx context.Context, id *do
 				return
 			case <-ticker.C:
 				renewCtx, cancelRenew := context.WithTimeout(leaseCtx, defaultLeaseRenewCallTimeout)
-				err := s.limiter.RenewReservationLease(renewCtx, id, requestID, defaultReservationLeaseTTLSec)
+				var err error
+				if hasLegacy {
+					err = s.limiter.RenewReservationLease(renewCtx, id, requestID, defaultReservationLeaseTTLSec)
+				}
+				if err == nil && hasDesc {
+					err = s.limiter.RenewDescriptorLeases(renewCtx, orgID, descriptors, requestID, defaultReservationLeaseTTLSec)
+				} else if hasDesc {
+					_ = s.limiter.RenewDescriptorLeases(renewCtx, orgID, descriptors, requestID, defaultReservationLeaseTTLSec)
+				}
 				cancelRenew()
 				if err != nil {
 					if leaseCtx.Err() == nil {
@@ -248,7 +271,13 @@ func (s *GatewayServer) startReservationLeaseRenewer(ctx context.Context, id *do
 }
 
 func (s *GatewayServer) wrapBudgetRelease(ctx context.Context, id *domain.IdentityContext, requestID string, release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
-	stopRenewer := s.startReservationLeaseRenewer(ctx, id, requestID)
+	return s.wrapBudgetReleaseWithRenewer(id, requestID, s.startReservationLeaseRenewer(ctx, id, requestID), release)
+}
+
+func (s *GatewayServer) wrapBudgetReleaseWithRenewer(id *domain.IdentityContext, requestID string, stopRenewer func(), release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
+	if stopRenewer == nil {
+		stopRenewer = func() {}
+	}
 	var once sync.Once
 	return func(actualTokens int, overrideCostMicros int64) {
 		once.Do(func() {
@@ -486,7 +515,7 @@ type postDispatchSettlement struct {
 	estTokens              int
 	isStream               bool
 	actualTokensReconciled bool
-	upstreamDispatched     bool
+	firstProviderAttempt   func() *domain.Deployment
 	meta                   *router.ExecutionMeta
 	selectedDep            *domain.Deployment
 	dispatchErr            error
@@ -495,11 +524,16 @@ type postDispatchSettlement struct {
 	releaseUsage           func(actualInput, actualOutput int, overrideCostMicros int64)
 }
 
+func (p *postDispatchSettlement) trackDispatch(ctx context.Context) context.Context {
+	ctx, p.firstProviderAttempt = router.TrackProviderDispatch(ctx)
+	return ctx
+}
+
 func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
 	if p == nil || (p.releaseQuota == nil && p.releaseUsage == nil) || p.actualTokensReconciled {
 		return
 	}
-	if !p.upstreamDispatched {
+	if p.firstProviderAttempt == nil || p.firstProviderAttempt() == nil {
 		if p.releaseUsage != nil {
 			p.releaseUsage(-1, -1, -1)
 		} else {
@@ -513,6 +547,9 @@ func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
 	var pricingVer int
 	resolvedModel := p.requestedModel
 	dep := p.selectedDep
+	if dep == nil {
+		dep = p.firstProviderAttempt()
+	}
 	if p.meta != nil && p.meta.WinningDeployment != nil {
 		dep = p.meta.WinningDeployment
 	}

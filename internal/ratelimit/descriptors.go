@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
@@ -17,6 +18,9 @@ var checkDescriptorsLua string
 
 //go:embed scripts/reconcile_descriptors.lua
 var reconcileDescriptorsLua string
+
+//go:embed scripts/renew_descriptors.lua
+var renewDescriptorsLua string
 
 const (
 	defaultDescriptorTPDTTLSec         = 86400 * 2
@@ -252,6 +256,9 @@ func (l *Limiter) AcquireDescriptors(
 
 	if l.redis != nil && l.redis.Client() != nil {
 		keys := descriptorCheckKeys(orgID, active, now)
+		// Unique receipt makes Redis command retries safe without admitting a
+		// distinct concurrent call that reuses an active budget reservation ID.
+		keys = append(keys, "gw:quota:"+orgHashTag(orgID)+":admission:"+uuid.NewString())
 		argv := make([]any, 0, 9+len(active)*11)
 		argv = append(argv,
 			len(active),
@@ -705,4 +712,66 @@ func (l *Limiter) ResetBudgetWindowSpend(ctx context.Context, windows []*domain.
 		return rdb.Del(rCtx, redisKeys...).Result()
 	})
 	return err
+}
+
+// RenewDescriptorLeases extends active budget reservation leases for all budgeted
+// descriptors matching requestID in both Redis and local fallback tracking.
+func (l *Limiter) RenewDescriptorLeases(
+	ctx context.Context,
+	orgID string,
+	descriptors []domain.RateLimitDescriptor,
+	requestID string,
+	ttlSec int,
+) error {
+	if l == nil || requestID == "" || len(descriptors) == 0 {
+		return nil
+	}
+	if ttlSec <= 0 {
+		ttlSec = defaultDescriptorReservationTTLSec
+	}
+	active, err := normalizeDescriptors(orgID, descriptors)
+	if err != nil {
+		return err
+	}
+	var budgeted []domain.RateLimitDescriptor
+	for _, d := range active {
+		if d.MaxBudgetMicros > 0 {
+			budgeted = append(budgeted, d)
+		}
+	}
+	if len(budgeted) == 0 {
+		return nil
+	}
+
+	now := l.nowUTC()
+	newExpiry := now.Add(time.Duration(ttlSec) * time.Second)
+	tag := orgHashTag(orgID)
+	l.localMu.Lock()
+	for _, d := range budgeted {
+		lk := tag + ":" + descriptorEntityKey(d)
+		if resMap := l.localDescReservations[lk]; resMap != nil {
+			if entry, ok := resMap[requestID]; ok {
+				entry.expiresAt = newExpiry
+				resMap[requestID] = entry
+			}
+		}
+	}
+	l.localMu.Unlock()
+
+	if l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	nowMin := now.Unix() / 60
+	utcDay := now.Format("20060102")
+	keys := make([]string, 0, len(budgeted)*3)
+	for _, d := range budgeted {
+		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
+		keys = append(keys, ks.resZSet, ks.resSum, ks.resAmounts)
+	}
+	_, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return l.renewDescriptorsScr.Run(rCtx, rdb, keys, len(budgeted), requestID, ttlSec).Result()
+	})
+	return execErr
 }

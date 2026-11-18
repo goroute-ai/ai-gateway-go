@@ -537,7 +537,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 		onAdmitted()
 	}
 
-	quotaSettlement.upstreamDispatched = true
+	ctx = quotaSettlement.trackDispatch(ctx)
 	resp, meta, err := s.reliability.ExecuteChat(ctx, idCtx, chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err

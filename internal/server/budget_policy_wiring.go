@@ -228,23 +228,23 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 		return func(int, int, int64) {}, nil
 	}
 
-	var legacyRel func(actualTokens int, overrideCostMicros int64)
+	var legacyRawRel func(actualTokens int, overrideCostMicros int64)
+	var legacyRollback func()
 	if legacyHasBudget {
-		rel, err := s.limiter.AcquireWithBudget(ctx, effID, rateTokens, reserve, requestID)
+		rel, rb, err := s.limiter.AcquireWithBudgetAndRollback(ctx, effID, rateTokens, reserve, requestID)
 		if err != nil {
 			return nil, err
 		}
-		legacyRel = s.wrapBudgetRelease(ctx, effID, requestID, rel)
+		legacyRawRel = rel
+		legacyRollback = rb
 	} else {
-		rel, err := s.limiter.Acquire(ctx, effID, rateTokens)
+		rel, rb, err := s.limiter.AcquireWithRollback(ctx, effID, rateTokens)
 		if err != nil {
 			return nil, err
 		}
-		var legacyOnce sync.Once
-		legacyRel = func(actualTokens int, _ int64) {
-			legacyOnce.Do(func() {
-				rel(actualTokens)
-			})
+		legacyRollback = rb
+		legacyRawRel = func(actualTokens int, _ int64) {
+			rel(actualTokens)
 		}
 	}
 
@@ -265,14 +265,31 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 		var err error
 		descRel, err = s.limiter.AcquireDescriptors(ctx, orgID, requestID, estInput, estOutput, reserve, extDescriptors)
 		if err != nil {
-			legacyRel(-1, -1)
+			if legacyRollback != nil {
+				legacyRollback()
+			}
 			return nil, err
+		}
+	}
+
+	stopRenewer := s.startReservationLeaseRenewerWithDescriptors(ctx, effID, extDescriptors, requestID)
+	var legacyRel func(actualTokens int, overrideCostMicros int64)
+	if legacyHasBudget {
+		legacyRel = s.wrapBudgetReleaseWithRenewer(effID, requestID, stopRenewer, legacyRawRel)
+	} else {
+		var legacyOnce sync.Once
+		legacyRel = func(actualTokens int, _ int64) {
+			legacyOnce.Do(func() {
+				stopRenewer()
+				legacyRawRel(actualTokens, 0)
+			})
 		}
 	}
 
 	var once sync.Once
 	return func(actualInput, actualOutput int, overrideCostMicros int64) {
 		once.Do(func() {
+			stopRenewer()
 			if actualInput < 0 {
 				if legacyRel != nil {
 					legacyRel(-1, -1)
@@ -340,7 +357,7 @@ func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id
 		return func(int) {}, false, nil
 	}
 	pct := s.budgetExceededThrottlePct()
-	currID := id
+	currID := applyEffectiveTempBudgets(id, time.Now().UTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {

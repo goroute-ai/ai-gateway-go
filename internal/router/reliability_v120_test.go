@@ -533,15 +533,17 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 		}
 
 		// 4) Multi-deployment 401 fails over from depA to depB and succeeds.
-		multiGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-multi", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
+		multiGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-multi", RoutingStrategy: domain.StrategyLowestCost, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, multiGroup)
 		dep1 := registerV120ModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
-			ID: "openai/retry-multi", Provider: domain.ProviderOpenAI, ModelName: "retry-multi",
-			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
+			ID: "openai/retry-multi-a", Provider: domain.ProviderOpenAI, ModelName: "retry-multi-a",
+			InputCostMicrosPer1M: 1,
+			SupportsInference:    true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-auth-1", "http://localhost")
 		dep2 := registerV120ModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
-			ID: "openai/retry-multi", Provider: domain.ProviderOpenAI, ModelName: "retry-multi",
-			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
+			ID: "openai/retry-multi-b", Provider: domain.ProviderOpenAI, ModelName: "retry-multi-b",
+			InputCostMicrosPer1M: 2,
+			SupportsInference:    true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-auth-2", "http://localhost")
 		depAuthA = dep1.ID
 		depAuthB = dep2.ID

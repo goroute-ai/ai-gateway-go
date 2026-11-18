@@ -700,6 +700,10 @@ func (s *GatewayServer) processBatchAsync(
 	}
 
 	finishedAt := time.Now().UTC()
+	if cur, curErr := s.repo.GetBatch(ctx, batch.OrgID, batch.ID); curErr == nil && cur != nil && cur.Status == "cancelled" {
+		_ = os.Remove(outPath)
+		return
+	}
 	batch.Status = "completed"
 	batch.OutputFileID = outID
 	batch.RequestCounts = counts

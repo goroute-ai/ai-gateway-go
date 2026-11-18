@@ -674,7 +674,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}
 		}
 
-		quotaSettlement.upstreamDispatched = true
+		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 			usage, meta, err = s.orchestrator.ExecuteStreamLoop(upstreamCtx, idCtx, &chatReq, writeChunk, onSelected)
 		} else {
@@ -901,7 +901,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	var resp *domain.CanonicalChatResponse
 	var meta *router.ExecutionMeta
 
-	quotaSettlement.upstreamDispatched = true
+	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 	if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 		resp, meta, err = s.orchestrator.ExecuteLoop(upstreamCtx, idCtx, &chatReq)
 	} else {
@@ -1209,8 +1209,8 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
-	quotaSettlement.upstreamDispatched = true
-	resp, meta, err := s.reliability.ExecuteEmbeddings(r.Context(), idCtx, embReq)
+	upstreamCtx := quotaSettlement.trackDispatch(r.Context())
+	resp, meta, err := s.reliability.ExecuteEmbeddings(upstreamCtx, idCtx, embReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
 	if err != nil {
