@@ -31,11 +31,15 @@ type ResolverConfig struct {
 	ProxyDefaultRole           string
 }
 
+// EmbeddedAuthenticator optionally supplies an authenticated data-plane identity.
+type EmbeddedAuthenticator func(context.Context, *http.Request) (*domain.IdentityContext, error)
+
 // AuthResolver resolves Data Plane HTTP requests into a frozen domain.IdentityContext
 // with an attached domain.Principal across Virtual API Keys, OIDC/JWT (with claim-to-key
 // mapping and race-safe JIT user provisioning), OAuth token introspection, and trusted
 // reverse-proxy identity headers.
 type AuthResolver struct {
+	embeddedAuth               EmbeddedAuthenticator
 	authSvc                    *Service
 	repo                       storage.Repository
 	rbac                       *RBACEngine
@@ -95,6 +99,12 @@ func (r *AuthResolver) ExtractorOptions() ExtractorOptions {
 	return r.authSvc.ExtractorOptions()
 }
 
+// SetEmbeddedAuthenticator configures an SDK hook before the server starts
+// serving requests. A nil identity and nil error defer to built-in auth.
+func (r *AuthResolver) SetEmbeddedAuthenticator(authenticator EmbeddedAuthenticator) {
+	r.embeddedAuth = authenticator
+}
+
 // ResolveRequest authenticates an inbound Data Plane HTTP request and returns a frozen
 // IdentityContext carrying tenant budgets, rate limits, model allowlists, and Principal.
 func (r *AuthResolver) ResolveRequest(ctx context.Context, req *http.Request) (*domain.IdentityContext, error) {
@@ -104,6 +114,51 @@ func (r *AuthResolver) ResolveRequest(ctx context.Context, req *http.Request) (*
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "unauthenticated",
 			Message:    "Authentication resolver is not configured",
+		}
+	}
+
+	if r.embeddedAuth != nil {
+		identity, err := r.embeddedAuth(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if identity != nil {
+			org, err := r.repo.GetOrganization(ctx, identity.OrgID)
+			if err != nil || org == nil || !org.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "organization_inactive",
+					Message:    "Custom auth must resolve to an active organization",
+				}
+			}
+			clone := *identity
+			if len(clone.AllowedEndpoints) == 0 {
+				clone.AllowedEndpoints = []string{"*"}
+			}
+			if clone.OrgMaxBudgetMicros == 0 {
+				clone.OrgMaxBudgetMicros = org.MaxBudgetMicros
+				clone.OrgTempBudgetIncreaseMicros = org.TempBudgetIncreaseMicros
+				clone.OrgTempBudgetExpiresAt = org.TempBudgetExpiresAt
+				clone.OrgSoftBudgetMicros = org.SoftBudgetMicros
+				clone.OrgThrottleOnBudgetExceeded = org.ThrottleOnBudgetExceeded
+				clone.OrgBudgetFallbacks = domain.CloneBudgetFallbacks(org.BudgetFallbacks)
+				clone.OrgSpentMicros = org.SpentMicros
+			}
+			if clone.OrgRPMLimit == 0 {
+				clone.OrgRPMLimit = org.RPMLimit
+			}
+			if clone.OrgTPMLimit == 0 {
+				clone.OrgTPMLimit = org.TPMLimit
+			}
+			if clone.OrgMaxConcurrent == 0 {
+				clone.OrgMaxConcurrent = org.MaxConcurrentRequests
+			}
+			identity = &clone
+			if r.rbac != nil {
+				identity = r.rbac.EnrichIdentityWithAccessRules(ctx, identity)
+			}
+			return identity, nil
 		}
 	}
 
