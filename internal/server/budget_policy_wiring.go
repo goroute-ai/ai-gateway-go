@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -185,7 +184,7 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 	if s == nil {
 		return func(int, int, int64) {}, nil
 	}
-	now := time.Now().UTC()
+	now := s.nowUTC()
 	effID := applyEffectiveTempBudgets(id, now)
 	extDescriptors, descErr := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
 	if descErr != nil {
@@ -326,7 +325,7 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 
 func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), bool, error) {
 	pct := s.budgetExceededThrottlePct()
-	currID := applyEffectiveTempBudgets(id, time.Now().UTC())
+	currID := applyEffectiveTempBudgets(id, s.nowUTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {
@@ -357,7 +356,7 @@ func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id
 		return func(int) {}, false, nil
 	}
 	pct := s.budgetExceededThrottlePct()
-	currID := applyEffectiveTempBudgets(id, time.Now().UTC())
+	currID := applyEffectiveTempBudgets(id, s.nowUTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {

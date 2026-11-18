@@ -99,6 +99,34 @@ type GatewayServer struct {
 	uploadSem          chan struct{}
 	uploadInFlightMu   sync.Mutex
 	uploadInFlight     map[string]int64
+	nowMu              sync.RWMutex
+	nowFunc            func() time.Time
+}
+
+func (s *GatewayServer) nowUTC() time.Time {
+	if s == nil {
+		return time.Now().UTC()
+	}
+	s.nowMu.RLock()
+	fn := s.nowFunc
+	s.nowMu.RUnlock()
+	if fn != nil {
+		return fn().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// SetNowFunc overrides the wall-clock source used for quota admission and rolling windows.
+func (s *GatewayServer) SetNowFunc(fn func() time.Time) {
+	if s == nil {
+		return
+	}
+	s.nowMu.Lock()
+	s.nowFunc = fn
+	s.nowMu.Unlock()
+	if s.limiter != nil {
+		s.limiter.SetNowFunc(fn)
+	}
 }
 
 // parseCustomProviderOperations maps string operation names from CustomProviderConfig
@@ -338,6 +366,11 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	limiter.SetDefaultEstimatedTPM(cfg.RateLimit.DefaultEstimatedTPM)
 	limiter.SetRedisTimeout(cfg.RateLimit.RedisTimeout)
 	limiter.SetGlobalLimits(cfg.RateLimit.GlobalRPMLimit, cfg.RateLimit.GlobalTPMLimit, cfg.RateLimit.GlobalMaxConcurrent)
+	if rHistRepo, ok := repo.(storage.RollingSpendHistoryRepository); ok && rHistRepo != nil {
+		limiter.SetRollingWindowLoader(func(ctx context.Context, orgID string, d domain.RateLimitDescriptor, now time.Time) ([]domain.RollingSpendEntry, error) {
+			return rHistRepo.ListRollingWindowHistory(ctx, orgID, d.ScopeType, d.ScopeID, now)
+		})
+	}
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)

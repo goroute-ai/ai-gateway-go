@@ -446,6 +446,8 @@ The minute's TPM counter is adjusted by $\Delta\text{Tokens}$, and the in-flight
 ### 8.4 Redis Availability
 Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters. If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error. It does not fall back to per-process counters, because those cannot preserve tenant-wide limits across replicas. Requests without configured limits do not require Redis for quota admission.
 
+For `rolling_24h` budget windows, each settled charge expires 24 hours after its recorded millisecond timestamp in `gw:dq:{org:<org_id>}:r24h:<entity>` independently of `window_reset_at`. When a Redis rolling counter is cold, the limiter restores persisted spend from PostgreSQL `spend_logs` (and any unexpired migration `rolling_hold_micros` at its original expiration) and initializes the window atomically and idempotently with admission, keeping surviving reservations separate from settled spend; if repository loading fails, admission returns `HTTP 503 quota_policy_unavailable`. **Recovery boundary:** PostgreSQL restores persisted spend after complete Redis state loss, whereas reservations and settlements that existed only in Redis cannot be reconstructed from that history.
+
 ---
 
 ## 9. Deterministic Exact-Match Response Caching

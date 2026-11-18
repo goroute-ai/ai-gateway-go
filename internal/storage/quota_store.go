@@ -127,6 +127,12 @@ type BudgetWindowResetRepository interface {
 	ResetExpiredBudgetWindowsWithResults(ctx context.Context, now time.Time) ([]*domain.BudgetWindowLimit, error)
 }
 
+// RollingSpendHistoryRepository restores timestamped spend entries and active
+// migration holds within the trailing 24 hours for cold rolling_24h quota recovery.
+type RollingSpendHistoryRepository interface {
+	ListRollingWindowHistory(ctx context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, now time.Time) ([]domain.RollingSpendEntry, error)
+}
+
 // TempBudgetRepository persists temporary budget boosts with expirations across
 // virtual_keys, teams, users, and organizations.
 type TempBudgetRepository interface {

@@ -490,8 +490,8 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
 				continue
 			}
-			if !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
-				// Window has expired and is awaiting background reset.
+			if bw.WindowType != domain.BudgetWindowRolling24h && !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
+				// Periodic window has expired and is awaiting background reset.
 				desc.SpentFloorMicros = 0
 			}
 			if desc.HasLimits() {
@@ -676,7 +676,7 @@ func (s *GatewayServer) requestHasBudget(ctx context.Context, id *domain.Identit
 	if s == nil || id == nil {
 		return false
 	}
-	ext, err := s.buildExtendedQuotaDescriptors(ctx, id, model, time.Now().UTC())
+	ext, err := s.buildExtendedQuotaDescriptors(ctx, id, model, s.nowUTC())
 	if err != nil {
 		return false
 	}

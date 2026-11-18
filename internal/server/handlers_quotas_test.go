@@ -917,3 +917,72 @@ func TestProjectQuotaSharesUsageAcrossGatewayReplicas(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, second.Code, second.Body.String())
 	require.Contains(t, second.Body.String(), "tpd")
 }
+
+func TestRolling24hBudgetRecovery_IgnoresPastResetAtAndFailsClosedOnLoaderError(t *testing.T) {
+	env := setupQuotaHandlerTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chat-roll","object":"chat.completion","model":"gpt-4.1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	ctx := context.Background()
+
+	t0 := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	curTime := t0
+	env.gw.SetNowFunc(func() time.Time { return curTime })
+
+	key, err := env.gw.AuthService().IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID: "org_a", TeamID: "team_a1", UserID: "usr_a1_dev",
+		Name: "rolling-recovery-key", Role: domain.RoleDeveloper,
+	})
+	require.NoError(t, err)
+
+	// Upsert rolling_24h window with WindowResetAt 48h in the past (must NOT zero active rolling spend).
+	require.NoError(t, env.repo.UpsertBudgetWindowLimit(ctx, &domain.BudgetWindowLimit{
+		OrgID:           "org_a",
+		ScopeType:       domain.QuotaScopeKey,
+		ScopeID:         key.ID,
+		WindowType:      domain.BudgetWindowRolling24h,
+		MaxBudgetMicros: 50_000,
+		WindowResetAt:   t0.Add(-48 * time.Hour),
+	}))
+	require.NoError(t, env.repo.RecordSpendBatch(ctx, []domain.SpendEvent{
+		{
+			ID:             "sp-roll-1",
+			RequestID:      "req-roll-1",
+			OrgID:          "org_a",
+			TeamID:         "team_a1",
+			UserID:         "usr_a1_dev",
+			VirtualKeyID:   key.ID,
+			Endpoint:       "/v1/chat/completions",
+			RequestedModel: "gpt-4.1",
+			ResolvedModel:  "gpt-4.1",
+			Provider:       domain.ProviderOpenAI,
+			CostMicros:     40_000,
+			CreatedAt:      t0.Add(-20 * time.Hour),
+		},
+	}))
+
+	// Estimate upper bound for gpt-4.1 (~40_200 micros): 40_000 + ~40_200 > 50_000 must reject despite past WindowResetAt.
+	rec := doAdminJSONRequest(t, env.handler, http.MethodPost, "/v1/chat/completions", key.RawKey, map[string]any{
+		"model": "gpt-4.1", "messages": []map[string]string{{"role": "user", "content": "hi"}}, "max_tokens": 5000,
+	})
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "budget")
+
+	// Advance +5h so sp-roll-1 is 25h old -> expired; request now succeeds.
+	curTime = t0.Add(5 * time.Hour)
+	recOK := doAdminJSONRequest(t, env.handler, http.MethodPost, "/v1/chat/completions", key.RawKey, map[string]any{
+		"model": "gpt-4.1", "messages": []map[string]string{{"role": "user", "content": "hi"}}, "max_tokens": 5000,
+	})
+	require.Equal(t, http.StatusOK, recOK.Code, recOK.Body.String())
+
+	// Clear Redis so next request hits cold path, and simulate rolling history load failure -> 503 quota_policy_unavailable.
+	env.mr.FlushAll()
+	env.gw.Limiter().SetRollingWindowLoader(func(_ context.Context, _ string, _ domain.RateLimitDescriptor, _ time.Time) ([]domain.RollingSpendEntry, error) {
+		return nil, context.DeadlineExceeded
+	})
+	recErr := doAdminJSONRequest(t, env.handler, http.MethodPost, "/v1/chat/completions", key.RawKey, map[string]any{
+		"model": "gpt-4.1", "messages": []map[string]string{{"role": "user", "content": "hi"}}, "max_tokens": 100,
+	})
+	require.Equal(t, http.StatusServiceUnavailable, recErr.Code, recErr.Body.String())
+	require.Contains(t, recErr.Body.String(), "quota_policy_unavailable")
+}

@@ -22,7 +22,7 @@
 --   ARGV[6]: tpd_ttl_sec (TTL for 86,400s UTC day bucket)
 --   ARGV[7]: request_id
 --   ARGV[8]: actual_cost_micros (>= 0 settles reservation & charges spend, -1 refunds without charge, -2 leaves reservation for outbox)
---   ARGV[9]: rolling_now_sec (optional unix timestamp for trailing 24h windows)
+--   ARGV[9]: rolling_now_ms (optional unix millisecond timestamp for trailing 24h windows)
 --
 -- Per-descriptor flags ARGV (7 args per descriptor idx = 0..count-1, abase = 9 + idx * 7):
 --   ARGV[abase + 1]: has_tpm (1 or 0)
@@ -48,9 +48,10 @@ local actual_cost = tonumber(ARGV[8])
 if actual_cost == nil then
     actual_cost = -1
 end
-local rolling_now = tonumber(ARGV[9]) or 0
-if rolling_now <= 0 then
-    rolling_now = tonumber(redis.call("TIME")[1])
+local rolling_now_ms = tonumber(ARGV[9]) or 0
+if rolling_now_ms <= 0 then
+    local time_parts = redis.call("TIME")
+    rolling_now_ms = tonumber(time_parts[1]) * 1000 + math.floor((tonumber(time_parts[2]) or 0) / 1000)
 end
 
 local function adjust_counter(key, delta, ttl)
@@ -119,13 +120,14 @@ for idx = 0, count - 1 do
             end
         end
         if removed > 0 and actual_cost >= 0 then
-            if actual_cost > 0 then
-                redis.call("INCRBY", spend_key, actual_cost)
-                if is_rolling == 1 then
-                    redis.call("ZADD", r24h_zset, rolling_now, request_id .. ":" .. actual_cost)
+            if is_rolling == 1 then
+                if actual_cost > 0 then
+                    redis.call("ZADD", r24h_zset, rolling_now_ms, "s:" .. request_id .. ":" .. actual_cost)
                     redis.call("EXPIRE", r24h_zset, 90000)
-                    redis.call("EXPIRE", spend_key, 90000)
                 end
+                redis.call("SET", spend_key, "1", "EX", 90000)
+            elseif actual_cost > 0 then
+                redis.call("INCRBY", spend_key, actual_cost)
             end
         end
     end

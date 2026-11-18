@@ -2070,52 +2070,122 @@ func (p *PostgresRepository) ListBudgetWindowLimits(ctx context.Context, filter 
 	return out, nil
 }
 
+func rollingSpendScopeFilter(orgID string, scopeType domain.QuotaScopeType, scopeID string, nextArg int) (string, []any, bool) {
+	switch scopeType {
+	case domain.QuotaScopeOrg:
+		return fmt.Sprintf("org_id = $%d", nextArg), []any{orgID}, true
+	case domain.QuotaScopeTeam:
+		return fmt.Sprintf("org_id = $%d AND team_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeUser:
+		return fmt.Sprintf("org_id = $%d AND user_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeKey:
+		return fmt.Sprintf("org_id = $%d AND virtual_key_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeTeamMember:
+		teamID, userID, ok := strings.Cut(scopeID, ":")
+		if !ok || teamID == "" || userID == "" {
+			return "", nil, false
+		}
+		return fmt.Sprintf("org_id = $%d AND team_id = $%d AND user_id = $%d", nextArg, nextArg+1, nextArg+2), []any{orgID, teamID, userID}, true
+	case domain.QuotaScopeProject:
+		return fmt.Sprintf("org_id = $%d AND project_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeEndUser:
+		return fmt.Sprintf("org_id = $%d AND end_user_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeTag:
+		return fmt.Sprintf("org_id = $%d AND $%d = ANY(tags)", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeModelAccessGroup:
+		return fmt.Sprintf("org_id = $%d AND $%d = ANY(model_access_group_ids)", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	default:
+		return "", nil, false
+	}
+}
+
 func (p *PostgresRepository) postgresRollingWindowSpend(ctx context.Context, bw *domain.BudgetWindowLimit, cutoff time.Time) (int64, error) {
 	if p == nil || p.pool == nil || bw == nil {
 		return 0, nil
 	}
-	var sum int64
-	var q string
-	var args []any
-	switch bw.ScopeType {
-	case domain.QuotaScopeOrg:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2`
-		args = []any{cutoff, bw.OrgID}
-	case domain.QuotaScopeTeam:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND team_id = $3`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeUser:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND user_id = $3`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeKey:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND virtual_key_id = $3`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeTeamMember:
-		teamID, userID, ok := strings.Cut(bw.ScopeID, ":")
-		if !ok || teamID == "" || userID == "" {
-			return 0, nil
-		}
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND team_id = $3 AND user_id = $4`
-		args = []any{cutoff, bw.OrgID, teamID, userID}
-	case domain.QuotaScopeProject:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND project_id = $3`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeEndUser:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND end_user_id = $3`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeTag:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND $3 = ANY(tags)`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	case domain.QuotaScopeModelAccessGroup:
-		q = `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND org_id = $2 AND $3 = ANY(model_access_group_ids)`
-		args = []any{cutoff, bw.OrgID, bw.ScopeID}
-	default:
+	condSQL, scopeArgs, ok := rollingSpendScopeFilter(bw.OrgID, bw.ScopeType, bw.ScopeID, 2)
+	if !ok {
 		return 0, nil
 	}
+	var sum int64
+	q := `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND ` + condSQL
+	args := append([]any{cutoff}, scopeArgs...)
 	if err := p.pool.QueryRow(ctx, q, args...).Scan(&sum); err != nil {
 		return 0, err
 	}
 	return sum, nil
+}
+
+func (p *PostgresRepository) ListRollingWindowHistory(ctx context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, now time.Time) ([]domain.RollingSpendEntry, error) {
+	orgID = strings.TrimSpace(orgID)
+	scopeType = domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(scopeType))))
+	scopeID = strings.TrimSpace(scopeID)
+	if orgID == "" || scopeID == "" || !scopeType.IsValid() {
+		return nil, nil
+	}
+	nowUTC := now.UTC()
+	if nowUTC.IsZero() {
+		nowUTC = time.Now().UTC()
+	}
+	if p == nil || p.pool == nil {
+		return p.mem.ListRollingWindowHistory(ctx, orgID, scopeType, scopeID, nowUTC)
+	}
+
+	condSQL, scopeArgs, ok := rollingSpendScopeFilter(orgID, scopeType, scopeID, 2)
+	if !ok {
+		return nil, nil
+	}
+	cutoff := nowUTC.Add(-24 * time.Hour)
+	q := `SELECT id, created_at, cost_micros FROM spend_logs WHERE created_at > $1 AND cost_micros > 0 AND ` + condSQL + ` ORDER BY created_at ASC, id ASC`
+	args := append([]any{cutoff}, scopeArgs...)
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.RollingSpendEntry
+	for rows.Next() {
+		var id string
+		var createdAt time.Time
+		var costMicros int64
+		if scanErr := rows.Scan(&id, &createdAt, &costMicros); scanErr != nil {
+			return nil, scanErr
+		}
+		if costMicros <= 0 {
+			continue
+		}
+		out = append(out, domain.RollingSpendEntry{
+			ID:           "db:" + id,
+			TimestampMs:  createdAt.UTC().UnixMilli(),
+			AmountMicros: costMicros,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var bwID string
+	var holdMicros int64
+	var holdExp *time.Time
+	holdErr := p.pool.QueryRow(ctx,
+		`SELECT id, rolling_hold_micros, rolling_hold_expires_at
+		 FROM budget_window_limits
+		 WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3 AND window_type = 'rolling_24h'`,
+		orgID, string(scopeType), scopeID,
+	).Scan(&bwID, &holdMicros, &holdExp)
+	if holdErr != nil && !errors.Is(holdErr, pgx.ErrNoRows) {
+		return nil, holdErr
+	}
+	if holdErr == nil && holdMicros > 0 && holdExp != nil && holdExp.UTC().After(nowUTC) {
+		out = append(out, domain.RollingSpendEntry{
+			ID:           "hold:" + bwID,
+			TimestampMs:  holdExp.UTC().Add(-24 * time.Hour).UnixMilli(),
+			AmountMicros: holdMicros,
+		})
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) IncrementBudgetWindowSpend(ctx context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64) error {
@@ -3586,7 +3656,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			endpoint, modality, modality_units, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 			cost_micros, pricing_version, pricing_status, pricing_provenance_source,
-			latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+			latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
 		) VALUES (
 			$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
 			COALESCE(NULLIF($8,''), (SELECT project_id FROM virtual_keys WHERE id = NULLIF($7,''))),
@@ -3594,7 +3664,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 			$14,$15,$16,$17,$18,$19,
 			$20,$21,$22,$23,$24,
 			$25,$26,$27,$28,
-			$29,$30,$31,$32,$33,$34,$35
+			$29,$30,$31,$32,$33,$34,$35,$36
 		)
 		ON CONFLICT (id) DO NOTHING
 		RETURNING org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''),
@@ -3606,6 +3676,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	}
 	defer tx.Rollback(ctx)
 
+	nowFallback := time.Now().UTC()
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -3644,13 +3715,17 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		if evPolicyIDs == nil {
 			evPolicyIDs = []string{}
 		}
+		createdAt := ev.CreatedAt.UTC()
+		if createdAt.IsZero() {
+			createdAt = nowFallback
+		}
 		batch.Queue(insertQ,
 			id, ev.RequestID, ev.TraceID, orgID, ev.TeamID, ev.UserID, ev.VirtualKeyID,
 			ev.ProjectID, ev.EndUserID, evTags, ev.SessionID, evMAGs, evPolicyIDs,
 			ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
 			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource,
-			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
+			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount, createdAt,
 		)
 	}
 	orgTotals := make(map[string]int64)

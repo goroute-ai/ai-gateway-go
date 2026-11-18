@@ -27,9 +27,9 @@
 --   ARGV[7]: tpd_ttl_sec (TTL for 86,400s UTC day bucket)
 --   ARGV[8]: conc_ttl_sec (TTL for concurrency counter)
 --   ARGV[9]: reservation_ttl_sec (TTL for budget reservation lease)
---   ARGV[10]: rolling_now_sec (optional unix timestamp for trailing 24h windows)
+--   ARGV[10]: rolling_now_ms (optional unix millisecond timestamp for trailing 24h windows)
 --
--- Per-descriptor ARGV (12 args per descriptor idx = 0..count-1, abase = 10 + idx * 12):
+-- Per-descriptor ARGV (13 args per descriptor idx = 0..count-1, abase = 10 + idx * 13):
 --   ARGV[abase + 1]:  scope_upper (e.g. "KEY", "TEAM", "AGENT_SESSION", "MODEL_PER_KEY")
 --   ARGV[abase + 2]:  rpm_limit
 --   ARGV[abase + 3]:  tpm_limit
@@ -42,6 +42,11 @@
 --   ARGV[abase + 10]: max_budget_micros
 --   ARGV[abase + 11]: spent_floor_micros
 --   ARGV[abase + 12]: is_rolling_24h (1 or 0)
+--   ARGV[abase + 13]: has_rolling_init (1 or 0)
+--
+-- Trailing cold-init payload after fixed table (starting at 10 + count * 13 + 1):
+--   For each descriptor in order with has_rolling_init == 1:
+--     entry_count, followed by entry_count triples of (entry_id, ts_ms, amount_micros)
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
@@ -66,11 +71,13 @@ local tpd_ttl = tonumber(ARGV[7]) or 172800
 local conc_ttl = tonumber(ARGV[8]) or 300
 local reservation_ttl = tonumber(ARGV[9]) or 3600
 
-local now = tonumber(redis.call("TIME")[1])
-local rolling_now = tonumber(ARGV[10]) or 0
-if rolling_now <= 0 then
-    rolling_now = now
+local time_parts = redis.call("TIME")
+local now = tonumber(time_parts[1])
+local rolling_now_ms = tonumber(ARGV[10]) or 0
+if rolling_now_ms <= 0 then
+    rolling_now_ms = now * 1000 + math.floor((tonumber(time_parts[2]) or 0) / 1000)
 end
+local cutoff_ms = rolling_now_ms - 86400000
 local retry_min = 60 - (now % 60)
 if retry_min <= 0 then retry_min = 60 end
 local retry_day = 86400 - (now % 86400)
@@ -112,10 +119,12 @@ end
 -- Zero Redis writes occur until every descriptor passes every configured limit.
 local pending_add = {}
 local pending_res = {}
+local rolling_init_entries = {}
+local init_ptr = 10 + count * 13 + 1
 
 for idx = 0, count - 1 do
     local kbase = idx * 12
-    local abase = 10 + idx * 12
+    local abase = 10 + idx * 13
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -130,22 +139,6 @@ for idx = 0, count - 1 do
     local res_amounts = KEYS[kbase + 11]
     local r24h_zset = KEYS[kbase + 12]
 
-    local scope = ARGV[abase + 1]
-    local rpm_limit = tonumber(ARGV[abase + 2]) or 0
-    local tpm_limit = tonumber(ARGV[abase + 3]) or 0
-    local itpm_limit = tonumber(ARGV[abase + 4]) or 0
-    local otpm_limit = tonumber(ARGV[abase + 5]) or 0
-    local tpd_limit = tonumber(ARGV[abase + 6]) or 0
-    local max_conc = tonumber(ARGV[abase + 7]) or 0
-    local max_iter = tonumber(ARGV[abase + 8]) or 0
-    local iter_ttl = tonumber(ARGV[abase + 9]) or 3600
-    local max_budget = tonumber(ARGV[abase + 10]) or 0
-    local spent_floor = tonumber(ARGV[abase + 11]) or 0
-    local is_rolling = tonumber(ARGV[abase + 12]) or 0
-    local res_zset = KEYS[kbase + 9]
-    local res_sum = KEYS[kbase + 10]
-    local res_amounts = KEYS[kbase + 11]
-
     local scope = ARGV[abase + 1] or "DESCRIPTOR"
     local rpm_limit = tonumber(ARGV[abase + 2]) or 0
     local tpm_limit = tonumber(ARGV[abase + 3]) or 0
@@ -157,6 +150,24 @@ for idx = 0, count - 1 do
     local iter_ttl = tonumber(ARGV[abase + 9]) or 3600
     local max_budget = tonumber(ARGV[abase + 10]) or 0
     local spent_floor = tonumber(ARGV[abase + 11]) or 0
+    local is_rolling = tonumber(ARGV[abase + 12]) or 0
+    local has_rolling_init = tonumber(ARGV[abase + 13]) or 0
+
+    if has_rolling_init == 1 then
+        local n = tonumber(ARGV[init_ptr]) or 0
+        init_ptr = init_ptr + 1
+        local entries = {}
+        for j = 1, n do
+            local eid = ARGV[init_ptr] or ""
+            local ets = tonumber(ARGV[init_ptr + 1]) or 0
+            local eamt = tonumber(ARGV[init_ptr + 2]) or 0
+            init_ptr = init_ptr + 3
+            if eid ~= "" and eamt > 0 and ets > cutoff_ms then
+                entries[#entries + 1] = { id = eid, ts_ms = ets, amt = eamt }
+            end
+        end
+        rolling_init_entries[idx] = entries
+    end
 
     if rpm_limit > 0 then
         local cur = tonumber(redis.call("GET", rpm_key) or "0") + (pending_add[rpm_key] or 0)
@@ -219,27 +230,28 @@ for idx = 0, count - 1 do
     end
 
     if max_budget > 0 then
-        local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
-        local cur_spent = math.max(redis_spent, spent_floor)
+        local cur_spent = 0
         if is_rolling == 1 then
-            local cutoff = rolling_now - 86400
-            local exp_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "-inf", cutoff)
-            local exp_roll_sum = 0
-            for _, m in ipairs(exp_roll) do
-                local a = tonumber(string.match(m, ":(%d+)$") or "0")
-                if a > 0 then
-                    exp_roll_sum = exp_roll_sum + a
-                end
-            end
             if redis.call("EXISTS", spend_key) == 1 then
-                local cur = redis_spent - exp_roll_sum
-                if cur < 0 then
-                    cur = 0
+                local active_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "(" .. cutoff_ms, "+inf")
+                for _, m in ipairs(active_roll) do
+                    local a = tonumber(string.match(m, ":(%d+)$") or "0")
+                    if a > 0 then
+                        cur_spent = cur_spent + a
+                    end
                 end
-                cur_spent = cur
             else
-                cur_spent = spent_floor
+                if has_rolling_init == 0 then
+                    return {0, "ROLLING_WINDOW_COLD", idx, max_budget, 5}
+                end
+                local init_list = rolling_init_entries[idx] or {}
+                for _, entry in ipairs(init_list) do
+                    cur_spent = cur_spent + entry.amt
+                end
             end
+        else
+            local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
+            cur_spent = math.max(redis_spent, spent_floor)
         end
         if reserve <= 0 or request_id == "" then
             return {0, "BUDGET_ESTIMATE_REQUIRED", cur_spent, max_budget, 5}
@@ -281,7 +293,7 @@ end
 -- Phase 2: All descriptors admitted; atomically apply all counter mutations and reservations.
 for idx = 0, count - 1 do
     local kbase = idx * 12
-    local abase = 10 + idx * 12
+    local abase = 10 + idx * 13
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -337,28 +349,18 @@ for idx = 0, count - 1 do
     end
     if max_budget > 0 then
         if is_rolling == 1 then
-            local cutoff = rolling_now - 86400
-            local exp_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "-inf", cutoff)
-            if #exp_roll > 0 then
-                local exp_roll_sum = 0
-                for _, m in ipairs(exp_roll) do
-                    local a = tonumber(string.match(m, ":(%d+)$") or "0")
-                    if a > 0 then
-                        exp_roll_sum = exp_roll_sum + a
-                    end
+            if redis.call("EXISTS", spend_key) == 0 then
+                redis.call("DEL", r24h_zset)
+                local init_list = rolling_init_entries[idx] or {}
+                for _, entry in ipairs(init_list) do
+                    redis.call("ZADD", r24h_zset, entry.ts_ms, entry.id .. ":" .. entry.amt)
                 end
-                redis.call("ZREMRANGEBYSCORE", r24h_zset, "-inf", cutoff)
-                if redis.call("EXISTS", spend_key) == 1 and exp_roll_sum > 0 then
-                    local rem = redis.call("DECRBY", spend_key, exp_roll_sum)
-                    if rem < 0 then
-                        redis.call("SET", spend_key, 0, "EX", 90000)
-                    end
+                redis.call("SET", spend_key, "1", "EX", 90000)
+                if redis.call("EXISTS", r24h_zset) == 1 then
+                    redis.call("EXPIRE", r24h_zset, 90000)
                 end
-            end
-            if redis.call("EXISTS", spend_key) == 0 and spent_floor > 0 then
-                redis.call("SET", spend_key, spent_floor, "EX", 90000)
-                redis.call("ZADD", r24h_zset, rolling_now, "seed:" .. rolling_now .. ":" .. spent_floor)
-                redis.call("EXPIRE", r24h_zset, 90000)
+            else
+                redis.call("ZREMRANGEBYSCORE", r24h_zset, "-inf", cutoff_ms)
             end
         else
             local redis_spent = tonumber(redis.call("GET", spend_key) or "0")

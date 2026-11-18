@@ -55,6 +55,10 @@ type SpendIncrementEvent struct {
 	CostMicros   int64
 }
 
+// RollingWindowSpendLoader restores timestamped trailing-24h spend entries and
+// active migration holds from durable storage when a rolling_24h counter is cold.
+type RollingWindowSpendLoader func(ctx context.Context, orgID string, descriptor domain.RateLimitDescriptor, now time.Time) ([]domain.RollingSpendEntry, error)
+
 // Limiter enforces RPM, TPM, Concurrency, and Budget limits across Virtual Key, Team, User, Organization, and Global scopes.
 // Uses atomic Redis Lua scripts; configured quotas fail closed when Redis is unavailable.
 type Limiter struct {
@@ -86,6 +90,7 @@ type Limiter struct {
 	globalRPM               int
 	globalTPM               int
 	globalMaxConc           int
+	rollingLoader           RollingWindowSpendLoader
 
 	localMu               sync.Mutex
 	localWindowMin        int64
@@ -163,6 +168,27 @@ func (l *Limiter) SetFallbackToLocalOnOutage(fallback bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.fallbackToLocalOnOutage = fallback
+}
+
+// SetRollingWindowLoader configures the durable repository loader used to restore
+// timestamped trailing-24h spend history on cold rolling_24h quota counters.
+func (l *Limiter) SetRollingWindowLoader(loader RollingWindowSpendLoader) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rollingLoader = loader
+}
+
+// SetNowFunc overrides the wall-clock source used by the limiter (primarily for deterministic tests).
+func (l *Limiter) SetNowFunc(fn func() time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.nowFunc = fn
 }
 
 // SetEnabled enables or disables rate limiting enforcement.

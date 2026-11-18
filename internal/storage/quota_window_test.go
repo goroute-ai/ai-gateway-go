@@ -584,4 +584,21 @@ func TestRecordSpendBatch_ProjectMemberPinnedPolicyAndRolling24h(t *testing.T) {
 	if err != nil || len(bws) != 1 || bws[0].SpentMicros != 18_000 {
 		t.Fatalf("Rolling 24h window SpentMicros = %+v (err=%v), want 18000 (excluding >24h spend)", bws, err)
 	}
+
+	// Verify ListRollingWindowHistory returns exact millisecond entries and active migration hold only before expiry.
+	hist, err := repo.ListRollingWindowHistory(ctx, "org-attr", domain.QuotaScopeProject, "proj-attr", now)
+	if err != nil || len(hist) != 1 || hist[0].ID != "db:sp-recent" || hist[0].AmountMicros != 18_000 {
+		t.Fatalf("ListRollingWindowHistory = %+v (err=%v), want single sp-recent entry", hist, err)
+	}
+	if err := repo.IncrementBudgetWindowSpend(ctx, "org-attr", domain.QuotaScopeProject, "proj-attr", 5_000); err != nil {
+		t.Fatalf("IncrementBudgetWindowSpend hold: %v", err)
+	}
+	histWithHold, err := repo.ListRollingWindowHistory(ctx, "org-attr", domain.QuotaScopeProject, "proj-attr", now)
+	if err != nil || len(histWithHold) != 2 || histWithHold[1].AmountMicros != 5_000 {
+		t.Fatalf("ListRollingWindowHistory with hold = %+v (err=%v)", histWithHold, err)
+	}
+	histAfterHoldExp, err := repo.ListRollingWindowHistory(ctx, "org-attr", domain.QuotaScopeProject, "proj-attr", now.Add(25*time.Hour))
+	if err != nil || len(histAfterHoldExp) != 0 {
+		t.Fatalf("expected all history and hold expired after +25h, got %+v (err=%v)", histAfterHoldExp, err)
+	}
 }

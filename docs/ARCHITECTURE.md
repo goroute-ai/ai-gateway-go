@@ -429,7 +429,12 @@ Rate limiting is enforced hierarchically across **Virtual Key**, **Team**, and *
 - **Max Concurrent In-Flight Requests**
 - **Max Budget Ceiling (Micro-Dollars)**
 
-All checks execute inside `internal/ratelimit/scripts/check_and_increment.lua` in a **single atomic Redis `EVALSHA` call**, guaranteeing zero race conditions across 100+ concurrent gateway pods and keeping Redis latency under `0.5ms`.
+All checks execute inside `internal/ratelimit/scripts/check_and_increment.lua` (and `check_descriptors.lua` for multi-scope, per-model, and multi-window descriptors) in a **single atomic Redis `EVALSHA` call**, guaranteeing zero race conditions across 100+ concurrent gateway pods and keeping Redis latency under `0.5ms`.
+
+#### Rolling 24-Hour Window Cold Recovery Boundary
+- **`rolling_24h` Windows**: Unlike periodic `daily`, `weekly`, and `monthly` limits, `rolling_24h` spend entries expire individually 24 hours (`86,400,000 ms`) after each settled spend timestamp in `gw:dq:{org:<org_id>}:r24h:<entity>` rather than resetting on `window_reset_at`.
+- **Atomic Cold Recovery**: On a cold `rolling_24h` Redis counter (for example after complete Redis state loss or key eviction), `AcquireDescriptors` loads timestamped spend from PostgreSQL `spend_logs` (plus any unexpired migration `rolling_hold_micros`) and initializes the Redis ZSET atomically inside `check_descriptors.lua`, keeping concurrent initialization across gateway replicas idempotent and counting surviving in-flight reservations separately from settled spend. If the repository cannot load history, admission fails closed with `503 quota_policy_unavailable`.
+- **Recovery Boundary**: PostgreSQL restores persisted spend after complete Redis state loss; in-flight reservations and settlements that existed only in Redis cannot be reconstructed from that PostgreSQL history.
 
 ---
 
@@ -580,6 +585,7 @@ All multi-key Lua scripts use Redis Cluster hash tags so every key touched in an
 | `gw:rl:{org:<org_id>}:conc:{id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent request counter (Key, Team, Org scopes) |
 | `gw:spend:{org:<org_id>}:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend in micro-dollars |
 | `gw:budget:{org:<org_id>}:reservations:{scope}:{id}` | `ZSET` | `3660s` | In-flight budget reservation sorted set |
+| `gw:dq:{org:<org_id>}:r24h:<entity>` | `ZSET` (ms score) | `90000s` | Trailing 24h settled spend and active migration holds (recovered atomically from PostgreSQL on cold miss) |
 | `gw:budget:{org:<org_id>}:dep:{dep_id}:{period}` | `STRING` (Int64) | Period | Per-deployment spend window counter (`DeploymentBudgetTracker`) |
 | `gw:budget:{org:<org_id>}:prov:{provider}:{period}` | `STRING` (Int64) | Period | Per-provider spend window counter (`provider_budgets`) |
 | `gw:router:{dep:<dep_id>}:circuit` | `STRING` | `60s` | Circuit breaker state (`open` / `half_open`) |

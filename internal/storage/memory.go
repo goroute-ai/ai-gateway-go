@@ -1678,65 +1678,112 @@ func (r *MemoryRepository) ListBudgetWindowLimits(_ context.Context, filter Budg
 	return out, nil
 }
 
+func (r *MemoryRepository) matchesRollingSpendEventLocked(ev domain.SpendEvent, orgID string, scopeType domain.QuotaScopeType, scopeID string) bool {
+	if ev.OrgID != orgID || ev.CostMicros <= 0 {
+		return false
+	}
+	switch scopeType {
+	case domain.QuotaScopeOrg:
+		return true
+	case domain.QuotaScopeTeam:
+		return ev.TeamID == scopeID
+	case domain.QuotaScopeUser:
+		return ev.UserID == scopeID
+	case domain.QuotaScopeKey:
+		return ev.VirtualKeyID == scopeID
+	case domain.QuotaScopeTeamMember:
+		return ev.TeamID != "" && ev.UserID != "" && ev.TeamID+":"+ev.UserID == scopeID
+	case domain.QuotaScopeProject:
+		projID := strings.TrimSpace(ev.ProjectID)
+		if projID == "" {
+			if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
+				projID = strings.TrimSpace(vk.ProjectID)
+			}
+		}
+		return projID != "" && projID == scopeID
+	case domain.QuotaScopeEndUser:
+		return ev.EndUserID == scopeID
+	case domain.QuotaScopeTag:
+		for _, t := range ev.Tags {
+			if strings.TrimSpace(t) == scopeID {
+				return true
+			}
+		}
+		return false
+	case domain.QuotaScopeModelAccessGroup:
+		for _, magID := range ev.ModelAccessGroupIDs {
+			if strings.TrimSpace(magID) == scopeID {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 func (r *MemoryRepository) rollingWindowSpendLocked(bw *domain.BudgetWindowLimit, cutoff time.Time) int64 {
 	if bw == nil {
 		return 0
 	}
 	var sum int64
 	for _, ev := range r.spendLogs {
-		if ev.OrgID != bw.OrgID || ev.CostMicros <= 0 || !ev.CreatedAt.UTC().After(cutoff) {
+		if !ev.CreatedAt.UTC().After(cutoff) {
 			continue
 		}
-		switch bw.ScopeType {
-		case domain.QuotaScopeOrg:
+		if r.matchesRollingSpendEventLocked(ev, bw.OrgID, bw.ScopeType, bw.ScopeID) {
 			sum += ev.CostMicros
-		case domain.QuotaScopeTeam:
-			if ev.TeamID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeUser:
-			if ev.UserID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeKey:
-			if ev.VirtualKeyID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeTeamMember:
-			if ev.TeamID != "" && ev.UserID != "" && ev.TeamID+":"+ev.UserID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeProject:
-			projID := strings.TrimSpace(ev.ProjectID)
-			if projID == "" {
-				if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
-					projID = strings.TrimSpace(vk.ProjectID)
-				}
-			}
-			if projID != "" && projID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeEndUser:
-			if ev.EndUserID == bw.ScopeID {
-				sum += ev.CostMicros
-			}
-		case domain.QuotaScopeTag:
-			for _, t := range ev.Tags {
-				if strings.TrimSpace(t) == bw.ScopeID {
-					sum += ev.CostMicros
-					break
-				}
-			}
-		case domain.QuotaScopeModelAccessGroup:
-			for _, magID := range ev.ModelAccessGroupIDs {
-				if strings.TrimSpace(magID) == bw.ScopeID {
-					sum += ev.CostMicros
-					break
-				}
-			}
 		}
 	}
 	return sum
+}
+
+func (r *MemoryRepository) ListRollingWindowHistory(_ context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, now time.Time) ([]domain.RollingSpendEntry, error) {
+	orgID = strings.TrimSpace(orgID)
+	scopeType = domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(scopeType))))
+	scopeID = strings.TrimSpace(scopeID)
+	if orgID == "" || scopeID == "" || !scopeType.IsValid() {
+		return nil, nil
+	}
+	nowUTC := now.UTC()
+	if nowUTC.IsZero() {
+		nowUTC = time.Now().UTC()
+	}
+	cutoff := nowUTC.Add(-24 * time.Hour)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []domain.RollingSpendEntry
+	for _, ev := range r.spendLogs {
+		if !ev.CreatedAt.UTC().After(cutoff) {
+			continue
+		}
+		if r.matchesRollingSpendEventLocked(ev, orgID, scopeType, scopeID) {
+			out = append(out, domain.RollingSpendEntry{
+				ID:           "db:" + ev.ID,
+				TimestampMs:  ev.CreatedAt.UTC().UnixMilli(),
+				AmountMicros: ev.CostMicros,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TimestampMs != out[j].TimestampMs {
+			return out[i].TimestampMs < out[j].TimestampMs
+		}
+		return out[i].ID < out[j].ID
+	})
+
+	if bwID, ok := r.budgetWindowsByTuple[budgetWindowTupleKey(orgID, scopeType, scopeID, domain.BudgetWindowRolling24h)]; ok {
+		if bw := r.budgetWindows[bwID]; bw != nil && bw.RollingHoldMicros > 0 && bw.RollingHoldExpiresAt != nil && bw.RollingHoldExpiresAt.UTC().After(nowUTC) {
+			out = append(out, domain.RollingSpendEntry{
+				ID:           "hold:" + bw.ID,
+				TimestampMs:  bw.RollingHoldExpiresAt.UTC().Add(-24 * time.Hour).UnixMilli(),
+				AmountMicros: bw.RollingHoldMicros,
+			})
+		}
+	}
+	return out, nil
 }
 
 func (r *MemoryRepository) incrementBudgetWindowSpendLocked(orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64, now time.Time, includeRollingHold bool) {
