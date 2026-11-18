@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { ProviderCredential, ProviderType, CredentialValidationResult } from '../types';
@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 export const CredentialsView: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -52,7 +52,7 @@ export const CredentialsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'credentials', adminKey, activeOrgId],
     queryFn: () => adminApi.listCredentials(adminKey, activeOrgId),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   // 2. Add credential mutation
@@ -350,87 +350,43 @@ export const CredentialsView: React.FC = () => {
             <ErrorAlert error={addMutation.error} title="Failed to save provider credential" />
           )}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Provider *</label>
+            <Field label="Provider *">
               <select value={provider} onChange={(e) => { setProvider(e.target.value as ProviderType); setPreflightResult(null); }} className={INPUT_CLS}>
                 {providersList.map((p) => <option key={p.id} value={p.id}>{p.label} ({p.id})</option>)}
               </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Credential Label *</label>
+            </Field>
+            <Field label="Credential Label *">
               <input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-openai-primary" className={INPUT_CLS} />
-            </div>
+            </Field>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">API Key *</label>
-            <input type="password" required={provider !== 'ollama'} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder={provider === 'ollama' ? 'Optional for Ollama' : 'sk-...'} className={`${INPUT_CLS} font-mono`} />
-          </div>
+          <Field label="API Key *">
+            <input type="password" required={provider !== 'ollama'} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder={provider === 'ollama' ? 'Optional for Ollama' : 'sk-...'} className={MONO_INPUT_CLS} />
+          </Field>
 
-          {/* Optional Base URL & Azure fields */}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Custom Base URL (Optional)
-            </label>
-            <input
-              type="text"
-              value={baseURL}
-              onChange={(e) => setBaseURL(e.target.value)}
-              placeholder="e.g. https://my-vllm.internal:8000/v1 or http://localhost:11434"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
+          <Field label="Custom Base URL (Optional)">
+            <input type="text" value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="e.g. https://my-vllm.internal:8000/v1 or http://localhost:11434" className={MONO_INPUT_CLS} />
+          </Field>
 
           {provider === 'azure' && (
             <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
-              <div>
-                <label className="block text-xs font-medium text-brand-body mb-1">
-                  Azure Deployment Name
-                </label>
-                <input
-                  type="text"
-                  value={azureDeployment}
-                  onChange={(e) => setAzureDeployment(e.target.value)}
-                  placeholder="e.g. gpt-4o-deployment"
-                  className={`${INPUT_CLS} py-1.5 font-mono`}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-brand-body mb-1">
-                  API Version
-                </label>
-                <input
-                  type="text"
-                  value={apiVersion}
-                  onChange={(e) => setApiVersion(e.target.value)}
-                  placeholder="2024-08-01-preview"
-                  className={`${INPUT_CLS} py-1.5 font-mono`}
-                />
-              </div>
+              <Field label="Azure Deployment Name">
+                <input type="text" value={azureDeployment} onChange={(e) => setAzureDeployment(e.target.value)} placeholder="e.g. gpt-4o-deployment" className={`${MONO_INPUT_CLS} py-1.5`} />
+              </Field>
+              <Field label="API Version">
+                <input type="text" value={apiVersion} onChange={(e) => setApiVersion(e.target.value)} placeholder="2024-08-01-preview" className={`${MONO_INPUT_CLS} py-1.5`} />
+              </Field>
             </div>
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Custom Headers JSON (Optional)</label>
-              <input
-                type="text"
-                value={headersJSON}
-                onChange={(e) => { setHeadersJSON(e.target.value); setHeadersError(null); }}
-                placeholder='{"X-Custom-Header":"value"}'
-                className={`${INPUT_CLS} font-mono`}
-              />
+            <Field label="Custom Headers JSON (Optional)">
+              <input type="text" value={headersJSON} onChange={(e) => { setHeadersJSON(e.target.value); setHeadersError(null); }} placeholder='{"X-Custom-Header":"value"}' className={MONO_INPUT_CLS} />
               {headersError && <p className="text-[11px] text-status-danger mt-1">{headersError}</p>}
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Expires At (Optional)</label>
-              <input
-                type="datetime-local"
-                value={expiresAt}
-                onChange={(e) => setExpiresAt(e.target.value)}
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
+            </Field>
+            <Field label="Expires At (Optional)">
+              <input type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} className={MONO_INPUT_CLS} />
+            </Field>
           </div>
 
           {/* Preflight Test Result */}
@@ -472,18 +428,8 @@ export const CredentialsView: React.FC = () => {
             </button>
 
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowAddModal(false)}
-                className={BTN_CANCEL}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={addMutation.isPending || !name.trim()}
-                className={BTN_PRIMARY}
-              >
+              <button type="button" onClick={() => setShowAddModal(false)} className={BTN_CANCEL}>Cancel</button>
+              <button type="submit" disabled={addMutation.isPending || !name.trim()} className={BTN_PRIMARY}>
                 {addMutation.isPending ? 'Saving to Vault...' : 'Save to Vault'}
               </button>
             </div>
@@ -492,52 +438,29 @@ export const CredentialsView: React.FC = () => {
       </Modal>
 
       {/* Rotate Credential Modal */}
-      <Modal
-        isOpen={!!rotateCred}
+      <FormModal
+        open={!!rotateCred}
         onClose={() => setRotateCred(null)}
         title={`Rotate Key: ${rotateCred?.name || ''}`}
         description="Re-encrypts the upstream secret with a new key version in the AES-256-GCM vault."
-        maxWidth="md"
+        onSubmit={() => {
+          if (!rotateCred || !rotateApiKey.trim()) return;
+          const payload: any = { api_key: rotateApiKey.trim() };
+          if (rotateBaseURL.trim()) payload.base_url = rotateBaseURL.trim();
+          if (rotateExpiresAt) {
+            const d = new Date(rotateExpiresAt);
+            if (!isNaN(d.getTime())) payload.expires_at = d.toISOString();
+          }
+          rotateMutation.mutate({ credId: rotateCred.id, data: payload });
+        }}
+        pending={rotateMutation.isPending || !rotateApiKey.trim()}
+        submitLabel={rotateMutation.isPending ? 'Rotating...' : 'Rotate Key'}
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!rotateCred || !rotateApiKey.trim()) return;
-            const payload: any = { api_key: rotateApiKey.trim() };
-            if (rotateBaseURL.trim()) payload.base_url = rotateBaseURL.trim();
-            if (rotateExpiresAt) {
-              const d = new Date(rotateExpiresAt);
-              if (!isNaN(d.getTime())) payload.expires_at = d.toISOString();
-            }
-            rotateMutation.mutate({ credId: rotateCred.id, data: payload });
-          }}
-          className="space-y-4"
-        >
-          {rotateMutation.isError && (
-            <ErrorAlert error={rotateMutation.error} title="Failed to rotate credential" />
-          )}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              New API Key <span className="text-status-danger">*</span>
-            </label>
-            <input type="password" required value={rotateApiKey} onChange={(e) => setRotateApiKey(e.target.value)} placeholder="Enter replacement API key..." className={`${INPUT_CLS} font-mono`} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Base URL (optional)</label>
-            <input type="text" value={rotateBaseURL} onChange={(e) => setRotateBaseURL(e.target.value)} placeholder="Leave blank to keep existing" className={`${INPUT_CLS} font-mono`} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Expires At (optional)</label>
-            <input type="datetime-local" value={rotateExpiresAt} onChange={(e) => setRotateExpiresAt(e.target.value)} className={`${INPUT_CLS} font-mono`} />
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setRotateCred(null)} className={BTN_CANCEL}>Cancel</button>
-            <button type="submit" disabled={rotateMutation.isPending || !rotateApiKey.trim()} className={BTN_PRIMARY}>
-              {rotateMutation.isPending ? 'Rotating...' : 'Rotate Key'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        {rotateMutation.isError && <ErrorAlert error={rotateMutation.error} title="Failed to rotate credential" />}
+        <Field label="New API Key *"><input type="password" required value={rotateApiKey} onChange={(e) => setRotateApiKey(e.target.value)} placeholder="Enter replacement API key..." className={MONO_INPUT_CLS} /></Field>
+        <Field label="Base URL (optional)"><input type="text" value={rotateBaseURL} onChange={(e) => setRotateBaseURL(e.target.value)} placeholder="Leave blank to keep existing" className={MONO_INPUT_CLS} /></Field>
+        <Field label="Expires At (optional)"><input type="datetime-local" value={rotateExpiresAt} onChange={(e) => setRotateExpiresAt(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
     </div>
   );
 };

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Lock, AlertTriangle, Building2, Key, Sun, Moon } from 'lucide-react';
+import { Lock, AlertTriangle, Building2, Key, Sun, Moon, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-import { Modal, INPUT_CLS, BTN_CANCEL } from '../common/Modal';
+import { FormModal, Field, MONO_INPUT_CLS } from '../common/Modal';
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../../api/admin';
 
@@ -11,36 +11,49 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ currentView }) => {
-  const { adminKey, unlockWithKey, isUnlocked, lock, activeOrgId, setActiveOrgId } = useAuth();
+  const {
+    adminKey,
+    authMode,
+    operator,
+    currentUser,
+    passwordResetRequired,
+    updatePassword,
+    isUnlocked,
+    logout,
+    activeOrgId,
+    setActiveOrgId,
+  } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
-  const [tempKey, setTempKey] = useState<string>('');
-  const [unlockError, setUnlockError] = useState<string | null>(null);
-  const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
+  const [showPwdModal, setShowPwdModal] = useState(false);
+  const [curPwd, setCurPwd] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [pwdErr, setPwdErr] = useState<string | null>(null);
+  const [pwdSaving, setPwdSaving] = useState(false);
 
-  // Fetch organizations if unlocked
   const { data: orgsData } = useQuery({
-    queryKey: ['admin', 'orgs', adminKey],
+    queryKey: ['admin', 'orgs', adminKey, authMode],
     queryFn: () => adminApi.listOrgs(adminKey),
     enabled: isUnlocked,
     staleTime: 60000,
   });
 
-  const handleSaveKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tempKey.trim() || isUnlocking) return;
-    setUnlockError(null);
-    setIsUnlocking(true);
+  const handlePasswordSubmit = async () => {
+    if (!newPwd || pwdSaving) return;
+    setPwdErr(null);
+    setPwdSaving(true);
     try {
-      await unlockWithKey(tempKey);
-      setTempKey('');
-      setShowKeyModal(false);
+      await updatePassword(curPwd, newPwd);
+      setCurPwd('');
+      setNewPwd('');
+      setShowPwdModal(false);
     } catch (err: any) {
-      setUnlockError(err?.message || 'Invalid Master Admin Key or control plane unreachable.');
+      setPwdErr(err?.message || 'Failed to update password.');
     } finally {
-      setIsUnlocking(false);
+      setPwdSaving(false);
     }
   };
+
+  const identityLabel = currentUser?.email || operator?.actor_id || 'operator';
 
   return (
     <>
@@ -73,8 +86,18 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Org Selector */}
+        <div className="flex items-center gap-2.5">
+          {isUnlocked && passwordResetRequired && (
+            <button
+              type="button"
+              onClick={() => setShowPwdModal(true)}
+              className="flex items-center gap-1.5 text-xs status-warning border px-2.5 py-1 rounded-md font-mono"
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Password Reset Required</span>
+            </button>
+          )}
+
           {isUnlocked && (
             <div className="flex items-center gap-1.5 bg-surface-elevated border border-border rounded-md px-2.5 py-1 text-xs">
               <Building2 className="w-3.5 h-3.5 text-brand-muted" />
@@ -98,7 +121,6 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
             </div>
           )}
 
-          {/* Persistent Dark / Light Theme Switcher */}
           <button
             type="button"
             onClick={toggleTheme}
@@ -109,83 +131,43 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
             {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
 
-          {/* Master Admin Key Session Lock/Unlock Button */}
           {isUnlocked ? (
             <button
-              onClick={lock}
+              onClick={() => void logout()}
               className="flex items-center gap-1.5 text-xs text-accent-primary hover:text-status-danger bg-accent-soft hover:bg-status-danger/10 border border-accent-primary/30 hover:border-status-danger/40 px-2.5 py-1 rounded-md transition-colors font-mono"
-              title="Master Admin Key is held in browser memory only. Click to lock session immediately."
+              title={`Signed in as ${identityLabel} (${operator?.role || 'admin'}). Click to sign out.`}
             >
-              <Key className="w-3.5 h-3.5" />
-              <span className="hidden md:inline font-mono text-[11px]">Session Unlocked</span>
+              {authMode === 'session' ? <ShieldCheck className="w-3.5 h-3.5" /> : <Key className="w-3.5 h-3.5" />}
+              <span className="hidden md:inline font-mono text-[11px]">
+                {authMode === 'session' ? `${identityLabel} · Sign Out` : 'Break-Glass · Lock'}
+              </span>
             </button>
           ) : (
-            <button
-              onClick={() => setShowKeyModal(true)}
-              className="flex items-center gap-1.5 text-xs status-warning border px-2.5 py-1 rounded-md hover:opacity-90 transition-opacity animate-pulse font-mono"
-            >
+            <span className="flex items-center gap-1.5 text-xs status-warning border px-2.5 py-1 rounded-md font-mono">
               <Lock className="w-3.5 h-3.5" />
-              <span>Unlock Admin Key</span>
-            </button>
+              <span>Locked</span>
+            </span>
           )}
         </div>
       </header>
 
-      {/* Admin Key Modal */}
-      <Modal
-        isOpen={showKeyModal}
-        onClose={() => setShowKeyModal(false)}
-        title="Authenticate Admin Session"
-        description="Provide your Gateway Master Admin Key to access the Control Plane. This key is held strictly in browser memory and is never saved to storage or logs."
-        maxWidth="md"
+      <FormModal
+        open={showPwdModal}
+        onClose={() => setShowPwdModal(false)}
+        title="Update Operator Password"
+        description="Your password requires rotation. Updating will sign out active sessions."
+        onSubmit={handlePasswordSubmit}
+        pending={pwdSaving}
+        submitLabel="Update Password"
       >
-        <form onSubmit={handleSaveKey} className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1.5">
-              Master Admin Key
-            </label>
-            <div className="relative">
-              <Key className="w-4 h-4 text-brand-muted absolute left-3 top-2.5" />
-              <input
-                type="password"
-                value={tempKey}
-                onChange={(e) => setTempKey(e.target.value)}
-                placeholder="Enter GATEWAY_MASTER_ADMIN_KEY"
-                className={`${INPUT_CLS} pl-9 font-mono`}
-                autoFocus
-              />
-            </div>
-            <p className="text-[11px] text-brand-muted mt-2 flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5 text-status-warning shrink-0" />
-              Key is discarded immediately when you close the tab or refresh.
-            </p>
-            {unlockError && (
-              <p className="text-[11px] font-mono mt-2 status-danger border rounded px-2.5 py-1.5">
-                {unlockError}
-              </p>
-            )}
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                setUnlockError(null);
-                setShowKeyModal(false);
-              }}
-              className={BTN_CANCEL}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!tempKey.trim() || isUnlocking}
-              className="px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-dark text-accent-contrast transition-colors disabled:opacity-50"
-            >
-              {isUnlocking ? 'Verifying...' : 'Unlock Dashboard'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        {pwdErr && <p className="text-[11px] font-mono status-danger border rounded px-2.5 py-1.5">{pwdErr}</p>}
+        <Field label="Current Password">
+          <input type="password" value={curPwd} onChange={(e) => setCurPwd(e.target.value)} className={MONO_INPUT_CLS} required />
+        </Field>
+        <Field label="New Password (min 8 chars)">
+          <input type="password" minLength={8} value={newPwd} onChange={(e) => setNewPwd(e.target.value)} className={MONO_INPUT_CLS} required />
+        </Field>
+      </FormModal>
     </>
   );
 };

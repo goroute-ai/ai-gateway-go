@@ -29,7 +29,7 @@ const formatMicroDollars = (micros?: number) => {
 };
 
 export const SimulatorUsageTab: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
 
   // Simulator / Apply state
   const [endpointMode, setEndpointMode] = useState<'simulate' | 'apply'>('simulate');
@@ -66,19 +66,19 @@ export const SimulatorUsageTab: React.FC = () => {
   const defsQuery = useQuery({
     queryKey: ['admin', 'guardrail-definitions', adminKey, activeOrgId, ''],
     queryFn: () => adminApi.listGuardrailDefinitions(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const teamsQuery = useQuery({
     queryKey: ['admin', 'teams', adminKey, activeOrgId],
     queryFn: () => adminApi.listTeams(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const keysQuery = useQuery({
     queryKey: ['admin', 'keys', adminKey, activeOrgId],
     queryFn: () => adminApi.listKeys(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const usageQuery = useQuery({
@@ -101,7 +101,7 @@ export const SimulatorUsageTab: React.FC = () => {
         ...(filterTeamId ? { team_id: filterTeamId } : {}),
         ...(filterKeyId ? { virtual_key_id: filterKeyId } : {}),
       }),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const runMutation = useMutation({

@@ -43,7 +43,7 @@ const generateId = (): string => {
 const escapeShellSingle = (val: string): string => `'${val.replace(/'/g, `'\\''`)}'`;
 
 export const PlaygroundView: React.FC = () => {
-  const { adminKey, activeOrgId, lastIssuedKey } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId, lastIssuedKey } = useAuth();
 
   // Authentication State
   const [virtualKey, setVirtualKey] = useState<string>('');
@@ -99,7 +99,7 @@ export const PlaygroundView: React.FC = () => {
   const { data: modelGroupsData } = useQuery({
     queryKey: ['admin', 'model-groups', adminKey, activeOrgId],
     queryFn: () => adminApi.listModelGroups(adminKey, activeOrgId),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   const { data: catalogueData } = useQuery({
@@ -112,7 +112,7 @@ export const PlaygroundView: React.FC = () => {
         throw err;
       }
     },
-    enabled: !!adminKey,
+    enabled: isUnlocked,
     retry: (count, err) => !isPlatformAdminForbidden(err) && count < 2,
   });
 
@@ -703,48 +703,20 @@ func main() {
               <span>Routing Hints</span>
               <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isHintsOpen ? '' : '-rotate-90'}`} />
             </button>
-            {isHintsOpen && (
-              <div className="space-y-2 pt-2">
-                <input
-                  type="text"
-                  value={hintRegion}
-                  onChange={(e) => setHintRegion(e.target.value)}
-                  placeholder="Allowed region (e.g. us-east-1)"
-                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
-                />
-                <input
-                  type="text"
-                  value={hintTags}
-                  onChange={(e) => setHintTags(e.target.value)}
-                  placeholder="Tags (comma-sep: tier:fast, eu)"
-                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
-                />
-                <input
-                  type="text"
-                  value={hintSessionId}
-                  onChange={(e) => setHintSessionId(e.target.value)}
-                  placeholder="Session ID (sticky affinity)"
-                  className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
-                />
-                <div className="grid grid-cols-2 gap-1.5">
-                  <input
-                    type="number"
-                    value={hintPriority}
-                    onChange={(e) => setHintPriority(e.target.value)}
-                    placeholder="Priority"
-                    className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    value={hintHedgeMs}
-                    onChange={(e) => setHintHedgeMs(e.target.value)}
-                    placeholder="Hedge (ms)"
-                    className="w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary"
-                  />
+            {isHintsOpen && (() => {
+              const hc = 'w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary';
+              return (
+                <div className="space-y-2 pt-2">
+                  <input type="text" value={hintRegion} onChange={(e) => setHintRegion(e.target.value)} placeholder="Allowed region (e.g. us-east-1)" className={hc} />
+                  <input type="text" value={hintTags} onChange={(e) => setHintTags(e.target.value)} placeholder="Tags (comma-sep: tier:fast, eu)" className={hc} />
+                  <input type="text" value={hintSessionId} onChange={(e) => setHintSessionId(e.target.value)} placeholder="Session ID (sticky affinity)" className={hc} />
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <input type="number" value={hintPriority} onChange={(e) => setHintPriority(e.target.value)} placeholder="Priority" className={hc} />
+                    <input type="number" min={0} value={hintHedgeMs} onChange={(e) => setHintHedgeMs(e.target.value)} placeholder="Hedge (ms)" className={hc} />
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
 

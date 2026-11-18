@@ -162,7 +162,7 @@ const TagListField: React.FC<{
 };
 
 export const GuardrailsView: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const [activeTab, setActiveTab] = useState<GuardrailsTab>('baseline');
 
   // Local state for policy editing
@@ -210,7 +210,7 @@ export const GuardrailsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'guardrail-policy', adminKey, activeOrgId],
     queryFn: () => adminApi.getGuardrailPolicy(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   useEffect(() => {

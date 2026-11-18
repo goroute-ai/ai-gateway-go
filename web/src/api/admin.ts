@@ -35,6 +35,11 @@ import type {
   MCPToolset,
   A2AAgent,
   GatewayConfig,
+  SSOProviderPublicInfo,
+  AuthLoginResponse,
+  AuthMeResponse,
+  QuotaPolicy,
+  BudgetWindowLimit,
 } from '../types';
 
 const enc = encodeURIComponent;
@@ -87,8 +92,27 @@ export const adminApi = {
     apiFetch<VirtualKey>('/admin/v1/keys', { method: 'POST', body: JSON.stringify(data) }, key),
   updateKey: (key: string, keyId: string, data: Partial<VirtualKey>) =>
     apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
-  rotateKey: (key: string, keyId: string) =>
-    apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}/rotate`, { method: 'POST' }, key),
+  rotateKey: (key: string, keyId: string, data?: { org_id?: string; grace_period_seconds?: number }) =>
+    apiFetch<VirtualKey>(
+      `/admin/v1/keys/${enc(keyId)}/rotate`,
+      { method: 'POST', ...(data ? { body: JSON.stringify(data) } : {}) },
+      key
+    ),
+  setKeyTempBudget: (
+    key: string,
+    keyId: string,
+    data: {
+      org_id?: string;
+      temp_budget_increase_micros?: number;
+      temp_budget_expires_at?: string;
+      ttl_seconds?: number;
+    }
+  ) =>
+    apiFetch<VirtualKey>(
+      `/admin/v1/keys/${enc(keyId)}/temp-budget`,
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
   revokeKey: (key: string, keyId: string) =>
     apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${enc(keyId)}/revoke`, { method: 'POST' }, key),
 
@@ -454,7 +478,71 @@ export const adminApi = {
       key
     ),
 
+  // Quotas & Multi-Window Budgets
+  listQuotas: (
+    key: string,
+    params?: {
+      org_id?: string;
+      scope_type?: string;
+      scope_id?: string;
+      model_pattern?: string;
+      active_only?: string;
+    }
+  ) => apiFetch<{ data: QuotaPolicy[] }>(`/admin/v1/quotas${qs(params || {})}`, {}, key),
+  upsertQuota: (key: string, data: Partial<QuotaPolicy>) =>
+    apiFetch<QuotaPolicy>('/admin/v1/quotas', { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteQuota: (key: string, policyId: string, orgId?: string) =>
+    apiFetch<{ status: string; id: string }>(
+      `/admin/v1/quotas/${enc(policyId)}${qs({ org_id: orgId })}`,
+      { method: 'DELETE' },
+      key
+    ),
+  listBudgetWindows: (
+    key: string,
+    params?: { org_id?: string; scope_type?: string; scope_id?: string; window_type?: string }
+  ) => apiFetch<{ data: BudgetWindowLimit[] }>(`/admin/v1/budget-windows${qs(params || {})}`, {}, key),
+  upsertBudgetWindow: (key: string, data: Partial<BudgetWindowLimit>) =>
+    apiFetch<BudgetWindowLimit>(
+      '/admin/v1/budget-windows',
+      { method: 'PUT', body: JSON.stringify(data) },
+      key
+    ),
+
   // Gateway Runtime Config
   getConfig: (key: string) =>
     apiFetch<GatewayConfig>('/admin/v1/config', {}, key),
+};
+
+export const authApi = {
+  getSSOProviders: () =>
+    apiFetch<{ providers: SSOProviderPublicInfo[] }>('/auth/sso/providers'),
+  loginPassword: (data: {
+    email?: string;
+    username?: string;
+    password: string;
+    password_sha1?: string;
+  }) =>
+    apiFetch<AuthLoginResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getMe: (key?: string) =>
+    apiFetch<AuthMeResponse>('/auth/me', {}, key),
+  logout: (key?: string) =>
+    apiFetch<{ status: string }>('/auth/logout', { method: 'POST' }, key),
+  updatePassword: (
+    data: {
+      current_password?: string;
+      new_password: string;
+      password_sha1?: string;
+      user_id?: string;
+      email?: string;
+    },
+    key?: string
+  ) =>
+    apiFetch<{ status: string; user_id: string; password_reset_required: boolean }>(
+      '/auth/password',
+      { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
 };

@@ -20,6 +20,48 @@ export type ProviderType =
 
 export type BudgetResetPeriod = 'daily' | 'monthly' | 'never';
 
+export type KeyType = 'default' | 'llm_api' | 'management' | 'read_only' | 'service_account';
+
+export type SelfServeBudgetPolicy = 'disabled' | 'lower_only' | 'ceiling';
+
+export type OperatorRole = 'platform_admin' | 'org_admin' | 'org_viewer' | 'team_admin';
+
+export interface OperatorContext {
+  actor_id: string;
+  impersonated_by_actor_id?: string;
+  role: OperatorRole;
+  org_id?: string;
+  team_id?: string;
+  auth_method: string;
+  can_impersonate?: boolean;
+  deprecated_key_revoke_at?: string;
+  session_id?: string;
+  csrf_token?: string;
+}
+
+export interface SSOProviderPublicInfo {
+  id: string;
+  display_name: string;
+  type: string;
+}
+
+export interface AuthLoginResponse {
+  token: string;
+  session_token: string;
+  csrf_token: string;
+  expires_at: string;
+  password_reset_required: boolean;
+  operator: OperatorContext;
+  user?: User;
+}
+
+export interface AuthMeResponse {
+  operator: OperatorContext;
+  csrf_token?: string;
+  user?: User;
+  password_reset_required?: boolean;
+}
+
 export type Role =
   | 'platform_admin'
   | 'org_admin'
@@ -34,8 +76,17 @@ export interface Organization {
   name: string;
   slug?: string;
   max_budget_micros?: number;
+  temp_budget_increase_micros?: number;
+  temp_budget_expires_at?: string;
+  self_serve_budget_policy?: SelfServeBudgetPolicy;
+  soft_budget_micros?: number;
+  throttle_on_budget_exceeded?: boolean;
+  budget_fallbacks?: Record<string, string[]>;
   spent_micros?: number;
   budget_reset_period?: BudgetResetPeriod;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  max_concurrent_requests?: number;
   is_active: boolean;
   created_at?: string;
 }
@@ -45,6 +96,11 @@ export interface Team {
   org_id: string;
   name: string;
   max_budget_micros?: number;
+  temp_budget_increase_micros?: number;
+  temp_budget_expires_at?: string;
+  soft_budget_micros?: number;
+  throttle_on_budget_exceeded?: boolean;
+  budget_fallbacks?: Record<string, string[]>;
   spent_micros?: number;
   budget_reset_period?: BudgetResetPeriod;
   rpm_limit?: number;
@@ -82,6 +138,17 @@ export interface User {
   name?: string;
   oidc_subject?: string;
   role: Role;
+  max_budget_micros?: number;
+  temp_budget_increase_micros?: number;
+  temp_budget_expires_at?: string;
+  soft_budget_micros?: number;
+  throttle_on_budget_exceeded?: boolean;
+  budget_fallbacks?: Record<string, string[]>;
+  spent_micros?: number;
+  budget_reset_period?: BudgetResetPeriod;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  max_concurrent_requests?: number;
   is_active: boolean;
   created_at?: string;
   updated_at?: string;
@@ -91,23 +158,35 @@ export interface VirtualKey {
   id: string;
   org_id: string;
   team_id?: string;
+  project_id?: string;
   user_id?: string;
   name: string;
   key_prefix: string;
-  raw_key?: string; // Only returned on creation
+  raw_key?: string; // Only returned on creation or rotation
   role?: Role;
+  key_type?: KeyType;
   max_budget_micros?: number;
+  temp_budget_increase_micros?: number;
+  temp_budget_expires_at?: string;
+  soft_budget_micros?: number;
+  throttle_on_budget_exceeded?: boolean;
+  budget_fallbacks?: Record<string, string[]>;
   spent_micros?: number;
   budget_reset_period?: BudgetResetPeriod;
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  batch_enqueued_token_limit?: number;
+  rotation_interval_sec?: number;
+  key_rotation_at?: string;
   allowed_models?: string[];
   allowed_endpoints?: string[];
   allowed_mcp_servers?: string[] | null;
   allowed_a2a_agents?: string[] | null;
   allowed_client_apps?: string[] | null;
   expires_at?: string;
+  can_impersonate?: boolean;
+  deprecated_key_revoke_at?: string;
   is_active: boolean;
   created_at: string;
 }
@@ -724,4 +803,61 @@ export interface GatewayConfig {
   logging?: Record<string, any>;
   tracing?: Record<string, any>;
   [key: string]: any;
+}
+
+export type QuotaScopeType =
+  | 'org'
+  | 'team'
+  | 'team_member'
+  | 'project'
+  | 'user'
+  | 'key'
+  | 'end_user'
+  | 'tag'
+  | 'model_access_group'
+  | 'agent_session'
+  | 'mcp_server'
+  | 'model_per_key'
+  | 'model_per_team'
+  | 'model_per_project'
+  | 'model_per_user'
+  | 'model_per_org'
+  | 'model_per_end_user';
+
+export interface QuotaPolicy {
+  id: string;
+  org_id: string;
+  scope_type: QuotaScopeType;
+  scope_id: string;
+  model_pattern: string;
+  rpm_limit: number;
+  tpm_limit: number;
+  itpm_limit: number;
+  otpm_limit: number;
+  tpd_limit: number;
+  max_concurrent: number;
+  max_budget_micros: number;
+  spent_micros: number;
+  budget_reset_period: BudgetResetPeriod;
+  budget_reset_at?: string;
+  max_iterations: number;
+  window_ttl_sec: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BudgetWindowType = 'daily' | 'weekly' | 'monthly' | 'rolling_24h';
+
+export interface BudgetWindowLimit {
+  id: string;
+  org_id: string;
+  scope_type: QuotaScopeType;
+  scope_id: string;
+  window_type: BudgetWindowType;
+  max_budget_micros: number;
+  spent_micros: number;
+  window_reset_at: string;
+  created_at: string;
+  updated_at: string;
 }
