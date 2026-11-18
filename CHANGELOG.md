@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v1.20.0] - 2026-11-18
+## [1.20.0] - 2026-11-18
 
 ### Intelligent Routing, Resilient Failover, Affinity, Pre-Routers & Hedged Racing
 
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Epic 4 — Server Wiring, OpenAPI/UI Parity & Chaos/Load Verification (`internal/server/`, `docs/openapi/`, `web/`, `tests/`)
 - **Server Wiring, HTTP Hint Headers & Telemetry (`internal/server/server.go`, `handlers_*.go`, `security_headers.go`)**: Wired all v1.20.0 routing subsystems end-to-end, added request hint headers (`X-Gateway-Allowed-Region`, `X-Gateway-Session-Id`, `X-Gateway-Preferred-Deployment-Id`, `X-Gateway-Priority`, `X-Gateway-Hedge-After-Ms`, `X-Gateway-Tag-*`, `X-Gateway-Tags`) without overwriting JSON `goroute_extensions`, and exposed `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, and `X-Gateway-Tier-Stepdowns` in responses and CORS `Access-Control-Expose-Headers`.
-- **OpenAPI Contract & Operator Web UI Parity (`docs/openapi/gateway.openapi.yaml`, `internal/openapi/gateway.gen.go`, `web/src/`, `internal/ui/dist/`)**: Synced `FallbackTarget`, `RetryPolicy`, `CooldownPolicy`, `tags`, `max_budget_micros`, `budget_reset_period`, and `goroute_extensions` routing hints across OpenAPI schemas, generated types, `ModelsView`, and `PlaygroundView`.
+- **OpenAPI Contract, Public Go SDK & Operator Web UI Parity (`docs/openapi/gateway.openapi.yaml`, `internal/openapi/gateway.gen.go`, `pkg/gateway/`, `web/src/`, `internal/ui/dist/`)**: Synced `FallbackTarget`, `RetryPolicy`, `CooldownPolicy`, `tags`, `max_budget_micros`, `budget_reset_period`, and `goroute_extensions` routing hints across OpenAPI schemas, generated types, `ModelsView`, and `PlaygroundView`. Extended `pkg/gateway` with `ModelEntry` routing/fallback/budget fields, `ChatRequest.RoutingHints`, `ChatResult` telemetry (`WinningDeployment`, `FallbackReason`, `TierStepdowns`, `StreamContinued` with bounded non-negative `X-Gateway-Tier-Stepdowns` parsing), and pure-public `WithRoutingPlugin` / `WithPreRouter` / `WithRouterConfig` options.
 - **Benchmarks, k6 Chaos & Multi-Pod E2E Suites (`internal/router/router_benchmark_test.go`, `tests/load/`, `tests/e2e/routing_v120_test.go`)**: Added microbenchmarks for routing hot paths, Go concurrency/chaos load tests (`tests/load/routing_load_test.go`), k6 fault-injection and hedged-tail-latency chaos verification (`tests/load/k6_routing_chaos.js`), and multi-pod E2E routing tests.
 
 ---
