@@ -305,6 +305,31 @@ type ProxyAuthConfig struct {
 	DefaultRole       string            `yaml:"default_role,omitempty"`
 }
 
+// SSOProviderConfig configures an interactive OIDC SSO identity provider for Control Plane and CLI login.
+type SSOProviderConfig struct {
+	ID                    string           `yaml:"id,omitempty"`
+	Name                  string           `yaml:"name,omitempty"`
+	Type                  string           `yaml:"type,omitempty"`
+	DisplayName           string           `yaml:"display_name,omitempty"`
+	ClientID              string           `yaml:"client_id"`
+	ClientSecret          string           `yaml:"client_secret,omitempty"`
+	Issuer                string           `yaml:"issuer,omitempty"`
+	AuthorizationEndpoint string           `yaml:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string           `yaml:"token_endpoint,omitempty"`
+	JWKSURL               string           `yaml:"jwks_url,omitempty"`
+	DiscoveryURL          string           `yaml:"discovery_url,omitempty"`
+	Scopes                []string         `yaml:"scopes,omitempty"`
+	RedirectURL           string           `yaml:"redirect_url,omitempty"`
+	AllowedEmailDomains   []string         `yaml:"allowed_email_domains,omitempty"`
+	AutoRegister          bool             `yaml:"auto_register,omitempty"`
+	DefaultOrgID          string           `yaml:"default_org_id,omitempty"`
+	DefaultTeamID         string           `yaml:"default_team_id,omitempty"`
+	DefaultRole           string           `yaml:"default_role,omitempty"`
+	TenantID              string           `yaml:"tenant_id,omitempty"`
+	Algorithms            []string         `yaml:"algorithms,omitempty"`
+	ClaimMapping          OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
+}
+
 type AuthConfig struct {
 	MasterAdminKey          string              `yaml:"master_admin_key"`
 	MasterEncryptionKey     string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
@@ -316,6 +341,7 @@ type AuthConfig struct {
 	JWTAudience             string              `yaml:"jwt_audience"`
 	OIDCJWKSURL             string              `yaml:"oidc_jwks_url"`
 	OIDCIssuers             []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
+	SSOProviders            []SSOProviderConfig `yaml:"sso_providers,omitempty"`
 	Introspection           IntrospectionConfig `yaml:"introspection,omitempty"`
 	ProxyAuth               ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
 	DefaultOrgID            string              `yaml:"default_org_id"`
@@ -1037,6 +1063,70 @@ func (c *Config) Validate() error {
 			trimmedAlg := strings.TrimSpace(alg)
 			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
 				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains invalid algorithm %q", i, alg)
+			}
+		}
+	}
+	seenSSOProviders := make(map[string]struct{}, len(c.Auth.SSOProviders))
+	for i, sso := range c.Auth.SSOProviders {
+		id := strings.ToLower(strings.TrimSpace(sso.ID))
+		if id == "" {
+			id = strings.ToLower(strings.TrimSpace(sso.Name))
+		}
+		if id == "" {
+			return fmt.Errorf("auth.sso_providers[%d]: id or name is required", i)
+		}
+		if _, dup := seenSSOProviders[id]; dup {
+			return fmt.Errorf("duplicate auth.sso_providers[%d] id %q", i, id)
+		}
+		seenSSOProviders[id] = struct{}{}
+		if strings.TrimSpace(sso.ClientID) == "" {
+			return fmt.Errorf("auth.sso_providers[%d] (%q): client_id is required", i, id)
+		}
+		for _, urlField := range []struct {
+			name string
+			val  string
+		}{
+			{"discovery_url", sso.DiscoveryURL},
+			{"authorization_endpoint", sso.AuthorizationEndpoint},
+			{"token_endpoint", sso.TokenEndpoint},
+			{"jwks_url", sso.JWKSURL},
+			{"redirect_url", sso.RedirectURL},
+		} {
+			if raw := strings.TrimSpace(urlField.val); raw != "" {
+				u, err := url.Parse(raw)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fmt.Errorf("auth.sso_providers[%d] (%q).%s must be a valid http or https URL", i, id, urlField.name)
+				}
+			}
+		}
+		ptype := strings.ToLower(strings.TrimSpace(sso.Type))
+		if ptype == "" {
+			switch {
+			case id == "google":
+				ptype = "google"
+			case id == "microsoft" || id == "entra" || id == "azure_ad" || strings.TrimSpace(sso.TenantID) != "":
+				ptype = "microsoft"
+			default:
+				ptype = "oidc"
+			}
+		}
+		if ptype != "google" && ptype != "microsoft" {
+			hasDiscovery := strings.TrimSpace(sso.DiscoveryURL) != ""
+			hasManual := strings.TrimSpace(sso.AuthorizationEndpoint) != "" && strings.TrimSpace(sso.TokenEndpoint) != ""
+			hasIssuerURL := false
+			if iss := strings.TrimSpace(sso.Issuer); iss != "" {
+				if u, err := url.Parse(iss); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+					hasIssuerURL = true
+				}
+			}
+			if !hasDiscovery && !hasManual && !hasIssuerURL {
+				return fmt.Errorf("auth.sso_providers[%d] (%q) requires discovery_url, an http(s) issuer, or authorization_endpoint + token_endpoint", i, id)
+			}
+		}
+		for _, alg := range sso.Algorithms {
+			trimmedAlg := strings.TrimSpace(alg)
+			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
+				return fmt.Errorf("auth.sso_providers[%d] (%q).algorithms contains invalid algorithm %q", i, id, alg)
 			}
 		}
 	}

@@ -57,6 +57,9 @@ type GatewayServer struct {
 	sessionMgr         *auth.SessionManager
 	loginThrottle      *auth.LoginThrottle
 	breachScreener     auth.BreachScreener
+	ssoMgr             *auth.SSOProviderManager
+	ssoStateStore      *auth.SSOStateStore
+	cliLoginStore      *auth.CLILoginStore
 	authResolver       *auth.AuthResolver
 	keyRotation        *auth.KeyRotationManager
 	rbac               *auth.RBACEngine
@@ -246,6 +249,16 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	authSvc.SetSessionManager(sessionMgr)
 	authSvc.SetLoginThrottle(loginThrottle)
+
+	ssoMgr, err := auth.NewSSOProviderManager(buildSSOProviderConfigs(cfg.Auth.SSOProviders), netPolicy)
+	if err != nil {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(context.Background())
+		}
+		return nil, fmt.Errorf("invalid sso_providers config: %w", err)
+	}
+	ssoStateStore := auth.NewSSOStateStore(redisFabric)
+	cliLoginStore := auth.NewCLILoginStore(redisFabric, vault)
 
 	var introspector *auth.OAuthIntrospector
 	if strings.TrimSpace(cfg.Auth.Introspection.TokenInfoEndpoint) != "" {
@@ -554,6 +567,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		sessionMgr:         sessionMgr,
 		loginThrottle:      loginThrottle,
 		breachScreener:     breachScreener,
+		ssoMgr:             ssoMgr,
+		ssoStateStore:      ssoStateStore,
+		cliLoginStore:      cliLoginStore,
 		authResolver:       authResolver,
 		keyRotation:        keyRotation,
 		rbac:               rbac,
@@ -659,11 +675,17 @@ func (s *GatewayServer) setupRoutes() {
 	// Control Plane Authentication (/auth/*)
 	r.Route("/auth", func(authRouter chi.Router) {
 		authRouter.Post("/login", s.handleAuthLogin)
+		authRouter.Get("/sso/providers", s.handleAuthSSOProviders)
+		authRouter.Get("/sso/{provider}/login", s.handleAuthSSOLogin)
+		authRouter.Get("/sso/{provider}/callback", s.handleAuthSSOCallback)
+		authRouter.Post("/cli/start", s.handleAuthCLIStart)
+		authRouter.Get("/cli/poll/{login_id}", s.handleAuthCLIPoll)
 		authRouter.Group(func(protected chi.Router) {
 			protected.Use(auth.AdminControlPlaneMiddleware(s.authSvc))
 			protected.Post("/logout", s.handleAuthLogout)
 			protected.Get("/me", s.handleAuthMe)
 			protected.Post("/password", s.handleAuthPassword)
+			protected.Post("/cli/complete/{login_id}", s.handleAuthCLIComplete)
 		})
 	})
 
@@ -1060,6 +1082,27 @@ func (s *GatewayServer) LoginThrottle() *auth.LoginThrottle {
 	return s.loginThrottle
 }
 
+func (s *GatewayServer) SSOProviderManager() *auth.SSOProviderManager {
+	if s == nil {
+		return nil
+	}
+	return s.ssoMgr
+}
+
+func (s *GatewayServer) SSOStateStore() *auth.SSOStateStore {
+	if s == nil {
+		return nil
+	}
+	return s.ssoStateStore
+}
+
+func (s *GatewayServer) CLILoginStore() *auth.CLILoginStore {
+	if s == nil {
+		return nil
+	}
+	return s.cliLoginStore
+}
+
 func (s *GatewayServer) AuthResolver() *auth.AuthResolver {
 	return s.authResolver
 }
@@ -1312,6 +1355,46 @@ func buildOIDCIssuerConfigs(issuers []config.OIDCIssuerConfig, netPolicy *networ
 			DefaultTeamID: iss.DefaultTeamID,
 			DefaultRole:   iss.DefaultRole,
 			NetworkPolicy: netPolicy,
+		})
+	}
+	return out
+}
+
+func buildSSOProviderConfigs(providers []config.SSOProviderConfig) []auth.SSOProviderConfig {
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make([]auth.SSOProviderConfig, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, auth.SSOProviderConfig{
+			ID:                    p.ID,
+			Name:                  p.Name,
+			Type:                  p.Type,
+			DisplayName:           p.DisplayName,
+			ClientID:              config.ResolveEnvValue(p.ClientID),
+			ClientSecret:          config.ResolveEnvValue(p.ClientSecret),
+			Issuer:                p.Issuer,
+			AuthorizationEndpoint: p.AuthorizationEndpoint,
+			TokenEndpoint:         p.TokenEndpoint,
+			JWKSURL:               p.JWKSURL,
+			DiscoveryURL:          p.DiscoveryURL,
+			Scopes:                append([]string(nil), p.Scopes...),
+			RedirectURL:           p.RedirectURL,
+			AllowedEmailDomains:   append([]string(nil), p.AllowedEmailDomains...),
+			AutoRegister:          p.AutoRegister,
+			DefaultOrgID:          p.DefaultOrgID,
+			DefaultTeamID:         p.DefaultTeamID,
+			DefaultRole:           p.DefaultRole,
+			TenantID:              p.TenantID,
+			Algorithms:            append([]string(nil), p.Algorithms...),
+			ClaimMapping: auth.OIDCClaimMapping{
+				UserID:  p.ClaimMapping.UserID,
+				Email:   p.ClaimMapping.Email,
+				OrgID:   p.ClaimMapping.OrgID,
+				TeamIDs: p.ClaimMapping.TeamIDs,
+				Role:    p.ClaimMapping.Role,
+				EndUser: p.ClaimMapping.EndUser,
+			},
 		})
 	}
 	return out
