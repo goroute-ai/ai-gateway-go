@@ -34,8 +34,9 @@ import (
 
 // AuthResolver resolves the appropriate upstream authentication strategy for an MCP server call.
 type AuthResolver struct {
-	vault     *auth.Vault
-	netPolicy *network.Policy
+	vault      *auth.Vault
+	netPolicy  *network.Policy
+	tokenCache *upstream.DistributedTokenCache
 }
 
 // NewAuthResolver constructs an AuthResolver.
@@ -44,6 +45,11 @@ func NewAuthResolver(vault *auth.Vault, netPolicy *network.Policy) *AuthResolver
 		vault:     vault,
 		netPolicy: netPolicy,
 	}
+}
+
+// SetTokenCache attaches an optional DistributedTokenCache shared across MCP upstream OAuth2 strategies.
+func (r *AuthResolver) SetTokenCache(cache *upstream.DistributedTokenCache) {
+	r.tokenCache = cache
 }
 
 // ResolveStrategy determines the upstream authentication strategy for the given server.
@@ -96,7 +102,7 @@ func (r *AuthResolver) ResolveStrategy(
 	case "static":
 		return upstream.NewStaticStrategy("Authorization", secret, extraHeaders), extraHeaders
 	case "oauth2":
-		return upstream.NewOAuth2Strategy(server.OAuth2Endpoint, server.OAuth2ClientID, secret, server.OAuth2Scopes, r.netPolicy), extraHeaders
+		return upstream.NewOAuth2StrategyWithCache(server.OAuth2Endpoint, server.OAuth2ClientID, secret, server.OAuth2Scopes, r.netPolicy, r.tokenCache), extraHeaders
 	case "delegation":
 		return upstream.NewDelegationStrategy("Authorization", true), extraHeaders
 	case domain.MCPAuthVaultJWT:
@@ -139,6 +145,7 @@ func (r *AuthResolver) ResolveStrategy(
 			Resource:      server.EndpointURL,
 			Scope:         strings.Join(server.OAuth2Scopes, " "),
 			NetPolicy:     r.netPolicy,
+			TokenCache:    r.tokenCache,
 		}); err == nil {
 			return s, extraHeaders
 		}
@@ -150,6 +157,7 @@ func (r *AuthResolver) ResolveStrategy(
 			SigningKey:    secret,
 			Scopes:        server.OAuth2Scopes,
 			NetPolicy:     r.netPolicy,
+			TokenCache:    r.tokenCache,
 		}); err == nil {
 			return s, extraHeaders
 		}

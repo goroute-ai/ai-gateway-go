@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
@@ -21,6 +22,11 @@ import (
 type Adapter struct {
 	httpClient *http.Client
 	ssrfPolicy *network.Policy
+
+	ambientMu            sync.RWMutex
+	allowAmbientCloudIAM bool
+	ambientIAMCfg        AmbientIAMConfig
+	ambientProvider      *AmbientCredentialProvider
 }
 
 // NewAdapter creates a new AWS Bedrock adapter.
@@ -32,6 +38,25 @@ func NewAdapter(httpClient *http.Client, ssrfPolicy *network.Policy) *Adapter {
 		httpClient: httpClient,
 		ssrfPolicy: ssrfPolicy,
 	}
+}
+
+// SetAllowAmbientCloudIAM opts this Bedrock adapter in or out of ambient AWS IAM
+// resolution (env, IRSA, ECS, IMDSv2). Disabled (false) by default.
+func (a *Adapter) SetAllowAmbientCloudIAM(allow bool) {
+	a.ambientMu.Lock()
+	defer a.ambientMu.Unlock()
+	a.allowAmbientCloudIAM = allow
+	a.ambientIAMCfg.AllowAmbientCloudIAM = allow
+	a.ambientProvider = nil
+}
+
+// SetAmbientIAMConfig configures ambient AWS IAM options (including AllowAmbientCloudIAM).
+func (a *Adapter) SetAmbientIAMConfig(cfg AmbientIAMConfig) {
+	a.ambientMu.Lock()
+	defer a.ambientMu.Unlock()
+	a.allowAmbientCloudIAM = cfg.AllowAmbientCloudIAM
+	a.ambientIAMCfg = cfg
+	a.ambientProvider = nil
 }
 
 func (a *Adapter) Provider() domain.ProviderType {
@@ -136,7 +161,7 @@ func (a *Adapter) getEndpointURL(dep *domain.Deployment, creds *Credentials, pat
 }
 
 func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
-	creds, err := parseCredentials(dep.Credential)
+	creds, err := a.resolveCredentials(ctx, dep.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +225,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 	ctx = adapter.StreamingContext(ctx)
-	creds, err := parseCredentials(dep.Credential)
+	creds, err := a.resolveCredentials(ctx, dep.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -427,7 +452,7 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 }
 
 func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
-	creds, err := parseCredentials(dep.Credential)
+	creds, err := a.resolveCredentials(ctx, dep.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +614,7 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 }
 
 func (a *Adapter) ValidateCredential(ctx context.Context, cred *domain.ProviderCredential) error {
-	creds, err := parseCredentials(cred)
+	creds, err := a.resolveCredentials(ctx, cred)
 	if err != nil {
 		return err
 	}
@@ -601,7 +626,7 @@ func (a *Adapter) ValidateCredential(ctx context.Context, cred *domain.ProviderC
 
 // Rerank translates the shared rerank contract to the Bedrock Agent Runtime API.
 func (a *Adapter) Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
-	creds, err := parseCredentials(dep.Credential)
+	creds, err := a.resolveCredentials(ctx, dep.Credential)
 	if err != nil {
 		return nil, err
 	}

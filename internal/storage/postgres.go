@@ -27,6 +27,7 @@ type PostgresPoolOptions struct {
 	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
+	RDSIAM          *RDSIAMConfig
 }
 
 func dsnHasPoolParam(dsn, param string) bool {
@@ -57,6 +58,23 @@ func configurePostgresPool(dsn string, opts PostgresPoolOptions) (*pgxpool.Confi
 		cfg.MaxConnIdleTime = opts.MaxConnIdleTime
 	} else if !dsnHasPoolParam(dsn, "pool_max_conn_idle_time") {
 		cfg.MaxConnIdleTime = 5 * time.Minute
+	}
+	if opts.RDSIAM != nil && opts.RDSIAM.Enabled {
+		iamCfg := *opts.RDSIAM
+		if iamCfg.Host == "" {
+			iamCfg.Host = cfg.ConnConfig.Host
+		}
+		if iamCfg.Port == 0 {
+			iamCfg.Port = cfg.ConnConfig.Port
+		}
+		if iamCfg.DBUser == "" {
+			iamCfg.DBUser = cfg.ConnConfig.User
+		}
+		provider, err := NewRDSIAMTokenProvider(iamCfg)
+		if err != nil {
+			return nil, fmt.Errorf("configure rds iam token provider: %w", err)
+		}
+		cfg.BeforeConnect = provider.BeforeConnect
 	}
 	return cfg, nil
 }

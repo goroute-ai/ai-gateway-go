@@ -35,6 +35,7 @@ type OktaIDJAGConfig struct {
 	CustomSigner  func(claims map[string]any) (string, error)
 	HeaderName    string
 	NetPolicy     *network.Policy
+	TokenCache    *DistributedTokenCache
 }
 
 // OktaIDJAGStrategy implements Okta ID-JAG (Identity Assertion JWT Authorization Grant).
@@ -49,13 +50,8 @@ type OktaIDJAGStrategy struct {
 	headerName    string
 	httpClient    *http.Client
 
-	mu    sync.RWMutex
-	cache map[string]cachedToken
-}
-
-type cachedToken struct {
-	accessToken string
-	expiresAt   time.Time
+	mu         sync.RWMutex
+	tokenCache *DistributedTokenCache
 }
 
 // NewOktaIDJAGStrategy constructs a new Okta ID-JAG strategy.
@@ -81,6 +77,11 @@ func NewOktaIDJAGStrategy(cfg OktaIDJAGConfig) (*OktaIDJAGStrategy, error) {
 	client := network.NewHTTPClient(cfg.NetPolicy)
 	client.Timeout = 15 * time.Second
 
+	cache := cfg.TokenCache
+	if cache == nil {
+		cache = NewDistributedTokenCache(nil, DistributedTokenCacheConfig{})
+	}
+
 	return &OktaIDJAGStrategy{
 		tokenEndpoint: cfg.TokenEndpoint,
 		clientID:      cfg.ClientID,
@@ -91,8 +92,30 @@ func NewOktaIDJAGStrategy(cfg OktaIDJAGConfig) (*OktaIDJAGStrategy, error) {
 		customSigner:  cfg.CustomSigner,
 		headerName:    headerName,
 		httpClient:    client,
-		cache:         make(map[string]cachedToken),
+		tokenCache:    cache,
 	}, nil
+}
+
+// SetTokenCache configures the DistributedTokenCache used by this strategy.
+func (s *OktaIDJAGStrategy) SetTokenCache(cache *DistributedTokenCache) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenCache = cache
+}
+
+func (s *OktaIDJAGStrategy) getOrInitTokenCache() *DistributedTokenCache {
+	s.mu.RLock()
+	cache := s.tokenCache
+	s.mu.RUnlock()
+	if cache != nil {
+		return cache
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokenCache == nil {
+		s.tokenCache = NewDistributedTokenCache(nil, DistributedTokenCacheConfig{})
+	}
+	return s.tokenCache
 }
 
 func (s *OktaIDJAGStrategy) Type() string {
@@ -154,79 +177,66 @@ func (s *OktaIDJAGStrategy) Apply(ctx context.Context, req *http.Request, authCt
 		}
 	}
 
-	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s", sub, s.tokenEndpoint, strings.Join(s.scopes, " "))))
-	cacheKey := hex.EncodeToString(cacheKeyHash[:])
+	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s",
+		sub, s.tokenEndpoint, s.clientID, s.audience, strings.Join(s.scopes, " "))))
+	cacheKey := "okta_id_jag|" + hex.EncodeToString(cacheKeyHash[:])
 
-	// 1. Check cached token
-	s.mu.RLock()
-	cached, found := s.cache[cacheKey]
-	s.mu.RUnlock()
+	accessToken, err := s.getOrInitTokenCache().GetOrRefresh(ctx, cacheKey, func(refreshCtx context.Context) (string, time.Duration, error) {
+		// Mint Assertion JWT
+		assertion, err := s.signAssertion(sub)
+		if err != nil {
+			return "", 0, fmt.Errorf("okta_id_jag: sign assertion: %w", err)
+		}
 
-	if found && time.Now().Before(cached.expiresAt) {
-		req.Header.Set(s.headerName, "Bearer "+cached.accessToken)
-		return nil
-	}
+		// Post to Token Endpoint
+		form := url.Values{}
+		form.Set("grant_type", GrantTypeJWTBearer)
+		form.Set("assertion", assertion)
+		if len(s.scopes) > 0 {
+			form.Set("scope", strings.Join(s.scopes, " "))
+		}
 
-	// 2. Mint Assertion JWT
-	assertion, err := s.signAssertion(sub)
+		httpReq, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, s.tokenEndpoint, strings.NewReader(form.Encode()))
+		if err != nil {
+			return "", 0, fmt.Errorf("okta_id_jag: create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		httpReq.Header.Set("Accept", "application/json")
+
+		resp, err := s.httpClient.Do(httpReq)
+		if err != nil {
+			return "", 0, fmt.Errorf("okta_id_jag: post assertion: %w", err)
+		}
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if err != nil {
+			return "", 0, fmt.Errorf("okta_id_jag: read response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return "", 0, fmt.Errorf("okta_id_jag: token endpoint returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		var tokResp tokenResponse
+		if err := json.Unmarshal(bodyBytes, &tokResp); err != nil {
+			return "", 0, fmt.Errorf("okta_id_jag: decode json: %w", err)
+		}
+
+		if tokResp.AccessToken == "" {
+			return "", 0, fmt.Errorf("okta_id_jag: missing access_token in response: %s", string(bodyBytes))
+		}
+
+		ttl := 3600 * time.Second
+		if tokResp.ExpiresIn > 0 {
+			ttl = time.Duration(tokResp.ExpiresIn) * time.Second
+		}
+		return tokResp.AccessToken, ttl, nil
+	})
 	if err != nil {
-		return fmt.Errorf("okta_id_jag: sign assertion: %w", err)
+		return err
 	}
 
-	// 3. Post to Token Endpoint
-	form := url.Values{}
-	form.Set("grant_type", GrantTypeJWTBearer)
-	form.Set("assertion", assertion)
-	if len(s.scopes) > 0 {
-		form.Set("scope", strings.Join(s.scopes, " "))
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("okta_id_jag: create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Accept", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("okta_id_jag: post assertion: %w", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if err != nil {
-		return fmt.Errorf("okta_id_jag: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("okta_id_jag: token endpoint returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var tokResp tokenResponse
-	if err := json.Unmarshal(bodyBytes, &tokResp); err != nil {
-		return fmt.Errorf("okta_id_jag: decode json: %w", err)
-	}
-
-	if tokResp.AccessToken == "" {
-		return fmt.Errorf("okta_id_jag: missing access_token in response: %s", string(bodyBytes))
-	}
-
-	ttl := 3600 * time.Second
-	if tokResp.ExpiresIn > 0 {
-		ttl = time.Duration(tokResp.ExpiresIn) * time.Second
-	}
-	if ttl > 45*time.Second {
-		ttl -= 30 * time.Second
-	}
-
-	s.mu.Lock()
-	s.cache[cacheKey] = cachedToken{
-		accessToken: tokResp.AccessToken,
-		expiresAt:   time.Now().Add(ttl),
-	}
-	s.mu.Unlock()
-
-	req.Header.Set(s.headerName, "Bearer "+tokResp.AccessToken)
+	req.Header.Set(s.headerName, "Bearer "+accessToken)
 	return nil
 }

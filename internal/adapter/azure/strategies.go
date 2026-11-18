@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -116,8 +117,15 @@ func (s *AzureEndpointStrategy) BuildURL(dep *domain.Deployment, op adapter.Oper
 }
 
 // AzureAuthStrategy applies authentication to Azure OpenAI requests.
-// Supports both Azure API keys (`api-key: <key>`) and Microsoft Entra ID Bearer tokens (`Authorization: Bearer <token>`).
-type AzureAuthStrategy struct{}
+// Supports Azure API keys (`api-key: <key>`), Microsoft Entra ID Bearer tokens (`Authorization: Bearer <token>`),
+// and opt-in Azure Managed Identity (`AllowAmbientCloudIAM: true`).
+type AzureAuthStrategy struct {
+	AllowAmbientCloudIAM bool
+	ManagedIdentity      *ManagedIdentityTokenSource
+	SSRFPolicy           *network.Policy
+
+	defaultMSISource atomic.Pointer[ManagedIdentityTokenSource]
+}
 
 func (s *AzureAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderCredential) error {
 	if cred == nil {
@@ -125,12 +133,29 @@ func (s *AzureAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderCr
 	}
 
 	rawKey := strings.TrimSpace(cred.DecryptedAPIKey)
-	if rawKey == "" {
-		return fmt.Errorf("empty DecryptedAPIKey for Azure OpenAI")
+	authMode := ""
+	if cred.Headers != nil {
+		authMode = strings.ToLower(strings.TrimSpace(cred.Headers["auth_mode"]))
 	}
 
-	// If the key starts with "Bearer ", treat as Microsoft Entra ID OAuth2 token
-	if strings.HasPrefix(rawKey, "Bearer ") {
+	useManagedIdentity := rawKey == "" ||
+		strings.EqualFold(rawKey, "ambient") ||
+		strings.EqualFold(rawKey, "managed_identity") ||
+		authMode == "managed_identity" ||
+		authMode == "ambient_iam"
+
+	if useManagedIdentity {
+		if !s.AllowAmbientCloudIAM {
+			return fmt.Errorf("empty DecryptedAPIKey for Azure OpenAI")
+		}
+		ts := s.getOrInitManagedIdentity()
+		token, err := ts.GetToken(req.Context())
+		if err != nil {
+			return fmt.Errorf("azure managed identity auth: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if strings.HasPrefix(rawKey, "Bearer ") {
+		// Microsoft Entra ID OAuth2 token
 		req.Header.Set("Authorization", rawKey)
 	} else {
 		// Standard Azure API key
@@ -140,7 +165,7 @@ func (s *AzureAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderCr
 	// Inject other custom headers from credential (except control values like api-version and azure_deployment_name)
 	for k, v := range cred.Headers {
 		kLower := strings.ToLower(k)
-		if kLower == "api-version" || kLower == "azure_deployment_name" || kLower == "azure_endpoint_mode" {
+		if kLower == "api-version" || kLower == "azure_deployment_name" || kLower == "azure_endpoint_mode" || kLower == "auth_mode" {
 			continue
 		}
 		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
@@ -149,4 +174,21 @@ func (s *AzureAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderCr
 	}
 
 	return nil
+}
+
+func (s *AzureAuthStrategy) getOrInitManagedIdentity() *ManagedIdentityTokenSource {
+	if s.ManagedIdentity != nil {
+		return s.ManagedIdentity
+	}
+	if existing := s.defaultMSISource.Load(); existing != nil {
+		return existing
+	}
+	created := NewManagedIdentityTokenSource(ManagedIdentityConfig{
+		AllowAmbientCloudIAM: s.AllowAmbientCloudIAM,
+		SSRFPolicy:           s.SSRFPolicy,
+	})
+	if s.defaultMSISource.CompareAndSwap(nil, created) {
+		return created
+	}
+	return s.defaultMSISource.Load()
 }
