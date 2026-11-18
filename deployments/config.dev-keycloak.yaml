@@ -1,0 +1,58 @@
+# Local Development Configuration for Docker Compose --profile keycloak
+# Start with:
+#   GATEWAY_CONFIG_HOST_PATH=./config.dev-keycloak.yaml docker compose -f deployments/docker-compose.yml --profile keycloak up --build
+
+server:
+  environment: "development"
+  host: "0.0.0.0"
+  port: 8080
+  public_base_url: "http://localhost:8080"
+
+logging:
+  level: "info"
+  format: "json"
+
+storage:
+  mode: "postgres"
+  postgres_dsn: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+  redis_addr: "redis:6379"
+  redis_db: 0
+
+auth:
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
+  allow_master_key_data_plane: false
+  enable_data_plane_jwt: true
+  jwt_issuer: "http://localhost:8081/realms/goroute"
+  jwt_audience: "goroute-gateway"
+  oidc_jwks_url: "http://keycloak:8080/realms/goroute/protocol/openid-connect/certs"
+  default_org_id: "org_default"
+  sso_providers:
+    - id: "keycloak"
+      display_name: "Keycloak"
+      type: "oidc"
+      client_id: "goroute-gateway"
+      client_secret: "os.environ/KEYCLOAK_SSO_SECRET"
+      issuer: "http://localhost:8081/realms/goroute"
+      discovery_url: "http://keycloak:8080/realms/goroute/.well-known/openid-configuration"
+      redirect_url: "http://localhost:8080/auth/sso/keycloak/callback"
+      scopes: ["openid", "profile", "email"]
+      auto_register: true
+      default_org_id: "org_default"
+      default_role: "org_viewer"
+      allow_privileged_role_claims: true
+      role_claim: "role"
+      org_claim: "org_id"
+
+security:
+  network:
+    inbound_caller:
+      expose_on_public_internet: false
+    outbound_ssrf:
+      allow_private_networks: true
+      allow_insecure_http: true
+      allow_loopback_http: true
+      allowed_schemes:
+        - "http"
+        - "https"
