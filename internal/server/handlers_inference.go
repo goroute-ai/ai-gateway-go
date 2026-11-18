@@ -283,6 +283,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
+	s.applyChatRoutingHints(r, &chatReq)
 
 	// 1. RBAC Model Allowlist Check (Key & Team level)
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
@@ -682,6 +683,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 		}
 		s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
+		setRoutingTelemetryHeaders(w, meta)
 		if err != nil {
 			statusCode := http.StatusBadGateway
 			if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
@@ -978,14 +980,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Version", strconv.Itoa(pricingVer))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
-	if meta != nil {
-		w.Header().Set("X-Gateway-Latency-Ms", strconv.FormatInt(meta.LatencyMs, 10))
-		w.Header().Set("X-Gateway-Routing-Micros", strconv.FormatInt(meta.RoutingMicros, 10))
-		w.Header().Set("X-Gateway-Fallback-Attempted", strconv.FormatBool(meta.FallbackAttempted))
-		if meta.RouteDecision != nil {
-			w.Header().Set("X-Gateway-Route-Reason", meta.RouteDecision.Reason)
-		}
-	}
+	setRoutingTelemetryHeaders(w, meta)
 	w.Header().Set("Content-Type", "application/json")
 	var provenance string
 	if gm != nil {
@@ -1418,4 +1413,140 @@ func (s *GatewayServer) resolveCachedStreamModelMeta(ctx context.Context, orgID,
 		}
 	}
 	return resolvedModel, "", nil
+}
+
+func isAllASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func appendUniqueRoutingTag(tags []string, tag string) []string {
+	for _, existing := range tags {
+		if strings.EqualFold(strings.TrimSpace(existing), tag) {
+			return tags
+		}
+	}
+	return append(tags, tag)
+}
+
+func (s *GatewayServer) applyChatRoutingHints(r *http.Request, chatReq *domain.CanonicalChatRequest) {
+	defaultPriority := 0
+	if s != nil && s.cfg != nil && s.cfg.Router.Scheduler.Enabled {
+		defaultPriority = s.cfg.Router.Scheduler.DefaultPriority
+	}
+	applyRoutingHintHeaders(r, chatReq, defaultPriority)
+}
+
+func applyRoutingHintHeaders(r *http.Request, chatReq *domain.CanonicalChatRequest, defaultPriority int) {
+	if r == nil || chatReq == nil {
+		return
+	}
+	ensureExt := func() *domain.GoRouteExtensions {
+		if chatReq.GoRouteExtensions == nil {
+			chatReq.GoRouteExtensions = &domain.GoRouteExtensions{}
+		}
+		return chatReq.GoRouteExtensions
+	}
+
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Allowed-Region")); v != "" {
+		ext := ensureExt()
+		if strings.TrimSpace(ext.AllowedRegion) == "" {
+			ext.AllowedRegion = v
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Session-Id")); v != "" {
+		ext := ensureExt()
+		if strings.TrimSpace(ext.SessionID) == "" {
+			ext.SessionID = v
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Preferred-Deployment-Id")); v != "" {
+		ext := ensureExt()
+		if strings.TrimSpace(ext.PreferredDeploymentID) == "" {
+			ext.PreferredDeploymentID = v
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Priority")); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			ext := ensureExt()
+			if ext.Priority == 0 {
+				ext.Priority = p
+			}
+		}
+	} else if defaultPriority > 0 && (chatReq.GoRouteExtensions == nil || chatReq.GoRouteExtensions.Priority == 0) {
+		ext := ensureExt()
+		ext.Priority = defaultPriority
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Hedge-After-Ms")); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			ext := ensureExt()
+			if ext.HedgeAfterMs == 0 {
+				ext.HedgeAfterMs = ms
+			}
+		}
+	}
+
+	for _, raw := range r.Header.Values("X-Gateway-Tags") {
+		for _, part := range strings.Split(raw, ",") {
+			if tag := strings.TrimSpace(part); tag != "" {
+				ext := ensureExt()
+				ext.Tags = appendUniqueRoutingTag(ext.Tags, tag)
+			}
+		}
+	}
+
+	var tagHeaderKeys []string
+	for k := range r.Header {
+		if len(k) > len("X-Gateway-Tag-") && strings.EqualFold(k[:len("X-Gateway-Tag-")], "X-Gateway-Tag-") {
+			tagHeaderKeys = append(tagHeaderKeys, k)
+		}
+	}
+	sort.Strings(tagHeaderKeys)
+	for _, k := range tagHeaderKeys {
+		suffix := strings.ToLower(strings.TrimSpace(k[len("X-Gateway-Tag-"):]))
+		for _, raw := range r.Header.Values(k) {
+			for _, part := range strings.Split(raw, ",") {
+				item := strings.TrimSpace(part)
+				if item == "" {
+					continue
+				}
+				ext := ensureExt()
+				if strings.HasPrefix(item, "&") || strings.HasPrefix(item, "!") || strings.Contains(item, ":") || suffix == "" || isAllASCIIDigits(suffix) {
+					ext.Tags = appendUniqueRoutingTag(ext.Tags, item)
+					continue
+				}
+				if !strings.EqualFold(suffix, item) {
+					ext.Tags = appendUniqueRoutingTag(ext.Tags, suffix+":"+item)
+				}
+				ext.Tags = appendUniqueRoutingTag(ext.Tags, item)
+			}
+		}
+	}
+}
+
+func setRoutingTelemetryHeaders(w http.ResponseWriter, meta *router.ExecutionMeta) {
+	if w == nil || meta == nil {
+		return
+	}
+	w.Header().Set("X-Gateway-Latency-Ms", strconv.FormatInt(meta.LatencyMs, 10))
+	w.Header().Set("X-Gateway-Routing-Micros", strconv.FormatInt(meta.RoutingMicros, 10))
+	w.Header().Set("X-Gateway-Fallback-Attempted", strconv.FormatBool(meta.FallbackAttempted))
+	w.Header().Set("X-Gateway-Tier-Stepdowns", strconv.Itoa(meta.TierStepdowns))
+	routeReason := strings.TrimSpace(meta.FallbackReason)
+	if routeReason == "" && meta.RouteDecision != nil {
+		routeReason = strings.TrimSpace(meta.RouteDecision.Reason)
+	}
+	if routeReason != "" {
+		w.Header().Set("X-Gateway-Route-Reason", routeReason)
+	}
+	if meta.StreamContinued {
+		w.Header().Set("X-Gateway-Stream-Continued", "true")
+	}
 }

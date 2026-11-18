@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +34,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 
 	var wire struct {
 		domain.CanonicalResponseRequest
-		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
+		PreviousResponseID string                    `json:"previous_response_id,omitempty"`
+		GoRouteExtensions  *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 10<<20)).Decode(&wire); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -96,6 +98,22 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if req.Text != nil && req.Text.Format != nil {
 		chatReq.ResponseFormat = req.Text.Format
 	}
+	prevRespID := strings.TrimSpace(wire.PreviousResponseID)
+	if prevRespID == "" && req.Metadata != nil {
+		if raw, ok := req.Metadata["previous_response_id"].(string); ok {
+			prevRespID = strings.TrimSpace(raw)
+		}
+	}
+	if prevRespID == "" {
+		prevRespID = strings.TrimSpace(r.Header.Get("X-Gateway-Previous-Response-Id"))
+	}
+	if prevRespID != "" {
+		if chatReq.ExtraParams == nil {
+			chatReq.ExtraParams = make(map[string]any)
+		}
+		chatReq.ExtraParams["previous_response_id"] = prevRespID
+	}
+	s.applyChatRoutingHints(r, chatReq)
 	prc, _, err := s.evaluateChatInputGuardrails(r.Context(), w, r, idCtx, chatReq, "responses")
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -204,6 +222,9 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			CostMicros:       costMicros,
 			CacheHit:         false,
 		})
+		if s.affinityStore != nil && respID != "" && depID != "" {
+			s.affinityStore.PinAsync(idCtx.OrgID, router.ResponseAffinityKey(idCtx.OrgID, respID), depID, s.affinityStore.DefaultTTL())
+		}
 		if !s.persistSpendEvent(w, r, domain.SpendEvent{
 			ID:             "sp_" + uuid.NewString(),
 			RequestID:      respID,
@@ -215,6 +236,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Modality:       domain.ModalityResponse,
 			RequestedModel: req.Model,
 			ResolvedModel:  resp.Model,
+			Provider:       resp.Provider,
 			DeploymentID:   depID,
 			PricingVersion: pricingVer,
 			Usage:          resp.Usage,
@@ -225,6 +247,15 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
+		if resp.Provider != "" {
+			w.Header().Set("X-Gateway-Provider", string(resp.Provider))
+		}
+		if resp.Model != "" {
+			w.Header().Set("X-Gateway-Model", resp.Model)
+		}
+		w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
+		w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(gm)))
+		setRoutingTelemetryHeaders(w, meta)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
 		return
@@ -462,7 +493,17 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		return nil
 	}
 
-	onSelected := func(dep *domain.Deployment) {}
+	onSelected := func(dep *domain.Deployment) {
+		if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
+			if dep.GlobalModel.Provider != "" {
+				w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
+			}
+			if dep.GlobalModel.ModelName != "" {
+				w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
+			}
+			w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(dep.GlobalModel)))
+		}
+	}
 
 	streamStarted := time.Now()
 	var usage *domain.TokenUsage
@@ -496,6 +537,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 	}
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
+	setRoutingTelemetryHeaders(w, meta)
 	if err != nil {
 		if streamCacheHit {
 			releaseQuota(0)
@@ -590,6 +632,9 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		costMicros = finops.CalculateCostMicros(gm, streamUsage)
+		if s.affinityStore != nil && respID != "" && depID != "" {
+			s.affinityStore.PinAsync(idCtx.OrgID, router.ResponseAffinityKey(idCtx.OrgID, respID), depID, s.affinityStore.DefaultTTL())
+		}
 		if streamCacheKey != "" && !streamSession.Blocked() && sawTerminalChunk && len(sanitizedChunks) > 0 {
 			finalizeStreamChunksForCache(sanitizedChunks, resolved, streamUsage)
 			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolved, sanitizedChunks)
@@ -615,6 +660,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			Modality:       domain.ModalityResponse,
 			RequestedModel: req.Model,
 			ResolvedModel:  resolved,
+			Provider:       provider,
 			DeploymentID:   depID,
 			PricingVersion: pricingVer,
 			Usage:          streamUsage,

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"runtime"
@@ -46,42 +47,47 @@ import (
 
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
 type GatewayServer struct {
-	cfg              *config.Config
-	netPolicy        *network.Policy
-	repo             storage.Repository
-	redisFabric      *storage.RedisFabric
-	reg              *adapter.Registry
-	vault            *auth.Vault
-	authSvc          *auth.Service
-	rbac             *auth.RBACEngine
-	limiter          *ratelimit.Limiter
-	respCache        *cache.ResponseCache
-	modelMgmt        *modelmgmt.Service
-	discovery        *modelmgmt.DiscoveryWorker
-	reliability      *router.ReliabilityManager
-	spendWorker      *finops.SpendWorker
-	collector        *observability.Collector
-	metricsExporter  *observability.OTLPMetricsExporter
-	metricsStop      func()
-	outboundMetrics  *network.HTTPClientMetrics
-	budgetStats      *budgetLookupStats
-	tracer           trace.Tracer
-	tracerShutdown   func(context.Context) error
-	healthMon        *health.Monitor
-	validator        *validation.Validator
-	guardrails       *guardrails.Engine
-	mcpHub           *mcp.Hub
-	a2aRouter        *a2a.RouterService
-	a2aSigner        *a2a.GatewayCardSigner
-	a2aStreamSub     *a2a.StreamSubscriber
-	a2aPublisher     *a2a.StreamPublisher
-	a2aOutboxWorker  *a2a.OutboxWorker
-	a2aBridge        *a2a.OpenAIBridge
-	orchestrator     *orchestrator.ToolLoopOrchestrator
-	router           chi.Router
-	uploadSem        chan struct{}
-	uploadInFlightMu sync.Mutex
-	uploadInFlight   map[string]int64
+	cfg               *config.Config
+	netPolicy         *network.Policy
+	repo              storage.Repository
+	redisFabric       *storage.RedisFabric
+	reg               *adapter.Registry
+	vault             *auth.Vault
+	authSvc           *auth.Service
+	rbac              *auth.RBACEngine
+	limiter           *ratelimit.Limiter
+	respCache         *cache.ResponseCache
+	modelMgmt         *modelmgmt.Service
+	discovery         *modelmgmt.DiscoveryWorker
+	intelligentRouter *router.IntelligentRouter
+	reliability       *router.ReliabilityManager
+	affinityStore     *router.AffinityStore
+	depBudgets        *router.DeploymentBudgetTracker
+	semanticPreRouter *router.SemanticPreRouter
+	semanticWarmed    sync.Map
+	spendWorker       *finops.SpendWorker
+	collector         *observability.Collector
+	metricsExporter   *observability.OTLPMetricsExporter
+	metricsStop       func()
+	outboundMetrics   *network.HTTPClientMetrics
+	budgetStats       *budgetLookupStats
+	tracer            trace.Tracer
+	tracerShutdown    func(context.Context) error
+	healthMon         *health.Monitor
+	validator         *validation.Validator
+	guardrails        *guardrails.Engine
+	mcpHub            *mcp.Hub
+	a2aRouter         *a2a.RouterService
+	a2aSigner         *a2a.GatewayCardSigner
+	a2aStreamSub      *a2a.StreamSubscriber
+	a2aPublisher      *a2a.StreamPublisher
+	a2aOutboxWorker   *a2a.OutboxWorker
+	a2aBridge         *a2a.OpenAIBridge
+	orchestrator      *orchestrator.ToolLoopOrchestrator
+	router            chi.Router
+	uploadSem         chan struct{}
+	uploadInFlightMu  sync.Mutex
+	uploadInFlight    map[string]int64
 }
 
 // parseCustomProviderOperations maps string operation names from CustomProviderConfig
@@ -301,6 +307,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	healthMon := health.NewMonitor(repo, reg, vault, 60*time.Second, 5*time.Second)
 	validator := validation.NewValidator(repo)
+	validator.SetAllowDefaultFallbacks(len(cfg.Router.DefaultFallbacks) > 0)
 	guardrailsEng := guardrails.NewEngine(repo)
 
 	ir := router.NewIntelligentRouter(repo, cfg.Router)
@@ -308,13 +315,111 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		_, err := reg.Get(provider)
 		return err == nil
 	})
+	if cfg.Router.Bandit.Enabled {
+		bandit := router.NewBanditPreRouter(cfg.Router, redisFabric, router.WithBanditRepository(repo))
+		ir.SetBanditPreRouter(bandit)
+	}
 	lb := router.NewLoadBalancer(redisFabric)
 	relMgr := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, redisFabric, cfg.Router)
 	relMgr.SetCollector(collector)
 	relMgr.SetHealthMonitor(healthMon)
 
+	affinityStore := router.NewAffinityStoreFromRouterConfig(redisFabric, cfg.Router)
+	affinityStore.SetCollector(collector)
+	relMgr.SetAffinityStore(affinityStore)
+
+	depBudgets := router.NewDeploymentBudgetTracker(redisFabric, router.DeploymentBudgetConfig{})
+	depBudgets.SetCollector(collector)
+	relMgr.SetDeploymentBudgetTracker(depBudgets)
+
+	if cfg.Router.Scheduler.Enabled {
+		maxConcurrent := cfg.RateLimit.GlobalMaxConcurrent
+		if maxConcurrent <= 0 {
+			maxConcurrent = 256
+		}
+		sched := router.NewPrioritySchedulerWithConfig(router.SchedulerConfig{
+			Enabled:          true,
+			MaxConcurrent:    maxConcurrent,
+			MaxQueueDepth:    cfg.Router.Scheduler.MaxQueueDepth,
+			QueueWaitTimeout: cfg.Router.Scheduler.MaxWaitTime,
+		})
+		relMgr.SetScheduler(sched)
+	}
+
+	var semanticPreRouter *router.SemanticPreRouter
+	if cfg.Router.SemanticRouter.Enabled {
+		embedFn := func(ctx context.Context, orgID, model string, inputs []string) ([][]float32, error) {
+			if strings.TrimSpace(model) == "" {
+				return nil, fmt.Errorf("semantic router embedding_model is required")
+			}
+			resp, _, err := relMgr.ExecuteEmbeddings(ctx, &domain.IdentityContext{OrgID: orgID}, &domain.CanonicalEmbeddingRequest{
+				Model: model,
+				Input: inputs,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if resp == nil || len(resp.Data) == 0 {
+				return nil, fmt.Errorf("empty embeddings response")
+			}
+			vecs := make([][]float32, len(resp.Data))
+			for i, item := range resp.Data {
+				idx := item.Index
+				if idx < 0 || idx >= len(vecs) || vecs[idx] != nil {
+					idx = i
+				}
+				v := make([]float32, len(item.Embedding))
+				for j, f := range item.Embedding {
+					v[j] = float32(f)
+				}
+				vecs[idx] = v
+			}
+			return vecs, nil
+		}
+		semanticPreRouter = router.NewSemanticPreRouter(cfg.Router.SemanticRouter, cfg.Router.DefaultFastAlias, embedFn, redisFabric)
+		ir.SetSemanticPreRouter(semanticPreRouter)
+	}
+
+	if cfg.Router.CacheAwareRouting {
+		qual := router.NewQualityPreRouter(repo, cfg.Router, func(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (string, bool) {
+			if req == nil {
+				return "", false
+			}
+			if respCache != nil && respCache.IsCacheable(req, "") {
+				if key := respCache.ComputeKey(orgID, req); key != "" {
+					if cached, hit := respCache.Get(ctx, key); hit && cached != nil {
+						if mg, err := repo.GetModelGroupByAlias(ctx, orgID, cached.Model); err == nil && mg != nil && mg.IsActive {
+							return mg.Alias, true
+						}
+						if strings.TrimSpace(cfg.Router.DefaultFastAlias) != "" {
+							return cfg.Router.DefaultFastAlias, true
+						}
+						if cached.Model != "" {
+							return cached.Model, true
+						}
+					}
+				}
+			}
+			if affinityStore != nil && cfg.Router.PromptCacheAffinity {
+				if groups, err := repo.ListModelGroups(ctx, orgID); err == nil {
+					for _, g := range groups {
+						if g == nil || !g.IsActive {
+							continue
+						}
+						if depID, _ := affinityStore.Lookup(ctx, orgID, g.Alias, req, ""); depID != "" {
+							return g.Alias, true
+						}
+					}
+				}
+			}
+			return "", false
+		})
+		ir.SetQualityPreRouter(qual)
+	}
+
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
 	spendWorker.SetCollector(collector)
+	spendWorker.SetDeploymentSpendRecorder(depBudgets)
 
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
@@ -346,39 +451,43 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 
 	s := &GatewayServer{
-		cfg:             cfg,
-		netPolicy:       netPolicy,
-		repo:            repo,
-		redisFabric:     redisFabric,
-		reg:             reg,
-		vault:           vault,
-		authSvc:         authSvc,
-		rbac:            rbac,
-		limiter:         limiter,
-		respCache:       respCache,
-		modelMgmt:       modelMgmtSvc,
-		discovery:       discWorker,
-		reliability:     relMgr,
-		spendWorker:     spendWorker,
-		collector:       collector,
-		metricsExporter: metricsExporter,
-		outboundMetrics: outboundMetrics,
-		budgetStats:     budgetStats,
-		tracer:          tracer,
-		tracerShutdown:  tracerShutdown,
-		healthMon:       healthMon,
-		validator:       validator,
-		guardrails:      guardrailsEng,
-		mcpHub:          mcpHub,
-		a2aRouter:       a2aRouter,
-		a2aSigner:       a2aSigner,
-		a2aStreamSub:    a2aStreamSub,
-		a2aPublisher:    a2aPublisher,
-		a2aOutboxWorker: a2aOutboxWorker,
-		a2aBridge:       a2aBridge,
-		orchestrator:    toolOrchestrator,
-		uploadSem:       uploadSem,
-		uploadInFlight:  make(map[string]int64),
+		cfg:               cfg,
+		netPolicy:         netPolicy,
+		repo:              repo,
+		redisFabric:       redisFabric,
+		reg:               reg,
+		vault:             vault,
+		authSvc:           authSvc,
+		rbac:              rbac,
+		limiter:           limiter,
+		respCache:         respCache,
+		modelMgmt:         modelMgmtSvc,
+		discovery:         discWorker,
+		intelligentRouter: ir,
+		reliability:       relMgr,
+		affinityStore:     affinityStore,
+		depBudgets:        depBudgets,
+		semanticPreRouter: semanticPreRouter,
+		spendWorker:       spendWorker,
+		collector:         collector,
+		metricsExporter:   metricsExporter,
+		outboundMetrics:   outboundMetrics,
+		budgetStats:       budgetStats,
+		tracer:            tracer,
+		tracerShutdown:    tracerShutdown,
+		healthMon:         healthMon,
+		validator:         validator,
+		guardrails:        guardrailsEng,
+		mcpHub:            mcpHub,
+		a2aRouter:         a2aRouter,
+		a2aSigner:         a2aSigner,
+		a2aStreamSub:      a2aStreamSub,
+		a2aPublisher:      a2aPublisher,
+		a2aOutboxWorker:   a2aOutboxWorker,
+		a2aBridge:         a2aBridge,
+		orchestrator:      toolOrchestrator,
+		uploadSem:         uploadSem,
+		uploadInFlight:    make(map[string]int64),
 	}
 	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
 	s.setupRoutes()
@@ -388,6 +497,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return nil, err
 	}
+	s.warmupSemanticPreRouter(context.Background())
 	if err := s.seedGuardrailsFromConfig(context.Background()); err != nil {
 		if s.tracerShutdown != nil {
 			_ = s.tracerShutdown(context.Background())
@@ -753,6 +863,36 @@ func (s *GatewayServer) Reliability() *router.ReliabilityManager {
 	return s.reliability
 }
 
+// ReliabilityManager returns the server's ReliabilityManager for SDK integration.
+func (s *GatewayServer) ReliabilityManager() *router.ReliabilityManager {
+	if s == nil {
+		return nil
+	}
+	return s.reliability
+}
+
+// IntelligentRouter returns the server's IntelligentRouter for SDK integration.
+func (s *GatewayServer) IntelligentRouter() *router.IntelligentRouter {
+	if s == nil {
+		return nil
+	}
+	return s.intelligentRouter
+}
+
+// AddRoutingPlugin appends a Stage 2 RoutingPlugin to the server's ReliabilityManager.
+func (s *GatewayServer) AddRoutingPlugin(p router.RoutingPlugin) {
+	if s != nil && s.reliability != nil {
+		s.reliability.AddRoutingPlugin(p)
+	}
+}
+
+// RegisterPreRouter registers a Stage 1 PreRouter on the server's IntelligentRouter.
+func (s *GatewayServer) RegisterPreRouter(pr router.PreRouter) {
+	if s != nil && s.intelligentRouter != nil {
+		s.intelligentRouter.RegisterPreRouter(pr)
+	}
+}
+
 func (s *GatewayServer) MCPHub() *mcp.Hub {
 	return s.mcpHub
 }
@@ -777,6 +917,14 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	if s.cfg.Discovery.Enabled {
 		s.discovery.Start(ctx)
 	}
+	if s.intelligentRouter != nil {
+		if b := s.intelligentRouter.Bandit(); b != nil {
+			b.Start(ctx)
+		}
+	}
+	if s.semanticPreRouter != nil {
+		go s.warmupSemanticPreRouter(ctx)
+	}
 	if s.a2aPublisher != nil {
 		s.a2aPublisher.Start(ctx)
 	}
@@ -790,6 +938,52 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	}
 }
 
+func (s *GatewayServer) warmupSemanticPreRouter(ctx context.Context) {
+	if s == nil || s.semanticPreRouter == nil || s.repo == nil || s.intelligentRouter == nil || s.cfg == nil {
+		return
+	}
+	semCfg := s.cfg.Router.SemanticRouter
+	if !semCfg.Enabled || strings.TrimSpace(semCfg.EmbeddingModel) == "" || len(semCfg.Routes) == 0 {
+		return
+	}
+	orgs, err := s.repo.ListOrganizations(ctx)
+	if err != nil {
+		return
+	}
+	timeout := semCfg.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	for _, org := range orgs {
+		if org == nil || !org.IsActive || org.ID == "" {
+			continue
+		}
+		if _, already := s.semanticWarmed.Load(org.ID); already {
+			continue
+		}
+		mg, err := s.intelligentRouter.ResolveExplicitModel(ctx, org.ID, semCfg.EmbeddingModel)
+		if err != nil || mg == nil {
+			continue
+		}
+		deps, err := s.repo.ListDeploymentsByGroup(ctx, mg.ID)
+		if err != nil || len(deps) == 0 {
+			continue
+		}
+		warmCtx, cancel := context.WithTimeout(ctx, timeout)
+		warmErr := s.semanticPreRouter.Warmup(warmCtx, org.ID)
+		cancel()
+		if warmErr == nil {
+			s.semanticWarmed.Store(org.ID, true)
+		} else {
+			logger.WarnContext(ctx, "Semantic pre-router warmup failed; failing open to default alias",
+				slog.String("component", "router"),
+				slog.String("org_id", org.ID),
+				slog.String("error", warmErr.Error()),
+			)
+		}
+	}
+}
+
 // Shutdown drains background workers cleanly.
 func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.authSvc.StopInvalidationListener()
@@ -798,6 +992,14 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	}
 	if s.a2aOutboxWorker != nil {
 		s.a2aOutboxWorker.Stop()
+	}
+	if s.intelligentRouter != nil {
+		if b := s.intelligentRouter.Bandit(); b != nil {
+			b.Stop()
+		}
+	}
+	if s.affinityStore != nil {
+		_ = s.affinityStore.Wait(ctx)
 	}
 	s.healthMon.Stop()
 	s.discovery.Stop()
