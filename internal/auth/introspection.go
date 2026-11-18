@@ -537,8 +537,8 @@ func (o *OAuthIntrospector) parseAndValidateClaims(mode string, claims map[strin
 		}
 	}
 
-	sub := extractStringClaim(claims, "sub")
-	userID := extractStringClaim(claims, o.userIDField)
+	sub := introspectionStringClaim(claims, "sub")
+	userID := introspectionStringClaim(claims, o.userIDField)
 	if userID == "" && o.userIDField == "sub" {
 		userID = sub
 	}
@@ -550,20 +550,20 @@ func (o *OAuthIntrospector) parseAndValidateClaims(mode string, claims map[strin
 		Active:    active,
 		Subject:   sub,
 		UserID:    userID,
-		Email:     extractStringClaim(claims, o.emailField),
+		Email:     introspectionStringClaim(claims, o.emailField),
 		Role:      extractRoleClaim(claims, o.roleField),
-		OrgID:     extractStringClaim(claims, o.orgIDField),
-		TeamID:    extractStringClaim(claims, o.teamIDField),
-		Scope:     extractStringClaim(claims, "scope"),
-		ClientID:  extractStringClaim(claims, "client_id"),
-		TokenType: extractStringClaim(claims, "token_type"),
-		Username:  extractStringClaim(claims, "username"),
-		Issuer:    extractStringClaim(claims, "iss"),
+		OrgID:     introspectionStringClaim(claims, o.orgIDField),
+		TeamID:    introspectionStringClaim(claims, o.teamIDField),
+		Scope:     introspectionStringClaim(claims, "scope"),
+		ClientID:  introspectionStringClaim(claims, "client_id"),
+		TokenType: introspectionStringClaim(claims, "token_type"),
+		Username:  introspectionStringClaim(claims, "username"),
+		Issuer:    introspectionStringClaim(claims, "iss"),
 		Audience:  extractAudienceClaim(claims["aud"]),
 		ExpiresAt: exp,
 		IssuedAt:  iat,
 		NotBefore: nbf,
-		Groups:    extractStringSliceClaim(claims, "groups"),
+		Groups:    introspectionStringSliceClaim(claims, "groups"),
 		Claims:    cloneClaimsMap(claims),
 	}
 	return res, nil
@@ -587,7 +587,7 @@ func isIntrospectionTokenExpired(expUnix int64, now time.Time) bool {
 	return expUnix > 0 && now.Unix() >= expUnix
 }
 
-func extractStringClaim(claims map[string]any, field string) string {
+func introspectionStringClaim(claims map[string]any, field string) string {
 	if field == "" {
 		return ""
 	}
@@ -615,17 +615,17 @@ func extractStringClaim(claims map[string]any, field string) string {
 }
 
 func extractRoleClaim(claims map[string]any, field string) string {
-	if s := extractStringClaim(claims, field); s != "" {
+	if s := introspectionStringClaim(claims, field); s != "" {
 		return s
 	}
-	vals := extractStringSliceClaim(claims, field)
+	vals := introspectionStringSliceClaim(claims, field)
 	if len(vals) > 0 {
 		return vals[0]
 	}
 	return ""
 }
 
-func extractStringSliceClaim(claims map[string]any, field string) []string {
+func introspectionStringSliceClaim(claims map[string]any, field string) []string {
 	if field == "" {
 		return nil
 	}
@@ -633,28 +633,8 @@ func extractStringSliceClaim(claims map[string]any, field string) []string {
 	if !ok || raw == nil {
 		return nil
 	}
-	switch v := raw.(type) {
-	case []string:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if trimmed := strings.TrimSpace(item); trimmed != "" {
-				out = append(out, trimmed)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				if trimmed := strings.TrimSpace(s); trimmed != "" {
-					out = append(out, trimmed)
-				}
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	out, _ := extractStringSliceValue(raw, false)
+	return out
 }
 
 func extractAudienceClaim(raw any) AudienceClaim {
