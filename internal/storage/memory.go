@@ -37,6 +37,7 @@ type MemoryRepository struct {
 	jwtKeyMappingsByTuple  map[string]string
 	quotaPolicies          map[string]*domain.QuotaPolicy
 	quotaPoliciesByTuple   map[string]string
+	accessGroupRules       map[string]*domain.AccessGroupRule
 	credentials            map[string]*domain.ProviderCredential
 	groupsByID             map[string]*domain.ModelGroup
 	deployments            map[string]*domain.Deployment
@@ -96,6 +97,7 @@ func NewMemoryRepository() *MemoryRepository {
 		jwtKeyMappingsByTuple: make(map[string]string),
 		quotaPolicies:         make(map[string]*domain.QuotaPolicy),
 		quotaPoliciesByTuple:  make(map[string]string),
+		accessGroupRules:      make(map[string]*domain.AccessGroupRule),
 		credentials:           make(map[string]*domain.ProviderCredential),
 		groupsByID:            make(map[string]*domain.ModelGroup),
 		deployments:           make(map[string]*domain.Deployment),
@@ -1155,6 +1157,97 @@ func (r *MemoryRepository) IncrementQuotaPolicySpend(_ context.Context, id strin
 	return nil
 }
 
+func cloneAccessGroupRule(rule *domain.AccessGroupRule) *domain.AccessGroupRule {
+	if rule == nil {
+		return nil
+	}
+	cp := *rule
+	if rule.AllowedModels != nil {
+		cp.AllowedModels = slices.Clone(rule.AllowedModels)
+	} else {
+		cp.AllowedModels = []string{}
+	}
+	return &cp
+}
+
+func (r *MemoryRepository) CreateAccessGroupRule(ctx context.Context, rule *domain.AccessGroupRule) error {
+	if rule == nil {
+		return fmt.Errorf("access group rule is required")
+	}
+	if strings.TrimSpace(rule.OrgID) == "" ||
+		strings.TrimSpace(rule.Name) == "" ||
+		strings.TrimSpace(rule.Attribute) == "" ||
+		strings.TrimSpace(string(rule.Operator)) == "" ||
+		strings.TrimSpace(rule.Value) == "" {
+		return fmt.Errorf("org_id, name, attribute, operator, and value are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rule.ID == "" {
+		rule.ID = uuid.NewString()
+	}
+	if _, exists := r.accessGroupRules[rule.ID]; exists {
+		return fmt.Errorf("access group rule %q already exists: %w", rule.ID, ErrConflict)
+	}
+	now := time.Now().UTC()
+	if rule.CreatedAt.IsZero() {
+		rule.CreatedAt = now
+	}
+	if rule.UpdatedAt.IsZero() {
+		rule.UpdatedAt = rule.CreatedAt
+	}
+	if rule.AllowedModels == nil {
+		rule.AllowedModels = []string{}
+	}
+	r.accessGroupRules[rule.ID] = cloneAccessGroupRule(rule)
+	return nil
+}
+
+func (r *MemoryRepository) GetAccessGroupRule(ctx context.Context, id string) (*domain.AccessGroupRule, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rule, ok := r.accessGroupRules[id]
+	if !ok {
+		return nil, fmt.Errorf("access group rule %q %w", id, ErrNotFound)
+	}
+	return cloneAccessGroupRule(rule), nil
+}
+
+func (r *MemoryRepository) ListAccessGroupRules(ctx context.Context, orgID string, activeOnly bool) ([]*domain.AccessGroupRule, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.AccessGroupRule
+	for _, rule := range r.accessGroupRules {
+		if orgID != "" && rule.OrgID != orgID {
+			continue
+		}
+		if activeOnly && !rule.IsActive {
+			continue
+		}
+		out = append(out, cloneAccessGroupRule(rule))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority > out[j].Priority
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteAccessGroupRule(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.accessGroupRules[id]; !ok {
+		return fmt.Errorf("access group rule %q %w", id, ErrNotFound)
+	}
+	delete(r.accessGroupRules, id)
+	return nil
+}
+
 func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	if vk == nil {
 		return nil
@@ -1856,6 +1949,62 @@ func (r *MemoryRepository) ListSpendLogs(ctx context.Context, orgID string, limi
 	for i := len(r.spendLogs) - 1; i >= 0 && len(out) < limit; i-- {
 		ev := r.spendLogs[i]
 		if orgID == "" || ev.OrgID == orgID {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) GetTeamSpendSummary(ctx context.Context, orgID, teamID string) (*SpendSummary, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sum := &SpendSummary{
+		SpendByProvider:   make(map[string]int64),
+		SpendByModel:      make(map[string]int64),
+		SpendByTeam:       make(map[string]int64),
+		SpendByUser:       make(map[string]int64),
+		SpendByVirtualKey: make(map[string]int64),
+	}
+	for _, ev := range r.spendLogs {
+		if orgID != "" && ev.OrgID != orgID {
+			continue
+		}
+		if ev.TeamID != teamID {
+			continue
+		}
+		sum.TotalRequests++
+		sum.TotalTokens += int64(ev.Usage.TotalTokens)
+		sum.TotalCostMicros += ev.CostMicros
+		if ev.PricingStatus == domain.PricingStatusUnknown || ev.PricingStatus == domain.PricingStatusUnrecorded {
+			sum.UnpricedRequests++
+			sum.UnpricedTokens += int64(ev.Usage.TotalTokens)
+		}
+		sum.SpendByProvider[string(ev.Provider)] += ev.CostMicros
+		sum.SpendByModel[ev.ResolvedModel] += ev.CostMicros
+		if ev.TeamID != "" {
+			sum.SpendByTeam[ev.TeamID] += ev.CostMicros
+		}
+		if ev.UserID != "" {
+			sum.SpendByUser[ev.UserID] += ev.CostMicros
+		}
+		if ev.VirtualKeyID != "" {
+			sum.SpendByVirtualKey[ev.VirtualKeyID] += ev.CostMicros
+		}
+	}
+	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0
+	return sum, nil
+}
+
+func (r *MemoryRepository) ListTeamSpendLogs(ctx context.Context, orgID, teamID string, limit int) ([]domain.SpendEvent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]domain.SpendEvent, 0)
+	for i := len(r.spendLogs) - 1; i >= 0 && len(out) < limit; i-- {
+		ev := r.spendLogs[i]
+		if (orgID == "" || ev.OrgID == orgID) && ev.TeamID == teamID {
 			out = append(out, ev)
 		}
 	}

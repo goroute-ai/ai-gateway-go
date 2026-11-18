@@ -1411,6 +1411,131 @@ func (p *PostgresRepository) IncrementQuotaPolicySpend(ctx context.Context, id s
 	return nil
 }
 
+const accessGroupRuleSelectCols = `id, org_id, name, attribute, operator, value, COALESCE(allowed_models, '{}'), COALESCE(access_group_id, ''), priority, is_active, created_at, updated_at`
+
+func scanAccessGroupRule(row rowScanner) (*domain.AccessGroupRule, error) {
+	var r domain.AccessGroupRule
+	var op string
+	if err := row.Scan(
+		&r.ID, &r.OrgID, &r.Name, &r.Attribute, &op, &r.Value,
+		&r.AllowedModels, &r.AccessGroupID, &r.Priority, &r.IsActive, &r.CreatedAt, &r.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	r.Operator = domain.AccessRuleOperator(op)
+	if r.AllowedModels == nil {
+		r.AllowedModels = []string{}
+	}
+	return &r, nil
+}
+
+func (p *PostgresRepository) CreateAccessGroupRule(ctx context.Context, rule *domain.AccessGroupRule) error {
+	if rule == nil {
+		return fmt.Errorf("access group rule is required")
+	}
+	if strings.TrimSpace(rule.OrgID) == "" ||
+		strings.TrimSpace(rule.Name) == "" ||
+		strings.TrimSpace(rule.Attribute) == "" ||
+		strings.TrimSpace(string(rule.Operator)) == "" ||
+		strings.TrimSpace(rule.Value) == "" {
+		return fmt.Errorf("org_id, name, attribute, operator, and value are required")
+	}
+	if p.pool == nil {
+		return p.mem.CreateAccessGroupRule(ctx, rule)
+	}
+	if rule.ID == "" {
+		rule.ID = uuid.NewString()
+	}
+	allowedModels := rule.AllowedModels
+	if allowedModels == nil {
+		allowedModels = []string{}
+	}
+	const q = `
+		INSERT INTO access_group_rules (id, org_id, name, attribute, operator, value, allowed_models, access_group_id, priority, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING created_at, updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		rule.ID, rule.OrgID, rule.Name, rule.Attribute, string(rule.Operator), rule.Value,
+		allowedModels, rule.AccessGroupID, rule.Priority, rule.IsActive,
+	).Scan(&rule.CreatedAt, &rule.UpdatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("access group rule already exists: %w", ErrConflict)
+		}
+		return err
+	}
+	rule.AllowedModels = allowedModels
+	_ = p.mem.CreateAccessGroupRule(ctx, rule)
+	return nil
+}
+
+func (p *PostgresRepository) GetAccessGroupRule(ctx context.Context, id string) (*domain.AccessGroupRule, error) {
+	if p.pool == nil {
+		return p.mem.GetAccessGroupRule(ctx, id)
+	}
+	r, err := scanAccessGroupRule(p.pool.QueryRow(ctx, `SELECT `+accessGroupRuleSelectCols+` FROM access_group_rules WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("access group rule %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	return r, nil
+}
+
+func (p *PostgresRepository) ListAccessGroupRules(ctx context.Context, orgID string, activeOnly bool) ([]*domain.AccessGroupRule, error) {
+	if p.pool == nil {
+		return p.mem.ListAccessGroupRules(ctx, orgID, activeOnly)
+	}
+	var (
+		clauses []string
+		args    []any
+	)
+	if orgID != "" {
+		args = append(args, orgID)
+		clauses = append(clauses, fmt.Sprintf("org_id = $%d", len(args)))
+	}
+	if activeOnly {
+		clauses = append(clauses, "is_active = TRUE")
+	}
+	q := `SELECT ` + accessGroupRuleSelectCols + ` FROM access_group_rules`
+	if len(clauses) > 0 {
+		q += ` WHERE ` + strings.Join(clauses, " AND ")
+	}
+	q += ` ORDER BY priority DESC, created_at ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.AccessGroupRule
+	for rows.Next() {
+		r, scanErr := scanAccessGroupRule(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteAccessGroupRule(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM access_group_rules WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("access group rule %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteAccessGroupRule(ctx, id)
+	return nil
+}
+
 const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default')`
 
 const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default')`
@@ -2706,6 +2831,136 @@ func (p *PostgresRepository) ListSpendLogs(ctx context.Context, orgID string, li
 	}
 	if len(out) == 0 {
 		return p.mem.ListSpendLogs(ctx, orgID, limit)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) GetTeamSpendSummary(ctx context.Context, orgID, teamID string) (*SpendSummary, error) {
+	if p.pool == nil {
+		return p.mem.GetTeamSpendSummary(ctx, orgID, teamID)
+	}
+	sum := &SpendSummary{
+		SpendByProvider:   make(map[string]int64),
+		SpendByModel:      make(map[string]int64),
+		SpendByTeam:       make(map[string]int64),
+		SpendByUser:       make(map[string]int64),
+		SpendByVirtualKey: make(map[string]int64),
+	}
+	var whereClause string
+	var args []any
+	if orgID != "" {
+		whereClause = "WHERE org_id = $1 AND team_id = $2"
+		args = []any{orgID, teamID}
+	} else {
+		whereClause = "WHERE team_id = $1"
+		args = []any{teamID}
+	}
+
+	qTotals := `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_micros), 0),
+		COUNT(*) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')),
+		COALESCE(SUM(total_tokens) FILTER (WHERE pricing_status IN ('unknown', 'unrecorded')), 0)
+		FROM spend_logs ` + whereClause
+	if err := p.pool.QueryRow(ctx, qTotals, args...).Scan(&sum.TotalRequests, &sum.TotalTokens, &sum.TotalCostMicros, &sum.UnpricedRequests, &sum.UnpricedTokens); err != nil {
+		return p.mem.GetTeamSpendSummary(ctx, orgID, teamID)
+	}
+	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0
+
+	qBreakdown := `
+		SELECT
+			COALESCE(provider, ''),
+			COALESCE(resolved_model, ''),
+			COALESCE(team_id, ''),
+			COALESCE(virtual_key_id, ''),
+			COALESCE(user_id, ''),
+			GROUPING(provider, resolved_model, team_id, virtual_key_id, user_id),
+			COALESCE(SUM(cost_micros), 0)
+		FROM spend_logs ` + whereClause + `
+		GROUP BY GROUPING SETS (
+			(provider),
+			(resolved_model),
+			(team_id),
+			(virtual_key_id),
+			(user_id)
+		)`
+	if rows, err := p.pool.Query(ctx, qBreakdown, args...); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var prov, model, tid, vkID, userID string
+			var grp int
+			var cost int64
+			if err := rows.Scan(&prov, &model, &tid, &vkID, &userID, &grp, &cost); err != nil {
+				continue
+			}
+			switch grp {
+			case 15:
+				sum.SpendByProvider[prov] = cost
+			case 23:
+				sum.SpendByModel[model] = cost
+			case 27:
+				if tid != "" {
+					sum.SpendByTeam[tid] = cost
+				}
+			case 29:
+				if vkID != "" {
+					sum.SpendByVirtualKey[vkID] = cost
+				}
+			case 30:
+				if userID != "" {
+					sum.SpendByUser[userID] = cost
+				}
+			}
+		}
+	}
+	return sum, nil
+}
+
+func (p *PostgresRepository) ListTeamSpendLogs(ctx context.Context, orgID, teamID string, limit int) ([]domain.SpendEvent, error) {
+	if p.pool == nil {
+		return p.mem.ListTeamSpendLogs(ctx, orgID, teamID, limit)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var q string
+	var args []any
+	if orgID != "" {
+		q = `
+			SELECT id, request_id, trace_id, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''), endpoint, requested_model, resolved_model, provider,
+				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
+				cost_micros, pricing_version, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
+			FROM spend_logs WHERE org_id = $1 AND team_id = $2 ORDER BY created_at DESC LIMIT $3`
+		args = []any{orgID, teamID, limit}
+	} else {
+		q = `
+			SELECT id, request_id, trace_id, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''), endpoint, requested_model, resolved_model, provider,
+				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
+				cost_micros, pricing_version, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
+			FROM spend_logs WHERE team_id = $1 ORDER BY created_at DESC LIMIT $2`
+		args = []any{teamID, limit}
+	}
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return p.mem.ListTeamSpendLogs(ctx, orgID, teamID, limit)
+	}
+	defer rows.Close()
+
+	out := make([]domain.SpendEvent, 0)
+	for rows.Next() {
+		var ev domain.SpendEvent
+		var prov string
+		if err := rows.Scan(
+			&ev.ID, &ev.RequestID, &ev.TraceID, &ev.OrgID, &ev.TeamID, &ev.UserID, &ev.VirtualKeyID, &ev.Endpoint, &ev.RequestedModel, &ev.ResolvedModel, &prov,
+			&ev.Usage.PromptTokens, &ev.Usage.CompletionTokens, &ev.Usage.CachedPromptTokens, &ev.Usage.ReasoningTokens, &ev.Usage.TotalTokens,
+			&ev.CostMicros, &ev.PricingVersion, &ev.LatencyMs, &ev.TTFTMs, &ev.StatusCode, &ev.IsStream, &ev.CacheHit, &ev.FallbackAttempted, &ev.RetryCount, &ev.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		ev.Provider = domain.ProviderType(prov)
+		out = append(out, ev)
+	}
+	if len(out) == 0 {
+		return p.mem.ListTeamSpendLogs(ctx, orgID, teamID, limit)
 	}
 	return out, rows.Err()
 }

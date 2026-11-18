@@ -25,6 +25,7 @@ const (
 	OperatorRolePlatformAdmin OperatorRole = "platform_admin"
 	OperatorRoleOrgAdmin      OperatorRole = "org_admin"
 	OperatorRoleOrgViewer     OperatorRole = "org_viewer"
+	OperatorRoleTeamAdmin     OperatorRole = "team_admin"
 )
 
 // OperatorContext represents an authenticated Control Plane operator attached to `r.Context()`.
@@ -32,6 +33,7 @@ type OperatorContext struct {
 	ActorID               string       `json:"actor_id"`
 	Role                  OperatorRole `json:"role"`
 	OrgID                 string       `json:"org_id,omitempty"`
+	TeamID                string       `json:"team_id,omitempty"`
 	AuthMethod            string       `json:"auth_method"` // "master_key", "virtual_key", "jwt"
 	DeprecatedKeyRevokeAt *time.Time   `json:"deprecated_key_revoke_at,omitempty"`
 }
@@ -209,6 +211,33 @@ type JWTKeyMapping struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// AccessRuleOperator defines supported comparison operators for dynamic access group rules.
+type AccessRuleOperator string
+
+const (
+	AccessRuleOperatorEquals   AccessRuleOperator = "equals"
+	AccessRuleOperatorContains AccessRuleOperator = "contains"
+	AccessRuleOperatorPrefix   AccessRuleOperator = "prefix"
+	AccessRuleOperatorInList   AccessRuleOperator = "in_list"
+)
+
+// AccessGroupRule defines an organization-scoped attribute rule that dynamically grants
+// model allowlists and/or access group membership to matching authenticated principals.
+type AccessGroupRule struct {
+	ID            string             `json:"id"`
+	OrgID         string             `json:"org_id"`
+	Name          string             `json:"name"`
+	Attribute     string             `json:"attribute"`
+	Operator      AccessRuleOperator `json:"operator"`
+	Value         string             `json:"value"`
+	AllowedModels []string           `json:"allowed_models"`
+	AccessGroupID string             `json:"access_group_id,omitempty"`
+	Priority      int                `json:"priority"`
+	IsActive      bool               `json:"is_active"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
 // IdentityContext is resolved on the hot path from L1/L2 cache and attached to `r.Context()`.
 type IdentityContext struct {
 	VirtualKeyID                 string              `json:"virtual_key_id"`
@@ -224,6 +253,8 @@ type IdentityContext struct {
 	Principal                    *Principal          `json:"principal,omitempty"`
 	KeyAllowedModels             []string            `json:"key_allowed_models,omitempty"`
 	TeamAllowedModels            []string            `json:"team_allowed_models,omitempty"`
+	DynamicAllowedModels         []string            `json:"dynamic_allowed_models,omitempty"`
+	AccessGroups                 []string            `json:"access_groups,omitempty"`
 	AllowedEndpoints             []string            `json:"allowed_endpoints"`
 	KeyAllowedMCPServers         []string            `json:"key_allowed_mcp_servers"`
 	TeamAllowedMCPServers        []string            `json:"team_allowed_mcp_servers"`

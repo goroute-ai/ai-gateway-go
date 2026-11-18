@@ -51,6 +51,7 @@ type Service struct {
 	invalidationMu          sync.Mutex
 	invalidationCancel      context.CancelFunc
 	nowFn                   func() time.Time
+	invalidationHandlers    []func(storage.InvalidationEvent)
 }
 
 func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, masterAdminKey string, l1TTL, l2TTL time.Duration) *Service {
@@ -453,6 +454,17 @@ func teamEpochKey(teamID string) string {
 	return "gw:auth:team_epoch:" + teamID
 }
 
+// AddInvalidationHandler registers an additional handler (such as RBACEngine.HandleInvalidation)
+// to receive Redis Pub/Sub invalidation events observed by StartInvalidationListener.
+func (s *Service) AddInvalidationHandler(fn func(storage.InvalidationEvent)) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.invalidationMu.Lock()
+	defer s.invalidationMu.Unlock()
+	s.invalidationHandlers = append(s.invalidationHandlers, fn)
+}
+
 func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
 	switch ev.Type {
 	case "key":
@@ -467,6 +479,14 @@ func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
 		if ev.EntityID != "" {
 			s.evictL1ByTeam(ev.EntityID)
 		}
+	}
+
+	s.invalidationMu.Lock()
+	handlers := make([]func(storage.InvalidationEvent), len(s.invalidationHandlers))
+	copy(handlers, s.invalidationHandlers)
+	s.invalidationMu.Unlock()
+	for _, h := range handlers {
+		h(ev)
 	}
 }
 
@@ -1015,10 +1035,17 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 		if idCtx.UserID != "" {
 			actorID = idCtx.UserID
 		}
+		teamID := idCtx.TeamID
+		if teamID == "" && idCtx.UserID != "" {
+			if user, uErr := s.lookupUser(ctx, idCtx.OrgID, idCtx.UserID); uErr == nil && user != nil {
+				teamID = user.TeamID
+			}
+		}
 		return &domain.OperatorContext{
 			ActorID:               actorID,
 			Role:                  opRole,
 			OrgID:                 idCtx.OrgID,
+			TeamID:                teamID,
 			AuthMethod:            "virtual_key",
 			DeprecatedKeyRevokeAt: idCtx.DeprecatedKeyRevokeAt,
 		}, nil
@@ -1069,10 +1096,31 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
 			}
 		}
+		if opRole == domain.OperatorRoleTeamAdmin && user.TeamID != "" {
+			if team, teamErr := s.repo.GetTeam(ctx, user.TeamID); teamErr == nil && team != nil {
+				if team.OrgID != user.OrgID {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "team_org_mismatch",
+						Message:    "Team associated with this operator does not belong to its organization",
+					}
+				}
+				if !team.IsActive {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "team_inactive",
+						Message:    "Team associated with this operator is inactive",
+					}
+				}
+			}
+		}
 		return &domain.OperatorContext{
 			ActorID:    user.ID,
 			Role:       opRole,
 			OrgID:      user.OrgID,
+			TeamID:     user.TeamID,
 			AuthMethod: "jwt",
 		}, nil
 	}
@@ -1093,6 +1141,8 @@ func mapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
 		return domain.OperatorRoleOrgAdmin, true
 	case domain.RoleViewer, domain.RoleOrgViewer:
 		return domain.OperatorRoleOrgViewer, true
+	case domain.RoleTeamAdmin:
+		return domain.OperatorRoleTeamAdmin, true
 	default:
 		return "", false
 	}

@@ -1305,22 +1305,26 @@ func cacheAllowedModelScope(idCtx *domain.IdentityContext) string {
 	if idCtx == nil {
 		return ""
 	}
-	var prefix string
-	var models []string
+	var parts []string
 	switch {
 	case idCtx.KeyAllowedModels != nil:
-		prefix = "key:"
-		models = idCtx.KeyAllowedModels
+		sorted := make([]string, len(idCtx.KeyAllowedModels))
+		copy(sorted, idCtx.KeyAllowedModels)
+		sort.Strings(sorted)
+		parts = append(parts, "key:"+strings.Join(sorted, ","))
 	case idCtx.TeamAllowedModels != nil:
-		prefix = "team:"
-		models = idCtx.TeamAllowedModels
-	default:
-		return ""
+		sorted := make([]string, len(idCtx.TeamAllowedModels))
+		copy(sorted, idCtx.TeamAllowedModels)
+		sort.Strings(sorted)
+		parts = append(parts, "team:"+strings.Join(sorted, ","))
 	}
-	sorted := make([]string, len(models))
-	copy(sorted, models)
-	sort.Strings(sorted)
-	return prefix + strings.Join(sorted, ",")
+	if len(idCtx.DynamicAllowedModels) > 0 {
+		sorted := make([]string, len(idCtx.DynamicAllowedModels))
+		copy(sorted, idCtx.DynamicAllowedModels)
+		sort.Strings(sorted)
+		parts = append(parts, "dyn:"+strings.Join(sorted, ","))
+	}
+	return strings.Join(parts, "|")
 }
 
 // streamCacheControlHeader combines Cache-Control and X-Gateway-Cache-Control

@@ -128,6 +128,9 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 					domain.WriteHTTPError(w, err)
 					return
 				}
+				if svc == nil || svc.DataPlaneResolver() == nil || svc.DataPlaneResolver().rbac == nil {
+					idCtx = rbac.EnrichIdentityWithAccessRules(r.Context(), idCtx)
+				}
 			}
 			if err := enforceReadOnlyKeyMethod(idCtx, r.Method); err != nil {
 				domain.WriteHTTPError(w, err)
@@ -155,6 +158,9 @@ func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) f
 				if err := rbac.AuthorizeEndpoint(idCtx, r.URL.Path); err != nil {
 					domain.WriteHTTPError(w, err)
 					return
+				}
+				if resolver == nil || resolver.rbac == nil {
+					idCtx = rbac.EnrichIdentityWithAccessRules(r.Context(), idCtx)
 				}
 			}
 			if err := enforceReadOnlyKeyMethod(idCtx, r.Method); err != nil {

@@ -20,6 +20,54 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AdminAccessGroupRuleOperator.
+const (
+	AdminAccessGroupRuleOperatorContains AdminAccessGroupRuleOperator = "contains"
+	AdminAccessGroupRuleOperatorEquals   AdminAccessGroupRuleOperator = "equals"
+	AdminAccessGroupRuleOperatorInList   AdminAccessGroupRuleOperator = "in_list"
+	AdminAccessGroupRuleOperatorPrefix   AdminAccessGroupRuleOperator = "prefix"
+)
+
+// Valid indicates whether the value is a known member of the AdminAccessGroupRuleOperator enum.
+func (e AdminAccessGroupRuleOperator) Valid() bool {
+	switch e {
+	case AdminAccessGroupRuleOperatorContains:
+		return true
+	case AdminAccessGroupRuleOperatorEquals:
+		return true
+	case AdminAccessGroupRuleOperatorInList:
+		return true
+	case AdminAccessGroupRuleOperatorPrefix:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminAccessGroupRuleCreateRequestOperator.
+const (
+	AdminAccessGroupRuleCreateRequestOperatorContains AdminAccessGroupRuleCreateRequestOperator = "contains"
+	AdminAccessGroupRuleCreateRequestOperatorEquals   AdminAccessGroupRuleCreateRequestOperator = "equals"
+	AdminAccessGroupRuleCreateRequestOperatorInList   AdminAccessGroupRuleCreateRequestOperator = "in_list"
+	AdminAccessGroupRuleCreateRequestOperatorPrefix   AdminAccessGroupRuleCreateRequestOperator = "prefix"
+)
+
+// Valid indicates whether the value is a known member of the AdminAccessGroupRuleCreateRequestOperator enum.
+func (e AdminAccessGroupRuleCreateRequestOperator) Valid() bool {
+	switch e {
+	case AdminAccessGroupRuleCreateRequestOperatorContains:
+		return true
+	case AdminAccessGroupRuleCreateRequestOperatorEquals:
+		return true
+	case AdminAccessGroupRuleCreateRequestOperatorInList:
+		return true
+	case AdminAccessGroupRuleCreateRequestOperatorPrefix:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminCacheInvalidateRequestScope.
 const (
 	All   AdminCacheInvalidateRequestScope = "all"
@@ -935,6 +983,44 @@ type AdminA2APushConfigRequest struct {
 	TargetUrl string  `json:"target_url"`
 	TaskId    string  `json:"task_id"`
 }
+
+// AdminAccessGroupRule defines model for AdminAccessGroupRule.
+type AdminAccessGroupRule struct {
+	AccessGroupId *string                      `json:"access_group_id,omitempty"`
+	AllowedModels []string                     `json:"allowed_models"`
+	Attribute     string                       `json:"attribute"`
+	CreatedAt     time.Time                    `json:"created_at"`
+	Id            string                       `json:"id"`
+	IsActive      bool                         `json:"is_active"`
+	Name          string                       `json:"name"`
+	Operator      AdminAccessGroupRuleOperator `json:"operator"`
+	OrgId         string                       `json:"org_id"`
+	Priority      int                          `json:"priority"`
+	UpdatedAt     time.Time                    `json:"updated_at"`
+	Value         string                       `json:"value"`
+}
+
+// AdminAccessGroupRuleOperator defines model for AdminAccessGroupRule.Operator.
+type AdminAccessGroupRuleOperator string
+
+// AdminAccessGroupRuleCreateRequest defines model for AdminAccessGroupRuleCreateRequest.
+type AdminAccessGroupRuleCreateRequest struct {
+	AccessGroupId *string   `json:"access_group_id,omitempty"`
+	AllowedModels *[]string `json:"allowed_models,omitempty"`
+
+	// Attribute Trusted Principal or IdentityContext attribute (jwt_claims.<path>, user_id, email, user_role, team_id, issuer)
+	Attribute string                                    `json:"attribute"`
+	Id        *string                                   `json:"id,omitempty"`
+	IsActive  *bool                                     `json:"is_active,omitempty"`
+	Name      string                                    `json:"name"`
+	Operator  AdminAccessGroupRuleCreateRequestOperator `json:"operator"`
+	OrgId     *string                                   `json:"org_id,omitempty"`
+	Priority  *int                                      `json:"priority,omitempty"`
+	Value     string                                    `json:"value"`
+}
+
+// AdminAccessGroupRuleCreateRequestOperator defines model for AdminAccessGroupRuleCreateRequest.Operator.
+type AdminAccessGroupRuleCreateRequestOperator string
 
 // AdminCacheInvalidateRequest defines model for AdminCacheInvalidateRequest.
 type AdminCacheInvalidateRequest struct {
@@ -2171,6 +2257,12 @@ type ListA2AAgentsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// ListAccessGroupRulesParams defines parameters for ListAccessGroupRules.
+type ListAccessGroupRulesParams struct {
+	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	ActiveOnly *bool   `form:"active_only,omitempty" json:"active_only,omitempty"`
+}
+
 // ListAuditLogsParams defines parameters for ListAuditLogs.
 type ListAuditLogsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2306,6 +2398,9 @@ type SetA2AKillSwitchJSONRequestBody = AdminA2AKillSwitchRequest
 
 // SetA2APushConfigJSONRequestBody defines body for SetA2APushConfig for application/json ContentType.
 type SetA2APushConfigJSONRequestBody = AdminA2APushConfigRequest
+
+// CreateAccessGroupRuleJSONRequestBody defines body for CreateAccessGroupRule for application/json ContentType.
+type CreateAccessGroupRuleJSONRequestBody = AdminAccessGroupRuleCreateRequest
 
 // InvalidateCacheJSONRequestBody defines body for InvalidateCache for application/json ContentType.
 type InvalidateCacheJSONRequestBody = AdminCacheInvalidateRequest
@@ -3099,6 +3194,15 @@ type ServerInterface interface {
 	// SetA2APushConfig Create a push notification configuration for an A2A task
 	// (POST /admin/v1/a2a/push-configs)
 	SetA2APushConfig(w http.ResponseWriter, r *http.Request)
+	// ListAccessGroupRules List dynamic attribute-based access group rules
+	// (GET /admin/v1/access-group-rules)
+	ListAccessGroupRules(w http.ResponseWriter, r *http.Request, params ListAccessGroupRulesParams)
+	// CreateAccessGroupRule Create a dynamic attribute-based access group rule
+	// (POST /admin/v1/access-group-rules)
+	CreateAccessGroupRule(w http.ResponseWriter, r *http.Request)
+	// DeleteAccessGroupRule Delete a dynamic attribute-based access group rule
+	// (DELETE /admin/v1/access-group-rules/{id})
+	DeleteAccessGroupRule(w http.ResponseWriter, r *http.Request, id string)
 	// ListAuditLogs List admin and security audit log records
 	// (GET /admin/v1/audit/logs)
 	ListAuditLogs(w http.ResponseWriter, r *http.Request, params ListAuditLogsParams)
@@ -3502,6 +3606,92 @@ func (siw *ServerInterfaceWrapper) SetA2APushConfig(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetA2APushConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAccessGroupRules operation middleware
+func (siw *ServerInterfaceWrapper) ListAccessGroupRules(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAccessGroupRulesParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "active_only" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "active_only", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "active_only"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "active_only", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAccessGroupRules(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateAccessGroupRule operation middleware
+func (siw *ServerInterfaceWrapper) CreateAccessGroupRule(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateAccessGroupRule(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteAccessGroupRule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAccessGroupRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteAccessGroupRule(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6015,6 +6205,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.ListJWTKeyMappings)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.CreateJWTKeyMapping)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/jwt-mappings/{id}", wrapper.DeleteJWTKeyMapping)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/access-group-rules", wrapper.ListAccessGroupRules)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/access-group-rules", wrapper.CreateAccessGroupRule)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/access-group-rules/{id}", wrapper.DeleteAccessGroupRule)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/credentials", wrapper.ListCredentials)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials", wrapper.CreateCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/{credID}/rotate", wrapper.RotateCredential)
@@ -6185,6 +6378,90 @@ func (response SetA2APushConfig201JSONResponse) VisitSetA2APushConfigResponse(w 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAccessGroupRulesRequestObject struct {
+	Params ListAccessGroupRulesParams
+}
+
+type ListAccessGroupRulesResponseObject interface {
+	VisitListAccessGroupRulesResponse(w http.ResponseWriter) error
+}
+
+type ListAccessGroupRules200JSONResponse struct {
+	Data *[]AdminAccessGroupRule `json:"data,omitempty"`
+}
+
+func (response ListAccessGroupRules200JSONResponse) VisitListAccessGroupRulesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateAccessGroupRuleRequestObject struct {
+	Body *CreateAccessGroupRuleJSONRequestBody
+}
+
+type CreateAccessGroupRuleResponseObject interface {
+	VisitCreateAccessGroupRuleResponse(w http.ResponseWriter) error
+}
+
+type CreateAccessGroupRule201JSONResponse AdminAccessGroupRule
+
+func (response CreateAccessGroupRule201JSONResponse) VisitCreateAccessGroupRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateAccessGroupRule400Response struct {
+}
+
+func (response CreateAccessGroupRule400Response) VisitCreateAccessGroupRuleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type CreateAccessGroupRule403Response struct {
+}
+
+func (response CreateAccessGroupRule403Response) VisitCreateAccessGroupRuleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteAccessGroupRuleRequestObject struct {
+	Id string `json:"id"`
+}
+
+type DeleteAccessGroupRuleResponseObject interface {
+	VisitDeleteAccessGroupRuleResponse(w http.ResponseWriter) error
+}
+
+type DeleteAccessGroupRule200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteAccessGroupRule200JSONResponse) VisitDeleteAccessGroupRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -8359,6 +8636,15 @@ type StrictServerInterface interface {
 	// SetA2APushConfig Create a push notification configuration for an A2A task
 	// (POST /admin/v1/a2a/push-configs)
 	SetA2APushConfig(ctx context.Context, request SetA2APushConfigRequestObject) (SetA2APushConfigResponseObject, error)
+	// ListAccessGroupRules List dynamic attribute-based access group rules
+	// (GET /admin/v1/access-group-rules)
+	ListAccessGroupRules(ctx context.Context, request ListAccessGroupRulesRequestObject) (ListAccessGroupRulesResponseObject, error)
+	// CreateAccessGroupRule Create a dynamic attribute-based access group rule
+	// (POST /admin/v1/access-group-rules)
+	CreateAccessGroupRule(ctx context.Context, request CreateAccessGroupRuleRequestObject) (CreateAccessGroupRuleResponseObject, error)
+	// DeleteAccessGroupRule Delete a dynamic attribute-based access group rule
+	// (DELETE /admin/v1/access-group-rules/{id})
+	DeleteAccessGroupRule(ctx context.Context, request DeleteAccessGroupRuleRequestObject) (DeleteAccessGroupRuleResponseObject, error)
 	// ListAuditLogs List admin and security audit log records
 	// (GET /admin/v1/audit/logs)
 	ListAuditLogs(ctx context.Context, request ListAuditLogsRequestObject) (ListAuditLogsResponseObject, error)
@@ -8828,6 +9114,89 @@ func (sh *strictHandler) SetA2APushConfig(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetA2APushConfigResponseObject); ok {
 		if err := validResponse.VisitSetA2APushConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAccessGroupRules operation middleware
+func (sh *strictHandler) ListAccessGroupRules(w http.ResponseWriter, r *http.Request, params ListAccessGroupRulesParams) {
+	var request ListAccessGroupRulesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAccessGroupRules(ctx, request.(ListAccessGroupRulesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAccessGroupRules")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAccessGroupRulesResponseObject); ok {
+		if err := validResponse.VisitListAccessGroupRulesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateAccessGroupRule operation middleware
+func (sh *strictHandler) CreateAccessGroupRule(w http.ResponseWriter, r *http.Request) {
+	var request CreateAccessGroupRuleRequestObject
+
+	var body CreateAccessGroupRuleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateAccessGroupRule(ctx, request.(CreateAccessGroupRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateAccessGroupRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateAccessGroupRuleResponseObject); ok {
+		if err := validResponse.VisitCreateAccessGroupRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteAccessGroupRule operation middleware
+func (sh *strictHandler) DeleteAccessGroupRule(w http.ResponseWriter, r *http.Request, id string) {
+	var request DeleteAccessGroupRuleRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteAccessGroupRule(ctx, request.(DeleteAccessGroupRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteAccessGroupRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteAccessGroupRuleResponseObject); ok {
+		if err := validResponse.VisitDeleteAccessGroupRuleResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

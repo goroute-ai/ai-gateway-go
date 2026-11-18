@@ -62,6 +62,12 @@ type UserLookupRepository interface {
 	GetUser(ctx context.Context, id string) (*domain.User, error)
 }
 
+// TeamSpendRepository is an optional extension of Repository for team-scoped FinOps spend queries.
+type TeamSpendRepository interface {
+	GetTeamSpendSummary(ctx context.Context, orgID, teamID string) (*SpendSummary, error)
+	ListTeamSpendLogs(ctx context.Context, orgID, teamID string, limit int) ([]domain.SpendEvent, error)
+}
+
 // GlobalModelNameLookup is an optional indexed lookup for hot inference paths.
 // Implementations must return every matching provider model when provider is
 // empty so callers can retain conservative cross-provider pricing bounds.

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -32,6 +34,24 @@ func (s *GatewayServer) authorizeAdmin(w http.ResponseWriter, r *http.Request, t
 		return nil, false
 	}
 	return op, true
+}
+
+func (s *GatewayServer) authorizeTeamAdmin(w http.ResponseWriter, r *http.Request, targetOrgID, targetTeamID string, write bool) (*domain.OperatorContext, bool) {
+	op := auth.OperatorFromContext(r.Context())
+	if err := auth.AuthorizeTeamAdminAction(op, targetOrgID, targetTeamID, write); err != nil {
+		domain.WriteHTTPError(w, err)
+		return nil, false
+	}
+	return op, true
+}
+
+func isPrivilegedOrgOrPlatformRole(role domain.Role) bool {
+	switch role {
+	case domain.RolePlatformAdmin, domain.RoleOrgAdmin, domain.RoleOrgViewer, domain.RoleViewer:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
@@ -64,11 +84,23 @@ func (s *GatewayServer) authorizeCustomBaseURL(op *domain.OperatorContext, clean
 }
 
 func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
+	explicitOrgID = strings.TrimSpace(explicitOrgID)
 	if explicitOrgID != "" {
 		return explicitOrgID
 	}
 	if op := auth.OperatorFromContext(r.Context()); op != nil && op.Role != domain.OperatorRolePlatformAdmin {
 		return op.OrgID
+	}
+	return ""
+}
+
+func resolveScopedTeamID(r *http.Request, explicitTeamID string) string {
+	explicitTeamID = strings.TrimSpace(explicitTeamID)
+	if explicitTeamID != "" {
+		return explicitTeamID
+	}
+	if op := auth.OperatorFromContext(r.Context()); op != nil && op.Role == domain.OperatorRoleTeamAdmin {
+		return op.TeamID
 	}
 	return ""
 }
@@ -353,13 +385,41 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 
 func (s *GatewayServer) handleAdminListTeams(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
+	op, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false)
+	if !ok {
+		return
+	}
+	if op.Role == domain.OperatorRoleTeamAdmin {
+		team, err := s.repo.GetTeam(r.Context(), op.TeamID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				writeJSON(w, http.StatusOK, map[string]any{"data": []*domain.Team{}})
+				return
+			}
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		if team == nil || team.OrgID != op.OrgID {
+			writeJSON(w, http.StatusOK, map[string]any{"data": []*domain.Team{}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []*domain.Team{team}})
 		return
 	}
 	teams, err := s.repo.ListTeams(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if teamID != "" {
+		filtered := make([]*domain.Team, 0, 1)
+		for _, t := range teams {
+			if t != nil && t.ID == teamID {
+				filtered = append(filtered, t)
+			}
+		}
+		teams = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": teams})
 }
@@ -397,13 +457,23 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 
 func (s *GatewayServer) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
+	if _, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false); !ok {
 		return
 	}
 	users, err := s.repo.ListUsers(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if teamID != "" {
+		filtered := make([]*domain.User, 0)
+		for _, u := range users {
+			if u != nil && u.TeamID == teamID {
+				filtered = append(filtered, u)
+			}
+		}
+		users = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": users})
 }
@@ -417,13 +487,38 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	req.OrgID = resolveScopedOrgID(r, req.OrgID)
-	op, ok := s.authorizeAdmin(w, r, req.OrgID, true)
+	req.TeamID = strings.TrimSpace(req.TeamID)
+	req.UserID = strings.TrimSpace(req.UserID)
+	op, ok := s.authorizeTeamAdmin(w, r, req.OrgID, req.TeamID, true)
 	if !ok {
 		return
 	}
 	if req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can issue platform_admin keys"})
 		return
+	}
+	if op.Role == domain.OperatorRoleTeamAdmin {
+		if isPrivilegedOrgOrPlatformRole(req.Role) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    fmt.Sprintf("team_admin cannot issue virtual keys with role %q", req.Role),
+			})
+			return
+		}
+		if req.UserID != "" {
+			user, err := s.lookupUserByID(r.Context(), req.UserID)
+			if err != nil || user == nil || user.OrgID != req.OrgID || user.TeamID != op.TeamID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_team_access_denied",
+					Message:    "team_admin can only issue virtual keys for users belonging to their own team",
+				})
+				return
+			}
+		}
 	}
 	if req.KeyType != "" && !auth.IsValidKeyType(req.KeyType) {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_key_type", Message: fmt.Sprintf("unsupported key_type %q", req.KeyType)})
@@ -453,13 +548,23 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 
 func (s *GatewayServer) handleAdminListKeys(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
+	if _, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false); !ok {
 		return
 	}
 	keys, err := s.repo.ListVirtualKeys(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if teamID != "" {
+		filtered := make([]*domain.VirtualKey, 0)
+		for _, k := range keys {
+			if k != nil && k.TeamID == teamID {
+				filtered = append(filtered, k)
+			}
+		}
+		keys = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": keys})
 }
@@ -468,10 +573,16 @@ func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Requ
 	keyID := chi.URLParam(r, "keyID")
 	vk, err := s.repo.GetVirtualKeyByID(r.Context(), keyID)
 	if err != nil {
+		if _, ok := s.authorizeTeamAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), resolveScopedTeamID(r, r.URL.Query().Get("team_id")), true); !ok {
+			return
+		}
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if _, ok := s.authorizeAdmin(w, r, vk.OrgID, true); !ok {
+	if _, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true); !ok {
+		return
+	}
+	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
 		return
 	}
 	if err := s.authSvc.RevokeKey(r.Context(), keyID); err != nil {
@@ -1152,10 +1263,29 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 
 func (s *GatewayServer) handleAdminSpendSummary(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
+	if _, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false); !ok {
 		return
 	}
 	_ = s.spendWorker.FlushNow(r.Context())
+	if teamID != "" {
+		if tsRepo, ok := s.repo.(storage.TeamSpendRepository); ok && tsRepo != nil {
+			sum, err := tsRepo.GetTeamSpendSummary(r.Context(), orgID, teamID)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, sum)
+			return
+		}
+		logs, err := s.repo.ListSpendLogs(r.Context(), orgID, 10000)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, summarizeSpendEventsForTeam(logs, teamID))
+		return
+	}
 	sum, err := s.repo.GetSpendSummary(r.Context(), orgID)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -1164,13 +1294,76 @@ func (s *GatewayServer) handleAdminSpendSummary(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, sum)
 }
 
+func summarizeSpendEventsForTeam(events []domain.SpendEvent, teamID string) *storage.SpendSummary {
+	sum := &storage.SpendSummary{
+		SpendByProvider:   make(map[string]int64),
+		SpendByModel:      make(map[string]int64),
+		SpendByTeam:       make(map[string]int64),
+		SpendByUser:       make(map[string]int64),
+		SpendByVirtualKey: make(map[string]int64),
+	}
+	for _, ev := range events {
+		if ev.TeamID != teamID {
+			continue
+		}
+		sum.TotalRequests++
+		sum.TotalTokens += int64(ev.Usage.TotalTokens)
+		sum.TotalCostMicros += ev.CostMicros
+		if ev.PricingStatus == domain.PricingStatusUnknown || ev.PricingStatus == domain.PricingStatusUnrecorded {
+			sum.UnpricedRequests++
+			sum.UnpricedTokens += int64(ev.Usage.TotalTokens)
+		}
+		sum.SpendByProvider[string(ev.Provider)] += ev.CostMicros
+		sum.SpendByModel[ev.ResolvedModel] += ev.CostMicros
+		if ev.TeamID != "" {
+			sum.SpendByTeam[ev.TeamID] += ev.CostMicros
+		}
+		if ev.UserID != "" {
+			sum.SpendByUser[ev.UserID] += ev.CostMicros
+		}
+		if ev.VirtualKeyID != "" {
+			sum.SpendByVirtualKey[ev.VirtualKeyID] += ev.CostMicros
+		}
+	}
+	sum.TotalCostUSD = float64(sum.TotalCostMicros) / 1_000_000.0
+	return sum
+}
+
 func (s *GatewayServer) handleAdminSpendLogs(w http.ResponseWriter, r *http.Request) {
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
+	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
+	if _, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false); !ok {
 		return
 	}
 	_ = s.spendWorker.FlushNow(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if teamID != "" {
+		if tsRepo, ok := s.repo.(storage.TeamSpendRepository); ok && tsRepo != nil {
+			logs, err := tsRepo.ListTeamSpendLogs(r.Context(), orgID, teamID, limit)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			if logs == nil {
+				logs = []domain.SpendEvent{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": logs})
+			return
+		}
+		logs, err := s.repo.ListSpendLogs(r.Context(), orgID, limit)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		filtered := make([]domain.SpendEvent, 0)
+		for _, ev := range logs {
+			if ev.TeamID == teamID {
+				filtered = append(filtered, ev)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": filtered})
+		return
+	}
 	logs, err := s.repo.ListSpendLogs(r.Context(), orgID, limit)
 	if err != nil {
 		domain.WriteHTTPError(w, err)

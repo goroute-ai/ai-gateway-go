@@ -16,6 +16,7 @@ import (
 type ResolverConfig struct {
 	Service                    *Service
 	Repo                       storage.Repository
+	RBAC                       *RBACEngine
 	JWTVerifier                *JWTVerifier
 	Introspector               *OAuthIntrospector
 	ProxyAuth                  *ProxyAuthenticator
@@ -36,6 +37,7 @@ type ResolverConfig struct {
 type AuthResolver struct {
 	authSvc                    *Service
 	repo                       storage.Repository
+	rbac                       *RBACEngine
 	jwtVerifier                *JWTVerifier
 	introspector               *OAuthIntrospector
 	proxyAuth                  *ProxyAuthenticator
@@ -62,6 +64,7 @@ func NewAuthResolver(cfg ResolverConfig) *AuthResolver {
 	return &AuthResolver{
 		authSvc:                    cfg.Service,
 		repo:                       repo,
+		rbac:                       cfg.RBAC,
 		jwtVerifier:                jwtVerifier,
 		introspector:               cfg.Introspector,
 		proxyAuth:                  cfg.ProxyAuth,
@@ -73,6 +76,13 @@ func NewAuthResolver(cfg ResolverConfig) *AuthResolver {
 		proxyAutoRegister:          cfg.ProxyAutoRegister,
 		proxyDefaultTeamID:         strings.TrimSpace(cfg.ProxyDefaultTeamID),
 		proxyDefaultRole:           strings.TrimSpace(cfg.ProxyDefaultRole),
+	}
+}
+
+// SetRBAC attaches an RBACEngine for dynamic access group rule projection during identity resolution.
+func (r *AuthResolver) SetRBAC(rbac *RBACEngine) {
+	if r != nil {
+		r.rbac = rbac
 	}
 }
 
@@ -102,36 +112,46 @@ func (r *AuthResolver) ResolveRequest(ctx context.Context, req *http.Request) (*
 	}
 
 	token := strings.TrimSpace(cred.Token)
+	var idCtx *domain.IdentityContext
 	if token == "" {
 		if r.proxyAuth != nil && r.proxyAuth.Enabled() {
-			return r.resolveProxyAuth(ctx, req)
-		}
-		if r.authSvc != nil {
-			return r.authSvc.AuthenticateVirtualKey(ctx, "")
-		}
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "missing_api_key",
-			Message:    "Missing Authorization Bearer token",
-		}
-	}
-
-	isMasterFallback := r.authSvc != nil && r.authSvc.AllowMasterKeyDataPlane() && r.authSvc.ValidateAdminKey(token)
-	if cred.Source == CredentialSourceBearer && !strings.HasPrefix(token, "sk-gw-") && !isMasterFallback {
-		if strings.Count(token, ".") == 2 {
-			if r.enableDataPlaneJWT {
-				return r.resolveJWTBearer(ctx, token)
+			idCtx, err = r.resolveProxyAuth(ctx, req)
+		} else if r.authSvc != nil {
+			idCtx, err = r.authSvc.AuthenticateVirtualKey(ctx, "")
+		} else {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "missing_api_key",
+				Message:    "Missing Authorization Bearer token",
 			}
-			// Fail closed when EnableDataPlaneJWT is false.
-			return nil, invalidAPIKeyError()
 		}
-		if r.introspector != nil && r.introspector.Enabled() {
-			return r.resolveIntrospectedBearer(ctx, token)
+	} else {
+		isMasterFallback := r.authSvc != nil && r.authSvc.AllowMasterKeyDataPlane() && r.authSvc.ValidateAdminKey(token)
+		if cred.Source == CredentialSourceBearer && !strings.HasPrefix(token, "sk-gw-") && !isMasterFallback {
+			if strings.Count(token, ".") == 2 {
+				if r.enableDataPlaneJWT {
+					idCtx, err = r.resolveJWTBearer(ctx, token)
+				} else {
+					// Fail closed when EnableDataPlaneJWT is false.
+					return nil, invalidAPIKeyError()
+				}
+			} else if r.introspector != nil && r.introspector.Enabled() {
+				idCtx, err = r.resolveIntrospectedBearer(ctx, token)
+			} else {
+				idCtx, err = r.authenticateVirtualKeyWithPrincipal(ctx, token)
+			}
+		} else {
+			idCtx, err = r.authenticateVirtualKeyWithPrincipal(ctx, token)
 		}
 	}
-
-	return r.authenticateVirtualKeyWithPrincipal(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if r.rbac != nil && idCtx != nil {
+		idCtx = r.rbac.EnrichIdentityWithAccessRules(ctx, idCtx)
+	}
+	return idCtx, nil
 }
 
 func (r *AuthResolver) authenticateVirtualKeyWithPrincipal(ctx context.Context, rawToken string) (*domain.IdentityContext, error) {
