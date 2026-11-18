@@ -723,19 +723,14 @@ func (s *GatewayServer) handleSCIMReplaceGroup(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	prevMembers := s.collectGroupMemberIDs(r.Context(), orgID, existing.ID)
+	newMembers := extractMemberIDs(req.Members)
 	updated := *existing
 	updated.Name = displayName
-	if err := s.repo.UpdateTeam(r.Context(), &updated); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", err.Error())
+	if !s.updateSCIMGroup(w, r, &updated, newMembers, true) {
 		return
 	}
-	if err := s.syncSCIMGroupMembers(r.Context(), orgID, updated.ID, req.Members, true); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "invalidValue", err.Error())
-		return
-	}
-	if s.authSvc != nil {
-		s.authSvc.InvalidateTeam(r.Context(), updated.ID)
-	}
+	s.invalidateSCIMGroupCaches(r.Context(), orgID, updated.ID, prevMembers, newMembers)
 	s.audit(r.Context(), orgID, "scim.group.updated", "team", updated.ID, map[string]any{
 		"name":         updated.Name,
 		"member_count": len(req.Members),
@@ -759,7 +754,8 @@ func (s *GatewayServer) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Requ
 	}
 
 	updated := *existing
-	currentMembers := s.collectGroupMemberIDs(r.Context(), orgID, existing.ID)
+	prevMembers := s.collectGroupMemberIDs(r.Context(), orgID, existing.ID)
+	currentMembers := append([]string(nil), prevMembers...)
 	membersChanged := false
 
 	for _, op := range patch.Operations {
@@ -854,28 +850,66 @@ func (s *GatewayServer) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Requ
 			}
 		}
 	}
-	if err := s.repo.UpdateTeam(r.Context(), &updated); err != nil {
-		writeSCIMError(w, http.StatusBadRequest, "", err.Error())
+	if !s.updateSCIMGroup(w, r, &updated, currentMembers, membersChanged) {
 		return
 	}
 	if membersChanged {
-		refs := make([]scimMemberRef, 0, len(currentMembers))
-		for _, id := range currentMembers {
-			refs = append(refs, scimMemberRef{Value: id})
-		}
-		if err := s.syncSCIMGroupMembers(r.Context(), orgID, updated.ID, refs, true); err != nil {
-			writeSCIMError(w, http.StatusBadRequest, "invalidValue", err.Error())
-			return
-		}
-	}
-	if s.authSvc != nil {
-		s.authSvc.InvalidateTeam(r.Context(), updated.ID)
+		s.invalidateSCIMGroupCaches(r.Context(), orgID, updated.ID, prevMembers, currentMembers)
+	} else {
+		s.invalidateSCIMGroupCaches(r.Context(), orgID, updated.ID, nil, nil)
 	}
 	s.audit(r.Context(), orgID, "scim.group.patched", "team", updated.ID, map[string]any{
 		"name":         updated.Name,
 		"member_count": len(currentMembers),
 	})
 	writeSCIMJSON(w, http.StatusOK, s.toSCIMGroup(r.Context(), orgID, &updated))
+}
+
+func (s *GatewayServer) updateSCIMGroup(w http.ResponseWriter, r *http.Request, group *domain.Team, members []string, replace bool) bool {
+	repo, ok := s.repo.(storage.SCIMRepository)
+	if !ok {
+		writeSCIMError(w, http.StatusServiceUnavailable, "", "SCIM group updates are unavailable")
+		return false
+	}
+	if err := repo.UpdateSCIMGroup(r.Context(), group, members, replace); err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			writeSCIMError(w, http.StatusConflict, "", "Group changed or the name is already in use")
+		} else {
+			writeSCIMError(w, http.StatusBadRequest, "invalidValue", "Could not apply group update")
+		}
+		return false
+	}
+	return true
+}
+
+func (s *GatewayServer) invalidateSCIMGroupCaches(ctx context.Context, orgID, teamID string, prevMembers, nextMembers []string) {
+	if s.authSvc != nil {
+		s.authSvc.InvalidateTeam(ctx, teamID)
+		seen := make(map[string]struct{}, len(prevMembers)+len(nextMembers))
+		for _, uid := range prevMembers {
+			if uid == "" {
+				continue
+			}
+			if _, ok := seen[uid]; ok {
+				continue
+			}
+			seen[uid] = struct{}{}
+			s.authSvc.InvalidateUserKeys(ctx, orgID, uid)
+		}
+		for _, uid := range nextMembers {
+			if uid == "" {
+				continue
+			}
+			if _, ok := seen[uid]; ok {
+				continue
+			}
+			seen[uid] = struct{}{}
+			s.authSvc.InvalidateUserKeys(ctx, orgID, uid)
+		}
+	}
+	if s.rbac != nil {
+		s.rbac.InvalidateAccessGroupRules(ctx, orgID)
+	}
 }
 
 func (s *GatewayServer) handleSCIMDeleteGroup(w http.ResponseWriter, r *http.Request) {

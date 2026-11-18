@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -324,6 +326,42 @@ func TestSCIMGroupLifecycle(t *testing.T) {
 	require.NoError(t, json.Unmarshal(recList.Body.Bytes(), &listResp))
 	assert.Equal(t, float64(1), listResp["totalResults"])
 
+	// Issue key for usr_g_1 and warm cache before SCIM patch
+	memberKey, err := srv.AuthService().IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  "org_a",
+		TeamID: groupID,
+		UserID: "usr_g_1",
+		Name:   "usr-g-1-key",
+		Role:   domain.RoleDeveloper,
+	})
+	require.NoError(t, err)
+	idBefore, err := srv.AuthService().AuthenticateVirtualKey(ctx, memberKey.RawKey)
+	require.NoError(t, err)
+	assert.Equal(t, groupID, idBefore.TeamID)
+
+	// Failed atomic PATCH rolls back displayName + memberships and leaves auth cache intact
+	invalidPatch := doSCIMReq(t, srv, http.MethodPatch, "/scim/v2/Groups/"+groupID, scimKey.RawKey, map[string]any{
+		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		"Operations": []map[string]any{
+			{"op": "replace", "path": "displayName", "value": "Invalid Partial Name"},
+			{"op": "add", "path": "members", "value": []map[string]string{{"value": "missing-user"}}},
+		},
+	})
+	require.Equal(t, http.StatusBadRequest, invalidPatch.Code)
+	unchanged := doSCIMReq(t, srv, http.MethodGet, "/scim/v2/Groups/"+groupID, scimKey.RawKey, nil)
+	require.Equal(t, http.StatusOK, unchanged.Code)
+	assert.True(t, strings.Contains(unchanged.Body.String(), "ML Platform"))
+	assert.False(t, strings.Contains(unchanged.Body.String(), "Invalid Partial Name"))
+
+	// Stale UpdatedAt returns ErrConflict from UpdateSCIMGroup
+	staleTeam, err := repo.GetTeam(ctx, groupID)
+	require.NoError(t, err)
+	staleSnapshot := *staleTeam
+	staleSnapshot.UpdatedAt = staleSnapshot.UpdatedAt.Add(-time.Minute)
+	staleSnapshot.Name = "Stale Rename"
+	err = repo.(storage.SCIMRepository).UpdateSCIMGroup(ctx, &staleSnapshot, []string{"usr_g_1"}, true)
+	assert.ErrorIs(t, err, storage.ErrConflict)
+
 	// 3. PATCH add usr_g_2 and remove usr_g_1
 	recPatch := doSCIMReq(t, srv, http.MethodPatch, "/scim/v2/Groups/"+groupID, scimKey.RawKey, map[string]any{
 		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
@@ -347,6 +385,38 @@ func TestSCIMGroupLifecycle(t *testing.T) {
 	assert.Equal(t, "ML Core", gotGrp.DisplayName)
 	require.Len(t, gotGrp.Members, 1)
 	assert.Equal(t, "usr_g_2", gotGrp.Members[0].Value)
+
+	// Post-commit cache invalidation reflects usr_g_1 removal and evicts cached keys
+	recUserAfter := doSCIMReq(t, srv, http.MethodGet, "/scim/v2/Users/usr_g_1", scimKey.RawKey, nil)
+	require.Equal(t, http.StatusOK, recUserAfter.Code)
+	assert.False(t, strings.Contains(recUserAfter.Body.String(), `"value":"`+groupID+`"`))
+	// Warm key cache before direct repo mutation so SCIM PATCH must invalidate it
+	_, err = srv.AuthService().AuthenticateVirtualKey(ctx, memberKey.RawKey)
+	require.NoError(t, err)
+	storedK, err := repo.GetVirtualKeyByHash(ctx, memberKey.KeyHash)
+	require.NoError(t, err)
+	storedK.AllowedModels = []string{"evicted-refresh-model"}
+	require.NoError(t, repo.UpdateVirtualKey(ctx, storedK))
+	recPatch2 := doSCIMReq(t, srv, http.MethodPatch, "/scim/v2/Groups/"+groupID, scimKey.RawKey, map[string]any{
+		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		"Operations": []map[string]any{
+			{"op": "add", "path": "members", "value": []map[string]any{{"value": "usr_g_1"}}},
+		},
+	})
+	require.Equal(t, http.StatusOK, recPatch2.Code)
+	idEvicted, err := srv.AuthService().AuthenticateVirtualKey(ctx, memberKey.RawKey)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"evicted-refresh-model"}, idEvicted.KeyAllowedModels)
+
+	// Restore previous single-member state before PUT step
+	recPatchRestore := doSCIMReq(t, srv, http.MethodPatch, "/scim/v2/Groups/"+groupID, scimKey.RawKey, map[string]any{
+		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		"Operations": []map[string]any{
+			{"op": "remove", "path": `members[value eq "usr_g_1"]`},
+		},
+	})
+	require.Equal(t, http.StatusOK, recPatchRestore.Code)
+	require.NoError(t, srv.AuthService().RevokeKey(ctx, memberKey.ID))
 
 	// 4. PUT replace group
 	recPut := doSCIMReq(t, srv, http.MethodPut, "/scim/v2/Groups/"+groupID, scimKey.RawKey, map[string]any{
