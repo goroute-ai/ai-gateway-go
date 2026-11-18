@@ -37,6 +37,13 @@ tracing:
 storage:
   mode: "postgres"           # "postgres" (recommended for production) or "memory"
   postgres_dsn: "postgres://gateway:STRONG_DB_PASSWORD@postgres-host:5432/aigateway?sslmode=require"
+  rds_iam:
+    enabled: false
+    region: ""               # RDS AWS region. Use a DSN with sslmode=verify-full.
+    # access_key_id: "os.environ/AWS_ACCESS_KEY_ID"
+    # secret_access_key: "os.environ/AWS_SECRET_ACCESS_KEY"
+    # role_arn: "os.environ/AWS_ROLE_ARN"
+    # web_identity_token_file: "os.environ/AWS_WEB_IDENTITY_TOKEN_FILE"
   redis_addr: "redis-host:6379"
   redis_addrs: []            # Optional list of Redis Cluster / Sentinel seed addresses (overrides redis_addr when non-empty)
   redis_master_name: ""      # Optional Redis Sentinel master name
@@ -48,6 +55,10 @@ auth:
   master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
   master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
   allow_master_key_data_plane: false
+  allow_ambient_cloud_iam: false
+  # Secure delivery is required to activate scheduled replacement keys.
+  # key_rotation_delivery_url: "https://secrets.example.com/goroute/key-rotation"
+  # key_rotation_delivery_token: "os.environ/GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"
   jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
   jwt_issuer: ""
   jwt_audience: ""

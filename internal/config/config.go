@@ -243,14 +243,25 @@ type ServerConfig struct {
 	MaxConcurrentFileUploads  int           `yaml:"max_concurrent_file_uploads"`    // 0 = unlimited
 }
 
+type RDSIAMConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Region          string `yaml:"region"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+	SessionToken    string `yaml:"session_token,omitempty"`
+	RoleARN         string `yaml:"role_arn,omitempty"`
+	WebIdentityFile string `yaml:"web_identity_token_file,omitempty"`
+}
+
 type StorageConfig struct {
-	Mode            string   `yaml:"mode"` // "memory" or "postgres"
-	PostgresDSN     string   `yaml:"postgres_dsn"`
-	RedisAddr       string   `yaml:"redis_addr"`
-	RedisAddrs      []string `yaml:"redis_addrs"`
-	RedisMasterName string   `yaml:"redis_master_name"`
-	RedisPass       string   `yaml:"redis_pass"`
-	RedisDB         int      `yaml:"redis_db"`
+	Mode            string       `yaml:"mode"` // "memory" or "postgres"
+	PostgresDSN     string       `yaml:"postgres_dsn"`
+	RDSIAM          RDSIAMConfig `yaml:"rds_iam,omitempty"`
+	RedisAddr       string       `yaml:"redis_addr"`
+	RedisAddrs      []string     `yaml:"redis_addrs"`
+	RedisMasterName string       `yaml:"redis_master_name"`
+	RedisPass       string       `yaml:"redis_pass"`
+	RedisDB         int          `yaml:"redis_db"`
 }
 
 // OIDCClaimMapping maps custom JWT claim paths to GoRoute identity fields.
@@ -331,6 +342,7 @@ type SSOProviderConfig struct {
 }
 
 type AuthConfig struct {
+	AllowAmbientCloudIAM     bool                `yaml:"allow_ambient_cloud_iam,omitempty"`
 	MasterAdminKey           string              `yaml:"master_admin_key"`
 	MasterEncryptionKey      string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
 	AllowMasterKeyDataPlane  bool                `yaml:"allow_master_key_data_plane"`

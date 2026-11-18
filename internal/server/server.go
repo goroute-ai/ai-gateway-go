@@ -25,6 +25,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openaicompat"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -202,6 +203,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	ollamaAdp.SetMediaFetcher(mediaClient, mediaPolicy)
 	vertexAdp := vertex.NewAdapter(adapterClient, netPolicy)
 	vertexAdp.SetMediaFetcher(mediaClient, mediaPolicy)
+	vertexAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
+	bedrockAdp := bedrock.NewAdapter(adapterClient, netPolicy)
+	bedrockAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
 
 	reg := adapter.NewRegistry()
 	reg.Register(openaiAdp)
@@ -209,11 +213,12 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	reg.Register(geminiAdp)
 	reg.Register(mistralAdp)
 	reg.Register(ollamaAdp)
-	reg.Register(bedrock.NewAdapter(adapterClient, netPolicy))
+	reg.Register(bedrockAdp)
 	reg.Register(vertexAdp)
 	reg.Register(cohere.NewAdapter(adapterClient, netPolicy))
 
 	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
+	profileReg.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
 	for _, custom := range cfg.Providers.CustomOpenAICompatible {
 		opts := openaicompat.CustomProfileOptions{
 			SupportedOperations: parseCustomProviderOperations(custom.SupportedOperations),
@@ -538,6 +543,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
+	mcpAuthResolver.SetTokenCache(upstream.NewDistributedTokenCache(redisFabric, upstream.DistributedTokenCacheConfig{
+		EncryptionKey: cfg.Auth.MasterEncryptionKey,
+	}))
 	mcpHub := mcp.NewHub(repo, vault, rbac, mcpDispatcher, mcpAuthResolver)
 
 	mcpSecret := cfg.MCP.CacheKeySecret

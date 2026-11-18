@@ -740,3 +740,13 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 - OpenAI-compatible profiles in `internal/adapter/openaicompat` declare explicit `SupportedOperations`, `SupportsStreamOptions`, `DropUnsupportedParams` (opt-in, default `false`), `StrippedParams`, `ExtraBodyFields`, and `ReasoningMapping`.
 - Local/self-hosted profiles (`ollama`, `vllm`, `lm_studio`, `llamafile`, `xinference`) require explicit allowlisting in `security.network` if targeting private/loopback addresses.
 - Imported catalog pricing defaults to `PricingStatusUnknown` (non-zero rates) or `PricingStatusUnrecorded` (zero rates); budgeted traffic requires `PricingStatusVerified` or `PricingStatusCustom` plus a deterministic pre-dispatch bound.
+
+### Federated identity, key delivery, and upstream IAM
+
+Link an existing user with the `oidc_issuer` and `oidc_subject` fields on the admin user API. The issuer must match the verified provider issuer, and the subject must match the configured subject claim. The gateway searches for this pair within the resolved organization. Legacy subject-only JWT links are accepted only with one enabled verifier and an unambiguous match. Browser SSO requires an issuer-bound link or explicit JIT provisioning.
+
+With `auth.enable_hibp_check` enabled, the gateway computes a password digest in memory and sends its five-character prefix to the configured range service. A confirmed breach blocks login and password changes. Service outages are logged and preserve password availability. Administrators can reset a breached operator password through the authorized password endpoint.
+
+Scheduled key rotation requires `auth.key_rotation_delivery_url` and `auth.key_rotation_delivery_token`. The gateway sends an authenticated HTTPS POST containing the organization ID, key ID, and staged replacement key (reusing the same encrypted staged replacement across retries). The receiver should store the credential securely before returning a 2xx response, which promotes the replacement and starts the old key's grace period. Failed or unconfigured delivery leaves the current key active. Manual rotations still return the replacement to the authorized caller.
+
+For RDS IAM, enable `storage.rds_iam.enabled`, set the region, and use the actual RDS endpoint and database user in a PostgreSQL DSN with `sslmode=verify-full`. Both startup and migration-only mode refresh IAM tokens on new connections. Use explicit credentials or configure the role and web identity token file. Set `auth.allow_ambient_cloud_iam` to opt in to Bedrock, Vertex, Azure, and RDS ambient credential resolution. Gateway replicas sharing a Redis upstream cache must use the same master encryption key.

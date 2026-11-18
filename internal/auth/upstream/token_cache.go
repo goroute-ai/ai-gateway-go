@@ -2,6 +2,8 @@ package upstream
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -45,6 +47,7 @@ type TokenRefreshFunc func(ctx context.Context) (accessToken string, ttl time.Du
 
 // DistributedTokenCacheConfig tunes L1/L2 caching and Redis distributed locking.
 type DistributedTokenCacheConfig struct {
+	EncryptionKey    string // Shared gateway key; Redis L2 caching requires this key.
 	KeyPrefix        string
 	EarlyRefreshSkew time.Duration
 	LockTTL          time.Duration
@@ -58,6 +61,7 @@ type DistributedTokenCacheConfig struct {
 // a Redis distributed mutex (SET NX PX + Lua release).
 type DistributedTokenCache struct {
 	redis            *storage.RedisFabric
+	cipher           cipher.AEAD
 	keyPrefix        string
 	earlyRefreshSkew time.Duration
 	lockTTL          time.Duration
@@ -98,8 +102,20 @@ func NewDistributedTokenCache(redisFabric *storage.RedisFabric, cfg DistributedT
 		nowFn = time.Now
 	}
 
+	var aead cipher.AEAD
+	if cfg.EncryptionKey != "" {
+		key := sha256.Sum256([]byte("goroute/upstream-token-cache/v1\x00" + cfg.EncryptionKey))
+		block, _ := aes.NewCipher(key[:])
+		aead, _ = cipher.NewGCMWithRandomNonce(block)
+	}
+	if aead == nil {
+		// Fail closed against writing plaintext tokens to shared Redis.
+		redisFabric = nil
+	}
+
 	return &DistributedTokenCache{
 		redis:            redisFabric,
+		cipher:           aead,
 		keyPrefix:        prefix,
 		earlyRefreshSkew: skew,
 		lockTTL:          lockTTL,
@@ -333,11 +349,15 @@ func (c *DistributedTokenCache) getL2(ctx context.Context, digest string) (Cache
 		return CachedToken{}, false
 	}
 	raw, ok := val.([]byte)
-	if !ok || len(raw) == 0 {
+	if !ok || len(raw) == 0 || c.cipher == nil {
+		return CachedToken{}, false
+	}
+	plaintext, err := c.cipher.Open(nil, nil, raw, []byte(dataKey))
+	if err != nil {
 		return CachedToken{}, false
 	}
 	var entry CachedToken
-	if err := json.Unmarshal(raw, &entry); err != nil {
+	if err := json.Unmarshal(plaintext, &entry); err != nil {
 		return CachedToken{}, false
 	}
 	if !c.isFresh(entry) {
@@ -347,7 +367,7 @@ func (c *DistributedTokenCache) getL2(ctx context.Context, digest string) (Cache
 }
 
 func (c *DistributedTokenCache) setL2(ctx context.Context, digest string, entry CachedToken) {
-	if c.redis == nil || c.redis.Client() == nil {
+	if c.redis == nil || c.redis.Client() == nil || c.cipher == nil {
 		return
 	}
 	ttl := entry.ExpiresAt.Sub(c.now().UTC())
@@ -359,8 +379,9 @@ func (c *DistributedTokenCache) setL2(ctx context.Context, digest string, entry 
 		return
 	}
 	dataKey := c.dataKey(digest)
+	sealed := c.cipher.Seal(nil, nil, raw, []byte(dataKey))
 	_, _ = c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.Set(ctx, dataKey, raw, ttl).Result()
+		return rdb.Set(ctx, dataKey, sealed, ttl).Result()
 	})
 }
 
@@ -396,6 +417,15 @@ func (c *DistributedTokenCache) dataKey(digest string) string {
 
 func (c *DistributedTokenCache) lockKey(digest string) string {
 	return c.keyPrefix + "lock:" + digest
+}
+
+func tokenCacheKey(authCtx *UpstreamAuthContext, fields ...string) string {
+	orgID, serverID := "", ""
+	if authCtx != nil {
+		orgID, serverID = authCtx.CallingOrgID, authCtx.ServerID
+	}
+	encoded, _ := json.Marshal(append([]string{orgID, serverID}, fields...))
+	return hashTokenCacheKey(string(encoded))
 }
 
 func hashTokenCacheKey(key string) string {
