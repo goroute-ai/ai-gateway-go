@@ -644,3 +644,71 @@ auth:
 		})
 	}
 }
+
+func TestConfig_FinOpsSoftBudgetYAMLAndValidation(t *testing.T) {
+	yamlContent := `
+server:
+  environment: test
+finops:
+  soft_budget_webhook_url: "https://alerts.example.com/soft-budget"
+  soft_budget_cooldown_sec: 900
+  budget_exceeded_throttle_pct: 0.25
+`
+	tmpPath := filepath.Join(t.TempDir(), "finops_config.yaml")
+	if err := os.WriteFile(tmpPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	cfg, err := config.Load(tmpPath)
+	if err != nil {
+		t.Fatalf("load finops config: %v", err)
+	}
+	if cfg.FinOps.SoftBudgetWebhookURL != "https://alerts.example.com/soft-budget" {
+		t.Fatalf("SoftBudgetWebhookURL = %q", cfg.FinOps.SoftBudgetWebhookURL)
+	}
+	if cfg.FinOps.SoftBudgetCooldownSec != 900 {
+		t.Fatalf("SoftBudgetCooldownSec = %d, want 900", cfg.FinOps.SoftBudgetCooldownSec)
+	}
+	if cfg.FinOps.BudgetExceededThrottlePct != 0.25 {
+		t.Fatalf("BudgetExceededThrottlePct = %v, want 0.25", cfg.FinOps.BudgetExceededThrottlePct)
+	}
+
+	cases := []struct {
+		name string
+		edit func(*config.Config)
+	}{
+		{
+			name: "invalid webhook scheme",
+			edit: func(c *config.Config) {
+				c.FinOps.SoftBudgetWebhookURL = "ftp://alerts.example.com/hook"
+			},
+		},
+		{
+			name: "negative cooldown",
+			edit: func(c *config.Config) {
+				c.FinOps.SoftBudgetCooldownSec = -1
+			},
+		},
+		{
+			name: "throttle pct > 1",
+			edit: func(c *config.Config) {
+				c.FinOps.BudgetExceededThrottlePct = 1.5
+			},
+		},
+		{
+			name: "throttle pct < 0",
+			edit: func(c *config.Config) {
+				c.FinOps.BudgetExceededThrottlePct = -0.1
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := config.Default()
+			c.Server.Environment = "test"
+			tc.edit(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected validation error for %s", tc.name)
+			}
+		})
+	}
+}

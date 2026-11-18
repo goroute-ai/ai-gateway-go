@@ -783,23 +783,29 @@ func (r *AuthResolver) projectUserIdentity(
 	}
 
 	idCtx := &domain.IdentityContext{
-		KeyPrefix:           fmt.Sprintf("%s:%s", prefixMethod, user.ID),
-		OrgID:               org.ID,
-		TeamID:              teamID,
-		UserID:              user.ID,
-		Role:                user.Role,
-		Principal:           principal,
-		AllowedEndpoints:    []string{"*"},
-		UserRPMLimit:        user.RPMLimit,
-		UserTPMLimit:        user.TPMLimit,
-		UserMaxConcurrent:   user.MaxConcurrentRequests,
-		UserMaxBudgetMicros: user.MaxBudgetMicros,
-		UserSpentMicros:     user.SpentMicros,
-		OrgRPMLimit:         org.RPMLimit,
-		OrgTPMLimit:         org.TPMLimit,
-		OrgMaxConcurrent:    org.MaxConcurrentRequests,
-		OrgMaxBudgetMicros:  org.MaxBudgetMicros,
-		OrgSpentMicros:      org.SpentMicros,
+		KeyPrefix:                    fmt.Sprintf("%s:%s", prefixMethod, user.ID),
+		OrgID:                        org.ID,
+		TeamID:                       teamID,
+		UserID:                       user.ID,
+		Role:                         user.Role,
+		Principal:                    principal,
+		AllowedEndpoints:             []string{"*"},
+		UserRPMLimit:                 user.RPMLimit,
+		UserTPMLimit:                 user.TPMLimit,
+		UserMaxConcurrent:            user.MaxConcurrentRequests,
+		UserMaxBudgetMicros:          user.MaxBudgetMicros,
+		UserSoftBudgetMicros:         user.SoftBudgetMicros,
+		UserThrottleOnBudgetExceeded: user.ThrottleOnBudgetExceeded,
+		UserBudgetFallbacks:          domain.CloneBudgetFallbacks(user.BudgetFallbacks),
+		UserSpentMicros:              user.SpentMicros,
+		OrgRPMLimit:                  org.RPMLimit,
+		OrgTPMLimit:                  org.TPMLimit,
+		OrgMaxConcurrent:             org.MaxConcurrentRequests,
+		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
+		OrgSoftBudgetMicros:          org.SoftBudgetMicros,
+		OrgThrottleOnBudgetExceeded:  org.ThrottleOnBudgetExceeded,
+		OrgBudgetFallbacks:           domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+		OrgSpentMicros:               org.SpentMicros,
 	}
 
 	if teamID != "" {
@@ -821,6 +827,9 @@ func (r *AuthResolver) projectUserIdentity(
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
+		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
+		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
 		idCtx.TeamSpentMicros = team.SpentMicros
 	}
 

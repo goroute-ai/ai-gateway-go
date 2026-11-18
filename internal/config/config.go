@@ -408,10 +408,13 @@ type RateLimitConfig struct {
 }
 
 type FinOpsConfig struct {
-	ChannelBufferSize int           `yaml:"channel_buffer_size"`
-	BatchSize         int           `yaml:"batch_size"`
-	FlushInterval     time.Duration `yaml:"flush_interval"`
-	WorkerCount       int           `yaml:"worker_count"`
+	ChannelBufferSize         int           `yaml:"channel_buffer_size"`
+	BatchSize                 int           `yaml:"batch_size"`
+	FlushInterval             time.Duration `yaml:"flush_interval"`
+	WorkerCount               int           `yaml:"worker_count"`
+	SoftBudgetWebhookURL      string        `yaml:"soft_budget_webhook_url,omitempty"`
+	SoftBudgetCooldownSec     int           `yaml:"soft_budget_cooldown_sec,omitempty"`
+	BudgetExceededThrottlePct float64       `yaml:"budget_exceeded_throttle_pct,omitempty"`
 }
 
 type DiscoveryConfig struct {
@@ -492,10 +495,12 @@ func Default() *Config {
 			RedisTimeout:        50 * time.Millisecond,
 		},
 		FinOps: FinOpsConfig{
-			ChannelBufferSize: 16384,
-			BatchSize:         250,
-			FlushInterval:     500 * time.Millisecond,
-			WorkerCount:       2,
+			ChannelBufferSize:         16384,
+			BatchSize:                 250,
+			FlushInterval:             500 * time.Millisecond,
+			WorkerCount:               2,
+			SoftBudgetCooldownSec:     3600,
+			BudgetExceededThrottlePct: 0.10,
 		},
 		Discovery: DiscoveryConfig{
 			Enabled:      true,
@@ -751,6 +756,19 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 			cfg.FinOps.FlushInterval = d
 		}
 	}
+	if v := os.Getenv("GATEWAY_FINOPS_SOFT_BUDGET_WEBHOOK_URL"); v != "" {
+		cfg.FinOps.SoftBudgetWebhookURL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_FINOPS_SOFT_BUDGET_COOLDOWN_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.FinOps.SoftBudgetCooldownSec = n
+		}
+	}
+	if v := os.Getenv("GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.FinOps.BudgetExceededThrottlePct = f
+		}
+	}
 	if v := os.Getenv("GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = b
@@ -855,6 +873,25 @@ func (c *Config) Validate() error {
 	}
 	if c.Router.Bandit.DefaultAlpha < 0 || c.Router.Bandit.DefaultBeta < 0 {
 		return fmt.Errorf("invalid router.bandit priors: alpha=%v beta=%v", c.Router.Bandit.DefaultAlpha, c.Router.Bandit.DefaultBeta)
+	}
+	if rawWebhook := strings.TrimSpace(c.FinOps.SoftBudgetWebhookURL); rawWebhook != "" {
+		u, err := url.Parse(rawWebhook)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid finops.soft_budget_webhook_url %q: must be a valid http or https URL", c.FinOps.SoftBudgetWebhookURL)
+		}
+		c.FinOps.SoftBudgetWebhookURL = rawWebhook
+	}
+	if c.FinOps.SoftBudgetCooldownSec < 0 {
+		return fmt.Errorf("invalid finops.soft_budget_cooldown_sec: %d", c.FinOps.SoftBudgetCooldownSec)
+	}
+	if c.FinOps.SoftBudgetCooldownSec == 0 {
+		c.FinOps.SoftBudgetCooldownSec = 3600
+	}
+	if c.FinOps.BudgetExceededThrottlePct < 0 || c.FinOps.BudgetExceededThrottlePct > 1 {
+		return fmt.Errorf("invalid finops.budget_exceeded_throttle_pct: %v (must be in [0, 1])", c.FinOps.BudgetExceededThrottlePct)
+	}
+	if c.FinOps.BudgetExceededThrottlePct == 0 {
+		c.FinOps.BudgetExceededThrottlePct = 0.10
 	}
 	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
 		c.Tracing.ServiceName = "ai-gateway-go"

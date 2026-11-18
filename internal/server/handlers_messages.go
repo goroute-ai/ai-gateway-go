@@ -165,12 +165,17 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			budgetInputTokens = len(encoded)
 		}
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
+	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
+	if acq.FallbackApplied && acq.EffectiveModel != "" {
+		chatReq.Model = acq.EffectiveModel
+	}
+	applyBudgetPolicyHeaders(w, payload.Model, acq)
+	releaseQuota := acq.ReleaseQuota
 
 	// 4. Dispatch Execution
 	if payload.Stream {

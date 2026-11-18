@@ -46,6 +46,12 @@ func (f *fakeTeamScanner) Scan(dest ...any) error {
 			} else {
 				*d = f.values[i].([]string)
 			}
+		case *[]byte:
+			if f.values[i] == nil {
+				*d = nil
+			} else {
+				*d = f.values[i].([]byte)
+			}
 		default:
 			return errors.New("unsupported scan destination")
 		}
@@ -59,7 +65,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 	t.Run("NULL columns map to nil slices (inherit)", func(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
-				"team-1", "org-1", "eng", int64(1000), int64(100), "monthly", nil,
+				"team-1", "org-1", "eng", int64(1000), int64(0), false, []byte("{}"), int64(100), "monthly", nil,
 				10, 1000, 5, []string{"gpt-4.1"}, nil, nil, nil,
 				true, now, now,
 			},
@@ -80,7 +86,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 	t.Run("Empty array {} maps to non-nil empty slices (DenyAll)", func(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
-				"team-2", "org-1", "sec", int64(0), int64(0), "monthly", nil,
+				"team-2", "org-1", "sec", int64(0), int64(0), false, []byte("{}"), int64(0), "monthly", nil,
 				0, 0, 0, []string{}, []string{}, []string{}, []string{},
 				true, now, now,
 			},
@@ -103,7 +109,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 	t.Run("Populated allowlists map to exact entries", func(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
-				"team-3", "org-1", "ml", int64(5000), int64(0), "weekly", nil,
+				"team-3", "org-1", "ml", int64(5000), int64(3500), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`), int64(0), "weekly", nil,
 				20, 2000, 12, []string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
 				true, now, now,
 			},
@@ -111,6 +117,9 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		team, err := scanTeam(scanner)
 		if err != nil {
 			t.Fatalf("scanTeam failed: %v", err)
+		}
+		if team.SoftBudgetMicros != 3500 || !team.ThrottleOnBudgetExceeded || len(team.BudgetFallbacks["gpt-4.1"]) != 1 || team.BudgetFallbacks["gpt-4.1"][0] != "gpt-4.1-mini" {
+			t.Fatalf("unexpected soft budget fields: %+v", team)
 		}
 		if len(team.AllowedMCPServers) != 1 || team.AllowedMCPServers[0] != "mcp-1" {
 			t.Fatalf("unexpected AllowedMCPServers: %#v", team.AllowedMCPServers)

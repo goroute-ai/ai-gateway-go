@@ -585,6 +585,7 @@ func cloneOrganization(org *domain.Organization) *domain.Organization {
 	}
 	cp := *org
 	cp.MaxConcurrentRequests = org.MaxConcurrentRequests
+	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(org.BudgetFallbacks)
 	if org.BudgetResetAt != nil {
 		t := *org.BudgetResetAt
 		cp.BudgetResetAt = &t
@@ -685,8 +686,16 @@ func (r *MemoryRepository) GetOrgModelPolicies(ctx context.Context, orgID string
 }
 
 func cloneTeam(team *domain.Team) *domain.Team {
+	if team == nil {
+		return nil
+	}
 	cp := *team
 	cp.MaxConcurrentRequests = team.MaxConcurrentRequests
+	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
+	if team.BudgetResetAt != nil {
+		t := *team.BudgetResetAt
+		cp.BudgetResetAt = &t
+	}
 	cp.AllowedModels = slices.Clone(team.AllowedModels)
 	cp.AllowedMCPServers = slices.Clone(team.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
@@ -765,6 +774,19 @@ func (r *MemoryRepository) DeleteTeam(ctx context.Context, id string) error {
 	return nil
 }
 
+func cloneUser(user *domain.User) *domain.User {
+	if user == nil {
+		return nil
+	}
+	cp := *user
+	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
+	if user.BudgetResetAt != nil {
+		t := *user.BudgetResetAt
+		cp.BudgetResetAt = &t
+	}
+	return &cp
+}
+
 func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -775,8 +797,8 @@ func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) er
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, now)
 	user.CreatedAt = now
 	user.UpdatedAt = now
-	cp := *user
-	r.users[cp.ID] = &cp
+	cp := cloneUser(user)
+	r.users[cp.ID] = cp
 	return nil
 }
 
@@ -799,8 +821,8 @@ func (r *MemoryRepository) UpdateUser(ctx context.Context, user *domain.User) er
 	}
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, now)
 	user.UpdatedAt = now
-	cp := *user
-	r.users[cp.ID] = &cp
+	cp := cloneUser(user)
+	r.users[cp.ID] = cp
 	return nil
 }
 
@@ -811,8 +833,7 @@ func (r *MemoryRepository) GetUser(ctx context.Context, id string) (*domain.User
 	if !ok {
 		return nil, fmt.Errorf("user %q %w", id, ErrNotFound)
 	}
-	cp := *u
-	return &cp, nil
+	return cloneUser(u), nil
 }
 
 func (r *MemoryRepository) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
@@ -820,8 +841,7 @@ func (r *MemoryRepository) GetUserByOIDCSubject(ctx context.Context, subject str
 	defer r.mu.RUnlock()
 	for _, u := range r.users {
 		if u.OIDCSubject != "" && u.OIDCSubject == subject {
-			cp := *u
-			return &cp, nil
+			return cloneUser(u), nil
 		}
 	}
 	return nil, fmt.Errorf("user with oidc_subject %q not found", subject)
@@ -833,8 +853,7 @@ func (r *MemoryRepository) ListUsers(ctx context.Context, orgID string) ([]*doma
 	var out []*domain.User
 	for _, u := range r.users {
 		if orgID == "" || u.OrgID == orgID {
-			cp := *u
-			out = append(out, &cp)
+			out = append(out, cloneUser(u))
 		}
 	}
 	return out, nil
@@ -1021,6 +1040,7 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	}
 	cp := *vk
 	cp.RawKey = ""
+	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(vk.BudgetFallbacks)
 	cp.AllowedModels = slices.Clone(vk.AllowedModels)
 	cp.AllowedEndpoints = slices.Clone(vk.AllowedEndpoints)
 	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
@@ -1100,8 +1120,7 @@ func (r *MemoryRepository) GetVirtualKeyByHash(ctx context.Context, keyHash stri
 	if !ok {
 		return nil, fmt.Errorf("virtual key not found")
 	}
-	cp := *vk
-	return &cp, nil
+	return cloneVirtualKey(vk), nil
 }
 
 func (r *MemoryRepository) GetVirtualKeyByID(ctx context.Context, id string) (*domain.VirtualKey, error) {
@@ -1111,8 +1130,7 @@ func (r *MemoryRepository) GetVirtualKeyByID(ctx context.Context, id string) (*d
 	if !ok {
 		return nil, fmt.Errorf("virtual key %q not found", id)
 	}
-	cp := *vk
-	return &cp, nil
+	return cloneVirtualKey(vk), nil
 }
 
 func (r *MemoryRepository) ListVirtualKeys(ctx context.Context, orgID string) ([]*domain.VirtualKey, error) {
@@ -1121,8 +1139,7 @@ func (r *MemoryRepository) ListVirtualKeys(ctx context.Context, orgID string) ([
 	var out []*domain.VirtualKey
 	for _, vk := range r.keysByID {
 		if orgID == "" || vk.OrgID == orgID {
-			cp := *vk
-			out = append(out, &cp)
+			out = append(out, cloneVirtualKey(vk))
 		}
 	}
 	return out, nil

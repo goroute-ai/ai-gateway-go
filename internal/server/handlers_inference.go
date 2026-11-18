@@ -340,19 +340,25 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			budgetInputTokens = len(encoded)
 		}
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
+	origRequestedModel := chatReq.Model
+	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if acq.FallbackApplied && acq.EffectiveModel != "" {
+		chatReq.Model = acq.EffectiveModel
+	}
+	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
+	releaseQuota := acq.ReleaseQuota
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          reqID,
 		traceID:        traceID,
 		endpoint:       "/v1/chat/completions",
 		modality:       domain.ModalityChat,
-		requestedModel: chatReq.Model,
+		requestedModel: origRequestedModel,
 		estTokens:      estTokens,
 		isStream:       chatReq.Stream,
 		reqCtx:         r.Context(),
@@ -418,7 +424,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 					UserID:                  idCtx.UserID,
 					VirtualKeyID:            idCtx.VirtualKeyID,
 					Endpoint:                "/v1/chat/completions",
-					RequestedModel:          chatReq.Model,
+					RequestedModel:          origRequestedModel,
 					ResolvedModel:           cachedResp.Model,
 					Provider:                cachedResp.Provider,
 					PricingStatus:           cachePricingStatus,
@@ -623,7 +629,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						UserID:                  idCtx.UserID,
 						VirtualKeyID:            idCtx.VirtualKeyID,
 						Endpoint:                "/v1/chat/completions",
-						RequestedModel:          chatReq.Model,
+						RequestedModel:          origRequestedModel,
 						ResolvedModel:           resolvedModel,
 						Provider:                provider,
 						PricingStatus:           cachePricingStatus,
@@ -831,7 +837,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				UserID:                  idCtx.UserID,
 				VirtualKeyID:            idCtx.VirtualKeyID,
 				Endpoint:                "/v1/chat/completions",
-				RequestedModel:          chatReq.Model,
+				RequestedModel:          origRequestedModel,
 				ResolvedModel:           resolvedModel,
 				Provider:                provider,
 				DeploymentID:            depID,
@@ -1013,7 +1019,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		UserID:                  idCtx.UserID,
 		VirtualKeyID:            idCtx.VirtualKeyID,
 		Endpoint:                "/v1/chat/completions",
-		RequestedModel:          chatReq.Model,
+		RequestedModel:          origRequestedModel,
 		ResolvedModel:           resp.Model,
 		Provider:                resp.Provider,
 		DeploymentID:            depID,
@@ -1117,19 +1123,25 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	for _, input := range inputs {
 		inputByteBound += len(input)
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
+	origRequestedModel := raw.Model
+	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if acq.FallbackApplied && acq.EffectiveModel != "" {
+		raw.Model = acq.EffectiveModel
+	}
+	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
+	releaseQuota := acq.ReleaseQuota
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          reqID,
 		traceID:        traceID,
 		endpoint:       "/v1/embeddings",
 		modality:       domain.ModalityEmbedding,
-		requestedModel: raw.Model,
+		requestedModel: origRequestedModel,
 		estTokens:      estTokens,
 		reqCtx:         r.Context(),
 		releaseQuota:   releaseQuota,
@@ -1248,7 +1260,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		UserID:                  idCtx.UserID,
 		VirtualKeyID:            idCtx.VirtualKeyID,
 		Endpoint:                "/v1/embeddings",
-		RequestedModel:          raw.Model,
+		RequestedModel:          origRequestedModel,
 		ResolvedModel:           resp.Model,
 		Provider:                resp.Provider,
 		DeploymentID:            depID,

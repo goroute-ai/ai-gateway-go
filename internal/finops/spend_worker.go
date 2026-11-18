@@ -51,6 +51,7 @@ type SpendWorker struct {
 
 	hookMu               sync.RWMutex
 	deploymentBudgetHook DeploymentSpendRecorder
+	softBudgetNotifier   *SoftBudgetNotifier
 
 	maxOutboxDepth     int64
 	pendingOutboxDepth atomic.Int64
@@ -91,6 +92,20 @@ func (sw *SpendWorker) SetDeploymentSpendRecorder(recorder DeploymentSpendRecord
 // SetDeploymentBudgetHook attaches an optional DeploymentBudgetHook.
 func (sw *SpendWorker) SetDeploymentBudgetHook(hook DeploymentBudgetHook) {
 	sw.SetDeploymentSpendRecorder(hook)
+}
+
+// SetSoftBudgetNotifier attaches an optional SoftBudgetNotifier invoked after spend settlement.
+func (sw *SpendWorker) SetSoftBudgetNotifier(notifier *SoftBudgetNotifier) {
+	sw.hookMu.Lock()
+	sw.softBudgetNotifier = notifier
+	sw.hookMu.Unlock()
+}
+
+func (sw *SpendWorker) getSoftBudgetNotifier() *SoftBudgetNotifier {
+	sw.hookMu.RLock()
+	notifier := sw.softBudgetNotifier
+	sw.hookMu.RUnlock()
+	return notifier
 }
 
 // SetMaxOutboxDepth configures the pending outbox high-watermark for backpressure.
@@ -178,6 +193,9 @@ func (sw *SpendWorker) Stop(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	if notifier := sw.getSoftBudgetNotifier(); notifier != nil {
+		_ = notifier.Wait(ctx)
+	}
 }
 
 func (sw *SpendWorker) runBatchLoop(ctx context.Context) {
@@ -249,8 +267,13 @@ func (sw *SpendWorker) ResetExpiredBudgetsNow(ctx context.Context, now time.Time
 			}
 		}
 		ids := make([]string, 0, len(pending))
+		notifier := sw.getSoftBudgetNotifier()
 		for _, event := range pending {
 			ids = append(ids, event.ID)
+			if notifier != nil {
+				notifier.ClearCooldown(ctx, event.OrgID, event.Scope, event.EntityID, string(domain.BudgetResetDaily))
+				notifier.ClearCooldown(ctx, event.OrgID, event.Scope, event.EntityID, string(domain.BudgetResetMonthly))
+			}
 		}
 		if err := outbox.MarkBudgetResetsDelivered(ctx, ids); err != nil {
 			return resetCount, err
@@ -294,6 +317,9 @@ func (sw *SpendWorker) process(ctx context.Context) error {
 		if len(events) == 0 {
 			return firstErr
 		}
+		if notifier := sw.getSoftBudgetNotifier(); notifier != nil {
+			notifier.CheckAndNotifyForEvents(ctx, events)
+		}
 		if err := sw.repo.RecordSpendBatch(ctx, events); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -310,6 +336,9 @@ func (sw *SpendWorker) process(ctx context.Context) error {
 				}
 			}
 			return firstErr
+		}
+		if notifier := sw.getSoftBudgetNotifier(); notifier != nil {
+			notifier.CheckAndNotifyForEvents(ctx, events)
 		}
 
 		var redisErrs []error

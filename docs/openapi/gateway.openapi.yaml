@@ -774,6 +774,17 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        soft_budget_micros:
+          type: integer
+          format: int64
+        throttle_on_budget_exceeded:
+          type: boolean
+        budget_fallbacks:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
         spent_micros:
           type: integer
           format: int64
@@ -1087,6 +1098,17 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        soft_budget_micros:
+          type: integer
+          format: int64
+        throttle_on_budget_exceeded:
+          type: boolean
+        budget_fallbacks:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
         spent_micros:
           type: integer
           format: int64
@@ -1178,6 +1200,17 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        soft_budget_micros:
+          type: integer
+          format: int64
+        throttle_on_budget_exceeded:
+          type: boolean
+        budget_fallbacks:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
         spent_micros:
           type: integer
           format: int64
@@ -1273,9 +1306,23 @@ components:
         max_budget_micro:
           type: integer
           format: int64
+        max_budget_micros:
+          type: integer
+          format: int64
         soft_budget_micro:
           type: integer
           format: int64
+        soft_budget_micros:
+          type: integer
+          format: int64
+        throttle_on_budget_exceeded:
+          type: boolean
+        budget_fallbacks:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
         rpm_limit:
           type: integer
         tpm_limit:

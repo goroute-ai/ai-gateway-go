@@ -47,48 +47,49 @@ import (
 
 // GatewayServer wires together all Data Plane, Control Plane, and Cross-Cutting Platform modules on a `go-chi/chi/v5` router.
 type GatewayServer struct {
-	cfg               *config.Config
-	netPolicy         *network.Policy
-	repo              storage.Repository
-	redisFabric       *storage.RedisFabric
-	reg               *adapter.Registry
-	vault             *auth.Vault
-	authSvc           *auth.Service
-	authResolver      *auth.AuthResolver
-	rbac              *auth.RBACEngine
-	limiter           *ratelimit.Limiter
-	respCache         *cache.ResponseCache
-	modelMgmt         *modelmgmt.Service
-	discovery         *modelmgmt.DiscoveryWorker
-	intelligentRouter *router.IntelligentRouter
-	reliability       *router.ReliabilityManager
-	affinityStore     *router.AffinityStore
-	depBudgets        *router.DeploymentBudgetTracker
-	semanticPreRouter *router.SemanticPreRouter
-	semanticWarmed    sync.Map
-	spendWorker       *finops.SpendWorker
-	collector         *observability.Collector
-	metricsExporter   *observability.OTLPMetricsExporter
-	metricsStop       func()
-	outboundMetrics   *network.HTTPClientMetrics
-	budgetStats       *budgetLookupStats
-	tracer            trace.Tracer
-	tracerShutdown    func(context.Context) error
-	healthMon         *health.Monitor
-	validator         *validation.Validator
-	guardrails        *guardrails.Engine
-	mcpHub            *mcp.Hub
-	a2aRouter         *a2a.RouterService
-	a2aSigner         *a2a.GatewayCardSigner
-	a2aStreamSub      *a2a.StreamSubscriber
-	a2aPublisher      *a2a.StreamPublisher
-	a2aOutboxWorker   *a2a.OutboxWorker
-	a2aBridge         *a2a.OpenAIBridge
-	orchestrator      *orchestrator.ToolLoopOrchestrator
-	router            chi.Router
-	uploadSem         chan struct{}
-	uploadInFlightMu  sync.Mutex
-	uploadInFlight    map[string]int64
+	cfg                *config.Config
+	netPolicy          *network.Policy
+	repo               storage.Repository
+	redisFabric        *storage.RedisFabric
+	reg                *adapter.Registry
+	vault              *auth.Vault
+	authSvc            *auth.Service
+	authResolver       *auth.AuthResolver
+	rbac               *auth.RBACEngine
+	limiter            *ratelimit.Limiter
+	respCache          *cache.ResponseCache
+	modelMgmt          *modelmgmt.Service
+	discovery          *modelmgmt.DiscoveryWorker
+	intelligentRouter  *router.IntelligentRouter
+	reliability        *router.ReliabilityManager
+	affinityStore      *router.AffinityStore
+	depBudgets         *router.DeploymentBudgetTracker
+	semanticPreRouter  *router.SemanticPreRouter
+	semanticWarmed     sync.Map
+	spendWorker        *finops.SpendWorker
+	softBudgetNotifier *finops.SoftBudgetNotifier
+	collector          *observability.Collector
+	metricsExporter    *observability.OTLPMetricsExporter
+	metricsStop        func()
+	outboundMetrics    *network.HTTPClientMetrics
+	budgetStats        *budgetLookupStats
+	tracer             trace.Tracer
+	tracerShutdown     func(context.Context) error
+	healthMon          *health.Monitor
+	validator          *validation.Validator
+	guardrails         *guardrails.Engine
+	mcpHub             *mcp.Hub
+	a2aRouter          *a2a.RouterService
+	a2aSigner          *a2a.GatewayCardSigner
+	a2aStreamSub       *a2a.StreamSubscriber
+	a2aPublisher       *a2a.StreamPublisher
+	a2aOutboxWorker    *a2a.OutboxWorker
+	a2aBridge          *a2a.OpenAIBridge
+	orchestrator       *orchestrator.ToolLoopOrchestrator
+	router             chi.Router
+	uploadSem          chan struct{}
+	uploadInFlightMu   sync.Mutex
+	uploadInFlight     map[string]int64
 }
 
 // parseCustomProviderOperations maps string operation names from CustomProviderConfig
@@ -475,6 +476,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
 	spendWorker.SetCollector(collector)
 	spendWorker.SetDeploymentSpendRecorder(depBudgets)
+	softBudgetNotifier := finops.NewSoftBudgetNotifier(repo, redisFabric, netPolicy, cfg.FinOps.SoftBudgetWebhookURL, cfg.FinOps.SoftBudgetCooldownSec)
+	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
 
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
@@ -506,44 +509,45 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 
 	s := &GatewayServer{
-		cfg:               cfg,
-		netPolicy:         netPolicy,
-		repo:              repo,
-		redisFabric:       redisFabric,
-		reg:               reg,
-		vault:             vault,
-		authSvc:           authSvc,
-		authResolver:      authResolver,
-		rbac:              rbac,
-		limiter:           limiter,
-		respCache:         respCache,
-		modelMgmt:         modelMgmtSvc,
-		discovery:         discWorker,
-		intelligentRouter: ir,
-		reliability:       relMgr,
-		affinityStore:     affinityStore,
-		depBudgets:        depBudgets,
-		semanticPreRouter: semanticPreRouter,
-		spendWorker:       spendWorker,
-		collector:         collector,
-		metricsExporter:   metricsExporter,
-		outboundMetrics:   outboundMetrics,
-		budgetStats:       budgetStats,
-		tracer:            tracer,
-		tracerShutdown:    tracerShutdown,
-		healthMon:         healthMon,
-		validator:         validator,
-		guardrails:        guardrailsEng,
-		mcpHub:            mcpHub,
-		a2aRouter:         a2aRouter,
-		a2aSigner:         a2aSigner,
-		a2aStreamSub:      a2aStreamSub,
-		a2aPublisher:      a2aPublisher,
-		a2aOutboxWorker:   a2aOutboxWorker,
-		a2aBridge:         a2aBridge,
-		orchestrator:      toolOrchestrator,
-		uploadSem:         uploadSem,
-		uploadInFlight:    make(map[string]int64),
+		cfg:                cfg,
+		netPolicy:          netPolicy,
+		repo:               repo,
+		redisFabric:        redisFabric,
+		reg:                reg,
+		vault:              vault,
+		authSvc:            authSvc,
+		authResolver:       authResolver,
+		rbac:               rbac,
+		limiter:            limiter,
+		respCache:          respCache,
+		modelMgmt:          modelMgmtSvc,
+		discovery:          discWorker,
+		intelligentRouter:  ir,
+		reliability:        relMgr,
+		affinityStore:      affinityStore,
+		depBudgets:         depBudgets,
+		semanticPreRouter:  semanticPreRouter,
+		spendWorker:        spendWorker,
+		softBudgetNotifier: softBudgetNotifier,
+		collector:          collector,
+		metricsExporter:    metricsExporter,
+		outboundMetrics:    outboundMetrics,
+		budgetStats:        budgetStats,
+		tracer:             tracer,
+		tracerShutdown:     tracerShutdown,
+		healthMon:          healthMon,
+		validator:          validator,
+		guardrails:         guardrailsEng,
+		mcpHub:             mcpHub,
+		a2aRouter:          a2aRouter,
+		a2aSigner:          a2aSigner,
+		a2aStreamSub:       a2aStreamSub,
+		a2aPublisher:       a2aPublisher,
+		a2aOutboxWorker:    a2aOutboxWorker,
+		a2aBridge:          a2aBridge,
+		orchestrator:       toolOrchestrator,
+		uploadSem:          uploadSem,
+		uploadInFlight:     make(map[string]int64),
 	}
 	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
 	s.setupRoutes()

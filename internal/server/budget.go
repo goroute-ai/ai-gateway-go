@@ -421,31 +421,8 @@ func modalityRate(value any) (int64, bool) {
 }
 
 func (s *GatewayServer) acquireModalityBudget(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int), error) {
-	if !identityHasBudget(id) {
-		return s.limiter.Acquire(ctx, id, rateTokens)
-	}
-	if s.budgetStats != nil {
-		s.budgetStats.budgetedChecks.Add(1)
-	}
-	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, id.OrgID, model)
-	if err != nil || gm == nil {
-		if sawUnverified {
-			return nil, &domain.GatewayError{StatusCode: http.StatusForbidden, Type: domain.ErrorTypeBudgetExceeded, Code: "pricing_unknown_budget_restricted", Message: "Budgeted requests require known model pricing"}
-		}
-		return nil, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"}
-	}
-	reserve, ok := estimator(gm)
-	if !ok {
-		return nil, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"}
-	}
-	release, err := s.limiter.AcquireWithBudget(ctx, id, rateTokens, reserve, requestID)
-	if err != nil {
-		return nil, err
-	}
-	releaseWithCost := s.wrapBudgetRelease(ctx, id, requestID, release)
-	return func(tokens int) {
-		releaseWithCost(tokens, -2)
-	}, nil
+	release, _, err := s.acquireModalityQuotaWithThrottle(ctx, id, model, rateTokens, requestID, estimator)
+	return release, err
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(int), error) {
@@ -459,33 +436,8 @@ func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *do
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithCost(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), error) {
-	if !identityHasBudget(id) {
-		release, err := s.limiter.Acquire(ctx, id, rateTokens)
-		if err != nil {
-			return nil, err
-		}
-		var once sync.Once
-		return func(actualTokens int, _ int64) {
-			once.Do(func() {
-				release(actualTokens)
-			})
-		}, nil
-	}
-	if s.budgetStats != nil {
-		s.budgetStats.budgetedChecks.Add(1)
-	}
-	reserve, err := s.tokenBudgetUpperBound(ctx, id.OrgID, model, budgetInputTokens, requestedOutput)
-	if err != nil {
-		if errors.Is(err, errBudgetPricingUnverified) {
-			return nil, &domain.GatewayError{StatusCode: http.StatusForbidden, Type: domain.ErrorTypeBudgetExceeded, Code: "pricing_unknown_budget_restricted", Message: "Budgeted requests require known model pricing"}
-		}
-		return nil, &domain.GatewayError{StatusCode: 503, Type: domain.ErrorTypeBudgetExceeded, Code: "budget_estimate_unavailable", Message: "A safe upper-bound cost could not be calculated before dispatch"}
-	}
-	release, err := s.limiter.AcquireWithBudget(ctx, id, rateTokens, reserve, requestID)
-	if err != nil {
-		return nil, err
-	}
-	return s.wrapBudgetRelease(ctx, id, requestID, release), nil
+	release, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	return release, err
 }
 
 func (s *GatewayServer) estimateInputCostMicros(orgID, model string, gm *domain.GlobalModel, inputTokens int) int64 {

@@ -551,18 +551,21 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		if err != nil && s.allowMasterKeyDataPlane && s.ValidateAdminKey(rawToken) {
 			if org := s.resolveDefaultActiveOrg(ctx); org != nil {
 				idCtx := &domain.IdentityContext{
-					VirtualKeyID:         "vk_master_admin",
-					KeyPrefix:            "master-admin",
-					OrgID:                org.ID,
-					Role:                 domain.RoleOrgAdmin,
-					AllowedEndpoints:     []string{"*"},
-					KeyAllowedMCPServers: []string{"*"},
-					KeyAllowedA2AAgents:  []string{"*"},
-					OrgRPMLimit:          org.RPMLimit,
-					OrgTPMLimit:          org.TPMLimit,
-					OrgMaxConcurrent:     org.MaxConcurrentRequests,
-					OrgMaxBudgetMicros:   org.MaxBudgetMicros,
-					OrgSpentMicros:       org.SpentMicros,
+					VirtualKeyID:                "vk_master_admin",
+					KeyPrefix:                   "master-admin",
+					OrgID:                       org.ID,
+					Role:                        domain.RoleOrgAdmin,
+					AllowedEndpoints:            []string{"*"},
+					KeyAllowedMCPServers:        []string{"*"},
+					KeyAllowedA2AAgents:         []string{"*"},
+					OrgRPMLimit:                 org.RPMLimit,
+					OrgTPMLimit:                 org.TPMLimit,
+					OrgMaxConcurrent:            org.MaxConcurrentRequests,
+					OrgMaxBudgetMicros:          org.MaxBudgetMicros,
+					OrgSoftBudgetMicros:         org.SoftBudgetMicros,
+					OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
+					OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+					OrgSpentMicros:              org.SpentMicros,
 				}
 				s.l1Cache.Store(keyHash, l1CacheEntry{
 					identity:  idCtx,
@@ -654,27 +657,33 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 	}
 
 	idCtx := &domain.IdentityContext{
-		VirtualKeyID:         vk.ID,
-		KeyPrefix:            vk.KeyPrefix,
-		OrgID:                vk.OrgID,
-		TeamID:               vk.TeamID,
-		UserID:               vk.UserID,
-		Role:                 vk.Role,
-		KeyAllowedModels:     vk.AllowedModels,
-		AllowedEndpoints:     vk.AllowedEndpoints,
-		KeyAllowedMCPServers: vk.AllowedMCPServers,
-		KeyAllowedA2AAgents:  vk.AllowedA2AAgents,
-		KeyAllowedClientApps: vk.AllowedClientApps,
-		KeyRPMLimit:          vk.RPMLimit,
-		KeyTPMLimit:          vk.TPMLimit,
-		KeyMaxConcurrent:     vk.MaxConcurrentRequests,
-		KeyMaxBudgetMicros:   vk.MaxBudgetMicros,
-		KeySpentMicros:       vk.SpentMicros,
-		OrgRPMLimit:          org.RPMLimit,
-		OrgTPMLimit:          org.TPMLimit,
-		OrgMaxConcurrent:     org.MaxConcurrentRequests,
-		OrgMaxBudgetMicros:   org.MaxBudgetMicros,
-		OrgSpentMicros:       org.SpentMicros,
+		VirtualKeyID:                vk.ID,
+		KeyPrefix:                   vk.KeyPrefix,
+		OrgID:                       vk.OrgID,
+		TeamID:                      vk.TeamID,
+		UserID:                      vk.UserID,
+		Role:                        vk.Role,
+		KeyAllowedModels:            vk.AllowedModels,
+		AllowedEndpoints:            vk.AllowedEndpoints,
+		KeyAllowedMCPServers:        vk.AllowedMCPServers,
+		KeyAllowedA2AAgents:         vk.AllowedA2AAgents,
+		KeyAllowedClientApps:        vk.AllowedClientApps,
+		KeyRPMLimit:                 vk.RPMLimit,
+		KeyTPMLimit:                 vk.TPMLimit,
+		KeyMaxConcurrent:            vk.MaxConcurrentRequests,
+		KeyMaxBudgetMicros:          vk.MaxBudgetMicros,
+		KeySoftBudgetMicros:         vk.SoftBudgetMicros,
+		KeyThrottleOnBudgetExceeded: vk.ThrottleOnBudgetExceeded,
+		KeyBudgetFallbacks:          domain.CloneBudgetFallbacks(vk.BudgetFallbacks),
+		KeySpentMicros:              vk.SpentMicros,
+		OrgRPMLimit:                 org.RPMLimit,
+		OrgTPMLimit:                 org.TPMLimit,
+		OrgMaxConcurrent:            org.MaxConcurrentRequests,
+		OrgMaxBudgetMicros:          org.MaxBudgetMicros,
+		OrgSoftBudgetMicros:         org.SoftBudgetMicros,
+		OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
+		OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+		OrgSpentMicros:              org.SpentMicros,
 	}
 
 	if vk.TeamID != "" {
@@ -720,6 +729,9 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
+		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
+		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
 		idCtx.TeamSpentMicros = team.SpentMicros
 	}
 
@@ -762,6 +774,9 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.UserTPMLimit = user.TPMLimit
 		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
 		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
+		idCtx.UserSoftBudgetMicros = user.SoftBudgetMicros
+		idCtx.UserThrottleOnBudgetExceeded = user.ThrottleOnBudgetExceeded
+		idCtx.UserBudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
 		idCtx.UserSpentMicros = user.SpentMicros
 	}
 
