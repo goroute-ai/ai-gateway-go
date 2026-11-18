@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,16 +33,24 @@ import (
 
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
 type ModelEntry struct {
-	ModelName       string   // Client-facing model name or alias (e.g. "fast", "reasoning", "gemini-2.5-flash")
-	Model           string   // Upstream provider/model (e.g. "gemini/gemini-2.5-flash", "anthropic/claude-sonnet-4-20250514")
-	APIKey          string   // Literal key or "os.environ/GEMINI_API_KEY"
-	APIBase         string   // Optional custom upstream endpoint
-	RoutingStrategy string   // Optional: "weighted-shuffle", "least-busy", "latency-based", "lowest-cost"
-	Fallbacks       []string // Optional: ordered fallback model group aliases (e.g. []string{"backup-claude"})
-	Weight          int
-	RPM             int
-	TPM             int
-	SimulateStatus  int // Optional fault-injection HTTP status (e.g. 503) for local failover/circuit-breaker testing
+	ModelName              string           // Client-facing model name or alias (e.g. "fast", "reasoning", "gemini-2.5-flash")
+	Model                  string           // Upstream provider/model (e.g. "gemini/gemini-2.5-flash", "anthropic/claude-sonnet-4-20250514")
+	APIKey                 string           // Literal key or "os.environ/GEMINI_API_KEY"
+	APIBase                string           // Optional custom upstream endpoint
+	RoutingStrategy        string           // Optional: "weighted-shuffle", "least-busy", "latency-based", "lowest-cost", "priority-tiered", "fastest-response"
+	Fallbacks              []string         // Optional: ordered fallback model group aliases (e.g. []string{"backup-claude"})
+	ContextWindowFallbacks []string         // Optional: ordered fallback group aliases when input exceeds context window
+	ContentPolicyFallbacks []string         // Optional: ordered fallback group aliases on content policy / safety refusals
+	FallbackTargets        []FallbackTarget // Optional: structured fallback targets with parameter overrides
+	Region                 string           // Optional: deployment region (e.g. "us-east-1", "eu-west-1")
+	Priority               int              // Optional: priority tier (0 is highest priority; higher values are lower priority tiers)
+	Tags                   []string         // Optional: deployment tags for tag-based request filtering
+	MaxBudgetMicros        int64            // Optional: per-deployment spend budget cap in micro-dollars (1 USD = 1,000,000 micros)
+	BudgetResetPeriod      string           // Optional: budget reset period ("hourly", "daily", "weekly", "monthly")
+	Weight                 int
+	RPM                    int
+	TPM                    int
+	SimulateStatus         int // Optional fault-injection HTTP status (e.g. 503) for local failover/circuit-breaker testing
 }
 
 // ChatResult wraps the OpenAI-compatible response together with unpacked gateway telemetry headers
@@ -51,12 +60,16 @@ type ChatResult struct {
 	ReasoningContent  string                       `json:"reasoning_content,omitempty"`
 	Provider          string                       `json:"provider"`
 	Model             string                       `json:"model"`
+	WinningDeployment string                       `json:"winning_deployment,omitempty"`
 	RequestID         string                       `json:"request_id"`
 	CostMicros        int64                        `json:"cost_micros"`
 	RoutingMicros     int64                        `json:"routing_micros"`
 	CacheStatus       string                       `json:"cache_status,omitempty"`
 	RouteReason       string                       `json:"route_reason,omitempty"`
 	FallbackAttempted bool                         `json:"fallback_attempted,omitempty"`
+	FallbackReason    string                       `json:"fallback_reason,omitempty"`
+	TierStepdowns     int                          `json:"tier_stepdowns,omitempty"`
+	StreamContinued   bool                         `json:"stream_continued,omitempty"`
 	Usage             domain.TokenUsage            `json:"usage"`
 	Raw               domain.CanonicalChatResponse `json:"raw"`
 }
@@ -92,6 +105,10 @@ type clientConfig struct {
 	silentLogs           bool
 	logLevel             string
 	guardrailScanners    []guardrailScannerEntry
+	routingPlugins       []routingPluginEntry
+	preRouters           []preRouterEntry
+	preRouterAliases     []preRouterAliasEntry
+	routerMutations      []func(*config.RouterConfig)
 }
 
 // WithLogger configures a custom slog.Logger for embedded gateway operation.
@@ -197,6 +214,12 @@ func New(opts ...Option) (*Client, error) {
 		if len(cc.guardrailScanners) > 0 {
 			return nil, fmt.Errorf("WithGuardrailScanner requires an embedded gateway and cannot be combined with WithRemote")
 		}
+		if len(cc.routingPlugins) > 0 {
+			return nil, fmt.Errorf("WithRoutingPlugin requires an embedded gateway and cannot be combined with WithRemote")
+		}
+		if len(cc.preRouters) > 0 || len(cc.preRouterAliases) > 0 {
+			return nil, fmt.Errorf("WithPreRouter requires an embedded gateway and cannot be combined with WithRemote")
+		}
 		client := NewClient(cc.remoteURL, cc.apiKey)
 		if cc.httpClient != nil {
 			client.httpClient = cc.httpClient
@@ -213,6 +236,11 @@ func New(opts ...Option) (*Client, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	for _, mut := range cc.routerMutations {
+		if mut != nil {
+			mut(&cfg.Router)
+		}
 	}
 
 	var mockServers []*httptest.Server
@@ -291,16 +319,24 @@ func New(opts ...Option) (*Client, error) {
 		}
 
 		cfg.ModelList = append(cfg.ModelList, config.ModelListEntry{
-			ModelName:       e.ModelName,
-			RoutingStrategy: e.RoutingStrategy,
-			Fallbacks:       e.Fallbacks,
+			ModelName:              e.ModelName,
+			RoutingStrategy:        e.RoutingStrategy,
+			Fallbacks:              slices.Clone(e.Fallbacks),
+			ContextWindowFallbacks: toDomainFallbackTargets(e.ContextWindowFallbacks),
+			ContentPolicyFallbacks: toDomainFallbackTargets(e.ContentPolicyFallbacks),
+			FallbackTargets:        convertFallbackTargets(e.FallbackTargets),
 			ModelParams: config.ModelParams{
-				Model:   e.Model,
-				APIKey:  apiKey,
-				APIBase: apiBase,
-				Weight:  e.Weight,
-				RPM:     e.RPM,
-				TPM:     e.TPM,
+				Model:             e.Model,
+				APIKey:            apiKey,
+				APIBase:           apiBase,
+				Region:            e.Region,
+				Weight:            e.Weight,
+				RPM:               e.RPM,
+				TPM:               e.TPM,
+				Priority:          e.Priority,
+				Tags:              slices.Clone(e.Tags),
+				MaxBudgetMicros:   e.MaxBudgetMicros,
+				BudgetResetPeriod: e.BudgetResetPeriod,
 			},
 		})
 	}
@@ -438,6 +474,13 @@ func New(opts ...Option) (*Client, error) {
 			}
 		}
 	}
+	if len(cc.routingPlugins) > 0 || len(cc.preRouters) > 0 || len(cc.preRouterAliases) > 0 {
+		if regErr := registerSDKRoutingHooks(gw, cc.routingPlugins, cc.preRouters, cc.preRouterAliases); regErr != nil {
+			gw.Shutdown(context.Background())
+			cleanupOnErr()
+			return nil, regErr
+		}
+	}
 	gw.StartWorkers(context.Background())
 
 	ts := httptest.NewServer(gw.Handler())
@@ -568,15 +611,16 @@ func (c *Client) Chat(ctx context.Context, model, userPrompt string, opts ...Req
 // ChatWithMessages sends a multi-turn chat request using the pure public ChatRequest schema.
 func (c *Client) ChatWithMessages(ctx context.Context, req ChatRequest, opts ...RequestOption) (*ChatResult, error) {
 	cReq := domain.CanonicalChatRequest{
-		Model:           req.Model,
-		Temperature:     req.Temperature,
-		TopP:            req.TopP,
-		MaxTokens:       req.MaxTokens,
-		Stop:            req.Stop,
-		Stream:          req.Stream,
-		ReasoningEffort: req.ReasoningEffort,
-		User:            req.User,
-		Messages:        make([]domain.CanonicalMessage, 0, len(req.Messages)),
+		Model:             req.Model,
+		Temperature:       req.Temperature,
+		TopP:              req.TopP,
+		MaxTokens:         req.MaxTokens,
+		Stop:              req.Stop,
+		Stream:            req.Stream,
+		ReasoningEffort:   req.ReasoningEffort,
+		User:              req.User,
+		Messages:          make([]domain.CanonicalMessage, 0, len(req.Messages)),
+		GoRouteExtensions: toDomainGoRouteExtensions(req.RoutingHints),
 	}
 	for _, m := range req.Messages {
 		cm := domain.CanonicalMessage{
@@ -638,27 +682,16 @@ func (c *Client) ChatMessages(ctx context.Context, req domain.CanonicalChatReque
 	}
 
 	res := &ChatResult{
-		Provider:          resp.Header.Get("X-Gateway-Provider"),
-		Model:             resp.Header.Get("X-Gateway-Model"),
-		RequestID:         resp.Header.Get("X-Gateway-Request-Id"),
-		CacheStatus:       resp.Header.Get("X-Gateway-Cache"),
-		RouteReason:       resp.Header.Get("X-Gateway-Route-Reason"),
-		FallbackAttempted: strings.EqualFold(resp.Header.Get("X-Gateway-Fallback-Attempted"), "true"),
-		CostMicros:        parseHeaderInt64(resp.Header.Get("X-Gateway-Cost-Micros")),
-		RoutingMicros:     parseHeaderInt64(resp.Header.Get("X-Gateway-Routing-Micros")),
-		Usage:             raw.Usage,
-		Raw:               raw,
-	}
-	if res.Provider == "" {
-		res.Provider = string(raw.Provider)
-	}
-	if res.Model == "" {
-		res.Model = raw.Model
+		Provider: string(raw.Provider),
+		Model:    raw.Model,
+		Usage:    raw.Usage,
+		Raw:      raw,
 	}
 	if len(raw.Choices) > 0 {
 		res.Content = raw.Choices[0].Message.Content
 		res.ReasoningContent = raw.Choices[0].Message.ReasoningContent
 	}
+	populateChatResultFromHeaders(res, resp.Header)
 	return res, nil
 }
 
@@ -737,12 +770,13 @@ func (c *Client) StreamChat(ctx context.Context, model, userPrompt string, onDel
 		}
 	}
 
-	return &ChatResult{
-		Content:   fullText.String(),
-		Model:     lastModel,
-		RequestID: resp.Header.Get("X-Gateway-Request-Id"),
-		Usage:     usage,
-	}, scanner.Err()
+	res := &ChatResult{
+		Content: fullText.String(),
+		Model:   lastModel,
+		Usage:   usage,
+	}
+	populateChatResultFromHeaders(res, resp.Header)
+	return res, scanner.Err()
 }
 
 // ListModels returns the IDs of all models visible to the caller's Virtual API Key via `GET /v1/models`.
