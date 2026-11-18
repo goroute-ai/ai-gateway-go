@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -953,6 +954,228 @@ func (p *PostgresRepository) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	return nil
+}
+
+func (p *PostgresRepository) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
+	if orgID == "" || subject == "" {
+		return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetUserByOrgAndOIDCSubject(ctx, orgID, subject)
+	}
+	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE org_id = $1 AND oidc_subject = $2 LIMIT 1`, orgID, subject))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+		}
+		return nil, err
+	}
+	_ = p.mem.CreateUser(ctx, u)
+	return u, nil
+}
+
+func (p *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, fmt.Errorf("user with email %q %w", email, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetUserByEmail(ctx, email)
+	}
+	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`, email))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("user with email %q %w", email, ErrNotFound)
+		}
+		return nil, err
+	}
+	_ = p.mem.CreateUser(ctx, u)
+	return u, nil
+}
+
+func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, user *domain.User) (*domain.User, bool, error) {
+	if user == nil || strings.TrimSpace(user.OrgID) == "" {
+		return nil, false, fmt.Errorf("org_id is required to provision user")
+	}
+	if p.pool == nil {
+		return p.mem.GetOrCreateUserByOIDCSubject(ctx, user)
+	}
+
+	cp := *user
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+	now := time.Now().UTC()
+	cp.BudgetResetPeriod, cp.BudgetResetAt = resolveBudgetResetSchedule(cp.BudgetResetPeriod, cp.BudgetResetAt, now)
+
+	const q = `
+		INSERT INTO users (
+			id, org_id, team_id, email, name, role, oidc_subject,
+			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			rpm_limit, tpm_limit, max_concurrent_requests, is_active
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT DO NOTHING`
+	tag, err := p.pool.Exec(ctx, q,
+		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject,
+		cp.MaxBudgetMicros, cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
+		cp.RPMLimit, cp.TPMLimit, cp.MaxConcurrentRequests, cp.IsActive,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if tag.RowsAffected() > 0 {
+		created, getErr := p.GetUser(ctx, cp.ID)
+		if getErr == nil && created != nil {
+			return created, true, nil
+		}
+		_ = p.mem.CreateUser(ctx, &cp)
+		return &cp, true, nil
+	}
+
+	// Concurrent creation or pre-existing user: re-read deterministically by (org_id, oidc_subject), then email.
+	if cp.OIDCSubject != "" {
+		existing, err := p.GetUserByOrgAndOIDCSubject(ctx, cp.OrgID, cp.OIDCSubject)
+		if err == nil && existing != nil {
+			return existing, false, nil
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, false, err
+		}
+	}
+	if cp.Email != "" {
+		existing, err := p.GetUserByEmail(ctx, cp.Email)
+		if err == nil && existing != nil {
+			if existing.OrgID != cp.OrgID {
+				return nil, false, fmt.Errorf("email %q already belongs to another organization: %w", cp.Email, ErrConflict)
+			}
+			if existing.OIDCSubject != "" && cp.OIDCSubject != "" && existing.OIDCSubject != cp.OIDCSubject {
+				return nil, false, fmt.Errorf("email %q is bound to another OIDC subject: %w", cp.Email, ErrConflict)
+			}
+			return existing, false, nil
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, false, err
+		}
+	}
+	return nil, false, fmt.Errorf("failed to resolve or provision user for org %q", cp.OrgID)
+}
+
+const jwtKeyMappingSelectCols = `id, org_id, issuer, claim_name, claim_value, virtual_key_id, created_at`
+
+func scanJWTKeyMapping(row rowScanner) (*domain.JWTKeyMapping, error) {
+	var m domain.JWTKeyMapping
+	if err := row.Scan(&m.ID, &m.OrgID, &m.Issuer, &m.ClaimName, &m.ClaimValue, &m.VirtualKeyID, &m.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (p *PostgresRepository) CreateJWTKeyMapping(ctx context.Context, mapping *domain.JWTKeyMapping) error {
+	if mapping == nil {
+		return fmt.Errorf("jwt key mapping is required")
+	}
+	if strings.TrimSpace(mapping.OrgID) == "" ||
+		strings.TrimSpace(mapping.Issuer) == "" ||
+		strings.TrimSpace(mapping.ClaimName) == "" ||
+		strings.TrimSpace(mapping.ClaimValue) == "" ||
+		strings.TrimSpace(mapping.VirtualKeyID) == "" {
+		return fmt.Errorf("org_id, issuer, claim_name, claim_value, and virtual_key_id are required")
+	}
+	if p.pool == nil {
+		return p.mem.CreateJWTKeyMapping(ctx, mapping)
+	}
+	if mapping.ID == "" {
+		mapping.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO jwt_key_mappings (id, org_id, issuer, claim_name, claim_value, virtual_key_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING created_at`
+	if err := p.pool.QueryRow(ctx, q,
+		mapping.ID, mapping.OrgID, mapping.Issuer, mapping.ClaimName, mapping.ClaimValue, mapping.VirtualKeyID,
+	).Scan(&mapping.CreatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("jwt key mapping already exists: %w", ErrConflict)
+		}
+		return err
+	}
+	_ = p.mem.CreateJWTKeyMapping(ctx, mapping)
+	return nil
+}
+
+func (p *PostgresRepository) GetJWTKeyMapping(ctx context.Context, id string) (*domain.JWTKeyMapping, error) {
+	if p.pool == nil {
+		return p.mem.GetJWTKeyMapping(ctx, id)
+	}
+	m, err := scanJWTKeyMapping(p.pool.QueryRow(ctx, `SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("jwt key mapping %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	return m, nil
+}
+
+func (p *PostgresRepository) ListJWTKeyMappings(ctx context.Context, orgID string) ([]*domain.JWTKeyMapping, error) {
+	if p.pool == nil {
+		return p.mem.ListJWTKeyMappings(ctx, orgID)
+	}
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if orgID != "" {
+		rows, err = p.pool.Query(ctx, `SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE org_id = $1 ORDER BY created_at ASC, id ASC`, orgID)
+	} else {
+		rows, err = p.pool.Query(ctx, `SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings ORDER BY created_at ASC, id ASC`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.JWTKeyMapping
+	for rows.Next() {
+		m, scanErr := scanJWTKeyMapping(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteJWTKeyMapping(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteJWTKeyMapping(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM jwt_key_mappings WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("jwt key mapping %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteJWTKeyMapping(ctx, id)
+	return nil
+}
+
+func (p *PostgresRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
+	if p.pool == nil {
+		return p.mem.ResolveJWTKeyMapping(ctx, issuer, claimName, claimValue)
+	}
+	m, err := scanJWTKeyMapping(p.pool.QueryRow(ctx,
+		`SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE issuer = $1 AND claim_name = $2 AND claim_value = $3 LIMIT 1`,
+		issuer, claimName, claimValue,
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+		}
+		return nil, err
+	}
+	return m, nil
 }
 
 const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active`

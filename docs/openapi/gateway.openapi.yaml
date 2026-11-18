@@ -1217,6 +1217,50 @@ components:
           type: string
         id:
           type: string
+    AdminJWTKeyMappingCreateRequest:
+      type: object
+      required:
+        - issuer
+        - claim_name
+        - claim_value
+        - virtual_key_id
+      properties:
+        org_id:
+          type: string
+        issuer:
+          type: string
+        claim_name:
+          type: string
+        claim_value:
+          type: string
+        virtual_key_id:
+          type: string
+    AdminJWTKeyMapping:
+      type: object
+      required:
+        - id
+        - org_id
+        - issuer
+        - claim_name
+        - claim_value
+        - virtual_key_id
+        - created_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        issuer:
+          type: string
+        claim_name:
+          type: string
+        claim_value:
+          type: string
+        virtual_key_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
     AdminOrganization:
       type: object
       properties:
@@ -2913,6 +2957,63 @@ paths:
       responses:
         '200':
           description: Virtual API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/jwt-mappings:
+    post:
+      operationId: createJWTKeyMapping
+      summary: Create a JWT claim-to-virtual-key mapping
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminJWTKeyMappingCreateRequest'
+      responses:
+        '201':
+          description: Created JWT key mapping
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminJWTKeyMapping'
+        '409':
+          description: Conflict when mapping already exists for (issuer, claim_name, claim_value)
+    get:
+      operationId: listJWTKeyMappings
+      summary: List JWT claim-to-virtual-key mappings
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of JWT key mappings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminJWTKeyMapping'
+  /admin/v1/jwt-mappings/{id}:
+    delete:
+      operationId: deleteJWTKeyMapping
+      summary: Delete a JWT claim-to-virtual-key mapping
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: JWT key mapping deleted
           content:
             application/json:
               schema:

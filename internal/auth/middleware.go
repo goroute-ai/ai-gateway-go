@@ -60,20 +60,50 @@ func ExtractGatewayCredentialsWithSource(r *http.Request) (ExtractedCredentials,
 	return ExtractCredentials(r, ExtractorOptions{})
 }
 
-// DataPlaneMiddleware authenticates `/v1/*` requests using Virtual API Keys (`sk-gw-...`) and checks endpoint RBAC.
+// DataPlaneMiddleware authenticates Data Plane requests (`/v1/*`, `/mcp/*`, `/a2a/*`) using
+// the Service's configured AuthResolver when present, or Virtual API Keys (`sk-gw-...`) otherwise,
+// and enforces endpoint RBAC.
 func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var opts ExtractorOptions
-			if svc != nil {
-				opts = svc.ExtractorOptions()
+			var (
+				idCtx *domain.IdentityContext
+				err   error
+			)
+			if svc != nil && svc.DataPlaneResolver() != nil {
+				idCtx, err = svc.DataPlaneResolver().ResolveRequest(r.Context(), r)
+			} else {
+				var opts ExtractorOptions
+				if svc != nil {
+					opts = svc.ExtractorOptions()
+				}
+				var cred ExtractedCredentials
+				cred, err = ExtractCredentials(r, opts)
+				if err == nil {
+					idCtx, err = svc.AuthenticateVirtualKey(r.Context(), cred.Token)
+				}
 			}
-			cred, err := ExtractCredentials(r, opts)
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return
 			}
-			idCtx, err := svc.AuthenticateVirtualKey(r.Context(), cred.Token)
+			if rbac != nil {
+				if err := rbac.AuthorizeEndpoint(idCtx, r.URL.Path); err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
+			}
+			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
+		})
+	}
+}
+
+// DataPlaneMiddlewareWithResolver authenticates Data Plane requests via an explicit AuthResolver
+// and enforces endpoint RBAC.
+func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			idCtx, err := resolver.ResolveRequest(r.Context(), r)
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return

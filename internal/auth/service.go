@@ -44,6 +44,7 @@ type Service struct {
 	allowMasterKeyDataPlane bool
 	customAPIKeyHeader      string
 	jwtVerifier             *JWTVerifier
+	dataPlaneResolver       *AuthResolver
 	l1TTL                   time.Duration
 	l2TTL                   time.Duration
 	l1Cache                 sync.Map // keyHash -> l1CacheEntry
@@ -80,6 +81,42 @@ func (s *Service) SetAllowMasterKeyDataPlane(allow bool) {
 // SetJWTVerifier configures inbound JWT/OIDC verification for Control Plane authentication.
 func (s *Service) SetJWTVerifier(v *JWTVerifier) {
 	s.jwtVerifier = v
+}
+
+// JWTVerifier returns the configured JWTVerifier.
+func (s *Service) JWTVerifier() *JWTVerifier {
+	if s == nil {
+		return nil
+	}
+	return s.jwtVerifier
+}
+
+// SetDataPlaneResolver attaches a unified AuthResolver for DataPlaneMiddleware.
+func (s *Service) SetDataPlaneResolver(r *AuthResolver) {
+	if s != nil {
+		s.dataPlaneResolver = r
+	}
+}
+
+// DataPlaneResolver returns the configured Data Plane AuthResolver, if any.
+func (s *Service) DataPlaneResolver() *AuthResolver {
+	if s == nil {
+		return nil
+	}
+	return s.dataPlaneResolver
+}
+
+// Repo returns the underlying storage.Repository.
+func (s *Service) Repo() storage.Repository {
+	if s == nil {
+		return nil
+	}
+	return s.repo
+}
+
+// AllowMasterKeyDataPlane reports whether MasterAdminKey is allowed on data-plane routes.
+func (s *Service) AllowMasterKeyDataPlane() bool {
+	return s != nil && s.allowMasterKeyDataPlane
 }
 
 // SetCustomAPIKeyHeader configures an optional custom HTTP header name used to extract inbound gateway API keys.
@@ -545,6 +582,67 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		return nil, expiredVirtualKeyError()
 	}
 
+	idCtx, err := s.resolveVirtualKeyIdentity(ctx, vk)
+	if err != nil {
+		return nil, err
+	}
+
+	// Hydrate L2 Redis + L1 Memory
+	var keyExpiresAt *time.Time
+	if vk.ExpiresAt != nil {
+		expiresAt := vk.ExpiresAt.UTC()
+		keyExpiresAt = &expiresAt
+	}
+	orgEpoch, teamEpoch := s.fetchEpochs(ctx, idCtx.OrgID, idCtx.TeamID)
+	cacheEntry := cachedIdentity{
+		Identity:     *idCtx,
+		KeyExpiresAt: keyExpiresAt,
+		OrgEpoch:     orgEpoch,
+		TeamEpoch:    teamEpoch,
+	}
+	if s.redis != nil {
+		if b, err := json.Marshal(cacheEntry); err == nil {
+			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+				return rdb.Set(ctx, authCacheKey(keyHash), b, s.l2TTL).Result()
+			})
+		}
+	}
+	s.l1Cache.Store(keyHash, l1CacheEntry{
+		identity:     idCtx,
+		expiresAt:    now.Add(s.l1TTL),
+		keyExpiresAt: keyExpiresAt,
+	})
+
+	return idCtx, nil
+}
+
+// AuthenticateVirtualKeyByID resolves a VirtualKey's full IdentityContext by ID (e.g. from a JWT-to-key mapping).
+func (s *Service) AuthenticateVirtualKeyByID(ctx context.Context, id string) (*domain.IdentityContext, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_api_key",
+			Message:    "Mapped virtual API key id is empty",
+		}
+	}
+	vk, err := s.repo.GetVirtualKeyByID(ctx, id)
+	if err != nil || vk == nil || !vk.IsActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_api_key",
+			Message:    "Mapped virtual API key is invalid or revoked",
+		}
+	}
+	if isKeyExpired(vk.ExpiresAt, time.Now().UTC()) {
+		return nil, expiredVirtualKeyError()
+	}
+	return s.resolveVirtualKeyIdentity(ctx, vk)
+}
+
+func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.VirtualKey) (*domain.IdentityContext, error) {
 	org, err := s.repo.GetOrganization(ctx, vk.OrgID)
 	if err != nil || !org.IsActive {
 		return nil, &domain.GatewayError{
@@ -666,32 +764,6 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
 		idCtx.UserSpentMicros = user.SpentMicros
 	}
-
-	// Hydrate L2 Redis + L1 Memory
-	var keyExpiresAt *time.Time
-	if vk.ExpiresAt != nil {
-		expiresAt := vk.ExpiresAt.UTC()
-		keyExpiresAt = &expiresAt
-	}
-	orgEpoch, teamEpoch := s.fetchEpochs(ctx, idCtx.OrgID, idCtx.TeamID)
-	cacheEntry := cachedIdentity{
-		Identity:     *idCtx,
-		KeyExpiresAt: keyExpiresAt,
-		OrgEpoch:     orgEpoch,
-		TeamEpoch:    teamEpoch,
-	}
-	if s.redis != nil {
-		if b, err := json.Marshal(cacheEntry); err == nil {
-			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-				return rdb.Set(ctx, authCacheKey(keyHash), b, s.l2TTL).Result()
-			})
-		}
-	}
-	s.l1Cache.Store(keyHash, l1CacheEntry{
-		identity:     idCtx,
-		expiresAt:    now.Add(s.l1TTL),
-		keyExpiresAt: keyExpiresAt,
-	})
 
 	return idCtx, nil
 }

@@ -54,6 +54,7 @@ type GatewayServer struct {
 	reg               *adapter.Registry
 	vault             *auth.Vault
 	authSvc           *auth.Service
+	authResolver      *auth.AuthResolver
 	rbac              *auth.RBACEngine
 	limiter           *ratelimit.Limiter
 	respCache         *cache.ResponseCache
@@ -219,14 +220,67 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
 	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
-	authSvc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{
+	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
+	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
 		Secret:        cfg.Auth.JWTSecret,
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,
 		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
+		DefaultOrgID:  cfg.Auth.DefaultOrgID,
 		Issuers:       buildOIDCIssuerConfigs(cfg.Auth.OIDCIssuers, netPolicy),
 		NetworkPolicy: netPolicy,
-	}))
+	})
+	authSvc.SetJWTVerifier(jwtVerifier)
+
+	var introspector *auth.OAuthIntrospector
+	if strings.TrimSpace(cfg.Auth.Introspection.TokenInfoEndpoint) != "" {
+		introspector = auth.NewOAuthIntrospector(auth.IntrospectionConfig{
+			TokenInfoEndpoint: cfg.Auth.Introspection.TokenInfoEndpoint,
+			ClientID:          cfg.Auth.Introspection.ClientID,
+			ClientSecret:      cfg.Auth.Introspection.ClientSecret,
+			Mode:              cfg.Auth.Introspection.Mode,
+			UserIDField:       cfg.Auth.Introspection.UserIDField,
+			EmailField:        cfg.Auth.Introspection.EmailField,
+			RoleField:         cfg.Auth.Introspection.RoleField,
+			OrgIDField:        cfg.Auth.Introspection.OrgIDField,
+			TeamIDField:       cfg.Auth.Introspection.TeamIDField,
+			CacheTTL:          cfg.Auth.Introspection.CacheTTL,
+			NetworkPolicy:     netPolicy,
+			Redis:             redisFabric,
+		})
+	}
+
+	var proxyAuth *auth.ProxyAuthenticator
+	if cfg.Auth.ProxyAuth.Enabled {
+		proxyAuth, err = auth.NewProxyAuthenticator(auth.ProxyAuthConfig{
+			Enabled:           cfg.Auth.ProxyAuth.Enabled,
+			TrustedProxyCIDRs: cfg.Auth.ProxyAuth.TrustedProxyCIDRs,
+			HeaderMapping:     cfg.Auth.ProxyAuth.HeaderMapping,
+		})
+		if err != nil {
+			if tracerShutdown != nil {
+				_ = tracerShutdown(context.Background())
+			}
+			return nil, fmt.Errorf("invalid proxy auth config: %w", err)
+		}
+	}
+
+	authResolver := auth.NewAuthResolver(auth.ResolverConfig{
+		Service:                    authSvc,
+		Repo:                       repo,
+		JWTVerifier:                jwtVerifier,
+		Introspector:               introspector,
+		ProxyAuth:                  proxyAuth,
+		EnableDataPlaneJWT:         cfg.Auth.EnableDataPlaneJWT,
+		DefaultOrgID:               cfg.Auth.DefaultOrgID,
+		IntrospectionAutoRegister:  cfg.Auth.Introspection.AutoRegister,
+		IntrospectionDefaultTeamID: cfg.Auth.Introspection.DefaultTeamID,
+		IntrospectionDefaultRole:   cfg.Auth.Introspection.DefaultRole,
+		ProxyAutoRegister:          cfg.Auth.ProxyAuth.AutoRegister,
+		ProxyDefaultTeamID:         cfg.Auth.ProxyAuth.DefaultTeamID,
+		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
+	})
+	authSvc.SetDataPlaneResolver(authResolver)
 	rbac := auth.NewRBACEngine(repo)
 	rbac.SetRedis(redisFabric)
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
@@ -459,6 +513,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reg:               reg,
 		vault:             vault,
 		authSvc:           authSvc,
+		authResolver:      authResolver,
 		rbac:              rbac,
 		limiter:           limiter,
 		respCache:         respCache,
@@ -736,13 +791,16 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Put("/users/{userID}", s.handleAdminUpdateUser)
 		adm.Delete("/users/{userID}", s.handleAdminDeleteUser)
 
-		// Virtual API Keys
+		// Virtual API Keys & JWT Claim-to-Key Mappings
 		adm.Post("/keys", s.handleAdminIssueKey)
 		adm.Get("/keys", s.handleAdminListKeys)
 		adm.Put("/keys/{keyID}", s.handleAdminUpdateKey)
 		adm.Post("/keys/{keyID}/rotate", s.handleAdminRotateKey)
 		adm.Post("/keys/{keyID}/revoke", s.handleAdminRevokeKey)
 		adm.Delete("/keys/{keyID}", s.handleAdminRevokeKey)
+		adm.Post("/jwt-mappings", s.handleAdminCreateJWTMapping)
+		adm.Get("/jwt-mappings", s.handleAdminListJWTMappings)
+		adm.Delete("/jwt-mappings/{id}", s.handleAdminDeleteJWTMapping)
 
 		// Provider Credentials Vault & Lifecycle (Rotation & Live Validation)
 		adm.Post("/credentials", s.handleAdminCreateCredential)
@@ -904,6 +962,10 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 
 func (s *GatewayServer) AuthService() *auth.Service {
 	return s.authSvc
+}
+
+func (s *GatewayServer) AuthResolver() *auth.AuthResolver {
+	return s.authResolver
 }
 
 func (s *GatewayServer) RBAC() *auth.RBACEngine {

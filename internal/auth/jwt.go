@@ -143,6 +143,10 @@ type JWTConfig struct {
 	Algorithms          []string
 	AllowedEmailDomains []string
 	ClaimMapping        OIDCClaimMapping
+	AutoRegister        bool
+	DefaultOrgID        string
+	DefaultTeamID       string
+	DefaultRole         string
 	Issuers             []OIDCIssuerConfig
 	NetworkPolicy       *network.Policy
 	HTTPClient          *http.Client
@@ -332,6 +336,35 @@ func (o *OIDCVerifier) Issuer() string {
 	return o.issuer
 }
 
+// AutoRegister reports whether JIT user provisioning is enabled for this issuer.
+func (o *OIDCVerifier) AutoRegister() bool {
+	return o != nil && o.autoRegister
+}
+
+// DefaultOrgID returns the fallback organization ID configured for this issuer.
+func (o *OIDCVerifier) DefaultOrgID() string {
+	if o == nil {
+		return ""
+	}
+	return o.defaultOrgID
+}
+
+// DefaultTeamID returns the fallback team ID configured for this issuer.
+func (o *OIDCVerifier) DefaultTeamID() string {
+	if o == nil {
+		return ""
+	}
+	return o.defaultTeamID
+}
+
+// DefaultRole returns the fallback role configured for this issuer.
+func (o *OIDCVerifier) DefaultRole() string {
+	if o == nil {
+		return ""
+	}
+	return o.defaultRole
+}
+
 // JWTVerifier validates inbound HS256 and OIDC asymmetric JWTs across one or more configured issuers.
 type JWTVerifier struct {
 	defaultVerifier *OIDCVerifier
@@ -356,6 +389,10 @@ func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 			Algorithms:          cfg.Algorithms,
 			AllowedEmailDomains: cfg.AllowedEmailDomains,
 			ClaimMapping:        cfg.ClaimMapping,
+			AutoRegister:        cfg.AutoRegister,
+			DefaultOrgID:        cfg.DefaultOrgID,
+			DefaultTeamID:       cfg.DefaultTeamID,
+			DefaultRole:         cfg.DefaultRole,
 			CacheTTL:            cfg.CacheTTL,
 			DiscoveryTTL:        cfg.DiscoveryTTL,
 			StaleCacheTTL:       cfg.StaleCacheTTL,
@@ -454,6 +491,19 @@ func (v *JWTVerifier) SetNowFunc(fn func() time.Time) {
 			ov.SetNowFunc(fn)
 		}
 	}
+}
+
+// VerifierForIssuer returns the configured OIDCVerifier for issuer, falling back to the default verifier.
+func (v *JWTVerifier) VerifierForIssuer(issuer string) *OIDCVerifier {
+	if v == nil {
+		return nil
+	}
+	if iss := strings.TrimSpace(issuer); iss != "" {
+		if ov, ok := v.issuers[iss]; ok && ov != nil {
+			return ov
+		}
+	}
+	return v.defaultVerifier
 }
 
 // Enabled reports whether at least one HMAC secret, static JWKS URL, or OIDC discovery issuer is configured.

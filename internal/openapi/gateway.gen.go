@@ -968,6 +968,26 @@ type AdminDeployment struct {
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
 type AdminDeploymentStatus string
 
+// AdminJWTKeyMapping defines model for AdminJWTKeyMapping.
+type AdminJWTKeyMapping struct {
+	ClaimName    string    `json:"claim_name"`
+	ClaimValue   string    `json:"claim_value"`
+	CreatedAt    time.Time `json:"created_at"`
+	Id           string    `json:"id"`
+	Issuer       string    `json:"issuer"`
+	OrgId        string    `json:"org_id"`
+	VirtualKeyId string    `json:"virtual_key_id"`
+}
+
+// AdminJWTKeyMappingCreateRequest defines model for AdminJWTKeyMappingCreateRequest.
+type AdminJWTKeyMappingCreateRequest struct {
+	ClaimName    string  `json:"claim_name"`
+	ClaimValue   string  `json:"claim_value"`
+	Issuer       string  `json:"issuer"`
+	OrgId        *string `json:"org_id,omitempty"`
+	VirtualKeyId string  `json:"virtual_key_id"`
+}
+
 // AdminMCPServerCreateRequest defines model for AdminMCPServerCreateRequest.
 type AdminMCPServerCreateRequest struct {
 	Args        *[]string                            `json:"args,omitempty"`
@@ -2118,6 +2138,11 @@ type ListDeploymentsParams struct {
 	ModelGroupId *string `form:"model_group_id,omitempty" json:"model_group_id,omitempty"`
 }
 
+// ListJWTKeyMappingsParams defines parameters for ListJWTKeyMappings.
+type ListJWTKeyMappingsParams struct {
+	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+}
+
 // ListVirtualKeysParams defines parameters for ListVirtualKeys.
 type ListVirtualKeysParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2252,6 +2277,9 @@ type UpdateGuardrailDefinitionJSONRequestBody = GuardrailDefinitionWriteRequest
 
 // SetGuardrailDefinitionStatusJSONRequestBody defines body for SetGuardrailDefinitionStatus for application/json ContentType.
 type SetGuardrailDefinitionStatusJSONRequestBody = GuardrailStatusUpdateRequest
+
+// CreateJWTKeyMappingJSONRequestBody defines body for CreateJWTKeyMapping for application/json ContentType.
+type CreateJWTKeyMappingJSONRequestBody = AdminJWTKeyMappingCreateRequest
 
 // IssueVirtualKeyJSONRequestBody defines body for IssueVirtualKey for application/json ContentType.
 type IssueVirtualKeyJSONRequestBody = AdminVirtualKey
@@ -3081,6 +3109,15 @@ type ServerInterface interface {
 	// ProbeDeployments Probe provider deployments for liveness and latency
 	// (POST /admin/v1/health/probe)
 	ProbeDeployments(w http.ResponseWriter, r *http.Request)
+	// ListJWTKeyMappings List JWT claim-to-virtual-key mappings
+	// (GET /admin/v1/jwt-mappings)
+	ListJWTKeyMappings(w http.ResponseWriter, r *http.Request, params ListJWTKeyMappingsParams)
+	// CreateJWTKeyMapping Create a JWT claim-to-virtual-key mapping
+	// (POST /admin/v1/jwt-mappings)
+	CreateJWTKeyMapping(w http.ResponseWriter, r *http.Request)
+	// DeleteJWTKeyMapping Delete a JWT claim-to-virtual-key mapping
+	// (DELETE /admin/v1/jwt-mappings/{id})
+	DeleteJWTKeyMapping(w http.ResponseWriter, r *http.Request, id string)
 	// ListVirtualKeys List virtual API keys for an organization
 	// (GET /admin/v1/keys)
 	ListVirtualKeys(w http.ResponseWriter, r *http.Request, params ListVirtualKeysParams)
@@ -3943,6 +3980,79 @@ func (siw *ServerInterfaceWrapper) ProbeDeployments(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ProbeDeployments(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListJWTKeyMappings operation middleware
+func (siw *ServerInterfaceWrapper) ListJWTKeyMappings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListJWTKeyMappingsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListJWTKeyMappings(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateJWTKeyMapping operation middleware
+func (siw *ServerInterfaceWrapper) CreateJWTKeyMapping(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateJWTKeyMapping(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteJWTKeyMapping operation middleware
+func (siw *ServerInterfaceWrapper) DeleteJWTKeyMapping(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteJWTKeyMapping(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5840,6 +5950,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/keys", wrapper.ListVirtualKeys)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys", wrapper.IssueVirtualKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/revoke", wrapper.RevokeVirtualKey)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.ListJWTKeyMappings)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.CreateJWTKeyMapping)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/jwt-mappings/{id}", wrapper.DeleteJWTKeyMapping)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/credentials", wrapper.ListCredentials)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials", wrapper.CreateCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/{credID}/rotate", wrapper.RotateCredential)
@@ -6551,6 +6664,82 @@ type ProbeDeployments200JSONResponse struct {
 }
 
 func (response ProbeDeployments200JSONResponse) VisitProbeDeploymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListJWTKeyMappingsRequestObject struct {
+	Params ListJWTKeyMappingsParams
+}
+
+type ListJWTKeyMappingsResponseObject interface {
+	VisitListJWTKeyMappingsResponse(w http.ResponseWriter) error
+}
+
+type ListJWTKeyMappings200JSONResponse struct {
+	Data *[]AdminJWTKeyMapping `json:"data,omitempty"`
+}
+
+func (response ListJWTKeyMappings200JSONResponse) VisitListJWTKeyMappingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateJWTKeyMappingRequestObject struct {
+	Body *CreateJWTKeyMappingJSONRequestBody
+}
+
+type CreateJWTKeyMappingResponseObject interface {
+	VisitCreateJWTKeyMappingResponse(w http.ResponseWriter) error
+}
+
+type CreateJWTKeyMapping201JSONResponse AdminJWTKeyMapping
+
+func (response CreateJWTKeyMapping201JSONResponse) VisitCreateJWTKeyMappingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateJWTKeyMapping409Response struct {
+}
+
+func (response CreateJWTKeyMapping409Response) VisitCreateJWTKeyMappingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(409)
+	return nil
+}
+
+type DeleteJWTKeyMappingRequestObject struct {
+	Id string `json:"id"`
+}
+
+type DeleteJWTKeyMappingResponseObject interface {
+	VisitDeleteJWTKeyMappingResponse(w http.ResponseWriter) error
+}
+
+type DeleteJWTKeyMapping200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteJWTKeyMapping200JSONResponse) VisitDeleteJWTKeyMappingResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -8179,6 +8368,15 @@ type StrictServerInterface interface {
 	// ProbeDeployments Probe provider deployments for liveness and latency
 	// (POST /admin/v1/health/probe)
 	ProbeDeployments(ctx context.Context, request ProbeDeploymentsRequestObject) (ProbeDeploymentsResponseObject, error)
+	// ListJWTKeyMappings List JWT claim-to-virtual-key mappings
+	// (GET /admin/v1/jwt-mappings)
+	ListJWTKeyMappings(ctx context.Context, request ListJWTKeyMappingsRequestObject) (ListJWTKeyMappingsResponseObject, error)
+	// CreateJWTKeyMapping Create a JWT claim-to-virtual-key mapping
+	// (POST /admin/v1/jwt-mappings)
+	CreateJWTKeyMapping(ctx context.Context, request CreateJWTKeyMappingRequestObject) (CreateJWTKeyMappingResponseObject, error)
+	// DeleteJWTKeyMapping Delete a JWT claim-to-virtual-key mapping
+	// (DELETE /admin/v1/jwt-mappings/{id})
+	DeleteJWTKeyMapping(ctx context.Context, request DeleteJWTKeyMappingRequestObject) (DeleteJWTKeyMappingResponseObject, error)
 	// ListVirtualKeys List virtual API keys for an organization
 	// (GET /admin/v1/keys)
 	ListVirtualKeys(ctx context.Context, request ListVirtualKeysRequestObject) (ListVirtualKeysResponseObject, error)
@@ -9242,6 +9440,89 @@ func (sh *strictHandler) ProbeDeployments(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ProbeDeploymentsResponseObject); ok {
 		if err := validResponse.VisitProbeDeploymentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListJWTKeyMappings operation middleware
+func (sh *strictHandler) ListJWTKeyMappings(w http.ResponseWriter, r *http.Request, params ListJWTKeyMappingsParams) {
+	var request ListJWTKeyMappingsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListJWTKeyMappings(ctx, request.(ListJWTKeyMappingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListJWTKeyMappings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListJWTKeyMappingsResponseObject); ok {
+		if err := validResponse.VisitListJWTKeyMappingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateJWTKeyMapping operation middleware
+func (sh *strictHandler) CreateJWTKeyMapping(w http.ResponseWriter, r *http.Request) {
+	var request CreateJWTKeyMappingRequestObject
+
+	var body CreateJWTKeyMappingJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateJWTKeyMapping(ctx, request.(CreateJWTKeyMappingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateJWTKeyMapping")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateJWTKeyMappingResponseObject); ok {
+		if err := validResponse.VisitCreateJWTKeyMappingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteJWTKeyMapping operation middleware
+func (sh *strictHandler) DeleteJWTKeyMapping(w http.ResponseWriter, r *http.Request, id string) {
+	var request DeleteJWTKeyMappingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteJWTKeyMapping(ctx, request.(DeleteJWTKeyMappingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteJWTKeyMapping")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteJWTKeyMappingResponseObject); ok {
+		if err := validResponse.VisitDeleteJWTKeyMappingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

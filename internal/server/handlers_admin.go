@@ -1315,6 +1315,8 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"master_admin_key":            redactSecret(cfg.Auth.MasterAdminKey),
 			"master_encryption_key":       redactSecret(cfg.Auth.MasterEncryptionKey),
 			"allow_master_key_data_plane": cfg.Auth.AllowMasterKeyDataPlane,
+			"enable_data_plane_jwt":       cfg.Auth.EnableDataPlaneJWT,
+			"custom_api_key_header":       cfg.Auth.CustomAPIKeyHeader,
 			"jwt_secret":                  redactSecret(cfg.Auth.JWTSecret),
 			"jwt_issuer":                  cfg.Auth.JWTIssuer,
 			"jwt_audience":                cfg.Auth.JWTAudience,
