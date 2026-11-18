@@ -45,6 +45,8 @@ type MemoryRepository struct {
 	ptuSharesByTuple       map[string]string
 	priorityClasses        map[string]*domain.PriorityClass
 	priorityClassesByTuple map[string]string
+	budgetWindows          map[string]*domain.BudgetWindowLimit
+	budgetWindowsByTuple   map[string]string
 	accessGroupRules       map[string]*domain.AccessGroupRule
 	credentials            map[string]*domain.ProviderCredential
 	groupsByID             map[string]*domain.ModelGroup
@@ -115,6 +117,8 @@ func NewMemoryRepository() *MemoryRepository {
 		ptuSharesByTuple:       make(map[string]string),
 		priorityClasses:        make(map[string]*domain.PriorityClass),
 		priorityClassesByTuple: make(map[string]string),
+		budgetWindows:          make(map[string]*domain.BudgetWindowLimit),
+		budgetWindowsByTuple:   make(map[string]string),
 		accessGroupRules:       make(map[string]*domain.AccessGroupRule),
 		credentials:            make(map[string]*domain.ProviderCredential),
 		groupsByID:             make(map[string]*domain.ModelGroup),
@@ -614,6 +618,14 @@ func advanceBudgetResetAt(period domain.BudgetResetPeriod, current *time.Time) *
 	}
 }
 
+func cloneTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
 func cloneOrganization(org *domain.Organization) *domain.Organization {
 	if org == nil {
 		return nil
@@ -621,10 +633,8 @@ func cloneOrganization(org *domain.Organization) *domain.Organization {
 	cp := *org
 	cp.MaxConcurrentRequests = org.MaxConcurrentRequests
 	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(org.BudgetFallbacks)
-	if org.BudgetResetAt != nil {
-		t := *org.BudgetResetAt
-		cp.BudgetResetAt = &t
-	}
+	cp.BudgetResetAt = cloneTimePtr(org.BudgetResetAt)
+	cp.TempBudgetExpiresAt = cloneTimePtr(org.TempBudgetExpiresAt)
 	if len(org.Metadata) > 0 {
 		cp.Metadata = make(map[string]string, len(org.Metadata))
 		for k, v := range org.Metadata {
@@ -635,6 +645,15 @@ func cloneOrganization(org *domain.Organization) *domain.Organization {
 }
 
 func (r *MemoryRepository) CreateOrganization(ctx context.Context, org *domain.Organization) error {
+	if org.SelfServeBudgetPolicy == "" {
+		org.SelfServeBudgetPolicy = domain.SelfServeBudgetDisabled
+	} else {
+		p := domain.SelfServeBudgetPolicy(strings.ToLower(strings.TrimSpace(string(org.SelfServeBudgetPolicy))))
+		if !p.IsValid() {
+			return fmt.Errorf("invalid self_serve_budget_policy %q", org.SelfServeBudgetPolicy)
+		}
+		org.SelfServeBudgetPolicy = p
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if org.ID == "" {
@@ -727,10 +746,8 @@ func cloneTeam(team *domain.Team) *domain.Team {
 	cp := *team
 	cp.MaxConcurrentRequests = team.MaxConcurrentRequests
 	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
-	if team.BudgetResetAt != nil {
-		t := *team.BudgetResetAt
-		cp.BudgetResetAt = &t
-	}
+	cp.BudgetResetAt = cloneTimePtr(team.BudgetResetAt)
+	cp.TempBudgetExpiresAt = cloneTimePtr(team.TempBudgetExpiresAt)
 	cp.AllowedModels = slices.Clone(team.AllowedModels)
 	cp.AllowedMCPServers = slices.Clone(team.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
@@ -853,10 +870,8 @@ func cloneUser(user *domain.User) *domain.User {
 	}
 	cp := *user
 	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
-	if user.BudgetResetAt != nil {
-		t := *user.BudgetResetAt
-		cp.BudgetResetAt = &t
-	}
+	cp.BudgetResetAt = cloneTimePtr(user.BudgetResetAt)
+	cp.TempBudgetExpiresAt = cloneTimePtr(user.TempBudgetExpiresAt)
 	return &cp
 }
 
@@ -1559,6 +1574,186 @@ func (r *MemoryRepository) ListPriorityClasses(_ context.Context, orgID string) 
 	return out, nil
 }
 
+func (r *MemoryRepository) UpsertBudgetWindowLimit(_ context.Context, limit *domain.BudgetWindowLimit) error {
+	now := time.Now().UTC()
+	hasExplicitReset := limit != nil && !limit.WindowResetAt.IsZero()
+	if err := normalizeBudgetWindowLimit(limit, now); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := budgetWindowTupleKey(limit.OrgID, limit.ScopeType, limit.ScopeID, limit.WindowType)
+	if existingID, ok := r.budgetWindowsByTuple[tupleKey]; ok {
+		existing := r.budgetWindows[existingID]
+		limit.ID = existing.ID
+		limit.CreatedAt = existing.CreatedAt
+		if existing.SpentMicros > limit.SpentMicros {
+			limit.SpentMicros = existing.SpentMicros
+		}
+		if !hasExplicitReset {
+			limit.WindowResetAt = existing.WindowResetAt
+		}
+		limit.UpdatedAt = now
+		r.budgetWindows[existing.ID] = limit.Clone()
+		return nil
+	}
+
+	if limit.ID == "" {
+		limit.ID = uuid.NewString()
+	} else if _, exists := r.budgetWindows[limit.ID]; exists {
+		return fmt.Errorf("budget window limit %q already exists: %w", limit.ID, ErrConflict)
+	}
+	if limit.CreatedAt.IsZero() {
+		limit.CreatedAt = now
+	}
+	limit.UpdatedAt = now
+	r.budgetWindows[limit.ID] = limit.Clone()
+	r.budgetWindowsByTuple[tupleKey] = limit.ID
+	return nil
+}
+
+func (r *MemoryRepository) ListBudgetWindowLimits(_ context.Context, filter BudgetWindowFilter) ([]*domain.BudgetWindowLimit, error) {
+	orgID := strings.TrimSpace(filter.OrgID)
+	scopeType := domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(filter.ScopeType))))
+	scopeID := strings.TrimSpace(filter.ScopeID)
+	windowType := domain.BudgetWindowType(strings.ToLower(strings.TrimSpace(string(filter.WindowType))))
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []*domain.BudgetWindowLimit
+	for _, bw := range r.budgetWindows {
+		if orgID != "" && bw.OrgID != orgID {
+			continue
+		}
+		if scopeType != "" && bw.ScopeType != scopeType {
+			continue
+		}
+		if scopeID != "" && bw.ScopeID != scopeID {
+			continue
+		}
+		if windowType != "" && bw.WindowType != windowType {
+			continue
+		}
+		out = append(out, bw.Clone())
+	}
+	sortBudgetWindowLimits(out)
+	return out, nil
+}
+
+func (r *MemoryRepository) incrementBudgetWindowSpendLocked(orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64, now time.Time) {
+	if orgID == "" || scopeID == "" || deltaMicros <= 0 {
+		return
+	}
+	for _, bw := range r.budgetWindows {
+		if bw.OrgID == orgID && bw.ScopeType == scopeType && bw.ScopeID == scopeID {
+			bw.SpentMicros += deltaMicros
+			bw.UpdatedAt = now
+		}
+	}
+}
+
+func (r *MemoryRepository) IncrementBudgetWindowSpend(_ context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64) error {
+	orgID = strings.TrimSpace(orgID)
+	scopeType = domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(scopeType))))
+	scopeID = strings.TrimSpace(scopeID)
+	if orgID == "" || !scopeType.IsValid() || scopeID == "" {
+		return fmt.Errorf("org_id, valid scope_type, and scope_id are required")
+	}
+	if deltaMicros < 0 {
+		return fmt.Errorf("delta_micros must be non-negative")
+	}
+	if deltaMicros == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.incrementBudgetWindowSpendLocked(orgID, scopeType, scopeID, deltaMicros, time.Now().UTC())
+	return nil
+}
+
+func (r *MemoryRepository) ResetExpiredBudgetWindows(ctx context.Context, now time.Time) (int, error) {
+	reset, err := r.ResetExpiredBudgetWindowsWithResults(ctx, now)
+	return len(reset), err
+}
+
+func (r *MemoryRepository) ResetExpiredBudgetWindowsWithResults(_ context.Context, now time.Time) ([]*domain.BudgetWindowLimit, error) {
+	nowUTC := now.UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var reset []*domain.BudgetWindowLimit
+	for _, bw := range r.budgetWindows {
+		if !nowUTC.Before(bw.WindowResetAt) {
+			bw.SpentMicros = 0
+			bw.WindowResetAt = advanceBudgetWindowResetAt(bw.WindowType, bw.WindowResetAt, nowUTC)
+			bw.UpdatedAt = nowUTC
+			reset = append(reset, bw.Clone())
+		}
+	}
+	sortBudgetWindowLimits(reset)
+	return reset, nil
+}
+
+func (r *MemoryRepository) SetTempBudgetBoost(_ context.Context, scopeType domain.QuotaScopeType, scopeID string, increaseMicros int64, expiresAt *time.Time) error {
+	scopeType = domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(scopeType))))
+	scopeID = strings.TrimSpace(scopeID)
+	if scopeID == "" {
+		return fmt.Errorf("scope_id is required")
+	}
+	if increaseMicros < 0 {
+		return fmt.Errorf("temp_budget_increase_micros must be non-negative")
+	}
+	now := time.Now().UTC()
+	exp := cloneTimePtr(expiresAt)
+	if exp != nil {
+		u := exp.UTC()
+		exp = &u
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	switch scopeType {
+	case domain.QuotaScopeKey:
+		vk, ok := r.keysByID[scopeID]
+		if !ok {
+			return fmt.Errorf("virtual key %q %w", scopeID, ErrNotFound)
+		}
+		vk.TempBudgetIncreaseMicros = increaseMicros
+		vk.TempBudgetExpiresAt = exp
+		vk.UpdatedAt = now
+	case domain.QuotaScopeTeam:
+		t, ok := r.teams[scopeID]
+		if !ok {
+			return fmt.Errorf("team %q %w", scopeID, ErrNotFound)
+		}
+		t.TempBudgetIncreaseMicros = increaseMicros
+		t.TempBudgetExpiresAt = exp
+		t.UpdatedAt = now
+	case domain.QuotaScopeUser:
+		u, ok := r.users[scopeID]
+		if !ok {
+			return fmt.Errorf("user %q %w", scopeID, ErrNotFound)
+		}
+		u.TempBudgetIncreaseMicros = increaseMicros
+		u.TempBudgetExpiresAt = exp
+		u.UpdatedAt = now
+	case domain.QuotaScopeOrg:
+		o, ok := r.orgs[scopeID]
+		if !ok {
+			return fmt.Errorf("organization %q %w", scopeID, ErrNotFound)
+		}
+		o.TempBudgetIncreaseMicros = increaseMicros
+		o.TempBudgetExpiresAt = exp
+		o.UpdatedAt = now
+	default:
+		return fmt.Errorf("unsupported temp budget scope_type %q", scopeType)
+	}
+	return nil
+}
+
 func cloneAccessGroupRule(rule *domain.AccessGroupRule) *domain.AccessGroupRule {
 	if rule == nil {
 		return nil
@@ -1662,18 +1857,10 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
-	if vk.BudgetResetAt != nil {
-		t := *vk.BudgetResetAt
-		cp.BudgetResetAt = &t
-	}
-	if vk.KeyRotationAt != nil {
-		t := *vk.KeyRotationAt
-		cp.KeyRotationAt = &t
-	}
-	if vk.ExpiresAt != nil {
-		t := *vk.ExpiresAt
-		cp.ExpiresAt = &t
-	}
+	cp.BudgetResetAt = cloneTimePtr(vk.BudgetResetAt)
+	cp.TempBudgetExpiresAt = cloneTimePtr(vk.TempBudgetExpiresAt)
+	cp.KeyRotationAt = cloneTimePtr(vk.KeyRotationAt)
+	cp.ExpiresAt = cloneTimePtr(vk.ExpiresAt)
 	if len(vk.Metadata) > 0 {
 		cp.Metadata = make(map[string]string, len(vk.Metadata))
 		for k, v := range vk.Metadata {
@@ -2301,6 +2488,9 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 
 		if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
 			vk.SpentMicros += ev.CostMicros
+			if ev.CostMicros > 0 && vk.ProjectID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeProject, vk.ProjectID, ev.CostMicros, ev.CreatedAt)
+			}
 		}
 		if ev.TeamID != "" {
 			if t, ok := r.teams[ev.TeamID]; ok {
@@ -2315,6 +2505,21 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 		if ev.OrgID != "" {
 			if o, ok := r.orgs[ev.OrgID]; ok {
 				o.SpentMicros += ev.CostMicros
+			}
+		}
+		if ev.CostMicros > 0 && ev.OrgID != "" {
+			r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeOrg, ev.OrgID, ev.CostMicros, ev.CreatedAt)
+			if ev.TeamID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeam, ev.TeamID, ev.CostMicros, ev.CreatedAt)
+			}
+			if ev.UserID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeUser, ev.UserID, ev.CostMicros, ev.CreatedAt)
+			}
+			if ev.VirtualKeyID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeKey, ev.VirtualKeyID, ev.CostMicros, ev.CreatedAt)
+			}
+			if ev.TeamID != "" && ev.UserID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeamMember, ev.TeamID+":"+ev.UserID, ev.CostMicros, ev.CreatedAt)
 			}
 		}
 	}

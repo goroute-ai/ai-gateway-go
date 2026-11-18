@@ -68,21 +68,132 @@ func (e AdminAccessGroupRuleCreateRequestOperator) Valid() bool {
 	}
 }
 
+// Defines values for AdminBudgetWindowLimitScopeType.
+const (
+	AdminBudgetWindowLimitScopeTypeAgentSession     AdminBudgetWindowLimitScopeType = "agent_session"
+	AdminBudgetWindowLimitScopeTypeEndUser          AdminBudgetWindowLimitScopeType = "end_user"
+	AdminBudgetWindowLimitScopeTypeKey              AdminBudgetWindowLimitScopeType = "key"
+	AdminBudgetWindowLimitScopeTypeMcpServer        AdminBudgetWindowLimitScopeType = "mcp_server"
+	AdminBudgetWindowLimitScopeTypeModelAccessGroup AdminBudgetWindowLimitScopeType = "model_access_group"
+	AdminBudgetWindowLimitScopeTypeModelPerEndUser  AdminBudgetWindowLimitScopeType = "model_per_end_user"
+	AdminBudgetWindowLimitScopeTypeModelPerKey      AdminBudgetWindowLimitScopeType = "model_per_key"
+	AdminBudgetWindowLimitScopeTypeModelPerOrg      AdminBudgetWindowLimitScopeType = "model_per_org"
+	AdminBudgetWindowLimitScopeTypeModelPerProject  AdminBudgetWindowLimitScopeType = "model_per_project"
+	AdminBudgetWindowLimitScopeTypeModelPerTeam     AdminBudgetWindowLimitScopeType = "model_per_team"
+	AdminBudgetWindowLimitScopeTypeModelPerUser     AdminBudgetWindowLimitScopeType = "model_per_user"
+	AdminBudgetWindowLimitScopeTypeOrg              AdminBudgetWindowLimitScopeType = "org"
+	AdminBudgetWindowLimitScopeTypeProject          AdminBudgetWindowLimitScopeType = "project"
+	AdminBudgetWindowLimitScopeTypeTag              AdminBudgetWindowLimitScopeType = "tag"
+	AdminBudgetWindowLimitScopeTypeTeam             AdminBudgetWindowLimitScopeType = "team"
+	AdminBudgetWindowLimitScopeTypeTeamMember       AdminBudgetWindowLimitScopeType = "team_member"
+	AdminBudgetWindowLimitScopeTypeUser             AdminBudgetWindowLimitScopeType = "user"
+)
+
+// Valid indicates whether the value is a known member of the AdminBudgetWindowLimitScopeType enum.
+func (e AdminBudgetWindowLimitScopeType) Valid() bool {
+	switch e {
+	case AdminBudgetWindowLimitScopeTypeAgentSession:
+		return true
+	case AdminBudgetWindowLimitScopeTypeEndUser:
+		return true
+	case AdminBudgetWindowLimitScopeTypeKey:
+		return true
+	case AdminBudgetWindowLimitScopeTypeMcpServer:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelAccessGroup:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerEndUser:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerKey:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerOrg:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerProject:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerTeam:
+		return true
+	case AdminBudgetWindowLimitScopeTypeModelPerUser:
+		return true
+	case AdminBudgetWindowLimitScopeTypeOrg:
+		return true
+	case AdminBudgetWindowLimitScopeTypeProject:
+		return true
+	case AdminBudgetWindowLimitScopeTypeTag:
+		return true
+	case AdminBudgetWindowLimitScopeTypeTeam:
+		return true
+	case AdminBudgetWindowLimitScopeTypeTeamMember:
+		return true
+	case AdminBudgetWindowLimitScopeTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminBudgetWindowLimitWindowType.
+const (
+	AdminBudgetWindowLimitWindowTypeDaily      AdminBudgetWindowLimitWindowType = "daily"
+	AdminBudgetWindowLimitWindowTypeMonthly    AdminBudgetWindowLimitWindowType = "monthly"
+	AdminBudgetWindowLimitWindowTypeRolling24h AdminBudgetWindowLimitWindowType = "rolling_24h"
+	AdminBudgetWindowLimitWindowTypeWeekly     AdminBudgetWindowLimitWindowType = "weekly"
+)
+
+// Valid indicates whether the value is a known member of the AdminBudgetWindowLimitWindowType enum.
+func (e AdminBudgetWindowLimitWindowType) Valid() bool {
+	switch e {
+	case AdminBudgetWindowLimitWindowTypeDaily:
+		return true
+	case AdminBudgetWindowLimitWindowTypeMonthly:
+		return true
+	case AdminBudgetWindowLimitWindowTypeRolling24h:
+		return true
+	case AdminBudgetWindowLimitWindowTypeWeekly:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminBudgetWindowUpsertRequestWindowType.
+const (
+	AdminBudgetWindowUpsertRequestWindowTypeDaily      AdminBudgetWindowUpsertRequestWindowType = "daily"
+	AdminBudgetWindowUpsertRequestWindowTypeMonthly    AdminBudgetWindowUpsertRequestWindowType = "monthly"
+	AdminBudgetWindowUpsertRequestWindowTypeRolling24h AdminBudgetWindowUpsertRequestWindowType = "rolling_24h"
+	AdminBudgetWindowUpsertRequestWindowTypeWeekly     AdminBudgetWindowUpsertRequestWindowType = "weekly"
+)
+
+// Valid indicates whether the value is a known member of the AdminBudgetWindowUpsertRequestWindowType enum.
+func (e AdminBudgetWindowUpsertRequestWindowType) Valid() bool {
+	switch e {
+	case AdminBudgetWindowUpsertRequestWindowTypeDaily:
+		return true
+	case AdminBudgetWindowUpsertRequestWindowTypeMonthly:
+		return true
+	case AdminBudgetWindowUpsertRequestWindowTypeRolling24h:
+		return true
+	case AdminBudgetWindowUpsertRequestWindowTypeWeekly:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminCacheInvalidateRequestScope.
 const (
-	All   AdminCacheInvalidateRequestScope = "all"
-	Model AdminCacheInvalidateRequestScope = "model"
-	Org   AdminCacheInvalidateRequestScope = "org"
+	AdminCacheInvalidateRequestScopeAll   AdminCacheInvalidateRequestScope = "all"
+	AdminCacheInvalidateRequestScopeModel AdminCacheInvalidateRequestScope = "model"
+	AdminCacheInvalidateRequestScopeOrg   AdminCacheInvalidateRequestScope = "org"
 )
 
 // Valid indicates whether the value is a known member of the AdminCacheInvalidateRequestScope enum.
 func (e AdminCacheInvalidateRequestScope) Valid() bool {
 	switch e {
-	case All:
+	case AdminCacheInvalidateRequestScopeAll:
 		return true
-	case Model:
+	case AdminCacheInvalidateRequestScopeModel:
 		return true
-	case Org:
+	case AdminCacheInvalidateRequestScopeOrg:
 		return true
 	default:
 		return false
@@ -125,6 +236,195 @@ func (e AdminMCPServerCreateRequestTransport) Valid() bool {
 	case Stdio:
 		return true
 	case StreamableHttp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminOrganizationSelfServeBudgetPolicy.
+const (
+	AdminOrganizationSelfServeBudgetPolicyCeiling   AdminOrganizationSelfServeBudgetPolicy = "ceiling"
+	AdminOrganizationSelfServeBudgetPolicyDisabled  AdminOrganizationSelfServeBudgetPolicy = "disabled"
+	AdminOrganizationSelfServeBudgetPolicyLowerOnly AdminOrganizationSelfServeBudgetPolicy = "lower_only"
+)
+
+// Valid indicates whether the value is a known member of the AdminOrganizationSelfServeBudgetPolicy enum.
+func (e AdminOrganizationSelfServeBudgetPolicy) Valid() bool {
+	switch e {
+	case AdminOrganizationSelfServeBudgetPolicyCeiling:
+		return true
+	case AdminOrganizationSelfServeBudgetPolicyDisabled:
+		return true
+	case AdminOrganizationSelfServeBudgetPolicyLowerOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminQuotaPolicyBudgetResetPeriod.
+const (
+	AdminQuotaPolicyBudgetResetPeriodDaily   AdminQuotaPolicyBudgetResetPeriod = "daily"
+	AdminQuotaPolicyBudgetResetPeriodMonthly AdminQuotaPolicyBudgetResetPeriod = "monthly"
+	AdminQuotaPolicyBudgetResetPeriodNever   AdminQuotaPolicyBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminQuotaPolicyBudgetResetPeriod enum.
+func (e AdminQuotaPolicyBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminQuotaPolicyBudgetResetPeriodDaily:
+		return true
+	case AdminQuotaPolicyBudgetResetPeriodMonthly:
+		return true
+	case AdminQuotaPolicyBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminQuotaPolicyScopeType.
+const (
+	AdminQuotaPolicyScopeTypeAgentSession     AdminQuotaPolicyScopeType = "agent_session"
+	AdminQuotaPolicyScopeTypeEndUser          AdminQuotaPolicyScopeType = "end_user"
+	AdminQuotaPolicyScopeTypeKey              AdminQuotaPolicyScopeType = "key"
+	AdminQuotaPolicyScopeTypeMcpServer        AdminQuotaPolicyScopeType = "mcp_server"
+	AdminQuotaPolicyScopeTypeModelAccessGroup AdminQuotaPolicyScopeType = "model_access_group"
+	AdminQuotaPolicyScopeTypeModelPerEndUser  AdminQuotaPolicyScopeType = "model_per_end_user"
+	AdminQuotaPolicyScopeTypeModelPerKey      AdminQuotaPolicyScopeType = "model_per_key"
+	AdminQuotaPolicyScopeTypeModelPerOrg      AdminQuotaPolicyScopeType = "model_per_org"
+	AdminQuotaPolicyScopeTypeModelPerProject  AdminQuotaPolicyScopeType = "model_per_project"
+	AdminQuotaPolicyScopeTypeModelPerTeam     AdminQuotaPolicyScopeType = "model_per_team"
+	AdminQuotaPolicyScopeTypeModelPerUser     AdminQuotaPolicyScopeType = "model_per_user"
+	AdminQuotaPolicyScopeTypeOrg              AdminQuotaPolicyScopeType = "org"
+	AdminQuotaPolicyScopeTypeProject          AdminQuotaPolicyScopeType = "project"
+	AdminQuotaPolicyScopeTypeTag              AdminQuotaPolicyScopeType = "tag"
+	AdminQuotaPolicyScopeTypeTeam             AdminQuotaPolicyScopeType = "team"
+	AdminQuotaPolicyScopeTypeTeamMember       AdminQuotaPolicyScopeType = "team_member"
+	AdminQuotaPolicyScopeTypeUser             AdminQuotaPolicyScopeType = "user"
+)
+
+// Valid indicates whether the value is a known member of the AdminQuotaPolicyScopeType enum.
+func (e AdminQuotaPolicyScopeType) Valid() bool {
+	switch e {
+	case AdminQuotaPolicyScopeTypeAgentSession:
+		return true
+	case AdminQuotaPolicyScopeTypeEndUser:
+		return true
+	case AdminQuotaPolicyScopeTypeKey:
+		return true
+	case AdminQuotaPolicyScopeTypeMcpServer:
+		return true
+	case AdminQuotaPolicyScopeTypeModelAccessGroup:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerEndUser:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerKey:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerOrg:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerProject:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerTeam:
+		return true
+	case AdminQuotaPolicyScopeTypeModelPerUser:
+		return true
+	case AdminQuotaPolicyScopeTypeOrg:
+		return true
+	case AdminQuotaPolicyScopeTypeProject:
+		return true
+	case AdminQuotaPolicyScopeTypeTag:
+		return true
+	case AdminQuotaPolicyScopeTypeTeam:
+		return true
+	case AdminQuotaPolicyScopeTypeTeamMember:
+		return true
+	case AdminQuotaPolicyScopeTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminQuotaPolicyUpsertRequestBudgetResetPeriod.
+const (
+	AdminQuotaPolicyUpsertRequestBudgetResetPeriodDaily   AdminQuotaPolicyUpsertRequestBudgetResetPeriod = "daily"
+	AdminQuotaPolicyUpsertRequestBudgetResetPeriodMonthly AdminQuotaPolicyUpsertRequestBudgetResetPeriod = "monthly"
+	AdminQuotaPolicyUpsertRequestBudgetResetPeriodNever   AdminQuotaPolicyUpsertRequestBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminQuotaPolicyUpsertRequestBudgetResetPeriod enum.
+func (e AdminQuotaPolicyUpsertRequestBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminQuotaPolicyUpsertRequestBudgetResetPeriodDaily:
+		return true
+	case AdminQuotaPolicyUpsertRequestBudgetResetPeriodMonthly:
+		return true
+	case AdminQuotaPolicyUpsertRequestBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminQuotaPolicyUpsertRequestScopeType.
+const (
+	AdminQuotaPolicyUpsertRequestScopeTypeAgentSession     AdminQuotaPolicyUpsertRequestScopeType = "agent_session"
+	AdminQuotaPolicyUpsertRequestScopeTypeEndUser          AdminQuotaPolicyUpsertRequestScopeType = "end_user"
+	AdminQuotaPolicyUpsertRequestScopeTypeKey              AdminQuotaPolicyUpsertRequestScopeType = "key"
+	AdminQuotaPolicyUpsertRequestScopeTypeMcpServer        AdminQuotaPolicyUpsertRequestScopeType = "mcp_server"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelAccessGroup AdminQuotaPolicyUpsertRequestScopeType = "model_access_group"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerEndUser  AdminQuotaPolicyUpsertRequestScopeType = "model_per_end_user"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerKey      AdminQuotaPolicyUpsertRequestScopeType = "model_per_key"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerOrg      AdminQuotaPolicyUpsertRequestScopeType = "model_per_org"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerProject  AdminQuotaPolicyUpsertRequestScopeType = "model_per_project"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerTeam     AdminQuotaPolicyUpsertRequestScopeType = "model_per_team"
+	AdminQuotaPolicyUpsertRequestScopeTypeModelPerUser     AdminQuotaPolicyUpsertRequestScopeType = "model_per_user"
+	AdminQuotaPolicyUpsertRequestScopeTypeOrg              AdminQuotaPolicyUpsertRequestScopeType = "org"
+	AdminQuotaPolicyUpsertRequestScopeTypeProject          AdminQuotaPolicyUpsertRequestScopeType = "project"
+	AdminQuotaPolicyUpsertRequestScopeTypeTag              AdminQuotaPolicyUpsertRequestScopeType = "tag"
+	AdminQuotaPolicyUpsertRequestScopeTypeTeam             AdminQuotaPolicyUpsertRequestScopeType = "team"
+	AdminQuotaPolicyUpsertRequestScopeTypeTeamMember       AdminQuotaPolicyUpsertRequestScopeType = "team_member"
+	AdminQuotaPolicyUpsertRequestScopeTypeUser             AdminQuotaPolicyUpsertRequestScopeType = "user"
+)
+
+// Valid indicates whether the value is a known member of the AdminQuotaPolicyUpsertRequestScopeType enum.
+func (e AdminQuotaPolicyUpsertRequestScopeType) Valid() bool {
+	switch e {
+	case AdminQuotaPolicyUpsertRequestScopeTypeAgentSession:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeEndUser:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeKey:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeMcpServer:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelAccessGroup:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerEndUser:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerKey:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerOrg:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerProject:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerTeam:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeModelPerUser:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeOrg:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeProject:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeTag:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeTeam:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeTeamMember:
+		return true
+	case AdminQuotaPolicyUpsertRequestScopeTypeUser:
 		return true
 	default:
 		return false
@@ -1088,6 +1388,40 @@ type AdminAccessGroupRuleCreateRequest struct {
 // AdminAccessGroupRuleCreateRequestOperator defines model for AdminAccessGroupRuleCreateRequest.Operator.
 type AdminAccessGroupRuleCreateRequestOperator string
 
+// AdminBudgetWindowLimit defines model for AdminBudgetWindowLimit.
+type AdminBudgetWindowLimit struct {
+	CreatedAt       time.Time                        `json:"created_at"`
+	Id              string                           `json:"id"`
+	MaxBudgetMicros int64                            `json:"max_budget_micros"`
+	OrgId           string                           `json:"org_id"`
+	ScopeId         string                           `json:"scope_id"`
+	ScopeType       AdminBudgetWindowLimitScopeType  `json:"scope_type"`
+	SpentMicros     int64                            `json:"spent_micros"`
+	UpdatedAt       time.Time                        `json:"updated_at"`
+	WindowResetAt   time.Time                        `json:"window_reset_at"`
+	WindowType      AdminBudgetWindowLimitWindowType `json:"window_type"`
+}
+
+// AdminBudgetWindowLimitScopeType defines model for AdminBudgetWindowLimit.ScopeType.
+type AdminBudgetWindowLimitScopeType string
+
+// AdminBudgetWindowLimitWindowType defines model for AdminBudgetWindowLimit.WindowType.
+type AdminBudgetWindowLimitWindowType string
+
+// AdminBudgetWindowUpsertRequest defines model for AdminBudgetWindowUpsertRequest.
+type AdminBudgetWindowUpsertRequest struct {
+	Id              *string                                  `json:"id,omitempty"`
+	MaxBudgetMicros int64                                    `json:"max_budget_micros"`
+	OrgId           *string                                  `json:"org_id,omitempty"`
+	ScopeId         string                                   `json:"scope_id"`
+	ScopeType       string                                   `json:"scope_type"`
+	WindowResetAt   *time.Time                               `json:"window_reset_at,omitempty"`
+	WindowType      AdminBudgetWindowUpsertRequestWindowType `json:"window_type"`
+}
+
+// AdminBudgetWindowUpsertRequestWindowType defines model for AdminBudgetWindowUpsertRequest.WindowType.
+type AdminBudgetWindowUpsertRequestWindowType string
+
 // AdminCacheInvalidateRequest defines model for AdminCacheInvalidateRequest.
 type AdminCacheInvalidateRequest struct {
 	Model *string                           `json:"model,omitempty"`
@@ -1251,21 +1585,27 @@ type AdminModelPricingHistory map[string]interface{}
 
 // AdminOrganization defines model for AdminOrganization.
 type AdminOrganization struct {
-	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
-	CreatedAt                *time.Time           `json:"created_at,omitempty"`
-	Id                       *string              `json:"id,omitempty"`
-	MaxBudgetMicro           *int64               `json:"max_budget_micro,omitempty"`
-	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
-	Metadata                 *map[string]string   `json:"metadata,omitempty"`
-	Name                     *string              `json:"name,omitempty"`
-	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
-	Slug                     *string              `json:"slug,omitempty"`
-	SoftBudgetMicro          *int64               `json:"soft_budget_micro,omitempty"`
-	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
-	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
-	UpdatedAt                *time.Time           `json:"updated_at,omitempty"`
+	BudgetFallbacks          *map[string][]string                    `json:"budget_fallbacks,omitempty"`
+	CreatedAt                *time.Time                              `json:"created_at,omitempty"`
+	Id                       *string                                 `json:"id,omitempty"`
+	MaxBudgetMicro           *int64                                  `json:"max_budget_micro,omitempty"`
+	MaxBudgetMicros          *int64                                  `json:"max_budget_micros,omitempty"`
+	Metadata                 *map[string]string                      `json:"metadata,omitempty"`
+	Name                     *string                                 `json:"name,omitempty"`
+	RpmLimit                 *int                                    `json:"rpm_limit,omitempty"`
+	SelfServeBudgetPolicy    *AdminOrganizationSelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
+	Slug                     *string                                 `json:"slug,omitempty"`
+	SoftBudgetMicro          *int64                                  `json:"soft_budget_micro,omitempty"`
+	SoftBudgetMicros         *int64                                  `json:"soft_budget_micros,omitempty"`
+	TempBudgetExpiresAt      *time.Time                              `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64                                  `json:"temp_budget_increase_micros,omitempty"`
+	ThrottleOnBudgetExceeded *bool                                   `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int                                    `json:"tpm_limit,omitempty"`
+	UpdatedAt                *time.Time                              `json:"updated_at,omitempty"`
 }
+
+// AdminOrganizationSelfServeBudgetPolicy defines model for AdminOrganization.SelfServeBudgetPolicy.
+type AdminOrganizationSelfServeBudgetPolicy string
 
 // AdminPricingUpdateRequest defines model for AdminPricingUpdateRequest.
 type AdminPricingUpdateRequest struct {
@@ -1346,6 +1686,63 @@ type AdminProviderCredential struct {
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 }
 
+// AdminQuotaPolicy defines model for AdminQuotaPolicy.
+type AdminQuotaPolicy struct {
+	BudgetResetAt     *time.Time                         `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminQuotaPolicyBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	CreatedAt         time.Time                          `json:"created_at"`
+	Id                string                             `json:"id"`
+	IsActive          bool                               `json:"is_active"`
+	ItpmLimit         *int                               `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                             `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                               `json:"max_concurrent,omitempty"`
+	MaxIterations     *int                               `json:"max_iterations,omitempty"`
+	ModelPattern      string                             `json:"model_pattern"`
+	OrgId             string                             `json:"org_id"`
+	OtpmLimit         *int                               `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                               `json:"rpm_limit,omitempty"`
+	ScopeId           string                             `json:"scope_id"`
+	ScopeType         AdminQuotaPolicyScopeType          `json:"scope_type"`
+	SpentMicros       *int64                             `json:"spent_micros,omitempty"`
+	TpdLimit          *int64                             `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                               `json:"tpm_limit,omitempty"`
+	UpdatedAt         time.Time                          `json:"updated_at"`
+	WindowTtlSec      *int                               `json:"window_ttl_sec,omitempty"`
+}
+
+// AdminQuotaPolicyBudgetResetPeriod defines model for AdminQuotaPolicy.BudgetResetPeriod.
+type AdminQuotaPolicyBudgetResetPeriod string
+
+// AdminQuotaPolicyScopeType defines model for AdminQuotaPolicy.ScopeType.
+type AdminQuotaPolicyScopeType string
+
+// AdminQuotaPolicyUpsertRequest defines model for AdminQuotaPolicyUpsertRequest.
+type AdminQuotaPolicyUpsertRequest struct {
+	BudgetResetAt     *time.Time                                      `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod *AdminQuotaPolicyUpsertRequestBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	Id                *string                                         `json:"id,omitempty"`
+	IsActive          *bool                                           `json:"is_active,omitempty"`
+	ItpmLimit         *int                                            `json:"itpm_limit,omitempty"`
+	MaxBudgetMicros   *int64                                          `json:"max_budget_micros,omitempty"`
+	MaxConcurrent     *int                                            `json:"max_concurrent,omitempty"`
+	MaxIterations     *int                                            `json:"max_iterations,omitempty"`
+	ModelPattern      *string                                         `json:"model_pattern,omitempty"`
+	OrgId             *string                                         `json:"org_id,omitempty"`
+	OtpmLimit         *int                                            `json:"otpm_limit,omitempty"`
+	RpmLimit          *int                                            `json:"rpm_limit,omitempty"`
+	ScopeId           string                                          `json:"scope_id"`
+	ScopeType         AdminQuotaPolicyUpsertRequestScopeType          `json:"scope_type"`
+	TpdLimit          *int64                                          `json:"tpd_limit,omitempty"`
+	TpmLimit          *int                                            `json:"tpm_limit,omitempty"`
+	WindowTtlSec      *int                                            `json:"window_ttl_sec,omitempty"`
+}
+
+// AdminQuotaPolicyUpsertRequestBudgetResetPeriod defines model for AdminQuotaPolicyUpsertRequest.BudgetResetPeriod.
+type AdminQuotaPolicyUpsertRequestBudgetResetPeriod string
+
+// AdminQuotaPolicyUpsertRequestScopeType defines model for AdminQuotaPolicyUpsertRequest.ScopeType.
+type AdminQuotaPolicyUpsertRequestScopeType string
+
 // AdminSpendSummary defines model for AdminSpendSummary.
 type AdminSpendSummary map[string]interface{}
 
@@ -1368,6 +1765,8 @@ type AdminTeam struct {
 	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
 	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
 	SpentMicros              *int64               `json:"spent_micros,omitempty"`
+	TempBudgetExpiresAt      *time.Time           `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64               `json:"temp_budget_increase_micros,omitempty"`
 	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
 	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
 	UpdatedAt                time.Time            `json:"updated_at"`
@@ -1407,6 +1806,16 @@ type AdminTeamMembershipUpsertRequest struct {
 // AdminTeamMembershipUpsertRequestRole defines model for AdminTeamMembershipUpsertRequest.Role.
 type AdminTeamMembershipUpsertRequestRole string
 
+// AdminTempBudgetBoostRequest defines model for AdminTempBudgetBoostRequest.
+type AdminTempBudgetBoostRequest struct {
+	ExpiresAt                *time.Time `json:"expires_at,omitempty"`
+	IncreaseMicros           *int64     `json:"increase_micros,omitempty"`
+	OrgId                    *string    `json:"org_id,omitempty"`
+	TempBudgetExpiresAt      *time.Time `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64     `json:"temp_budget_increase_micros,omitempty"`
+	TtlSeconds               *int64     `json:"ttl_seconds,omitempty"`
+}
+
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
 	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
@@ -1428,6 +1837,8 @@ type AdminUser struct {
 	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
 	SpentMicros              *int64               `json:"spent_micros,omitempty"`
 	TeamId                   *string              `json:"team_id,omitempty"`
+	TempBudgetExpiresAt      *time.Time           `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64               `json:"temp_budget_increase_micros,omitempty"`
 	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
 	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
 	UpdatedAt                time.Time            `json:"updated_at"`
@@ -1472,15 +1883,17 @@ type AdminVirtualKey struct {
 	Role   AdminVirtualKeyRole `json:"role"`
 
 	// RotationIntervalSec Automatic key rotation interval in seconds (0 disables scheduled rotation)
-	RotationIntervalSec      *int64    `json:"rotation_interval_sec,omitempty"`
-	RpmLimit                 *int      `json:"rpm_limit,omitempty"`
-	SoftBudgetMicros         *int64    `json:"soft_budget_micros,omitempty"`
-	SpentMicros              *int64    `json:"spent_micros,omitempty"`
-	TeamId                   *string   `json:"team_id,omitempty"`
-	ThrottleOnBudgetExceeded *bool     `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int      `json:"tpm_limit,omitempty"`
-	UpdatedAt                time.Time `json:"updated_at"`
-	UserId                   *string   `json:"user_id,omitempty"`
+	RotationIntervalSec      *int64     `json:"rotation_interval_sec,omitempty"`
+	RpmLimit                 *int       `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros         *int64     `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64     `json:"spent_micros,omitempty"`
+	TeamId                   *string    `json:"team_id,omitempty"`
+	TempBudgetExpiresAt      *time.Time `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64     `json:"temp_budget_increase_micros,omitempty"`
+	ThrottleOnBudgetExceeded *bool      `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int       `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+	UserId                   *string    `json:"user_id,omitempty"`
 }
 
 // AdminVirtualKeyKeyType Capability preset controlling default allowed endpoints, role, and user binding
@@ -2449,6 +2862,14 @@ type ListAuditLogsParams struct {
 	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ListBudgetWindowsParams defines parameters for ListBudgetWindows.
+type ListBudgetWindowsParams struct {
+	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	ScopeType  *string `form:"scope_type,omitempty" json:"scope_type,omitempty"`
+	ScopeId    *string `form:"scope_id,omitempty" json:"scope_id,omitempty"`
+	WindowType *string `form:"window_type,omitempty" json:"window_type,omitempty"`
+}
+
 // ImportCatalogueParams defines parameters for ImportCatalogue.
 type ImportCatalogueParams struct {
 	Provider *string `form:"provider,omitempty" json:"provider,omitempty"`
@@ -2557,6 +2978,15 @@ type DeleteProjectParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// ListQuotaPoliciesParams defines parameters for ListQuotaPolicies.
+type ListQuotaPoliciesParams struct {
+	OrgId        *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	ScopeType    *string `form:"scope_type,omitempty" json:"scope_type,omitempty"`
+	ScopeId      *string `form:"scope_id,omitempty" json:"scope_id,omitempty"`
+	ModelPattern *string `form:"model_pattern,omitempty" json:"model_pattern,omitempty"`
+	ActiveOnly   *bool   `form:"active_only,omitempty" json:"active_only,omitempty"`
+}
+
 // ListSpendLogsParams defines parameters for ListSpendLogs.
 type ListSpendLogsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -2619,6 +3049,9 @@ type SetA2APushConfigJSONRequestBody = AdminA2APushConfigRequest
 // CreateAccessGroupRuleJSONRequestBody defines body for CreateAccessGroupRule for application/json ContentType.
 type CreateAccessGroupRuleJSONRequestBody = AdminAccessGroupRuleCreateRequest
 
+// UpsertBudgetWindowJSONRequestBody defines body for UpsertBudgetWindow for application/json ContentType.
+type UpsertBudgetWindowJSONRequestBody = AdminBudgetWindowUpsertRequest
+
 // InvalidateCacheJSONRequestBody defines body for InvalidateCache for application/json ContentType.
 type InvalidateCacheJSONRequestBody = AdminCacheInvalidateRequest
 
@@ -2664,6 +3097,9 @@ type UpdateVirtualKeyJSONRequestBody = AdminVirtualKey
 // RotateVirtualKeyJSONRequestBody defines body for RotateVirtualKey for application/json ContentType.
 type RotateVirtualKeyJSONRequestBody = AdminVirtualKeyRotateRequest
 
+// SetVirtualKeyTempBudgetJSONRequestBody defines body for SetVirtualKeyTempBudget for application/json ContentType.
+type SetVirtualKeyTempBudgetJSONRequestBody = AdminTempBudgetBoostRequest
+
 // SetMCPUserCredentialJSONRequestBody defines body for SetMCPUserCredential for application/json ContentType.
 type SetMCPUserCredentialJSONRequestBody = AdminMCPUserCredentialRequest
 
@@ -2705,6 +3141,9 @@ type CreateProjectJSONRequestBody = AdminProjectRequest
 
 // UpdateProjectJSONRequestBody defines body for UpdateProject for application/json ContentType.
 type UpdateProjectJSONRequestBody = AdminProjectRequest
+
+// UpsertQuotaPolicyJSONRequestBody defines body for UpsertQuotaPolicy for application/json ContentType.
+type UpsertQuotaPolicyJSONRequestBody = AdminQuotaPolicyUpsertRequest
 
 // CreateTeamJSONRequestBody defines body for CreateTeam for application/json ContentType.
 type CreateTeamJSONRequestBody = AdminTeam
@@ -3438,6 +3877,12 @@ type ServerInterface interface {
 	// ListAuditLogs List admin and security audit log records
 	// (GET /admin/v1/audit/logs)
 	ListAuditLogs(w http.ResponseWriter, r *http.Request, params ListAuditLogsParams)
+	// ListBudgetWindows List multi-window budget limits for an organization
+	// (GET /admin/v1/budget-windows)
+	ListBudgetWindows(w http.ResponseWriter, r *http.Request, params ListBudgetWindowsParams)
+	// UpsertBudgetWindow Create or update a multi-window budget limit (daily, weekly, monthly, rolling_24h)
+	// (PUT /admin/v1/budget-windows)
+	UpsertBudgetWindow(w http.ResponseWriter, r *http.Request)
 	// InvalidateCache Invalidate response cache entries by scope, organization, or model
 	// (POST /admin/v1/cache/invalidate)
 	InvalidateCache(w http.ResponseWriter, r *http.Request)
@@ -3543,6 +3988,9 @@ type ServerInterface interface {
 	// RotateVirtualKey Rotate a virtual API key secret, optionally keeping the previous key active during a grace window and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// SetVirtualKeyTempBudget Apply or clear a temporary budget boost with expiration for a virtual API key
+	// (POST /admin/v1/keys/{keyID}/temp-budget)
+	SetVirtualKeyTempBudget(w http.ResponseWriter, r *http.Request, keyID string)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
 	// (POST /admin/v1/mcp/credentials)
 	SetMCPUserCredential(w http.ResponseWriter, r *http.Request)
@@ -3639,6 +4087,15 @@ type ServerInterface interface {
 	// UpdateProject Update a team-scoped project's metadata, budgets, rate limits, and model scopes
 	// (PUT /admin/v1/projects/{projectID})
 	UpdateProject(w http.ResponseWriter, r *http.Request, projectID string)
+	// ListQuotaPolicies List scoped quota policies for an organization
+	// (GET /admin/v1/quotas)
+	ListQuotaPolicies(w http.ResponseWriter, r *http.Request, params ListQuotaPoliciesParams)
+	// UpsertQuotaPolicy Create or update a scoped quota policy (RPM, TPM, ITPM, OTPM, TPD, concurrency, budget)
+	// (PUT /admin/v1/quotas)
+	UpsertQuotaPolicy(w http.ResponseWriter, r *http.Request)
+	// DeleteQuotaPolicy Delete a scoped quota policy
+	// (DELETE /admin/v1/quotas/{policyID})
+	DeleteQuotaPolicy(w http.ResponseWriter, r *http.Request, policyID string)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams)
@@ -4006,6 +4463,92 @@ func (siw *ServerInterfaceWrapper) ListAuditLogs(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAuditLogs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListBudgetWindows operation middleware
+func (siw *ServerInterfaceWrapper) ListBudgetWindows(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListBudgetWindowsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope_type", r.URL.Query(), &params.ScopeType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope_type", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope_id", r.URL.Query(), &params.ScopeId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "window_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "window_type", r.URL.Query(), &params.WindowType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "window_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "window_type", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListBudgetWindows(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertBudgetWindow operation middleware
+func (siw *ServerInterfaceWrapper) UpsertBudgetWindow(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertBudgetWindow(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4843,6 +5386,32 @@ func (siw *ServerInterfaceWrapper) RotateVirtualKey(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RotateVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetVirtualKeyTempBudget operation middleware
+func (siw *ServerInterfaceWrapper) SetVirtualKeyTempBudget(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetVirtualKeyTempBudget(w, r, keyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5867,6 +6436,131 @@ func (siw *ServerInterfaceWrapper) UpdateProject(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateProject(w, r, projectID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListQuotaPolicies operation middleware
+func (siw *ServerInterfaceWrapper) ListQuotaPolicies(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListQuotaPoliciesParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope_type", r.URL.Query(), &params.ScopeType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope_type", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope_id", r.URL.Query(), &params.ScopeId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "model_pattern" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "model_pattern", r.URL.Query(), &params.ModelPattern, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "model_pattern"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "model_pattern", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "active_only" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "active_only", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "active_only"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "active_only", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListQuotaPolicies(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertQuotaPolicy operation middleware
+func (siw *ServerInterfaceWrapper) UpsertQuotaPolicy(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertQuotaPolicy(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteQuotaPolicy operation middleware
+func (siw *ServerInterfaceWrapper) DeleteQuotaPolicy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "policyID" -------------
+	var policyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "policyID", r.PathValue("policyID"), &policyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "policyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteQuotaPolicy(w, r, policyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6908,6 +7602,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/keys", wrapper.ListVirtualKeys)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys", wrapper.IssueVirtualKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/revoke", wrapper.RevokeVirtualKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/temp-budget", wrapper.SetVirtualKeyTempBudget)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.ListJWTKeyMappings)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/jwt-mappings", wrapper.CreateJWTKeyMapping)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/jwt-mappings/{id}", wrapper.DeleteJWTKeyMapping)
@@ -6929,6 +7624,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/health/deployments", wrapper.ListDeploymentHealth)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/health/probe", wrapper.ProbeDeployments)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/cache/invalidate", wrapper.InvalidateCache)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/quotas", wrapper.ListQuotaPolicies)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/quotas", wrapper.UpsertQuotaPolicy)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/quotas/{policyID}", wrapper.DeleteQuotaPolicy)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/budget-windows", wrapper.ListBudgetWindows)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/budget-windows", wrapper.UpsertBudgetWindow)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/summary", wrapper.GetSpendSummary)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/logs", wrapper.ListSpendLogs)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/audit/logs", wrapper.ListAuditLogs)
@@ -7194,6 +7894,68 @@ func (response ListAuditLogs200JSONResponse) VisitListAuditLogsResponse(w http.R
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type ListBudgetWindowsRequestObject struct {
+	Params ListBudgetWindowsParams
+}
+
+type ListBudgetWindowsResponseObject interface {
+	VisitListBudgetWindowsResponse(w http.ResponseWriter) error
+}
+
+type ListBudgetWindows200JSONResponse struct {
+	Data *[]AdminBudgetWindowLimit `json:"data,omitempty"`
+}
+
+func (response ListBudgetWindows200JSONResponse) VisitListBudgetWindowsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertBudgetWindowRequestObject struct {
+	Body *UpsertBudgetWindowJSONRequestBody
+}
+
+type UpsertBudgetWindowResponseObject interface {
+	VisitUpsertBudgetWindowResponse(w http.ResponseWriter) error
+}
+
+type UpsertBudgetWindow200JSONResponse AdminBudgetWindowLimit
+
+func (response UpsertBudgetWindow200JSONResponse) VisitUpsertBudgetWindowResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertBudgetWindow400Response struct {
+}
+
+func (response UpsertBudgetWindow400Response) VisitUpsertBudgetWindowResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertBudgetWindow403Response struct {
+}
+
+func (response UpsertBudgetWindow403Response) VisitUpsertBudgetWindowResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
 }
 
 type InvalidateCacheRequestObject struct {
@@ -8064,6 +8826,53 @@ func (response RotateVirtualKey200JSONResponse) VisitRotateVirtualKeyResponse(w 
 	return err
 }
 
+type SetVirtualKeyTempBudgetRequestObject struct {
+	KeyID string `json:"keyID"`
+	Body  *SetVirtualKeyTempBudgetJSONRequestBody
+}
+
+type SetVirtualKeyTempBudgetResponseObject interface {
+	VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error
+}
+
+type SetVirtualKeyTempBudget200JSONResponse AdminVirtualKey
+
+func (response SetVirtualKeyTempBudget200JSONResponse) VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetVirtualKeyTempBudget400Response struct {
+}
+
+func (response SetVirtualKeyTempBudget400Response) VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type SetVirtualKeyTempBudget403Response struct {
+}
+
+func (response SetVirtualKeyTempBudget403Response) VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type SetVirtualKeyTempBudget404Response struct {
+}
+
+func (response SetVirtualKeyTempBudget404Response) VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
 type SetMCPUserCredentialRequestObject struct {
 	Body *SetMCPUserCredentialJSONRequestBody
 }
@@ -8848,6 +9657,98 @@ func (response UpdateProject200JSONResponse) VisitUpdateProjectResponse(w http.R
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type ListQuotaPoliciesRequestObject struct {
+	Params ListQuotaPoliciesParams
+}
+
+type ListQuotaPoliciesResponseObject interface {
+	VisitListQuotaPoliciesResponse(w http.ResponseWriter) error
+}
+
+type ListQuotaPolicies200JSONResponse struct {
+	Data *[]AdminQuotaPolicy `json:"data,omitempty"`
+}
+
+func (response ListQuotaPolicies200JSONResponse) VisitListQuotaPoliciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertQuotaPolicyRequestObject struct {
+	Body *UpsertQuotaPolicyJSONRequestBody
+}
+
+type UpsertQuotaPolicyResponseObject interface {
+	VisitUpsertQuotaPolicyResponse(w http.ResponseWriter) error
+}
+
+type UpsertQuotaPolicy200JSONResponse AdminQuotaPolicy
+
+func (response UpsertQuotaPolicy200JSONResponse) VisitUpsertQuotaPolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertQuotaPolicy400Response struct {
+}
+
+func (response UpsertQuotaPolicy400Response) VisitUpsertQuotaPolicyResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpsertQuotaPolicy403Response struct {
+}
+
+func (response UpsertQuotaPolicy403Response) VisitUpsertQuotaPolicyResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteQuotaPolicyRequestObject struct {
+	PolicyID string `json:"policyID"`
+}
+
+type DeleteQuotaPolicyResponseObject interface {
+	VisitDeleteQuotaPolicyResponse(w http.ResponseWriter) error
+}
+
+type DeleteQuotaPolicy200JSONResponse AdminDeleteStatusResponse
+
+func (response DeleteQuotaPolicy200JSONResponse) VisitDeleteQuotaPolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteQuotaPolicy404Response struct {
+}
+
+func (response DeleteQuotaPolicy404Response) VisitDeleteQuotaPolicyResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type ListSpendLogsRequestObject struct {
@@ -9728,6 +10629,12 @@ type StrictServerInterface interface {
 	// ListAuditLogs List admin and security audit log records
 	// (GET /admin/v1/audit/logs)
 	ListAuditLogs(ctx context.Context, request ListAuditLogsRequestObject) (ListAuditLogsResponseObject, error)
+	// ListBudgetWindows List multi-window budget limits for an organization
+	// (GET /admin/v1/budget-windows)
+	ListBudgetWindows(ctx context.Context, request ListBudgetWindowsRequestObject) (ListBudgetWindowsResponseObject, error)
+	// UpsertBudgetWindow Create or update a multi-window budget limit (daily, weekly, monthly, rolling_24h)
+	// (PUT /admin/v1/budget-windows)
+	UpsertBudgetWindow(ctx context.Context, request UpsertBudgetWindowRequestObject) (UpsertBudgetWindowResponseObject, error)
 	// InvalidateCache Invalidate response cache entries by scope, organization, or model
 	// (POST /admin/v1/cache/invalidate)
 	InvalidateCache(ctx context.Context, request InvalidateCacheRequestObject) (InvalidateCacheResponseObject, error)
@@ -9833,6 +10740,9 @@ type StrictServerInterface interface {
 	// RotateVirtualKey Rotate a virtual API key secret, optionally keeping the previous key active during a grace window and returning the new raw secret once
 	// (POST /admin/v1/keys/{keyID}/rotate)
 	RotateVirtualKey(ctx context.Context, request RotateVirtualKeyRequestObject) (RotateVirtualKeyResponseObject, error)
+	// SetVirtualKeyTempBudget Apply or clear a temporary budget boost with expiration for a virtual API key
+	// (POST /admin/v1/keys/{keyID}/temp-budget)
+	SetVirtualKeyTempBudget(ctx context.Context, request SetVirtualKeyTempBudgetRequestObject) (SetVirtualKeyTempBudgetResponseObject, error)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
 	// (POST /admin/v1/mcp/credentials)
 	SetMCPUserCredential(ctx context.Context, request SetMCPUserCredentialRequestObject) (SetMCPUserCredentialResponseObject, error)
@@ -9929,6 +10839,15 @@ type StrictServerInterface interface {
 	// UpdateProject Update a team-scoped project's metadata, budgets, rate limits, and model scopes
 	// (PUT /admin/v1/projects/{projectID})
 	UpdateProject(ctx context.Context, request UpdateProjectRequestObject) (UpdateProjectResponseObject, error)
+	// ListQuotaPolicies List scoped quota policies for an organization
+	// (GET /admin/v1/quotas)
+	ListQuotaPolicies(ctx context.Context, request ListQuotaPoliciesRequestObject) (ListQuotaPoliciesResponseObject, error)
+	// UpsertQuotaPolicy Create or update a scoped quota policy (RPM, TPM, ITPM, OTPM, TPD, concurrency, budget)
+	// (PUT /admin/v1/quotas)
+	UpsertQuotaPolicy(ctx context.Context, request UpsertQuotaPolicyRequestObject) (UpsertQuotaPolicyResponseObject, error)
+	// DeleteQuotaPolicy Delete a scoped quota policy
+	// (DELETE /admin/v1/quotas/{policyID})
+	DeleteQuotaPolicy(ctx context.Context, request DeleteQuotaPolicyRequestObject) (DeleteQuotaPolicyResponseObject, error)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(ctx context.Context, request ListSpendLogsRequestObject) (ListSpendLogsResponseObject, error)
@@ -10339,6 +11258,63 @@ func (sh *strictHandler) ListAuditLogs(w http.ResponseWriter, r *http.Request, p
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListAuditLogsResponseObject); ok {
 		if err := validResponse.VisitListAuditLogsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListBudgetWindows operation middleware
+func (sh *strictHandler) ListBudgetWindows(w http.ResponseWriter, r *http.Request, params ListBudgetWindowsParams) {
+	var request ListBudgetWindowsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListBudgetWindows(ctx, request.(ListBudgetWindowsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListBudgetWindows")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListBudgetWindowsResponseObject); ok {
+		if err := validResponse.VisitListBudgetWindowsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertBudgetWindow operation middleware
+func (sh *strictHandler) UpsertBudgetWindow(w http.ResponseWriter, r *http.Request) {
+	var request UpsertBudgetWindowRequestObject
+
+	var body UpsertBudgetWindowJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertBudgetWindow(ctx, request.(UpsertBudgetWindowRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertBudgetWindow")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertBudgetWindowResponseObject); ok {
+		if err := validResponse.VisitUpsertBudgetWindowResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -11344,6 +12320,39 @@ func (sh *strictHandler) RotateVirtualKey(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// SetVirtualKeyTempBudget operation middleware
+func (sh *strictHandler) SetVirtualKeyTempBudget(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request SetVirtualKeyTempBudgetRequestObject
+
+	request.KeyID = keyID
+
+	var body SetVirtualKeyTempBudgetJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetVirtualKeyTempBudget(ctx, request.(SetVirtualKeyTempBudgetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetVirtualKeyTempBudget")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetVirtualKeyTempBudgetResponseObject); ok {
+		if err := validResponse.VisitSetVirtualKeyTempBudgetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // SetMCPUserCredential operation middleware
 func (sh *strictHandler) SetMCPUserCredential(w http.ResponseWriter, r *http.Request) {
 	var request SetMCPUserCredentialRequestObject
@@ -12255,6 +13264,89 @@ func (sh *strictHandler) UpdateProject(w http.ResponseWriter, r *http.Request, p
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateProjectResponseObject); ok {
 		if err := validResponse.VisitUpdateProjectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListQuotaPolicies operation middleware
+func (sh *strictHandler) ListQuotaPolicies(w http.ResponseWriter, r *http.Request, params ListQuotaPoliciesParams) {
+	var request ListQuotaPoliciesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListQuotaPolicies(ctx, request.(ListQuotaPoliciesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListQuotaPolicies")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListQuotaPoliciesResponseObject); ok {
+		if err := validResponse.VisitListQuotaPoliciesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertQuotaPolicy operation middleware
+func (sh *strictHandler) UpsertQuotaPolicy(w http.ResponseWriter, r *http.Request) {
+	var request UpsertQuotaPolicyRequestObject
+
+	var body UpsertQuotaPolicyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertQuotaPolicy(ctx, request.(UpsertQuotaPolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertQuotaPolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertQuotaPolicyResponseObject); ok {
+		if err := validResponse.VisitUpsertQuotaPolicyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteQuotaPolicy operation middleware
+func (sh *strictHandler) DeleteQuotaPolicy(w http.ResponseWriter, r *http.Request, policyID string) {
+	var request DeleteQuotaPolicyRequestObject
+
+	request.PolicyID = policyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteQuotaPolicy(ctx, request.(DeleteQuotaPolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteQuotaPolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteQuotaPolicyResponseObject); ok {
+		if err := validResponse.VisitDeleteQuotaPolicyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

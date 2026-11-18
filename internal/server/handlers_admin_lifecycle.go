@@ -124,6 +124,77 @@ func verifyExplicitOrgMatch(w http.ResponseWriter, r *http.Request, targetOrgID 
 	return true
 }
 
+func (s *GatewayServer) enforceSelfServeBudgetPolicy(ctx context.Context, w http.ResponseWriter, op *domain.OperatorContext, orgID, teamID string, currentMax, requestedMax int64) bool {
+	if op == nil || op.Role == domain.OperatorRolePlatformAdmin || op.Role == domain.OperatorRoleOrgAdmin {
+		return true
+	}
+	if requestedMax == currentMax {
+		return true
+	}
+	org, err := s.repo.GetOrganization(ctx, orgID)
+	if err != nil || org == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "self_serve_budget_policy_unavailable",
+			Message:    "Unable to evaluate organization self_serve_budget_policy",
+		})
+		return false
+	}
+	policy := org.SelfServeBudgetPolicy
+	if policy == "" {
+		policy = domain.SelfServeBudgetDisabled
+	}
+	switch policy {
+	case domain.SelfServeBudgetDisabled:
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "self_serve_budget_disabled",
+			Message:    "Organization self_serve_budget_policy is disabled; only org_admin or platform_admin may modify budgets",
+		})
+		return false
+	case domain.SelfServeBudgetLowerOnly:
+		if requestedMax == 0 || (currentMax > 0 && requestedMax > currentMax) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "self_serve_budget_policy_violation",
+				Message:    "Organization self_serve_budget_policy 'lower_only' only permits lowering an existing budget cap",
+			})
+			return false
+		}
+		return true
+	case domain.SelfServeBudgetCeiling:
+		ceiling := org.MaxBudgetMicros
+		if teamID != "" {
+			if team, teamErr := s.repo.GetTeam(ctx, teamID); teamErr == nil && team != nil && team.MaxBudgetMicros > 0 {
+				if ceiling == 0 || team.MaxBudgetMicros < ceiling {
+					ceiling = team.MaxBudgetMicros
+				}
+			}
+		}
+		if ceiling <= 0 || requestedMax == 0 || requestedMax > ceiling {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "self_serve_budget_exceeds_ceiling",
+				Message:    "Requested budget exceeds parent ceiling under self_serve_budget_policy 'ceiling'",
+			})
+			return false
+		}
+		return true
+	default:
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "self_serve_budget_disabled",
+			Message:    "Unsupported organization self_serve_budget_policy",
+		})
+		return false
+	}
+}
+
 func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Request) {
 	teamID := strings.TrimSpace(chi.URLParam(r, "teamID"))
 	if teamID == "" {
@@ -150,7 +221,8 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if _, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.ID, true); !ok {
+	op, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.ID, true)
+	if !ok {
 		return
 	}
 
@@ -215,6 +287,9 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 				Code:       "invalid_budget",
 				Message:    "max_budget_micros cannot be negative",
 			})
+			return
+		}
+		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, "", existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
 			return
 		}
 		updated.MaxBudgetMicros = *req.MaxBudgetMicros
@@ -538,6 +613,9 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 				Code:       "invalid_budget",
 				Message:    "max_budget_micros cannot be negative",
 			})
+			return
+		}
+		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, updated.TeamID, existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
 			return
 		}
 		updated.MaxBudgetMicros = *req.MaxBudgetMicros
@@ -928,6 +1006,9 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 				Code:       "invalid_budget",
 				Message:    "max_budget_micros cannot be negative",
 			})
+			return
+		}
+		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, updated.TeamID, existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
 			return
 		}
 		updated.MaxBudgetMicros = *req.MaxBudgetMicros

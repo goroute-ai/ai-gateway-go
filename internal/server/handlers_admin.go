@@ -168,6 +168,10 @@ func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
+	if org.SelfServeBudgetPolicy != "" && !org.SelfServeBudgetPolicy.IsValid() {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_self_serve_budget_policy", Message: "self_serve_budget_policy must be disabled, lower_only, or ceiling"})
+		return
+	}
 	org.IsActive = true
 	if org.BudgetResetPeriod == "" {
 		org.BudgetResetPeriod = domain.BudgetResetMonthly
@@ -622,6 +626,11 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 				Message:    "team_admin can only issue virtual keys for users belonging to their own team",
 			})
 			return
+		}
+		if req.MaxBudgetMicros > 0 {
+			if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, req.OrgID, req.TeamID, 0, req.MaxBudgetMicros) {
+				return
+			}
 		}
 	}
 	if req.KeyType != "" && !auth.IsValidKeyType(req.KeyType) {

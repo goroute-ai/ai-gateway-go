@@ -53,10 +53,14 @@ func descriptorEntityKey(d domain.RateLimitDescriptor) string {
 	scope := strings.ToLower(strings.TrimSpace(string(d.ScopeType)))
 	scopeID := strings.TrimSpace(d.ScopeID)
 	modelPattern := strings.TrimSpace(d.ModelPattern)
-	if modelPattern == "" || modelPattern == "*" {
-		return fmt.Sprintf("%s:%s", scope, scopeID)
+	base := fmt.Sprintf("%s:%s", scope, scopeID)
+	if modelPattern != "" && modelPattern != "*" {
+		base = fmt.Sprintf("%s:model:%s", base, modelPattern)
 	}
-	return fmt.Sprintf("%s:%s:model:%s", scope, scopeID, modelPattern)
+	if wt := strings.ToLower(strings.TrimSpace(string(d.WindowType))); wt != "" {
+		base = fmt.Sprintf("%s:win:%s", base, wt)
+	}
+	return base
 }
 
 func buildDescriptorKeySet(orgID string, d domain.RateLimitDescriptor, nowMin int64, utcDay string) descriptorKeySet {
@@ -461,7 +465,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 
 		if d.TPMLimit > 0 {
 			cur := l.localDescTPM[lk] + pendingTPM[lk]
-			if cur+estTotal > d.TPMLimit {
+			if cur+estTotal > d.TPMLimit || (estTotal == 0 && cur >= d.TPMLimit) {
 				return nil, toDescriptorQuotaError(scope+"_TPM_EXCEEDED", int64(cur), int64(d.TPMLimit), retryMin)
 			}
 			pendingTPM[lk] += estTotal
@@ -469,7 +473,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 
 		if d.ITPMLimit > 0 {
 			cur := l.localDescITPM[lk] + pendingITPM[lk]
-			if cur+estInput > d.ITPMLimit {
+			if cur+estInput > d.ITPMLimit || (estInput == 0 && cur >= d.ITPMLimit) {
 				return nil, toDescriptorQuotaError(scope+"_ITPM_EXCEEDED", int64(cur), int64(d.ITPMLimit), retryMin)
 			}
 			pendingITPM[lk] += estInput
@@ -477,7 +481,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 
 		if d.OTPMLimit > 0 {
 			cur := l.localDescOTPM[lk] + pendingOTPM[lk]
-			if cur+estOutput > d.OTPMLimit {
+			if cur+estOutput > d.OTPMLimit || (estOutput == 0 && cur >= d.OTPMLimit) {
 				return nil, toDescriptorQuotaError(scope+"_OTPM_EXCEEDED", int64(cur), int64(d.OTPMLimit), retryMin)
 			}
 			pendingOTPM[lk] += estOutput
@@ -485,7 +489,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 
 		if d.TPDLimit > 0 {
 			cur := l.localDescTPD[lk] + pendingTPD[lk]
-			if cur+int64(estTotal) > d.TPDLimit {
+			if cur+int64(estTotal) > d.TPDLimit || (estTotal == 0 && cur >= d.TPDLimit) {
 				return nil, toDescriptorQuotaError(scope+"_TPD_EXCEEDED", cur, d.TPDLimit, retryDay)
 			}
 			pendingTPD[lk] += int64(estTotal)
@@ -666,4 +670,39 @@ func (l *Limiter) acquireDescriptorsLocal(
 			}
 		})
 	}, nil
+}
+
+// ResetBudgetWindowSpend clears live Redis and local descriptor spend counters
+// for expired multi-window budget limits that have been reset in durable storage.
+func (l *Limiter) ResetBudgetWindowSpend(ctx context.Context, windows []*domain.BudgetWindowLimit) error {
+	if l == nil || len(windows) == 0 {
+		return nil
+	}
+	now := l.nowUTC()
+	nowMin := now.Unix() / 60
+	utcDay := now.Format("20060102")
+
+	var redisKeys []string
+	l.localMu.Lock()
+	for _, w := range windows {
+		if w == nil || w.OrgID == "" || w.ScopeID == "" || w.WindowType == "" {
+			continue
+		}
+		desc := w.ToDescriptor()
+		lk := orgHashTag(w.OrgID) + ":" + descriptorEntityKey(desc)
+		delete(l.localDescSpent, lk)
+		ks := buildDescriptorKeySet(w.OrgID, desc, nowMin, utcDay)
+		redisKeys = append(redisKeys, ks.spend)
+	}
+	l.localMu.Unlock()
+
+	if len(redisKeys) == 0 || l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return rdb.Del(rCtx, redisKeys...).Result()
+	})
+	return err
 }

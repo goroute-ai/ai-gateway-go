@@ -938,7 +938,13 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Post("/health/probe", s.handleAdminProbeDeployments)
 		adm.Post("/cache/invalidate", s.handleAdminInvalidateCache)
 
-		// FinOps Spend & Governance Audit Logs
+		// FinOps Spend, Quotas, Multi-Window Budgets & Governance Audit Logs
+		adm.Put("/quotas", s.handleAdminUpsertQuotaPolicy)
+		adm.Get("/quotas", s.handleAdminListQuotaPolicies)
+		adm.Delete("/quotas/{policyID}", s.handleAdminDeleteQuotaPolicy)
+		adm.Put("/budget-windows", s.handleAdminUpsertBudgetWindow)
+		adm.Get("/budget-windows", s.handleAdminListBudgetWindows)
+		adm.Post("/keys/{keyID}/temp-budget", s.handleAdminSetKeyTempBudget)
 		adm.Get("/spend/summary", s.handleAdminSpendSummary)
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
 		adm.Get("/audit/logs", s.handleAdminAuditLogs)

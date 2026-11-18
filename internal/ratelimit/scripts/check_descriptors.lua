@@ -137,7 +137,7 @@ for idx = 0, count - 1 do
 
     if tpm_limit > 0 then
         local cur = tonumber(redis.call("GET", tpm_key) or "0") + (pending_add[tpm_key] or 0)
-        if (cur + est_total) > tpm_limit then
+        if (cur + est_total) > tpm_limit or (est_total == 0 and cur >= tpm_limit) then
             return {0, scope .. "_TPM_EXCEEDED", cur, tpm_limit, retry_min}
         end
         pending_add[tpm_key] = (pending_add[tpm_key] or 0) + est_total
@@ -145,7 +145,7 @@ for idx = 0, count - 1 do
 
     if itpm_limit > 0 then
         local cur = tonumber(redis.call("GET", itpm_key) or "0") + (pending_add[itpm_key] or 0)
-        if (cur + est_input) > itpm_limit then
+        if (cur + est_input) > itpm_limit or (est_input == 0 and cur >= itpm_limit) then
             return {0, scope .. "_ITPM_EXCEEDED", cur, itpm_limit, retry_min}
         end
         pending_add[itpm_key] = (pending_add[itpm_key] or 0) + est_input
@@ -153,7 +153,7 @@ for idx = 0, count - 1 do
 
     if otpm_limit > 0 then
         local cur = tonumber(redis.call("GET", otpm_key) or "0") + (pending_add[otpm_key] or 0)
-        if (cur + est_output) > otpm_limit then
+        if (cur + est_output) > otpm_limit or (est_output == 0 and cur >= otpm_limit) then
             return {0, scope .. "_OTPM_EXCEEDED", cur, otpm_limit, retry_min}
         end
         pending_add[otpm_key] = (pending_add[otpm_key] or 0) + est_output
@@ -161,7 +161,7 @@ for idx = 0, count - 1 do
 
     if tpd_limit > 0 then
         local cur = tonumber(redis.call("GET", tpd_key) or "0") + (pending_add[tpd_key] or 0)
-        if (cur + est_total) > tpd_limit then
+        if (cur + est_total) > tpd_limit or (est_total == 0 and cur >= tpd_limit) then
             return {0, scope .. "_TPD_EXCEEDED", cur, tpd_limit, retry_day}
         end
         pending_add[tpd_key] = (pending_add[tpd_key] or 0) + est_total

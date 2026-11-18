@@ -86,24 +86,27 @@ const (
 
 // Organization represents a top-level tenant in the AI Gateway.
 type Organization struct {
-	ID                       string              `json:"id"`
-	Name                     string              `json:"name"`
-	Slug                     string              `json:"slug"`
-	MaxBudgetMicros          int64               `json:"max_budget_micros"` // 0 = unlimited
-	SoftBudgetMicros         int64               `json:"soft_budget_micros"`
-	ThrottleOnBudgetExceeded bool                `json:"throttle_on_budget_exceeded"`
-	BudgetFallbacks          map[string][]string `json:"budget_fallbacks,omitempty"`
-	SpentMicros              int64               `json:"spent_micros"`
-	BudgetResetPeriod        BudgetResetPeriod   `json:"budget_reset_period"`
-	BudgetResetAt            *time.Time          `json:"budget_reset_at,omitempty"`
-	RPMLimit                 int                 `json:"rpm_limit"`                            // 0 = unlimited
-	TPMLimit                 int                 `json:"tpm_limit"`                            // 0 = unlimited
-	MaxConcurrentRequests    int                 `json:"max_concurrent_requests"`              // 0 = unlimited
-	BatchEnqueuedTokenLimit  int64               `json:"batch_enqueued_token_limit,omitempty"` // 0 = unlimited
-	IsActive                 bool                `json:"is_active"`
-	Metadata                 map[string]string   `json:"metadata,omitempty"`
-	CreatedAt                time.Time           `json:"created_at"`
-	UpdatedAt                time.Time           `json:"updated_at"`
+	ID                       string                `json:"id"`
+	Name                     string                `json:"name"`
+	Slug                     string                `json:"slug"`
+	MaxBudgetMicros          int64                 `json:"max_budget_micros"` // 0 = unlimited
+	TempBudgetIncreaseMicros int64                 `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt      *time.Time            `json:"temp_budget_expires_at,omitempty"`
+	SelfServeBudgetPolicy    SelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
+	SoftBudgetMicros         int64                 `json:"soft_budget_micros"`
+	ThrottleOnBudgetExceeded bool                  `json:"throttle_on_budget_exceeded"`
+	BudgetFallbacks          map[string][]string   `json:"budget_fallbacks,omitempty"`
+	SpentMicros              int64                 `json:"spent_micros"`
+	BudgetResetPeriod        BudgetResetPeriod     `json:"budget_reset_period"`
+	BudgetResetAt            *time.Time            `json:"budget_reset_at,omitempty"`
+	RPMLimit                 int                   `json:"rpm_limit"`                            // 0 = unlimited
+	TPMLimit                 int                   `json:"tpm_limit"`                            // 0 = unlimited
+	MaxConcurrentRequests    int                   `json:"max_concurrent_requests"`              // 0 = unlimited
+	BatchEnqueuedTokenLimit  int64                 `json:"batch_enqueued_token_limit,omitempty"` // 0 = unlimited
+	IsActive                 bool                  `json:"is_active"`
+	Metadata                 map[string]string     `json:"metadata,omitempty"`
+	CreatedAt                time.Time             `json:"created_at"`
+	UpdatedAt                time.Time             `json:"updated_at"`
 }
 
 // Team groups users and virtual keys under an Organization with dedicated budgets and model scopes.
@@ -112,6 +115,8 @@ type Team struct {
 	OrgID                    string              `json:"org_id"`
 	Name                     string              `json:"name"`
 	MaxBudgetMicros          int64               `json:"max_budget_micros"`
+	TempBudgetIncreaseMicros int64               `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt      *time.Time          `json:"temp_budget_expires_at,omitempty"`
 	SoftBudgetMicros         int64               `json:"soft_budget_micros"`
 	ThrottleOnBudgetExceeded bool                `json:"throttle_on_budget_exceeded"`
 	BudgetFallbacks          map[string][]string `json:"budget_fallbacks,omitempty"`
@@ -143,6 +148,8 @@ type User struct {
 	SCIMExternalID           string              `json:"scim_external_id,omitempty"`
 	SCIMActive               bool                `json:"scim_active"`
 	MaxBudgetMicros          int64               `json:"max_budget_micros"`
+	TempBudgetIncreaseMicros int64               `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt      *time.Time          `json:"temp_budget_expires_at,omitempty"`
 	SoftBudgetMicros         int64               `json:"soft_budget_micros"`
 	ThrottleOnBudgetExceeded bool                `json:"throttle_on_budget_exceeded"`
 	BudgetFallbacks          map[string][]string `json:"budget_fallbacks,omitempty"`
@@ -234,6 +241,8 @@ type VirtualKey struct {
 	AllowedA2AAgents         []string            `json:"allowed_a2a_agents"`  // nil = inherit, [] = DenyAll, [...] = allowlist
 	AllowedClientApps        []string            `json:"allowed_client_apps"` // nil = inherit, [] = DenyAll, [...] = allowlist
 	MaxBudgetMicros          int64               `json:"max_budget_micros"`
+	TempBudgetIncreaseMicros int64               `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt      *time.Time          `json:"temp_budget_expires_at,omitempty"`
 	SoftBudgetMicros         int64               `json:"soft_budget_micros"`
 	ThrottleOnBudgetExceeded bool                `json:"throttle_on_budget_exceeded"`
 	BudgetFallbacks          map[string][]string `json:"budget_fallbacks,omitempty"`
@@ -338,6 +347,8 @@ type IdentityContext struct {
 	KeyMaxConcurrent             int                 `json:"key_max_concurrent"`
 	KeyBatchEnqueuedTokenLimit   int64               `json:"key_batch_enqueued_token_limit"`
 	KeyMaxBudgetMicros           int64               `json:"key_max_budget_micros"`
+	KeyTempBudgetIncreaseMicros  int64               `json:"key_temp_budget_increase_micros,omitempty"`
+	KeyTempBudgetExpiresAt       *time.Time          `json:"key_temp_budget_expires_at,omitempty"`
 	KeySoftBudgetMicros          int64               `json:"key_soft_budget_micros"`
 	KeyThrottleOnBudgetExceeded  bool                `json:"key_throttle_on_budget_exceeded"`
 	KeyBudgetFallbacks           map[string][]string `json:"key_budget_fallbacks,omitempty"`
@@ -347,6 +358,8 @@ type IdentityContext struct {
 	TeamMaxConcurrent            int                 `json:"team_max_concurrent"`
 	TeamBatchEnqueuedTokenLimit  int64               `json:"team_batch_enqueued_token_limit"`
 	TeamMaxBudgetMicros          int64               `json:"team_max_budget_micros"`
+	TeamTempBudgetIncreaseMicros int64               `json:"team_temp_budget_increase_micros,omitempty"`
+	TeamTempBudgetExpiresAt      *time.Time          `json:"team_temp_budget_expires_at,omitempty"`
 	TeamSoftBudgetMicros         int64               `json:"team_soft_budget_micros"`
 	TeamThrottleOnBudgetExceeded bool                `json:"team_throttle_on_budget_exceeded"`
 	TeamBudgetFallbacks          map[string][]string `json:"team_budget_fallbacks,omitempty"`
@@ -365,6 +378,8 @@ type IdentityContext struct {
 	UserMaxConcurrent            int                 `json:"user_max_concurrent"`
 	UserBatchEnqueuedTokenLimit  int64               `json:"user_batch_enqueued_token_limit"`
 	UserMaxBudgetMicros          int64               `json:"user_max_budget_micros"`
+	UserTempBudgetIncreaseMicros int64               `json:"user_temp_budget_increase_micros,omitempty"`
+	UserTempBudgetExpiresAt      *time.Time          `json:"user_temp_budget_expires_at,omitempty"`
 	UserSoftBudgetMicros         int64               `json:"user_soft_budget_micros"`
 	UserThrottleOnBudgetExceeded bool                `json:"user_throttle_on_budget_exceeded"`
 	UserBudgetFallbacks          map[string][]string `json:"user_budget_fallbacks,omitempty"`
@@ -374,6 +389,8 @@ type IdentityContext struct {
 	OrgMaxConcurrent             int                 `json:"org_max_concurrent"`
 	OrgBatchEnqueuedTokenLimit   int64               `json:"org_batch_enqueued_token_limit"`
 	OrgMaxBudgetMicros           int64               `json:"org_max_budget_micros"`
+	OrgTempBudgetIncreaseMicros  int64               `json:"org_temp_budget_increase_micros,omitempty"`
+	OrgTempBudgetExpiresAt       *time.Time          `json:"org_temp_budget_expires_at,omitempty"`
 	OrgSoftBudgetMicros          int64               `json:"org_soft_budget_micros"`
 	OrgThrottleOnBudgetExceeded  bool                `json:"org_throttle_on_budget_exceeded"`
 	OrgBudgetFallbacks           map[string][]string `json:"org_budget_fallbacks,omitempty"`

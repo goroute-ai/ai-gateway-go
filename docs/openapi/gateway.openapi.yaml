@@ -778,6 +778,12 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        temp_budget_increase_micros:
+          type: integer
+          format: int64
+        temp_budget_expires_at:
+          type: string
+          format: date-time
         soft_budget_micros:
           type: integer
           format: int64
@@ -1102,6 +1108,12 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        temp_budget_increase_micros:
+          type: integer
+          format: int64
+        temp_budget_expires_at:
+          type: string
+          format: date-time
         soft_budget_micros:
           type: integer
           format: int64
@@ -1210,6 +1222,12 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        temp_budget_increase_micros:
+          type: integer
+          format: int64
+        temp_budget_expires_at:
+          type: string
+          format: date-time
         soft_budget_micros:
           type: integer
           format: int64
@@ -1656,6 +1674,15 @@ components:
         max_budget_micros:
           type: integer
           format: int64
+        temp_budget_increase_micros:
+          type: integer
+          format: int64
+        temp_budget_expires_at:
+          type: string
+          format: date-time
+        self_serve_budget_policy:
+          type: string
+          enum: [disabled, lower_only, ceiling]
         soft_budget_micro:
           type: integer
           format: int64
@@ -2496,6 +2523,197 @@ components:
               cost_micros:
                 type: integer
                 format: int64
+    AdminQuotaPolicy:
+      type: object
+      required:
+        - id
+        - org_id
+        - scope_type
+        - scope_id
+        - model_pattern
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        scope_type:
+          type: string
+          enum: [org, team, team_member, project, user, key, end_user, tag, model_access_group, agent_session, mcp_server, model_per_key, model_per_team, model_per_project, model_per_user, model_per_org, model_per_end_user]
+        scope_id:
+          type: string
+        model_pattern:
+          type: string
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        max_iterations:
+          type: integer
+        window_ttl_sec:
+          type: integer
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminQuotaPolicyUpsertRequest:
+      type: object
+      required:
+        - scope_type
+        - scope_id
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        scope_type:
+          type: string
+          enum: [org, team, team_member, project, user, key, end_user, tag, model_access_group, agent_session, mcp_server, model_per_key, model_per_team, model_per_project, model_per_user, model_per_org, model_per_end_user]
+        scope_id:
+          type: string
+        model_pattern:
+          type: string
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        itpm_limit:
+          type: integer
+        otpm_limit:
+          type: integer
+        tpd_limit:
+          type: integer
+          format: int64
+        max_concurrent:
+          type: integer
+        max_budget_micros:
+          type: integer
+          format: int64
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        budget_reset_at:
+          type: string
+          format: date-time
+        max_iterations:
+          type: integer
+        window_ttl_sec:
+          type: integer
+        is_active:
+          type: boolean
+    AdminBudgetWindowLimit:
+      type: object
+      required:
+        - id
+        - org_id
+        - scope_type
+        - scope_id
+        - window_type
+        - max_budget_micros
+        - spent_micros
+        - window_reset_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        scope_type:
+          type: string
+          enum: [org, team, team_member, project, user, key, end_user, tag, model_access_group, agent_session, mcp_server, model_per_key, model_per_team, model_per_project, model_per_user, model_per_org, model_per_end_user]
+        scope_id:
+          type: string
+        window_type:
+          type: string
+          enum: [daily, weekly, monthly, rolling_24h]
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        window_reset_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminBudgetWindowUpsertRequest:
+      type: object
+      required:
+        - scope_type
+        - scope_id
+        - window_type
+        - max_budget_micros
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        scope_type:
+          type: string
+        scope_id:
+          type: string
+        window_type:
+          type: string
+          enum: [daily, weekly, monthly, rolling_24h]
+        max_budget_micros:
+          type: integer
+          format: int64
+        window_reset_at:
+          type: string
+          format: date-time
+    AdminTempBudgetBoostRequest:
+      type: object
+      properties:
+        org_id:
+          type: string
+        temp_budget_increase_micros:
+          type: integer
+          format: int64
+        increase_micros:
+          type: integer
+          format: int64
+        temp_budget_expires_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        ttl_seconds:
+          type: integer
+          format: int64
   parameters:
     FileID:
       name: file_id
@@ -3672,6 +3890,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/keys/{keyID}/temp-budget:
+    post:
+      operationId: setVirtualKeyTempBudget
+      summary: Apply or clear a temporary budget boost with expiration for a virtual API key
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTempBudgetBoostRequest'
+      responses:
+        '200':
+          description: Virtual key updated with temporary budget boost
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+        '400':
+          description: Invalid temporary budget boost request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+        '404':
+          description: Virtual key not found
   /admin/v1/jwt-mappings:
     post:
       operationId: createJWTKeyMapping
@@ -4069,6 +4316,144 @@ paths:
                   namespace_version:
                     type: integer
                     format: int64
+  /admin/v1/quotas:
+    put:
+      operationId: upsertQuotaPolicy
+      summary: Create or update a scoped quota policy (RPM, TPM, ITPM, OTPM, TPD, concurrency, budget)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminQuotaPolicyUpsertRequest'
+      responses:
+        '200':
+          description: Upserted quota policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminQuotaPolicy'
+        '400':
+          description: Invalid quota policy request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listQuotaPolicies
+      summary: List scoped quota policies for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scope_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scope_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: model_pattern
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of quota policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminQuotaPolicy'
+  /admin/v1/quotas/{policyID}:
+    delete:
+      operationId: deleteQuotaPolicy
+      summary: Delete a scoped quota policy
+      parameters:
+        - name: policyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Quota policy deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Quota policy not found
+  /admin/v1/budget-windows:
+    put:
+      operationId: upsertBudgetWindow
+      summary: Create or update a multi-window budget limit (daily, weekly, monthly, rolling_24h)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminBudgetWindowUpsertRequest'
+      responses:
+        '200':
+          description: Upserted budget window limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBudgetWindowLimit'
+        '400':
+          description: Invalid budget window request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listBudgetWindows
+      summary: List multi-window budget limits for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scope_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scope_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: window_type
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of budget window limits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminBudgetWindowLimit'
   /admin/v1/spend/summary:
     get:
       operationId: getSpendSummary

@@ -855,6 +855,8 @@ func (r *AuthResolver) projectUserIdentity(
 		UserMaxConcurrent:            user.MaxConcurrentRequests,
 		UserBatchEnqueuedTokenLimit:  user.BatchEnqueuedTokenLimit,
 		UserMaxBudgetMicros:          user.MaxBudgetMicros,
+		UserTempBudgetIncreaseMicros: user.TempBudgetIncreaseMicros,
+		UserTempBudgetExpiresAt:      user.TempBudgetExpiresAt,
 		UserSoftBudgetMicros:         user.SoftBudgetMicros,
 		UserThrottleOnBudgetExceeded: user.ThrottleOnBudgetExceeded,
 		UserBudgetFallbacks:          domain.CloneBudgetFallbacks(user.BudgetFallbacks),
@@ -864,6 +866,8 @@ func (r *AuthResolver) projectUserIdentity(
 		OrgMaxConcurrent:             org.MaxConcurrentRequests,
 		OrgBatchEnqueuedTokenLimit:   org.BatchEnqueuedTokenLimit,
 		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
+		OrgTempBudgetIncreaseMicros:  org.TempBudgetIncreaseMicros,
+		OrgTempBudgetExpiresAt:       org.TempBudgetExpiresAt,
 		OrgSoftBudgetMicros:          org.SoftBudgetMicros,
 		OrgThrottleOnBudgetExceeded:  org.ThrottleOnBudgetExceeded,
 		OrgBudgetFallbacks:           domain.CloneBudgetFallbacks(org.BudgetFallbacks),
@@ -890,6 +894,8 @@ func (r *AuthResolver) projectUserIdentity(
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamTempBudgetIncreaseMicros = team.TempBudgetIncreaseMicros
+		idCtx.TeamTempBudgetExpiresAt = team.TempBudgetExpiresAt
 		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
 		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
 		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)

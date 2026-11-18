@@ -908,6 +908,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		KeyMaxConcurrent:            vk.MaxConcurrentRequests,
 		KeyBatchEnqueuedTokenLimit:  vk.BatchEnqueuedTokenLimit,
 		KeyMaxBudgetMicros:          vk.MaxBudgetMicros,
+		KeyTempBudgetIncreaseMicros: vk.TempBudgetIncreaseMicros,
+		KeyTempBudgetExpiresAt:      vk.TempBudgetExpiresAt,
 		KeySoftBudgetMicros:         vk.SoftBudgetMicros,
 		KeyThrottleOnBudgetExceeded: vk.ThrottleOnBudgetExceeded,
 		KeyBudgetFallbacks:          domain.CloneBudgetFallbacks(vk.BudgetFallbacks),
@@ -917,6 +919,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		OrgMaxConcurrent:            org.MaxConcurrentRequests,
 		OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
 		OrgMaxBudgetMicros:          org.MaxBudgetMicros,
+		OrgTempBudgetIncreaseMicros: org.TempBudgetIncreaseMicros,
+		OrgTempBudgetExpiresAt:      org.TempBudgetExpiresAt,
 		OrgSoftBudgetMicros:         org.SoftBudgetMicros,
 		OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
 		OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
@@ -1023,6 +1027,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
 		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamTempBudgetIncreaseMicros = team.TempBudgetIncreaseMicros
+		idCtx.TeamTempBudgetExpiresAt = team.TempBudgetExpiresAt
 		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
 		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
 		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
@@ -1078,6 +1084,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
 		idCtx.UserBatchEnqueuedTokenLimit = user.BatchEnqueuedTokenLimit
 		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
+		idCtx.UserTempBudgetIncreaseMicros = user.TempBudgetIncreaseMicros
+		idCtx.UserTempBudgetExpiresAt = user.TempBudgetExpiresAt
 		idCtx.UserSoftBudgetMicros = user.SoftBudgetMicros
 		idCtx.UserThrottleOnBudgetExceeded = user.ThrottleOnBudgetExceeded
 		idCtx.UserBudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
