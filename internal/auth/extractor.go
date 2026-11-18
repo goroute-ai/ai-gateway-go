@@ -57,8 +57,7 @@ type ExtractorOptions struct {
 //  4. Provider-native headers (x-api-key, x-goog-api-key, api-key, Ocp-Apim-Subscription-Key)
 //  5. Query ?key= on Gemini-compatible routes, or WebSocket subprotocol/query on realtime routes.
 //
-// Conflicting primary credentials (Authorization vs provider-native headers, or conflicting
-// provider-native headers) without an explicit gateway override header return HTTP 400
+// Conflicting credentials across supported sources without an explicit gateway override header return HTTP 400
 // ambiguous_gateway_credentials.
 func ExtractCredentials(r *http.Request, opts ExtractorOptions) (ExtractedCredentials, error) {
 	if r == nil {
@@ -88,24 +87,9 @@ func ExtractCredentials(r *http.Request, opts ExtractorOptions) (ExtractedCreden
 		}
 	}
 
-	if len(primary) > 0 {
-		first := primary[0]
-		for _, candidate := range primary[1:] {
-			if candidate.Token != first.Token {
-				return ExtractedCredentials{}, &domain.GatewayError{
-					StatusCode: http.StatusBadRequest,
-					Type:       domain.ErrorTypeAuthentication,
-					Code:       "ambiguous_gateway_credentials",
-					Message:    "Conflicting authentication credentials: multiple primary credential headers were provided with different values without an explicit gateway override header",
-				}
-			}
-		}
-		return first, nil
-	}
-
 	if r.URL != nil && isGeminiCompatibleRoute(r.URL.Path) {
 		if qKey := strings.TrimSpace(r.URL.Query().Get("key")); qKey != "" {
-			return ExtractedCredentials{Token: qKey, Source: CredentialSourceQuery}, nil
+			primary = append(primary, ExtractedCredentials{Token: qKey, Source: CredentialSourceQuery})
 		}
 	}
 
@@ -115,20 +99,35 @@ func ExtractCredentials(r *http.Request, opts ExtractorOptions) (ExtractedCreden
 			proto = strings.TrimSpace(proto)
 			if strings.HasPrefix(proto, "openai-insecure-api-key.") {
 				if tok := strings.TrimSpace(strings.TrimPrefix(proto, "openai-insecure-api-key.")); tok != "" {
-					return ExtractedCredentials{
+					primary = append(primary, ExtractedCredentials{
 						Token:  tok,
 						Source: CredentialSourceWebSocket,
-					}, nil
+					})
 				}
 			}
 		}
 
 		if qKey := strings.TrimSpace(r.URL.Query().Get("api_key")); qKey != "" {
-			return ExtractedCredentials{Token: qKey, Source: CredentialSourceWebSocket}, nil
+			primary = append(primary, ExtractedCredentials{Token: qKey, Source: CredentialSourceWebSocket})
 		}
 		if qToken := strings.TrimSpace(r.URL.Query().Get("token")); qToken != "" {
-			return ExtractedCredentials{Token: qToken, Source: CredentialSourceWebSocket}, nil
+			primary = append(primary, ExtractedCredentials{Token: qToken, Source: CredentialSourceWebSocket})
 		}
+	}
+
+	if len(primary) > 0 {
+		first := primary[0]
+		for _, candidate := range primary[1:] {
+			if candidate.Token != first.Token {
+				return ExtractedCredentials{}, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeAuthentication,
+					Code:       "ambiguous_gateway_credentials",
+					Message:    "Conflicting authentication credentials: multiple credential sources were provided with different values without an explicit gateway override header",
+				}
+			}
+		}
+		return first, nil
 	}
 
 	return ExtractedCredentials{}, nil
