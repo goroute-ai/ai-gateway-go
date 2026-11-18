@@ -269,13 +269,13 @@ func TestBudgetWindowRepository_CRUDIncrementAndReset(t *testing.T) {
 				t.Fatalf("unexpected daily window after upsert update: %+v (err=%v)", dailyAfter, err)
 			}
 
-			// ResetExpiredBudgetWindowsWithResults resets only daily + rolling_24h (expiredAt <= now).
+			// ResetExpiredBudgetWindowsWithResults resets only periodic expired windows (daily), leaving rolling_24h intact.
 			resetList, err := repo.ResetExpiredBudgetWindowsWithResults(ctx, now)
 			if err != nil {
 				t.Fatalf("ResetExpiredBudgetWindowsWithResults: %v", err)
 			}
-			if len(resetList) != 2 {
-				t.Fatalf("expected 2 expired windows reset (daily + rolling_24h), got %d: %+v", len(resetList), resetList)
+			if len(resetList) != 1 || resetList[0].WindowType != domain.BudgetWindowDaily {
+				t.Fatalf("expected 1 periodic expired window reset (daily), got %d: %+v", len(resetList), resetList)
 			}
 			for _, rw := range resetList {
 				if rw.SpentMicros != 0 {
@@ -284,6 +284,15 @@ func TestBudgetWindowRepository_CRUDIncrementAndReset(t *testing.T) {
 				if !rw.WindowResetAt.After(now) {
 					t.Fatalf("expected reset window %s WindowResetAt > now, got %v", rw.WindowType, rw.WindowResetAt)
 				}
+			}
+			rollingAfterReset, err := repo.ListBudgetWindowLimits(ctx, BudgetWindowFilter{
+				OrgID:      "org-w1",
+				ScopeType:  domain.QuotaScopeKey,
+				ScopeID:    "vk-1",
+				WindowType: domain.BudgetWindowRolling24h,
+			})
+			if err != nil || len(rollingAfterReset) != 1 || rollingAfterReset[0].SpentMicros != 150_000 {
+				t.Fatalf("expected rolling_24h window to survive periodic reset with spent=150000, got %+v (err=%v)", rollingAfterReset, err)
 			}
 
 			// Weekly and monthly windows were not expired and must still retain SpentMicros=150_000.
@@ -468,17 +477,111 @@ func TestTempBudgetRepository_PersistenceAndScanners(t *testing.T) {
 
 	bwRow := &fakeTeamScanner{
 		values: []any{
-			"bw-1", "org-scan", "key", "vk-1", "rolling_24h", int64(1000), int64(200), future, now, now,
+			"bw-1", "org-scan", "key", "vk-1", "rolling_24h", int64(1000), int64(200), future, int64(50), &future, now, now,
 		},
 	}
 	scannedBW, err := scanBudgetWindowLimit(bwRow)
 	if err != nil {
 		t.Fatalf("scanBudgetWindowLimit: %v", err)
 	}
-	if scannedBW.WindowType != domain.BudgetWindowRolling24h || scannedBW.MaxBudgetMicros != 1000 || scannedBW.SpentMicros != 200 {
+	if scannedBW.WindowType != domain.BudgetWindowRolling24h || scannedBW.MaxBudgetMicros != 1000 || scannedBW.SpentMicros != 200 || scannedBW.RollingHoldMicros != 50 {
 		t.Fatalf("unexpected scannedBW: %+v", scannedBW)
 	}
 	if _, err := scanBudgetWindowLimit(&fakeTeamScanner{err: pgx.ErrNoRows}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("expected pgx.ErrNoRows, got %v", err)
+	}
+}
+
+func TestRecordSpendBatch_ProjectMemberPinnedPolicyAndRolling24h(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepository()
+	now := time.Now().UTC()
+
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org-attr", Name: "Org Attr", Slug: "org-attr", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+	if err := repo.CreateTeam(ctx, &domain.Team{ID: "team-attr", OrgID: "org-attr", Name: "Team Attr", IsActive: true}); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{ID: "usr-attr", OrgID: "org-attr", TeamID: "team-attr", Email: "attr@example.com", Name: "Attr User", Role: domain.RoleDeveloper, IsActive: true}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := repo.UpsertTeamMembership(ctx, &domain.TeamMembership{ID: "tm-attr", OrgID: "org-attr", TeamID: "team-attr", UserID: "usr-attr", Role: domain.RoleDeveloper}); err != nil {
+		t.Fatalf("UpsertTeamMembership: %v", err)
+	}
+	if err := repo.CreateProject(ctx, &domain.Project{ID: "proj-attr", OrgID: "org-attr", TeamID: "team-attr", Name: "Proj Attr", IsActive: true}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := repo.CreateVirtualKey(ctx, &domain.VirtualKey{ID: "vk-attr", KeyPrefix: "sk-gw-attr", KeyHash: "hash-attr", Name: "VK Attr", OrgID: "org-attr", TeamID: "team-attr", ProjectID: "proj-attr", UserID: "usr-attr", Role: domain.RoleDeveloper, IsActive: true}); err != nil {
+		t.Fatalf("CreateVirtualKey: %v", err)
+	}
+	if err := repo.UpsertQuotaPolicy(ctx, &domain.QuotaPolicy{ID: "qp-pinned", OrgID: "org-attr", ScopeType: domain.QuotaScopeModelPerProject, ScopeID: "proj-attr", ModelPattern: "gpt-4.1", MaxBudgetMicros: 100_000, IsActive: true}); err != nil {
+		t.Fatalf("UpsertQuotaPolicy pinned: %v", err)
+	}
+	if err := repo.UpsertQuotaPolicy(ctx, &domain.QuotaPolicy{ID: "qp-later", OrgID: "org-attr", ScopeType: domain.QuotaScopeModelPerTeam, ScopeID: "team-attr", ModelPattern: "*", MaxBudgetMicros: 200_000, IsActive: true}); err != nil {
+		t.Fatalf("UpsertQuotaPolicy later: %v", err)
+	}
+	if err := repo.UpsertBudgetWindowLimit(ctx, &domain.BudgetWindowLimit{OrgID: "org-attr", ScopeType: domain.QuotaScopeProject, ScopeID: "proj-attr", WindowType: domain.BudgetWindowRolling24h, MaxBudgetMicros: 50_000}); err != nil {
+		t.Fatalf("UpsertBudgetWindowLimit rolling: %v", err)
+	}
+
+	events := []domain.SpendEvent{
+		{
+			ID:                    "sp-old",
+			RequestID:             "req-old",
+			OrgID:                 "org-attr",
+			TeamID:                "team-attr",
+			UserID:                "usr-attr",
+			VirtualKeyID:          "vk-attr",
+			ProjectID:             "proj-attr",
+			MatchedQuotaPolicyIDs: []string{"qp-pinned", "qp-pinned"},
+			ResolvedModel:         "gpt-4.1",
+			Provider:              domain.ProviderOpenAI,
+			CostMicros:            12_000,
+			CreatedAt:             now.Add(-25 * time.Hour),
+		},
+		{
+			ID:                    "sp-recent",
+			RequestID:             "req-recent",
+			OrgID:                 "org-attr",
+			TeamID:                "team-attr",
+			UserID:                "usr-attr",
+			VirtualKeyID:          "vk-attr",
+			ProjectID:             "proj-attr",
+			MatchedQuotaPolicyIDs: []string{"qp-pinned"},
+			ResolvedModel:         "gpt-4.1",
+			Provider:              domain.ProviderOpenAI,
+			CostMicros:            18_000,
+			CreatedAt:             now.Add(-2 * time.Hour),
+		},
+	}
+	if err := repo.RecordSpendBatch(ctx, events); err != nil {
+		t.Fatalf("RecordSpendBatch initial: %v", err)
+	}
+	// Outbox replay with identical IDs must be strictly idempotent.
+	if err := repo.RecordSpendBatch(ctx, events); err != nil {
+		t.Fatalf("RecordSpendBatch replay: %v", err)
+	}
+
+	proj, err := repo.GetProject(ctx, "proj-attr")
+	if err != nil || proj.SpentMicros != 30_000 {
+		t.Fatalf("Project SpentMicros = %d (err=%v), want 30000", proj.SpentMicros, err)
+	}
+	tm, err := repo.GetTeamMembership(ctx, "team-attr", "usr-attr")
+	if err != nil || tm.SpentMicros != 30_000 {
+		t.Fatalf("TeamMembership SpentMicros = %d (err=%v), want 30000", tm.SpentMicros, err)
+	}
+	qpPinned, err := repo.GetQuotaPolicy(ctx, "qp-pinned")
+	if err != nil || qpPinned.SpentMicros != 30_000 {
+		t.Fatalf("Pinned QuotaPolicy SpentMicros = %d (err=%v), want 30000", qpPinned.SpentMicros, err)
+	}
+	qpLater, err := repo.GetQuotaPolicy(ctx, "qp-later")
+	if err != nil || qpLater.SpentMicros != 0 {
+		t.Fatalf("Unpinned QuotaPolicy SpentMicros = %d (err=%v), want 0", qpLater.SpentMicros, err)
+	}
+
+	bws, err := repo.ListBudgetWindowLimits(ctx, BudgetWindowFilter{OrgID: "org-attr", ScopeType: domain.QuotaScopeProject, ScopeID: "proj-attr", WindowType: domain.BudgetWindowRolling24h})
+	if err != nil || len(bws) != 1 || bws[0].SpentMicros != 18_000 {
+		t.Fatalf("Rolling 24h window SpentMicros = %+v (err=%v), want 18000 (excluding >24h spend)", bws, err)
 	}
 }

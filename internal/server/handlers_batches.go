@@ -621,11 +621,12 @@ func (s *GatewayServer) processBatchAsync(
 			totalActualTokens += resp.Usage.TotalTokens
 			totalCostMicros += costMicros
 			if s.spendWorker != nil {
-				spendPersistErr = s.spendWorker.Record(ctx, domain.SpendEvent{
+				spendPersistErr = s.spendWorker.Record(ctx, enrichSpendEventFromContext(ctx, domain.SpendEvent{
 					ID:             "sp_" + uuid.NewString(),
 					RequestID:      batch.ID + "_" + item.CustomID,
 					OrgID:          idCtx.OrgID,
 					TeamID:         idCtx.TeamID,
+					ProjectID:      idCtx.ProjectID,
 					UserID:         idCtx.UserID,
 					VirtualKeyID:   idCtx.VirtualKeyID,
 					Endpoint:       "/v1/batches",
@@ -638,7 +639,7 @@ func (s *GatewayServer) processBatchAsync(
 					CostMicros:     costMicros,
 					StatusCode:     http.StatusOK,
 					CreatedAt:      time.Now().UTC(),
-				})
+				}))
 				if spendPersistErr != nil {
 					counts.Completed--
 					counts.Failed++

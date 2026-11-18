@@ -107,6 +107,7 @@ type Limiter struct {
 	localDescIter         map[string]localIterCounter
 	localDescSpent        map[string]int64
 	localDescReservations map[string]map[string]localReservationEntry
+	localDescRolling      map[string][]localRollingSpendEntry
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -152,6 +153,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		localDescIter:           make(map[string]localIterCounter),
 		localDescSpent:          make(map[string]int64),
 		localDescReservations:   make(map[string]map[string]localReservationEntry),
+		localDescRolling:        make(map[string][]localRollingSpendEntry),
 	}
 }
 

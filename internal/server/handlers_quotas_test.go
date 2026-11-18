@@ -878,3 +878,42 @@ func TestSelfServeBudgetPolicy_DisabledLowerOnlyCeiling(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Contains(t, rec.Body.String(), "self_serve_budget_exceeds_ceiling")
 }
+
+func TestProjectQuotaSharesUsageAcrossGatewayReplicas(t *testing.T) {
+	env := setupQuotaHandlerTestEnv(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chat-quota","object":"chat.completion","model":"gpt-4.1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":45,"completion_tokens":5,"total_tokens":50}}`))
+	}))
+	ctx := context.Background()
+	redisTwo := storage.NewRedisFabric(env.mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = redisTwo.Client().Close() })
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = env.masterKey
+	cfg.RateLimit.Enabled = true
+	cfg.RateLimit.FallbackToLocalOnOutage = false
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	replica, err := server.New(cfg, env.repo, redisTwo, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { replica.Shutdown(ctx) })
+
+	key, err := env.gw.AuthService().IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID: "org_a", TeamID: "team_a1", ProjectID: "proj_a1", UserID: "usr_a1_dev",
+		Name: "project-shared-quota", Role: domain.RoleDeveloper,
+	})
+	require.NoError(t, err)
+	require.NoError(t, env.repo.UpsertQuotaPolicy(ctx, &domain.QuotaPolicy{
+		OrgID: "org_a", ScopeType: domain.QuotaScopeModelPerProject, ScopeID: "proj_a1",
+		ModelPattern: "gpt-4.1", TPDLimit: 50, IsActive: true,
+	}))
+	request := func(handler http.Handler) *httptest.ResponseRecorder {
+		return doAdminJSONRequest(t, handler, http.MethodPost, "/v1/chat/completions", key.RawKey, map[string]any{
+			"model": "gpt-4.1", "messages": []map[string]string{{"role": "user", "content": "hi"}}, "max_tokens": 8,
+		})
+	}
+	first := request(env.handler)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	second := request(replica.Handler())
+	require.Equal(t, http.StatusTooManyRequests, second.Code, second.Body.String())
+	require.Contains(t, second.Body.String(), "tpd")
+}

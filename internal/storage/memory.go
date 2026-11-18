@@ -1648,6 +1648,8 @@ func (r *MemoryRepository) ListBudgetWindowLimits(_ context.Context, filter Budg
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	now := time.Now().UTC()
+	cutoff := now.Add(-24 * time.Hour)
 	var out []*domain.BudgetWindowLimit
 	for _, bw := range r.budgetWindows {
 		if orgID != "" && bw.OrgID != orgID {
@@ -1662,20 +1664,103 @@ func (r *MemoryRepository) ListBudgetWindowLimits(_ context.Context, filter Budg
 		if windowType != "" && bw.WindowType != windowType {
 			continue
 		}
-		out = append(out, bw.Clone())
+		cp := bw.Clone()
+		if cp.WindowType == domain.BudgetWindowRolling24h {
+			recent := r.rollingWindowSpendLocked(cp, cutoff)
+			if cp.RollingHoldExpiresAt != nil && now.Before(cp.RollingHoldExpiresAt.UTC()) && cp.RollingHoldMicros > 0 {
+				recent += cp.RollingHoldMicros
+			}
+			cp.SpentMicros = recent
+		}
+		out = append(out, cp)
 	}
 	sortBudgetWindowLimits(out)
 	return out, nil
 }
 
-func (r *MemoryRepository) incrementBudgetWindowSpendLocked(orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64, now time.Time) {
+func (r *MemoryRepository) rollingWindowSpendLocked(bw *domain.BudgetWindowLimit, cutoff time.Time) int64 {
+	if bw == nil {
+		return 0
+	}
+	var sum int64
+	for _, ev := range r.spendLogs {
+		if ev.OrgID != bw.OrgID || ev.CostMicros <= 0 || !ev.CreatedAt.UTC().After(cutoff) {
+			continue
+		}
+		switch bw.ScopeType {
+		case domain.QuotaScopeOrg:
+			sum += ev.CostMicros
+		case domain.QuotaScopeTeam:
+			if ev.TeamID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeUser:
+			if ev.UserID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeKey:
+			if ev.VirtualKeyID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeTeamMember:
+			if ev.TeamID != "" && ev.UserID != "" && ev.TeamID+":"+ev.UserID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeProject:
+			projID := strings.TrimSpace(ev.ProjectID)
+			if projID == "" {
+				if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
+					projID = strings.TrimSpace(vk.ProjectID)
+				}
+			}
+			if projID != "" && projID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeEndUser:
+			if ev.EndUserID == bw.ScopeID {
+				sum += ev.CostMicros
+			}
+		case domain.QuotaScopeTag:
+			for _, t := range ev.Tags {
+				if strings.TrimSpace(t) == bw.ScopeID {
+					sum += ev.CostMicros
+					break
+				}
+			}
+		case domain.QuotaScopeModelAccessGroup:
+			for _, magID := range ev.ModelAccessGroupIDs {
+				if strings.TrimSpace(magID) == bw.ScopeID {
+					sum += ev.CostMicros
+					break
+				}
+			}
+		}
+	}
+	return sum
+}
+
+func (r *MemoryRepository) incrementBudgetWindowSpendLocked(orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64, now time.Time, includeRollingHold bool) {
 	if orgID == "" || scopeID == "" || deltaMicros <= 0 {
 		return
 	}
+	nowUTC := now.UTC()
 	for _, bw := range r.budgetWindows {
 		if bw.OrgID == orgID && bw.ScopeType == scopeType && bw.ScopeID == scopeID {
+			if bw.WindowType == domain.BudgetWindowRolling24h {
+				if includeRollingHold {
+					if bw.RollingHoldExpiresAt == nil || !nowUTC.Before(bw.RollingHoldExpiresAt.UTC()) {
+						bw.RollingHoldMicros = deltaMicros
+					} else {
+						bw.RollingHoldMicros += deltaMicros
+					}
+					exp := nowUTC.Add(24 * time.Hour)
+					bw.RollingHoldExpiresAt = &exp
+					bw.UpdatedAt = nowUTC
+				}
+				continue
+			}
 			bw.SpentMicros += deltaMicros
-			bw.UpdatedAt = now
+			bw.UpdatedAt = nowUTC
 		}
 	}
 }
@@ -1695,7 +1780,7 @@ func (r *MemoryRepository) IncrementBudgetWindowSpend(_ context.Context, orgID s
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.incrementBudgetWindowSpendLocked(orgID, scopeType, scopeID, deltaMicros, time.Now().UTC())
+	r.incrementBudgetWindowSpendLocked(orgID, scopeType, scopeID, deltaMicros, time.Now().UTC(), true)
 	return nil
 }
 
@@ -1711,6 +1796,9 @@ func (r *MemoryRepository) ResetExpiredBudgetWindowsWithResults(_ context.Contex
 
 	var reset []*domain.BudgetWindowLimit
 	for _, bw := range r.budgetWindows {
+		if bw.WindowType == domain.BudgetWindowRolling24h {
+			continue
+		}
 		if !nowUTC.Before(bw.WindowResetAt) {
 			bw.SpentMicros = 0
 			bw.WindowResetAt = advanceBudgetWindowResetAt(bw.WindowType, bw.WindowResetAt, nowUTC)
@@ -2511,15 +2599,17 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 		if _, exists := r.spendLogIDs[ev.ID]; exists {
 			continue
 		}
+		projectID := strings.TrimSpace(ev.ProjectID)
+		if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
+			vk.SpentMicros += ev.CostMicros
+			if projectID == "" {
+				projectID = strings.TrimSpace(vk.ProjectID)
+			}
+		}
+		ev.ProjectID = projectID
 		r.spendLogIDs[ev.ID] = struct{}{}
 		r.spendLogs = append(r.spendLogs, ev)
 
-		if vk, ok := r.keysByID[ev.VirtualKeyID]; ok {
-			vk.SpentMicros += ev.CostMicros
-			if ev.CostMicros > 0 && vk.ProjectID != "" {
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeProject, vk.ProjectID, ev.CostMicros, ev.CreatedAt)
-			}
-		}
 		if ev.TeamID != "" {
 			if t, ok := r.teams[ev.TeamID]; ok {
 				t.SpentMicros += ev.CostMicros
@@ -2535,19 +2625,51 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 				o.SpentMicros += ev.CostMicros
 			}
 		}
+		if projectID != "" {
+			if p, ok := r.projects[projectID]; ok {
+				p.SpentMicros += ev.CostMicros
+				p.UpdatedAt = ev.CreatedAt
+			}
+		}
+		if ev.TeamID != "" && ev.UserID != "" {
+			if mID, ok := r.teamMembershipsByTuple[teamMembershipTupleKey(ev.TeamID, ev.UserID)]; ok {
+				if m, exists := r.teamMemberships[mID]; exists {
+					m.SpentMicros += ev.CostMicros
+					m.UpdatedAt = ev.CreatedAt
+				}
+			}
+		}
+		seenPolicies := make(map[string]struct{}, len(ev.MatchedQuotaPolicyIDs))
+		for _, qpID := range ev.MatchedQuotaPolicyIDs {
+			qpID = strings.TrimSpace(qpID)
+			if qpID == "" {
+				continue
+			}
+			if _, dup := seenPolicies[qpID]; dup {
+				continue
+			}
+			seenPolicies[qpID] = struct{}{}
+			if qp, ok := r.quotaPolicies[qpID]; ok {
+				qp.SpentMicros += ev.CostMicros
+				qp.UpdatedAt = ev.CreatedAt
+			}
+		}
 		if ev.CostMicros > 0 && ev.OrgID != "" {
-			r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeOrg, ev.OrgID, ev.CostMicros, ev.CreatedAt)
+			r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeOrg, ev.OrgID, ev.CostMicros, ev.CreatedAt, false)
 			if ev.TeamID != "" {
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeam, ev.TeamID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeam, ev.TeamID, ev.CostMicros, ev.CreatedAt, false)
 			}
 			if ev.UserID != "" {
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeUser, ev.UserID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeUser, ev.UserID, ev.CostMicros, ev.CreatedAt, false)
 			}
 			if ev.VirtualKeyID != "" {
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeKey, ev.VirtualKeyID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeKey, ev.VirtualKeyID, ev.CostMicros, ev.CreatedAt, false)
+			}
+			if projectID != "" {
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeProject, projectID, ev.CostMicros, ev.CreatedAt, false)
 			}
 			if ev.TeamID != "" && ev.UserID != "" {
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeamMember, ev.TeamID+":"+ev.UserID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTeamMember, ev.TeamID+":"+ev.UserID, ev.CostMicros, ev.CreatedAt, false)
 			}
 			if ev.EndUserID != "" {
 				if euID, ok := r.endUsersByTuple[endUserTupleKey(ev.OrgID, ev.EndUserID)]; ok {
@@ -2556,7 +2678,7 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 						eu.UpdatedAt = ev.CreatedAt
 					}
 				}
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeEndUser, ev.EndUserID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeEndUser, ev.EndUserID, ev.CostMicros, ev.CreatedAt, false)
 			}
 			for _, tagName := range ev.Tags {
 				tagName = strings.TrimSpace(tagName)
@@ -2569,18 +2691,23 @@ func (r *MemoryRepository) RecordSpendBatch(ctx context.Context, events []domain
 						t.UpdatedAt = ev.CreatedAt
 					}
 				}
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTag, tagName, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeTag, tagName, ev.CostMicros, ev.CreatedAt, false)
 			}
+			seenMAGs := make(map[string]struct{}, len(ev.ModelAccessGroupIDs))
 			for _, magID := range ev.ModelAccessGroupIDs {
 				magID = strings.TrimSpace(magID)
 				if magID == "" {
 					continue
 				}
+				if _, dup := seenMAGs[magID]; dup {
+					continue
+				}
+				seenMAGs[magID] = struct{}{}
 				if g, exists := r.modelAccessGroups[magID]; exists && g.OrgID == ev.OrgID {
 					g.SpentMicros += ev.CostMicros
 					g.UpdatedAt = ev.CreatedAt
 				}
-				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeModelAccessGroup, magID, ev.CostMicros, ev.CreatedAt)
+				r.incrementBudgetWindowSpendLocked(ev.OrgID, domain.QuotaScopeModelAccessGroup, magID, ev.CostMicros, ev.CreatedAt, false)
 			}
 		}
 	}

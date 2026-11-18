@@ -105,3 +105,60 @@ func TestLimiter_RenewDescriptorLeases_ExtendsScoreAndLocalExpiry(t *testing.T) 
 		t.Fatal("expected distinct AcquireDescriptors call with same requestID to be rejected")
 	}
 }
+
+func TestLimiter_Rolling24hWindow_SlidingExpiration(t *testing.T) {
+	ctx := context.Background()
+	runCase := func(t *testing.T, withRedis bool) {
+		var lim *Limiter
+		if withRedis {
+			mr := miniredis.RunT(t)
+			rf := storage.NewRedisFabric(mr.Addr(), "", 0)
+			defer func() { _ = rf.Client().Close() }()
+			lim = NewLimiter(rf, 60, 60)
+		} else {
+			lim = NewLimiter(nil, 60, 60)
+			lim.SetFallbackToLocalOnOutage(true)
+		}
+
+		curTime := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		lim.nowFunc = func() time.Time { return curTime }
+
+		desc := domain.RateLimitDescriptor{
+			ScopeType:       domain.QuotaScopeKey,
+			ScopeID:         "vk-roll",
+			WindowType:      domain.BudgetWindowRolling24h,
+			MaxBudgetMicros: 1000,
+		}
+
+		// Request 1 at t=0 settles 700 micros.
+		rel1, err := lim.AcquireDescriptors(ctx, "org-roll", "req-r1", 10, 10, 700, []domain.RateLimitDescriptor{desc})
+		if err != nil {
+			t.Fatalf("req-r1: %v", err)
+		}
+		rel1(10, 10, 700)
+
+		// At t=+12h, 700 is still active; a 400-micro reservation (total 1100 > 1000) must reject.
+		curTime = curTime.Add(12 * time.Hour)
+		if _, err := lim.AcquireDescriptors(ctx, "org-roll", "req-r2", 10, 10, 400, []domain.RateLimitDescriptor{desc}); err == nil {
+			t.Fatal("expected rejection at +12h while 700 micros remain in rolling window")
+		}
+
+		// A 250-micro request at t=+12h succeeds (700 + 250 = 950 <= 1000).
+		rel3, err := lim.AcquireDescriptors(ctx, "org-roll", "req-r3", 10, 10, 250, []domain.RateLimitDescriptor{desc})
+		if err != nil {
+			t.Fatalf("req-r3 at +12h: %v", err)
+		}
+		rel3(10, 10, 250)
+
+		// At t=+24h+1m from t=0, req-r1 (700) has aged out while req-r3 (250) stays active.
+		curTime = curTime.Add(12*time.Hour + time.Minute)
+		rel4, err := lim.AcquireDescriptors(ctx, "org-roll", "req-r4", 10, 10, 700, []domain.RateLimitDescriptor{desc})
+		if err != nil {
+			t.Fatalf("expected req-r4 to succeed after req-r1 aged out (250 active + 700 <= 1000), got: %v", err)
+		}
+		rel4(10, 10, 700)
+	}
+
+	t.Run("redis", func(t *testing.T) { runCase(t, true) })
+	t.Run("local_fallback", func(t *testing.T) { runCase(t, false) })
+}

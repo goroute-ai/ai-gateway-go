@@ -38,6 +38,11 @@ type localReservationEntry struct {
 	expiresAt time.Time
 }
 
+type localRollingSpendEntry struct {
+	ts     time.Time
+	amount int64
+}
+
 // descriptorKeySet holds all Redis Cluster slot-aligned keys for a single descriptor.
 type descriptorKeySet struct {
 	rpm        string
@@ -51,6 +56,7 @@ type descriptorKeySet struct {
 	resZSet    string
 	resSum     string
 	resAmounts string
+	r24hZSet   string
 }
 
 func descriptorEntityKey(d domain.RateLimitDescriptor) string {
@@ -84,6 +90,7 @@ func buildDescriptorKeySet(orgID string, d domain.RateLimitDescriptor, nowMin in
 		resZSet:    resZ,
 		resSum:     resS,
 		resAmounts: resA,
+		r24hZSet:   fmt.Sprintf("gw:dq:%s:r24h:%s", tag, entity),
 	}
 }
 
@@ -91,7 +98,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 	nowUTC := now.UTC()
 	nowMin := nowUTC.Unix() / 60
 	utcDay := nowUTC.Format("20060102")
-	keys := make([]string, 0, len(descriptors)*11)
+	keys := make([]string, 0, len(descriptors)*12)
 	for _, d := range descriptors {
 		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
 		keys = append(keys,
@@ -106,6 +113,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 			ks.resZSet,
 			ks.resSum,
 			ks.resAmounts,
+			ks.r24hZSet,
 		)
 	}
 	return keys
@@ -115,7 +123,7 @@ func descriptorReconcileKeys(orgID string, descriptors []domain.RateLimitDescrip
 	nowUTC := now.UTC()
 	nowMin := nowUTC.Unix() / 60
 	utcDay := nowUTC.Format("20060102")
-	keys := make([]string, 0, len(descriptors)*9)
+	keys := make([]string, 0, len(descriptors)*10)
 	for _, d := range descriptors {
 		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
 		keys = append(keys,
@@ -128,6 +136,7 @@ func descriptorReconcileKeys(orgID string, descriptors []domain.RateLimitDescrip
 			ks.resZSet,
 			ks.resSum,
 			ks.resAmounts,
+			ks.r24hZSet,
 		)
 	}
 	return keys
@@ -259,7 +268,7 @@ func (l *Limiter) AcquireDescriptors(
 		// Unique receipt makes Redis command retries safe without admitting a
 		// distinct concurrent call that reuses an active budget reservation ID.
 		keys = append(keys, "gw:quota:"+orgHashTag(orgID)+":admission:"+uuid.NewString())
-		argv := make([]any, 0, 9+len(active)*11)
+		argv := make([]any, 0, 10+len(active)*12)
 		argv = append(argv,
 			len(active),
 			estInput,
@@ -270,6 +279,7 @@ func (l *Limiter) AcquireDescriptors(
 			defaultDescriptorTPDTTLSec,
 			concTTL,
 			defaultDescriptorReservationTTLSec,
+			now.UTC().Unix(),
 		)
 		for _, d := range active {
 			argv = append(argv,
@@ -284,6 +294,7 @@ func (l *Limiter) AcquireDescriptors(
 				descriptorIterTTL(d),
 				d.MaxBudgetMicros,
 				d.SpentFloorMicros,
+				boolToInt(d.WindowType == domain.BudgetWindowRolling24h),
 			)
 		}
 
@@ -311,7 +322,7 @@ func (l *Limiter) AcquireDescriptors(
 				}
 
 				recKeys := descriptorReconcileKeys(orgID, active, now)
-				flags := make([]any, 0, len(active)*6)
+				flags := make([]any, 0, len(active)*7)
 				for _, d := range active {
 					flags = append(flags,
 						boolToInt(d.TPMLimit > 0),
@@ -320,6 +331,7 @@ func (l *Limiter) AcquireDescriptors(
 						boolToInt(d.TPDLimit > 0),
 						boolToInt(d.MaxConcurrent > 0),
 						boolToInt(d.MaxBudgetMicros > 0),
+						boolToInt(d.WindowType == domain.BudgetWindowRolling24h),
 					)
 				}
 
@@ -336,7 +348,7 @@ func (l *Limiter) AcquireDescriptors(
 						outputDelta := actualOutput - estOutput
 						totalDelta := (actualInput + actualOutput) - (estInput + estOutput)
 
-						recArgv := make([]any, 0, 8+len(flags))
+						recArgv := make([]any, 0, 9+len(flags))
 						recArgv = append(recArgv,
 							len(active),
 							inputDelta,
@@ -346,6 +358,7 @@ func (l *Limiter) AcquireDescriptors(
 							defaultDescriptorTPDTTLSec,
 							reqID,
 							actualCostMicros,
+							l.nowUTC().Unix(),
 						)
 						recArgv = append(recArgv, flags...)
 
@@ -399,6 +412,24 @@ func (l *Limiter) ensureLocalDescMapsLocked() {
 	if l.localDescReservations == nil {
 		l.localDescReservations = make(map[string]map[string]localReservationEntry)
 	}
+	if l.localDescRolling == nil {
+		l.localDescRolling = make(map[string][]localRollingSpendEntry)
+	}
+}
+
+func pruneLocalRollingEntries(entries []localRollingSpendEntry, cutoff time.Time) ([]localRollingSpendEntry, int64) {
+	if len(entries) == 0 {
+		return entries, 0
+	}
+	pruned := make([]localRollingSpendEntry, 0, len(entries))
+	var sum int64
+	for _, entry := range entries {
+		if entry.ts.After(cutoff) && entry.amount > 0 {
+			pruned = append(pruned, entry)
+			sum += entry.amount
+		}
+	}
+	return pruned, sum
 }
 
 func (l *Limiter) acquireDescriptorsLocal(
@@ -527,9 +558,20 @@ func (l *Limiter) acquireDescriptorsLocal(
 		}
 
 		if d.MaxBudgetMicros > 0 {
-			curSpent := l.localDescSpent[lk]
-			if d.SpentFloorMicros > curSpent {
-				curSpent = d.SpentFloorMicros
+			var curSpent int64
+			if d.WindowType == domain.BudgetWindowRolling24h {
+				if entries, ok := l.localDescRolling[lk]; ok {
+					pruned, sum := pruneLocalRollingEntries(entries, nowUTC.Add(-24*time.Hour))
+					l.localDescRolling[lk] = pruned
+					curSpent = sum
+				} else {
+					curSpent = d.SpentFloorMicros
+				}
+			} else {
+				curSpent = l.localDescSpent[lk]
+				if d.SpentFloorMicros > curSpent {
+					curSpent = d.SpentFloorMicros
+				}
 			}
 			if reserveMicros <= 0 || reqID == "" {
 				return nil, toDescriptorQuotaError("BUDGET_ESTIMATE_REQUIRED", curSpent, d.MaxBudgetMicros, 5)
@@ -590,7 +632,18 @@ func (l *Limiter) acquireDescriptorsLocal(
 			l.localDescIter[lk] = entry
 		}
 		if d.MaxBudgetMicros > 0 {
-			if d.SpentFloorMicros > l.localDescSpent[lk] {
+			if d.WindowType == domain.BudgetWindowRolling24h {
+				if _, ok := l.localDescRolling[lk]; !ok {
+					if d.SpentFloorMicros > 0 {
+						l.localDescRolling[lk] = []localRollingSpendEntry{{
+							ts:     nowUTC,
+							amount: d.SpentFloorMicros,
+						}}
+					} else {
+						l.localDescRolling[lk] = []localRollingSpendEntry{}
+					}
+				}
+			} else if d.SpentFloorMicros > l.localDescSpent[lk] {
 				l.localDescSpent[lk] = d.SpentFloorMicros
 			}
 			resMap := l.localDescReservations[lk]
@@ -669,7 +722,14 @@ func (l *Limiter) acquireDescriptorsLocal(
 						if _, existed := resMap[reqID]; existed {
 							delete(resMap, reqID)
 							if actualCostMicros > 0 {
-								l.localDescSpent[lk] += actualCostMicros
+								if d.WindowType == domain.BudgetWindowRolling24h {
+									l.localDescRolling[lk] = append(l.localDescRolling[lk], localRollingSpendEntry{
+										ts:     l.nowUTC().UTC(),
+										amount: actualCostMicros,
+									})
+								} else {
+									l.localDescSpent[lk] += actualCostMicros
+								}
 							}
 						}
 					}
@@ -698,8 +758,9 @@ func (l *Limiter) ResetBudgetWindowSpend(ctx context.Context, windows []*domain.
 		desc := w.ToDescriptor()
 		lk := orgHashTag(w.OrgID) + ":" + descriptorEntityKey(desc)
 		delete(l.localDescSpent, lk)
+		delete(l.localDescRolling, lk)
 		ks := buildDescriptorKeySet(w.OrgID, desc, nowMin, utcDay)
-		redisKeys = append(redisKeys, ks.spend)
+		redisKeys = append(redisKeys, ks.spend, ks.r24hZSet)
 	}
 	l.localMu.Unlock()
 

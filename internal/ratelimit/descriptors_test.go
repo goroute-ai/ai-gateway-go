@@ -75,7 +75,7 @@ func TestDescriptorKeysAlignToSameRedisClusterSlot(t *testing.T) {
 			}
 
 			checkKeys := descriptorCheckKeys(tc.orgID, descs, now)
-			if want := len(descs) * 11; len(checkKeys) != want {
+			if want := len(descs) * 12; len(checkKeys) != want {
 				t.Fatalf("descriptorCheckKeys len = %d, want %d", len(checkKeys), want)
 			}
 			for i, k := range checkKeys {
@@ -86,7 +86,7 @@ func TestDescriptorKeysAlignToSameRedisClusterSlot(t *testing.T) {
 			assertSameClusterSlot(t, "descriptorCheckKeys", checkKeys)
 
 			recKeys := descriptorReconcileKeys(tc.orgID, descs, now)
-			if want := len(descs) * 9; len(recKeys) != want {
+			if want := len(descs) * 10; len(recKeys) != want {
 				t.Fatalf("descriptorReconcileKeys len = %d, want %d", len(recKeys), want)
 			}
 			for i, k := range recKeys {

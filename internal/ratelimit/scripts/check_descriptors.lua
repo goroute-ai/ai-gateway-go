@@ -1,7 +1,7 @@
 -- Atomic 2-Phase All-or-Nothing Multi-Descriptor Rate Limiter & Budget Guard
 -- Every key in KEYS MUST carry the same {org:<orgID>} Redis Cluster hash tag.
 --
--- Per-descriptor KEYS (11 keys per descriptor idx = 0..count-1, kbase = idx * 11):
+-- Per-descriptor KEYS (12 keys per descriptor idx = 0..count-1, kbase = idx * 12):
 --   KEYS[kbase + 1]:  rpm_key         (60s minute bucket)
 --   KEYS[kbase + 2]:  tpm_key         (60s minute bucket)
 --   KEYS[kbase + 3]:  itpm_key        (60s minute bucket)
@@ -13,10 +13,11 @@
 --   KEYS[kbase + 9]:  res_zset_key    (reservation expiration sorted set)
 --   KEYS[kbase + 10]: res_sum_key     (O(1) active reserved micro-dollars sum)
 --   KEYS[kbase + 11]: res_amounts_key (request_id -> reserved micro-dollars hash)
+--   KEYS[kbase + 12]: r24h_zset_key   (trailing 24h timestamped spend sorted set)
 --
--- KEYS[count * 11 + 1]: unique admission receipt for Redis command retries.
+-- KEYS[count * 12 + 1]: unique admission receipt for Redis command retries.
 --
--- Fixed header ARGV[1..9]:
+-- Fixed header ARGV[1..10]:
 --   ARGV[1]: count (number of descriptors)
 --   ARGV[2]: est_input (estimated input tokens, >= 0)
 --   ARGV[3]: est_output (estimated output tokens, >= 0)
@@ -26,8 +27,9 @@
 --   ARGV[7]: tpd_ttl_sec (TTL for 86,400s UTC day bucket)
 --   ARGV[8]: conc_ttl_sec (TTL for concurrency counter)
 --   ARGV[9]: reservation_ttl_sec (TTL for budget reservation lease)
+--   ARGV[10]: rolling_now_sec (optional unix timestamp for trailing 24h windows)
 --
--- Per-descriptor ARGV (11 args per descriptor idx = 0..count-1, abase = 9 + idx * 11):
+-- Per-descriptor ARGV (12 args per descriptor idx = 0..count-1, abase = 10 + idx * 12):
 --   ARGV[abase + 1]:  scope_upper (e.g. "KEY", "TEAM", "AGENT_SESSION", "MODEL_PER_KEY")
 --   ARGV[abase + 2]:  rpm_limit
 --   ARGV[abase + 3]:  tpm_limit
@@ -39,13 +41,14 @@
 --   ARGV[abase + 9]:  iter_ttl_sec
 --   ARGV[abase + 10]: max_budget_micros
 --   ARGV[abase + 11]: spent_floor_micros
+--   ARGV[abase + 12]: is_rolling_24h (1 or 0)
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
     return {1, "OK"}
 end
 
-local receipt_key = KEYS[count * 11 + 1]
+local receipt_key = KEYS[count * 12 + 1]
 if receipt_key and receipt_key ~= "" and redis.call("EXISTS", receipt_key) == 1 then
     return {1, "OK"}
 end
@@ -64,6 +67,10 @@ local conc_ttl = tonumber(ARGV[8]) or 300
 local reservation_ttl = tonumber(ARGV[9]) or 3600
 
 local now = tonumber(redis.call("TIME")[1])
+local rolling_now = tonumber(ARGV[10]) or 0
+if rolling_now <= 0 then
+    rolling_now = now
+end
 local retry_min = 60 - (now % 60)
 if retry_min <= 0 then retry_min = 60 end
 local retry_day = 86400 - (now % 86400)
@@ -107,8 +114,8 @@ local pending_add = {}
 local pending_res = {}
 
 for idx = 0, count - 1 do
-    local kbase = idx * 11
-    local abase = 9 + idx * 11
+    local kbase = idx * 12
+    local abase = 10 + idx * 12
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -118,6 +125,23 @@ for idx = 0, count - 1 do
     local conc_key = KEYS[kbase + 6]
     local iter_key = KEYS[kbase + 7]
     local spend_key = KEYS[kbase + 8]
+    local res_zset = KEYS[kbase + 9]
+    local res_sum = KEYS[kbase + 10]
+    local res_amounts = KEYS[kbase + 11]
+    local r24h_zset = KEYS[kbase + 12]
+
+    local scope = ARGV[abase + 1]
+    local rpm_limit = tonumber(ARGV[abase + 2]) or 0
+    local tpm_limit = tonumber(ARGV[abase + 3]) or 0
+    local itpm_limit = tonumber(ARGV[abase + 4]) or 0
+    local otpm_limit = tonumber(ARGV[abase + 5]) or 0
+    local tpd_limit = tonumber(ARGV[abase + 6]) or 0
+    local max_conc = tonumber(ARGV[abase + 7]) or 0
+    local max_iter = tonumber(ARGV[abase + 8]) or 0
+    local iter_ttl = tonumber(ARGV[abase + 9]) or 3600
+    local max_budget = tonumber(ARGV[abase + 10]) or 0
+    local spent_floor = tonumber(ARGV[abase + 11]) or 0
+    local is_rolling = tonumber(ARGV[abase + 12]) or 0
     local res_zset = KEYS[kbase + 9]
     local res_sum = KEYS[kbase + 10]
     local res_amounts = KEYS[kbase + 11]
@@ -197,6 +221,26 @@ for idx = 0, count - 1 do
     if max_budget > 0 then
         local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
         local cur_spent = math.max(redis_spent, spent_floor)
+        if is_rolling == 1 then
+            local cutoff = rolling_now - 86400
+            local exp_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "-inf", cutoff)
+            local exp_roll_sum = 0
+            for _, m in ipairs(exp_roll) do
+                local a = tonumber(string.match(m, ":(%d+)$") or "0")
+                if a > 0 then
+                    exp_roll_sum = exp_roll_sum + a
+                end
+            end
+            if redis.call("EXISTS", spend_key) == 1 then
+                local cur = redis_spent - exp_roll_sum
+                if cur < 0 then
+                    cur = 0
+                end
+                cur_spent = cur
+            else
+                cur_spent = spent_floor
+            end
+        end
         if reserve <= 0 or request_id == "" then
             return {0, "BUDGET_ESTIMATE_REQUIRED", cur_spent, max_budget, 5}
         end
@@ -236,8 +280,8 @@ end
 
 -- Phase 2: All descriptors admitted; atomically apply all counter mutations and reservations.
 for idx = 0, count - 1 do
-    local kbase = idx * 11
-    local abase = 9 + idx * 11
+    local kbase = idx * 12
+    local abase = 10 + idx * 12
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -250,7 +294,9 @@ for idx = 0, count - 1 do
     local res_zset = KEYS[kbase + 9]
     local res_sum = KEYS[kbase + 10]
     local res_amounts = KEYS[kbase + 11]
+    local r24h_zset = KEYS[kbase + 12]
 
+    local scope = ARGV[abase + 1]
     local rpm_limit = tonumber(ARGV[abase + 2]) or 0
     local tpm_limit = tonumber(ARGV[abase + 3]) or 0
     local itpm_limit = tonumber(ARGV[abase + 4]) or 0
@@ -261,6 +307,11 @@ for idx = 0, count - 1 do
     local iter_ttl = tonumber(ARGV[abase + 9]) or 3600
     local max_budget = tonumber(ARGV[abase + 10]) or 0
     local spent_floor = tonumber(ARGV[abase + 11]) or 0
+    local is_rolling = tonumber(ARGV[abase + 12]) or 0
+    local res_zset = KEYS[kbase + 9]
+    local res_sum = KEYS[kbase + 10]
+    local res_amounts = KEYS[kbase + 11]
+    local r24h_zset = KEYS[kbase + 12]
 
     if rpm_limit > 0 then
         incr_ttl(rpm_key, 1, window_ttl)
@@ -285,9 +336,35 @@ for idx = 0, count - 1 do
         incr_ttl(iter_key, 1, iter_ttl)
     end
     if max_budget > 0 then
-        local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
-        if spent_floor > redis_spent then
-            redis.call("SET", spend_key, spent_floor)
+        if is_rolling == 1 then
+            local cutoff = rolling_now - 86400
+            local exp_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "-inf", cutoff)
+            if #exp_roll > 0 then
+                local exp_roll_sum = 0
+                for _, m in ipairs(exp_roll) do
+                    local a = tonumber(string.match(m, ":(%d+)$") or "0")
+                    if a > 0 then
+                        exp_roll_sum = exp_roll_sum + a
+                    end
+                end
+                redis.call("ZREMRANGEBYSCORE", r24h_zset, "-inf", cutoff)
+                if redis.call("EXISTS", spend_key) == 1 and exp_roll_sum > 0 then
+                    local rem = redis.call("DECRBY", spend_key, exp_roll_sum)
+                    if rem < 0 then
+                        redis.call("SET", spend_key, 0, "EX", 90000)
+                    end
+                end
+            end
+            if redis.call("EXISTS", spend_key) == 0 and spent_floor > 0 then
+                redis.call("SET", spend_key, spent_floor, "EX", 90000)
+                redis.call("ZADD", r24h_zset, rolling_now, "seed:" .. rolling_now .. ":" .. spent_floor)
+                redis.call("EXPIRE", r24h_zset, 90000)
+            end
+        else
+            local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
+            if spent_floor > redis_spent then
+                redis.call("SET", spend_key, spent_floor)
+            end
         end
         cleanup_expired(res_zset, res_sum, res_amounts)
         if reserve > 0 and request_id ~= "" then
