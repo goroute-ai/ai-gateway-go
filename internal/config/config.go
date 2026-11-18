@@ -253,18 +253,44 @@ type StorageConfig struct {
 	RedisDB         int      `yaml:"redis_db"`
 }
 
+// OIDCClaimMapping maps custom JWT claim paths to GoRoute identity fields.
+type OIDCClaimMapping struct {
+	UserID  string `yaml:"user_id,omitempty"`
+	Email   string `yaml:"email,omitempty"`
+	OrgID   string `yaml:"org_id,omitempty"`
+	TeamIDs string `yaml:"team_ids,omitempty"`
+	Role    string `yaml:"role,omitempty"`
+	EndUser string `yaml:"end_user,omitempty"`
+}
+
+// OIDCIssuerConfig configures a single OIDC/JWT issuer for multi-issuer verification.
+type OIDCIssuerConfig struct {
+	Issuer              string           `yaml:"issuer"`
+	Audience            string           `yaml:"audience,omitempty"`
+	JWKSURL             string           `yaml:"jwks_url,omitempty"`
+	DiscoveryURL        string           `yaml:"discovery_url,omitempty"`
+	Algorithms          []string         `yaml:"algorithms,omitempty"`
+	AllowedEmailDomains []string         `yaml:"allowed_email_domains,omitempty"`
+	ClaimMapping        OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
+	AutoRegister        bool             `yaml:"auto_register,omitempty"`
+	DefaultOrgID        string           `yaml:"default_org_id,omitempty"`
+	DefaultTeamID       string           `yaml:"default_team_id,omitempty"`
+	DefaultRole         string           `yaml:"default_role,omitempty"`
+}
+
 type AuthConfig struct {
-	MasterAdminKey          string        `yaml:"master_admin_key"`
-	MasterEncryptionKey     string        `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	AllowMasterKeyDataPlane bool          `yaml:"allow_master_key_data_plane"`
-	JWTSecret               string        `yaml:"jwt_secret"`
-	JWTIssuer               string        `yaml:"jwt_issuer"`
-	JWTAudience             string        `yaml:"jwt_audience"`
-	OIDCJWKSURL             string        `yaml:"oidc_jwks_url"`
-	DefaultOrgID            string        `yaml:"default_org_id"`
-	DefaultVirtualKey       string        `yaml:"default_virtual_key"`
-	L1CacheTTL              time.Duration `yaml:"l1_cache_ttl"`
-	L2CacheTTL              time.Duration `yaml:"l2_cache_ttl"`
+	MasterAdminKey          string             `yaml:"master_admin_key"`
+	MasterEncryptionKey     string             `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	AllowMasterKeyDataPlane bool               `yaml:"allow_master_key_data_plane"`
+	JWTSecret               string             `yaml:"jwt_secret"`
+	JWTIssuer               string             `yaml:"jwt_issuer"`
+	JWTAudience             string             `yaml:"jwt_audience"`
+	OIDCJWKSURL             string             `yaml:"oidc_jwks_url"`
+	OIDCIssuers             []OIDCIssuerConfig `yaml:"oidc_issuers,omitempty"`
+	DefaultOrgID            string             `yaml:"default_org_id"`
+	DefaultVirtualKey       string             `yaml:"default_virtual_key"`
+	L1CacheTTL              time.Duration      `yaml:"l1_cache_ttl"`
+	L2CacheTTL              time.Duration      `yaml:"l2_cache_ttl"`
 }
 
 type RouterConfig struct {
@@ -850,6 +876,29 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Auth.JWTAudience) == "" {
 			return fmt.Errorf("auth.jwt_audience is required when JWT or OIDC authentication is enabled")
+		}
+	}
+	seenIssuers := make(map[string]struct{}, len(c.Auth.OIDCIssuers))
+	for i, iss := range c.Auth.OIDCIssuers {
+		trimmedIss := strings.TrimSpace(iss.Issuer)
+		if trimmedIss == "" {
+			return fmt.Errorf("auth.oidc_issuers[%d].issuer is required", i)
+		}
+		if _, exists := seenIssuers[trimmedIss]; exists {
+			return fmt.Errorf("duplicate auth.oidc_issuers[%d].issuer %q", i, trimmedIss)
+		}
+		seenIssuers[trimmedIss] = struct{}{}
+		if strings.TrimSpace(iss.JWKSURL) == "" && strings.TrimSpace(iss.DiscoveryURL) == "" {
+			u, err := url.Parse(trimmedIss)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("auth.oidc_issuers[%d] requires jwks_url, discovery_url, or an http(s) issuer URL", i)
+			}
+		}
+		for _, alg := range iss.Algorithms {
+			trimmedAlg := strings.TrimSpace(alg)
+			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
+				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains invalid algorithm %q", i, alg)
+			}
 		}
 	}
 

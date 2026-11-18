@@ -550,3 +550,97 @@ model_list:
 		t.Fatalf("expected error for similarity_threshold > 1")
 	}
 }
+
+func TestConfig_OIDCIssuersYAMLAndValidation(t *testing.T) {
+	yamlContent := `
+server:
+  environment: test
+auth:
+  oidc_issuers:
+    - issuer: "https://idp-a.example.com"
+      audience: "gateway-api"
+      discovery_url: "https://idp-a.example.com/.well-known/openid-configuration"
+      algorithms: ["RS256", "EdDSA"]
+      allowed_email_domains: ["acme.com", "example.org"]
+      claim_mapping:
+        user_id: "uid"
+        email: "mail"
+        org_id: "tenant.org_id"
+        team_ids: "groups"
+        role: "roles"
+        end_user: "end_user"
+      auto_register: true
+      default_org_id: "org_acme"
+      default_team_id: "team_eng"
+      default_role: "developer"
+    - issuer: "https://idp-b.example.com"
+      jwks_url: "https://idp-b.example.com/keys"
+`
+	tmpPath := filepath.Join(t.TempDir(), "oidc_config.yaml")
+	if err := os.WriteFile(tmpPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	cfg, err := config.Load(tmpPath)
+	if err != nil {
+		t.Fatalf("load multi-issuer config: %v", err)
+	}
+	if len(cfg.Auth.OIDCIssuers) != 2 {
+		t.Fatalf("expected 2 oidc_issuers, got %d", len(cfg.Auth.OIDCIssuers))
+	}
+	issA := cfg.Auth.OIDCIssuers[0]
+	if issA.Issuer != "https://idp-a.example.com" || issA.Audience != "gateway-api" || !issA.AutoRegister {
+		t.Fatalf("unexpected issuer A fields: %+v", issA)
+	}
+	if issA.ClaimMapping.OrgID != "tenant.org_id" || issA.ClaimMapping.EndUser != "end_user" {
+		t.Fatalf("unexpected claim mapping: %+v", issA.ClaimMapping)
+	}
+	if issA.DefaultOrgID != "org_acme" || issA.DefaultTeamID != "team_eng" || issA.DefaultRole != "developer" {
+		t.Fatalf("unexpected defaults: %+v", issA)
+	}
+
+	// Negative cases
+	cases := []struct {
+		name string
+		edit func(*config.Config)
+	}{
+		{
+			name: "missing issuer",
+			edit: func(c *config.Config) {
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{JWKSURL: "https://idp.example.com/jwks.json"}}
+			},
+		},
+		{
+			name: "duplicate issuer",
+			edit: func(c *config.Config) {
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{
+					{Issuer: "https://idp.example.com"},
+					{Issuer: "https://idp.example.com"},
+				}
+			},
+		},
+		{
+			name: "non-url issuer without jwks_url or discovery_url",
+			edit: func(c *config.Config) {
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{Issuer: "urn:corp:idp"}}
+			},
+		},
+		{
+			name: "alg none disallowed",
+			edit: func(c *config.Config) {
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{
+					{Issuer: "https://idp.example.com", Algorithms: []string{"none"}},
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := config.Default()
+			c.Server.Environment = "test"
+			tc.edit(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected validation error for %s", tc.name)
+			}
+		})
+	}
+}
