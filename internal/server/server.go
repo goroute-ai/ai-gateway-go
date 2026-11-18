@@ -224,6 +224,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,
 		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
+		Issuers:       buildOIDCIssuerConfigs(cfg.Auth.OIDCIssuers, netPolicy),
 		NetworkPolicy: netPolicy,
 	}))
 	rbac := auth.NewRBACEngine(repo)
@@ -1112,4 +1113,35 @@ func inboundCallerMiddleware(cfg config.InboundCallerConfig) func(http.Handler) 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func buildOIDCIssuerConfigs(issuers []config.OIDCIssuerConfig, netPolicy *network.Policy) []auth.OIDCIssuerConfig {
+	if len(issuers) == 0 {
+		return nil
+	}
+	out := make([]auth.OIDCIssuerConfig, 0, len(issuers))
+	for _, iss := range issuers {
+		out = append(out, auth.OIDCIssuerConfig{
+			Issuer:              iss.Issuer,
+			Audience:            iss.Audience,
+			JWKSURL:             iss.JWKSURL,
+			DiscoveryURL:        iss.DiscoveryURL,
+			Algorithms:          iss.Algorithms,
+			AllowedEmailDomains: iss.AllowedEmailDomains,
+			ClaimMapping: auth.OIDCClaimMapping{
+				UserID:  iss.ClaimMapping.UserID,
+				Email:   iss.ClaimMapping.Email,
+				OrgID:   iss.ClaimMapping.OrgID,
+				TeamIDs: iss.ClaimMapping.TeamIDs,
+				Role:    iss.ClaimMapping.Role,
+				EndUser: iss.ClaimMapping.EndUser,
+			},
+			AutoRegister:  iss.AutoRegister,
+			DefaultOrgID:  iss.DefaultOrgID,
+			DefaultTeamID: iss.DefaultTeamID,
+			DefaultRole:   iss.DefaultRole,
+			NetworkPolicy: netPolicy,
+		})
+	}
+	return out
 }
