@@ -78,29 +78,39 @@ router:
   #  rate_limit_retries: 2
   #  timeout_retries: 1
   #  server_error_retries: 2
+  #  auth_error_retries: 1
+  #  not_found_retries: 0
+  #  bad_request_retries: 0
   #  default_retries: 1
   cooldown_policy: {}
   #  allowed_fails:
   #    rate_limit: 5
   #    server_error: 3
+  #    auth: 1
   #  failure_rate_threshold: 0.5
   #  min_requests_per_minute: 10
   #  max_cooldown_seconds: 300
   enable_mid_stream_continuation: false
   max_stream_continuations: 1
   health_staleness_threshold: 0s     # 0s = disable health staleness check
-  strict_capacity_filtering: false
+  strict_capacity_filtering: false   # Exclude deployments with exhausted local RPM/TPM capacity windows
   provider_budgets: {}               # Optional per-provider budget cap in micro-USD (e.g. openai: 100000000)
   session_affinity_ttl: 30m
   session_affinity_repin_on_failover: true
   prompt_cache_affinity: false
-  pre_router_mode: ""                # "", "heuristic", "semantic", "bandit", or "quality"
+  pre_router_mode: ""                # "", "heuristic", "semantic", "quality", or "adaptive"
   semantic_router:
     enabled: false
     embedding_model: ""
     similarity_threshold: 0.78
     timeout: 2s
     routes: []
+    #  - name: "coding-intent"
+    #    target_model: "coding"
+    #    description: "Software engineering, debugging, and code generation"
+    #    utterances:
+    #      - "Write a Go function to parse JSON"
+    #      - "Debug this failing SQL query"
   cache_aware_routing: false
   bandit:
     enabled: false
@@ -112,6 +122,9 @@ router:
     cost_weight: 0.5
     sync_interval: 5s
     candidate_models: []
+    #  - "fast"
+    #  - "reasoning"
+    #  - "coding"
   hedge_delay_ms: 0                  # 0 = disabled; >0 enables staggered hedged racing
   max_hedge_concurrency: 2
   scheduler:
@@ -285,6 +298,7 @@ model_list:
       weight: 100
       rpm: 1000
       tpm: 1000000
+      # region: "us-east"
       # priority: 1
       # tags: ["tier:fast", "region:us"]
       # max_budget_micros: 0
