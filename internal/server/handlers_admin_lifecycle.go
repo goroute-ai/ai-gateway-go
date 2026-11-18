@@ -615,7 +615,7 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			})
 			return
 		}
-		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, "", existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
+		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, updated.TeamID, existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
 			return
 		}
 		updated.MaxBudgetMicros = *req.MaxBudgetMicros

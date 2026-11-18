@@ -627,6 +627,11 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
+		if req.MaxBudgetMicros > 0 {
+			if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, req.OrgID, req.TeamID, 0, req.MaxBudgetMicros) {
+				return
+			}
+		}
 	}
 	if req.KeyType != "" && !auth.IsValidKeyType(req.KeyType) {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_key_type", Message: fmt.Sprintf("unsupported key_type %q", req.KeyType)})

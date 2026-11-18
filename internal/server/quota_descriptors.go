@@ -12,15 +12,24 @@ import (
 
 // applyEffectiveTempBudgets returns a shallow copy of id with active temporary
 // budget boosts applied to key, team, user, and org limits when now < expires_at.
+// Temporary boost fields are cleared on the copy so repeated calls are idempotent.
 func applyEffectiveTempBudgets(id *domain.IdentityContext, now time.Time) *domain.IdentityContext {
 	if id == nil {
 		return nil
 	}
 	cp := *id
 	cp.KeyMaxBudgetMicros = domain.EffectiveMaxBudgetMicros(id.KeyMaxBudgetMicros, id.KeyTempBudgetIncreaseMicros, id.KeyTempBudgetExpiresAt, now)
+	cp.KeyTempBudgetIncreaseMicros = 0
+	cp.KeyTempBudgetExpiresAt = nil
 	cp.TeamMaxBudgetMicros = domain.EffectiveMaxBudgetMicros(id.TeamMaxBudgetMicros, id.TeamTempBudgetIncreaseMicros, id.TeamTempBudgetExpiresAt, now)
+	cp.TeamTempBudgetIncreaseMicros = 0
+	cp.TeamTempBudgetExpiresAt = nil
 	cp.UserMaxBudgetMicros = domain.EffectiveMaxBudgetMicros(id.UserMaxBudgetMicros, id.UserTempBudgetIncreaseMicros, id.UserTempBudgetExpiresAt, now)
+	cp.UserTempBudgetIncreaseMicros = 0
+	cp.UserTempBudgetExpiresAt = nil
 	cp.OrgMaxBudgetMicros = domain.EffectiveMaxBudgetMicros(id.OrgMaxBudgetMicros, id.OrgTempBudgetIncreaseMicros, id.OrgTempBudgetExpiresAt, now)
+	cp.OrgTempBudgetIncreaseMicros = 0
+	cp.OrgTempBudgetExpiresAt = nil
 	return &cp
 }
 

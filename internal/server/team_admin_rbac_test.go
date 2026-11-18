@@ -21,7 +21,7 @@ func TestTeamAdminControlPlaneRBAC_IsolationAndScopedOperations(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 
-	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_a", Name: "Org A", Slug: "org-a", IsActive: true}))
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_a", Name: "Org A", Slug: "org-a", MaxBudgetMicros: 100_000_000, SelfServeBudgetPolicy: domain.SelfServeBudgetCeiling, IsActive: true}))
 	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_b", Name: "Org B", Slug: "org-b", IsActive: true}))
 
 	require.NoError(t, repo.CreateTeam(ctx, &domain.Team{ID: "team_a1", OrgID: "org_a", Name: "Team A1", MaxBudgetMicros: 50_000_000, IsActive: true}))
@@ -373,7 +373,7 @@ func TestAdminAccessGroupRules_CRUDAndDynamicModelGrant(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 
-	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_a", Name: "Org A", Slug: "org-a", IsActive: true}))
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_a", Name: "Org A", Slug: "org-a", MaxBudgetMicros: 100_000_000, SelfServeBudgetPolicy: domain.SelfServeBudgetCeiling, IsActive: true}))
 	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org_b", Name: "Org B", Slug: "org-b", IsActive: true}))
 	require.NoError(t, repo.CreateTeam(ctx, &domain.Team{
 		ID:            "team_a1",

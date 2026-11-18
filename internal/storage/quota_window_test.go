@@ -453,7 +453,7 @@ func TestTempBudgetRepository_PersistenceAndScanners(t *testing.T) {
 
 	userRow := &fakeTeamScanner{
 		values: []any{
-			"usr-scan", "org-scan", "team-scan", "u@scan.example", "Scan User", "developer", "sub-1",
+			"usr-scan", "org-scan", "team-scan", "u@scan.example", "Scan User", "developer", "sub-1", "scim-1", true,
 			int64(2000), int64(500), &future, int64(0), false, []byte("{}"), int64(100), "daily", nil,
 			20, 200, 3, int64(0), true, now, now,
 		},
@@ -462,7 +462,7 @@ func TestTempBudgetRepository_PersistenceAndScanners(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanUser: %v", err)
 	}
-	if scannedUser.TempBudgetIncreaseMicros != 500 || scannedUser.TempBudgetExpiresAt == nil || !scannedUser.TempBudgetExpiresAt.Equal(future) {
+	if scannedUser.SCIMExternalID != "scim-1" || !scannedUser.SCIMActive || scannedUser.TempBudgetIncreaseMicros != 500 || scannedUser.TempBudgetExpiresAt == nil || !scannedUser.TempBudgetExpiresAt.Equal(future) {
 		t.Fatalf("unexpected scannedUser: %+v", scannedUser)
 	}
 

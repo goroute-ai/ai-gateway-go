@@ -657,6 +657,31 @@ func TestTempBudgetBoost_AdmissionAndExpiration(t *testing.T) {
 	rr = callChat()
 	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
+	// 3b. Regression check: boost must NOT be double-applied (base 100 + 5000 = 5100, NOT 10100).
+	// A key with base=100, increase=5000, spent=5050 only has 50 micros left (< ~170 needed), so it must reject.
+	tbNoDoubleKey, err := env.gw.AuthService().IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:           "org_a",
+		TeamID:          "team_a1",
+		UserID:          "usr_a1_dev",
+		Name:            "temp-boost-no-double-key",
+		Role:            domain.RoleDeveloper,
+		MaxBudgetMicros: 100,
+		SpentMicros:     5050,
+	})
+	require.NoError(t, err)
+	recDouble := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/keys/"+tbNoDoubleKey.ID+"/temp-budget", env.orgAAdmin.RawKey, map[string]any{
+		"temp_budget_increase_micros": 5000,
+		"ttl_seconds":                 300,
+	})
+	require.Equal(t, http.StatusOK, recDouble.Code, recDouble.Body.String())
+	reqNoDouble := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4.1","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}`))
+	reqNoDouble.Header.Set("Authorization", "Bearer "+tbNoDoubleKey.RawKey)
+	reqNoDouble.Header.Set("Content-Type", "application/json")
+	rrNoDouble := httptest.NewRecorder()
+	env.handler.ServeHTTP(rrNoDouble, reqNoDouble)
+	assert.Equal(t, http.StatusTooManyRequests, rrNoDouble.Code)
+	assert.Contains(t, rrNoDouble.Body.String(), "key_budget_exceeded")
+
 	// 4. Expire the temp boost and invalidate auth cache -> effective budget reverts to 100 -> rejected!
 	past := time.Now().UTC().Add(-10 * time.Second)
 	require.NoError(t, env.repo.SetTempBudgetBoost(ctx, domain.QuotaScopeKey, tbKey.ID, 5000, &past))
@@ -682,8 +707,24 @@ func TestSelfServeBudgetPolicy_DisabledLowerOnlyCeiling(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// 1. Policy = disabled (default): team_admin cannot modify key or team budget, but org_admin can.
-	rec := doAdminJSONRequest(t, env.handler, http.MethodPut, "/admin/v1/keys/"+keyA1.ID, env.teamA1Adm.RawKey, map[string]any{
+	// 1. Policy = disabled (default): team_admin cannot modify key/team budget or issue a key with max_budget_micros > 0, but org_admin can.
+	rec := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/keys", env.teamA1Adm.RawKey, map[string]any{
+		"name":              "self-serve-disabled-issue",
+		"team_id":           "team_a1",
+		"role":              "developer",
+		"max_budget_micros": 1_000_000,
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "self_serve_budget_disabled")
+
+	rec = doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/keys", env.teamA1Adm.RawKey, map[string]any{
+		"name":    "self-serve-disabled-no-budget",
+		"team_id": "team_a1",
+		"role":    "developer",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	rec = doAdminJSONRequest(t, env.handler, http.MethodPut, "/admin/v1/keys/"+keyA1.ID, env.teamA1Adm.RawKey, map[string]any{
 		"max_budget_micros": 1_000_000,
 	})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
@@ -816,6 +857,23 @@ func TestSelfServeBudgetPolicy_DisabledLowerOnlyCeiling(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	rec = doAdminJSONRequest(t, env.handler, http.MethodPut, "/admin/v1/teams/team_ceil", taCeilVK.RawKey, map[string]any{
 		"max_budget_micros": 12_000_000,
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "self_serve_budget_exceeds_ceiling")
+
+	// Issuing a new key as team_admin under ceiling respects team ceiling (8M).
+	rec = doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/keys", taCeilVK.RawKey, map[string]any{
+		"name":              "ceil-issue-ok",
+		"team_id":           "team_ceil",
+		"role":              "developer",
+		"max_budget_micros": 6_000_000,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	rec = doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/keys", taCeilVK.RawKey, map[string]any{
+		"name":              "ceil-issue-too-high",
+		"team_id":           "team_ceil",
+		"role":              "developer",
+		"max_budget_micros": 9_000_000,
 	})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Contains(t, rec.Body.String(), "self_serve_budget_exceeds_ceiling")
