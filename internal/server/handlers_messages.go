@@ -116,6 +116,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	if payload.MaxTokens > 0 {
 		chatReq.MaxTokens = &payload.MaxTokens
 	}
+	s.applyChatRoutingHints(r, &chatReq)
 
 	// Translate System
 	if payload.System != nil {
@@ -284,8 +285,10 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	})
 
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
+	w.Header().Set("X-Gateway-Model", resp.Model)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	setRoutingTelemetryHeaders(w, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	// Convert CanonicalChatResponse to Anthropic JSON response
@@ -493,6 +496,15 @@ func (s *GatewayServer) streamAnthropicMessages(
 	} else {
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 			winningDep = dep
+			if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
+				if dep.GlobalModel.Provider != "" {
+					w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
+				}
+				if dep.GlobalModel.ModelName != "" {
+					w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
+				}
+				w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(dep.GlobalModel)))
+			}
 		})
 	}
 	if !streamSession.SSEStarted() {
@@ -512,6 +524,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 	}
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
+	setRoutingTelemetryHeaders(w, meta)
 
 	if err != nil {
 		if streamCacheHit {
@@ -651,6 +664,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			Endpoint:       r.URL.Path,
 			RequestedModel: chatReq.Model,
 			ResolvedModel:  resolvedModel,
+			Provider:       provider,
 			DeploymentID:   depID,
 			PricingVersion: pricingVer,
 			Usage:          finalUsage,

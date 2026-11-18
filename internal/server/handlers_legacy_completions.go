@@ -201,8 +201,10 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	})
 
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
+	w.Header().Set("X-Gateway-Model", resp.Model)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	setRoutingTelemetryHeaders(w, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string
@@ -436,6 +438,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 
 	streamStarted := time.Now()
 	ch, meta, err := s.reliability.ExecuteCompletionStream(r.Context(), idCtx, req)
+	setRoutingTelemetryHeaders(w, meta)
 	if err != nil {
 		releaseQuota(-1)
 		statusCode := http.StatusBadGateway
