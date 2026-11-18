@@ -19,7 +19,7 @@ const levelBtnClass = (active: boolean, level: string) => {
 };
 
 export const ToolPoliciesTab: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const qc = useQueryClient();
 
   const [filterTeam, setFilterTeam] = useState('');
@@ -40,19 +40,19 @@ export const ToolPoliciesTab: React.FC = () => {
         ...(filterTeam ? { team_id: filterTeam } : {}),
         ...(filterKey ? { virtual_key_id: filterKey } : {}),
       }),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const teamsQuery = useQuery({
     queryKey: ['admin', 'teams', adminKey, activeOrgId],
     queryFn: () => adminApi.listTeams(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const keysQuery = useQuery({
     queryKey: ['admin', 'keys', adminKey, activeOrgId],
     queryFn: () => adminApi.listKeys(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const invalidate = () =>

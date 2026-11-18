@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import type { GlobalModel, ModelGroup, Deployment } from '../types';
@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 export const ModelsView: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<'catalogue' | 'groups'>('catalogue');
@@ -67,7 +67,7 @@ export const ModelsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'catalogue', adminKey],
     queryFn: () => adminApi.listCatalogue(adminKey),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
     retry: (count, err) => !isPlatformAdminForbidden(err) && count < 2,
   });
 
@@ -80,7 +80,7 @@ export const ModelsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'pricing-history', adminKey, historyModel?.id],
     queryFn: () => adminApi.listPricingHistory(adminKey, historyModel!.id),
-    enabled: !!adminKey && !!historyModel,
+    enabled: isUnlocked && !!historyModel,
   });
 
   // 2. Fetch Model Groups
@@ -93,7 +93,7 @@ export const ModelsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'model-groups', adminKey, activeOrgId],
     queryFn: () => adminApi.listModelGroups(adminKey, activeOrgId),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   // 3. Fetch All Deployments
@@ -105,13 +105,13 @@ export const ModelsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'deployments', adminKey],
     queryFn: () => adminApi.listDeployments(adminKey),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   const { data: credsData } = useQuery({
     queryKey: ['admin', 'credentials', adminKey, activeOrgId],
     queryFn: () => adminApi.listCredentials(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   // Discovery Sync mutation
@@ -207,8 +207,7 @@ export const ModelsView: React.FC = () => {
     setCachedInputUSD((m.cached_input_cost_micros_per_1m / 1_000_000).toString());
   };
 
-  const handleSavePricing = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSavePricing = () => {
     if (!selectedModel) return;
 
     const inMicros = Math.round(parseFloat(inputCostUSD || '0') * 1_000_000);
@@ -234,8 +233,7 @@ export const ModelsView: React.FC = () => {
   const parseCsv = (v: string) =>
     v.split(',').map((s) => s.trim()).filter(Boolean);
 
-  const handleCreateGroup = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateGroup = () => {
     if (!groupAlias.trim()) return;
 
     const fbIds = parseCsv(groupFallbacks);
@@ -629,41 +627,22 @@ export const ModelsView: React.FC = () => {
       )}
 
       {/* Pricing Update Modal */}
-      <Modal
-        isOpen={!!selectedModel}
+      <FormModal
+        open={!!selectedModel}
         onClose={() => setSelectedModel(null)}
         title={`Update Pricing: ${selectedModel?.display_name || selectedModel?.model_name}`}
         description="Updates integer micro-dollar pricing rates ($1.00 = 1,000,000 µ$) and appends an immutable provenance audit record."
-        maxWidth="md"
+        onSubmit={handleSavePricing}
+        pending={pricingMutation.isPending}
+        submitLabel={pricingMutation.isPending ? 'Updating...' : 'Save Pricing'}
       >
-        <form onSubmit={handleSavePricing} className="space-y-4">
-          {pricingMutation.isError && (
-            <ErrorAlert error={pricingMutation.error} title="Failed to update pricing" />
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Input USD / 1M</label>
-              <input type="number" step="0.0001" required value={inputCostUSD} onChange={(e) => setInputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Output USD / 1M</label>
-              <input type="number" step="0.0001" required value={outputCostUSD} onChange={(e) => setOutputCostUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Cached Input USD / 1M</label>
-            <input type="number" step="0.0001" value={cachedInputUSD} onChange={(e) => setCachedInputUSD(e.target.value)} className={`${INPUT_CLS} font-mono`} />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setSelectedModel(null)} className={BTN_CANCEL}>Cancel</button>
-            <button type="submit" disabled={pricingMutation.isPending} className={BTN_PRIMARY}>
-              {pricingMutation.isPending ? 'Updating...' : 'Save Pricing'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        {pricingMutation.isError && <ErrorAlert error={pricingMutation.error} title="Failed to update pricing" />}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Input USD / 1M"><input type="number" step="0.0001" required value={inputCostUSD} onChange={(e) => setInputCostUSD(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+          <Field label="Output USD / 1M"><input type="number" step="0.0001" required value={outputCostUSD} onChange={(e) => setOutputCostUSD(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <Field label="Cached Input USD / 1M"><input type="number" step="0.0001" value={cachedInputUSD} onChange={(e) => setCachedInputUSD(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
 
       {/* Pricing History Modal */}
       <Modal
@@ -712,158 +691,116 @@ export const ModelsView: React.FC = () => {
       </Modal>
 
       {/* Create Model Group Modal */}
-      <Modal isOpen={showCreateGroupModal} onClose={() => setShowCreateGroupModal(false)} title="Create Model Group Alias" maxWidth="md">
-        <form onSubmit={handleCreateGroup} className="space-y-4">
-          {createGroupMutation.isError && (
-            <ErrorAlert error={createGroupMutation.error} title="Failed to create model group" />
-          )}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Alias Name *</label>
-            <input type="text" required value={groupAlias} onChange={(e) => setGroupAlias(e.target.value)} placeholder="fast, reasoning, coding" className={`${INPUT_CLS} font-mono`} />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Description (optional)</label>
-            <input type="text" value={groupDesc} onChange={(e) => setGroupDesc(e.target.value)} placeholder="Low-latency primary alias" className={INPUT_CLS} />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Routing Strategy</label>
-            <select value={routingStrategy} onChange={(e) => setRoutingStrategy(e.target.value)} className={INPUT_CLS}>
-              <option value="weighted-shuffle">weighted-shuffle (Default probabilistic)</option>
-              <option value="round-robin">round-robin (Cyclic distribution)</option>
-              <option value="least-busy">least-busy (Lowest in-flight concurrency)</option>
-              <option value="latency-based">latency-based (EWMA latency tracker)</option>
-              <option value="fastest-response">fastest-response (Hedged latency racing)</option>
-              <option value="usage-based-headroom">usage-based-headroom (TPM limit protection)</option>
-              <option value="lowest-cost">lowest-cost (Cheapest micro-dollar deployment)</option>
-            </select>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Max Retries</label><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Cooldown (s)</label><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Failure Threshold</label><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={`${INPUT_CLS} font-mono`} /></div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Fallback Group IDs (comma-separated)</label>
-            <input type="text" value={groupFallbacks} onChange={(e) => setGroupFallbacks(e.target.value)} placeholder="reasoning, backup-fast" className={`${INPUT_CLS} font-mono`} />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Context Window Fallbacks</label>
-              <input type="text" value={groupCtxFallbacks} onChange={(e) => setGroupCtxFallbacks(e.target.value)} placeholder="long-context" className={`${INPUT_CLS} font-mono`} />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Content Policy Fallbacks</label>
-              <input type="text" value={groupPolicyFallbacks} onChange={(e) => setGroupPolicyFallbacks(e.target.value)} placeholder="safe-fallback" className={`${INPUT_CLS} font-mono`} />
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowCreateGroupModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button type="submit" disabled={createGroupMutation.isPending || !groupAlias.trim()} className={BTN_PRIMARY}>
-              {createGroupMutation.isPending ? 'Creating...' : 'Create Model Group'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      <FormModal
+        open={showCreateGroupModal}
+        onClose={() => setShowCreateGroupModal(false)}
+        title="Create Model Group Alias"
+        onSubmit={handleCreateGroup}
+        pending={createGroupMutation.isPending || !groupAlias.trim()}
+        submitLabel={createGroupMutation.isPending ? 'Creating...' : 'Create Model Group'}
+      >
+        {createGroupMutation.isError && <ErrorAlert error={createGroupMutation.error} title="Failed to create model group" />}
+        <Field label="Alias Name *"><input type="text" required value={groupAlias} onChange={(e) => setGroupAlias(e.target.value)} placeholder="fast, reasoning, coding" className={MONO_INPUT_CLS} /></Field>
+        <Field label="Description (optional)"><input type="text" value={groupDesc} onChange={(e) => setGroupDesc(e.target.value)} placeholder="Low-latency primary alias" className={INPUT_CLS} /></Field>
+        <Field label="Routing Strategy">
+          <select value={routingStrategy} onChange={(e) => setRoutingStrategy(e.target.value)} className={INPUT_CLS}>
+            <option value="weighted-shuffle">weighted-shuffle (Default probabilistic)</option>
+            <option value="round-robin">round-robin (Cyclic distribution)</option>
+            <option value="least-busy">least-busy (Lowest in-flight concurrency)</option>
+            <option value="latency-based">latency-based (EWMA latency tracker)</option>
+            <option value="fastest-response">fastest-response (Hedged latency racing)</option>
+            <option value="usage-based-headroom">usage-based-headroom (TPM limit protection)</option>
+            <option value="lowest-cost">lowest-cost (Cheapest micro-dollar deployment)</option>
+          </select>
+        </Field>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Max Retries"><input type="number" min={0} value={groupMaxRetries} onChange={(e) => setGroupMaxRetries(e.target.value)} placeholder="2" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Cooldown (s)"><input type="number" min={0} value={groupCooldown} onChange={(e) => setGroupCooldown(e.target.value)} placeholder="30" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Failure Threshold"><input type="number" min={0} value={groupFailureThreshold} onChange={(e) => setGroupFailureThreshold(e.target.value)} placeholder="3" className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <Field label="Fallback Group IDs (comma-separated)"><input type="text" value={groupFallbacks} onChange={(e) => setGroupFallbacks(e.target.value)} placeholder="reasoning, backup-fast" className={MONO_INPUT_CLS} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Context Window Fallbacks"><input type="text" value={groupCtxFallbacks} onChange={(e) => setGroupCtxFallbacks(e.target.value)} placeholder="long-context" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Content Policy Fallbacks"><input type="text" value={groupPolicyFallbacks} onChange={(e) => setGroupPolicyFallbacks(e.target.value)} placeholder="safe-fallback" className={MONO_INPUT_CLS} /></Field>
+        </div>
+      </FormModal>
 
       {/* Add Deployment Modal */}
-      <Modal
-        isOpen={!!deployGroupId}
+      <FormModal
+        open={!!deployGroupId}
         onClose={() => setDeployGroupId(null)}
         title="Add Deployment to Model Group"
         description="Attach an upstream global model and provider credential to this routing group."
-        maxWidth="md"
+        onSubmit={() => {
+          if (!deployGroupId || !deployGlobalModelId.trim()) return;
+          const parsedTags = parseCsv(deployTags);
+          const parsedBudget = parseFloat(deployBudgetUSD);
+          const payload: Partial<Deployment> = {
+            model_group_id: deployGroupId,
+            global_model_id: deployGlobalModelId.trim(),
+            priority: parseInt(deployPriority, 10) || 1,
+            weight: parseInt(deployWeight, 10) || 100,
+            rpm_capacity: optInt(deployRpm),
+            tpm_capacity: optInt(deployTpm),
+            timeout_ms: optInt(deployTimeoutMs),
+          };
+          if (deployCredentialId.trim()) payload.credential_id = deployCredentialId.trim();
+          if (deployName.trim()) payload.deployment_name = deployName.trim();
+          if (deployRegion.trim()) payload.region = deployRegion.trim();
+          if (parsedTags.length > 0) payload.tags = parsedTags;
+          if (deployBudgetUSD.trim() && !isNaN(parsedBudget) && parsedBudget > 0) {
+            payload.max_budget_micros = Math.round(parsedBudget * 1_000_000);
+          }
+          if (deployBudgetPeriod) payload.budget_reset_period = deployBudgetPeriod;
+          createDeploymentMutation.mutate(payload);
+        }}
+        pending={createDeploymentMutation.isPending || !deployGlobalModelId.trim()}
+        submitLabel={createDeploymentMutation.isPending ? 'Adding...' : 'Add Deployment'}
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!deployGroupId || !deployGlobalModelId.trim()) return;
-            const parsedTags = parseCsv(deployTags);
-            const parsedBudget = parseFloat(deployBudgetUSD);
-            const payload: Partial<Deployment> = {
-              model_group_id: deployGroupId,
-              global_model_id: deployGlobalModelId.trim(),
-              priority: parseInt(deployPriority, 10) || 1,
-              weight: parseInt(deployWeight, 10) || 100,
-              rpm_capacity: optInt(deployRpm),
-              tpm_capacity: optInt(deployTpm),
-              timeout_ms: optInt(deployTimeoutMs),
-            };
-            if (deployCredentialId.trim()) payload.credential_id = deployCredentialId.trim();
-            if (deployName.trim()) payload.deployment_name = deployName.trim();
-            if (deployRegion.trim()) payload.region = deployRegion.trim();
-            if (parsedTags.length > 0) payload.tags = parsedTags;
-            if (deployBudgetUSD.trim() && !isNaN(parsedBudget) && parsedBudget > 0) {
-              payload.max_budget_micros = Math.round(parsedBudget * 1_000_000);
-            }
-            if (deployBudgetPeriod) payload.budget_reset_period = deployBudgetPeriod;
-            createDeploymentMutation.mutate(payload);
-          }}
-          className="space-y-4"
-        >
-          {createDeploymentMutation.isError && (
-            <ErrorAlert error={createDeploymentMutation.error} title="Failed to create deployment" />
+        {createDeploymentMutation.isError && <ErrorAlert error={createDeploymentMutation.error} title="Failed to create deployment" />}
+        <Field label="Global Model ID *">
+          <input type="text" required list="catalogue-models-list" value={deployGlobalModelId} onChange={(e) => setDeployGlobalModelId(e.target.value)} placeholder="openai/gpt-4.1" className={MONO_INPUT_CLS} />
+          <datalist id="catalogue-models-list">
+            {suggestionModels.slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
+          </datalist>
+          {suggestionModels.length > 100 && (
+            <p className="text-[10px] font-mono text-brand-muted mt-1">
+              Showing 100 of {suggestionModels.length} matching models — type to narrow suggestions.
+            </p>
           )}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Global Model ID *</label>
-            <input type="text" required list="catalogue-models-list" value={deployGlobalModelId} onChange={(e) => setDeployGlobalModelId(e.target.value)} placeholder="openai/gpt-4.1" className={`${INPUT_CLS} font-mono`} />
-            <datalist id="catalogue-models-list">
-              {suggestionModels.slice(0, 100).map((m) => <option key={m.id} value={m.id} />)}
-            </datalist>
-            {suggestionModels.length > 100 && (
-              <p className="text-[10px] font-mono text-brand-muted mt-1">
-                Showing 100 of {suggestionModels.length} matching models — type to narrow suggestions.
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Provider Credential (optional)</label>
-            <select value={deployCredentialId} onChange={(e) => setDeployCredentialId(e.target.value)} className={INPUT_CLS}>
-              <option value="">Auto-resolve org credential</option>
-              {(credsData?.data || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.provider})</option>)}
+        </Field>
+        <Field label="Provider Credential (optional)">
+          <select value={deployCredentialId} onChange={(e) => setDeployCredentialId(e.target.value)} className={INPUT_CLS}>
+            <option value="">Auto-resolve org credential</option>
+            {(credsData?.data || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.provider})</option>)}
+          </select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Deployment Name"><input type="text" value={deployName} onChange={(e) => setDeployName(e.target.value)} placeholder="primary-us-east" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Region"><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Priority Tier"><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+          <Field label="Weight"><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Tags (comma-sep)"><input type="text" value={deployTags} onChange={(e) => setDeployTags(e.target.value)} placeholder="tier:fast, eu" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Max Budget (USD)"><input type="number" min={0} step="0.01" value={deployBudgetUSD} onChange={(e) => setDeployBudgetUSD(e.target.value)} placeholder="unlimited" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Reset Period">
+            <select value={deployBudgetPeriod} onChange={(e) => setDeployBudgetPeriod(e.target.value)} className={INPUT_CLS}>
+              <option value="">None</option>
+              <option value="daily">daily</option>
+              <option value="monthly">monthly</option>
+              <option value="never">never</option>
             </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Deployment Name</label><input type="text" value={deployName} onChange={(e) => setDeployName(e.target.value)} placeholder="primary-us-east" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Region</label><input type="text" value={deployRegion} onChange={(e) => setDeployRegion(e.target.value)} placeholder="us-east-1" className={`${INPUT_CLS} font-mono`} /></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Priority Tier</label><input type="number" value={deployPriority} onChange={(e) => setDeployPriority(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Weight</label><input type="number" value={deployWeight} onChange={(e) => setDeployWeight(e.target.value)} className={`${INPUT_CLS} font-mono`} /></div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Tags (comma-sep)</label><input type="text" value={deployTags} onChange={(e) => setDeployTags(e.target.value)} placeholder="tier:fast, eu" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Max Budget (USD)</label><input type="number" min={0} step="0.01" value={deployBudgetUSD} onChange={(e) => setDeployBudgetUSD(e.target.value)} placeholder="unlimited" className={`${INPUT_CLS} font-mono`} /></div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Reset Period</label>
-              <select value={deployBudgetPeriod} onChange={(e) => setDeployBudgetPeriod(e.target.value)} className={INPUT_CLS}>
-                <option value="">None</option>
-                <option value="daily">daily</option>
-                <option value="monthly">monthly</option>
-                <option value="never">never</option>
-              </select>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div><label className="block text-xs font-medium text-brand-body mb-1">RPM Cap</label><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">TPM Cap</label><input type="number" min={0} value={deployTpm} onChange={(e) => setDeployTpm(e.target.value)} placeholder="optional" className={`${INPUT_CLS} font-mono`} /></div>
-            <div><label className="block text-xs font-medium text-brand-body mb-1">Timeout (ms)</label><input type="number" min={0} value={deployTimeoutMs} onChange={(e) => setDeployTimeoutMs(e.target.value)} placeholder="30000" className={`${INPUT_CLS} font-mono`} /></div>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setDeployGroupId(null)} className={BTN_CANCEL}>Cancel</button>
-            <button type="submit" disabled={createDeploymentMutation.isPending || !deployGlobalModelId.trim()} className={BTN_PRIMARY}>
-              {createDeploymentMutation.isPending ? 'Adding...' : 'Add Deployment'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+          </Field>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="RPM Cap"><input type="number" min={0} value={deployRpm} onChange={(e) => setDeployRpm(e.target.value)} placeholder="optional" className={MONO_INPUT_CLS} /></Field>
+          <Field label="TPM Cap"><input type="number" min={0} value={deployTpm} onChange={(e) => setDeployTpm(e.target.value)} placeholder="optional" className={MONO_INPUT_CLS} /></Field>
+          <Field label="Timeout (ms)"><input type="number" min={0} value={deployTimeoutMs} onChange={(e) => setDeployTimeoutMs(e.target.value)} placeholder="30000" className={MONO_INPUT_CLS} /></Field>
+        </div>
+      </FormModal>
     </div>
   );
 };

@@ -3,10 +3,18 @@ import { X } from 'lucide-react';
 
 export const INPUT_CLS =
   'w-full bg-surface-input border border-border-strong rounded-lg px-3 py-2 text-xs text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary';
+export const MONO_INPUT_CLS = `${INPUT_CLS} font-mono`;
 export const BTN_PRIMARY =
   'px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-dark text-accent-contrast transition-colors disabled:opacity-50';
 export const BTN_CANCEL =
   'px-3 py-1.5 rounded-md text-xs text-brand-muted hover:text-brand-title hover:bg-surface-elevated transition-colors';
+
+export const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div>
+    <label className="block text-xs font-medium text-brand-body mb-1">{label}</label>
+    {children}
+  </div>
+);
 
 interface ModalProps {
   isOpen: boolean;
@@ -71,3 +79,25 @@ export const Modal: React.FC<ModalProps> = ({
     </div>
   );
 };
+
+export const FormModal: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  description?: string;
+  maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
+  onSubmit: () => void;
+  pending?: boolean;
+  submitLabel?: string;
+  children: React.ReactNode;
+}> = ({ open, onClose, title, description, maxWidth, onSubmit, pending, submitLabel = 'Save', children }) => (
+  <Modal isOpen={open} onClose={onClose} title={title} description={description} maxWidth={maxWidth}>
+    <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }} className="space-y-3">
+      {children}
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onClose} className={BTN_CANCEL}>Cancel</button>
+        <button type="submit" disabled={pending} className={BTN_PRIMARY}>{pending ? 'Saving...' : submitLabel}</button>
+      </div>
+    </form>
+  </Modal>
+);

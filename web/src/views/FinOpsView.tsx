@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +16,8 @@ import {
   RefreshCw,
   Search,
 } from 'lucide-react';
+
+const QuotasTab = lazy(() => import('./finops/QuotasTab').then((m) => ({ default: m.QuotasTab })));
 
 const SpendBreakdownCard: React.FC<{
   title: string;
@@ -67,8 +69,8 @@ const SpendBreakdownCard: React.FC<{
 };
 
 export const FinOpsView: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
-  const [activeTab, setActiveTab] = useState<'spend' | 'audit'>('spend');
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
+  const [activeTab, setActiveTab] = useState<'spend' | 'quotas' | 'audit'>('spend');
   const [selectedSpendEvent, setSelectedSpendEvent] = useState<SpendEvent | null>(null);
   const [selectedAuditLog, setSelectedAuditLog] = useState<AuditLog | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
@@ -84,7 +86,7 @@ export const FinOpsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'spend-summary', adminKey, activeOrgId],
     queryFn: () => adminApi.getSpendSummary(adminKey, activeOrgId || undefined),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
     refetchInterval: 15000,
   });
 
@@ -98,7 +100,7 @@ export const FinOpsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'spend-logs', adminKey, activeOrgId, logLimit],
     queryFn: () => adminApi.listSpendLogs(adminKey, activeOrgId || undefined, logLimit),
-    enabled: !!adminKey && activeTab === 'spend',
+    enabled: isUnlocked && activeTab === 'spend',
     refetchInterval: 10000,
   });
 
@@ -112,7 +114,7 @@ export const FinOpsView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'audit-logs', adminKey, activeOrgId, logLimit],
     queryFn: () => adminApi.listAuditLogs(adminKey, activeOrgId || undefined, logLimit),
-    enabled: !!adminKey && activeTab === 'audit',
+    enabled: isUnlocked && activeTab === 'audit',
     refetchInterval: 10000,
   });
 
@@ -238,9 +240,9 @@ export const FinOpsView: React.FC = () => {
         </div>
       )}
 
-      {/* Navigation Tabs (Spend Logs vs Audit Trail) */}
+      {/* Navigation Tabs (Spend Logs, Quotas & Budgets, Audit Trail) */}
       <div className="border-b border-border-subtle">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex gap-4">
             <button
               onClick={() => setActiveTab('spend')}
@@ -252,6 +254,17 @@ export const FinOpsView: React.FC = () => {
             >
               <Layers className="w-4 h-4" />
               Recent Spend Events ({spendLogs.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('quotas')}
+              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
+                activeTab === 'quotas'
+                  ? 'border-accent-primary text-accent-primary font-semibold'
+                  : 'border-transparent text-brand-muted hover:text-brand-title'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              Quotas &amp; Multi-Window Budgets
             </button>
             <button
               onClick={() => setActiveTab('audit')}
@@ -266,30 +279,46 @@ export const FinOpsView: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-3 pb-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-brand-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                placeholder={activeTab === 'spend' ? 'Filter by request, model...' : 'Filter by action, resource...'}
-                className="pl-8 pr-3 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary font-mono w-56"
-              />
+          {activeTab !== 'quotas' && (
+            <div className="flex items-center gap-3 pb-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-brand-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  placeholder={activeTab === 'spend' ? 'Filter by request, model...' : 'Filter by action, resource...'}
+                  className="pl-8 pr-3 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary font-mono w-56"
+                />
+              </div>
+              <select
+                value={logLimit}
+                onChange={(e) => setLogLimit(Number(e.target.value))}
+                aria-label="Records per page"
+                className="bg-surface-input border border-border-subtle text-brand-body text-xs rounded px-2 py-1 font-mono focus:outline-none"
+              >
+                <option value={25}>25 rows</option>
+                <option value={50}>50 rows</option>
+                <option value={100}>100 rows</option>
+              </select>
             </div>
-            <select
-              value={logLimit}
-              onChange={(e) => setLogLimit(Number(e.target.value))}
-              aria-label="Records per page"
-              className="bg-surface-input border border-border-subtle text-brand-body text-xs rounded px-2 py-1 font-mono focus:outline-none"
-            >
-              <option value={25}>25 rows</option>
-              <option value={50}>50 rows</option>
-              <option value={100}>100 rows</option>
-            </select>
-          </div>
+          )}
         </div>
       </div>
+
+      {/* Tab 2: Quotas & Multi-Window Budgets (Lazy-Loaded) */}
+      {activeTab === 'quotas' && (
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-12 text-brand-muted font-mono text-xs gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
+              <span>Loading quotas &amp; multi-window budgets...</span>
+            </div>
+          }
+        >
+          <QuotasTab />
+        </Suspense>
+      )}
 
       {/* Tab 1: Spend Event Logs Table */}
       {activeTab === 'spend' && (
@@ -450,85 +479,57 @@ export const FinOpsView: React.FC = () => {
         </div>
       )}
 
-      {/* Spend Event Inspector Modal */}
-      {selectedSpendEvent && (
-        <Modal
-          title={`Spend Event: ${selectedSpendEvent.request_id || selectedSpendEvent.id}`}
-          isOpen={!!selectedSpendEvent}
-          onClose={() => setSelectedSpendEvent(null)}
-          size="lg"
-        >
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-surface-code border border-border-subtle rounded p-3 text-xs font-mono">
-              <div>
-                <span className="text-brand-muted block">Total Tokens:</span>
-                <span className="text-brand-title font-semibold">{(selectedSpendEvent.usage?.total_tokens ?? 0).toLocaleString()}</span>
+      {/* Spend Event / Audit Log Inspector Modal */}
+      {(selectedSpendEvent || selectedAuditLog) && (() => {
+        const isSpend = !!selectedSpendEvent;
+        const fields: Array<[string, string | number]> = isSpend
+          ? [
+              ['Total Tokens:', (selectedSpendEvent!.usage?.total_tokens ?? 0).toLocaleString()],
+              ['Cost (Micros):', `${selectedSpendEvent!.cost_micros?.toLocaleString() || 0} µ$`],
+              ['Cost (USD):', formatMicroDollars(selectedSpendEvent!.cost_micros)],
+              ['Provider:', selectedSpendEvent!.provider],
+              ['Resolved Model:', selectedSpendEvent!.resolved_model],
+              ['Latency:', selectedSpendEvent!.latency_ms ? `${selectedSpendEvent!.latency_ms.toFixed(1)} ms` : '-'],
+            ]
+          : [
+              ['Actor:', selectedAuditLog!.actor_id || 'master-admin'],
+              ['Timestamp:', new Date(selectedAuditLog!.created_at).toLocaleString()],
+              ['Target Resource:', selectedAuditLog!.resource],
+              ['Resource ID:', selectedAuditLog!.resource_id],
+            ];
+        return (
+          <Modal
+            title={
+              isSpend
+                ? `Spend Event: ${selectedSpendEvent!.request_id || selectedSpendEvent!.id}`
+                : `Audit Record: ${selectedAuditLog!.action} (${selectedAuditLog!.resource})`
+            }
+            isOpen
+            onClose={() => { setSelectedSpendEvent(null); setSelectedAuditLog(null); }}
+            size="lg"
+          >
+            <div className="space-y-4">
+              <div className={`grid grid-cols-2 ${isSpend ? 'sm:grid-cols-3' : ''} gap-3 bg-surface-code border border-border-subtle rounded p-3 text-xs font-mono`}>
+                {fields.map(([k, v]) => (
+                  <div key={k}>
+                    <span className="text-brand-muted block">{k}</span>
+                    <span className="text-brand-title font-semibold truncate block">{v}</span>
+                  </div>
+                ))}
               </div>
               <div>
-                <span className="text-brand-muted block">Cost (Micros):</span>
-                <span className="text-status-success font-semibold">{selectedSpendEvent.cost_micros?.toLocaleString() || 0} µ$</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Cost (USD):</span>
-                <span className="text-brand-title font-semibold">{formatMicroDollars(selectedSpendEvent.cost_micros)}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Provider:</span>
-                <span className="text-brand-body">{selectedSpendEvent.provider}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Resolved Model:</span>
-                <span className="text-accent-primary">{selectedSpendEvent.resolved_model}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Latency:</span>
-                <span className="text-brand-body">{selectedSpendEvent.latency_ms ? `${selectedSpendEvent.latency_ms.toFixed(1)} ms` : '-'}</span>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-brand-muted font-mono block mb-1">Raw Ledger Record:</label>
-              <CodeBlock code={JSON.stringify(selectedSpendEvent, null, 2)} language="json" />
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Audit Log Inspector Modal */}
-      {selectedAuditLog && (
-        <Modal
-          title={`Audit Record: ${selectedAuditLog.action} (${selectedAuditLog.resource})`}
-          isOpen={!!selectedAuditLog}
-          onClose={() => setSelectedAuditLog(null)}
-          size="lg"
-        >
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 bg-surface-code border border-border-subtle rounded p-3 text-xs font-mono">
-              <div>
-                <span className="text-brand-muted block">Actor:</span>
-                <span className="text-brand-title font-semibold">{selectedAuditLog.actor_id || 'master-admin'}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Timestamp:</span>
-                <span className="text-brand-body">{new Date(selectedAuditLog.created_at).toLocaleString()}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Target Resource:</span>
-                <span className="text-brand-body">{selectedAuditLog.resource}</span>
-              </div>
-              <div>
-                <span className="text-brand-muted block">Resource ID:</span>
-                <span className="text-accent-primary truncate block">{selectedAuditLog.resource_id}</span>
+                <label className="text-xs text-brand-muted font-mono block mb-1">
+                  {isSpend ? 'Raw Ledger Record:' : 'Audit Details / Payload:'}
+                </label>
+                <CodeBlock
+                  code={JSON.stringify(isSpend ? selectedSpendEvent : selectedAuditLog!.details || {}, null, 2)}
+                  language="json"
+                />
               </div>
             </div>
-
-            <div>
-              <label className="text-xs text-brand-muted font-mono block mb-1">Audit Details / Payload:</label>
-              <CodeBlock code={JSON.stringify(selectedAuditLog.details || {}, null, 2)} language="json" />
-            </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 };

@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [purgeModel, setPurgeModel] = useState('');
@@ -33,7 +33,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
   } = useQuery({
     queryKey: ['admin', 'telemetry', adminKey],
     queryFn: () => adminApi.getTelemetryMetrics(adminKey),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
     refetchInterval: 10000,
   });
 
@@ -47,7 +47,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
   } = useQuery({
     queryKey: ['admin', 'health', adminKey],
     queryFn: () => adminApi.listDeploymentHealth(adminKey),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
     refetchInterval: 15000,
   });
 

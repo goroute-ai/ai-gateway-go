@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { MCPTool } from '../types';
@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 
 export const AgenticView: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'mcp' | 'a2a'>('mcp');
   const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
@@ -86,7 +86,7 @@ export const AgenticView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'mcp-servers', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPServers(adminKey, activeOrgId),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   // Fetch MCP Toolsets
@@ -98,7 +98,7 @@ export const AgenticView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'mcp-toolsets', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPToolsets(adminKey, activeOrgId),
-    enabled: !!adminKey && activeTab === 'mcp',
+    enabled: isUnlocked && activeTab === 'mcp',
   });
 
   // Fetch MCP Tools
@@ -111,7 +111,7 @@ export const AgenticView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'mcp-tools', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPTools(adminKey, activeOrgId),
-    enabled: !!adminKey && activeTab === 'mcp',
+    enabled: isUnlocked && activeTab === 'mcp',
   });
 
   // Fetch A2A Agents
@@ -124,7 +124,7 @@ export const AgenticView: React.FC = () => {
   } = useQuery({
     queryKey: ['admin', 'a2a-agents', adminKey, activeOrgId],
     queryFn: () => adminApi.listA2AAgents(adminKey, activeOrgId),
-    enabled: !!adminKey,
+    enabled: isUnlocked,
   });
 
   // Create MCP Server Mutation
@@ -679,662 +679,238 @@ export const AgenticView: React.FC = () => {
       )}
 
       {/* Register MCP Server Modal */}
-      <Modal
-        isOpen={showServerModal}
+      <FormModal
+        open={showServerModal}
         onClose={() => setShowServerModal(false)}
         title="Register Upstream MCP Server"
         description="Connect a Model Context Protocol server to discover and govern callable tools."
         maxWidth="lg"
-      >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()) return;
-            setSrvFormError(null);
-            let parsedHeaders: Record<string, string> | undefined;
-            if (srvStaticHeaders.trim()) {
-              try {
-                const raw = JSON.parse(srvStaticHeaders);
-                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-                  setSrvFormError('Static headers must be a JSON object of key/value strings.');
-                  return;
-                }
-                parsedHeaders = Object.fromEntries(
-                  Object.entries(raw).map(([k, v]) => [k, String(v)])
-                );
-              } catch {
-                setSrvFormError('Invalid JSON syntax in Static Headers.');
+        onSubmit={() => {
+          if (!srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()) return;
+          setSrvFormError(null);
+          let parsedHeaders: Record<string, string> | undefined;
+          if (srvStaticHeaders.trim()) {
+            try {
+              const raw = JSON.parse(srvStaticHeaders);
+              if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                setSrvFormError('Static headers must be a JSON object of key/value strings.');
                 return;
               }
+              parsedHeaders = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v)]));
+            } catch {
+              setSrvFormError('Invalid JSON syntax in Static Headers.');
+              return;
             }
-            const scopes = srvOAuthScopes
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-            createServerMutation.mutate({
-              org_id: activeOrgId || undefined,
-              name: srvName.trim(),
-              slug: srvSlug.trim(),
-              endpoint_url: srvEndpoint.trim(),
-              protocol_version: srvProtocol,
-              transport_type: srvTransport,
-              auth_type: srvAuthType,
-              auth_secret: srvAuthSecret.trim() || undefined,
-              static_headers: parsedHeaders,
-              oauth2_endpoint: srvAuthType === 'oauth2' ? srvOAuthEndpoint.trim() || undefined : undefined,
-              oauth2_client_id: srvAuthType === 'oauth2' ? srvOAuthClientId.trim() || undefined : undefined,
-              oauth2_scopes: srvAuthType === 'oauth2' && scopes.length > 0 ? scopes : undefined,
-              pinned_tool_hash: srvPinnedHash.trim() || undefined,
-            });
-          }}
-          className="space-y-4"
-        >
-          {srvFormError && <ErrorAlert error={srvFormError} title="Invalid MCP server input" />}
-          {createServerMutation.isError && (
-            <ErrorAlert error={createServerMutation.error} title="Failed to register MCP server" />
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Server Name *</label>
-              <input
-                type="text"
-                required
-                value={srvName}
-                onChange={(e) => setSrvName(e.target.value)}
-                placeholder="GitHub Enterprise MCP"
-                className={INPUT_CLS}
-              />
+          }
+          const scopes = srvOAuthScopes.split(',').map((s) => s.trim()).filter(Boolean);
+          createServerMutation.mutate({
+            org_id: activeOrgId || undefined,
+            name: srvName.trim(),
+            slug: srvSlug.trim(),
+            endpoint_url: srvEndpoint.trim(),
+            protocol_version: srvProtocol,
+            transport_type: srvTransport,
+            auth_type: srvAuthType,
+            auth_secret: srvAuthSecret.trim() || undefined,
+            static_headers: parsedHeaders,
+            oauth2_endpoint: srvAuthType === 'oauth2' ? srvOAuthEndpoint.trim() || undefined : undefined,
+            oauth2_client_id: srvAuthType === 'oauth2' ? srvOAuthClientId.trim() || undefined : undefined,
+            oauth2_scopes: srvAuthType === 'oauth2' && scopes.length > 0 ? scopes : undefined,
+            pinned_tool_hash: srvPinnedHash.trim() || undefined,
+          });
+        }}
+        pending={createServerMutation.isPending || !srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()}
+        submitLabel={createServerMutation.isPending ? 'Registering...' : 'Register Server'}
+      >
+        {srvFormError && <ErrorAlert error={srvFormError} title="Invalid MCP server input" />}
+        {createServerMutation.isError && <ErrorAlert error={createServerMutation.error} title="Failed to register MCP server" />}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Server Name *"><input type="text" required value={srvName} onChange={(e) => setSrvName(e.target.value)} placeholder="GitHub Enterprise MCP" className={INPUT_CLS} /></Field>
+          <Field label="Slug *"><input type="text" required value={srvSlug} onChange={(e) => setSrvSlug(e.target.value)} placeholder="github-mcp" className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <Field label="Endpoint URL *"><input type="text" required value={srvEndpoint} onChange={(e) => setSrvEndpoint(e.target.value)} placeholder="https://mcp.internal.example.com/mcp" className={MONO_INPUT_CLS} /></Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Protocol Version">
+            <select value={srvProtocol} onChange={(e) => setSrvProtocol(e.target.value)} className={INPUT_CLS}>
+              <option value="2026-07-28">2026-07-28</option>
+              <option value="2025-11-25">2025-11-25</option>
+            </select>
+          </Field>
+          <Field label="Transport">
+            <select value={srvTransport} onChange={(e) => setSrvTransport(e.target.value)} className={INPUT_CLS}>
+              <option value="streamable_http">streamable_http</option>
+              <option value="stdio">stdio</option>
+            </select>
+          </Field>
+          <Field label="Auth Mode">
+            <select value={srvAuthType} onChange={(e) => setSrvAuthType(e.target.value)} className={INPUT_CLS}>
+              {['none', 'static', 'oauth2', 'delegation', 'vault_jwt'].map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+        </div>
+        {srvAuthType !== 'none' && (
+          <Field label="Auth Secret / Token (Vault Encrypted)">
+            <input type="password" value={srvAuthSecret} onChange={(e) => setSrvAuthSecret(e.target.value)} placeholder="Bearer token or client secret..." className={MONO_INPUT_CLS} />
+          </Field>
+        )}
+        {srvAuthType === 'oauth2' && (
+          <div className="space-y-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="OAuth2 Token Endpoint"><input type="text" value={srvOAuthEndpoint} onChange={(e) => setSrvOAuthEndpoint(e.target.value)} placeholder="https://auth.example.com/oauth/token" className={MONO_INPUT_CLS} /></Field>
+              <Field label="OAuth2 Client ID"><input type="text" value={srvOAuthClientId} onChange={(e) => setSrvOAuthClientId(e.target.value)} placeholder="mcp-client-id" className={MONO_INPUT_CLS} /></Field>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Slug *</label>
-              <input
-                type="text"
-                required
-                value={srvSlug}
-                onChange={(e) => setSrvSlug(e.target.value)}
-                placeholder="github-mcp"
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
+            <Field label="OAuth2 Scopes (comma-separated)"><input type="text" value={srvOAuthScopes} onChange={(e) => setSrvOAuthScopes(e.target.value)} placeholder="tools:read, tools:execute" className={MONO_INPUT_CLS} /></Field>
           </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Endpoint URL *</label>
-            <input
-              type="text"
-              required
-              value={srvEndpoint}
-              onChange={(e) => setSrvEndpoint(e.target.value)}
-              placeholder="https://mcp.internal.example.com/mcp"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Protocol Version</label>
-              <select
-                value={srvProtocol}
-                onChange={(e) => setSrvProtocol(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="2026-07-28">2026-07-28</option>
-                <option value="2025-11-25">2025-11-25</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Transport</label>
-              <select
-                value={srvTransport}
-                onChange={(e) => setSrvTransport(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="streamable_http">streamable_http</option>
-                <option value="stdio">stdio</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Auth Mode</label>
-              <select
-                value={srvAuthType}
-                onChange={(e) => setSrvAuthType(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="none">none</option>
-                <option value="static">static</option>
-                <option value="oauth2">oauth2</option>
-                <option value="delegation">delegation</option>
-                <option value="vault_jwt">vault_jwt</option>
-              </select>
-            </div>
-          </div>
-
-          {srvAuthType !== 'none' && (
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">
-                Auth Secret / Token (Vault Encrypted)
-              </label>
-              <input
-                type="password"
-                value={srvAuthSecret}
-                onChange={(e) => setSrvAuthSecret(e.target.value)}
-                placeholder="Bearer token or client secret..."
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-          )}
-
-          {srvAuthType === 'oauth2' && (
-            <div className="space-y-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-brand-body mb-1">OAuth2 Token Endpoint</label>
-                  <input
-                    type="text"
-                    value={srvOAuthEndpoint}
-                    onChange={(e) => setSrvOAuthEndpoint(e.target.value)}
-                    placeholder="https://auth.example.com/oauth/token"
-                    className={`${INPUT_CLS} font-mono`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-brand-body mb-1">OAuth2 Client ID</label>
-                  <input
-                    type="text"
-                    value={srvOAuthClientId}
-                    onChange={(e) => setSrvOAuthClientId(e.target.value)}
-                    placeholder="mcp-client-id"
-                    className={`${INPUT_CLS} font-mono`}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-brand-body mb-1">OAuth2 Scopes (comma-separated)</label>
-                <input
-                  type="text"
-                  value={srvOAuthScopes}
-                  onChange={(e) => setSrvOAuthScopes(e.target.value)}
-                  placeholder="tools:read, tools:execute"
-                  className={`${INPUT_CLS} font-mono`}
-                />
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Static Headers JSON (Optional)
-            </label>
-            <textarea
-              rows={2}
-              value={srvStaticHeaders}
-              onChange={(e) => setSrvStaticHeaders(e.target.value)}
-              placeholder='{"X-Tenant-Env": "prod"}'
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Pinned Tool Hash (Optional SHA-256)
-            </label>
-            <input
-              type="text"
-              value={srvPinnedHash}
-              onChange={(e) => setSrvPinnedHash(e.target.value)}
-              placeholder="sha256:..."
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowServerModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createServerMutation.isPending || !srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()}
-              className={BTN_PRIMARY}
-            >
-              {createServerMutation.isPending ? 'Registering...' : 'Register Server'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        )}
+        <Field label="Static Headers JSON (Optional)"><textarea rows={2} value={srvStaticHeaders} onChange={(e) => setSrvStaticHeaders(e.target.value)} placeholder='{"X-Tenant-Env": "prod"}' className={MONO_INPUT_CLS} /></Field>
+        <Field label="Pinned Tool Hash (Optional SHA-256)"><input type="text" value={srvPinnedHash} onChange={(e) => setSrvPinnedHash(e.target.value)} placeholder="sha256:..." className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
 
       {/* Create MCP Toolset Modal */}
-      <Modal
-        isOpen={showToolsetModal}
+      <FormModal
+        open={showToolsetModal}
         onClose={() => setShowToolsetModal(false)}
         title="Create Curated MCP Toolset"
         description="Bundle specific MCP tools into a curated `/mcp/toolsets/{slug}` endpoint."
         maxWidth="lg"
+        onSubmit={() => {
+          if (!tsName.trim() || !tsSlug.trim()) return;
+          const manual = tsManualToolIds.split(',').map((s) => s.trim()).filter(Boolean);
+          createToolsetMutation.mutate({
+            org_id: activeOrgId || undefined,
+            name: tsName.trim(),
+            slug: tsSlug.trim(),
+            tool_ids: Array.from(new Set([...tsSelectedToolIds, ...manual])),
+          });
+        }}
+        pending={createToolsetMutation.isPending || !tsName.trim() || !tsSlug.trim()}
+        submitLabel={createToolsetMutation.isPending ? 'Creating...' : 'Create Toolset'}
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!tsName.trim() || !tsSlug.trim()) return;
-            const manual = tsManualToolIds
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-            const combined = Array.from(new Set([...tsSelectedToolIds, ...manual]));
-            createToolsetMutation.mutate({
-              org_id: activeOrgId || undefined,
-              name: tsName.trim(),
-              slug: tsSlug.trim(),
-              tool_ids: combined,
-            });
-          }}
-          className="space-y-4"
-        >
-          {createToolsetMutation.isError && (
-            <ErrorAlert error={createToolsetMutation.error} title="Failed to create MCP toolset" />
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Toolset Name *</label>
-              <input
-                type="text"
-                required
-                value={tsName}
-                onChange={(e) => setTsName(e.target.value)}
-                placeholder="Read-Only DevOps Tools"
-                className={INPUT_CLS}
-              />
+        {createToolsetMutation.isError && <ErrorAlert error={createToolsetMutation.error} title="Failed to create MCP toolset" />}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Toolset Name *"><input type="text" required value={tsName} onChange={(e) => setTsName(e.target.value)} placeholder="Read-Only DevOps Tools" className={INPUT_CLS} /></Field>
+          <Field label="Slug *"><input type="text" required value={tsSlug} onChange={(e) => setTsSlug(e.target.value)} placeholder="devops-readonly" className={MONO_INPUT_CLS} /></Field>
+        </div>
+        {mcpTools.length > 0 && (
+          <Field label={`Select Discovered Tools (${tsSelectedToolIds.length} selected)`}>
+            <div className="p-2 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-1.5">
+              {mcpTools.map((tool: any, i: number) => {
+                const tid = tool.id || tool.name || String(i);
+                return (
+                  <label key={tid} className="flex items-center gap-2 text-xs font-mono text-brand-body">
+                    <input type="checkbox" checked={tsSelectedToolIds.includes(tid)} onChange={() => toggleToolSelection(tid)} />
+                    <span className="truncate">{tool.name}</span>
+                    {tool.id && <span className="text-[10px] text-brand-muted">({tool.id})</span>}
+                  </label>
+                );
+              })}
             </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Slug *</label>
-              <input
-                type="text"
-                required
-                value={tsSlug}
-                onChange={(e) => setTsSlug(e.target.value)}
-                placeholder="devops-readonly"
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-          </div>
-
-          {mcpTools.length > 0 && (
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">
-                Select Discovered Tools ({tsSelectedToolIds.length} selected)
-              </label>
-              <div className="p-2 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-1.5">
-                {mcpTools.map((tool: any, i: number) => {
-                  const tid = tool.id || tool.name || String(i);
-                  return (
-                    <label key={tid} className="flex items-center gap-2 text-xs font-mono text-brand-body">
-                      <input
-                        type="checkbox"
-                        checked={tsSelectedToolIds.includes(tid)}
-                        onChange={() => toggleToolSelection(tid)}
-                      />
-                      <span className="truncate">{tool.name}</span>
-                      {tool.id && <span className="text-[10px] text-brand-muted">({tool.id})</span>}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Tool IDs (comma-separated, optional)
-            </label>
-            <input
-              type="text"
-              value={tsManualToolIds}
-              onChange={(e) => setTsManualToolIds(e.target.value)}
-              placeholder="mcp_tool_1, mcp_tool_2"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowToolsetModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createToolsetMutation.isPending || !tsName.trim() || !tsSlug.trim()}
-              className={BTN_PRIMARY}
-            >
-              {createToolsetMutation.isPending ? 'Creating...' : 'Create Toolset'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+          </Field>
+        )}
+        <Field label="Tool IDs (comma-separated, optional)"><input type="text" value={tsManualToolIds} onChange={(e) => setTsManualToolIds(e.target.value)} placeholder="mcp_tool_1, mcp_tool_2" className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
 
       {/* Register A2A Agent Modal */}
-      <Modal
-        isOpen={showAgentModal}
+      <FormModal
+        open={showAgentModal}
         onClose={() => setShowAgentModal(false)}
         title="Register A2A Mesh Agent"
         description="Register an Agent-to-Agent protocol endpoint with task isolation, iteration caps, and budget controls."
         maxWidth="lg"
+        onSubmit={() => {
+          if (!agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()) return;
+          const maxIter = parseInt(agentMaxIter, 10);
+          const maxBudget = parseInt(agentMaxBudgetMicros, 10);
+          createAgentMutation.mutate({
+            org_id: activeOrgId || undefined,
+            name: agentName.trim(),
+            slug: agentSlug.trim(),
+            endpoint_url: agentEndpoint.trim(),
+            agent_card_url: agentCardUrl.trim() || undefined,
+            task_visibility_mode: agentVisibility,
+            auth_type: agentAuthType,
+            auth_secret: agentAuthType !== 'none' ? agentAuthSecret.trim() || undefined : undefined,
+            max_task_iterations: !isNaN(maxIter) && maxIter > 0 ? maxIter : 50,
+            max_task_budget_micros: !isNaN(maxBudget) && maxBudget > 0 ? maxBudget : undefined,
+          });
+        }}
+        pending={createAgentMutation.isPending || !agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()}
+        submitLabel={createAgentMutation.isPending ? 'Registering...' : 'Register Agent'}
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()) return;
-            const maxIter = parseInt(agentMaxIter, 10);
-            const maxBudget = parseInt(agentMaxBudgetMicros, 10);
-            createAgentMutation.mutate({
-              org_id: activeOrgId || undefined,
-              name: agentName.trim(),
-              slug: agentSlug.trim(),
-              endpoint_url: agentEndpoint.trim(),
-              agent_card_url: agentCardUrl.trim() || undefined,
-              task_visibility_mode: agentVisibility,
-              auth_type: agentAuthType,
-              auth_secret: agentAuthType !== 'none' ? agentAuthSecret.trim() || undefined : undefined,
-              max_task_iterations: !isNaN(maxIter) && maxIter > 0 ? maxIter : 50,
-              max_task_budget_micros: !isNaN(maxBudget) && maxBudget > 0 ? maxBudget : undefined,
-            });
-          }}
-          className="space-y-4"
-        >
-          {createAgentMutation.isError && (
-            <ErrorAlert error={createAgentMutation.error} title="Failed to register A2A agent" />
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Agent Name *</label>
-              <input
-                type="text"
-                required
-                value={agentName}
-                onChange={(e) => setAgentName(e.target.value)}
-                placeholder="Incident Triage Agent"
-                className={INPUT_CLS}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Mesh Slug *</label>
-              <input
-                type="text"
-                required
-                value={agentSlug}
-                onChange={(e) => setAgentSlug(e.target.value)}
-                placeholder="incident-triage"
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Endpoint URL *</label>
-            <input
-              type="text"
-              required
-              value={agentEndpoint}
-              onChange={(e) => setAgentEndpoint(e.target.value)}
-              placeholder="https://agent.internal.example.com/a2a"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Agent Card URL (Optional)
-            </label>
-            <input
-              type="text"
-              value={agentCardUrl}
-              onChange={(e) => setAgentCardUrl(e.target.value)}
-              placeholder="https://agent.internal.example.com/.well-known/agent-card.json"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Task Visibility</label>
-              <select
-                value={agentVisibility}
-                onChange={(e) => setAgentVisibility(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="key_strict">key_strict</option>
-                <option value="user_strict">user_strict</option>
-                <option value="team">team</option>
-                <option value="org_admin">org_admin</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Upstream Auth</label>
-              <select
-                value={agentAuthType}
-                onChange={(e) => setAgentAuthType(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="none">none</option>
-                <option value="static">static</option>
-                <option value="vault_jwt">vault_jwt</option>
-              </select>
-            </div>
-          </div>
-
-          {agentAuthType !== 'none' && (
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">
-                Auth Secret (Vault Encrypted)
-              </label>
-              <input
-                type="password"
-                value={agentAuthSecret}
-                onChange={(e) => setAgentAuthSecret(e.target.value)}
-                placeholder="Upstream agent secret..."
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">Max Task Iterations</label>
-              <input
-                type="number"
-                min={1}
-                value={agentMaxIter}
-                onChange={(e) => setAgentMaxIter(e.target.value)}
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-brand-body mb-1">
-                Max Task Budget (micros, optional)
-              </label>
-              <input
-                type="number"
-                min={0}
-                value={agentMaxBudgetMicros}
-                onChange={(e) => setAgentMaxBudgetMicros(e.target.value)}
-                placeholder="1000000"
-                className={`${INPUT_CLS} font-mono`}
-              />
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowAgentModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createAgentMutation.isPending || !agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()}
-              className={BTN_PRIMARY}
-            >
-              {createAgentMutation.isPending ? 'Registering...' : 'Register Agent'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        {createAgentMutation.isError && <ErrorAlert error={createAgentMutation.error} title="Failed to register A2A agent" />}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Agent Name *"><input type="text" required value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="Incident Triage Agent" className={INPUT_CLS} /></Field>
+          <Field label="Mesh Slug *"><input type="text" required value={agentSlug} onChange={(e) => setAgentSlug(e.target.value)} placeholder="incident-triage" className={MONO_INPUT_CLS} /></Field>
+        </div>
+        <Field label="Endpoint URL *"><input type="text" required value={agentEndpoint} onChange={(e) => setAgentEndpoint(e.target.value)} placeholder="https://agent.internal.example.com/a2a" className={MONO_INPUT_CLS} /></Field>
+        <Field label="Agent Card URL (Optional)"><input type="text" value={agentCardUrl} onChange={(e) => setAgentCardUrl(e.target.value)} placeholder="https://agent.internal.example.com/.well-known/agent-card.json" className={MONO_INPUT_CLS} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Task Visibility">
+            <select value={agentVisibility} onChange={(e) => setAgentVisibility(e.target.value)} className={INPUT_CLS}>
+              {['key_strict', 'user_strict', 'team', 'org_admin'].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Upstream Auth">
+            <select value={agentAuthType} onChange={(e) => setAgentAuthType(e.target.value)} className={INPUT_CLS}>
+              {['none', 'static', 'vault_jwt'].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+        </div>
+        {agentAuthType !== 'none' && (
+          <Field label="Auth Secret (Vault Encrypted)"><input type="password" value={agentAuthSecret} onChange={(e) => setAgentAuthSecret(e.target.value)} placeholder="Upstream agent secret..." className={MONO_INPUT_CLS} /></Field>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Max Task Iterations"><input type="number" min={1} value={agentMaxIter} onChange={(e) => setAgentMaxIter(e.target.value)} className={MONO_INPUT_CLS} /></Field>
+          <Field label="Max Task Budget (micros, optional)"><input type="number" min={0} value={agentMaxBudgetMicros} onChange={(e) => setAgentMaxBudgetMicros(e.target.value)} placeholder="1000000" className={MONO_INPUT_CLS} /></Field>
+        </div>
+      </FormModal>
 
       {/* Set MCP User BYOK Credential Modal */}
-      <Modal
-        isOpen={showCredModal}
+      <FormModal
+        open={showCredModal}
         onClose={() => setShowCredModal(false)}
         title="Set MCP User BYOK Credential"
         description="Store a Vault-encrypted per-user BYOK token for an upstream MCP server."
-        maxWidth="md"
+        onSubmit={() => {
+          if (!credServerId.trim() || !credUserId.trim() || !credToken.trim()) return;
+          setUserCredMutation.mutate({ org_id: activeOrgId || undefined, server_id: credServerId.trim(), user_id: credUserId.trim(), token: credToken.trim() });
+        }}
+        pending={setUserCredMutation.isPending || !credServerId.trim() || !credUserId.trim() || !credToken.trim()}
+        submitLabel="Save Credential"
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!credServerId.trim() || !credUserId.trim() || !credToken.trim()) return;
-            setUserCredMutation.mutate({
-              org_id: activeOrgId || undefined,
-              server_id: credServerId.trim(),
-              user_id: credUserId.trim(),
-              token: credToken.trim(),
-            });
-          }}
-          className="space-y-4"
-        >
-          {setUserCredMutation.isError && (
-            <ErrorAlert error={setUserCredMutation.error} title="Failed to save MCP user credential" />
+        {setUserCredMutation.isError && <ErrorAlert error={setUserCredMutation.error} title="Failed to save MCP user credential" />}
+        <Field label="MCP Server ID *">
+          {mcpServers.length > 0 ? (
+            <select required value={credServerId} onChange={(e) => setCredServerId(e.target.value)} className={INPUT_CLS}>
+              <option value="">Select MCP Server...</option>
+              {mcpServers.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.id})</option>)}
+            </select>
+          ) : (
+            <input type="text" required value={credServerId} onChange={(e) => setCredServerId(e.target.value)} placeholder="mcp_srv_..." className={MONO_INPUT_CLS} />
           )}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">MCP Server ID *</label>
-            {mcpServers.length > 0 ? (
-              <select
-                required
-                value={credServerId}
-                onChange={(e) => setCredServerId(e.target.value)}
-                className={INPUT_CLS}
-              >
-                <option value="">Select MCP Server...</option>
-                {mcpServers.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.id})
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                required
-                value={credServerId}
-                onChange={(e) => setCredServerId(e.target.value)}
-                placeholder="mcp_srv_..."
-                className={`${INPUT_CLS} font-mono`}
-              />
-            )}
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">User ID *</label>
-            <input
-              type="text"
-              required
-              value={credUserId}
-              onChange={(e) => setCredUserId(e.target.value)}
-              placeholder="usr_..."
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              User Token (Vault Encrypted) *
-            </label>
-            <input
-              type="password"
-              required
-              value={credToken}
-              onChange={(e) => setCredToken(e.target.value)}
-              placeholder="ghp_... or OAuth bearer token"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowCredModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={setUserCredMutation.isPending || !credServerId.trim() || !credUserId.trim() || !credToken.trim()}
-              className={BTN_PRIMARY}
-            >
-              {setUserCredMutation.isPending ? 'Saving...' : 'Save Credential'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        </Field>
+        <Field label="User ID *"><input type="text" required value={credUserId} onChange={(e) => setCredUserId(e.target.value)} placeholder="usr_..." className={MONO_INPUT_CLS} /></Field>
+        <Field label="User Token (Vault Encrypted) *"><input type="password" required value={credToken} onChange={(e) => setCredToken(e.target.value)} placeholder="ghp_... or OAuth bearer token" className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
 
       {/* Configure A2A Push Notification Webhook Modal */}
-      <Modal
-        isOpen={showPushModal}
+      <FormModal
+        open={showPushModal}
         onClose={() => setShowPushModal(false)}
         title="Configure A2A Push Notification Webhook"
         description="Register a webhook URL to receive asynchronous A2A task state updates."
-        maxWidth="md"
+        onSubmit={() => {
+          if (!pushTaskId.trim() || !pushTargetUrl.trim()) return;
+          setPushConfigMutation.mutate({ task_id: pushTaskId.trim(), target_url: pushTargetUrl.trim(), auth_token: pushAuthToken.trim() || undefined });
+        }}
+        pending={setPushConfigMutation.isPending || !pushTaskId.trim() || !pushTargetUrl.trim()}
+        submitLabel="Save Webhook"
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!pushTaskId.trim() || !pushTargetUrl.trim()) return;
-            setPushConfigMutation.mutate({
-              task_id: pushTaskId.trim(),
-              target_url: pushTargetUrl.trim(),
-              auth_token: pushAuthToken.trim() || undefined,
-            });
-          }}
-          className="space-y-4"
-        >
-          {setPushConfigMutation.isError && (
-            <ErrorAlert error={setPushConfigMutation.error} title="Failed to configure push webhook" />
-          )}
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">A2A Task ID *</label>
-            <input
-              type="text"
-              required
-              value={pushTaskId}
-              onChange={(e) => setPushTaskId(e.target.value)}
-              placeholder="task_..."
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">Webhook Target URL *</label>
-            <input
-              type="text"
-              required
-              value={pushTargetUrl}
-              onChange={(e) => setPushTargetUrl(e.target.value)}
-              placeholder="https://callbacks.internal.example.com/a2a/webhook"
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-brand-body mb-1">
-              Webhook Auth Token (Vault Encrypted, optional)
-            </label>
-            <input
-              type="password"
-              value={pushAuthToken}
-              onChange={(e) => setPushAuthToken(e.target.value)}
-              placeholder="Bearer secret..."
-              className={`${INPUT_CLS} font-mono`}
-            />
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShowPushModal(false)} className={BTN_CANCEL}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={setPushConfigMutation.isPending || !pushTaskId.trim() || !pushTargetUrl.trim()}
-              className={BTN_PRIMARY}
-            >
-              {setPushConfigMutation.isPending ? 'Saving...' : 'Save Webhook'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        {setPushConfigMutation.isError && <ErrorAlert error={setPushConfigMutation.error} title="Failed to configure push webhook" />}
+        <Field label="A2A Task ID *"><input type="text" required value={pushTaskId} onChange={(e) => setPushTaskId(e.target.value)} placeholder="task_..." className={MONO_INPUT_CLS} /></Field>
+        <Field label="Webhook Target URL *"><input type="text" required value={pushTargetUrl} onChange={(e) => setPushTargetUrl(e.target.value)} placeholder="https://callbacks.internal.example.com/a2a/webhook" className={MONO_INPUT_CLS} /></Field>
+        <Field label="Webhook Auth Token (Vault Encrypted, optional)"><input type="password" value={pushAuthToken} onChange={(e) => setPushAuthToken(e.target.value)} placeholder="Bearer secret..." className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
     </div>
   );
 };

@@ -90,7 +90,7 @@ const parseJsonSafe = (raw: string, label: string): Record<string, any> | undefi
 };
 
 export const RegistryTab: React.FC = () => {
-  const { adminKey, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const qc = useQueryClient();
 
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -136,25 +136,25 @@ export const RegistryTab: React.FC = () => {
     queryKey: ['admin', 'guardrail-definitions', adminKey, activeOrgId, statusFilter],
     queryFn: () =>
       adminApi.listGuardrailDefinitions(adminKey, activeOrgId, statusFilter ? { status: statusFilter } : undefined),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const bindingsQuery = useQuery({
     queryKey: ['admin', 'guardrail-bindings', adminKey, activeOrgId],
     queryFn: () => adminApi.listGuardrailBindings(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const teamsQuery = useQuery({
     queryKey: ['admin', 'teams', adminKey, activeOrgId],
     queryFn: () => adminApi.listTeams(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const keysQuery = useQuery({
     queryKey: ['admin', 'keys', adminKey, activeOrgId],
     queryFn: () => adminApi.listKeys(adminKey, activeOrgId),
-    enabled: !!adminKey && !!activeOrgId,
+    enabled: isUnlocked && !!activeOrgId,
   });
 
   const invalidateAll = () => {

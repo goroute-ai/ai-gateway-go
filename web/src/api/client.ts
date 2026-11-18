@@ -1,3 +1,16 @@
+let csrfToken: string | null = null;
+let deprecatedKeyHandler: ((revokeAt: string | null) => void) | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+export function setDeprecatedKeyHandler(handler: ((revokeAt: string | null) => void) | null) {
+  deprecatedKeyHandler = handler;
+}
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -10,11 +23,20 @@ export async function apiFetch<T>(
   if (adminKey && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${adminKey}`);
   }
+  const method = (options.method || 'GET').toUpperCase();
+  if (!adminKey && csrfToken && MUTATING_METHODS.has(method) && !headers.has('X-CSRF-Token')) {
+    headers.set('X-CSRF-Token', csrfToken);
+  }
 
   const response = await fetch(endpoint, {
     ...options,
+    credentials: options.credentials ?? 'same-origin',
     headers,
   });
+
+  if (response.headers.get('X-Gateway-Key-Deprecated') === 'true' && deprecatedKeyHandler) {
+    deprecatedKeyHandler(response.headers.get('X-Gateway-Key-Revoke-At'));
+  }
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
