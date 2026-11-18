@@ -21,6 +21,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/health"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
@@ -57,6 +58,7 @@ type ExecutionMeta struct {
 	FallbackAttempted bool
 	TierStepdowns     int
 	FallbackReason    string
+	StreamContinued   bool
 	LatencyMs         int64
 	TTFTMs            int64
 	RoutingMicros     int64
@@ -79,6 +81,12 @@ type ReliabilityManager struct {
 	cfg               config.RouterConfig
 	mu                sync.Mutex
 	cooldowns         map[string]*cooldownState
+	collabMu          sync.RWMutex
+	plugins           []RoutingPlugin
+	affinity          *AffinityStore
+	depBudgets        *DeploymentBudgetTracker
+	failureRates      *failureRateTracker
+	scheduler         *PriorityScheduler
 }
 
 func NewReliabilityManager(
@@ -119,6 +127,7 @@ func NewReliabilityManager(
 		redis:             redisFabric,
 		cfg:               cfg,
 		cooldowns:         make(map[string]*cooldownState),
+		failureRates:      newFailureRateTracker(redisFabric),
 	}
 }
 
@@ -135,6 +144,78 @@ func (rm *ReliabilityManager) SetCollector(col *observability.Collector) {
 // SetTracer attaches an OpenTelemetry Tracer to ReliabilityManager for upstream client spans.
 func (rm *ReliabilityManager) SetTracer(t trace.Tracer) {
 	rm.tracer = t
+}
+
+// SetRoutingPlugins replaces the registered Stage 2 RoutingPlugins.
+func (rm *ReliabilityManager) SetRoutingPlugins(plugins ...RoutingPlugin) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.plugins = nil
+	for _, p := range plugins {
+		if p != nil {
+			rm.plugins = append(rm.plugins, p)
+		}
+	}
+}
+
+// AddRoutingPlugin appends a non-nil RoutingPlugin to Stage 2 filtering.
+func (rm *ReliabilityManager) AddRoutingPlugin(p RoutingPlugin) {
+	if p == nil {
+		return
+	}
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.plugins = append(rm.plugins, p)
+}
+
+// SetAffinityStore attaches the session/response/prompt-cache AffinityStore.
+func (rm *ReliabilityManager) SetAffinityStore(a *AffinityStore) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.affinity = a
+}
+
+// SetDeploymentBudgetTracker attaches the per-deployment/provider budget tracker.
+func (rm *ReliabilityManager) SetDeploymentBudgetTracker(b *DeploymentBudgetTracker) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.depBudgets = b
+}
+
+// SetScheduler attaches a bounded PriorityScheduler for request admission control.
+func (rm *ReliabilityManager) SetScheduler(s *PriorityScheduler) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.scheduler = s
+}
+
+func (rm *ReliabilityManager) getRoutingPlugins() []RoutingPlugin {
+	rm.collabMu.RLock()
+	defer rm.collabMu.RUnlock()
+	if len(rm.plugins) == 0 {
+		return nil
+	}
+	out := make([]RoutingPlugin, len(rm.plugins))
+	copy(out, rm.plugins)
+	return out
+}
+
+func (rm *ReliabilityManager) getAffinityStore() *AffinityStore {
+	rm.collabMu.RLock()
+	defer rm.collabMu.RUnlock()
+	return rm.affinity
+}
+
+func (rm *ReliabilityManager) getDepBudgetTracker() *DeploymentBudgetTracker {
+	rm.collabMu.RLock()
+	defer rm.collabMu.RUnlock()
+	return rm.depBudgets
+}
+
+func (rm *ReliabilityManager) getScheduler() *PriorityScheduler {
+	rm.collabMu.RLock()
+	defer rm.collabMu.RUnlock()
+	return rm.scheduler
 }
 
 func (rm *ReliabilityManager) tracerFor(ctx context.Context) trace.Tracer {
@@ -261,77 +342,746 @@ func checkDeploymentOperation(adp adapter.ProviderAdapter, dep *domain.Deploymen
 	return nil
 }
 
+type queuedHop struct {
+	group     *domain.ModelGroup
+	overrides map[string]any
+	reason    string
+	depth     int
+}
+
+func (rm *ReliabilityManager) acquireSchedulerSlot(ctx context.Context, req *domain.CanonicalChatRequest) (func(), error) {
+	sched := rm.getScheduler()
+	if sched == nil {
+		return func() {}, nil
+	}
+	reqPriority := 0
+	if req != nil && req.GoRouteExtensions != nil {
+		reqPriority = req.GoRouteExtensions.Priority
+	}
+	return sched.Acquire(ctx, reqPriority)
+}
+
+func (rm *ReliabilityManager) effectiveMaxFallbackDepth() int {
+	if rm.cfg.MaxFallbackDepth > 0 {
+		return rm.cfg.MaxFallbackDepth
+	}
+	return maxFallbackDepth
+}
+
+func extractPreviousResponseID(req *domain.CanonicalChatRequest) string {
+	if req == nil {
+		return ""
+	}
+	if req.ExtraParams != nil {
+		if raw, ok := req.ExtraParams["previous_response_id"]; ok {
+			if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	if req.Metadata != nil {
+		if s := strings.TrimSpace(req.Metadata["previous_response_id"]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (rm *ReliabilityManager) affinityTTL(aff *AffinityStore) time.Duration {
+	if rm.cfg.SessionAffinityTTL > 0 {
+		return rm.cfg.SessionAffinityTTL
+	}
+	if aff != nil {
+		return aff.DefaultTTL()
+	}
+	return 0
+}
+
+func (rm *ReliabilityManager) shouldRepinAffinity(aff *AffinityStore) bool {
+	if aff != nil && aff.RepinOnFailover() {
+		return true
+	}
+	return rm.cfg.SessionAffinityRepinOnFailover
+}
+
+func (rm *ReliabilityManager) pinAffinityOnSuccess(aff *AffinityStore, orgID, key, priorDepID, winningDepID string) {
+	if aff == nil || key == "" || winningDepID == "" {
+		return
+	}
+	if priorDepID == "" || (winningDepID != priorDepID && rm.shouldRepinAffinity(aff)) {
+		aff.PinAsync(orgID, key, winningDepID, rm.affinityTTL(aff))
+	}
+}
+
+func (rm *ReliabilityManager) releaseUnusedProbes(ctx context.Context, all, kept []*domain.Deployment) {
+	if len(all) == 0 {
+		return
+	}
+	keptSet := make(map[string]struct{}, len(kept))
+	for _, d := range kept {
+		if d != nil {
+			keptSet[d.ID] = struct{}{}
+		}
+	}
+	for _, d := range all {
+		if d == nil || d.CircuitProbeToken == "" {
+			continue
+		}
+		if _, ok := keptSet[d.ID]; !ok {
+			rm.releaseHalfOpenProbe(ctx, d.ID, d.CircuitProbeToken)
+			d.CircuitProbeToken = ""
+		}
+	}
+}
+
+func hasGroupFallbacks(group *domain.ModelGroup, defaultFallbacks []domain.FallbackTarget) bool {
+	if len(defaultFallbacks) > 0 {
+		return true
+	}
+	return group != nil && (len(group.FallbackGroupIDs) > 0 || len(group.FallbackTargets) > 0)
+}
+
+func groupMatchesTargetRef(ref string, mg *domain.ModelGroup) bool {
+	if mg == nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	return ref != "" && (ref == mg.ID || ref == mg.Alias)
+}
+
+func targetsContainGroup(targets []domain.FallbackTarget, mg *domain.ModelGroup) bool {
+	for _, t := range targets {
+		if groupMatchesTargetRef(t.GroupAliasOrID, mg) {
+			return true
+		}
+	}
+	return false
+}
+
+func idsContainGroup(ids []string, mg *domain.ModelGroup) bool {
+	for _, id := range ids {
+		if groupMatchesTargetRef(id, mg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDirectFallbackTarget(parent, child *domain.ModelGroup, defaultFallbacks []domain.FallbackTarget) bool {
+	if parent == nil || child == nil {
+		return false
+	}
+	return targetsContainGroup(parent.ContextWindowFallbacks, child) ||
+		targetsContainGroup(parent.ContentPolicyFallbacks, child) ||
+		targetsContainGroup(parent.FallbackTargets, child) ||
+		idsContainGroup(parent.FallbackGroupIDs, child) ||
+		targetsContainGroup(defaultFallbacks, child)
+}
+
+func fallbackReasonForHop(parent *domain.ModelGroup, hop FallbackHop, defaultFallbacks []domain.FallbackTarget) string {
+	if hop.Category == CategoryContextWindow && parent != nil && len(parent.ContextWindowFallbacks) > 0 {
+		return "context_window_fallback"
+	}
+	if hop.Category == CategoryContentPolicy && parent != nil && len(parent.ContentPolicyFallbacks) > 0 {
+		return "content_policy_fallback"
+	}
+	if parent != nil && (targetsContainGroup(parent.FallbackTargets, hop.Group) || idsContainGroup(parent.FallbackGroupIDs, hop.Group)) {
+		return "fallback_group"
+	}
+	if targetsContainGroup(defaultFallbacks, hop.Group) {
+		return "default_fallback"
+	}
+	return "fallback_group"
+}
+
+func setFallbackMetaReason(meta *ExecutionMeta, reason string) {
+	if meta == nil || reason == "" {
+		return
+	}
+	if meta.FallbackReason == "priority_tier_stepdown" && reason == "fallback_group" {
+		return
+	}
+	meta.FallbackReason = reason
+}
+
+func (rm *ReliabilityManager) enqueueFallbacks(
+	ctx context.Context,
+	queue []queuedHop,
+	current queuedHop,
+	cat FailureCategory,
+	maxDepth int,
+	visited map[string]struct{},
+) []queuedHop {
+	if cat == CategoryNonRetryable || current.group == nil || current.depth >= maxDepth {
+		return queue
+	}
+	var defaultFB []domain.FallbackTarget
+	if current.depth == 0 {
+		defaultFB = rm.cfg.DefaultFallbacks
+	}
+	hops := buildSpecializedFallbackChain(ctx, rm.repo, current.group, cat, defaultFB, maxDepth-current.depth, visited)
+	if len(hops) == 0 {
+		return queue
+	}
+	added := make([]queuedHop, 0, len(hops))
+	for _, hop := range hops {
+		hopDepth := current.depth + 2
+		if isDirectFallbackTarget(current.group, hop.Group, defaultFB) {
+			hopDepth = current.depth + 1
+		}
+		if hopDepth > maxDepth {
+			hopDepth = maxDepth
+		}
+		added = append(added, queuedHop{
+			group:     hop.Group,
+			overrides: hop.Overrides,
+			reason:    fallbackReasonForHop(current.group, hop, defaultFB),
+			depth:     hopDepth,
+		})
+	}
+	return append(added, queue...)
+}
+
+func filterOutDepIDs(all []*domain.Deployment, excluded map[string]struct{}) []*domain.Deployment {
+	if len(excluded) == 0 {
+		return all
+	}
+	var out []*domain.Deployment
+	for _, d := range all {
+		if _, skip := excluded[d.ID]; !skip {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func isZeroRetryPolicy(p domain.RetryPolicy) bool {
+	return p == (domain.RetryPolicy{})
+}
+
+func (rm *ReliabilityManager) effectiveGroupRetryPolicy(group *domain.ModelGroup) domain.RetryPolicy {
+	if (group == nil || group.RetryPolicy == nil) && isZeroRetryPolicy(rm.cfg.RetryPolicy) {
+		maxRetries := 0
+		if group != nil && group.MaxRetries > 0 {
+			maxRetries = group.MaxRetries
+		}
+		cfgCopy := rm.cfg
+		cfgCopy.DefaultMaxRetries = maxRetries
+		return effectiveRetryPolicy(cfgCopy, group)
+	}
+	return effectiveRetryPolicy(rm.cfg, group)
+}
+
+func shouldHedgeGroup(group *domain.ModelGroup, req *domain.CanonicalChatRequest) bool {
+	if group != nil && group.RoutingStrategy == domain.StrategyFastestResponse {
+		return true
+	}
+	return req != nil && req.GoRouteExtensions != nil && req.GoRouteExtensions.HedgeAfterMs > 0
+}
+
+func (rm *ReliabilityManager) buildHedgeConfig(req *domain.CanonicalChatRequest) HedgeConfig {
+	stagger := time.Duration(rm.cfg.HedgeDelayMs) * time.Millisecond
+	if req != nil && req.GoRouteExtensions != nil && req.GoRouteExtensions.HedgeAfterMs > 0 {
+		stagger = time.Duration(req.GoRouteExtensions.HedgeAfterMs) * time.Millisecond
+	}
+	if stagger < 0 {
+		stagger = 0
+	}
+	return HedgeConfig{
+		MaxConcurrency: rm.cfg.MaxHedgeConcurrency,
+		StaggerDelay:   stagger,
+	}
+}
+
+func prioritizeAffinityCandidate(candidates []*domain.Deployment, aff *AffinityStore, affinityDepID string) []*domain.Deployment {
+	if aff == nil || affinityDepID == "" || len(candidates) <= 1 {
+		return candidates
+	}
+	pinned, ok := aff.SelectOrPin(affinityDepID, candidates)
+	if !ok || pinned == nil || candidates[0].ID == pinned.ID {
+		return candidates
+	}
+	ordered := make([]*domain.Deployment, 0, len(candidates))
+	ordered = append(ordered, pinned)
+	for _, d := range candidates {
+		if d != nil && d.ID != pinned.ID {
+			ordered = append(ordered, d)
+		}
+	}
+	return ordered
+}
+
+func isBanditRefusalResponse(resp *domain.CanonicalChatResponse) bool {
+	if resp == nil {
+		return false
+	}
+	for _, ch := range resp.Choices {
+		reason := strings.ToLower(strings.TrimSpace(ch.FinishReason))
+		if reason == "content_filter" || reason == "refusal" {
+			return true
+		}
+	}
+	return false
+}
+
+func (rm *ReliabilityManager) recordBanditOutcome(orgID string, decision *RouteDecision, success bool, latencyMs int64) {
+	if decision == nil || decision.BanditBucket == "" || rm.intelligentRouter == nil {
+		return
+	}
+	bandit := rm.intelligentRouter.Bandit()
+	if bandit == nil {
+		return
+	}
+	alias := strings.TrimSpace(decision.TargetGroupAlias)
+	if alias == "" && decision.ModelGroup != nil {
+		alias = decision.ModelGroup.Alias
+	}
+	if alias == "" {
+		return
+	}
+	bandit.RecordOutcome(orgID, decision.BanditBucket, alias, success, latencyMs, false)
+}
+
+type commaGroupCandidatePool struct {
+	groups        []*domain.ModelGroup
+	candidates    []*domain.Deployment
+	groupByDep    map[string]*domain.ModelGroup
+	activeByGroup map[string]int
+	skippedBudget bool
+	lastErr       error
+}
+
+func (rm *ReliabilityManager) resolveCommaSeparatedCandidates(
+	ctx context.Context,
+	orgID string,
+	req *domain.CanonicalChatRequest,
+	aliases []string,
+	estTokens int,
+	isBudgeted bool,
+	requirePrefill bool,
+) (*commaGroupCandidatePool, error) {
+	pool := &commaGroupCandidatePool{
+		groupByDep:    make(map[string]*domain.ModelGroup),
+		activeByGroup: make(map[string]int),
+	}
+	perGroup := make([][]*domain.Deployment, 0, len(aliases))
+	seenDep := make(map[string]struct{})
+	var firstResolveErr error
+
+	for _, alias := range aliases {
+		aliasReq := *req
+		aliasReq.Model = alias
+		dec, err := rm.intelligentRouter.ResolveGroup(ctx, orgID, &aliasReq)
+		if err != nil {
+			if firstResolveErr == nil {
+				firstResolveErr = err
+			}
+			continue
+		}
+		if dec == nil || dec.ModelGroup == nil {
+			continue
+		}
+		g := dec.ModelGroup
+		pool.groups = append(pool.groups, g)
+		deps, activeTotal, filterErr := rm.getEligibleDeploymentsForRequest(ctx, orgID, g, req, estTokens, nil, requirePrefill)
+		pool.activeByGroup[g.ID] = activeTotal
+		if filterErr != nil {
+			pool.lastErr = filterErr
+			if classifyFailureCategory(filterErr) == CategoryNonRetryable {
+				return nil, filterErr
+			}
+			continue
+		}
+		if isBudgeted && len(deps) > 0 {
+			filtered := filterKnownPricing(deps)
+			rm.releaseUnusedProbes(ctx, deps, filtered)
+			if len(filtered) == 0 {
+				pool.skippedBudget = true
+				continue
+			}
+			deps = filtered
+		}
+		if len(deps) > 0 {
+			perGroup = append(perGroup, deps)
+		}
+	}
+
+	if len(pool.groups) == 0 {
+		if firstResolveErr != nil {
+			return nil, firstResolveErr
+		}
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "model_group_not_found",
+			Message:    "No active model group configured for model or alias: " + req.Model,
+		}
+	}
+
+	// Interleave candidates round-robin across resolved groups so K racers span distinct model aliases first.
+	maxLen := 0
+	for _, list := range perGroup {
+		if len(list) > maxLen {
+			maxLen = len(list)
+		}
+	}
+	for idx := 0; idx < maxLen; idx++ {
+		for gIdx, list := range perGroup {
+			if idx >= len(list) {
+				continue
+			}
+			d := list[idx]
+			if d == nil {
+				continue
+			}
+			if _, dup := seenDep[d.ID]; dup {
+				continue
+			}
+			seenDep[d.ID] = struct{}{}
+			pool.candidates = append(pool.candidates, d)
+			// Find matching group by ModelGroupID fallback if needed.
+			for _, g := range pool.groups {
+				if g.ID == d.ModelGroupID {
+					pool.groupByDep[d.ID] = g
+					break
+				}
+			}
+			if pool.groupByDep[d.ID] == nil && gIdx < len(pool.groups) {
+				pool.groupByDep[d.ID] = pool.groups[gIdx]
+			}
+		}
+	}
+
+	return pool, nil
+}
+
 func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, *ExecutionMeta, error) {
 	if req != nil && req.Stream {
 		ctx = network.WithStreamingRequest(ctx)
 	}
+	releaseSlot, schedErr := rm.acquireSchedulerSlot(ctx, req)
+	if schedErr != nil {
+		return nil, nil, schedErr
+	}
+	defer releaseSlot()
+
 	start := time.Now()
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
 	}
+	isBudgeted := isBudgetConstrained(idCtx)
+	estTokens := ratelimit.EstimateRequestTokens(req)
+
+	var decision *RouteDecision
+	var initialQueue []queuedHop
+	var skippedDueToUnknownPricing bool
+	var lastErr error
 
 	routeStart := time.Now()
-	decision, err := rm.intelligentRouter.ResolveGroup(ctx, orgID, req)
-	if err != nil {
-		return nil, nil, err
+	if commaAliases := ParseCommaSeparatedModels(req.Model); len(commaAliases) >= 2 {
+		pool, poolErr := rm.resolveCommaSeparatedCandidates(ctx, orgID, req, commaAliases, estTokens, isBudgeted, false)
+		if poolErr != nil {
+			return nil, nil, poolErr
+		}
+		skippedDueToUnknownPricing = pool.skippedBudget
+		lastErr = pool.lastErr
+		primary := pool.groups[0]
+		decision = &RouteDecision{
+			RequestedModel:   req.Model,
+			TargetGroupAlias: primary.Alias,
+			ModelGroup:       primary,
+			Reason:           "hedged_race_winner",
+		}
+		meta := &ExecutionMeta{RouteDecision: decision}
+		meta.RoutingMicros = time.Since(routeStart).Microseconds()
+		if meta.RoutingMicros <= 0 {
+			meta.RoutingMicros = 1
+		}
+		if len(pool.candidates) > 0 {
+			for _, c := range pool.candidates {
+				rm.hydrateCredential(c)
+			}
+			raceStart := time.Now()
+			winner, resp, raceErr := RaceChatAttempts(ctx, pool.candidates, rm.buildHedgeConfig(req), func(raceCtx context.Context, dep *domain.Deployment) (*domain.CanonicalChatResponse, error) {
+				depGroup := pool.groupByDep[dep.ID]
+				if depGroup == nil {
+					depGroup = primary
+				}
+				adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+				if adpErr != nil {
+					return nil, adpErr
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+					return nil, opErr
+				}
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				r, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
+				depCancel()
+				var usage *domain.TokenUsage
+				if r != nil {
+					usage = &r.Usage
+				}
+				finishGenAIClientSpan(span, usage, callErr)
+				depLatency := time.Since(depStart).Milliseconds()
+				if callErr == nil && r != nil {
+					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, r.Usage.TotalTokens)
+					rm.recordSuccess(ctx, dep)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+					}
+					return r, nil
+				}
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+				if rm.collector != nil {
+					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+				}
+				if !errors.Is(callErr, context.Canceled) && raceCtx.Err() == nil {
+					rm.recordAttemptFailure(ctx, dep, depGroup, pool.activeByGroup[depGroup.ID], callErr)
+				}
+				return nil, callErr
+			})
+			if raceErr == nil && resp != nil && winner != nil {
+				rm.releaseUnusedProbes(ctx, pool.candidates, []*domain.Deployment{winner})
+				if wg := pool.groupByDep[winner.ID]; wg != nil {
+					meta.RouteDecision.TargetGroupAlias = wg.Alias
+					meta.RouteDecision.ModelGroup = wg
+				}
+				meta.RouteDecision.Reason = "hedged_race_winner"
+				meta.WinningDeployment = winner
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				_ = raceStart
+				return resp, meta, nil
+			}
+			rm.releaseUnusedProbes(ctx, pool.candidates, nil)
+			if raceErr != nil {
+				lastErr = raceErr
+			}
+		}
+		if lastErr != nil && classifyFailureCategory(lastErr) == CategoryNonRetryable {
+			return nil, meta, lastErr
+		}
+		visited := make(map[string]struct{})
+		if key := groupVisitKey(primary); key != "" {
+			visited[key] = struct{}{}
+		}
+		initialQueue = rm.enqueueFallbacks(ctx, nil, queuedHop{group: primary, depth: 0}, classifyFailureCategory(lastErr), rm.effectiveMaxFallbackDepth(), visited)
+		if len(initialQueue) == 0 {
+			if lastErr == nil {
+				if isBudgeted && skippedDueToUnknownPricing {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "pricing_unknown_budget_restricted",
+						Message:    "Request rejected: caller has strict budget enforcement enabled, but selected model deployment has unverified/unknown pricing",
+					}
+				} else {
+					lastErr = &domain.GatewayError{
+						StatusCode: http.StatusServiceUnavailable,
+						Type:       domain.ErrorTypeUpstream,
+						Code:       "all_deployments_unavailable",
+						Message:    "All primary and fallback model deployments are currently unavailable or in cooldown",
+					}
+				}
+			}
+			return nil, meta, lastErr
+		}
+	} else {
+		var err error
+		decision, err = rm.intelligentRouter.ResolveGroup(ctx, orgID, req)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	meta := &ExecutionMeta{RouteDecision: decision}
-	groupChain := rm.buildGroupChain(ctx, decision.ModelGroup)
 	meta.RoutingMicros = time.Since(routeStart).Microseconds()
 	if meta.RoutingMicros <= 0 {
 		meta.RoutingMicros = 1
 	}
 
-	isBudgeted := isBudgetConstrained(idCtx)
-	var skippedDueToUnknownPricing bool
+	maxDepth := rm.effectiveMaxFallbackDepth()
+	visited := make(map[string]struct{})
+	if key := groupVisitKey(decision.ModelGroup); key != "" {
+		visited[key] = struct{}{}
+	}
+	queue := initialQueue
+	if len(queue) == 0 {
+		queue = []queuedHop{{group: decision.ModelGroup, depth: 0}}
+	} else {
+		for _, h := range queue {
+			if k := groupVisitKey(h.group); k != "" {
+				visited[k] = struct{}{}
+			}
+		}
+	}
+	aff := rm.getAffinityStore()
 
-	var lastErr error
-	for groupIdx, group := range groupChain {
-		if groupIdx > 0 {
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		group := current.group
+		if group == nil {
+			continue
+		}
+
+		hopReq := req
+		if len(current.overrides) > 0 {
+			hopReq = applyFallbackOverrides(req, current.overrides)
+		}
+		if current.depth > 0 {
 			meta.FallbackAttempted = true
+			setFallbackMetaReason(meta, current.reason)
 			logger.WarnContext(ctx, "Cross-provider fallback activated",
 				slog.String("component", "router"),
-				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("primary_alias", decision.ModelGroup.Alias),
 				slog.String("fallback_alias", group.Alias),
+				slog.String("fallback_reason", current.reason),
 				slog.String("requested_model", req.Model),
 			)
 		}
 
-		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
-		if err != nil || len(deployments) == 0 {
+		deployments, activeTotal, filterErr := rm.getEligibleDeploymentsForRequest(ctx, orgID, group, hopReq, estTokens, nil, false)
+		if filterErr != nil {
+			lastErr = filterErr
+			cat := classifyFailureCategory(filterErr)
+			if cat == CategoryNonRetryable {
+				rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+				return nil, meta, filterErr
+			}
+			queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
+			continue
+		}
+		if len(deployments) == 0 {
+			cat := classifyFailureCategory(lastErr)
+			queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
 			continue
 		}
 
 		if isBudgeted {
 			filtered := filterKnownPricing(deployments)
+			rm.releaseUnusedProbes(ctx, deployments, filtered)
 			if len(filtered) == 0 {
 				skippedDueToUnknownPricing = true
 				logger.WarnContext(ctx, "Skipping model group for budgeted caller: all deployments have unverified pricing",
 					slog.String("component", "router"),
 					slog.String("group_alias", group.Alias),
 				)
+				queue = rm.enqueueFallbacks(ctx, queue, current, CategoryGeneral, maxDepth, visited)
 				continue
 			}
 			deployments = filtered
 		}
 
+		var affinityDepID, affinityKey string
+		if aff != nil {
+			affinityDepID, affinityKey = aff.Lookup(ctx, orgID, group.Alias, hopReq, extractPreviousResponseID(hopReq))
+		}
+
 		tiers := partitionByPriority(deployments)
-		maxAttempts := maxAttemptsForGroup(group)
+		retryPolicy := rm.effectiveGroupRetryPolicy(group)
+		var groupErr error
+		stopGroup := false
 
 		for tierIdx, tierDeployments := range tiers {
 			if tierIdx > 0 {
 				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			for attempt := 0; attempt < maxAttempts; attempt++ {
-				candidates := filterUntried(tierDeployments, triedDepIDs)
-				if len(candidates) == 0 {
-					candidates = tierDeployments
+			if shouldHedgeGroup(group, hopReq) {
+				racers := tierDeployments
+				if tierIdx == 0 {
+					racers = prioritizeAffinityCandidate(tierDeployments, aff, affinityDepID)
 				}
-				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				for _, r := range racers {
+					rm.hydrateCredential(r)
+				}
+				raceStart := time.Now()
+				winner, resp, raceErr := RaceChatAttempts(ctx, racers, rm.buildHedgeConfig(hopReq), func(raceCtx context.Context, dep *domain.Deployment) (*domain.CanonicalChatResponse, error) {
+					adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+					if adpErr != nil {
+						return nil, adpErr
+					}
+					if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+						return nil, opErr
+					}
+					reqCopy := *hopReq
+					reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+					depStart := time.Now()
+					rm.loadBalancer.OnRequestStart(dep.ID)
+					spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep)
+					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					r, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
+					depCancel()
+					var usage *domain.TokenUsage
+					if r != nil {
+						usage = &r.Usage
+					}
+					finishGenAIClientSpan(span, usage, callErr)
+					depLatency := time.Since(depStart).Milliseconds()
+					if callErr == nil && r != nil {
+						rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, r.Usage.TotalTokens)
+						rm.recordSuccess(ctx, dep)
+						if rm.collector != nil {
+							rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
+						}
+						return r, nil
+					}
+					rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+					if rm.collector != nil {
+						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
+					}
+					if !errors.Is(callErr, context.Canceled) && raceCtx.Err() == nil {
+						rm.recordAttemptFailure(ctx, dep, group, activeTotal, callErr)
+					}
+					return nil, callErr
+				})
+				if raceErr == nil && resp != nil && winner != nil {
+					raceLatency := time.Since(raceStart).Milliseconds()
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{winner})
+					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, winner.ID)
+					meta.RouteDecision.Reason = "hedged_race_winner"
+					meta.WinningDeployment = winner
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted && !isBanditRefusalResponse(resp), raceLatency)
+					return resp, meta, nil
+				}
+				lastErr = raceErr
+				groupErr = raceErr
+				if classifyFailureCategory(raceErr) == CategoryNonRetryable {
+					rm.releaseUnusedProbes(ctx, deployments, nil)
+					rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+					return nil, meta, raceErr
+				}
+				continue
+			}
+
+			retryTracker := newRetryBudgetTracker(retryPolicy, len(tierDeployments))
+			triedDepIDs := make([]string, 0, len(tierDeployments))
+			trippedDepIDs := make(map[string]struct{})
+
+			for attempt := 0; ; attempt++ {
+				var dep *domain.Deployment
+				if tierIdx == 0 && attempt == 0 && affinityDepID != "" && aff != nil {
+					if pinned, ok := aff.SelectOrPin(affinityDepID, deployments); ok {
+						dep = pinned
+					}
+				}
+				if dep == nil {
+					candidates := filterUntried(tierDeployments, triedDepIDs)
+					if len(candidates) == 0 {
+						candidates = filterOutDepIDs(tierDeployments, trippedDepIDs)
+						if len(candidates) == 0 {
+							break
+						}
+					}
+					dep = rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				}
 				if dep == nil {
 					break
 				}
@@ -342,7 +1092,6 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 					logger.WarnContext(ctx, "Intra-group retry attempt triggered",
 						slog.String("component", "router"),
 						slog.Int("attempt", attempt),
-						slog.Int("max_attempts", maxAttempts),
 						slog.String("group_alias", group.Alias),
 						slog.String("deployment_id", dep.ID),
 						slog.String("model", dep.GlobalModel.ModelName),
@@ -350,40 +1099,53 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				}
 
 				rm.hydrateCredential(dep)
-				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-				if err != nil {
-					lastErr = err
+				adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+				if adpErr != nil {
+					lastErr = adpErr
+					groupErr = adpErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
 					continue
 				}
 				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
 					lastErr = opErr
+					groupErr = opErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
 					continue
 				}
 
-				reqCopy := *req
+				reqCopy := *hopReq
 				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
 
 				depStart := time.Now()
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-				resp, err := adp.ChatCompletion(depCtx, dep, &reqCopy)
+				resp, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 				depCancel()
 				var usage *domain.TokenUsage
 				if resp != nil {
 					usage = &resp.Usage
 				}
-				finishGenAIClientSpan(span, usage, err)
+				finishGenAIClientSpan(span, usage, callErr)
 				depLatency := time.Since(depStart).Milliseconds()
 
-				if err == nil && resp != nil {
+				if callErr == nil && resp != nil {
 					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
 					rm.recordSuccess(ctx, dep)
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, dep.ID)
 					if rm.collector != nil {
 						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 					}
 					meta.WinningDeployment = dep
 					meta.LatencyMs = time.Since(start).Milliseconds()
+					rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted && !isBanditRefusalResponse(resp), depLatency)
 					return resp, meta, nil
 				}
 
@@ -391,13 +1153,37 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				if rm.collector != nil {
 					rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, true)
 				}
-				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				termErr, normErr, stopTier, abortGroup, tripped := rm.handleAttemptErrorWithPolicy(ctx, dep, group, activeTotal, callErr, retryTracker, attempt)
 				lastErr = normErr
+				groupErr = normErr
+				if tripped {
+					trippedDepIDs[dep.ID] = struct{}{}
+				}
 				if termErr != nil {
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+					rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
 					return nil, meta, termErr
 				}
+				if abortGroup {
+					stopGroup = true
+					break
+				}
+				if stopTier {
+					break
+				}
+			}
+			if stopGroup {
+				break
 			}
 		}
+
+		rm.releaseUnusedProbes(ctx, deployments, nil)
+		cat := classifyFailureCategory(groupErr)
+		if cat == CategoryNonRetryable && groupErr != nil {
+			rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+			return nil, meta, groupErr
+		}
+		queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
 	}
 
 	if lastErr == nil {
@@ -417,11 +1203,13 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			}
 		}
 	}
+	rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
 	return nil, meta, lastErr
 }
 
 // ExecuteStream routes and executes a streaming SSE chat completion.
-// Retries and fallbacks happen transparently if an upstream fails BEFORE the first chunk is emitted.
+// Retries, fallbacks, hedged racing, and (when enabled and safe) assistant-prefill mid-stream continuations
+// happen transparently across eligible deployments.
 func (rm *ReliabilityManager) ExecuteStream(
 	ctx context.Context,
 	idCtx *domain.IdentityContext,
@@ -429,79 +1217,447 @@ func (rm *ReliabilityManager) ExecuteStream(
 	onChunk adapter.StreamChunkHandler,
 	onSelected func(dep *domain.Deployment),
 ) (*domain.TokenUsage, *ExecutionMeta, error) {
+	ctx = network.WithStreamingRequest(ctx)
+	releaseSlot, schedErr := rm.acquireSchedulerSlot(ctx, req)
+	if schedErr != nil {
+		return nil, nil, schedErr
+	}
+	defer releaseSlot()
+
 	start := time.Now()
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
 	}
+	isBudgeted := isBudgetConstrained(idCtx)
+	acc := &streamAccumulator{}
+	acc.ObserveRequest(req)
+	failedDepIDs := make(map[string]struct{})
+	continuationCount := 0
+	firstChunkSentToClient := false
+	var partialUsage *domain.TokenUsage
+	var lastErr error
 
-	decision, err := rm.intelligentRouter.ResolveGroup(ctx, orgID, req)
-	if err != nil {
-		return nil, nil, err
+	var decision *RouteDecision
+	var initialQueue []queuedHop
+	var skippedDueToUnknownPricing bool
+
+	routeStart := time.Now()
+	if commaAliases := ParseCommaSeparatedModels(req.Model); len(commaAliases) >= 2 {
+		estTokens := ratelimit.EstimateRequestTokens(req)
+		pool, poolErr := rm.resolveCommaSeparatedCandidates(ctx, orgID, req, commaAliases, estTokens, isBudgeted, false)
+		if poolErr != nil {
+			return nil, nil, poolErr
+		}
+		skippedDueToUnknownPricing = pool.skippedBudget
+		lastErr = pool.lastErr
+		primary := pool.groups[0]
+		decision = &RouteDecision{
+			RequestedModel:   req.Model,
+			TargetGroupAlias: primary.Alias,
+			ModelGroup:       primary,
+			Reason:           "hedged_race_winner",
+		}
+		meta := &ExecutionMeta{RouteDecision: decision}
+		meta.RoutingMicros = time.Since(routeStart).Microseconds()
+		if meta.RoutingMicros <= 0 {
+			meta.RoutingMicros = 1
+		}
+		if len(pool.candidates) > 0 {
+			for _, c := range pool.candidates {
+				rm.hydrateCredential(c)
+			}
+			raceStart := time.Now()
+			var chunkUsageThisAttempt *domain.TokenUsage
+			var clientChunkErr error
+			winner, raceUsage, raceErr := RaceStreamAttempts(ctx, pool.candidates, rm.buildHedgeConfig(req), func(racerCtx context.Context, dep *domain.Deployment, emit adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+				depGroup := pool.groupByDep[dep.ID]
+				if depGroup == nil {
+					depGroup = primary
+				}
+				adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+				if adpErr != nil {
+					return nil, adpErr
+				}
+				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+					return nil, opErr
+				}
+				reqCopy := *req
+				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+				depStart := time.Now()
+				rm.loadBalancer.OnRequestStart(dep.ID)
+				spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep)
+				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, emit)
+				depCancel()
+				finishGenAIClientSpan(span, u, callErr)
+				depLatency := time.Since(depStart).Milliseconds()
+				if callErr == nil {
+					rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, 0)
+					rm.recordSuccess(ctx, dep)
+					return u, nil
+				}
+				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+				if !errors.Is(callErr, context.Canceled) && racerCtx.Err() == nil {
+					rm.recordAttemptFailure(ctx, dep, depGroup, pool.activeByGroup[depGroup.ID], callErr)
+				}
+				return u, callErr
+			}, func(chunk *domain.CanonicalStreamChunk) error {
+				if onChunk != nil {
+					if cerr := onChunk(chunk); cerr != nil {
+						clientChunkErr = cerr
+						return cerr
+					}
+				}
+				if !firstChunkSentToClient {
+					firstChunkSentToClient = true
+					meta.TTFTMs = time.Since(raceStart).Milliseconds()
+				}
+				if chunk != nil && chunk.Usage != nil {
+					u := *chunk.Usage
+					chunkUsageThisAttempt = &u
+				}
+				acc.ObserveChunk(chunk)
+				return nil
+			}, onSelected)
+
+			if raceErr == nil && winner != nil {
+				rm.releaseUnusedProbes(ctx, pool.candidates, []*domain.Deployment{winner})
+				if wg := pool.groupByDep[winner.ID]; wg != nil {
+					meta.RouteDecision.TargetGroupAlias = wg.Alias
+					meta.RouteDecision.ModelGroup = wg
+				}
+				meta.RouteDecision.Reason = "hedged_race_winner"
+				meta.WinningDeployment = winner
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, raceUsage), meta, nil
+			}
+			rm.releaseUnusedProbes(ctx, pool.candidates, nil)
+			if clientChunkErr != nil {
+				meta.WinningDeployment = winner
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, raceUsage), meta, raceErr
+			}
+			if firstChunkSentToClient && winner != nil {
+				failedDepIDs[winner.ID] = struct{}{}
+				attemptUsage := chunkUsageThisAttempt
+				if attemptUsage == nil && raceUsage != nil && (raceUsage.PromptTokens > 0 || raceUsage.CompletionTokens > 0 || raceUsage.TotalTokens > 0) {
+					u := *raceUsage
+					attemptUsage = &u
+				}
+				partialUsage = attemptUsage
+				meta.WinningDeployment = winner
+				if !acc.CanContinue(rm.cfg, continuationCount, raceErr) {
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return acc.MergeUsage(partialUsage, nil), meta, raceErr
+				}
+				if _, ok := acc.BuildContinuationRequest(req); !ok {
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return acc.MergeUsage(partialUsage, nil), meta, nil
+				}
+				continuationCount++
+			}
+			if raceErr != nil {
+				lastErr = raceErr
+			}
+		}
+		if lastErr != nil && classifyFailureCategory(lastErr) == CategoryNonRetryable {
+			return nil, meta, lastErr
+		}
+		visited := make(map[string]struct{})
+		if key := groupVisitKey(primary); key != "" {
+			visited[key] = struct{}{}
+		}
+		if firstChunkSentToClient {
+			initialQueue = append([]queuedHop{{group: primary, depth: 0}}, rm.enqueueFallbacks(ctx, nil, queuedHop{group: primary, depth: 0}, classifyFailureCategory(lastErr), rm.effectiveMaxFallbackDepth(), visited)...)
+		} else {
+			initialQueue = rm.enqueueFallbacks(ctx, nil, queuedHop{group: primary, depth: 0}, classifyFailureCategory(lastErr), rm.effectiveMaxFallbackDepth(), visited)
+		}
+		if len(initialQueue) == 0 {
+			if firstChunkSentToClient {
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, nil), meta, lastErr
+			}
+			if lastErr == nil {
+				lastErr = &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeUpstream,
+					Code:       "all_deployments_unavailable",
+					Message:    "All primary and fallback streaming deployments are unavailable",
+				}
+			}
+			return nil, meta, lastErr
+		}
+	} else {
+		var err error
+		decision, err = rm.intelligentRouter.ResolveGroup(ctx, orgID, req)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	meta := &ExecutionMeta{RouteDecision: decision}
-	groupChain := rm.buildGroupChain(ctx, decision.ModelGroup)
+	meta.RoutingMicros = time.Since(routeStart).Microseconds()
+	if meta.RoutingMicros <= 0 {
+		meta.RoutingMicros = 1
+	}
 
-	isBudgeted := isBudgetConstrained(idCtx)
-	var skippedDueToUnknownPricing bool
+	maxDepth := rm.effectiveMaxFallbackDepth()
+	visited := make(map[string]struct{})
+	if key := groupVisitKey(decision.ModelGroup); key != "" {
+		visited[key] = struct{}{}
+	}
+	queue := initialQueue
+	if len(queue) == 0 {
+		queue = []queuedHop{{group: decision.ModelGroup, depth: 0}}
+	} else {
+		for _, h := range queue {
+			if k := groupVisitKey(h.group); k != "" {
+				visited[k] = struct{}{}
+			}
+		}
+	}
+	aff := rm.getAffinityStore()
 
-	var lastErr error
-	for groupIdx, group := range groupChain {
-		if groupIdx > 0 {
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		group := current.group
+		if group == nil {
+			continue
+		}
+
+		hopBaseReq := req
+		if len(current.overrides) > 0 {
+			hopBaseReq = applyFallbackOverrides(req, current.overrides)
+		}
+		if current.depth > 0 {
 			meta.FallbackAttempted = true
+			setFallbackMetaReason(meta, current.reason)
 			logger.WarnContext(ctx, "Cross-provider fallback activated",
 				slog.String("component", "router"),
-				slog.String("primary_alias", groupChain[0].Alias),
+				slog.String("primary_alias", decision.ModelGroup.Alias),
 				slog.String("fallback_alias", group.Alias),
+				slog.String("fallback_reason", current.reason),
 				slog.String("requested_model", req.Model),
 			)
 		}
 
-		deployments, err := rm.getHealthyDeployments(ctx, orgID, group)
-		if err != nil || len(deployments) == 0 {
+		requirePrefill := firstChunkSentToClient
+		attemptReq := hopBaseReq
+		if requirePrefill {
+			contReq, ok := acc.BuildContinuationRequest(hopBaseReq)
+			if !ok {
+				// Token cap reached after already emitted output: finish cleanly with merged usage.
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, nil), meta, nil
+			}
+			attemptReq = contReq
+		}
+		estTokens := ratelimit.EstimateRequestTokens(attemptReq)
+
+		deployments, activeTotal, filterErr := rm.getEligibleDeploymentsForRequest(ctx, orgID, group, attemptReq, estTokens, failedDepIDs, requirePrefill)
+		if filterErr != nil {
+			lastErr = filterErr
+			cat := classifyFailureCategory(filterErr)
+			if cat == CategoryNonRetryable {
+				rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+				if firstChunkSentToClient {
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					return acc.MergeUsage(partialUsage, nil), meta, filterErr
+				}
+				return nil, meta, filterErr
+			}
+			queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
+			continue
+		}
+		if len(deployments) == 0 {
+			cat := classifyFailureCategory(lastErr)
+			queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
 			continue
 		}
 
 		if isBudgeted {
 			filtered := filterKnownPricing(deployments)
+			rm.releaseUnusedProbes(ctx, deployments, filtered)
 			if len(filtered) == 0 {
 				skippedDueToUnknownPricing = true
 				logger.WarnContext(ctx, "Skipping model group for budgeted caller: all deployments have unverified pricing",
 					slog.String("component", "router"),
 					slog.String("group_alias", group.Alias),
 				)
+				queue = rm.enqueueFallbacks(ctx, queue, current, CategoryGeneral, maxDepth, visited)
 				continue
 			}
 			deployments = filtered
 		}
 
+		var affinityDepID, affinityKey string
+		if aff != nil && !requirePrefill {
+			affinityDepID, affinityKey = aff.Lookup(ctx, orgID, group.Alias, attemptReq, extractPreviousResponseID(attemptReq))
+		}
+
 		tiers := partitionByPriority(deployments)
-		maxAttempts := maxAttemptsForGroup(group)
+		retryPolicy := rm.effectiveGroupRetryPolicy(group)
+		var groupErr error
+		stopGroup := false
+		continueSameGroup := false
 
 		for tierIdx, tierDeployments := range tiers {
 			if tierIdx > 0 {
 				recordTierStepdown(ctx, meta, group, tierIdx)
 			}
-			triedDepIDs := make([]string, 0, len(tierDeployments))
 
-			for attempt := 0; attempt < maxAttempts; attempt++ {
-				candidates := filterUntried(tierDeployments, triedDepIDs)
-				if len(candidates) == 0 {
-					candidates = tierDeployments
+			if !firstChunkSentToClient && shouldHedgeGroup(group, hopBaseReq) {
+				racers := tierDeployments
+				if tierIdx == 0 {
+					racers = prioritizeAffinityCandidate(tierDeployments, aff, affinityDepID)
 				}
-				dep := rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				for _, r := range racers {
+					rm.hydrateCredential(r)
+				}
+				raceStart := time.Now()
+				var chunkUsageThisAttempt *domain.TokenUsage
+				var clientChunkErr error
+				winner, raceUsage, raceErr := RaceStreamAttempts(ctx, racers, rm.buildHedgeConfig(hopBaseReq), func(racerCtx context.Context, dep *domain.Deployment, emit adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+					adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+					if adpErr != nil {
+						return nil, adpErr
+					}
+					if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
+						return nil, opErr
+					}
+					reqCopy := *attemptReq
+					reqCopy.ResolvedModel = dep.GlobalModel.ModelName
+					depStart := time.Now()
+					rm.loadBalancer.OnRequestStart(dep.ID)
+					spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep)
+					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, emit)
+					depCancel()
+					finishGenAIClientSpan(span, u, callErr)
+					depLatency := time.Since(depStart).Milliseconds()
+					if callErr == nil {
+						rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, 0)
+						rm.recordSuccess(ctx, dep)
+						return u, nil
+					}
+					rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
+					if !errors.Is(callErr, context.Canceled) && racerCtx.Err() == nil {
+						rm.recordAttemptFailure(ctx, dep, group, activeTotal, callErr)
+					}
+					return u, callErr
+				}, func(chunk *domain.CanonicalStreamChunk) error {
+					if onChunk != nil {
+						if cerr := onChunk(chunk); cerr != nil {
+							clientChunkErr = cerr
+							return cerr
+						}
+					}
+					if !firstChunkSentToClient {
+						firstChunkSentToClient = true
+						meta.TTFTMs = time.Since(raceStart).Milliseconds()
+					}
+					if chunk != nil && chunk.Usage != nil {
+						u := *chunk.Usage
+						chunkUsageThisAttempt = &u
+					}
+					acc.ObserveChunk(chunk)
+					return nil
+				}, onSelected)
+
+				if raceErr == nil && winner != nil {
+					raceLatency := time.Since(raceStart).Milliseconds()
+					mergedUsage := acc.MergeUsage(partialUsage, raceUsage)
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{winner})
+					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, winner.ID)
+					meta.RouteDecision.Reason = "hedged_race_winner"
+					meta.WinningDeployment = winner
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted, raceLatency)
+					return mergedUsage, meta, nil
+				}
+				if clientChunkErr != nil {
+					rm.releaseUnusedProbes(ctx, deployments, nil)
+					meta.WinningDeployment = winner
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+					return acc.MergeUsage(partialUsage, raceUsage), meta, raceErr
+				}
+				if firstChunkSentToClient && winner != nil {
+					failedDepIDs[winner.ID] = struct{}{}
+					attemptUsage := chunkUsageThisAttempt
+					if attemptUsage == nil && raceUsage != nil && (raceUsage.PromptTokens > 0 || raceUsage.CompletionTokens > 0 || raceUsage.TotalTokens > 0) {
+						u := *raceUsage
+						attemptUsage = &u
+					}
+					if attemptUsage != nil {
+						if partialUsage == nil {
+							partialUsage = attemptUsage
+						} else {
+							partialUsage = acc.MergeUsage(partialUsage, attemptUsage)
+						}
+					}
+					meta.WinningDeployment = winner
+					if !acc.CanContinue(rm.cfg, continuationCount, raceErr) {
+						rm.releaseUnusedProbes(ctx, deployments, nil)
+						meta.LatencyMs = time.Since(start).Milliseconds()
+						rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+						return acc.MergeUsage(partialUsage, nil), meta, raceErr
+					}
+					if _, ok := acc.BuildContinuationRequest(hopBaseReq); !ok {
+						rm.releaseUnusedProbes(ctx, deployments, nil)
+						meta.LatencyMs = time.Since(start).Milliseconds()
+						rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted, meta.LatencyMs)
+						return acc.MergeUsage(partialUsage, nil), meta, nil
+					}
+					continuationCount++
+					lastErr = raceErr
+					groupErr = raceErr
+					continueSameGroup = true
+					break
+				}
+				lastErr = raceErr
+				groupErr = raceErr
+				if classifyFailureCategory(raceErr) == CategoryNonRetryable {
+					rm.releaseUnusedProbes(ctx, deployments, nil)
+					rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+					return nil, meta, raceErr
+				}
+				continue
+			}
+
+			retryTracker := newRetryBudgetTracker(retryPolicy, len(tierDeployments))
+			triedDepIDs := make([]string, 0, len(tierDeployments))
+			trippedDepIDs := make(map[string]struct{})
+
+			for attempt := 0; ; attempt++ {
+				var dep *domain.Deployment
+				if tierIdx == 0 && attempt == 0 && affinityDepID != "" && aff != nil {
+					if pinned, ok := aff.SelectOrPin(affinityDepID, deployments); ok {
+						dep = pinned
+					}
+				}
+				if dep == nil {
+					candidates := filterUntried(tierDeployments, triedDepIDs)
+					if len(candidates) == 0 {
+						candidates = filterOutDepIDs(tierDeployments, trippedDepIDs)
+						if len(candidates) == 0 {
+							break
+						}
+					}
+					dep = rm.loadBalancer.Select(group.RoutingStrategy, candidates)
+				}
 				if dep == nil {
 					break
 				}
 				triedDepIDs = append(triedDepIDs, dep.ID)
 
-				if attempt > 0 {
+				if attempt > 0 && !firstChunkSentToClient {
 					meta.RetryCount++
 					logger.WarnContext(ctx, "Intra-group retry attempt triggered",
 						slog.String("component", "router"),
 						slog.Int("attempt", attempt),
-						slog.Int("max_attempts", maxAttempts),
 						slog.String("group_alias", group.Alias),
 						slog.String("deployment_id", dep.ID),
 						slog.String("model", dep.GlobalModel.ModelName),
@@ -509,73 +1665,215 @@ func (rm *ReliabilityManager) ExecuteStream(
 				}
 
 				rm.hydrateCredential(dep)
-				adp, err := rm.registry.Get(dep.GlobalModel.Provider)
-				if err != nil {
-					lastErr = err
+				adp, adpErr := rm.registry.Get(dep.GlobalModel.Provider)
+				if adpErr != nil {
+					lastErr = adpErr
+					groupErr = adpErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
 					continue
 				}
 				if opErr := checkDeploymentOperation(adp, dep, domain.OperationChat); opErr != nil {
 					lastErr = opErr
+					groupErr = opErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
 					continue
 				}
 
-				reqCopy := *req
+				reqCopy := *attemptReq
 				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
 
-				if onSelected != nil {
+				if !firstChunkSentToClient && onSelected != nil {
 					onSelected(dep)
 				}
 
 				depStart := time.Now()
-				firstChunkRecorded := false
+				attemptEmittedChunk := false
+				var chunkUsageThisAttempt *domain.TokenUsage
+				var clientChunkErr error
 				rm.loadBalancer.OnRequestStart(dep.ID)
 
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+				if requirePrefill {
+					span.AddEvent("router.stream_continuation", trace.WithAttributes(
+						attribute.Int("continuation.attempt", continuationCount),
+						attribute.String("deployment.id", dep.ID),
+					))
+					if parentSpan := trace.SpanFromContext(ctx); parentSpan.SpanContext().IsValid() {
+						parentSpan.AddEvent("router.stream_continuation", trace.WithAttributes(
+							attribute.Int("continuation.attempt", continuationCount),
+							attribute.String("deployment.id", dep.ID),
+						))
+					}
+				}
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
-				usage, err := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
-					if !firstChunkRecorded {
-						firstChunkRecorded = true
+				usage, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
+					if cerr := onChunk(chunk); cerr != nil {
+						clientChunkErr = cerr
+						return cerr
+					}
+					if !firstChunkSentToClient {
+						firstChunkSentToClient = true
 						meta.TTFTMs = time.Since(depStart).Milliseconds()
 					}
-					return onChunk(chunk)
+					attemptEmittedChunk = true
+					if chunk != nil && chunk.Usage != nil {
+						u := *chunk.Usage
+						chunkUsageThisAttempt = &u
+					}
+					acc.ObserveChunk(chunk)
+					return nil
 				})
 				depCancel()
-				finishGenAIClientSpan(span, usage, err)
+				finishGenAIClientSpan(span, usage, callErr)
 
-				if err == nil {
+				if callErr == nil {
 					depLatency := time.Since(depStart).Milliseconds()
+					mergedUsage := acc.MergeUsage(partialUsage, usage)
 					totalTok := 0
-					if usage != nil {
-						totalTok = usage.TotalTokens
+					if mergedUsage != nil {
+						totalTok = mergedUsage.TotalTokens
+					}
+					if continuationCount > 0 {
+						meta.StreamContinued = true
 					}
 					rm.loadBalancer.OnStreamRequestEnd(dep.ID, depLatency, meta.TTFTMs, totalTok)
 					rm.recordSuccess(ctx, dep)
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, dep.ID)
 					meta.WinningDeployment = dep
 					meta.LatencyMs = time.Since(start).Milliseconds()
-					return usage, meta, nil
+					rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted, depLatency)
+					return mergedUsage, meta, nil
 				}
 
 				rm.loadBalancer.OnRequestEnd(dep.ID, 0, 0)
 
-				// If bytes were already flushed to the client, we cannot retry on another deployment
-				if firstChunkRecorded {
+				if clientChunkErr != nil {
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+					meta.WinningDeployment = dep
+					meta.LatencyMs = time.Since(start).Milliseconds()
+					rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+					return acc.MergeUsage(partialUsage, usage), meta, callErr
+				}
+
+				if attemptEmittedChunk {
 					depLatency := time.Since(depStart).Milliseconds()
 					if rm.collector != nil && dep.GlobalModel != nil {
 						rm.collector.RecordDeploymentAttempt(dep.ID, dep.DeploymentName, string(dep.GlobalModel.Provider), dep.GlobalModel.ModelName, depLatency, false)
 					}
-					rm.recordFailure(ctx, dep, group.FailureThreshold, group.CooldownSeconds)
+					rm.recordAttemptFailure(ctx, dep, group, activeTotal, callErr)
+					failedDepIDs[dep.ID] = struct{}{}
+					attemptUsage := chunkUsageThisAttempt
+					if attemptUsage == nil && usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0) {
+						u := *usage
+						attemptUsage = &u
+					}
+					if attemptUsage != nil {
+						if partialUsage == nil {
+							partialUsage = attemptUsage
+						} else {
+							partialUsage = acc.MergeUsage(partialUsage, attemptUsage)
+						}
+					}
 					meta.WinningDeployment = dep
-					meta.LatencyMs = time.Since(start).Milliseconds()
-					return usage, meta, err
+
+					if !acc.CanContinue(rm.cfg, continuationCount, callErr) {
+						rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+						meta.LatencyMs = time.Since(start).Milliseconds()
+						rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+						return acc.MergeUsage(partialUsage, nil), meta, callErr
+					}
+
+					if _, ok := acc.BuildContinuationRequest(hopBaseReq); !ok {
+						rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+						meta.LatencyMs = time.Since(start).Milliseconds()
+						rm.recordBanditOutcome(orgID, decision, !meta.FallbackAttempted, meta.LatencyMs)
+						return acc.MergeUsage(partialUsage, nil), meta, nil
+					}
+
+					continuationCount++
+					lastErr = callErr
+					groupErr = callErr
+					// Re-enter the current group first so another prefill-capable deployment in the same group
+					// is tried before falling back across groups.
+					continueSameGroup = true
+					break
 				}
 
-				termErr, normErr := rm.handleAttemptError(ctx, dep, group, err, attempt, maxAttempts)
+				if firstChunkSentToClient {
+					// A continuation candidate failed before emitting any chunk; exclude it and continue searching.
+					failedDepIDs[dep.ID] = struct{}{}
+					trippedDepIDs[dep.ID] = struct{}{}
+					termErr, normErr, stopTier, abortGroup, _ := rm.handleAttemptErrorWithPolicy(ctx, dep, group, activeTotal, callErr, retryTracker, attempt)
+					lastErr = normErr
+					groupErr = normErr
+					if termErr != nil {
+						rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+						meta.LatencyMs = time.Since(start).Milliseconds()
+						rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+						return acc.MergeUsage(partialUsage, nil), meta, termErr
+					}
+					if abortGroup {
+						stopGroup = true
+						break
+					}
+					if stopTier {
+						break
+					}
+					continue
+				}
+
+				termErr, normErr, stopTier, abortGroup, tripped := rm.handleAttemptErrorWithPolicy(ctx, dep, group, activeTotal, callErr, retryTracker, attempt)
 				lastErr = normErr
+				groupErr = normErr
+				if tripped {
+					trippedDepIDs[dep.ID] = struct{}{}
+				}
 				if termErr != nil {
+					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
+					rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
 					return nil, meta, termErr
 				}
+				if abortGroup {
+					stopGroup = true
+					break
+				}
+				if stopTier {
+					break
+				}
+			}
+			if continueSameGroup || stopGroup {
+				break
 			}
 		}
+
+		rm.releaseUnusedProbes(ctx, deployments, nil)
+		if continueSameGroup {
+			queue = append([]queuedHop{current}, queue...)
+			continue
+		}
+		cat := classifyFailureCategory(groupErr)
+		if cat == CategoryNonRetryable && groupErr != nil {
+			rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+			if firstChunkSentToClient {
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, nil), meta, groupErr
+			}
+			return nil, meta, groupErr
+		}
+		queue = rm.enqueueFallbacks(ctx, queue, current, cat, maxDepth, visited)
+	}
+
+	if firstChunkSentToClient {
+		meta.LatencyMs = time.Since(start).Milliseconds()
+		rm.recordBanditOutcome(orgID, decision, false, meta.LatencyMs)
+		return acc.MergeUsage(partialUsage, nil), meta, lastErr
 	}
 
 	if lastErr == nil {
@@ -595,6 +1893,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 			}
 		}
 	}
+	rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
 	return nil, meta, lastErr
 }
 
@@ -2133,8 +3432,7 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 		return nil, err
 	}
 	now := time.Now().UTC()
-	var healthy []*domain.Deployment
-	var probes []*domain.Deployment
+	eligible := make([]*domain.Deployment, 0, len(all))
 	for _, d := range all {
 		if d.Status != domain.DeploymentStatusActive || d.GlobalModel == nil {
 			continue
@@ -2149,7 +3447,7 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 			}
 		}
 		// Active background health monitor check
-		if rm.healthMon != nil && !rm.healthMon.IsHealthy(d.ID) {
+		if rm.healthMon != nil && !rm.healthMon.IsHealthyWithMaxAge(d.ID, rm.cfg.HealthStalenessThreshold) {
 			continue
 		}
 		if rm.rbac != nil && orgID != "" {
@@ -2157,6 +3455,97 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 				continue
 			}
 		}
+		eligible = append(eligible, d)
+	}
+	return rm.admitThroughCircuitBreaker(ctx, eligible), nil
+}
+
+func (rm *ReliabilityManager) getEligibleDeploymentsForRequest(
+	ctx context.Context,
+	orgID string,
+	group *domain.ModelGroup,
+	req *domain.CanonicalChatRequest,
+	estTokens int,
+	excludeDepIDs map[string]struct{},
+	requirePrefill bool,
+) ([]*domain.Deployment, int, error) {
+	if group == nil {
+		return nil, 0, nil
+	}
+	all, err := rm.repo.ListDeploymentsByGroup(ctx, group.ID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	activeTotal := 0
+	authorized := make([]*domain.Deployment, 0, len(all))
+	for _, d := range all {
+		if d == nil {
+			continue
+		}
+		if d.Status == domain.DeploymentStatusActive && d.GlobalModel != nil {
+			activeTotal++
+		}
+		if len(excludeDepIDs) > 0 {
+			if _, excluded := excludeDepIDs[d.ID]; excluded {
+				continue
+			}
+		}
+		if rm.rbac != nil && orgID != "" {
+			if err := rm.rbac.AuthorizeDeployment(ctx, orgID, d); err != nil {
+				continue
+			}
+		}
+		authorized = append(authorized, d)
+	}
+	if len(authorized) == 0 {
+		return nil, activeTotal, nil
+	}
+
+	fp := NewFilterPipeline(rm.healthMon, rm.loadBalancer, rm.cfg, rm.getRoutingPlugins()...)
+	if budgets := rm.getDepBudgetTracker(); budgets != nil {
+		providerCaps := rm.cfg.ProviderBudgets
+		fp.SetBudgetCheck(func(bCtx context.Context, bOrgID string, dep *domain.Deployment) bool {
+			return budgets.IsWithinBudget(bCtx, bOrgID, dep, providerCaps)
+		})
+	}
+
+	eligible, err := fp.FilterEligibleDeployments(ctx, orgID, group.Alias, req, authorized, estTokens)
+	if err != nil {
+		return nil, activeTotal, err
+	}
+	if len(eligible) == 0 {
+		return nil, activeTotal, nil
+	}
+
+	if requirePrefill {
+		prefillEligible := make([]*domain.Deployment, 0, len(eligible))
+		for _, d := range eligible {
+			if d.GlobalModel == nil || rm.registry == nil {
+				continue
+			}
+			adp, adpErr := rm.registry.Get(d.GlobalModel.Provider)
+			if adpErr != nil || !adapter.SupportsAssistantPrefill(adp) {
+				continue
+			}
+			prefillEligible = append(prefillEligible, d)
+		}
+		eligible = prefillEligible
+		if len(eligible) == 0 {
+			return nil, activeTotal, nil
+		}
+	}
+
+	return rm.admitThroughCircuitBreaker(ctx, eligible), activeTotal, nil
+}
+
+func (rm *ReliabilityManager) admitThroughCircuitBreaker(ctx context.Context, candidates []*domain.Deployment) []*domain.Deployment {
+	if len(candidates) == 0 {
+		return nil
+	}
+	var healthy []*domain.Deployment
+	var probes []*domain.Deployment
+	for _, d := range candidates {
 		// 3-State Circuit Breaker check (CLOSED -> allowed, OPEN -> blocked, HALF_OPEN -> admits 1 trial request)
 		allowed, probeToken := rm.allowDeploymentRequest(ctx, d.ID)
 		if !allowed {
@@ -2174,16 +3563,16 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 			rm.releaseHalfOpenProbe(ctx, p.ID, p.CircuitProbeToken)
 			p.CircuitProbeToken = ""
 		}
-		return healthy, nil
+		return healthy
 	}
 	if len(probes) > 0 {
 		for _, p := range probes[1:] {
 			rm.releaseHalfOpenProbe(ctx, p.ID, p.CircuitProbeToken)
 			p.CircuitProbeToken = ""
 		}
-		return probes[:1], nil
+		return probes[:1]
 	}
-	return nil, nil
+	return nil
 }
 
 func (rm *ReliabilityManager) hydrateCredential(dep *domain.Deployment) {
@@ -2332,9 +3721,174 @@ func (rm *ReliabilityManager) handleAttemptError(
 	return nil, gwErr
 }
 
+func (rm *ReliabilityManager) handleAttemptErrorWithPolicy(
+	ctx context.Context,
+	dep *domain.Deployment,
+	group *domain.ModelGroup,
+	activeTotal int,
+	err error,
+	retryTracker *retryBudgetTracker,
+	attempt int,
+) (terminalErr error, normalizedErr error, stopTier bool, stopGroup bool, tripped bool) {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return err, err, true, true, false
+	}
+
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) {
+		gwErr = &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_transport_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+
+	cat := classifyFailureCategory(gwErr)
+	if cat == CategoryNonRetryable {
+		if isLocalGuardrailError(gwErr, true, strings.ToLower(strings.TrimSpace(gwErr.Code)), strings.ToLower(gwErr.Error())) {
+			return gwErr, gwErr, true, true, false
+		}
+		if retryTracker == nil || !retryTracker.consumeErr(gwErr) {
+			return gwErr, gwErr, true, true, false
+		}
+		sleepDur := CalculateBackoff(attempt, gwErr.RetryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+		if sleepDur > 0 {
+			timer := time.NewTimer(sleepDur)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err(), ctx.Err(), true, true, false
+			case <-timer.C:
+			}
+		}
+		return nil, gwErr, false, false, false
+	}
+
+	if cat == CategoryContextWindow || cat == CategoryContentPolicy {
+		return nil, gwErr, true, true, false
+	}
+
+	tripped = rm.recordAttemptFailure(ctx, dep, group, activeTotal, gwErr)
+
+	if gwErr.AuthFailure || cat == CategoryAuth {
+		if retryTracker == nil || !retryTracker.consumeErr(gwErr) {
+			return nil, gwErr, true, false, tripped
+		}
+		return nil, gwErr, false, false, tripped
+	}
+
+	if retryTracker == nil || !retryTracker.consumeErr(gwErr) {
+		return nil, gwErr, true, false, tripped
+	}
+
+	sleepDur := CalculateBackoff(attempt, gwErr.RetryAfterSec, rm.cfg.BaseRetryDelay, rm.cfg.MaxRetryDelay)
+	if sleepDur > 0 {
+		timer := time.NewTimer(sleepDur)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err(), ctx.Err(), true, true, tripped
+		case <-timer.C:
+		}
+	}
+	return nil, gwErr, false, false, tripped
+}
+
+func (rm *ReliabilityManager) recordAttemptFailure(
+	ctx context.Context,
+	dep *domain.Deployment,
+	group *domain.ModelGroup,
+	activeTotal int,
+	err error,
+) bool {
+	if dep == nil || err == nil {
+		return false
+	}
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) {
+		gwErr = &domain.GatewayError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeUpstream,
+			Code:       "upstream_transport_error",
+			Message:    err.Error(),
+			Retryable:  true,
+		}
+	}
+
+	cat := classifyFailureCategory(gwErr)
+	if cat == CategoryNonRetryable || cat == CategoryContextWindow || cat == CategoryContentPolicy {
+		if dep.CircuitProbeToken != "" {
+			rm.releaseHalfOpenProbe(ctx, dep.ID, dep.CircuitProbeToken)
+			dep.CircuitProbeToken = ""
+		}
+		return false
+	}
+
+	var groupCooldownSec, groupThreshold int
+	if group != nil {
+		groupCooldownSec = group.CooldownSeconds
+		groupThreshold = group.FailureThreshold
+	}
+	baseThreshold := groupThreshold
+	if baseThreshold <= 0 {
+		baseThreshold = rm.cfg.FailureThreshold
+	}
+	if baseThreshold <= 0 {
+		baseThreshold = defaultFailureThreshold
+	}
+
+	cooldownPolicy := effectiveCooldownPolicy(rm.cfg, group)
+	errClass := errorRetryClass(gwErr, activeTotal)
+	cooldownDur := effectiveCooldownDuration(cooldownPolicy, groupCooldownSec, rm.cfg.DefaultCooldown, gwErr.RetryAfterSec)
+
+	var reqs, fails int
+	if rm.failureRates != nil {
+		reqs, fails = rm.failureRates.record(ctx, dep.ID, true)
+	}
+
+	if gwErr.AuthFailure || errClass == retryClassAuth {
+		threshold := allowedFailsForClass(cooldownPolicy, baseThreshold, retryClassAuth)
+		if threshold <= 1 {
+			rm.tripCooldownDuration(ctx, dep.ID, cooldownDur)
+			return true
+		}
+		return rm.recordFailureWithDuration(ctx, dep, threshold, cooldownDur)
+	}
+
+	hasFallbacks := hasGroupFallbacks(group, rm.cfg.DefaultFallbacks)
+	rateProtected := isLoneDeploymentProtected(group, activeTotal, hasFallbacks, cooldownClassFailRate, cooldownPolicy)
+	if !rateProtected && shouldTripByFailureRate(cooldownPolicy, reqs, fails) {
+		rm.tripCooldownDuration(ctx, dep.ID, cooldownDur)
+		return true
+	}
+
+	if isLoneDeploymentProtected(group, activeTotal, hasFallbacks, errClass, cooldownPolicy) {
+		if dep.CircuitProbeToken != "" {
+			rm.releaseHalfOpenProbe(ctx, dep.ID, dep.CircuitProbeToken)
+			dep.CircuitProbeToken = ""
+		}
+		return false
+	}
+
+	threshold := allowedFailsForClass(cooldownPolicy, baseThreshold, errClass)
+	return rm.recordFailureWithDuration(ctx, dep, threshold, cooldownDur)
+}
+
 func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Deployment, threshold, cooldownSec int) {
+	if cooldownSec <= 0 {
+		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
+	}
+	if cooldownSec <= 0 {
+		cooldownSec = 30
+	}
+	rm.recordFailureWithDuration(ctx, dep, threshold, time.Duration(cooldownSec)*time.Second)
+}
+
+func (rm *ReliabilityManager) recordFailureWithDuration(ctx context.Context, dep *domain.Deployment, threshold int, cooldownDur time.Duration) bool {
 	if dep == nil {
-		return
+		return false
 	}
 	depID := dep.ID
 	if threshold <= 0 {
@@ -2343,13 +3897,12 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 	if threshold <= 0 {
 		threshold = 3
 	}
-	if cooldownSec <= 0 {
-		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
+	if cooldownDur <= 0 {
+		cooldownDur = rm.cfg.DefaultCooldown
 	}
-	if cooldownSec <= 0 {
-		cooldownSec = 30
+	if cooldownDur <= 0 {
+		cooldownDur = 30 * time.Second
 	}
-	cooldownDur := time.Duration(cooldownSec) * time.Second
 	windowMs := rm.cfg.FailureWindow.Milliseconds()
 	if windowMs <= 0 {
 		windowMs = 60_000
@@ -2379,8 +3932,9 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 						slog.String("deployment_id", depID),
 						slog.Duration("cooldown", cooldownDur),
 					)
+					return true
 				}
-				return
+				return false
 			}
 		}
 	}
@@ -2394,8 +3948,8 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 		st.probeToken = ""
 		st.cooldownUntil = now.Add(cooldownDur)
 		rm.mu.Unlock()
-		rm.tripCooldown(ctx, depID, cooldownSec)
-		return
+		rm.tripCooldownDuration(ctx, depID, cooldownDur)
+		return true
 	}
 	if !ok || now.Sub(st.windowStart) > time.Duration(windowMs)*time.Millisecond {
 		st = &cooldownState{windowStart: now}
@@ -2411,17 +3965,27 @@ func (rm *ReliabilityManager) recordFailure(ctx context.Context, dep *domain.Dep
 	rm.mu.Unlock()
 
 	if shouldTrip {
-		rm.tripCooldown(ctx, depID, cooldownSec)
-	} else {
-		rm.reopenHalfOpen(ctx, depID, dep.CircuitProbeToken, cooldownSec)
+		rm.tripCooldownDuration(ctx, depID, cooldownDur)
+		return true
 	}
+	rm.reopenHalfOpenDuration(ctx, depID, dep.CircuitProbeToken, cooldownDur)
+	return false
 }
 
 func (rm *ReliabilityManager) tripCooldown(ctx context.Context, depID string, cooldownSec int) {
 	if cooldownSec <= 0 {
 		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
 	}
-	dur := time.Duration(cooldownSec) * time.Second
+	rm.tripCooldownDuration(ctx, depID, time.Duration(cooldownSec)*time.Second)
+}
+
+func (rm *ReliabilityManager) tripCooldownDuration(ctx context.Context, depID string, dur time.Duration) {
+	if dur <= 0 {
+		dur = rm.cfg.DefaultCooldown
+	}
+	if dur <= 0 {
+		dur = defaultCooldownDuration
+	}
 	rm.mu.Lock()
 	st, ok := rm.cooldowns[depID]
 	if !ok {
@@ -2450,6 +4014,9 @@ func (rm *ReliabilityManager) tripCooldown(ctx context.Context, depID string, co
 func (rm *ReliabilityManager) recordSuccess(ctx context.Context, dep *domain.Deployment) {
 	if dep == nil {
 		return
+	}
+	if rm.failureRates != nil {
+		rm.failureRates.record(ctx, dep.ID, false)
 	}
 	depID := dep.ID
 	rm.mu.Lock()
@@ -2497,14 +4064,21 @@ func (rm *ReliabilityManager) releaseHalfOpenProbe(ctx context.Context, depID, p
 }
 
 func (rm *ReliabilityManager) reopenHalfOpen(ctx context.Context, depID, probeToken string, cooldownSec int) {
-	if probeToken == "" || rm.redis == nil || rm.redis.Client() == nil {
-		return
-	}
 	if cooldownSec <= 0 {
 		cooldownSec = int(rm.cfg.DefaultCooldown.Seconds())
 	}
+	rm.reopenHalfOpenDuration(ctx, depID, probeToken, time.Duration(cooldownSec)*time.Second)
+}
+
+func (rm *ReliabilityManager) reopenHalfOpenDuration(ctx context.Context, depID, probeToken string, dur time.Duration) {
+	if probeToken == "" || rm.redis == nil || rm.redis.Client() == nil {
+		return
+	}
+	if dur <= 0 {
+		dur = rm.cfg.DefaultCooldown
+	}
 	_, _ = rm.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return reopenHalfOpenScript.Run(ctx, rdb, circuitKeys(depID), (time.Duration(cooldownSec) * time.Second).Milliseconds(), probeToken).Result()
+		return reopenHalfOpenScript.Run(ctx, rdb, circuitKeys(depID), dur.Milliseconds(), probeToken).Result()
 	})
 }
 
