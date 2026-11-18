@@ -278,19 +278,50 @@ type OIDCIssuerConfig struct {
 	DefaultRole         string           `yaml:"default_role,omitempty"`
 }
 
+// IntrospectionConfig configures OAuth 2.0 RFC 7662 token introspection or OIDC UserInfo verification.
+type IntrospectionConfig struct {
+	TokenInfoEndpoint string        `yaml:"token_info_endpoint,omitempty"`
+	ClientID          string        `yaml:"client_id,omitempty"`
+	ClientSecret      string        `yaml:"client_secret,omitempty"`
+	Mode              string        `yaml:"mode,omitempty"`
+	UserIDField       string        `yaml:"user_id_field,omitempty"`
+	EmailField        string        `yaml:"email_field,omitempty"`
+	RoleField         string        `yaml:"role_field,omitempty"`
+	OrgIDField        string        `yaml:"org_id_field,omitempty"`
+	TeamIDField       string        `yaml:"team_id_field,omitempty"`
+	CacheTTL          time.Duration `yaml:"cache_ttl,omitempty"`
+	AutoRegister      bool          `yaml:"auto_register,omitempty"`
+	DefaultTeamID     string        `yaml:"default_team_id,omitempty"`
+	DefaultRole       string        `yaml:"default_role,omitempty"`
+}
+
+// ProxyAuthConfig configures CIDR-guarded reverse-proxy identity header authentication.
+type ProxyAuthConfig struct {
+	Enabled           bool              `yaml:"enabled,omitempty"`
+	TrustedProxyCIDRs []string          `yaml:"trusted_proxy_cidrs,omitempty"`
+	HeaderMapping     map[string]string `yaml:"header_mapping,omitempty"`
+	AutoRegister      bool              `yaml:"auto_register,omitempty"`
+	DefaultTeamID     string            `yaml:"default_team_id,omitempty"`
+	DefaultRole       string            `yaml:"default_role,omitempty"`
+}
+
 type AuthConfig struct {
-	MasterAdminKey          string             `yaml:"master_admin_key"`
-	MasterEncryptionKey     string             `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	AllowMasterKeyDataPlane bool               `yaml:"allow_master_key_data_plane"`
-	JWTSecret               string             `yaml:"jwt_secret"`
-	JWTIssuer               string             `yaml:"jwt_issuer"`
-	JWTAudience             string             `yaml:"jwt_audience"`
-	OIDCJWKSURL             string             `yaml:"oidc_jwks_url"`
-	OIDCIssuers             []OIDCIssuerConfig `yaml:"oidc_issuers,omitempty"`
-	DefaultOrgID            string             `yaml:"default_org_id"`
-	DefaultVirtualKey       string             `yaml:"default_virtual_key"`
-	L1CacheTTL              time.Duration      `yaml:"l1_cache_ttl"`
-	L2CacheTTL              time.Duration      `yaml:"l2_cache_ttl"`
+	MasterAdminKey          string              `yaml:"master_admin_key"`
+	MasterEncryptionKey     string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	AllowMasterKeyDataPlane bool                `yaml:"allow_master_key_data_plane"`
+	EnableDataPlaneJWT      bool                `yaml:"enable_data_plane_jwt"`
+	CustomAPIKeyHeader      string              `yaml:"custom_api_key_header"`
+	JWTSecret               string              `yaml:"jwt_secret"`
+	JWTIssuer               string              `yaml:"jwt_issuer"`
+	JWTAudience             string              `yaml:"jwt_audience"`
+	OIDCJWKSURL             string              `yaml:"oidc_jwks_url"`
+	OIDCIssuers             []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
+	Introspection           IntrospectionConfig `yaml:"introspection,omitempty"`
+	ProxyAuth               ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
+	DefaultOrgID            string              `yaml:"default_org_id"`
+	DefaultVirtualKey       string              `yaml:"default_virtual_key"`
+	L1CacheTTL              time.Duration       `yaml:"l1_cache_ttl"`
+	L2CacheTTL              time.Duration       `yaml:"l2_cache_ttl"`
 }
 
 type RouterConfig struct {
@@ -622,6 +653,14 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 			cfg.Auth.AllowMasterKeyDataPlane = b
 		}
 	}
+	if v := os.Getenv("GATEWAY_ENABLE_DATA_PLANE_JWT"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Auth.EnableDataPlaneJWT = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_CUSTOM_API_KEY_HEADER"); v != "" {
+		cfg.Auth.CustomAPIKeyHeader = strings.TrimSpace(v)
+	}
 	if v := os.Getenv("GATEWAY_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
 	}
@@ -899,6 +938,32 @@ func (c *Config) Validate() error {
 			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
 				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains invalid algorithm %q", i, alg)
 			}
+		}
+	}
+	if ep := strings.TrimSpace(c.Auth.Introspection.TokenInfoEndpoint); ep != "" {
+		u, err := url.Parse(ep)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("auth.introspection.token_info_endpoint must be a valid http or https URL")
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Auth.Introspection.Mode)) {
+		case "", "auto", "introspect", "userinfo":
+		default:
+			return fmt.Errorf("invalid auth.introspection.mode %q", c.Auth.Introspection.Mode)
+		}
+	}
+	for _, cidr := range c.Auth.ProxyAuth.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return fmt.Errorf("invalid auth.proxy_auth.trusted_proxy_cidrs %q: %w", cidr, err)
+		}
+	}
+	for hdr, target := range c.Auth.ProxyAuth.HeaderMapping {
+		if strings.TrimSpace(hdr) == "" {
+			return fmt.Errorf("auth.proxy_auth.header_mapping must not contain empty header names")
+		}
+		switch strings.ToLower(strings.TrimSpace(target)) {
+		case "user_id", "user_email", "team_id", "org_id":
+		default:
+			return fmt.Errorf("invalid auth.proxy_auth.header_mapping target %q for header %q", target, hdr)
 		}
 	}
 

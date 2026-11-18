@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,8 @@ type MemoryRepository struct {
 	users                  map[string]*domain.User
 	keysByID               map[string]*domain.VirtualKey
 	keysByHash             map[string]*domain.VirtualKey
+	jwtKeyMappings         map[string]*domain.JWTKeyMapping
+	jwtKeyMappingsByTuple  map[string]string
 	credentials            map[string]*domain.ProviderCredential
 	groupsByID             map[string]*domain.ModelGroup
 	deployments            map[string]*domain.Deployment
@@ -69,35 +72,37 @@ type spendOutboxEntry struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	r := &MemoryRepository{
-		globalModels:       make(map[string]*domain.GlobalModel),
-		globalModelsByName: make(map[string]map[domain.ProviderType]map[string]struct{}),
-		orgs:               make(map[string]*domain.Organization),
-		orgSubs:            make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
-		orgPolicies:        make(map[string]map[string]*domain.OrgModelPolicy),
-		teams:              make(map[string]*domain.Team),
-		users:              make(map[string]*domain.User),
-		keysByID:           make(map[string]*domain.VirtualKey),
-		keysByHash:         make(map[string]*domain.VirtualKey),
-		credentials:        make(map[string]*domain.ProviderCredential),
-		groupsByID:         make(map[string]*domain.ModelGroup),
-		deployments:        make(map[string]*domain.Deployment),
-		pricingHistory:     make(map[string][]*domain.ModelPricingHistory),
-		guardrails:         make(map[string]*domain.GuardrailPolicy),
-		guardrailDefs:      make(map[string]*domain.GuardrailDefinition),
-		guardrailBindings:  make(map[string]*domain.GuardrailBinding),
-		spendOutbox:        make(map[string]*spendOutboxEntry),
-		spendLogIDs:        make(map[string]struct{}),
-		budgetResetOutbox:  make(map[string]BudgetResetEvent),
-		files:              make(map[string]*domain.CanonicalFile),
-		batches:            make(map[string]*domain.CanonicalBatch),
-		mcpServers:         make(map[string]*domain.MCPServer),
-		mcpTools:           make(map[string]*domain.MCPTool),
-		mcpToolsets:        make(map[string]*domain.MCPToolset),
-		mcpUserCreds:       make(map[string]*domain.MCPUserCredential),
-		a2aAgents:          make(map[string]*domain.A2AAgent),
-		a2aTasks:           make(map[string]*domain.A2ATask),
-		a2aTaskEvents:      make(map[string][]*domain.A2ATaskEvent),
-		a2aPushConfigs:     make(map[string]*domain.A2APushNotificationConfig),
+		globalModels:          make(map[string]*domain.GlobalModel),
+		globalModelsByName:    make(map[string]map[domain.ProviderType]map[string]struct{}),
+		orgs:                  make(map[string]*domain.Organization),
+		orgSubs:               make(map[string]map[domain.ProviderType]*domain.OrgProviderSubscription),
+		orgPolicies:           make(map[string]map[string]*domain.OrgModelPolicy),
+		teams:                 make(map[string]*domain.Team),
+		users:                 make(map[string]*domain.User),
+		keysByID:              make(map[string]*domain.VirtualKey),
+		keysByHash:            make(map[string]*domain.VirtualKey),
+		jwtKeyMappings:        make(map[string]*domain.JWTKeyMapping),
+		jwtKeyMappingsByTuple: make(map[string]string),
+		credentials:           make(map[string]*domain.ProviderCredential),
+		groupsByID:            make(map[string]*domain.ModelGroup),
+		deployments:           make(map[string]*domain.Deployment),
+		pricingHistory:        make(map[string][]*domain.ModelPricingHistory),
+		guardrails:            make(map[string]*domain.GuardrailPolicy),
+		guardrailDefs:         make(map[string]*domain.GuardrailDefinition),
+		guardrailBindings:     make(map[string]*domain.GuardrailBinding),
+		spendOutbox:           make(map[string]*spendOutboxEntry),
+		spendLogIDs:           make(map[string]struct{}),
+		budgetResetOutbox:     make(map[string]BudgetResetEvent),
+		files:                 make(map[string]*domain.CanonicalFile),
+		batches:               make(map[string]*domain.CanonicalBatch),
+		mcpServers:            make(map[string]*domain.MCPServer),
+		mcpTools:              make(map[string]*domain.MCPTool),
+		mcpToolsets:           make(map[string]*domain.MCPToolset),
+		mcpUserCreds:          make(map[string]*domain.MCPUserCredential),
+		a2aAgents:             make(map[string]*domain.A2AAgent),
+		a2aTasks:              make(map[string]*domain.A2ATask),
+		a2aTaskEvents:         make(map[string][]*domain.A2ATaskEvent),
+		a2aPushConfigs:        make(map[string]*domain.A2APushNotificationConfig),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -843,6 +848,171 @@ func (r *MemoryRepository) DeleteUser(ctx context.Context, id string) error {
 	}
 	delete(r.users, id)
 	return nil
+}
+
+func (r *MemoryRepository) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
+	if orgID == "" || subject == "" {
+		return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, u := range r.users {
+		if u.OrgID == orgID && u.OIDCSubject == subject {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+}
+
+func (r *MemoryRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, fmt.Errorf("user with email %q %w", email, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, u := range r.users {
+		if strings.EqualFold(u.Email, email) {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("user with email %q %w", email, ErrNotFound)
+}
+
+func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, user *domain.User) (*domain.User, bool, error) {
+	if user == nil || strings.TrimSpace(user.OrgID) == "" {
+		return nil, false, fmt.Errorf("org_id is required to provision user")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if user.OIDCSubject != "" {
+		for _, u := range r.users {
+			if u.OrgID == user.OrgID && u.OIDCSubject == user.OIDCSubject {
+				cp := *u
+				return &cp, false, nil
+			}
+		}
+	}
+	if user.Email != "" {
+		for _, u := range r.users {
+			if strings.EqualFold(u.Email, user.Email) {
+				if u.OrgID != user.OrgID {
+					return nil, false, fmt.Errorf("email %q already belongs to another organization: %w", user.Email, ErrConflict)
+				}
+				if u.OIDCSubject != "" && user.OIDCSubject != "" && u.OIDCSubject != user.OIDCSubject {
+					return nil, false, fmt.Errorf("email %q is bound to another OIDC subject: %w", user.Email, ErrConflict)
+				}
+				cp := *u
+				return &cp, false, nil
+			}
+		}
+	}
+
+	cp := *user
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+	now := time.Now().UTC()
+	cp.BudgetResetPeriod, cp.BudgetResetAt = resolveBudgetResetSchedule(cp.BudgetResetPeriod, cp.BudgetResetAt, now)
+	cp.CreatedAt = now
+	cp.UpdatedAt = now
+	r.users[cp.ID] = &cp
+	out := cp
+	return &out, true, nil
+}
+
+func jwtMappingTupleKey(issuer, claimName, claimValue string) string {
+	return issuer + "\x00" + claimName + "\x00" + claimValue
+}
+
+func (r *MemoryRepository) CreateJWTKeyMapping(ctx context.Context, mapping *domain.JWTKeyMapping) error {
+	if mapping == nil {
+		return fmt.Errorf("jwt key mapping is required")
+	}
+	if strings.TrimSpace(mapping.OrgID) == "" ||
+		strings.TrimSpace(mapping.Issuer) == "" ||
+		strings.TrimSpace(mapping.ClaimName) == "" ||
+		strings.TrimSpace(mapping.ClaimValue) == "" ||
+		strings.TrimSpace(mapping.VirtualKeyID) == "" {
+		return fmt.Errorf("org_id, issuer, claim_name, claim_value, and virtual_key_id are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tupleKey := jwtMappingTupleKey(mapping.Issuer, mapping.ClaimName, mapping.ClaimValue)
+	if _, exists := r.jwtKeyMappingsByTuple[tupleKey]; exists {
+		return fmt.Errorf("jwt key mapping already exists for (%s, %s, %s): %w", mapping.Issuer, mapping.ClaimName, mapping.ClaimValue, ErrConflict)
+	}
+	if mapping.ID == "" {
+		mapping.ID = uuid.NewString()
+	}
+	if mapping.CreatedAt.IsZero() {
+		mapping.CreatedAt = time.Now().UTC()
+	}
+	cp := *mapping
+	r.jwtKeyMappings[cp.ID] = &cp
+	r.jwtKeyMappingsByTuple[tupleKey] = cp.ID
+	return nil
+}
+
+func (r *MemoryRepository) GetJWTKeyMapping(ctx context.Context, id string) (*domain.JWTKeyMapping, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.jwtKeyMappings[id]
+	if !ok {
+		return nil, fmt.Errorf("jwt key mapping %q %w", id, ErrNotFound)
+	}
+	cp := *m
+	return &cp, nil
+}
+
+func (r *MemoryRepository) ListJWTKeyMappings(ctx context.Context, orgID string) ([]*domain.JWTKeyMapping, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.JWTKeyMapping
+	for _, m := range r.jwtKeyMappings {
+		if orgID == "" || m.OrgID == orgID {
+			cp := *m
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (r *MemoryRepository) DeleteJWTKeyMapping(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.jwtKeyMappings[id]
+	if !ok {
+		return fmt.Errorf("jwt key mapping %q %w", id, ErrNotFound)
+	}
+	delete(r.jwtKeyMappingsByTuple, jwtMappingTupleKey(m.Issuer, m.ClaimName, m.ClaimValue))
+	delete(r.jwtKeyMappings, id)
+	return nil
+}
+
+func (r *MemoryRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	id, ok := r.jwtKeyMappingsByTuple[jwtMappingTupleKey(issuer, claimName, claimValue)]
+	if !ok {
+		return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	}
+	m, ok := r.jwtKeyMappings[id]
+	if !ok {
+		return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	}
+	cp := *m
+	return &cp, nil
 }
 
 func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {

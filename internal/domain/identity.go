@@ -154,43 +154,65 @@ type VirtualKey struct {
 	UpdatedAt             time.Time         `json:"updated_at"`
 }
 
+// Principal describes the verified inbound authentication principal attached to an IdentityContext.
+type Principal struct {
+	AuthMethod    string         `json:"auth_method"`
+	PrincipalType string         `json:"principal_type"`
+	Issuer        string         `json:"issuer,omitempty"`
+	Subject       string         `json:"subject,omitempty"`
+	Email         string         `json:"email,omitempty"`
+	RawClaims     map[string]any `json:"raw_claims,omitempty"`
+}
+
+// JWTKeyMapping binds a verified OIDC/JWT (issuer, claim_name, claim_value) tuple to a VirtualKey.
+type JWTKeyMapping struct {
+	ID           string    `json:"id"`
+	OrgID        string    `json:"org_id"`
+	Issuer       string    `json:"issuer"`
+	ClaimName    string    `json:"claim_name"`
+	ClaimValue   string    `json:"claim_value"`
+	VirtualKeyID string    `json:"virtual_key_id"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // IdentityContext is resolved on the hot path from L1/L2 cache and attached to `r.Context()`.
 type IdentityContext struct {
-	VirtualKeyID          string   `json:"virtual_key_id"`
-	KeyPrefix             string   `json:"key_prefix"`
-	OrgID                 string   `json:"org_id"`
-	TeamID                string   `json:"team_id,omitempty"`
-	UserID                string   `json:"user_id,omitempty"`
-	Role                  Role     `json:"role"`
-	KeyAllowedModels      []string `json:"key_allowed_models,omitempty"`
-	TeamAllowedModels     []string `json:"team_allowed_models,omitempty"`
-	AllowedEndpoints      []string `json:"allowed_endpoints"`
-	KeyAllowedMCPServers  []string `json:"key_allowed_mcp_servers"`
-	TeamAllowedMCPServers []string `json:"team_allowed_mcp_servers"`
-	KeyAllowedA2AAgents   []string `json:"key_allowed_a2a_agents"`
-	TeamAllowedA2AAgents  []string `json:"team_allowed_a2a_agents"`
-	KeyAllowedClientApps  []string `json:"key_allowed_client_apps"`
-	TeamAllowedClientApps []string `json:"team_allowed_client_apps"`
-	KeyRPMLimit           int      `json:"key_rpm_limit"`
-	KeyTPMLimit           int      `json:"key_tpm_limit"`
-	KeyMaxConcurrent      int      `json:"key_max_concurrent"`
-	KeyMaxBudgetMicros    int64    `json:"key_max_budget_micros"`
-	KeySpentMicros        int64    `json:"key_spent_micros"`
-	TeamRPMLimit          int      `json:"team_rpm_limit"`
-	TeamTPMLimit          int      `json:"team_tpm_limit"`
-	TeamMaxConcurrent     int      `json:"team_max_concurrent"`
-	TeamMaxBudgetMicros   int64    `json:"team_max_budget_micros"`
-	TeamSpentMicros       int64    `json:"team_spent_micros"`
-	UserRPMLimit          int      `json:"user_rpm_limit"`
-	UserTPMLimit          int      `json:"user_tpm_limit"`
-	UserMaxConcurrent     int      `json:"user_max_concurrent"`
-	UserMaxBudgetMicros   int64    `json:"user_max_budget_micros"`
-	UserSpentMicros       int64    `json:"user_spent_micros"`
-	OrgRPMLimit           int      `json:"org_rpm_limit"`
-	OrgTPMLimit           int      `json:"org_tpm_limit"`
-	OrgMaxConcurrent      int      `json:"org_max_concurrent"`
-	OrgMaxBudgetMicros    int64    `json:"org_max_budget_micros"`
-	OrgSpentMicros        int64    `json:"org_spent_micros"`
+	VirtualKeyID          string     `json:"virtual_key_id"`
+	KeyPrefix             string     `json:"key_prefix"`
+	OrgID                 string     `json:"org_id"`
+	TeamID                string     `json:"team_id,omitempty"`
+	UserID                string     `json:"user_id,omitempty"`
+	Role                  Role       `json:"role"`
+	Principal             *Principal `json:"principal,omitempty"`
+	KeyAllowedModels      []string   `json:"key_allowed_models,omitempty"`
+	TeamAllowedModels     []string   `json:"team_allowed_models,omitempty"`
+	AllowedEndpoints      []string   `json:"allowed_endpoints"`
+	KeyAllowedMCPServers  []string   `json:"key_allowed_mcp_servers"`
+	TeamAllowedMCPServers []string   `json:"team_allowed_mcp_servers"`
+	KeyAllowedA2AAgents   []string   `json:"key_allowed_a2a_agents"`
+	TeamAllowedA2AAgents  []string   `json:"team_allowed_a2a_agents"`
+	KeyAllowedClientApps  []string   `json:"key_allowed_client_apps"`
+	TeamAllowedClientApps []string   `json:"team_allowed_client_apps"`
+	KeyRPMLimit           int        `json:"key_rpm_limit"`
+	KeyTPMLimit           int        `json:"key_tpm_limit"`
+	KeyMaxConcurrent      int        `json:"key_max_concurrent"`
+	KeyMaxBudgetMicros    int64      `json:"key_max_budget_micros"`
+	KeySpentMicros        int64      `json:"key_spent_micros"`
+	TeamRPMLimit          int        `json:"team_rpm_limit"`
+	TeamTPMLimit          int        `json:"team_tpm_limit"`
+	TeamMaxConcurrent     int        `json:"team_max_concurrent"`
+	TeamMaxBudgetMicros   int64      `json:"team_max_budget_micros"`
+	TeamSpentMicros       int64      `json:"team_spent_micros"`
+	UserRPMLimit          int        `json:"user_rpm_limit"`
+	UserTPMLimit          int        `json:"user_tpm_limit"`
+	UserMaxConcurrent     int        `json:"user_max_concurrent"`
+	UserMaxBudgetMicros   int64      `json:"user_max_budget_micros"`
+	UserSpentMicros       int64      `json:"user_spent_micros"`
+	OrgRPMLimit           int        `json:"org_rpm_limit"`
+	OrgTPMLimit           int        `json:"org_tpm_limit"`
+	OrgMaxConcurrent      int        `json:"org_max_concurrent"`
+	OrgMaxBudgetMicros    int64      `json:"org_max_budget_micros"`
+	OrgSpentMicros        int64      `json:"org_spent_micros"`
 }
 
 // AuditLog records administrative or security-critical mutations.
