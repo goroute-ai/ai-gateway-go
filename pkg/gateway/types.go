@@ -27,17 +27,29 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// RoutingHints specifies per-request routing constraints and preferences mapped to
+// `goroute_extensions` in the outgoing inference payload.
+type RoutingHints struct {
+	AllowedRegion         string   `json:"allowed_region,omitempty"`
+	Tags                  []string `json:"tags,omitempty"`
+	SessionID             string   `json:"session_id,omitempty"`
+	PreferredDeploymentID string   `json:"preferred_deployment_id,omitempty"`
+	Priority              int      `json:"priority,omitempty"`
+	HedgeAfterMs          int      `json:"hedge_after_ms,omitempty"`
+}
+
 // ChatRequest specifies input parameters for a multi-turn or customized chat completion.
 type ChatRequest struct {
-	Model           string    `json:"model"`
-	Messages        []Message `json:"messages"`
-	Temperature     *float64  `json:"temperature,omitempty"`
-	TopP            *float64  `json:"top_p,omitempty"`
-	MaxTokens       *int      `json:"max_tokens,omitempty"`
-	Stop            []string  `json:"stop,omitempty"`
-	Stream          bool      `json:"stream,omitempty"`
-	ReasoningEffort string    `json:"reasoning_effort,omitempty"` // "low", "medium", "high"
-	User            string    `json:"user,omitempty"`
+	Model           string        `json:"model"`
+	Messages        []Message     `json:"messages"`
+	Temperature     *float64      `json:"temperature,omitempty"`
+	TopP            *float64      `json:"top_p,omitempty"`
+	MaxTokens       *int          `json:"max_tokens,omitempty"`
+	Stop            []string      `json:"stop,omitempty"`
+	Stream          bool          `json:"stream,omitempty"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"` // "low", "medium", "high"
+	User            string        `json:"user,omitempty"`
+	RoutingHints    *RoutingHints `json:"routing_hints,omitempty"`
 }
 
 // VirtualKeyRequest specifies parameters for issuing a new Gateway Virtual API Key.
