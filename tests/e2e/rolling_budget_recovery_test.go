@@ -208,6 +208,30 @@ func TestLiveStack_Rolling24hRecoveryAndDualNodeConcurrency(t *testing.T) {
 		t.Fatalf("expected 429 when full 150,000/150,000 active, got %d", got)
 	}
 
+	// Wait for the outbox worker to persist the t0 call into PostgreSQL spend_logs, then delete
+	// ONLY the rolling spend sorted set and verify admission reloads persisted spend and still rejects.
+	flushDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(flushDeadline) {
+		hist, histErr := pgRepo.ListRollingWindowHistory(ctx, orgID, domain.QuotaScopeKey, vk.ID, clock())
+		if histErr == nil && len(hist) >= 3 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if _, err := redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
+		keyPattern := fmt.Sprintf("gw:dq:{org:%s}:r24h:key:%s:*", orgID, vk.ID)
+		rKeys, err := rdb.Keys(ctx, keyPattern).Result()
+		if err != nil || len(rKeys) == 0 {
+			return nil, fmt.Errorf("expected rolling spend ZSET matching %s, got %v (err=%v)", keyPattern, rKeys, err)
+		}
+		return rdb.Del(ctx, rKeys...).Result()
+	}); err != nil {
+		t.Fatalf("delete only rolling ZSET: %v", err)
+	}
+	if got := callChat(ts1.URL, vk.RawKey); got != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after deleting only rolling spend ZSET (reload from Postgres), got %d", got)
+	}
+
 	// At t0 + 4h: charge 1 (t0-20h) has aged out (100,000 active out of 150,000).
 	// Room for 1 more 50,000-micro request, then next request rejects.
 	setClock(t0.Add(4 * time.Hour))

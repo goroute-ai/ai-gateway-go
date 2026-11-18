@@ -232,12 +232,16 @@ for idx = 0, count - 1 do
     if max_budget > 0 then
         local cur_spent = 0
         if is_rolling == 1 then
-            if redis.call("EXISTS", spend_key) == 1 then
-                local active_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "(" .. cutoff_ms, "+inf")
+            local init_score = redis.call("ZSCORE", r24h_zset, "__init__:0")
+            local rolling_initialized = (init_score ~= false and init_score ~= nil)
+            if rolling_initialized then
+                local active_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "(" .. cutoff_ms, "9007199254740990")
                 for _, m in ipairs(active_roll) do
-                    local a = tonumber(string.match(m, ":(%d+)$") or "0")
-                    if a > 0 then
-                        cur_spent = cur_spent + a
+                    if m ~= "__init__:0" then
+                        local a = tonumber(string.match(m, ":(%d+)$") or "0")
+                        if a > 0 then
+                            cur_spent = cur_spent + a
+                        end
                     end
                 end
             else
@@ -247,6 +251,15 @@ for idx = 0, count - 1 do
                 local init_list = rolling_init_entries[idx] or {}
                 for _, entry in ipairs(init_list) do
                     cur_spent = cur_spent + entry.amt
+                end
+                local unsettled_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "(" .. cutoff_ms, "9007199254740990")
+                for _, m in ipairs(unsettled_roll) do
+                    if m ~= "__init__:0" then
+                        local a = tonumber(string.match(m, ":(%d+)$") or "0")
+                        if a > 0 then
+                            cur_spent = cur_spent + a
+                        end
+                    end
                 end
             end
         else
@@ -349,19 +362,16 @@ for idx = 0, count - 1 do
     end
     if max_budget > 0 then
         if is_rolling == 1 then
-            if redis.call("EXISTS", spend_key) == 0 then
-                redis.call("DEL", r24h_zset)
+            redis.call("ZREMRANGEBYSCORE", r24h_zset, "-inf", cutoff_ms)
+            local init_score = redis.call("ZSCORE", r24h_zset, "__init__:0")
+            if init_score == false or init_score == nil then
+                redis.call("ZADD", r24h_zset, 9007199254740991, "__init__:0")
                 local init_list = rolling_init_entries[idx] or {}
                 for _, entry in ipairs(init_list) do
                     redis.call("ZADD", r24h_zset, entry.ts_ms, entry.id .. ":" .. entry.amt)
                 end
-                redis.call("SET", spend_key, "1", "EX", 90000)
-                if redis.call("EXISTS", r24h_zset) == 1 then
-                    redis.call("EXPIRE", r24h_zset, 90000)
-                end
-            else
-                redis.call("ZREMRANGEBYSCORE", r24h_zset, "-inf", cutoff_ms)
             end
+            redis.call("EXPIRE", r24h_zset, 90000)
         else
             local redis_spent = tonumber(redis.call("GET", spend_key) or "0")
             if spent_floor > redis_spent then

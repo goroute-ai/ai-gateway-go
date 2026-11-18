@@ -123,9 +123,10 @@ for idx = 0, count - 1 do
             if is_rolling == 1 then
                 if actual_cost > 0 then
                     redis.call("ZADD", r24h_zset, rolling_now_ms, "s:" .. request_id .. ":" .. actual_cost)
+                end
+                if redis.call("EXISTS", r24h_zset) == 1 then
                     redis.call("EXPIRE", r24h_zset, 90000)
                 end
-                redis.call("SET", spend_key, "1", "EX", 90000)
             elseif actual_cost > 0 then
                 redis.call("INCRBY", spend_key, actual_cost)
             end

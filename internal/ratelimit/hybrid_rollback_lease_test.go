@@ -229,10 +229,10 @@ func TestLimiter_Rolling24hColdRecovery_HoldConcurrentAndFailClosed(t *testing.T
 				t.Fatalf("expected 1 loader call on cold init, got %d", loaderCalls.Load())
 			}
 
-			// Simulate spend+r24h loss while req-surv reservation remains active in res_*.
+			// Simulate losing ONLY r24hZSet (while an init/spend marker or res_* survives).
 			if withRedis {
 				ks := buildDescriptorKeySet("org-rec", desc, curTime.Unix()/60, curTime.Format("20060102"))
-				mr.Del(ks.spend)
+				mr.Set(ks.spend, "1")
 				mr.Del(ks.r24hZSet)
 			} else {
 				lim.localMu.Lock()
