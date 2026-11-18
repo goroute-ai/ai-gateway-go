@@ -174,9 +174,21 @@ func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
 		t.Fatalf("CooldownPolicy not persisted: %+v", gotMG.CooldownPolicy)
 	}
 
+	cred := &domain.ProviderCredential{
+		OrgID:    org.ID,
+		Provider: domain.ProviderOpenAI,
+		Name:     "v120-mig-cred-" + suffix,
+		BaseURL:  "https://api.openai.com/v1",
+		IsActive: true,
+	}
+	if err := pgRepo.CreateProviderCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateProviderCredential: %v", err)
+	}
+
 	dep := &domain.Deployment{
 		ModelGroupID:      mg.ID,
 		GlobalModelID:     gm.ID,
+		CredentialID:      cred.ID,
 		DeploymentName:    "v120-mig-dep",
 		Priority:          2,
 		Tags:              []string{"tier:primary", "compliance:eu"},
@@ -191,7 +203,7 @@ func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
 	if err != nil || len(deps) != 1 {
 		t.Fatalf("ListDeploymentsByGroup: len=%d err=%v", len(deps), err)
 	}
-	if deps[0].Priority != 2 || deps[0].MaxBudgetMicros != 25_000_000 || deps[0].BudgetResetPeriod != "daily" || len(deps[0].Tags) != 2 {
+	if deps[0].CredentialID != cred.ID || deps[0].Priority != 2 || deps[0].MaxBudgetMicros != 25_000_000 || deps[0].BudgetResetPeriod != "daily" || len(deps[0].Tags) != 2 {
 		t.Fatalf("Deployment v1.20 fields not persisted: %+v", deps[0])
 	}
 }
@@ -242,41 +254,54 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	}
 
 	gmID := "openai/live-v120-" + suffix
-	_ = pgRepo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+	if err := pgRepo.UpsertGlobalModel(ctx, &domain.GlobalModel{
 		ID: gmID, Provider: domain.ProviderOpenAI, ModelName: "live-v120-" + suffix,
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive, PricingStatus: domain.PricingStatusVerified,
 		MaxOutputTokens: 4096,
-	})
+	}); err != nil {
+		t.Fatalf("UpsertGlobalModel: %v", err)
+	}
+
+	mustCreate := func(path string, body any, out any) {
+		t.Helper()
+		r, b := c1.doJSON("POST", path, adminHeaders, body, out)
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("POST %s failed: %d %s", path, r.StatusCode, string(b))
+		}
+	}
 
 	var pCred, fCred, fbMG, pMG, pDep map[string]any
-	c1.doJSON("POST", "/admin/v1/credentials", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/credentials", map[string]any{
 		"org_id": org.ID, "provider": "openai", "name": "p-c", "api_key": "sk-p", "base_url": primarySrv.URL,
 	}, &pCred)
-	c1.doJSON("POST", "/admin/v1/credentials", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/credentials", map[string]any{
 		"org_id": org.ID, "provider": "openai", "name": "f-c", "api_key": "sk-f", "base_url": fallbackSrv.URL,
 	}, &fCred)
 
-	c1.doJSON("POST", "/admin/v1/model-groups", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/model-groups", map[string]any{
 		"org_id": org.ID, "alias": "live-fb-" + suffix, "routing_strategy": "round-robin",
 	}, &fbMG)
-	c1.doJSON("POST", "/admin/v1/deployments", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/deployments", map[string]any{
 		"model_group_id": fbMG["id"], "global_model_id": gmID, "credential_id": fCred["id"],
 		"deployment_name": "fb-dep", "weight": 100,
 	}, nil)
 
-	c1.doJSON("POST", "/admin/v1/model-groups", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/model-groups", map[string]any{
 		"org_id": org.ID, "alias": "live-primary-" + suffix, "routing_strategy": "round-robin",
 		"max_retries": 0, "failure_threshold": 2, "cooldown_seconds": 5,
 		"fallback_targets": []map[string]any{{"target": fbMG["id"]}},
 	}, &pMG)
-	c1.doJSON("POST", "/admin/v1/deployments", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/deployments", map[string]any{
 		"model_group_id": pMG["id"], "global_model_id": gmID, "credential_id": pCred["id"],
 		"deployment_name": "p-dep", "weight": 100,
 	}, &pDep)
-	pDepID := pDep["id"].(string)
+	pDepID, _ := pDep["id"].(string)
+	if pDepID == "" {
+		t.Fatalf("expected non-empty deployment id, got %+v", pDep)
+	}
 
 	var vk domain.VirtualKey
-	c1.doJSON("POST", "/admin/v1/keys", adminHeaders, map[string]any{
+	mustCreate("/admin/v1/keys", map[string]any{
 		"org_id": org.ID, "name": "live-v120-key", "allowed_endpoints": []string{"*"},
 	}, &vk)
 
