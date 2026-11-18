@@ -29,25 +29,26 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0021`), change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces:*
-   - Unified Multi-Modal Data Plane (23 primary paths / 26 HTTP operations, including chat, embeddings, audio, images, files, batches, responses, and realtime).
+   *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces (`73` OpenAPI paths):*
+   - Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI paths, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
    - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
-   - Admin Control Plane (`/admin/v1/*`), including preflight credential validation, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
+   - Admin Control Plane (`/admin/v1/*`), including preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
 
 3. **[Subsystem Internals & Engineering Guide (`INTERNALS.md`)](./INTERNALS.md)**  
    *Deep-dive code tour and mathematical specifications for core contributors and platform architects:*
-   - Synchronous and Real-Time SSE Streaming Data Plane lifecycles with sequence diagrams.
+   - Synchronous and Real-Time SSE Streaming Data Plane lifecycles with sequence diagrams, including `StreamContinuationManager` mid-stream SSE continuation.
    - Embedded Operator Web UI serving mechanics, memory footprint, cache header policy, and HTML5 History fallback.
    - Two-layer Guardrails Pipeline (`Engine`, 19-driver registry, Starlark `custom_code` sandbox, tool trust taint tracking, `StreamWindowEvaluator`), `/v1/guardrails/apply`, and preflight credential validation mechanics.
-   - Stage-1 heuristic prompt complexity classifier formula (< 0.1ms) and Stage-2 load balancing models.
+   - Stage 0 `PreRouterRegistry` (heuristic complexity, semantic embedding centroids, quality tiering, Thompson-sampling adaptive bandit), `DeploymentFilterChain` (`RoutingPlugin`, region, `&`/`!` tags, staleness, capacity/budget caps, session & prompt-cache affinity), `Deployment.Priority` tier walk, 7-strategy Load Balancer (including `fastest-response` hedged racing), and `PriorityScheduler`.
+   - Adaptive `RetryPolicy` & failure-rate `CooldownPolicy` (with lone-deployment safety net) and specialized fallback chains (`context_window_fallbacks`, `content_policy_fallbacks`, `fallback_targets`).
    - AES-256-GCM Envelope Encryption (DEK/KEK) and SHA-256 constant-time hash verification.
    - Exact 64-bit micro-dollar integer accounting formula ($10^{-6}\text{ USD}$) with zero float drift.
-   - Single-roundtrip atomic Redis Lua rate limiting (`check_and_increment.lua`).
+   - Single-roundtrip atomic Redis Lua rate limiting (`check_and_increment.lua`) and distributed routing/affinity/bandit Lua scripts.
    - MCP Virtual Hub aggregation, AEAD-encrypted MRTR tokens, and SHA-256 tool pinning.
    - Linux Foundation A2A v1.0 durability, Subscribe-First SSE, and transactional outbox.
 
@@ -56,8 +57,8 @@ docs/
    - Enterprise AI Control Plane topology and 9 foundational subsystems, including the Embedded Operator Web UI.
    - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
-   - Reliability manager state machine (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`) and cross-provider failover chains.
-   - Horizontal pod scalability and distributed caching hierarchy (L1 Memory + L2 Redis).
+   - 6-stage routing pipeline and Reliability Manager (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`, priority tier step-downs, specialized fallback chains, and mid-stream recovery).
+   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0021`), and distributed caching/Redis cluster keyspace.
 
 5. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*

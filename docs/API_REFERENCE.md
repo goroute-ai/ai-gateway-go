@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.8.0`  
+> **Version**: `v1.20.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
 
@@ -14,6 +14,19 @@ All Gateway endpoints require authentication using a Virtual API Key (`sk-gw-...
 Authorization: Bearer sk-gw-prod-7f9a2b8c4d1e
 ```
 
+### Inbound Request Routing Hint Headers
+Callers can pass per-request routing hints via HTTP headers (equivalent to `goroute_extensions` fields in the request body):
+
+| Header | Description | Example |
+| :--- | :--- | :--- |
+| `X-Gateway-Allowed-Region` | Restrict candidate deployments to a specific region | `us-east-1` |
+| `X-Gateway-Session-Id` | Pin request session to a consistent deployment (`AffinityStore`) | `sess_01hf8a...` |
+| `X-Gateway-Preferred-Deployment-Id` | Soft-prefer a specific deployment ID when healthy | `dep_primary_us` |
+| `X-Gateway-Priority` | Request priority for `PriorityScheduler` queueing (higher = earlier dispatch) | `10` |
+| `X-Gateway-Hedge-After-Ms` | Per-request stagger delay override for `fastest-response` hedged racing | `150` |
+| `X-Gateway-Tags` | Comma-separated routing/guardrail tags (supports `&` / `!` expressions in filters) | `tier:fast, !experimental` |
+| `X-Gateway-Tag-<Name>` | Inject an explicit tag key/value (`<Name>=<Value>`) | `env=prod` |
+
 ### Standard Gateway Response Headers
 Every response from GoRoute AI Gateway includes rich tracing and attribution metadata:
 
@@ -23,15 +36,19 @@ Every response from GoRoute AI Gateway includes rich tracing and attribution met
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
 | `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `gemini`, `anthropic`, `openai` |
 | `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gemini-2.5-flash`, `claude-sonnet-4` |
-| `X-Gateway-Cost-Micros`| Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
-| `X-Gateway-Routing-Time`| Gateway Stage 1 + Stage 2 routing overhead | `12 µs` |
+| `X-Gateway-Cost-Micros` | Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
+| `X-Gateway-Routing-Micros` | Gateway Stage 0–4 routing decision overhead in microseconds | `12` |
 | `X-Gateway-Latency-Ms` | End-to-end request latency in milliseconds | `318` |
+| `X-Gateway-Route-Reason` | Selection / step-down reason code from PreRouter or ReliabilityManager | `priority_tier_stepdown` |
+| `X-Gateway-Fallback-Attempted` | Indicates whether an inter-group fallback executed | `true` or `false` |
+| `X-Gateway-Tier-Stepdowns` | Number of `Deployment.Priority` tier step-downs attempted | `1` |
+| `X-Gateway-Stream-Continued` | Indicates whether mid-stream SSE continuation seamlessly stitched output | `true` or `false` |
 | `X-Gateway-Cache` | Cache evaluation result | `HIT` or `MISS` |
 | `X-Gateway-Guardrail-Action` | Guardrail action applied during request/stream processing | `none`, `redact`, `block` |
 | `X-Gateway-Pricing-Status` | Billing pricing verification status (`verified` vs `unverified`) | `verified` |
 | `Retry-After` | Cooldown period sent on HTTP 429 rate limit | `45` (seconds) |
 
-When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, and `X-Gateway-Latency-Ms` to browser clients.
+When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, and `X-Gateway-Tier-Stepdowns` to browser clients.
 
 ---
 
@@ -56,7 +73,12 @@ Chat request bodies are limited to 10 MiB; larger requests return `413 request_b
   "max_tokens": 1024,
   "stream": false,
   "goroute_extensions": {
-    "tags": ["prod"],
+    "tags": ["prod", "tier:fast"],
+    "allowed_region": "us-east-1",
+    "session_id": "sess_01hf8a",
+    "preferred_deployment_id": "dep_primary_us",
+    "priority": 10,
+    "hedge_after_ms": 150,
     "guardrails": [
       {"name": "strict-pii", "enabled": true}
     ]
@@ -79,7 +101,7 @@ Chat request bodies are limited to 10 MiB; larger requests return `413 request_b
   ]
 }
 ```
-Optional `goroute_extensions.tags` activates tag-scoped `mode_rule` routing and bindings, while `goroute_extensions.guardrails` can opt into additional active named guardrails. Request overrides can never disable `default_on` or admin-locked (`is_locked: true`) guardrails.
+Optional `goroute_extensions.tags` activates tag-scoped `mode_rule` routing, bindings, and Stage 2 tag filtering (`&`/`!` boolean expressions). `allowed_region`, `session_id`, `preferred_deployment_id`, `priority`, and `hedge_after_ms` override region pinning, `AffinityStore` stickiness, `PriorityScheduler` queue priority, and `fastest-response` stagger intervals. Virtual model strings also support `auto`, `router/heuristic`, `router/semantic`, `router/quality`, `router/adaptive`, and comma-separated racing syntax (`"model-a,model-b"`). Meanwhile `goroute_extensions.guardrails` can opt into additional active named guardrails; request overrides can never disable `default_on` or admin-locked (`is_locked: true`) guardrails.
 
 #### Synchronous Response (HTTP 200 OK)
 ```json
@@ -821,23 +843,32 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
 - `POST /admin/v1/credentials/{credID}/validate`: Validates an already-persisted vault credential.
 
 ### 5.6 Model Groups & Deployment Management
-- `POST /admin/v1/model-groups`: Creates a virtual model group (alias) with routing strategy and fallbacks.
+- `POST /admin/v1/model-groups`: Creates a virtual model group (alias) with routing strategy (`weighted-shuffle`, `round-robin`, `least-busy`, `latency-based`, `fastest-response`, `usage-based-headroom`, `lowest-cost`), specialized fallbacks, retry policy, and adaptive cooldown policy.
   ```json
   {
-    "name": "fast",
-    "routing_strategy": "weighted-shuffle",
-    "fallback_group_ids": ["reasoning"]
+    "alias": "fast",
+    "routing_strategy": "latency-based",
+    "fallback_group_ids": ["reasoning"],
+    "context_window_fallbacks": [{"target": "long-context", "overrides": {"max_tokens": 4096}}],
+    "content_policy_fallbacks": [{"target": "safe-fallback"}],
+    "fallback_targets": [{"target": "backup-claude"}],
+    "retry_policy": {"rate_limit_retries": 3, "server_error_retries": 2},
+    "cooldown_policy": {"failure_rate_threshold": 0.5, "min_requests_per_minute": 10}
   }
   ```
 - `GET /admin/v1/model-groups`: Lists all configured model groups.
-- `POST /admin/v1/deployments`: Adds a model deployment to a group with priority, weight, and rate limits.
+- `POST /admin/v1/deployments`: Adds a model deployment to a group with priority tier, weight, region, tags, rate limits, and optional deployment spend budget.
   ```json
   {
     "model_group_id": "mg_fast",
     "global_model_id": "gemini/gemini-2.5-flash",
     "credential_id": "cred_gemini",
-    "priority": 1,
+    "priority": 0,
     "weight": 80,
+    "region": "us-central1",
+    "tags": ["tier:fast", "low-cost"],
+    "max_budget_micros": 50000000,
+    "budget_reset_period": "daily",
     "rpm_capacity": 1000,
     "tpm_capacity": 1000000
   }
@@ -965,6 +996,11 @@ gateway_response_cache_l1_evictions_total 12
 gateway_upstream_connections_reused_total 891
 gateway_streams_total 122
 gateway_stream_errors_total 2
+gateway_routing_overhead_micros{quantile="0.95"} 42
+gateway_fallbacks_total 7
+gateway_retries_total 19
+gw_redis_cb_state 0
+gw_routing_signal_degraded_total 0
 gateway_guardrail_blocks_total 4
 gateway_guardrail_evaluations_total{guardrail="prod-pii-shield",hook="pre_call"} 412
 gateway_guardrail_errors_total{guardrail="prod-pii-shield",hook="pre_call"} 0

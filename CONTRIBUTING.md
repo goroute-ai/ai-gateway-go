@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is a Go service and embeddable SDK (`v1.7.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v1.20.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 
@@ -22,7 +22,7 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 4. **Multi-Tenant Isolation & Security Headers**: Boundary 1 Virtual Key / JWT authentication, tri-state multi-tenant RBAC allowlists (`null` inherit vs `[]` deny all across `Org > Team > User > VirtualKey`), fail-closed quota/policy checks, Redis Pub/Sub cross-replica invalidation, and `SecurityHeadersMiddleware` ([`internal/server/security_headers.go`](./internal/server/security_headers.go)) must be preserved across all endpoints.
 5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and both primary `/v1` and `/admin/v1` routes are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
-7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 420 KB` uncompressed and `<= 125 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
+7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 500 KB` uncompressed and `<= 150 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
 8. **Secret & CI Hygiene**: Never commit real or realistic secret/token literals—even in unit tests (construct synthetic fixtures dynamically if needed). Keep tests compatible with `.gitleaks.toml` and GitHub Push Protection.
 
 ---

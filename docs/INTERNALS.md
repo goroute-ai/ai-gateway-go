@@ -10,10 +10,10 @@
 
 1. [Architectural Principles & Topology](#1-architectural-principles--topology)
 2. [Data Plane Execution Lifecycle (Step-by-Step)](#2-data-plane-execution-lifecycle-step-by-step)
-3. [Stage 1 Intelligent Router: Zero-LLM Complexity Classifier](#3-stage-1-intelligent-router-zero-llm-complexity-classifier)
-4. [Stage 2 Load Balancer: The 5 Selection Algorithms](#4-stage-2-load-balancer-the-5-selection-algorithms)
+3. [Stage 0 Pre-Router Engine: Heuristic, Semantic, Quality & Adaptive Bandit](#3-stage-0-pre-router-engine-heuristic-semantic-quality--adaptive-bandit)
+4. [Stages 2–5: Candidate Filters, Priority Tiers, 7 Load-Balancing Algorithms & Scheduling](#4-stages-25-candidate-filters-priority-tiers-7-load-balancing-algorithms--scheduling)
 5. [Dual-Boundary Security & Envelope Cryptography](#5-dual-boundary-security--envelope-cryptography)
-6. [Reliability Manager: 3-State Circuit Breakers & Failover](#6-reliability-manager-3-state-circuit-breakers--failover)
+6. [Reliability Manager: RetryPolicy, Adaptive Circuit Breakers, Specialized Fallbacks & SSE Continuation](#6-reliability-manager-retrypolicy-adaptive-circuit-breakers-specialized-fallbacks--sse-continuation)
 7. [FinOps Micro-Dollar Accounting & Asynchronous Batch Pipeline](#7-finops-micro-dollar-accounting--asynchronous-batch-pipeline)
 8. [Distributed Rate Limiting & Pre-Flight Tokenizer](#8-distributed-rate-limiting--pre-flight-tokenizer)
 9. [Deterministic Exact-Match Response Caching](#9-deterministic-exact-match-response-caching)
@@ -61,9 +61,9 @@ flowchart TB
             GuardMW["4. Security Guardrails\n(Injection, Secret & PII Redaction)"]
             RateMW["5. Quota & Budget Guard\n(Single Atomic Redis Lua Roundtrip)"]
             CacheMW["6. Exact-Match Response Cache\n(Deterministic SHA-256 Bypass)"]
-            Stage1["7. Stage 1: Intelligent Router\n(Zero-LLM Heuristic Complexity Classifier)"]
-            Stage2["8. Stage 2: Load Balancer\n(Weighted / Least-Busy / Latency EWMA / Headroom / Lowest-Cost)"]
-            RelMgr["9. Reliability Manager\n(Intra-Group Retries + Circuit Breakers + Fallbacks)"]
+            Stage1["7. Stage 0-1: PreRouter & Intelligent Router\n(Heuristic / Semantic / Quality / Bandit + Affinity)"]
+            Stage2["8. Stage 2-4: FilterChain, Tiers & Load Balancer\n(Plugins, Region/Tags, Budgets, 7 LB Strategies)"]
+            RelMgr["9. Stage 5: PriorityScheduler & Reliability Manager\n(RetryPolicy, Adaptive CB, Specialized Fallbacks, SSE Continuation)"]
             Adapters["10. Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Gemini · Mistral · Ollama)"]
         end
 
@@ -141,10 +141,10 @@ sequenceDiagram
         Cache-->>GW: Cached CanonicalChatResponse
         GW-->>Client: 200 OK (X-Gateway-Cache: HIT, Cost: 0)
     else Cache MISS
-        GW->>Router: Stage 1 (Intelligent Router) -> ModelGroup
-        GW->>Router: Stage 2 (Load Balancer) -> Healthy Deployment
-        Router-->>GW: Target Deployment + Fallback Chain
-        GW->>Rel: Execute Request with Circuit Breakers & Retries
+        GW->>Router: Stage 0-1 (PreRouter + Intelligent Router) -> ModelGroup
+        GW->>Router: Stage 2-4 (FilterChain + Priority Tiers + 7-Strategy LB) -> Candidates
+        Router-->>GW: Ranked Deployment Pool + Specialized Fallback Chains
+        GW->>Rel: Stage 5 (PriorityScheduler + Hedged Race / Retries + SSE Continuation)
         Rel->>Adapter: Transform Canonical Request to Target Provider Wire Schema
         Adapter->>Upstream: Forward Upstream HTTP Request
         Upstream-->>Adapter: Raw Upstream Response (Tokens + Headers)
@@ -168,13 +168,18 @@ When `stream: true` is requested:
    - **Google Gemini**: Server-sent events are normalized and candidates are mapped to completion choices.
 3. Every SSE frame is immediately dispatched to the client using `http.Flusher.Flush()` with zero intermediate buffer lag.
 4. **2MB High-Capacity Scanner Buffers**: All SSE line scanners (`pkg/gateway/sdk.go`, `internal/adapter/sse`, and MCP Stdio transports) allocate a custom 2MB line buffer (`scanner.Buffer(buf, 2*1024*1024)`) instead of Go's default 64KB `bufio.MaxScanTokenSize`. This prevents `bufio.ErrTooLong` truncation when processing long reasoning chains (e.g. OpenAI `o1`/`o3`, Claude thinking deltas), expanded tool arguments, or multi-kilobyte MCP responses.
-5. If a network disruption occurs mid-stream after HTTP 200 has been committed, the gateway emits a structured error SSE event (`event: error\ndata: {"error":{"message":"..."}}\n\n`) followed by `data: [DONE]\n\n`, allowing client SDKs to fail gracefully without JSON decoding panics.
+5. **Mid-Stream SSE Continuation (`StreamContinuationManager`, `internal/router/stream_continuation.go`)**: When `router.enable_mid_stream_continuation` is `true` and an upstream plain-text SSE stream fails mid-generation (without active tool-call deltas or non-text chunks), GoRoute captures emitted output text, adjusts `max_tokens` (`original_max - estimated_emitted_tokens`), appends an assistant prefill message, and seamlessly continues via an alternate deployment/fallback while setting `X-Gateway-Stream-Continued: true` (bounded by `max_stream_continuations`). If continuation is ineligible or exhausted, the gateway emits a structured error SSE event (`event: error\ndata: {"error":{"message":"..."}}\n\n`) followed by `data: [DONE]\n\n`, allowing client SDKs to fail gracefully without JSON decoding panics.
 
 ---
 
-## 3. Stage 1 Intelligent Router: Zero-LLM Complexity Classifier
+## 3. Stage 0 Pre-Router Engine: Heuristic, Semantic, Quality & Adaptive Bandit
 
-Traditional approaches often call a secondary LLM to classify prompts, which introduces 300ms–800ms of additional latency and consumes extra token budget. GoRoute AI Gateway implements a **Zero-LLM Sub-Millisecond Heuristic Complexity Classifier** that executes in `< 0.1 ms`.
+`PreRouterRegistry` (`internal/router/prerouter.go`) supports multiple pluggable virtual pre-routing modes alongside custom Go `PreRouter` extensions:
+- **`"auto"` / `"router/heuristic"`**: Traditional approaches often call a secondary LLM to classify prompts, introducing 300ms–800ms of latency and extra token spend. GoRoute's default classifier executes in `< 0.1 ms` in pure Go.
+- **`"router/semantic"` (`prerouter_semantic.go`)**: Computes cosine similarity between the incoming prompt embedding and pre-warmed intent route centroids (`gw:router:semantic:{org:<org_id>}:centroids`), routing matches above `similarity_threshold` to the configured `target_model`.
+- **`"router/quality"` (`prerouter_quality.go`)**: Selects targets across `GlobalModel.QualityTier` levels based on request hints, tool requirements, and prompt signals.
+- **`"router/adaptive"` (`prerouter_bandit.go`)**: Contextual **Thompson Sampling Bandit** sampling Beta(`alpha`, `beta`) posteriors per candidate arm stored in Redis (`gw:router:bandit:{org:<org_id>}:{bucket}`) with multi-objective reward updates shaped by success, latency (`latency_weight`), cost (`cost_weight`), and exponential decay (`decay_half_life`).
+- **Comma-Separated Racing (`"model-a,model-b"`)**: Expands comma-delimited targets into concurrent hedged execution candidates.
 
 ```
                   +----------------------------------------------+
@@ -234,19 +239,30 @@ If $\text{Score} \ge \text{ComplexityThreshold}$ (default `0.40`), the request r
 
 ---
 
-## 4. Stage 2 Load Balancer: The 5 Selection Algorithms
+## 4. Stages 2–5: Candidate Filters, Priority Tiers, 7 Load-Balancing Algorithms & Scheduling
 
-Once Stage 1 resolves a target `ModelGroup`, Stage 2 filters out any deployments currently in **Circuit Breaker Cooldown** and selects the winning deployment using one of 5 pluggable algorithms:
+Before selection, Stage 2 runs `DeploymentFilterChain` (`filters.go`):
+1. **Health & Staleness Gate**: Excludes disabled/cooldown deployments and deployments exceeding `router.health_staleness_threshold`.
+2. **RBAC & Context Window Gate**: Verifies `RBACEngine.AuthorizeDeployment` (fail-closed) and filters out models whose `max_input_tokens` cannot fit the estimated prompt + requested completion tokens (wrapping `ContextWindowExceededError` to trigger `context_window_fallbacks`).
+3. **Region & Boolean Tag Filter**: Enforces `allowed_region` and evaluates comma-separated `&` (AND) / `!` (NOT) tag expressions against `Deployment.Tags`.
+4. **Deployment Capacity, Budgets & Affinity (`deployment_budgets.go`, `affinity.go`)**: Enforces `rpm_capacity`, `tpm_capacity` (`strict_capacity_filtering`), per-deployment `max_budget_micros`, and `router.provider_budgets`, then boosts sticky deployments from `AffinityStore` (`session_id`, `previous_response_id`, or `prompt_cache_affinity` prefix hashes).
+5. **Custom Go `RoutingPlugin` Hooks**: Invokes ordered `RoutingPlugin` filters (exposed publicly via `gateway.WithRoutingPlugin`).
+
+Stage 3 partitions surviving candidates into ascending **`Deployment.Priority` tiers** (`partitionByPriority` in `priority_tiers.go`, using a zero-allocation fast path when all deployments share one tier). Stage 4 selects the winning candidate from the active tier using one of **7 Load-Balancing Strategies**:
 
 | Strategy | Selection Algorithm & Mathematical Model | Primary Use Case |
 | :--- | :--- | :--- |
 | **`weighted-shuffle`** | Probability proportional to deployment weight:<br>$$P(d_i) = \frac{w_i}{\sum_{j} w_j}$$ | Traffic splitting across accounts or providers (e.g., 80% Gemini / 20% OpenAI). |
+| **`round-robin`** | Atomic modular counter cycling evenly across healthy tier deployments. | Balanced traffic distribution across homogeneous nodes. |
 | **`least-busy`** | Selects deployment minimizing shared in-flight requests:<br>$$d^* = \arg\min_{d} (\text{InFlight}_d)$$ | Long-running streaming and deep reasoning workloads. |
 | **`latency-based`** | Selects the lowest shared time-to-first-token EWMA, using 250 ms for deployments without a sample. EWMA uses alpha 0.3:<br>$$\text{EWMA}_{\text{new}} = 0.3 \cdot L + 0.7 \cdot \text{EWMA}_{\text{old}}$$ | Interactive chat requiring minimum perceived latency. |
+| **`fastest-response`** | `HedgedExecutor` (`hedged.go`) dispatches staggered parallel requests (`hedge_delay_ms`, `max_hedge_concurrency`) across top candidates and streams/returns the fastest first responder, canceling slower peers. | P99 tail-latency shielding for latency-critical UX. |
 | **`usage-based-headroom`**| Selects deployment with highest remaining TPM capacity over a 1-minute window:<br>$$\text{Headroom} = 1 - \frac{\text{TPM}_{1\text{m}}}{\text{TPM}_{\text{cap}}}$$<br>TPM counters reset when the minute window expires. | Multi-region deployments to avoid approaching provider token limits. |
 | **`lowest-cost`** | Selects deployment with lowest combined micro-dollar token rate:<br>$$d^* = \arg\min_{d} (\text{InCost} + \text{OutCost})$$ | High-volume offline batch processing and background pipelines. |
 
-Adaptive strategies (`least-busy`, `latency-based`, and `usage-based-headroom`) share their deployment observations through Redis hashes keyed by a digest of deployment ID. Each hash expires after 10 minutes without a signal update, so retired deployments do not leave permanent keys. Lua scripts update in-flight counts, minute-window usage, and latency EWMA atomically. When Redis cannot be read or updated, the load balancer uses its process-local observations and emits a structured `routing_signal_store_unavailable` warning; routing then has only process-local accuracy until shared reads recover. `LoadBalancer.SharedSignalsAvailable()` exposes the last observed health of this signal path.
+When `router.scheduler.enabled` is `true`, Stage 5 passes requests through `PriorityScheduler` (`scheduler.go`) — a bounded priority queue ordered by `X-Gateway-Priority` / `goroute_extensions.priority` that caps overload (`max_queue_depth`, `max_wait_time`).
+
+Adaptive strategies (`least-busy`, `latency-based`, and `usage-based-headroom`) share their deployment observations through Redis hashes keyed by a SHA-256 digest of deployment ID (`gw:routing:signals:<sha256>`). Each hash expires after 10 minutes without a signal update, so retired deployments do not leave permanent keys. Lua scripts update in-flight counts, minute-window usage, and latency EWMA atomically. When Redis cannot be read or updated, the load balancer degrades gracefully to process-local observations, increments the `gw_routing_signal_degraded_total` counter, and emits a structured `routing_signal_store_unavailable` warning (`LoadBalancer.SharedSignalsAvailable()` reports current signal path health).
 
 ---
 
@@ -291,30 +307,33 @@ GoRoute enforces strict **fail-closed** authorization boundaries across all exec
 
 ---
 
-## 6. Reliability Manager: 3-State Circuit Breakers & Failover
+## 6. Reliability Manager: RetryPolicy, Adaptive Circuit Breakers, Specialized Fallbacks & SSE Continuation
 
-The Reliability Manager wraps upstream execution with automated error classification, exponential backoff, and distributed circuit breakers.
+The Reliability Manager wraps upstream execution with per-exception retry policies, exponential backoff, distributed/adaptive circuit breakers, priority tier walks, specialized fallback chains, and mid-stream SSE continuation.
 
-### 6.1 Upstream Error Classification Matrix
+### 6.1 Upstream Error Classification & Per-Exception `RetryPolicy`
 
 | HTTP Status / Condition | Classification | Action Taken |
 | :--- | :--- | :--- |
-| `429 Too Many Requests` | **Retryable** | Full-jitter backoff; honors `Retry-After` header if within tolerable limits. |
-| `500`, `502`, `503`, `504`, `529` | **Retryable** | Records failure against deployment; retries alternative deployment in group. |
-| `401 Unauthorized`, `403 Forbidden` | **AuthFailure** | **Immediately trips circuit breaker to `OPEN`**; prevents wasting retry attempts on bad credentials. |
-| `400 Bad Request` | **ClientError** | Non-retryable; fails fast and returns normalized error to caller. |
+| `429 Too Many Requests` | **Retryable (`rate_limit_retries`)** | Full-jitter backoff; honors `Retry-After` header if within `max_retry_delay`. |
+| Upstream timeout | **Retryable (`timeout_retries`)** | Records failure sample; retries alternate tier/deployment up to `timeout_retries`. |
+| `500`, `502`, `503`, `504`, `529` | **Retryable (`server_error_retries`)** | Records failure against deployment; retries alternative deployment in tier/group. |
+| `401 Unauthorized`, `403 Forbidden` | **AuthFailure (`auth_error_retries`)** | **Immediately trips circuit breaker to `OPEN`** (unless lone-deployment safety applies differently); prevents wasting retry attempts on bad credentials. |
+| `404 Not Found` | **NotFound (`not_found_retries`)** | Fails fast (`0` retries by default) or steps to fallback targets. |
+| `400 Bad Request` (`context_length_exceeded` / content policy) | **SpecializedFallbackEligible** | Skips intra-group retries and jumps directly to `context_window_fallbacks` or `content_policy_fallbacks`. |
+| Other `400 Bad Request` | **ClientError (`bad_request_retries`)** | Non-retryable by default; fails fast and returns normalized error to caller. |
 
-### 6.2 3-State Circuit Breaker State Machine
+### 6.2 3-State Adaptive Circuit Breaker & Lone-Deployment Safety Net
 
 ```mermaid
 stateDiagram-v2
     [*] --> CLOSED: Deployment Registered
 
-    CLOSED --> OPEN: >= 3 failures in 30s OR AuthFailure (401/403)
-    note right of CLOSED: Handles normal inference traffic
+    CLOSED --> OPEN: Failures >= threshold / allowed_fails OR FailureRate >= threshold OR AuthFailure
+    note right of CLOSED: Handles normal inference traffic\n(Lone-deployment safety net prevents total lockout on transient errors)
 
-    OPEN --> HALF_OPEN: Cooldown period expires (default 60s)
-    note right of OPEN: Excluded from candidate pool;\ntraffic routes to healthy peers or fallbacks
+    OPEN --> HALF_OPEN: Cooldown period expires (default 60s, capped at max_cooldown_seconds)
+    note right of OPEN: Excluded from candidate pool;\ntraffic routes to healthy tiers or fallbacks
 
     HALF_OPEN --> CLOSED: Single probe request succeeds
     HALF_OPEN --> OPEN: Single probe request fails
@@ -322,13 +341,15 @@ stateDiagram-v2
     CLOSED --> [*]
 ```
 
-- **Distributed Cooldown**: Redis stores an open-state marker and the expiring cooldown (`gw:router:cooldown:<dep_id>`). When a deployment trips, all gateway pods cease routing traffic to it.
-- **Trial Recovery (HALF_OPEN)**: After cooldown expiration, an atomic Redis script grants one 5-minute probe lease across pods. A failed probe restores the cooldown; a successful request clears the shared state and lease. If Redis is unavailable, the manager uses local circuit state and cannot coordinate probes across replicas.
-- **Streaming Retry Safety**: Before the first output chunk, retryable failures use the same bounded full-jitter backoff and in-range upstream `Retry-After` handling as non-streaming calls. Once a chunk is emitted, the gateway returns the stream error without replaying the request.
+- **Distributed Cooldown & Failure-Rate Triggers (`retry_policy.go`)**: Redis stores cluster-tagged state under `gw:router:{dep:<dep_id>}:{circuit,cooldown,probe,failures,reqs_1m,fails_1m}`. In addition to consecutive `failure_threshold` (`3`) or class-specific `CooldownPolicy.allowed_fails`, deployments trip if the 1-minute failure ratio `fails_1m / reqs_1m >= failure_rate_threshold` at or above `min_requests_per_minute`.
+- **Lone-Deployment Safety Net**: When a deployment is the sole eligible candidate in its group without alternatives, non-auth transient errors avoid opening a hard blackout circuit so temporary upstream jitter self-heals immediately.
+- **Trial Recovery (`HALF_OPEN`)**: After cooldown expiration, an atomic Redis script grants one 5-minute probe lease across pods (`circuit_breaker_scripts.go`). A failed probe restores the cooldown; a successful request clears shared state and lease. If Redis is unavailable, the manager uses local circuit state and cannot coordinate probes across replicas.
+- **Streaming Retry & Continuation Safety**: Before the first output chunk, retryable failures use the same bounded full-jitter backoff and `Retry-After` handling as non-streaming calls. Once plain-text chunks have been emitted, `StreamContinuationManager` can seamlessly re-route via assistant prefill (`enable_mid_stream_continuation: true`, `X-Gateway-Stream-Continued: true`) before falling back to structured `event: error` termination.
 
-### 6.3 Two-Level Failover Hierarchy
-- **Level 1 — Intra-Group Retry**: If Deployment 1 in model group `prod-chat` fails, the gateway immediately retries Deployment 2 in the **same** model group (same model, different region or account).
-- **Level 2 — Inter-Group Fallback**: If all deployments in the primary group are exhausted or in cooldown, the gateway walks the configured `fallbacks` graph in declaration order (e.g. `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-flash`). Traversal is limited to 16 edges, skips cycles and duplicate groups, and remains within the primary organization. The gateway re-translates the request across providers and sets `X-Gateway-Fallback-Attempted: true`.
+### 6.3 Multi-Level Failover Hierarchy
+- **Level 1 — Intra-Tier Retry**: Retries alternate healthy deployments in the current `Deployment.Priority` tier up to the matching `RetryPolicy` budget.
+- **Level 2 — Priority Tier Step-Down (`priority_tiers.go`)**: Exhausting tier `0` steps cleanly to tier `1`, `2`, etc., recording `X-Gateway-Tier-Stepdowns` and `X-Gateway-Route-Reason: priority_tier_stepdown`.
+- **Level 3 — Specialized & Generic Fallback Chains (`fallback_chains.go`)**: Classifies failures into `context_window_fallbacks`, `content_policy_fallbacks`, structured `fallback_targets` (applying per-target parameter `overrides`), legacy `fallback_group_ids`, or global `router.default_fallbacks`. Traversal is bounded by `max_fallback_depth` (default `16`), skips cycles and duplicate groups, re-translates across providers, repins session affinity when `session_affinity_repin_on_failover` is enabled, and sets `X-Gateway-Fallback-Attempted: true`.
 
 ### 6.4 Pure Go Dedicated Protocol Engines
 GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
@@ -460,7 +481,7 @@ GoRoute evaluates requests and tool calls through a deterministic two-layer pipe
 Validates request structures before consuming upstream quota:
 - Rejects invalid parameters (`temperature` not in `[0, 2]`, `top_p` not in `[0, 1]`, `max_tokens <= 0`).
 - Verifies model capability requirements (`supports_streaming`, `supports_tools`, `supports_vision`).
-- Rejects requests exceeding model context limits: `estimatedPromptTokens > model.MaxInputTokens`.
+- Rejects requests exceeding model context limits (`estimatedPromptTokens > model.MaxInputTokens`) — **except** when `context_window_fallbacks` (or `default_fallbacks`) are configured on the resolved group, in which case validation defers context checking to Stage 2 `DeploymentFilterChain` + `ReliabilityManager` so requests can route seamlessly to larger-context models before returning `400 context_length_exceeded`.
 
 ### 10.3 Active Upstream Health Monitor (`internal/health`)
 - Periodic background worker probing configured deployments.
@@ -468,7 +489,7 @@ Validates request structures before consuming upstream quota:
 - Automatically excludes failing backends from load balancing before client traffic is affected.
 
 ### 10.4 Observability & Distributed Tracing (`internal/observability`)
-- **Prometheus Metrics (`GET /metrics`)**: Exposes request counts, token counters, micro-dollar spend counters, cache hit rates, rate-limit trips, guardrail counters/timers (`gateway_guardrail_blocks_total`, `gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms_sum`, `gateway_guardrail_duration_ms_count`), and latency quantiles (`p50`, `p95`, `p99`).
+- **Prometheus Metrics (`GET /metrics`)**: Exposes request counts, token counters, micro-dollar spend counters, cache hit rates, rate-limit trips, routing/failover counters (`gateway_routing_overhead_micros`, `gateway_fallbacks_total`, `gateway_retries_total`, `gw_redis_cb_state`, `gw_routing_signal_degraded_total`), guardrail counters/timers (`gateway_guardrail_blocks_total`, `gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms_sum`, `gateway_guardrail_duration_ms_count`), and latency quantiles (`p50`, `p95`, `p99`).
 - **Runtime performance metrics**: Also exposes bounded response-cache L1 occupancy/evictions, upstream HTTP/1.1 vs HTTP/2 responses, fresh/reused connections, first-byte wait, idle-body timeouts, budgeted-model indexed lookups/catalog scans, and Postgres subscription/guardrail fallback query counts. Use these measurements before further pool or cache-consistency tuning.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Provides real-time stats computed via 1024-reservoir sampling.
 - **W3C Distributed Tracing & Guardrail Child Spans**: Generates or propagates standard `traceparent` and `X-Trace-Id` headers across log entries, spend records, and audit events, and emits scrubbed `guardrail.evaluate` OTEL child spans (guardrail name, hook, verdict, violation category labels, latency — without raw prompt/response payloads).
@@ -493,28 +514,36 @@ All entity operations (`teams`, `users`, `virtual_keys`, `spend_summaries`, `spe
    |                           ---> [daily_guardrail_metrics] / [daily_guardrail_usage_units] (0019)
    |-- [tool_policies] (0018)
    |-- [provider_credentials] (AES-256-GCM encrypted)
-   |-- [model_groups]
-         |-- [model_deployments]
-               |-- references [global_models] ---> [model_pricing_history]
+   |-- [model_groups] (+ specialized_fallbacks & retry/cooldown policies, 0020)
+         |-- [model_deployments] (+ tags, max_budget_micros, budget_reset_period, 0021)
+               |-- references [global_models] (+ quality_tier, 0021) ---> [model_pricing_history]
 ```
 
 ### 11.2 Redis Keyspace & TTL Matrix
 
 | Key Pattern | Type | TTL | Purpose |
 | :--- | :--- | :--- | :--- |
-| `gw:auth:key:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key, Team, Org quotas & permissions). |
-| `gw:rl:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window request counter (`scope` $\in \{\text{key}, \text{team}, \text{org}\}$). |
-| `gw:rl:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window token counter. |
-| `gw:rl:conc:{key_id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent connection counter. |
-| `gw:spend:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend accumulator in micro-dollars. |
-| `gw:router:cooldown:{dep_id}` | `STRING` (JSON) | `60s` | Cooldown state for a tripped deployment. |
-| `gw:router:failures:{dep_id}` | `STRING` (Int64) | `30s` | Sliding window failure counter. |
-| `gw:router:ttft:{dep_id}` | `STRING` (Float64)| `600s` | EWMA Time-To-First-Token latency (ms). |
-| `gw:cache:v2:{ns}:org:{id}:{hash}` | `STRING` (JSON) | `3600s` | Exact-match cached inference response. |
+| `gw:auth:key:v2:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key, Team, Org quotas & permissions). |
+| `gw:rl:{org:<org_id>}:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window request counter (`scope` $\in \{\text{key}, \text{team}, \text{user}, \text{org}\}$). |
+| `gw:rl:{org:<org_id>}:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window token counter. |
+| `gw:rl:{org:<org_id>}:conc:{id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent connection counter (Key, Team, Org scopes). |
+| `gw:spend:{org:<org_id>}:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend accumulator in micro-dollars. |
+| `gw:budget:{org:<org_id>}:dep:{dep_id}:{period}` | `STRING` (Int64) | Period | Per-deployment spend window counter (`DeploymentBudgetTracker`). |
+| `gw:budget:{org:<org_id>}:prov:{provider}:{period}` | `STRING` (Int64) | Period | Per-provider spend window counter (`router.provider_budgets`). |
+| `gw:router:{dep:<dep_id>}:circuit` | `STRING` | `60s` | Cluster-tagged circuit breaker state (`open` / `half_open`). |
+| `gw:router:{dep:<dep_id>}:cooldown` | `STRING` | `60s` | Cooldown state for a tripped deployment. |
+| `gw:router:{dep:<dep_id>}:probe` | `STRING` | `300s` | Half-open recovery probe lease token. |
+| `gw:router:{dep:<dep_id>}:failures` | `STRING` (Int64) | `30s` | Sliding window failure counter. |
+| `gw:router:{dep:<dep_id>}:reqs_1m` / `fails_1m` | `STRING` (Int64) | `60s` | Rolling 1-minute request & failure counts for failure-rate cooldowns. |
+| `gw:routing:signals:<sha256>` | `HASH` | `600s` | Shared adaptive LB signals (`in_flight`, `used_rpm`, `used_tpm`, `ewma_latency_ms`, `ewma_ttft_ms`). |
+| `gw:affinity:{org:<org_id>}:{session,resp,pcache}:*` | `STRING` | `1800s` | Sticky deployment affinity pins across sessions, Responses API, and prompt prefixes. |
+| `gw:router:semantic:{org:<org_id>}:centroids` | `HASH` / `STRING` | Cached | Normalized centroid vectors for `SemanticPreRouter`. |
+| `gw:router:bandit:{org:<org_id>}:{bucket}` | `HASH` | Persistent | Thompson-sampling Beta distribution parameters for `BanditPreRouter`. |
+| `gw:cache:{resp,cmpl,emb,stream}:{key}` | `STRING` (JSON) | `3600s` | Exact-match response cache entries (validated against `gw:cache:{epochs}:*`). |
 | `gw:lock:discovery` | `STRING` (UUID) | `60s` | Distributed mutex for model discovery synchronization. |
 | `gw:events:invalidation` | `PUBSUB` | — | Broadcast channel for instant multi-pod L1 cache eviction (propagates `KeyHash`, `KeyID`, and `OrgID`). |
-| `gw:mcp:sessions:{srv}:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest. |
-| `gw:mcp:mrtr:{jti}` | `STRING` | `300s` | Single-use anti-replay token registry for MRTR resumption. |
+| `gw:mcp25:sess:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest. |
+| `gw:mcp:mrtr:jti:{jti}` | `STRING` | `300s` | Single-use anti-replay token registry for MRTR resumption. |
 | `gw:mcp:cache:{bin_hmac}` | `STRING` (JSON) | `300s` | Length-prefixed binary HMAC-SHA256 cache entry. |
 | `gw:a2a:events:{taskID}` | `PUBSUB` | — | Redis Pub/Sub broadcast channel for Subscribe-First task event streams. |
 
@@ -536,7 +565,7 @@ The gateway isolates transport generation differences inside `internal/mcp`:
 
 2. **Compatibility Adapter (2025-11-25)**:
    - Manages stateful `initialize` handshakes and upstream `Mcp-Session-Id` headers.
-   - Upstream sessions are stored in Redis (`gw:mcp:sessions:{serverID}:{sessionID}`).
+   - Upstream sessions are stored in Redis (`gw:mcp25:sess:{sessionID}`).
    - To prevent session hijacking across tenants, each session record is cryptographically bound to a SHA-256 digest of the caller's principal (`OrgID:VirtualKeyID:UserID`). Calls with mismatching caller digests are rejected with `-32002` (Unauthorized).
    - If an upstream server returns `404 Not Found` or `410 Gone` on an existing session, the adapter translates this to JSON-RPC `-32025` (Session Expired).
 

@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.8.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.8.0)
+[![Release](https://img.shields.io/badge/Release-v1.20.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
@@ -38,7 +38,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.8.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
 ```
 
 ```go
@@ -69,15 +69,16 @@ func main() {
 	}
 	defer gw.Close()
 
-	// 1-Line synchronous completion
+	// 1-Line synchronous completion (with optional v1.20.0 routing hints)
 	res, err := gw.Chat(ctx, "fast", "In one sentence, explain what an AI Gateway does.")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("[%s] %s (cost: %d µ$, routing: %d µs)\n", res.Provider, res.Content, res.CostMicros, res.RoutingMicros)
+	fmt.Printf("[%s] %s (cost: %d µ$, routing: %d µs, reason: %s)\n", res.Provider, res.Content, res.CostMicros, res.RoutingMicros, res.RouteReason)
 }
 ```
+> *SDK Routing Hooks:* `pkg/gateway` also exposes `WithRoutingPlugin`, `WithPreRouter`, `WithPreRouterMode`, `WithRouterConfig`, `WithDefaultFallbackTargets`, `WithMidStreamContinuation`, `WithHedgeConfig`, `WithSessionAffinity`, and per-request `WithRoutingHints`.
 
 ### Path 2: Universal One-Line Shell Installer (macOS, Linux, WSL)
 
@@ -97,14 +98,14 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.8.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0).*
 
 ### Path 3: Container Image (`ghcr.io`) & Production Stack (Docker Compose)
 
 Run the published multi-arch Distroless container image directly from [GitHub Packages](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go):
 
 ```bash
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.8.0
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.20.0
 # Or track latest stable: docker pull ghcr.io/goroute-ai/ai-gateway-go:latest
 ```
 
@@ -122,37 +123,49 @@ docker compose up -d
 
 ---
 
-### 1. Intelligent Dynamic Routing & Load Balancing
+### 1. Intelligent Pre-Routing, Candidate Filtering & Load Balancing
 
 #### What It Does
 
-Decouples client applications from rigid upstream provider endpoints. Applications request virtual model aliases (`fast`, `reasoning`, or `auto`), and GoRoute dynamically selects the optimal provider deployment based on real-time latency, provider health, token cost, or remaining quota headroom.
+Decouples client applications from rigid upstream provider endpoints. Applications request virtual model aliases (`fast`, `reasoning`, `auto`, `router/semantic`, `router/quality`, `router/adaptive`, or comma-separated models for hedged racing), and GoRoute dynamically selects the optimal provider deployment based on real-time latency, health, region/tags, session affinity, token cost, or remaining quota headroom.
 
 #### How It Works Under the Hood
 
-1. **Stage 1 (Zero-LLM Complexity Classifier)**: Evaluates incoming prompts using an in-process heuristic classifier (< 0.1ms overhead) measuring prompt token length, reasoning markers, and code syntax blocks. Requests sent to `model: "auto"` are automatically routed to `fast` (e.g. Gemini 2.5 Flash) or `reasoning` (e.g. Claude 3.5 Sonnet / O3-Mini).
-2. **Stage 2 (Pluggable Load Balancing Algorithms)**: Filters healthy deployments and distributes load using one of five strategies:
+1. **Stage 0 (`PreRouterRegistry`)**: Resolves virtual model aliases before candidate filtering using `auto` / `router/heuristic` (zero-LLM <0.1ms complexity classifier), `router/semantic` (embedding cosine similarity), `router/quality` (`QualityTier` escalation), `router/adaptive` (Thompson-sampling Beta bandit), or custom registered Go `PreRouterFunc` hooks.
+2. **Stage 1–3 (Group Resolution, `DeploymentFilterChain` & Priority Tiers)**: Filters candidates by health & staleness, 3-state circuit breakers, context window fit (deferring rejection when `context_window_fallbacks` exist), region, boolean `&`/`!` tag expressions, per-deployment & per-provider budgets/capacity, session & prompt-cache affinity, and custom `RoutingPlugin` hooks, then walks `Deployment.Priority` tiers in ascending order.
+3. **Stage 4 (7 Pluggable Load Balancing Strategies)**: Distributes traffic within the active tier using one of seven strategies:
    - `weighted-shuffle`: Weighted randomized distribution across multiple deployments.
+   - `round-robin`: Atomic rotating distribution across healthy peers.
    - `least-busy`: Routes to the deployment with the fewest active in-flight requests.
-   - `lowest-latency`: Tracks exponential moving average (EWMA) time-to-first-token (TTFT) and routes to the fastest provider.
-   - `lowest-cost`: Selects the cheapest provider capable of serving the prompt.
+   - `latency-based`: Tracks exponential moving average (EWMA) time-to-first-token (TTFT) and routes to the fastest provider.
+   - `fastest-response`: Dispatches hedged staggered races (`hedge_delay_ms`) and returns the first streaming/non-streaming responder.
    - `usage-based-headroom`: Shifts traffic toward deployments with the largest remaining TPM quota.
+   - `lowest-cost`: Selects the cheapest provider capable of serving the prompt.
+4. **Stage 5 (`PriorityScheduler`)**: Optional bounded priority-queue scheduler controlling concurrency bursts by request priority.
 
 #### Configuration (`configs/config.yaml`)
 
 ```yaml
 router:
+  pre_router_mode: "heuristic" # or "semantic", "quality", "adaptive"
   default_fast_alias: "fast"
   default_reasoning_alias: "reasoning"
   complexity_threshold: 0.40
+  session_affinity_ttl: 30m
 
 model_list:
   - model_name: "fast"
-    routing_strategy: "lowest-latency"
+    routing_strategy: "latency-based"
     fallbacks: ["fast-backup"]
+    context_window_fallbacks:
+      - target: "long-context"
+        overrides: { max_tokens: 4096 }
     model_params:
       model: "gemini/gemini-2.5-flash"
       api_key: "os.environ/GEMINI_API_KEY"
+      region: "us-central1"
+      priority: 0
+      tags: ["tier:fast", "low-cost"]
       weight: 80
       rpm: 1000
 
@@ -160,6 +173,7 @@ model_list:
     model_params:
       model: "openai/gpt-4o-mini"
       api_key: "os.environ/OPENAI_API_KEY"
+      priority: 1
       weight: 20
 ```
 
@@ -169,6 +183,7 @@ model_list:
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_DEFAULT_KEY" \
   -H "Content-Type: application/json" \
+  -H "X-Gateway-Session-Id: sess-123" \
   -d '{
     "model": "auto",
     "messages": [{"role": "user", "content": "Explain raft consensus in 10 words."}]
@@ -181,7 +196,12 @@ Every response includes detailed routing attribution headers:
 HTTP/1.1 200 OK
 X-Gateway-Provider: gemini
 X-Gateway-Model: gemini-2.5-flash
-X-Gateway-Routing-Time: 14 µs
+X-Gateway-Routing-Micros: 14
+X-Gateway-Latency-Ms: 112
+X-Gateway-Route-Reason: priority_tier_0
+X-Gateway-Fallback-Attempted: false
+X-Gateway-Tier-Stepdowns: 0
+X-Gateway-Stream-Continued: false
 X-Gateway-Cost-Micros: 45
 ```
 
@@ -240,20 +260,21 @@ Retry-After: 45
 
 ---
 
-### 3. Resilient Retries, 3-State Circuit Breakers & Failover
+### 3. Resilient Retries, 3-State Circuit Breakers, Failover & Mid-Stream Recovery
 
 #### What It Does
 
-Ensures 99.99% application uptime by isolating failing providers, automatically backing off during transient network blips, and seamlessly rerouting requests across providers when upstream outages occur.
+Ensures 99.99% application uptime by isolating failing providers, backing off with per-exception retry policies, stepping through priority tiers and specialized fallback chains, and recovering mid-stream SSE disconnections seamlessly.
 
 #### How It Works Under the Hood
 
-1. **Intra-Group Full-Jitter Retries**: Automatically retries transient network errors (`502`, `503`, `504`) and rate limits (`429`) using exponential backoff with full jitter ($t_{\text{sleep}} = \text{random}(0, \min(M, B \times 2^{\text{attempt}}))$).
-2. **3-State Circuit Breakers**:
-   - `CLOSED`: Normal traffic flow. Upstream failures increment a sliding-window failure counter.
-   - `OPEN`: If consecutive failures reach `failure_threshold` (default `3`), the circuit trips open. Subsequent requests bypass the deployment immediately for `default_cooldown` (default `60s`), shielding the upstream and preventing request timeouts.
-   - `HALF_OPEN`: When the cooldown expires, a single canary probe is dispatched. If successful, the circuit resets to `CLOSED`; if it fails, it returns to `OPEN`.
-3. **Cross-Provider Failover Chains**: If all retries within the active model group fail or the circuit is open, GoRoute automatically steps down through the configured `fallbacks: [...]` chain across entirely different AI clouds.
+1. **Per-Exception Retries & Priority Tier Step-Down**: Evaluates per-class `RetryPolicy` (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, `auth_error_retries`, `not_found_retries`, `bad_request_retries`) using full-jitter exponential backoff ($t_{\text{sleep}} = \text{random}(0, \min(M, B \times 2^{\text{attempt}}))$) honoring upstream `Retry-After`. Exhausting a priority tier steps automatically to higher numeric `Deployment.Priority` tiers before leaving the group.
+2. **3-State Circuit Breakers & Lone-Deployment Safety Net**:
+   - `CLOSED`: Normal traffic flow. Upstream failures increment sliding-window counters and 1-minute failure-rate windows (`reqs_1m`/`fails_1m` for `CooldownPolicy.failure_rate_threshold`).
+   - `OPEN`: Trips when failure thresholds or adaptive error rates breach bounds—unless only one eligible deployment exists and the lone-deployment safety net keeps traffic flowing.
+   - `HALF_OPEN`: When the cooldown expires, an atomic probe lease dispatches a single canary request.
+3. **Specialized & Cross-Provider Fallback Chains**: Routes `context_length_exceeded` errors through `context_window_fallbacks`, moderation/content blocks through `content_policy_fallbacks`, and remaining errors through `fallback_targets` (with per-target `overrides`), `fallbacks`, or global `router.default_fallbacks`.
+4. **Mid-Stream SSE Continuation**: When `enable_mid_stream_continuation: true` is enabled and a plain-text SSE stream breaks mid-generation, `StreamContinuationManager` re-routes with an assistant prefill and adjusted `max_tokens`, setting `X-Gateway-Stream-Continued: true`.
 
 #### Multi-Cloud Failover Topology (`configs/config.yaml`)
 
@@ -371,9 +392,9 @@ Returns:
 
 ---
 
-### 6. Unified Multi-Modal Data Plane (23 Paths, 26 Operations)
+### 6. Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Both primary `/v1` and `/admin/v1` contract parity are enforced by `make specgen` (`63` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Both primary `/v1` (`24` paths) and `/admin/v1` (`49` paths) contract parity are enforced by `make specgen` (`73` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -477,15 +498,15 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### 8. Embedded Operator Web UI & Streaming Chat Playground
 
-GoRoute embeds a production React 19 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`**:
+GoRoute embeds a production React 18 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`**:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │  GoRoute Operator Console (http://localhost:8080/ui/)                                  │
 ├─────────────────┬──────────────────────────────────────────────────────────────────────┤
 │  ⚡ Overview     │  • Real-Time Gateway Vitals, Active Requests & P95 Latency           │
-│  💬 Playground   │  • Multi-Turn Streaming Chat with Token Counts & Latency Meter       │
-│  📦 Catalogue    │  • 100+ Models Directory with Pricing, Context Windows & Modalities  │
+│  💬 Playground   │  • Multi-Turn Streaming Chat with Cost & Routing Attribution Headers │
+│  📦 Catalogue    │  • Model Directory, Priority Tiers, Specialized Fallbacks & Budgets  │
 │  🔑 Virtual Keys │  • Issue Scoped Virtual Keys with RPM/TPM and Micro-Dollar Budgets   │
 │  💰 FinOps       │  • Real-Time Spend Breakdown by Team, Model, and Provider            │
 │  🛡️ Guardrails   │  • Baseline Policy, 19-Driver Registry, Tool Policies & Simulator │
@@ -567,10 +588,10 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 23 primary data-plane paths, Admin Control Plane groups, and UI; see documented contract gaps.         |
-| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all 70+ YAML options and environment variables.                    |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas.         |
-| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all 19 subsystems. |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 24 `/v1` OpenAPI paths, Admin Control Plane groups (`73` total paths), and UI; see documented contract gaps.         |
+| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`router.*`, `semantic_router.*`, `bandit.*`, `scheduler.*`), SDK options, and env vars.                    |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas (`0001`–`0021`).         |
+| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all subsystems and `v1.20.0` routing engines. |
 | **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts and vendor protocol specifications.                            |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 

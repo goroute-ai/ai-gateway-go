@@ -102,18 +102,32 @@ model_list:
 ```
 
 ### Option C: Embedded Go SDK (`pkg/gateway`)
-Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
+Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.RoutingHints`, `gateway.RouterOptions`, `gateway.FallbackTarget`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.8.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
 ```
 
 ```go
-// Embedded gateway with silent stdout logging in library mode
+// Embedded gateway with silent stdout logging and v1.20.0 routing options
 gw, err := gateway.New(
     gateway.WithModelList(
-        gateway.ModelEntry{ModelName: "fast", Model: "gemini/gemini-2.5-flash", APIKey: "os.environ/GEMINI_API_KEY"},
+        gateway.ModelEntry{
+            ModelName:         "fast",
+            Model:             "gemini/gemini-2.5-flash",
+            APIKey:            "os.environ/GEMINI_API_KEY",
+            RoutingStrategy:   "latency-based",
+            Priority:          0,
+            Region:            "us-central1",
+            Tags:              []string{"tier:fast", "low-cost"},
+            MaxBudgetMicros:   50_000_000,
+            BudgetResetPeriod: "daily",
+            ContextWindowFallbacks: []string{"long-context"},
+        },
     ),
+    gateway.WithSessionAffinity(30*time.Minute, true),
+    gateway.WithMidStreamContinuation(true, 1),
+    gateway.WithHedgeConfig(150, 2),
     gateway.WithSilentLogs(), // Suppresses internal gateway logger
 )
 ```
@@ -158,14 +172,22 @@ Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embe
 | **Tool / Function Calling** | OpenAI `tools[]` & `tool_calls[]` translate bidirectionally to Anthropic `tool_use`/`tool_result` blocks and Gemini `functionDeclarations`/`functionCall` parts. |
 | **Zero-Buffer SSE Framing** | Flushes every SSE `data:` frame immediately via `http.Flusher` with zero intermediate response buffering. |
 
-### Go SDK Usage
+### Go SDK Usage & Routing Options
 ```go
 res, err := gw.Chat(ctx, "fast", "Explain Pure Go network proxies.",
     gateway.WithSystem("Answer in one concise sentence."),
     gateway.WithTemperature(0.2),
     gateway.WithMaxTokens(256),
     gateway.WithReasoningEffort("medium"),
+    gateway.WithRoutingHints(gateway.RoutingHints{
+        AllowedRegion: "us-central1",
+        Tags:          []string{"tier:fast", "!deprecated"},
+        SessionID:     "sess_123",
+        Priority:      10,
+    }),
 )
+fmt.Printf("Provider=%s Reason=%s Stepdowns=%d Continued=%v\n",
+    res.Provider, res.RouteReason, res.TierStepdowns, res.StreamContinued)
 
 // Real-time SSE Streaming
 streamRes, err := gw.StreamChat(ctx, "fast", "Stream a summary.", func(delta string) error {
@@ -173,14 +195,19 @@ streamRes, err := gw.StreamChat(ctx, "fast", "Stream a summary.", func(delta str
     return nil
 })
 ```
+Custom Go hooks can also be injected at initialization with `WithRouterConfig`, `WithPreRouterMode`, `WithPreRouter`, `WithPreRouterAlias`, `WithRoutingPlugin`, `WithDefaultFallbacks`, and `WithDefaultFallbackTargets`.
 
-### HTTP Response Telemetry Headers
-Every `/v1/chat/completions` response includes real-time gateway telemetry headers:
+### HTTP Request Routing Hints & Response Telemetry Headers
+Every `/v1/chat/completions` call accepts optional inbound routing hint headers (`X-Gateway-Allowed-Region`, `X-Gateway-Session-Id`, `X-Gateway-Preferred-Deployment-Id`, `X-Gateway-Priority`, `X-Gateway-Hedge-After-Ms`, `X-Gateway-Tags`, `X-Gateway-Tag-<Name>`) and returns real-time telemetry headers:
 - `X-Gateway-Request-Id`: Unique request correlation ID (`req_...`)
 - `X-Gateway-Provider`: Winning upstream provider (`gemini`, `anthropic`, `openai`, `mistral`, `ollama`)
 - `X-Gateway-Model`: Resolved upstream model (`gemini-2.5-flash`, `claude-sonnet-4-20250514`, etc.)
 - `X-Gateway-Cost-Micros`: Exact request cost in micro-USD ($10^{-6}\text{ USD}$)
-- `X-Gateway-Routing-Micros`: Stage 1 + Stage 2 routing decision time in microseconds
+- `X-Gateway-Latency-Ms`: End-to-end request latency in milliseconds
+- `X-Gateway-Routing-Micros`: Stage 0–4 routing decision time in microseconds
+- `X-Gateway-Route-Reason`: PreRouter or step-down routing reason (e.g., `priority_tier_stepdown`)
+- `X-Gateway-Tier-Stepdowns`: Number of `Deployment.Priority` tier step-downs attempted
+- `X-Gateway-Stream-Continued`: `true` if mid-stream SSE continuation stitched the response
 - `X-Gateway-Cache`: `HIT` or `MISS` (for deterministic requests)
 - `X-Gateway-Fallback-Attempted`: `true` or `false`
 
@@ -225,39 +252,55 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/subscripti
 
 ---
 
-## Intelligent Routing & Load Balancing
+## Intelligent Pre-Routing, Candidate Filtering & Load Balancing
 
-### Stage 1: The 3 Routing Modes
-1. **Mode 1 — Explicit Model (`"gemini-2.5-flash"`, `"claude-sonnet-4-20250514"`)**: Routes directly to the specified model or `"provider/model"`.
-2. **Mode 2 — Logical Alias (`"fast"`, `"reasoning"`, `"coding"`)**: Routes to a named `ModelGroup` containing one or more load-balanced deployments across regions or providers.
-3. **Mode 3 — Smart Auto-Router (`"auto"`)**: Runs a **Zero-LLM Sub-Millisecond Heuristic Complexity Classifier** ($<1\text{ ms}$) that scores the prompt on `[0.0, 1.0]` using:
-   - Total token length (`> 32,000` tokens routes immediately to long-context tier)
-   - Fenced code blocks (` ``` `) and tool/function definitions (`+0.25`)
-   - Multi-step reasoning/architecture markers (`"step by step"`, `"prove"`, `"analyze"`, `"architect"`, `"consensus"`)
-   - `reasoning_effort == "high"` (`+0.35`)
-   - If $\text{score} \ge \text{complexity\_threshold}$ (default `0.40`), routes to `default_reasoning_alias` (`"reasoning"`); otherwise routes to `default_fast_alias` (`"fast"`).
+### Stage 0: PreRouter & Model Resolution Modes
+1. **Explicit Model (`"gemini-2.5-flash"`, `"claude-sonnet-4-20250514"`)**: Routes directly to the specified model or `"provider/model"`.
+2. **Logical Alias (`"fast"`, `"reasoning"`, `"coding"`)**: Routes to a named `ModelGroup` containing one or more priority-tiered, load-balanced deployments across regions or providers.
+3. **Comma-Separated Racing (`"model-a,model-b"`)**: Races candidate groups/models concurrently with hedged stagger delays (`hedge_delay_ms`).
+4. **Virtual Pre-Routers (`PreRouterRegistry`)**:
+   - **`"auto"` / `"router/heuristic"`**: Runs a **Zero-LLM Sub-Millisecond Heuristic Complexity Classifier** ($<0.1\text{ ms}$) scoring prompt tokens, fenced code blocks, tools, `reasoning_effort`, and analytical keywords against `complexity_threshold` (`0.40`).
+   - **`"router/semantic"`**: Matches request intent via embedding cosine similarity (`semantic_router.embedding_model`, `similarity_threshold`, `routes[]`) with Redis centroid caching.
+   - **`"router/quality"`**: Escalates or maps prompts across `GlobalModel.QualityTier` capabilities.
+   - **`"router/adaptive"`**: Runs a **Thompson-Sampling Contextual Bandit** (`bandit.*`) balancing Beta reward posteriors, latency weight, and cost weight with Postgres/Redis state sync.
 
-### Stage 2: The 5 Load-Balancing Strategies
-Configure `routing_strategy` per `model_list` entry or `ModelGroup`:
+### Stage 2: Candidate Filter Chain, Priority Tiers & 7 Load-Balancing Strategies
+Before selection, `DeploymentFilterChain` narrows candidates by deployment health & `health_staleness_threshold`, 3-state circuit breakers, context window capacity, `allowed_region`, boolean `&`/`!` `tags` expressions, per-deployment `rpm`/`tpm`/`max_budget_micros` & `provider_budgets`, session/prompt-cache affinity (`AffinityStore`), and registered `RoutingPlugin` filters. Surviving candidates are grouped by ascending `Deployment.Priority` tier and ordered using `routing_strategy` (optionally gated by `PriorityScheduler`):
 
 | Strategy Value | Selection Algorithm | Best For |
 | :--- | :--- | :--- |
 | `weighted-shuffle` | Random selection proportional to deployment `weight` ($P(d_i) = w_i / \sum w_j$). | Traffic splitting (e.g., 80% Gemini / 20% OpenAI). |
+| `round-robin` | Atomic deterministic rotation across healthy peers in the tier. | Even request distribution across homogeneous nodes. |
 | `least-busy` | Picks deployment with lowest shared in-flight request count. | Long-running streaming & reasoning workloads. |
 | `latency-based` | Picks lowest shared time-to-first-token EWMA (alpha 0.3); uses a 250 ms baseline for deployments without a sample. | Latency-critical interactive chat. |
+| `fastest-response` | Dispatches staggered hedged requests (`hedge_delay_ms`, `max_hedge_concurrency`) and commits to the first responder. | Ultra-low tail-latency tolerance (P99 shielding). |
 | `usage-based-headroom` | Picks deployment with most remaining TPM capacity over a 1-minute window. | Avoiding provider token limits across deployments. |
 | `lowest-cost` | Picks deployment with lowest `(InputCostMicrosPer1M + OutputCostMicrosPer1M)`. | Cost-optimized batch processing. |
 
-Adaptive strategies share expiring deployment signals through Redis. Signal keys expire after 10 minutes without updates. If shared state cannot be read or updated, routing falls back to the local process's observations and emits a structured `routing_signal_store_unavailable` warning; decisions during that period are not cluster-wide accurate. Weighted and lowest-cost strategies do not use these signals.
+Adaptive strategies, affinity pins, and bandit updates share expiring state through Redis. If shared state cannot be read or updated, routing degrades gracefully to process-local observations, increments `gw_routing_signal_degraded_total`, and emits a structured `routing_signal_store_unavailable` warning.
 
 ### YAML Configuration (`configs/config.yaml`)
 ```yaml
 router:
+  pre_router_mode: "heuristic" # "heuristic" | "semantic" | "quality" | "adaptive"
   default_fast_alias: "fast"
   default_reasoning_alias: "reasoning"
   default_coding_alias: "coding"
   complexity_threshold: 0.40
   long_context_tokens: 32000
+  health_staleness_threshold: 90s
+  strict_capacity_filtering: true
+  session_affinity_ttl: 30m
+  session_affinity_repin_on_failover: true
+  prompt_cache_affinity: true
+  cache_aware_routing: true
+  hedge_delay_ms: 150
+  max_hedge_concurrency: 2
+  scheduler:
+    enabled: true
+    max_queue_depth: 256
+    max_wait_time: 2s
+    default_priority: 0
 ```
 
 ---
@@ -305,22 +348,25 @@ curl -X POST http://localhost:8080/admin/v1/credentials/{credID}/validate \
 
 ---
 
-## Retries, 3-State Circuit Breakers & Fallbacks
+## Retries, Priority Tiers, Specialized Fallbacks & Mid-Stream Recovery
 
 ### How High-Availability Failover Works
-1. **Upstream Error Classification**:
-   - `429 Too Many Requests`, `500`, `502`, `503`, `504`: Classified as **Retryable**.
-   - `401 Unauthorized`, `403 Forbidden`: Classified as **AuthFailure** — immediately trips the deployment's circuit breaker to `OPEN` and fails over without wasting retry attempts.
-   - `400 Bad Request`: Non-retryable client error; returned immediately.
+1. **Per-Exception `RetryPolicy` & Error Classification**:
+   - `retry_policy` configures distinct retry budgets per error class (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, `auth_error_retries`, `not_found_retries`, `bad_request_retries`, `default_retries`).
+   - `401 Unauthorized`, `403 Forbidden`: Classified as **AuthFailure** — immediately trips the deployment's circuit breaker to `OPEN` and fails over unless blocked by the lone-deployment safety net.
+   - `400 Bad Request`: Non-retryable client error unless classified as `context_length_exceeded` / content-policy violation eligible for specialized fallbacks.
 2. **Full-Jitter Exponential Backoff**:
    $$\text{sleep} = \text{rand}\left(0,\ \min\left(\text{MaxDelay},\ \text{BaseDelay} \times 2^{\text{attempt}}\right)\right)$$
    Honors upstream `Retry-After` headers when $\le \text{MaxDelay}$.
-3. **3-State Circuit Breaker (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`)**:
-   - Trips from `CLOSED` to `OPEN` when failures reach `failure_threshold` (default `3`) within `failure_window` (`30s`).
-   - Remains `OPEN` for `default_cooldown` (`60s`), removing the deployment from the candidate pool.
-   - With Redis configured, an atomic shared lease admits one `HALF_OPEN` probe across replicas. The lease expires after five minutes if a process exits during the probe. A successful request clears shared circuit state; a failed probe restores the cooldown. Without Redis, probe coordination is process-local.
-4. **Cross-Provider Fallback Chains (`fallbacks`)**:
-   - When all deployments in the primary `ModelGroup` are exhausted or in cooldown, `ReliabilityManager` automatically walks `Fallbacks` (e.g., failing over from Google Gemini to Anthropic Claude) and sets `X-Gateway-Fallback-Attempted: true`.
+3. **3-State Circuit Breaker & Adaptive Cooldowns (`CooldownPolicy`)**:
+   - Trips from `CLOSED` to `OPEN` when failure counts reach `failure_threshold` (`allowed_fails` per class) within `failure_window` **or** when 1-minute failure rates exceed `cooldown_policy.failure_rate_threshold` at or above `min_requests_per_minute`.
+   - Includes a **lone-deployment safety net**: when only one deployment exists for an org/model group, non-auth transient errors avoid locking out 100% of traffic indefinitely.
+   - With Redis configured, an atomic shared lease admits one `HALF_OPEN` probe across replicas before closing or extending backoff up to `max_cooldown_seconds`.
+4. **Priority Tier Walk (`Deployment.Priority`) & Specialized Fallback Chains**:
+   - Within a `ModelGroup`, healthy deployments in ascending `priority` tiers (e.g. `0` → `1` → `2`) are exhausted before stepping across groups (`X-Gateway-Tier-Stepdowns`).
+   - `ReliabilityManager` routes `context_length_exceeded` errors via `context_window_fallbacks`, content/safety blocks via `content_policy_fallbacks`, and generic errors via `fallback_targets` (with per-target parameter `overrides`), legacy `fallbacks`, or global `router.default_fallbacks` (bounded by `max_fallback_depth`).
+5. **Mid-Stream SSE Continuation (`StreamContinuationManager`)**:
+   - When `enable_mid_stream_continuation: true` is configured, plain-text streaming interruptions retry via seamless assistant prefill with adjusted `max_tokens` (`max_stream_continuations`) and emit `X-Gateway-Stream-Continued: true`.
 
 ### YAML & SDK Configuration
 ```yaml
@@ -331,17 +377,40 @@ router:
   default_cooldown: 60s
   failure_window: 30s
   failure_threshold: 3
+  max_fallback_depth: 16
+  enable_mid_stream_continuation: true
+  max_stream_continuations: 1
+  retry_policy:
+    rate_limit_retries: 3
+    timeout_retries: 2
+    server_error_retries: 2
+  cooldown_policy:
+    failure_rate_threshold: 0.50
+    min_requests_per_minute: 20
+    max_cooldown_seconds: 300
+  default_fallbacks:
+    - target: "safe-backup"
 
 model_list:
   - model_name: "production-chat"
-    fallbacks: ["backup-claude"]
+    context_window_fallbacks:
+      - target: "long-context-claude"
+        overrides: { max_tokens: 4096 }
+    content_policy_fallbacks:
+      - target: "backup-claude"
+    fallback_targets:
+      - target: "backup-claude"
     model_params:
       model: "gemini/gemini-2.5-flash"
       api_key: "os.environ/GEMINI_API_KEY"
+      priority: 0
+      region: "us-central1"
+      tags: ["tier:primary"]
   - model_name: "backup-claude"
     model_params:
       model: "anthropic/claude-sonnet-4-20250514"
       api_key: "os.environ/ANTHROPIC_API_KEY"
+      priority: 1
 ```
 
 ---
@@ -357,7 +426,7 @@ $$\text{CostMicros} = \left\lfloor \frac{\text{picos} + 500,000}{1,000,000} \rig
 
 ### Non-Blocking Async Spend Worker & Hard Budgets
 - **Hot Path ($0\text{ ms}$ DB Blocking)**: After every inference call, `SpendWorker.Enqueue()` synchronously increments real-time budget counters and pushes a `SpendEvent` into a `16,384`-slot buffered Go channel flushed in batches of `250` every `500ms`.
-- **Hierarchical Hard Budgets**: Configure `MaxBudgetMicros` and `BudgetResetPeriod` (`"daily"`, `"monthly"`, `"never"`) at the **Virtual Key**, **Team**, or **Organization** level. Admission reserves the estimated upper-bound cost (input plus requested maximum output) in integer micro-dollars atomically in Redis, then replaces the reservation with actual spend after completion. Concurrent requests therefore cannot each spend against the same remaining balance.
+- **Hierarchical Hard Budgets & Per-Deployment/Provider Caps**: Configure `MaxBudgetMicros` and `BudgetResetPeriod` (`"daily"`, `"monthly"`, `"never"`) at the **Virtual Key**, **Team**, **Organization**, or **Deployment** (`model_params.max_budget_micros` / `router.provider_budgets`) level. Admission reserves the estimated upper-bound cost (input plus requested maximum output) in integer micro-dollars atomically in Redis, then replaces the reservation with actual spend after completion. Concurrent requests therefore cannot each spend against the same remaining balance; deployments or providers exceeding their budget window are automatically filtered out in Stage 2 (`DeploymentBudgetTracker`).
 - **Fail-Closed Estimate Requirements**: Budgeted chat, completion, Anthropic Messages, Responses, embeddings, rerank, image generation/edit/variation, and audio speech requests require known pricing and a deterministic pre-dispatch upper bound. For routed aliases, the reservation uses the maximum verified/custom rates available across matching catalog models. Embeddings use input byte length as a conservative token bound. Audio transcription, moderation, Realtime, and Batch currently return `503 budget_estimate_unavailable` before upstream dispatch/session/job creation. Redis unavailability also prevents a budgeted request from dispatching. Reservations expire after one hour if a process crashes before settlement; this can temporarily reduce available budget until expiry.
 
 ### Go SDK & Control Plane Usage
@@ -556,6 +625,38 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `router.default_cooldown` | `GATEWAY_ROUTER_DEFAULT_COOLDOWN` | `60s` | Duration a tripped deployment stays in `OPEN` circuit-breaker cooldown. |
 | `router.failure_window` | — | `30s` | Sliding window for counting consecutive upstream errors. |
 | `router.failure_threshold` | — | `3` | Consecutive errors required to trip circuit breaker into `OPEN` state. |
+| `router.default_fallbacks` | — | `[]` | Global fallback targets (`{target, overrides}`) evaluated if group-level chains are exhausted. |
+| `router.max_fallback_depth` | — | `16` | Maximum inter-group fallback hops allowed per request. |
+| `router.retry_policy.*` | — | `{}` | Per-class retry budgets (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, `auth_error_retries`, `not_found_retries`, `bad_request_retries`, `default_retries`). |
+| `router.cooldown_policy.*` | — | `{}` | Adaptive cooldown bounds (`allowed_fails`, `failure_rate_threshold`, `min_requests_per_minute`, `max_cooldown_seconds`). |
+| `router.enable_mid_stream_continuation` | — | `false` | Enables seamless SSE assistant-prefill recovery on plain-text mid-stream drops. |
+| `router.max_stream_continuations` | — | `1` | Maximum mid-stream continuation retries permitted per request. |
+| `router.health_staleness_threshold` | — | `0s` | Rejects deployments whose last health heartbeat exceeds this age (`0` disables staleness filter). |
+| `router.strict_capacity_filtering` | — | `false` | Enforces strict per-deployment RPM/TPM filtering before load balancer selection. |
+| `router.provider_budgets` | — | `{}` | Map of `provider -> max_budget_micros` spending ceiling across deployments. |
+| `router.session_affinity_ttl` | — | `30m` | TTL for `AffinityStore` session and response deployment pins. |
+| `router.session_affinity_repin_on_failover` | — | `true` | Automatically updates sticky deployment pin when failover succeeds on an alternate node. |
+| `router.prompt_cache_affinity` | — | `false` | Pins requests sharing prefix hashes (`pcache`) to improve upstream prompt cache hit rates. |
+| `router.pre_router_mode` | — | `""` | Default Stage 0 pre-router mode (`"heuristic"`, `"semantic"`, `"quality"`, `"adaptive"`). |
+| `router.semantic_router.enabled` | — | `false` | Enables embedding cosine-similarity pre-routing (`router/semantic`). |
+| `router.semantic_router.embedding_model` | — | `""` | Model alias or ID used to compute semantic centroids and prompt embeddings. |
+| `router.semantic_router.similarity_threshold` | — | `0` | Minimum cosine similarity required to match a semantic route. |
+| `router.semantic_router.timeout` | — | `0s` | Maximum timeout for semantic embedding calls before falling back. |
+| `router.semantic_router.routes[]` | — | `[]` | Intent routes (`name`, `target_model`, `utterances[]`, `description`). |
+| `router.cache_aware_routing` | — | `false` | Enables prompt-cache-prefix-aware candidate affinity scoring. |
+| `router.bandit.enabled` | — | `false` | Enables Thompson-sampling contextual bandit routing (`router/adaptive`). |
+| `router.bandit.default_alpha` / `default_beta` | — | `0` | Prior Beta distribution parameters for new bandit arms. |
+| `router.bandit.exploration_rate` | — | `0` | Exploration factor controlling random arm sampling. |
+| `router.bandit.decay_half_life` | — | `0s` | Exponential decay window applied to historical bandit observations. |
+| `router.bandit.latency_weight` / `cost_weight` | — | `0` | Multi-objective weights penalizing latency and token spend in bandit rewards. |
+| `router.bandit.sync_interval` | — | `0s` | Background Redis synchronization interval for cluster bandit state. |
+| `router.bandit.candidate_models[]` | — | `[]` | Candidate model aliases eligible for adaptive bandit selection. |
+| `router.hedge_delay_ms` | — | `0` | Default stagger delay in milliseconds before firing secondary hedged requests (`fastest-response`). |
+| `router.max_hedge_concurrency` | — | `2` | Maximum parallel hedged attempts per request. |
+| `router.scheduler.enabled` | — | `false` | Enables bounded `PriorityScheduler` request queueing. |
+| `router.scheduler.max_queue_depth` | — | `0` | Maximum queued requests before rejecting overflow with `503`. |
+| `router.scheduler.max_wait_time` | — | `0s` | Maximum queue wait timeout before failing a queued request. |
+| `router.scheduler.default_priority` | — | `0` | Default scheduling priority assigned when callers omit `X-Gateway-Priority`. |
 | `rate_limit.enabled` | — | `true` | Enables distributed sliding-window rate limiting via Redis Lua. |
 | `rate_limit.window_seconds` | — | `60` | Fixed window duration in seconds for RPM/TPM calculation. |
 | `rate_limit.concurrency_ttl_sec` | — | `300` | Lease duration in seconds for concurrent in-flight request locks. |
@@ -614,12 +715,19 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `providers.custom_openai_compatible[].supports_list_models` | — | `true` | Whether upstream provider implements `GET /models`. |
 | `providers.custom_openai_compatible[].default_headers` | — | `{}` | Key-value HTTP headers automatically attached to outbound calls. |
 | `model_list[].model_name` | — | — | Virtual model name or alias presented to clients (`"fast"`, `"reasoning"`). |
-| `model_list[].routing_strategy` | — | `"weighted-shuffle"` | Routing policy: `"weighted-shuffle"`, `"least-busy"`, `"latency-based"`, `"lowest-cost"`, `"usage-based-headroom"`. |
+| `model_list[].routing_strategy` | — | `"weighted-shuffle"` | Routing policy: `"weighted-shuffle"`, `"round-robin"`, `"least-busy"`, `"latency-based"`, `"fastest-response"`, `"usage-based-headroom"`, `"lowest-cost"`. |
 | `model_list[].fallbacks` | — | `[]` | Ordered array of fallback model names triggered on upstream outage or rate-limit. |
+| `model_list[].context_window_fallbacks` | — | `[]` | Ordered specialized fallback targets (`{target, overrides}`) triggered on `context_length_exceeded`. |
+| `model_list[].content_policy_fallbacks` | — | `[]` | Ordered specialized fallback targets triggered on content-policy/safety blocks. |
+| `model_list[].fallback_targets` | — | `[]` | Structured generic fallback targets with per-target request parameter `overrides`. |
 | `model_list[].model_params.model` | — | — | Upstream provider/model identifier (e.g. `"gemini/gemini-2.5-flash"`). |
 | `model_list[].model_params.api_key` | — | — | Upstream provider API key (supports `os.environ/VAR`). |
 | `model_list[].model_params.api_base` | — | `""` | Custom upstream base URL override. |
-| `model_list[].model_params.region` | — | `""` | Cloud region for Bedrock/Vertex deployments. |
+| `model_list[].model_params.region` | — | `""` | Cloud region for deployment affinity/region filtering (e.g. Bedrock/Vertex/regional clusters). |
+| `model_list[].model_params.priority` | — | `0` | Numeric priority tier (`0` is highest priority; lower tiers are exhausted before higher ones). |
+| `model_list[].model_params.tags` | — | `[]` | Deployment tags matched by request `&`/`!` tag filter expressions. |
+| `model_list[].model_params.max_budget_micros` | — | `0` | Per-deployment spend cap in integer micro-dollars (`0` = unlimited). |
+| `model_list[].model_params.budget_reset_period` | — | `"monthly"` | Deployment spend reset cadence (`"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"never"`). |
 | `model_list[].model_params.weight` | — | `100` | Integer weight for weighted load balancing. |
 | `model_list[].model_params.rpm` | — | `0` | Per-deployment Requests Per Minute capacity limit. |
 | `model_list[].model_params.tpm` | — | `0` | Per-deployment Tokens Per Minute capacity limit. |

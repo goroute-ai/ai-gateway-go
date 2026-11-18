@@ -92,7 +92,7 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (23 primary data-plane paths / 26 HTTP operations), two-stage intelligent & modality routing, retries, fallbacks, SSE streaming translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (24 `/v1` OpenAPI paths, 73 total OpenAPI paths across `/v1` and `/admin/v1`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`), retries, specialized fallbacks, mid-stream SSE continuation & translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ User $\rightarrow$ Key), 4-layer model access control, AES-256-GCM provider credential vault. | `internal/auth`, `internal/modelmgmt` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), real-time budget enforcement, hierarchical RPM/TPM rate limiting, automated budget reset schedules. | `internal/finops`, `internal/ratelimit` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -124,10 +124,11 @@ flowchart TB
             AuthMW["1. Auth & RBAC Middleware\n(L1 Memory + L2 Redis Lookup)"]
             RateLimitMW["2. Quota & Budget Guard\n(Single Atomic Redis Lua Script)"]
             RespCache["3. Exact-Match Response Cache\n(Optional Deterministic Bypass)"]
-            Stage1Router["4. Stage 1: Intelligent Model Router\n(Rules + Complexity Heuristics + Embeddings)"]
-            Stage2LB["5. Stage 2: Deployment Load Balancer\n(Weighted / Least-Busy / Latency EWMA / Headroom)"]
-            Reliability["6. Reliability Manager\n(Intra-Group Retries + Cross-Provider Fallbacks)"]
-            AdapterLayer["7. OpenAPI Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Gemini · Mistral · Ollama)"]
+            PreRouter["4. Stage 0: PreRouter Registry\n(Heuristic / Semantic / Quality / Adaptive Bandit / Session Pin)"]
+            Stage1Router["5. Stage 1-3: FilterChain & Priority Tiers\n(Plugins, Region, Tags, Budgets, Affinity, Priority)"]
+            Stage2LB["6. Stage 4: Deployment Load Balancer\n(7 Strategies + Hedged Fastest-Response Racing)"]
+            Reliability["7. Stage 5: Reliability & Scheduler\n(PriorityScheduler, RetryPolicy, Specialized Fallbacks, SSE Continuation)"]
+            AdapterLayer["8. OpenAPI Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Gemini · Mistral · Ollama)"]
         end
 
         subgraph ControlPlane["Control Plane (/admin/v1/* & Background Daemons)"]
@@ -155,7 +156,7 @@ flowchart TB
     LB --> AuthMW
     LB --> AdminAPI
 
-    AuthMW --> RateLimitMW --> RespCache --> Stage1Router --> Stage2LB --> Reliability --> AdapterLayer
+    AuthMW --> RateLimitMW --> RespCache --> PreRouter --> Stage1Router --> Stage2LB --> Reliability --> AdapterLayer
     AdapterLayer ==>|"Commit outbox before success"| SpendWorker
 
     AuthMW <-->|"L2 Cache"| Redis
@@ -200,15 +201,16 @@ flowchart TB
    - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over the organization and the complete canonical request, excluding per-call `RequestID` and non-cacheable `Stream`. Unencodable requests bypass the cache.
    - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
    - L1 and Redis entries carry global, organization, and model epochs. Each hit validates those epochs against shared Redis state; Redis errors and epoch mismatches become cache misses. Invalidation atomically increments shared epochs, so stale L1 values on other replicas are rejected on their next lookup without relying on Pub/Sub delivery.
-6. **Two-Stage Model Routing (`internal/router`)**:
-   - **Stage 1 (Intelligent Router)**: Resolves virtual aliases (`auto`, `fast`, `reasoning`, `coding`) into a concrete `ModelGroup` using deterministic rules, prompt complexity scoring, or embedding similarity. Also resolves direct `provider/model` requests dynamically by auto-provisioning from the embedded 5,493-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
-   - **Stage 2 (Deployment Load Balancer)**: Evaluates healthy deployments using `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), then selects the optimal deployment (excluding deployments in Redis cooldown) using the configured strategy (`weighted-shuffle`, `least-busy`, `latency-based`, `usage-based-headroom`, or `lowest-cost`). Adaptive strategies read and atomically update expiring shared Redis deployment signals; if Redis is unavailable, they use process-local estimates and log that cluster-wide accuracy is unavailable.
-7. **Reliability Loop & Provider OpenAPI Translation (`internal/router/reliability.go` + `internal/adapter`)**:
-   - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`).
-   - Transforms `CanonicalChatRequest` into the target provider's OpenAPI or protocol schema (OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock Converse, GCP Vertex AI, Cohere v2, Mistral, Ollama, or one of 30+ certified OpenAI-compatible profiles).
-   - Executes the HTTP request (or opens an SSE stream):
-     - On transient upstream failure (`429`, `500`, `502`, `503`, `529`, or dial/headers timeout before the first streamed byte), records the failure in the sliding window counter, triggers a deployment cooldown if the threshold is reached, waits for full-jitter backoff, and **retries another deployment in the same group**.
-     - If all healthy deployments in the primary `ModelGroup` are exhausted, walks the configured **`fallback_group_ids` chain** (e.g., failing over seamlessly across providers).
+6. **6-Stage Model Routing & Candidate Filtering (`internal/router`)**:
+   - **Stage 0 (PreRouterRegistry)**: Resolves virtual aliases (`auto`, `router/heuristic`, `router/semantic`, `router/quality`, `router/adaptive`, or custom `PreRouter` hooks) and session affinity pins (`AffinityStore`). Also supports comma-separated hedged racing (`model-a,model-b`) and dynamic `provider/model` auto-provisioning from the embedded 5,493-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
+   - **Stages 1–3 (Group Resolution, Filter Chain & Priority Tiers)**: `DeploymentFilterChain` evaluates `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), health & staleness (`health_staleness_threshold`), 3-state CB cooldowns, context windows, region, `&`/`!` tag expressions, deployment RPM/TPM/budget caps & provider budgets, affinity hints, and registered `RoutingPlugin` filters. Surviving candidates are grouped by ascending `Deployment.Priority` tier.
+   - **Stages 4–5 (Load Balancer & Scheduler)**: Selects the optimal deployment using the configured strategy (`weighted-shuffle`, `round-robin`, `least-busy`, `latency-based`, `fastest-response`, `usage-based-headroom`, or `lowest-cost`), optionally bounded by `PriorityScheduler`. Adaptive signals, affinity pins, and bandit updates use Redis with graceful fallback to process-local observations (`gw_routing_signal_degraded_total` counter + warning log).
+7. **Reliability Loop, Specialized Fallbacks & SSE Continuation (`internal/router/reliability.go` + `internal/adapter`)**:
+   - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`) and transforms `CanonicalChatRequest` into the target provider's OpenAPI or protocol schema.
+   - Executes the request (or `fastest-response` hedged race):
+     - Evaluates per-exception `RetryPolicy` (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, etc.) with full-jitter backoff + `Retry-After` handling, adaptive failure-rate `CooldownPolicy` + lone-deployment safety net, and ascending `Deployment.Priority` tier step-downs (`X-Gateway-Tier-Stepdowns`).
+     - If all tiers in the primary `ModelGroup` are exhausted, walks `context_window_fallbacks`, `content_policy_fallbacks`, `fallback_targets` (with per-target `overrides`), `fallback_group_ids`, or `router.default_fallbacks` (`X-Gateway-Fallback-Attempted: true`).
+     - If `enable_mid_stream_continuation: true` is active and a plain-text SSE stream breaks mid-response, `StreamContinuationManager` stitches an assistant-prefill continuation (`X-Gateway-Stream-Continued: true`).
 
 #### Post-Processing Path (Steps 8–9)
 8. **Quota Reconciliation**:
@@ -269,7 +271,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | 23 primary `/v1` paths and `/admin/v1` control-plane contracts (verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `24` `/v1` paths and `49` `/admin/v1` control-plane contracts (`73` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
@@ -291,9 +293,9 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
 
 #### 3.1.3 Semantic Translation Deep-Dive
 
-##### A. Anthropic Claude (`anthropic_api.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
+##### A. Anthropic Claude (`anthropic.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
 1. **Authentication & Version Headers**:
-   - Injects `x-api-key: <decrypted_key>` and `anthropic-version: 2023-06-01` (as mandated by `AnthropicVersionHeader` in `anthropic_api.yaml`).
+   - Injects `x-api-key: <decrypted_key>` and `anthropic-version: 2023-06-01` (as mandated by `AnthropicVersionHeader` in `anthropic.openapi.yaml`).
    - If `reasoning_effort` or thinking budget is requested, injects `thinking: {"type": "enabled", "budget_tokens": N}`.
    - **Thinking Parameter Compatibility**: When thinking is active, Anthropic forbids customized temperatures. The adapter automatically omits `temperature` and `top_p` to avoid upstream 400 rejection.
 2. **System Prompt Extraction**:
@@ -312,7 +314,7 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
      - `content_block_delta` (`input_json_delta`) $\rightarrow$ emits `delta.tool_calls[{index, function: {arguments: partial_json}}]`.
      - `message_delta` $\rightarrow$ captures `usage.output_tokens`, maps `stop_reason` (`end_turn` $\rightarrow$ `stop`, `max_tokens` $\rightarrow$ `length`, `tool_use` $\rightarrow$ `tool_calls`), and emits final chunk + `data: [DONE]\n\n`.
 
-##### B. Google Gemini (`gemini_api_v1.1.0.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
+##### B. Google Gemini (`gemini.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
 1. **Endpoint & Auth**:
    - Sync: `POST /v1beta/models/{model}:generateContent` with `x-goog-api-key: <decrypted_key>`.
    - Stream: `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` with `x-goog-api-key: <decrypted_key>`.
@@ -326,10 +328,10 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
 3. **Safety Block Interception**:
    - If a prompt triggers Gemini content safety filters, Gemini returns zero candidates with `promptFeedback.blockReason`. The adapter intercepts this condition and translates it into a standard `GatewayError` (`type: "safety_violation"`, `code: "prompt_blocked"`, HTTP 400), preventing downstream client nil-pointer crashes.
 
-##### C. Mistral AI (`mistral_api.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
+##### C. Mistral AI (`mistral.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
 1. **Endpoint & Parameter Normalization**:
    - Targets `POST /v1/chat/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
-   - Translates `MaxTokens` to Mistral's `max_tokens` (`ChatCompletionRequest` in `mistral_api.yaml`), normalizes `safe_prompt`, and maps SSE `data:` chunks to canonical chunks.
+   - Translates `MaxTokens` to Mistral's `max_tokens` (`ChatCompletionRequest` in `mistral.openapi.yaml`), normalizes `safe_prompt`, and maps SSE `data:` chunks to canonical chunks.
 
 ##### D. Ollama (`ollama.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
 1. **Wire Protocol Conversion (NDJSON $\rightarrow$ SSE)**:
@@ -362,58 +364,40 @@ To serve multi-tenant enterprises cleanly, model governance is architected acros
 
 ---
 
-### 3.3 Component 3: Two-Stage Routing Engine (Intelligent Router + Load Balancer)
+### 3.3 Component 3: 6-Stage Routing Engine (PreRouter, FilterChain, Tiers & Load Balancer)
 
 ```mermaid
 flowchart TD
-    Req["Incoming Request\nmodel: 'auto' | 'fast' | 'reasoning' | 'gpt-4.1'"]
-    CheckAlias{"Is model a Smart Alias?\n('auto', 'fast', 'reasoning', 'coding')"}
-    ExplicitGroup["Lookup Explicit ModelGroup\nfor Organization"]
+    Req["Incoming Request\nmodel: 'auto' | 'router/semantic' | 'router/quality' | 'router/adaptive' | 'fast' | 'model-a,model-b'"]
+    PreRoute{"Stage 0: PreRouterRegistry & Affinity\n(Heuristic / Semantic / Quality / Bandit / Session Pin)"}
+    Resolve["Stage 1: IntelligentRouter\n(ModelGroup Resolution + Fallback Chains)"]
+    Filter["Stage 2: DeploymentFilterChain\n(Health+Staleness, 3-State CB, Context Window, Region, &/! Tags, Dep/Provider Budgets, RoutingPlugin)"]
+    Tier["Stage 3: Priority Tier Grouping\n(Ascending Deployment.Priority)"]
+    Strategy{"Stage 4: LoadBalancer.Select"}
+    Strategies["weighted-shuffle | round-robin | least-busy\nlatency-based | fastest-response | usage-based-headroom | lowest-cost"]
+    Sched["Stage 5: PriorityScheduler & Execution\n(Bounded Queue + Hedged Race)"]
 
-    subgraph Stage1["Stage 1: Intelligent Model Router (< 0.5ms)"]
-        RuleEngine["Tier 1: Deterministic Rule Engine\n- Has Vision/Image parts?\n- Prompt Tokens > 32k?\n- Has Tool/JSON Schema requirements?\n- Matches Code/Regex patterns?"]
-        Complexity["Tier 2: Prompt Complexity Scorer\nScore S in [0.0, 1.0]\n- Token length weight\n- Reasoning keyword density\n- Multi-turn depth & code density"]
-        EmbedRouter["Tier 3: Optional Semantic Embedding Router\nCosine similarity vs task centroids"]
-    end
-
-    subgraph Stage2["Stage 2: Deployment Load Balancer"]
-        FilterHealthy["Filter Active Deployments\n(Exclude Redis Cooldowns)"]
-        Strategy{"Group Routing Strategy"}
-        Weighted["weighted-shuffle\n(Weighted Random)"]
-        LeastBusy["least-busy\n(Min Shared In-Flight Requests)"]
-        Latency["latency-based\n(Min Shared TTFT EWMA)"]
-        Headroom["usage-based-headroom\n(1m Windowed Shared TPM Headroom)"]
-        LowestCost["lowest-cost\n(Min Input+Output Price)"]
-    end
-
-    Selected["Selected Healthy Deployment\n+ Fallback Chain"]
-
-    Req --> CheckAlias
-    CheckAlias -->|"No (Explicit)"| ExplicitGroup
-    CheckAlias -->|"Yes ('auto'/alias)"| RuleEngine
-    RuleEngine -->|"No hard rule match"| Complexity
-    Complexity -->|"Ambiguous & Embedding Enabled"| EmbedRouter
-    RuleEngine & Complexity & EmbedRouter & ExplicitGroup --> FilterHealthy
-    FilterHealthy --> Strategy
-    Strategy --> Weighted & LeastBusy & Latency & Headroom & LowestCost
-    Weighted & LeastBusy & Latency & Headroom & LowestCost --> Selected
+    Req --> PreRoute --> Resolve --> Filter --> Tier --> Strategy --> Strategies --> Sched
 ```
 
 ---
 
-### 3.4 Component 4: Reliability Manager (Retries, Fallbacks & Circuit Breakers)
+### 3.4 Component 4: Reliability Manager (Retries, Priority Tiers, Fallbacks & Mid-Stream Continuation)
 
-The Reliability Manager wraps Stage 2 deployment execution with three nested safety nets:
+The Reliability Manager wraps deployment execution with five coordinated recovery mechanisms:
 
-1. **Intra-Group Retries (Same Model Group, Alternate Deployment)**:
-   - If Deployment A in `prod-gpt-4.1` returns `429`, `500`, `502`, `503`, `529`, or times out before the first streamed token, the Reliability Manager immediately marks a failure sample against Deployment A and selects Deployment B from the **same** `ModelGroup` (so the caller still receives the exact model they requested).
+1. **Per-Exception `RetryPolicy` & Intra-Tier Retries**:
+   - Evaluates per-class retry budgets (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, `auth_error_retries`, `not_found_retries`, `bad_request_retries`, `default_retries`).
    - Uses **Full-Jitter Exponential Backoff** (`sleep = rand(0, min(maxDelay, baseDelay * 2^attempt))`), honoring upstream `Retry-After` headers when present and within `maxDelay`.
-2. **Sliding-Window Circuit Breaker & Distributed Cooldown**:
-   - If a deployment accumulates $\ge N$ failures (default `3`) within a sliding window of $W$ seconds (default `30s`), or returns `401`/`403` (invalid upstream API key), the deployment is placed into **Cooldown** (`gw:router:cooldown:<dep_id>`, default `60s`).
-   - All gateway pods immediately stop routing traffic to that deployment until the cooldown TTL expires, at which point a single **Half-Open Probe** request tests recovery.
-3. **Inter-Group Fallback Chains (Cross-Model / Cross-Provider Failover)**:
-   - Every `ModelGroup` defines an ordered `fallback_group_ids` slice (e.g., `gpt-4.1` $\rightarrow$ `claude-sonnet-4` $\rightarrow$ `gemini-2.5-pro`).
-   - If all deployments in the primary group fail or are in cooldown, the Reliability Manager automatically re-translates the canonical request for the fallback provider and executes it seamlessly, setting response headers `X-Gateway-Fallback-Attempted: true` and `X-Gateway-Resolved-Model: <fallback_model>`.
+2. **Sliding-Window + Failure-Rate Circuit Breaker & Lone-Deployment Safety Net**:
+   - Trips a deployment to **Cooldown** (`gw:router:{dep:<dep_id>}:cooldown`) when failures reach `failure_threshold` (`allowed_fails`), on `401`/`403` auth errors, or when 1-minute failure rates (`fails_1m / reqs_1m`) exceed `cooldown_policy.failure_rate_threshold` at or above `min_requests_per_minute`.
+   - Enforces a **lone-deployment safety net** so transient non-auth errors on the sole remaining deployment never permanently blackhole all traffic.
+3. **Priority Tier Step-Down (`Deployment.Priority`)**:
+   - Exhausts all eligible candidates and retries in tier `0` before stepping to tier `1`, `2`, etc., recording `X-Gateway-Tier-Stepdowns` and `X-Gateway-Route-Reason: priority_tier_stepdown`.
+4. **Specialized & Cross-Provider Fallback Chains (`fallback_chains.go`)**:
+   - Routes `context_length_exceeded` errors through `context_window_fallbacks`, content/safety blocks through `content_policy_fallbacks`, and remaining errors through `fallback_targets` (supporting per-target parameter `overrides`), `fallback_group_ids`, or global `router.default_fallbacks`, setting `X-Gateway-Fallback-Attempted: true`.
+5. **Mid-Stream SSE Continuation (`stream_continuation.go`)**:
+   - When `enable_mid_stream_continuation: true` is active and a plain-text SSE stream disconnects after emitting tokens, `StreamContinuationManager` re-routes with accumulated assistant prefill and adjusted `max_tokens`, emitting `X-Gateway-Stream-Continued: true`.
 
 ---
 
@@ -545,7 +529,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0015`):
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0021`):
 
 #### 1. Multi-Tenant Identity & RBAC
 - **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
@@ -557,11 +541,11 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 
 #### 2. Vault, Routing & Deployments
 - **`provider_credentials`** (`0001`): AES-256-GCM encrypted provider keys. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `encrypted_api_key` (TEXT), `base_url` (TEXT), `azure_deployment_name` (VARCHAR), `api_version` (VARCHAR), `headers_json` (TEXT), `created_at`, `updated_at`.
-- **`model_groups`** (`0001`): Virtual model aliases (`fast`, `reasoning`). Columns: `id` (VARCHAR PK), `name` (UNIQUE), `routing_strategy` (VARCHAR), `fallback_group_ids` (TEXT[]), timestamps.
-- **`model_deployments`** (`0001`): Backing physical instances. Columns: `id` (VARCHAR PK), `model_group_id` (FK), `global_model_id` (VARCHAR), `provider_credential_id` (FK), `priority` (INT), `weight` (INT), `rpm_limit` (INT), `tpm_limit` (INT), `healthy` (BOOL), timestamps.
+- **`model_groups`** (`0001`, `0020`): Virtual model aliases (`fast`, `reasoning`). Columns: `id` (VARCHAR PK), `name` (UNIQUE), `routing_strategy` (VARCHAR), `fallback_group_ids` (TEXT[]), `context_window_fallbacks` (JSONB), `content_policy_fallbacks` (JSONB), `fallback_targets` (JSONB), `retry_policy` (JSONB), `cooldown_policy` (JSONB), timestamps.
+- **`model_deployments`** (`0001`, `0021`): Backing physical instances. Columns: `id` (VARCHAR PK), `model_group_id` (FK), `global_model_id` (VARCHAR), `provider_credential_id` (FK), `priority` (INT), `weight` (INT), `region` (VARCHAR), `tags` (TEXT[]), `max_budget_micros` (INT8), `budget_reset_period` (TEXT), `rpm_limit` (INT), `tpm_limit` (INT), `healthy` (BOOL), timestamps.
 
 #### 3. Global Catalogue, Capabilities & Pricing Provenance
-- **`global_models`** (`0001`, `0004`, `0005`, `0006`, `0007`): Verified model registry. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `model_name` (VARCHAR), `context_window` (INT), `max_output_tokens` (INT), `supports_streaming` (BOOL), `supports_tools` (BOOL), `supports_vision` (BOOL), `supports_reasoning` (BOOL), `supports_inference` (BOOL), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `rerank_cost_micros_per_search_unit` (INT8), `image_cost_micros_base` (INT8), `image_cost_micros_hd` (INT8), `audio_stt_cost_micros_per_second` (INT8), `audio_tts_cost_micros_per_1k_chars` (INT8), `modality_pricing_json` (JSONB), `pricing_status` (`provisional`, `verified`), `pricing_provenance_source` (VARCHAR), `pricing_effective_date` (DATE), timestamps.
+- **`global_models`** (`0001`, `0004`, `0005`, `0006`, `0007`, `0021`): Verified model registry including `quality_tier` (`INT`), context windows, tri-state capability references, modality pricing, and lifecycle status.
 - **`model_capabilities`** (`0005`): Tri-state capability matrix (`supported`, `unsupported`, `unknown`). Columns: `global_model_id` (FK PK), `supports_streaming`, `supports_tools`, `supports_structured_outputs`, `supports_vision`, `supports_audio_input`, `supports_audio_output`, `supports_reasoning`, timestamps.
 - **`model_pricing_history`** (`0005`): Immutable pricing audit revision log. Columns: `id` (VARCHAR PK), `global_model_id` (FK), `version` (INT), `input_cost_micros_per_1m` (INT8), `output_cost_micros_per_1m` (INT8), `cached_input_cost_micros_per_1m` (INT8), `reasoning_cost_micros_per_1m` (INT8), `pricing_status` (VARCHAR), `provenance_source` (VARCHAR), `effective_date` (DATE), `created_at`.
 - **`spend_event_outbox`** (`0008`): Durable inference/MCP event queue. Columns: stable `id`, `payload_json`, status (`pending`, `processing`, `delivered`, `dead_letter`), `attempt_count`, `next_attempt_at`, `locked_at`, `last_error`, and timestamps. A successful inference event is committed here before the request returns success.
@@ -590,22 +574,28 @@ All multi-key Lua scripts use Redis Cluster hash tags so every key touched in an
 
 | Redis Key Pattern | Data Type | TTL | Description |
 | :--- | :--- | :--- | :--- |
-| `gw:auth:key:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key + Team + Org quotas & permissions) |
-| `gw:rl:{org:<org_id>}:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Fixed/Sliding minute request counter (`scope` $\in \{\text{key},\text{team},\text{org}\}$) |
-| `gw:rl:{org:<org_id>}:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute token counter (`scope` $\in \{\text{key},\text{team},\text{org}\}$) |
-| `gw:rl:{org:<org_id>}:conc:{key_id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent request counter |
+| `gw:auth:key:v2:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key + Team + Org quotas & permissions) |
+| `gw:rl:{org:<org_id>}:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Fixed/Sliding minute request counter (`scope` $\in \{\text{key},\text{team},\text{user},\text{org}\}$) |
+| `gw:rl:{org:<org_id>}:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute token counter (`scope` $\in \{\text{key},\text{team},\text{user},\text{org}\}$) |
+| `gw:rl:{org:<org_id>}:conc:{id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent request counter (Key, Team, Org scopes) |
 | `gw:spend:{org:<org_id>}:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend in micro-dollars |
 | `gw:budget:{org:<org_id>}:reservations:{scope}:{id}` | `ZSET` | `3660s` | In-flight budget reservation sorted set |
+| `gw:budget:{org:<org_id>}:dep:{dep_id}:{period}` | `STRING` (Int64) | Period | Per-deployment spend window counter (`DeploymentBudgetTracker`) |
+| `gw:budget:{org:<org_id>}:prov:{provider}:{period}` | `STRING` (Int64) | Period | Per-provider spend window counter (`provider_budgets`) |
 | `gw:router:{dep:<dep_id>}:circuit` | `STRING` | `60s` | Circuit breaker state (`open` / `half_open`) |
 | `gw:router:{dep:<dep_id>}:cooldown` | `STRING` | `60s` | Cooldown state for an unhealthy deployment |
-| `gw:router:{dep:<dep_id>}:probe` | `STRING` | `30s` | Half-open recovery probe lease token |
-| `gw:router:failures:{dep_id}` | `STRING` (Int64) | `30s` | Sliding window failure counter |
-| `gw:router:ttft:{dep_id}` | `STRING` (Float64)| `600s` | EWMA Time-To-First-Token latency (ms) |
-| `gw:cache:resp:{sha256}` | `STRING` (JSON) | `3600s` | Exact-match cached inference response |
+| `gw:router:{dep:<dep_id>}:probe` | `STRING` | `300s` | Half-open recovery probe lease token |
+| `gw:router:{dep:<dep_id>}:failures` | `STRING` (Int64) | `30s` | Sliding window failure counter |
+| `gw:router:{dep:<dep_id>}:reqs_1m` / `fails_1m` | `STRING` (Int64) | `60s` | 1-minute rolling request and failure counts for adaptive failure-rate cooldowns |
+| `gw:routing:signals:<sha256>` | `HASH` | `600s` | Shared adaptive LB signals (`in_flight`, `used_rpm`, `used_tpm`, `ewma_latency_ms`, `ewma_ttft_ms`) |
+| `gw:affinity:{org:<org_id>}:{session,resp,pcache}:*` | `STRING` | `1800s` | Session, Responses API, and prompt-cache deployment affinity pins |
+| `gw:router:semantic:{org:<org_id>}:centroids` | `HASH` / `STRING` | Cached | Normalized centroid vectors for `SemanticPreRouter` |
+| `gw:router:bandit:{org:<org_id>}:{bucket}` | `HASH` | Persistent | Thompson-sampling Beta posterior state for `BanditPreRouter` |
+| `gw:cache:resp:{sha256}` | `STRING` (JSON) | `3600s` | Exact-match cached chat response (plus `gw:cache:{epochs}:*` epoch invalidation) |
 | `gw:lock:discovery` | `STRING` (UUID) | `60s` | Distributed mutex for automated model discovery worker |
 | `gw:events:invalidation` | `PUBSUB` | — | Broadcast channel for instant L1 cache eviction across pods |
-| `gw:mcp:sessions:{srv}:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest |
-| `gw:mcp:mrtr:{jti}` | `STRING` | `300s` | Single-use anti-replay token registry for MRTR resumption |
+| `gw:mcp25:sess:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest |
+| `gw:mcp:mrtr:jti:{jti}` | `STRING` | `300s` | Single-use anti-replay token registry for MRTR resumption |
 | `gw:mcp:cache:{bin_hmac}` | `STRING` (JSON) | `300s` | Delimiter-collision-proof binary length-prefixed MCP response cache |
 | `gw:a2a:events:{taskID}` | `PUBSUB` | — | Redis Pub/Sub broadcast channel for Subscribe-First task event streams |
 
@@ -731,7 +721,11 @@ ai-gateway-go/
 │   ├── 0018_tool_policies.up.sql
 │   ├── 0018_tool_policies.down.sql
 │   ├── 0019_guardrail_usage_metrics.up.sql
-│   └── 0019_guardrail_usage_metrics.down.sql
+│   ├── 0019_guardrail_usage_metrics.down.sql
+│   ├── 0020_specialized_fallbacks.up.sql
+│   ├── 0020_specialized_fallbacks.down.sql
+│   ├── 0021_deployment_tags_and_budgets.up.sql
+│   └── 0021_deployment_tags_and_budgets.down.sql
 ├── tests/
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
 │   └── e2e/                          # End-to-end integration, protocols, clustering & resilience suites
