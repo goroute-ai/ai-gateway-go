@@ -340,18 +340,25 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			budgetInputTokens = len(encoded)
 		}
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
+	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, maxOutput, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	actualTokensReconciled := false
-	defer func() {
-		if !actualTokensReconciled {
-			releaseQuota(-1)
-		}
-	}()
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          reqID,
+		traceID:        traceID,
+		endpoint:       "/v1/chat/completions",
+		modality:       domain.ModalityChat,
+		requestedModel: chatReq.Model,
+		estTokens:      estTokens,
+		isStream:       chatReq.Stream,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	// 3. Exact-Match Response Cache Check (Non-Streaming Deterministic Requests)
 	cacheHeader := r.Header.Get("X-Gateway-Cache-Control")
@@ -369,8 +376,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 					guardrailRedacted = true
 				}
 				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
-				actualTokensReconciled = true
-				releaseQuota(0)
+				quotaSettlement.actualTokensReconciled = true
+				releaseQuota(0, -2)
 				s.collector.Record(observability.RequestObservation{
 					Provider:          string(cachedResp.Provider),
 					Model:             cachedResp.Model,
@@ -584,8 +591,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 						return
 					}
 				}
-				actualTokensReconciled = true
-				releaseQuota(0)
+				quotaSettlement.actualTokensReconciled = true
+				releaseQuota(0, -2)
 				usageVal := extractStreamChunksUsage(cachedChunks, estTokens)
 				s.collector.RecordStream(time.Since(replayStarted), 0, false)
 				s.collector.Record(observability.RequestObservation{
@@ -644,6 +651,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		streamStarted := time.Now()
 
 		onSelected := func(dep *domain.Deployment) {
+			quotaSettlement.selectedDep = dep
 			if !sseWriter.Started() && dep != nil && dep.GlobalModel != nil {
 				if dep.GlobalModel.Provider != "" {
 					w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
@@ -656,6 +664,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}
 		}
 
+		quotaSettlement.upstreamDispatched = true
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 			usage, meta, err = s.orchestrator.ExecuteStreamLoop(upstreamCtx, idCtx, &chatReq, writeChunk, onSelected)
 		} else {
@@ -673,6 +682,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		if err == nil && flushErr != nil {
 			err = flushErr
 		}
+		quotaSettlement.meta = meta
+		quotaSettlement.dispatchErr = err
 		if streamSession.Redacted() {
 			guardrailRedacted = true
 		}
@@ -741,6 +752,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				}},
 			}
 			if writeErr := sseWriter.WriteChunk(&flushChunk); writeErr != nil {
+				quotaSettlement.dispatchErr = writeErr
 				_ = sseWriter.WriteError(writeErr)
 				return
 			}
@@ -759,8 +771,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			usageVal.TotalTokens = estTokens
 			totalTok = estTokens
 		}
-		actualTokensReconciled = true
-		releaseQuota(totalTok)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(totalTok, -2)
 
 		var gm *domain.GlobalModel
 		var depID, depName string
@@ -875,12 +887,18 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	var resp *domain.CanonicalChatResponse
 	var meta *router.ExecutionMeta
 
+	quotaSettlement.upstreamDispatched = true
 	if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 		resp, meta, err = s.orchestrator.ExecuteLoop(upstreamCtx, idCtx, &chatReq)
 	} else {
 		resp, meta, err = s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
 	}
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
+		if quotaSettlement.dispatchErr == nil {
+			quotaSettlement.dispatchErr = duringErr
+		}
 		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "chat_completion")
 		domain.WriteHTTPError(w, duringErr)
 		return
@@ -912,8 +930,8 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	actualTokensReconciled = true
-	releaseQuota(resp.Usage.TotalTokens)
+	quotaSettlement.actualTokensReconciled = true
+	releaseQuota(resp.Usage.TotalTokens, -2)
 
 	// Output Guardrail Evaluation (Layer 0 Engine + Layer 1 post_call Pipeline)
 	redacted, guardrailOutputErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "chat_completion")
@@ -1099,12 +1117,24 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	for _, input := range inputs {
 		inputByteBound += len(input)
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
+	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, raw.Model, estTokens, inputByteBound, -1, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          reqID,
+		traceID:        traceID,
+		endpoint:       "/v1/embeddings",
+		modality:       domain.ModalityEmbedding,
+		requestedModel: raw.Model,
+		estTokens:      estTokens,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	embReq := &domain.CanonicalEmbeddingRequest{
 		RequestID:      reqID,
@@ -1122,7 +1152,8 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		cacheKey = s.respCache.ComputeEmbeddingKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), embReq)
 		if cacheKey != "" {
 			if cachedResp, hit := s.respCache.GetEmbedding(r.Context(), cacheKey); hit {
-				releaseQuota(0)
+				quotaSettlement.actualTokensReconciled = true
+				releaseQuota(0, -2)
 				s.collector.Record(observability.RequestObservation{
 					Provider:   string(cachedResp.Provider),
 					Model:      cachedResp.Model,
@@ -1149,13 +1180,16 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
+	quotaSettlement.upstreamDispatched = true
 	resp, meta, err := s.reliability.ExecuteEmbeddings(r.Context(), idCtx, embReq)
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	if err != nil {
-		releaseQuota(-1)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(resp.Usage.TotalTokens)
+	quotaSettlement.actualTokensReconciled = true
+	releaseQuota(resp.Usage.TotalTokens, -2)
 	if cacheKey != "" {
 		s.respCache.SetEmbeddingWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
 	}

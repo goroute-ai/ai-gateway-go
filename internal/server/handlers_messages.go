@@ -165,7 +165,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			budgetInputTokens = len(encoded)
 		}
 	}
-	releaseQuota, err := s.acquireRequestQuotaWithBound(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
+	releaseQuota, err := s.acquireRequestQuotaWithCost(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteAnthropicHTTPError(w, err)
@@ -177,6 +177,19 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		s.streamAnthropicMessages(w, r, idCtx, prc, &chatReq, estTokens, releaseQuota, traceID, reqID)
 		return
 	}
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          reqID,
+		traceID:        traceID,
+		endpoint:       r.URL.Path,
+		modality:       domain.ModalityChat,
+		requestedModel: payload.Model,
+		estTokens:      estTokens,
+		isStream:       false,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	var cacheKey string
 	if s.respCache != nil && s.respCache.IsCacheable(&chatReq, r.Header.Get("X-Gateway-Cache-Control")) {
@@ -185,12 +198,14 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
 				_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "messages")
 				if sanitizeErr != nil {
-					releaseQuota(0)
+					quotaSettlement.actualTokensReconciled = true
+					releaseQuota(0, -2)
 					domain.WriteAnthropicHTTPError(w, sanitizeErr)
 					return
 				}
 				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
-				releaseQuota(0)
+				quotaSettlement.actualTokensReconciled = true
+				releaseQuota(0, -2)
 				s.collector.Record(observability.RequestObservation{
 					Provider:   string(cachedResp.Provider),
 					Model:      cachedResp.Model,
@@ -216,7 +231,6 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 
 	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
 	if duringInitErr != nil {
-		releaseQuota(-1)
 		domain.WriteAnthropicHTTPError(w, duringInitErr)
 		return
 	}
@@ -224,20 +238,25 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		defer duringHandle.Close()
 	}
 
+	quotaSettlement.upstreamDispatched = true
 	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
-		releaseQuota(-1)
+		if quotaSettlement.dispatchErr == nil {
+			quotaSettlement.dispatchErr = duringErr
+		}
 		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
 		domain.WriteAnthropicHTTPError(w, duringErr)
 		return
 	}
 	if err != nil {
-		releaseQuota(-1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
-	releaseQuota(resp.Usage.TotalTokens)
+	quotaSettlement.actualTokensReconciled = true
+	releaseQuota(resp.Usage.TotalTokens, -2)
 	if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "messages"); sanitizeErr != nil {
 		domain.WriteAnthropicHTTPError(w, sanitizeErr)
 		return
@@ -344,12 +363,25 @@ func (s *GatewayServer) streamAnthropicMessages(
 	prc guardrails.PipelineRequestContext,
 	chatReq *domain.CanonicalChatRequest,
 	estTokens int,
-	releaseQuota func(int),
+	releaseQuota func(int, int64),
 	traceID, reqID string,
 ) {
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          reqID,
+		traceID:        traceID,
+		endpoint:       r.URL.Path,
+		modality:       domain.ModalityChat,
+		requestedModel: chatReq.Model,
+		estTokens:      estTokens,
+		isStream:       true,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
+
 	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
 	if duringInitErr != nil {
-		releaseQuota(-1)
 		domain.WriteAnthropicHTTPError(w, duringInitErr)
 		return
 	}
@@ -358,7 +390,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 		if duringHandle != nil {
 			duringHandle.Close()
 		}
-		releaseQuota(0)
 		domain.WriteAnthropicHTTPError(w, sessionErr)
 		return
 	}
@@ -366,7 +397,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		releaseQuota(-1)
 		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       domain.ErrorTypeServer,
@@ -494,8 +524,10 @@ func (s *GatewayServer) streamAnthropicMessages(
 		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
 		usage = &u
 	} else {
+		quotaSettlement.upstreamDispatched = true
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 			winningDep = dep
+			quotaSettlement.selectedDep = dep
 			if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
 				if dep.GlobalModel.Provider != "" {
 					w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
@@ -519,6 +551,8 @@ func (s *GatewayServer) streamAnthropicMessages(
 	if err == nil && flushErr != nil {
 		err = flushErr
 	}
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
@@ -527,11 +561,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 	setRoutingTelemetryHeaders(w, meta)
 
 	if err != nil {
-		if streamCacheHit {
-			releaseQuota(0)
-		} else {
-			releaseQuota(-1)
-		}
 		isBlocked := streamSession.Blocked()
 		errType := "api_error"
 		errCode := "stream_error"
@@ -609,7 +638,8 @@ func (s *GatewayServer) streamAnthropicMessages(
 	var costMicros int64
 	var latMs int64
 	if streamCacheHit {
-		releaseQuota(0)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(0, -2)
 		resolvedModel, provider, gm = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, chatReq.Model, cachedStreamChunks)
 		costMicros = 0
 		s.collector.Record(observability.RequestObservation{
@@ -620,7 +650,8 @@ func (s *GatewayServer) streamAnthropicMessages(
 			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
-		releaseQuota(totalTokens)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(totalTokens, -2)
 		if winningDep == nil && meta != nil && meta.WinningDeployment != nil {
 			winningDep = meta.WinningDeployment
 		}
