@@ -34,8 +34,32 @@ type OperatorContext struct {
 	Role                  OperatorRole `json:"role"`
 	OrgID                 string       `json:"org_id,omitempty"`
 	TeamID                string       `json:"team_id,omitempty"`
-	AuthMethod            string       `json:"auth_method"` // "master_key", "virtual_key", "jwt"
+	AuthMethod            string       `json:"auth_method"` // "master_key", "virtual_key", "jwt", "session"
 	DeprecatedKeyRevokeAt *time.Time   `json:"deprecated_key_revoke_at,omitempty"`
+	SessionID             string       `json:"session_id,omitempty"`
+	CSRFToken             string       `json:"csrf_token,omitempty"`
+}
+
+// UserCredential stores the password hash and lockout state for a User in user_credentials.
+type UserCredential struct {
+	UserID                string     `json:"user_id"`
+	PasswordHash          string     `json:"-"`
+	PasswordResetRequired bool       `json:"password_reset_required"`
+	FailedAttempts        int        `json:"failed_attempts"`
+	LockedUntil           *time.Time `json:"locked_until,omitempty"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+// OperatorSession represents a revocable Control Plane session stored in operator_sessions.
+type OperatorSession struct {
+	ID        string     `json:"id"`
+	UserID    string     `json:"user_id"`
+	OrgID     string     `json:"org_id"`
+	Role      string     `json:"role"`
+	CSRFToken string     `json:"csrf_token"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // KeyType defines capability presets applied to Virtual API Keys.

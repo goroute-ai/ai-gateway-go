@@ -173,7 +173,8 @@ func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) f
 }
 
 // AdminControlPlaneMiddleware protects `/admin/v1/*` routes and resolves OperatorContext from
-// MasterAdminKey, admin-role VirtualKey, or validated inbound Bearer JWT/OIDC.
+// MasterAdminKey, admin-role VirtualKey, validated inbound Bearer JWT/OIDC, or Control Plane session cookie/JWT.
+// Mutating requests authenticated via session cookie must present a valid X-CSRF-Token header.
 func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +182,7 @@ func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 			if svc != nil {
 				opts = svc.ExtractorOptions()
 			}
-			cred, err := ExtractCredentials(r, opts)
+			cred, err := ExtractAdminCredentials(r, opts)
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return
@@ -190,6 +191,12 @@ func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 			if err != nil {
 				domain.WriteHTTPError(w, err)
 				return
+			}
+			if cred.Source == CredentialSourceCookie && IsMutatingHTTPMethod(r.Method) {
+				if err := ValidateCSRF(r, op); err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
 			}
 			if op != nil {
 				writeDeprecatedKeyHeaders(w, op.DeprecatedKeyRevokeAt)

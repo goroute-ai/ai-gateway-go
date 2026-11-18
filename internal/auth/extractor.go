@@ -34,6 +34,7 @@ const (
 	CredentialSourceHeaderKey     CredentialSource = "header_key"
 	CredentialSourceQuery         CredentialSource = "query"
 	CredentialSourceWebSocket     CredentialSource = "websocket"
+	CredentialSourceCookie        CredentialSource = "cookie"
 )
 
 // ExtractedCredentials carries a trimmed credential token alongside its transport source.
@@ -130,6 +131,27 @@ func ExtractCredentials(r *http.Request, opts ExtractorOptions) (ExtractedCreden
 		}
 	}
 
+	return ExtractedCredentials{}, nil
+}
+
+// ExtractAdminCredentials extracts Control Plane credentials using ExtractCredentials and
+// falls back to the HttpOnly `goroute_session` cookie when no explicit header credential is provided.
+func ExtractAdminCredentials(r *http.Request, opts ExtractorOptions) (ExtractedCredentials, error) {
+	cred, err := ExtractCredentials(r, opts)
+	if err != nil || cred.Token != "" {
+		return cred, err
+	}
+	if r == nil {
+		return ExtractedCredentials{}, nil
+	}
+	if cookie, err := r.Cookie(SessionCookieName); err == nil {
+		if tok := strings.TrimSpace(cookie.Value); tok != "" {
+			return ExtractedCredentials{
+				Token:  tok,
+				Source: CredentialSourceCookie,
+			}, nil
+		}
+	}
 	return ExtractedCredentials{}, nil
 }
 
