@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -582,7 +584,7 @@ func populateChatResultFromHeaders(res *ChatResult, hdr http.Header) {
 		res.FallbackAttempted = true
 	}
 	if v := strings.TrimSpace(hdr.Get("X-Gateway-Tier-Stepdowns")); v != "" {
-		res.TierStepdowns = int(parseHeaderInt64(v))
+		res.TierStepdowns = parseHeaderNonNegInt(v)
 	}
 	if strings.EqualFold(strings.TrimSpace(hdr.Get("X-Gateway-Stream-Continued")), "true") {
 		res.StreamContinued = true
@@ -612,4 +614,12 @@ func populateChatResultFromHeaders(res *ChatResult, hdr http.Header) {
 			res.WinningDeployment = res.Provider
 		}
 	}
+}
+
+func parseHeaderNonNegInt(v string) int {
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n < 0 || n > math.MaxInt32 {
+		return 0
+	}
+	return int(n)
 }

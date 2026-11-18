@@ -663,3 +663,53 @@ func TestWithMidStreamContinuationAndRouterConfig(t *testing.T) {
 	assert.Equal(t, []string{"Hello ", "world!"}, deltas)
 	assert.True(t, contSawPrefill.Load(), "continuation upstream must receive assistant prefill")
 }
+
+func TestRemoteChat_TierStepdownsHeaderBounds(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{name: "valid", header: "3", want: 3},
+		{name: "negative", header: "-5", want: 0},
+		{name: "overflow_int32", header: "999999999999", want: 0},
+		{name: "non_numeric", header: "abc", want: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Gateway-Provider", "openai")
+				w.Header().Set("X-Gateway-Model", "gpt-4o-mini")
+				w.Header().Set("X-Gateway-Tier-Stepdowns", tc.header)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":      "chatcmpl-bounds",
+					"object":  "chat.completion",
+					"created": time.Now().Unix(),
+					"model":   "gpt-4o-mini",
+					"choices": []map[string]any{
+						{
+							"index":         0,
+							"message":       map[string]any{"role": "assistant", "content": "ok"},
+							"finish_reason": "stop",
+						},
+					},
+					"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+				})
+			}))
+			defer srv.Close()
+
+			gw, err := gateway.New(gateway.WithSilentLogs(), gateway.WithRemote(srv.URL, "sk-test"))
+			require.NoError(t, err)
+			defer gw.Close()
+
+			res, err := gw.ChatWithMessages(context.Background(), gateway.ChatRequest{
+				Model:    "gpt-4o-mini",
+				Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, res.TierStepdowns)
+		})
+	}
+}
