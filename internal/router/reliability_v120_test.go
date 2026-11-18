@@ -992,10 +992,22 @@ func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
 		t.Fatalf("aff2.Wait: %v", err)
 	}
 
-	// Verify Redis was updated to the new pinned deployment, and stays pinned even after pinnedID recovers.
+	// Verify Redis was updated to the new pinned deployment, and stays pinned on a fresh pod even after pinnedID recovers.
 	failDepID.Store("")
 	mr.FastForward(2 * time.Second)
-	_, metaAfter, err := rm1.ExecuteChat(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
+	for _, k := range circuitKeys(pinnedID) {
+		mr.Del(k)
+	}
+	pinnedDep := dep1
+	if pinnedID == dep2.ID {
+		pinnedDep = dep2
+	}
+	rm1.recordSuccess(ctx, pinnedDep)
+	rm2.recordSuccess(ctx, pinnedDep)
+	rm3 := NewReliabilityManager(repo, reg, NewIntelligentRouter(repo, cfg), lb, vault, rbac, rf, cfg)
+	aff3 := NewAffinityStoreFromRouterConfig(rf, cfg)
+	rm3.SetAffinityStore(aff3)
+	_, metaAfter, err := rm3.ExecuteChat(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
 		Model:             "aff-group",
 		Messages:          []domain.CanonicalMessage{{Role: "user", Content: "post-repin"}},
 		GoRouteExtensions: &domain.GoRouteExtensions{SessionID: "sess-123"},
@@ -1008,10 +1020,18 @@ func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
 	}
 
 	// 4. Verify previous_response_id (ExtraParams) and PromptCacheAffinity pins.
-	affKeyResp := ResponseAffinityKey(org.ID, "resp_abc")
-	aff1.PinAsync(org.ID, affKeyResp, dep2.ID, time.Minute)
+	aff1.PinAsync(org.ID, ResponseAffinityKey(org.ID, "resp_1"), dep1.ID, time.Minute)
+	aff1.PinAsync(org.ID, ResponseAffinityKey(org.ID, "resp_abc"), dep2.ID, time.Minute)
 	if err := aff1.Wait(ctx); err != nil {
 		t.Fatal(err)
+	}
+	_, metaResp1, err := rm2.ExecuteChat(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
+		Model:       "aff-group",
+		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "follow-up-1"}},
+		ExtraParams: map[string]any{"previous_response_id": "resp_1"},
+	})
+	if err != nil || metaResp1.WinningDeployment.ID != dep1.ID {
+		t.Fatalf("expected previous_response_id affinity to %s, got %+v (err=%v)", dep1.ID, metaResp1, err)
 	}
 	_, metaRespID, err := rm2.ExecuteChat(ctx, &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
 		Model:       "aff-group",
