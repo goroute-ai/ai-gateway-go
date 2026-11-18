@@ -1318,6 +1318,18 @@ func cacheAllowedModelScope(idCtx *domain.IdentityContext) string {
 		sort.Strings(sorted)
 		parts = append(parts, "team:"+strings.Join(sorted, ","))
 	}
+	if len(idCtx.ProjectAllowedModels) > 0 {
+		sorted := make([]string, len(idCtx.ProjectAllowedModels))
+		copy(sorted, idCtx.ProjectAllowedModels)
+		sort.Strings(sorted)
+		parts = append(parts, "proj:"+strings.Join(sorted, ","))
+	}
+	if len(idCtx.TeamMemberAllowedModels) > 0 {
+		sorted := make([]string, len(idCtx.TeamMemberAllowedModels))
+		copy(sorted, idCtx.TeamMemberAllowedModels)
+		sort.Strings(sorted)
+		parts = append(parts, "tm:"+strings.Join(sorted, ","))
+	}
 	if len(idCtx.DynamicAllowedModels) > 0 {
 		sorted := make([]string, len(idCtx.DynamicAllowedModels))
 		copy(sorted, idCtx.DynamicAllowedModels)

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,8 +186,29 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 	}
 
 	vk := *req
+	vk.TeamID = strings.TrimSpace(vk.TeamID)
+	vk.ProjectID = strings.TrimSpace(vk.ProjectID)
+	vk.UserID = strings.TrimSpace(vk.UserID)
 	ApplyKeyTypePreset(&vk)
 
+	if vk.ProjectID != "" {
+		pmRepo, ok := s.repo.(storage.ProjectAndMembershipRepository)
+		if !ok || pmRepo == nil {
+			return nil, fmt.Errorf("repository does not support projects")
+		}
+		proj, err := pmRepo.GetProject(ctx, vk.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("verify project %q: %w", vk.ProjectID, err)
+		}
+		if proj.OrgID != vk.OrgID {
+			return nil, fmt.Errorf("project %q does not belong to organization %q", vk.ProjectID, vk.OrgID)
+		}
+		if vk.TeamID == "" {
+			vk.TeamID = proj.TeamID
+		} else if proj.TeamID != vk.TeamID {
+			return nil, fmt.Errorf("project %q does not belong to team %q", vk.ProjectID, vk.TeamID)
+		}
+	}
 	if vk.TeamID != "" {
 		team, err := s.repo.GetTeam(ctx, vk.TeamID)
 		if err != nil {
@@ -305,6 +327,27 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	}
 	if vk.CreatedAt.IsZero() {
 		vk.CreatedAt = existing.CreatedAt
+	}
+	vk.TeamID = strings.TrimSpace(vk.TeamID)
+	vk.ProjectID = strings.TrimSpace(vk.ProjectID)
+	vk.UserID = strings.TrimSpace(vk.UserID)
+	if vk.ProjectID != "" {
+		pmRepo, ok := s.repo.(storage.ProjectAndMembershipRepository)
+		if !ok || pmRepo == nil {
+			return fmt.Errorf("repository does not support projects")
+		}
+		proj, err := pmRepo.GetProject(ctx, vk.ProjectID)
+		if err != nil {
+			return fmt.Errorf("verify project %q: %w", vk.ProjectID, err)
+		}
+		if proj.OrgID != vk.OrgID {
+			return fmt.Errorf("project %q does not belong to organization %q", vk.ProjectID, vk.OrgID)
+		}
+		if vk.TeamID == "" {
+			vk.TeamID = proj.TeamID
+		} else if proj.TeamID != vk.TeamID {
+			return fmt.Errorf("project %q does not belong to team %q", vk.ProjectID, vk.TeamID)
+		}
 	}
 	if vk.TeamID != "" {
 		team, err := s.repo.GetTeam(ctx, vk.TeamID)
@@ -773,6 +816,7 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		KeyPrefix:                   vk.KeyPrefix,
 		OrgID:                       vk.OrgID,
 		TeamID:                      vk.TeamID,
+		ProjectID:                   vk.ProjectID,
 		UserID:                      vk.UserID,
 		Role:                        vk.Role,
 		KeyType:                     NormalizeKeyType(vk.KeyType),
@@ -803,8 +847,64 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		OrgSpentMicros:              org.SpentMicros,
 	}
 
-	if vk.TeamID != "" {
-		team, err := s.repo.GetTeam(ctx, vk.TeamID)
+	if vk.ProjectID != "" {
+		if pmRepo, ok := s.repo.(storage.ProjectAndMembershipRepository); ok && pmRepo != nil {
+			proj, err := pmRepo.GetProject(ctx, vk.ProjectID)
+			if err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "project_not_found",
+						Message:    "Project associated with this virtual key was not found",
+					}
+				}
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeServer,
+					Code:       "project_policy_unavailable",
+					Message:    "Unable to resolve project policy for this virtual key",
+					Retryable:  true,
+				}
+			}
+			if proj.OrgID != vk.OrgID {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "project_org_mismatch",
+					Message:    "Project associated with this virtual key does not belong to its organization",
+				}
+			}
+			if vk.TeamID != "" && proj.TeamID != vk.TeamID {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "project_team_mismatch",
+					Message:    "Project associated with this virtual key does not belong to its team",
+				}
+			}
+			if !proj.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "project_inactive",
+					Message:    "Project associated with this virtual key is inactive",
+				}
+			}
+			if idCtx.TeamID == "" {
+				idCtx.TeamID = proj.TeamID
+			}
+			idCtx.ProjectAllowedModels = slices.Clone(proj.AllowedModels)
+			idCtx.ProjectMaxBudgetMicros = proj.MaxBudgetMicros
+			idCtx.ProjectSpentMicros = proj.SpentMicros
+			idCtx.ProjectRPMLimit = proj.RPMLimit
+			idCtx.ProjectTPMLimit = proj.TPMLimit
+			idCtx.ProjectEnforceModelQuota = proj.EnforceProjectModelQuota
+		}
+	}
+
+	if idCtx.TeamID != "" {
+		team, err := s.repo.GetTeam(ctx, idCtx.TeamID)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
 				return nil, &domain.GatewayError{
@@ -897,6 +997,29 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.UserThrottleOnBudgetExceeded = user.ThrottleOnBudgetExceeded
 		idCtx.UserBudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
 		idCtx.UserSpentMicros = user.SpentMicros
+
+		if idCtx.TeamID != "" {
+			if pmRepo, ok := s.repo.(storage.ProjectAndMembershipRepository); ok && pmRepo != nil {
+				membership, memErr := pmRepo.GetTeamMembership(ctx, idCtx.TeamID, vk.UserID)
+				if memErr == nil && membership != nil {
+					if membership.OrgID == vk.OrgID && membership.TeamID == idCtx.TeamID {
+						idCtx.TeamMemberAllowedModels = slices.Clone(membership.AllowedModels)
+						idCtx.TeamMemberMaxBudgetMicros = membership.MaxBudgetMicros
+						idCtx.TeamMemberSpentMicros = membership.SpentMicros
+						idCtx.TeamMemberRPMLimit = membership.RPMLimit
+						idCtx.TeamMemberTPMLimit = membership.TPMLimit
+					}
+				} else if memErr != nil && !errors.Is(memErr, storage.ErrNotFound) {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusServiceUnavailable,
+						Type:       domain.ErrorTypeServer,
+						Code:       "team_membership_unavailable",
+						Message:    "Unable to resolve team membership policy for this virtual key",
+						Retryable:  true,
+					}
+				}
+			}
+		}
 	}
 
 	return idCtx, nil
@@ -1088,6 +1211,21 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			}
 		}
 		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		teamID := user.TeamID
+		if !ok || (opRole == domain.OperatorRoleTeamAdmin && teamID == "") {
+			if pmRepo, pmOK := s.repo.(storage.ProjectAndMembershipRepository); pmOK && pmRepo != nil {
+				if memberships, mErr := pmRepo.ListTeamMemberships(ctx, user.OrgID, "", user.ID); mErr == nil {
+					for _, m := range memberships {
+						if m != nil && m.Role == domain.RoleTeamAdmin {
+							opRole = domain.OperatorRoleTeamAdmin
+							teamID = m.TeamID
+							ok = true
+							break
+						}
+					}
+				}
+			}
+		}
 		if !ok {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
@@ -1096,8 +1234,8 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
 			}
 		}
-		if opRole == domain.OperatorRoleTeamAdmin && user.TeamID != "" {
-			if team, teamErr := s.repo.GetTeam(ctx, user.TeamID); teamErr == nil && team != nil {
+		if opRole == domain.OperatorRoleTeamAdmin && teamID != "" {
+			if team, teamErr := s.repo.GetTeam(ctx, teamID); teamErr == nil && team != nil {
 				if team.OrgID != user.OrgID {
 					return nil, &domain.GatewayError{
 						StatusCode: http.StatusForbidden,
@@ -1120,7 +1258,7 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			ActorID:    user.ID,
 			Role:       opRole,
 			OrgID:      user.OrgID,
-			TeamID:     user.TeamID,
+			TeamID:     teamID,
 			AuthMethod: "jwt",
 		}, nil
 	}

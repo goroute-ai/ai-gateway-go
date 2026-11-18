@@ -1172,6 +1172,8 @@ components:
           type: string
         team_id:
           type: string
+        project_id:
+          type: string
         user_id:
           type: string
         role:
@@ -1395,6 +1397,147 @@ components:
           type: integer
         is_active:
           type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminProjectRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        enforce_project_model_quota:
+          type: boolean
+        is_active:
+          type: boolean
+    AdminProject:
+      type: object
+      required:
+        - id
+        - org_id
+        - team_id
+        - name
+        - enforce_project_model_quota
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+        enforce_project_model_quota:
+          type: boolean
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminTeamMembershipUpsertRequest:
+      type: object
+      required:
+        - user_id
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [platform_admin, org_admin, org_viewer, team_admin, developer, service_account, viewer]
+        max_budget_micros:
+          type: integer
+          format: int64
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
+    AdminTeamMembership:
+      type: object
+      required:
+        - id
+        - org_id
+        - team_id
+        - user_id
+        - role
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [platform_admin, org_admin, org_viewer, team_admin, developer, service_account, viewer]
+        max_budget_micros:
+          type: integer
+          format: int64
+        spent_micros:
+          type: integer
+          format: int64
+        rpm_limit:
+          type: integer
+        tpm_limit:
+          type: integer
+        allowed_models:
+          type: array
+          items:
+            type: string
         created_at:
           type: string
           format: date-time
@@ -2842,6 +2985,176 @@ paths:
                 $ref: '#/components/schemas/AdminDeleteStatusResponse'
         '409':
           description: Conflict when active virtual keys still reference the team
+  /admin/v1/teams/{teamID}/members:
+    post:
+      operationId: upsertTeamMember
+      summary: Add or update an M:N user membership within a team
+      parameters:
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTeamMembershipUpsertRequest'
+      responses:
+        '200':
+          description: Upserted team membership
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTeamMembership'
+    get:
+      operationId: listTeamMembers
+      summary: List M:N memberships for a team
+      parameters:
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of team memberships
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminTeamMembership'
+  /admin/v1/teams/{teamID}/members/{userID}:
+    delete:
+      operationId: deleteTeamMember
+      summary: Remove a user's membership from a team
+      parameters:
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team membership deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/projects:
+    post:
+      operationId: createProject
+      summary: Create a team-scoped project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminProjectRequest'
+      responses:
+        '201':
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProject'
+        '409':
+          description: Conflict when a project with this id or name already exists in the team
+    get:
+      operationId: listProjects
+      summary: List projects scoped by organization and optional team
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminProject'
+  /admin/v1/projects/{projectID}:
+    put:
+      operationId: updateProject
+      summary: Update a team-scoped project's metadata, budgets, rate limits, and model scopes
+      parameters:
+        - name: projectID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminProjectRequest'
+      responses:
+        '200':
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProject'
+    delete:
+      operationId: deleteProject
+      summary: Delete a project
+      parameters:
+        - name: projectID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
   /admin/v1/users/{userID}:
     put:
       operationId: updateUser

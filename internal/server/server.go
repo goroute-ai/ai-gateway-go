@@ -794,11 +794,18 @@ func (s *GatewayServer) setupRoutes() {
 
 		adm.Get("/organizations/{orgID}/guardrail-usage", s.handleAdminGetGuardrailUsage)
 
-		// Teams & Users
+		// Teams, Memberships, Projects & Users
 		adm.Post("/teams", s.handleAdminCreateTeam)
 		adm.Get("/teams", s.handleAdminListTeams)
 		adm.Put("/teams/{teamID}", s.handleAdminUpdateTeam)
 		adm.Delete("/teams/{teamID}", s.handleAdminDeleteTeam)
+		adm.Post("/teams/{teamID}/members", s.handleAdminUpsertTeamMember)
+		adm.Get("/teams/{teamID}/members", s.handleAdminListTeamMembers)
+		adm.Delete("/teams/{teamID}/members/{userID}", s.handleAdminDeleteTeamMember)
+		adm.Post("/projects", s.handleAdminCreateProject)
+		adm.Get("/projects", s.handleAdminListProjects)
+		adm.Put("/projects/{projectID}", s.handleAdminUpdateProject)
+		adm.Delete("/projects/{projectID}", s.handleAdminDeleteProject)
 		adm.Post("/users", s.handleAdminCreateUser)
 		adm.Get("/users", s.handleAdminListUsers)
 		adm.Put("/users/{userID}", s.handleAdminUpdateUser)

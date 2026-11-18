@@ -23,12 +23,15 @@ func TestScanVirtualKey_AndDeprecatedKeyFields(t *testing.T) {
 		int64(10_000_000), int64(5_000_000), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`),
 		int64(1000), "monthly", nil,
 		60, 10000, 10, int64(50000), &expAt, true,
-		int64(86400), &rotAt, "llm_api",
+		int64(86400), &rotAt, "llm_api", "proj-1",
 	}
 
 	vk, err := scanVirtualKey(&fakeTeamScanner{values: baseValues})
 	if err != nil {
 		t.Fatalf("scanVirtualKey: %v", err)
+	}
+	if vk.ProjectID != "proj-1" {
+		t.Fatalf("ProjectID = %q, want %q", vk.ProjectID, "proj-1")
 	}
 	if vk.KeyType != domain.KeyTypeLLMAPI {
 		t.Fatalf("KeyType = %q, want %q", vk.KeyType, domain.KeyTypeLLMAPI)

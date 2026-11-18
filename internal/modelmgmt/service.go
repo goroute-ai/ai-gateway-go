@@ -85,6 +85,12 @@ func (s *Service) ListVisibleModelsForIdentity(ctx context.Context, idCtx *domai
 				if len(idCtx.TeamAllowedModels) > 0 && !allowsModel(idCtx.TeamAllowedModels, gm.ModelName, gm.ID) {
 					continue
 				}
+				if len(idCtx.TeamMemberAllowedModels) > 0 && !allowsModel(idCtx.TeamMemberAllowedModels, gm.ModelName, gm.ID) {
+					continue
+				}
+				if len(idCtx.ProjectAllowedModels) > 0 && !allowsModel(idCtx.ProjectAllowedModels, gm.ModelName, gm.ID) {
+					continue
+				}
 				if len(idCtx.KeyAllowedModels) > 0 && !allowsModel(idCtx.KeyAllowedModels, gm.ModelName, gm.ID) {
 					continue
 				}

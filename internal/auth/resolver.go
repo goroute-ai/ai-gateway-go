@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -531,11 +532,31 @@ func (r *AuthResolver) resolveProxyAuth(ctx context.Context, req *http.Request) 
 		Email:         firstNonEmpty(user.Email, proxyID.UserEmail),
 	}
 
-	teamIDOverride := ""
-	if user.TeamID == "" && proxyID.TeamID != "" {
-		teamIDOverride = proxyID.TeamID
-	}
+	teamIDOverride := r.resolveMemberTeamIDOverride(ctx, org.ID, user, proxyID.TeamID)
 	return r.projectUserIdentity(ctx, org, user, principal, teamIDOverride)
+}
+
+func (r *AuthResolver) resolveMemberTeamIDOverride(ctx context.Context, orgID string, user *domain.User, requestedTeamID string) string {
+	requestedTeamID = strings.TrimSpace(requestedTeamID)
+	if user == nil {
+		return requestedTeamID
+	}
+	if pmRepo, ok := r.repo.(storage.ProjectAndMembershipRepository); ok && pmRepo != nil {
+		if requestedTeamID != "" && requestedTeamID != user.TeamID {
+			if m, err := pmRepo.GetTeamMembership(ctx, requestedTeamID, user.ID); err == nil && m != nil && m.OrgID == orgID {
+				return requestedTeamID
+			}
+		}
+		if user.TeamID == "" && requestedTeamID == "" {
+			if ms, err := pmRepo.ListTeamMemberships(ctx, orgID, "", user.ID); err == nil && len(ms) > 0 {
+				return ms[0].TeamID
+			}
+		}
+	}
+	if user.TeamID == "" && requestedTeamID != "" {
+		return requestedTeamID
+	}
+	return ""
 }
 
 type userResolutionParams struct {
@@ -699,7 +720,8 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 		}
 	}
 
-	return r.projectUserIdentity(ctx, org, user, p.principal, "")
+	teamIDOverride := r.resolveMemberTeamIDOverride(ctx, org.ID, user, p.claimTeamID)
+	return r.projectUserIdentity(ctx, org, user, p.principal, teamIDOverride)
 }
 
 func (r *AuthResolver) lookupUserByOrgAndSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
@@ -792,9 +814,9 @@ func (r *AuthResolver) projectUserIdentity(
 	principal *domain.Principal,
 	teamIDOverride string,
 ) (*domain.IdentityContext, error) {
-	teamID := strings.TrimSpace(user.TeamID)
+	teamID := strings.TrimSpace(teamIDOverride)
 	if teamID == "" {
-		teamID = strings.TrimSpace(teamIDOverride)
+		teamID = strings.TrimSpace(user.TeamID)
 	}
 
 	prefixMethod := "oidc"
@@ -854,6 +876,31 @@ func (r *AuthResolver) projectUserIdentity(
 		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
 		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
 		idCtx.TeamSpentMicros = team.SpentMicros
+
+		if pmRepo, ok := r.repo.(storage.ProjectAndMembershipRepository); ok && pmRepo != nil {
+			membership, memErr := pmRepo.GetTeamMembership(ctx, teamID, user.ID)
+			if memErr == nil && membership != nil && membership.OrgID == org.ID && membership.TeamID == teamID {
+				idCtx.TeamMemberAllowedModels = slices.Clone(membership.AllowedModels)
+				idCtx.TeamMemberMaxBudgetMicros = membership.MaxBudgetMicros
+				idCtx.TeamMemberSpentMicros = membership.SpentMicros
+				idCtx.TeamMemberRPMLimit = membership.RPMLimit
+				idCtx.TeamMemberTPMLimit = membership.TPMLimit
+				if membership.Role != "" &&
+					user.Role != domain.RolePlatformAdmin &&
+					user.Role != domain.RoleOrgAdmin &&
+					user.Role != domain.RoleOrgViewer {
+					idCtx.Role = membership.Role
+				}
+			} else if memErr != nil && !errors.Is(memErr, storage.ErrNotFound) {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeServer,
+					Code:       "team_membership_unavailable",
+					Message:    "Unable to resolve team membership policy",
+					Retryable:  true,
+				}
+			}
+		}
 	}
 
 	return idCtx, nil
