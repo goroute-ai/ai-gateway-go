@@ -4,22 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
+	"github.com/goroute-ai/ai-gateway-go/internal/router"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
+const (
+	defaultReservationLeaseRenewInterval = 15 * time.Minute
+	defaultReservationLeaseTTLSec        = 3600
+	defaultLeaseRenewCallTimeout         = 5 * time.Second
+)
+
 type budgetLookupStats struct {
-	indexedLookups   atomic.Uint64
-	catalogScans     atomic.Uint64
-	budgetedChecks   atomic.Uint64
-	pricingSummaries atomic.Uint64
+	indexedLookups     atomic.Uint64
+	catalogScans       atomic.Uint64
+	budgetedChecks     atomic.Uint64
+	pricingSummaries   atomic.Uint64
+	leaseRenewals      atomic.Uint64
+	leaseRenewInterval time.Duration
 }
 
 var errBudgetPricingUnverified = errors.New("budget model pricing is unverified")
@@ -36,7 +49,7 @@ func rejectBudgetedUnsupported(w http.ResponseWriter, id *domain.IdentityContext
 }
 
 func identityHasBudget(id *domain.IdentityContext) bool {
-	return id != nil && (id.KeyMaxBudgetMicros > 0 || id.TeamMaxBudgetMicros > 0 || id.OrgMaxBudgetMicros > 0)
+	return id != nil && (id.KeyMaxBudgetMicros > 0 || id.TeamMaxBudgetMicros > 0 || id.UserMaxBudgetMicros > 0 || id.OrgMaxBudgetMicros > 0)
 }
 
 func (s *GatewayServer) budgetModelCandidates(ctx context.Context, provider domain.ProviderType, model string) ([]*domain.GlobalModel, error) {
@@ -175,6 +188,85 @@ func (s *GatewayServer) tokenBudgetUpperBound(ctx context.Context, orgID, model 
 
 func (s *GatewayServer) acquireRequestQuota(ctx context.Context, id *domain.IdentityContext, model string, inputTokens, requestedOutput int, requestID string) (func(int), error) {
 	return s.acquireRequestQuotaWithBound(ctx, id, model, inputTokens, inputTokens, requestedOutput, requestID)
+}
+
+func (s *GatewayServer) reservationLeaseRenewInterval() time.Duration {
+	if s != nil && s.budgetStats != nil && s.budgetStats.leaseRenewInterval > 0 {
+		return s.budgetStats.leaseRenewInterval
+	}
+	return defaultReservationLeaseRenewInterval
+}
+
+// startReservationLeaseRenewer periodically extends active budget reservation
+// leases while a budgeted request is in flight.
+func (s *GatewayServer) startReservationLeaseRenewer(ctx context.Context, id *domain.IdentityContext, requestID string) func() {
+	if s == nil || s.limiter == nil || !identityHasBudget(id) || requestID == "" {
+		return func() {}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	interval := s.reservationLeaseRenewInterval()
+	leaseCtx, cancelLease := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, cancelRenew := context.WithTimeout(leaseCtx, defaultLeaseRenewCallTimeout)
+				err := s.limiter.RenewReservationLease(renewCtx, id, requestID, defaultReservationLeaseTTLSec)
+				cancelRenew()
+				if err != nil {
+					if leaseCtx.Err() == nil {
+						logger.Warn("Reservation lease renewal failed",
+							slog.String("component", "budget"),
+							slog.String("request_id", requestID),
+							slog.String("error", err.Error()),
+						)
+					}
+					continue
+				}
+				if s.budgetStats != nil {
+					s.budgetStats.leaseRenewals.Add(1)
+				}
+			}
+		}
+	}()
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			cancelLease()
+			wg.Wait()
+		})
+	}
+}
+
+func (s *GatewayServer) wrapBudgetRelease(ctx context.Context, id *domain.IdentityContext, requestID string, release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
+	stopRenewer := s.startReservationLeaseRenewer(ctx, id, requestID)
+	var once sync.Once
+	return func(actualTokens int, overrideCostMicros int64) {
+		once.Do(func() {
+			stopRenewer()
+			cost := int64(-2)
+			if actualTokens < 0 {
+				cost = -1
+			} else if overrideCostMicros >= 0 {
+				cost = overrideCostMicros
+			}
+			release(actualTokens, cost)
+			if actualTokens >= 0 && overrideCostMicros >= 0 && s.spendWorker == nil && s.limiter != nil && id != nil {
+				settleCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = s.limiter.RecordSpendIncrementForUserEvent(settleCtx, "", requestID, id.VirtualKeyID, id.TeamID, id.UserID, id.OrgID, overrideCostMicros)
+			}
+		})
+	}
 }
 
 func mergeVerifiedBudgetModel(match **domain.GlobalModel, sawUnverified *bool, gm *domain.GlobalModel) {
@@ -350,18 +442,34 @@ func (s *GatewayServer) acquireModalityBudget(ctx context.Context, id *domain.Id
 	if err != nil {
 		return nil, err
 	}
+	releaseWithCost := s.wrapBudgetRelease(ctx, id, requestID, release)
 	return func(tokens int) {
-		cost := int64(-2)
-		if tokens < 0 {
-			cost = -1
-		}
-		release(tokens, cost)
+		releaseWithCost(tokens, -2)
 	}, nil
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(int), error) {
+	releaseWithCost, err := s.acquireRequestQuotaWithCost(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	if err != nil {
+		return nil, err
+	}
+	return func(tokens int) {
+		releaseWithCost(tokens, -2)
+	}, nil
+}
+
+func (s *GatewayServer) acquireRequestQuotaWithCost(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), error) {
 	if !identityHasBudget(id) {
-		return s.limiter.Acquire(ctx, id, rateTokens)
+		release, err := s.limiter.Acquire(ctx, id, rateTokens)
+		if err != nil {
+			return nil, err
+		}
+		var once sync.Once
+		return func(actualTokens int, _ int64) {
+			once.Do(func() {
+				release(actualTokens)
+			})
+		}, nil
 	}
 	if s.budgetStats != nil {
 		s.budgetStats.budgetedChecks.Add(1)
@@ -377,11 +485,140 @@ func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *do
 	if err != nil {
 		return nil, err
 	}
-	return func(tokens int) {
-		cost := int64(-2)
-		if tokens < 0 {
-			cost = -1
+	return s.wrapBudgetRelease(ctx, id, requestID, release), nil
+}
+
+func (s *GatewayServer) estimateInputCostMicros(orgID, model string, gm *domain.GlobalModel, inputTokens int) int64 {
+	if inputTokens <= 0 {
+		return 0
+	}
+	if gm != nil {
+		if cost, ok := finops.EstimateTokenCostUpperBound(gm, inputTokens, 0); ok {
+			return cost
 		}
-		release(tokens, cost)
-	}, nil
+		if cost := finops.CalculateCostMicros(gm, domain.TokenUsage{PromptTokens: inputTokens, TotalTokens: inputTokens}); cost > 0 {
+			return cost
+		}
+	}
+	if s != nil && s.repo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if cost, err := s.tokenBudgetUpperBound(ctx, orgID, model, inputTokens, -1); err == nil && cost >= 0 {
+			return cost
+		}
+	}
+	return 0
+}
+
+type postDispatchSettlement struct {
+	idCtx                  *domain.IdentityContext
+	reqID                  string
+	traceID                string
+	endpoint               string
+	modality               domain.ModalityType
+	requestedModel         string
+	estTokens              int
+	isStream               bool
+	actualTokensReconciled bool
+	upstreamDispatched     bool
+	meta                   *router.ExecutionMeta
+	selectedDep            *domain.Deployment
+	dispatchErr            error
+	reqCtx                 context.Context
+	releaseQuota           func(actualTokens int, overrideCostMicros int64)
+}
+
+func (s *GatewayServer) settleQuotaOnReturn(p *postDispatchSettlement) {
+	if p == nil || p.releaseQuota == nil || p.actualTokensReconciled {
+		return
+	}
+	if !p.upstreamDispatched {
+		p.releaseQuota(-1, -1)
+		return
+	}
+	var gm *domain.GlobalModel
+	var depID string
+	var provider domain.ProviderType
+	var pricingVer int
+	resolvedModel := p.requestedModel
+	dep := p.selectedDep
+	if p.meta != nil && p.meta.WinningDeployment != nil {
+		dep = p.meta.WinningDeployment
+	}
+	if dep != nil {
+		depID = dep.ID
+		gm = dep.GlobalModel
+		if gm != nil {
+			provider = gm.Provider
+			pricingVer = gm.PricingVersion
+			if gm.ModelName != "" {
+				resolvedModel = gm.ModelName
+			}
+		}
+	}
+	var orgID string
+	if p.idCtx != nil {
+		orgID = p.idCtx.OrgID
+	}
+	inputCostMicros := s.estimateInputCostMicros(orgID, p.requestedModel, gm, p.estTokens)
+	p.releaseQuota(p.estTokens, inputCostMicros)
+
+	if s != nil && s.spendWorker != nil && p.idCtx != nil {
+		statusCode := http.StatusBadGateway
+		if (p.reqCtx != nil && errors.Is(p.reqCtx.Err(), context.Canceled)) || errors.Is(p.dispatchErr, context.Canceled) {
+			statusCode = 499
+		} else if gwErr := (*domain.GatewayError)(nil); errors.As(p.dispatchErr, &gwErr) && gwErr.StatusCode > 0 {
+			statusCode = gwErr.StatusCode
+		}
+		settleCtx := context.Background()
+		if p.reqCtx != nil {
+			settleCtx = context.WithoutCancel(p.reqCtx)
+		}
+		var cancel context.CancelFunc
+		settleCtx, cancel = context.WithTimeout(settleCtx, 2*time.Second)
+		defer cancel()
+
+		var provenance string
+		if gm != nil {
+			provenance = gm.PricingProvenanceSource
+		}
+		var latMs, ttftMs int64
+		var retries int
+		var fb bool
+		if p.meta != nil {
+			latMs = p.meta.LatencyMs
+			ttftMs = p.meta.TTFTMs
+			retries = p.meta.RetryCount
+			fb = p.meta.FallbackAttempted
+		}
+		_ = s.spendWorker.Record(settleCtx, domain.SpendEvent{
+			RequestID:               p.reqID,
+			TraceID:                 p.traceID,
+			OrgID:                   p.idCtx.OrgID,
+			TeamID:                  p.idCtx.TeamID,
+			UserID:                  p.idCtx.UserID,
+			VirtualKeyID:            p.idCtx.VirtualKeyID,
+			Endpoint:                p.endpoint,
+			Modality:                p.modality,
+			RequestedModel:          p.requestedModel,
+			ResolvedModel:           resolvedModel,
+			Provider:                provider,
+			DeploymentID:            depID,
+			PricingVersion:          pricingVer,
+			PricingStatus:           domain.ResolvePricingStatus(gm),
+			PricingProvenanceSource: provenance,
+			Usage: domain.TokenUsage{
+				PromptTokens: p.estTokens,
+				TotalTokens:  p.estTokens,
+			},
+			CostMicros:        inputCostMicros,
+			LatencyMs:         latMs,
+			TTFTMs:            ttftMs,
+			StatusCode:        statusCode,
+			IsStream:          p.isStream,
+			FallbackAttempted: fb,
+			RetryCount:        retries,
+			CreatedAt:         time.Now().UTC(),
+		})
+	}
 }

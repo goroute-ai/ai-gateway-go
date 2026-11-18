@@ -124,12 +124,25 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if req.MaxOutputTokens != nil {
 		maxOut = *req.MaxOutputTokens
 	}
-	releaseQuota, quotaErr := s.acquireRequestQuota(r.Context(), idCtx, req.Model, estInputTokens, maxOut, respReqID)
+	releaseQuota, quotaErr := s.acquireRequestQuotaWithCost(r.Context(), idCtx, req.Model, estInputTokens, estInputTokens, maxOut, respReqID)
 	if quotaErr != nil {
 		s.collector.Record(admissionFailureObservation(quotaErr))
 		domain.WriteHTTPError(w, quotaErr)
 		return
 	}
+	quotaSettlement := &postDispatchSettlement{
+		idCtx:          idCtx,
+		reqID:          respReqID,
+		traceID:        observability.TraceFromContext(r.Context()).TraceID,
+		endpoint:       "/v1/responses",
+		modality:       domain.ModalityResponse,
+		requestedModel: req.Model,
+		estTokens:      estInputTokens,
+		isStream:       req.Stream,
+		reqCtx:         r.Context(),
+		releaseQuota:   releaseQuota,
+	}
+	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	if !req.Stream {
 		var cacheKey string
@@ -139,12 +152,14 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 				if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
 					_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "responses")
 					if sanitizeErr != nil {
-						releaseQuota(0)
+						quotaSettlement.actualTokensReconciled = true
+						releaseQuota(0, -2)
 						domain.WriteHTTPError(w, sanitizeErr)
 						return
 					}
 					s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, cachedResp)
-					releaseQuota(0)
+					quotaSettlement.actualTokensReconciled = true
+					releaseQuota(0, -2)
 					s.collector.Record(observability.RequestObservation{
 						Provider:   string(cachedResp.Provider),
 						Model:      cachedResp.Model,
@@ -169,7 +184,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 
 		upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
 		if duringInitErr != nil {
-			releaseQuota(-1)
 			domain.WriteHTTPError(w, duringInitErr)
 			return
 		}
@@ -177,19 +191,24 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			defer duringHandle.Close()
 		}
 
+		quotaSettlement.upstreamDispatched = true
 		resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
+		quotaSettlement.meta = meta
+		quotaSettlement.dispatchErr = err
 		if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
-			releaseQuota(-1)
+			if quotaSettlement.dispatchErr == nil {
+				quotaSettlement.dispatchErr = duringErr
+			}
 			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "responses")
 			domain.WriteHTTPError(w, duringErr)
 			return
 		}
 		if err != nil {
-			releaseQuota(-1)
 			domain.WriteHTTPError(w, err)
 			return
 		}
-		releaseQuota(resp.Usage.TotalTokens)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(resp.Usage.TotalTokens, -2)
 		if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, resp, "responses"); sanitizeErr != nil {
 			domain.WriteHTTPError(w, sanitizeErr)
 			return
@@ -274,7 +293,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	}
 	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
 	if duringInitErr != nil {
-		releaseQuota(-1)
 		domain.WriteHTTPError(w, duringInitErr)
 		return
 	}
@@ -283,7 +301,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		if duringHandle != nil {
 			duringHandle.Close()
 		}
-		releaseQuota(-1)
 		domain.WriteHTTPError(w, sessionErr)
 		return
 	}
@@ -494,6 +511,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	}
 
 	onSelected := func(dep *domain.Deployment) {
+		quotaSettlement.selectedDep = dep
 		if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
 			if dep.GlobalModel.Provider != "" {
 				w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
@@ -518,6 +536,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		u := extractStreamChunksUsage(cachedStreamChunks, estInputTokens)
 		usage = &u
 	} else {
+		quotaSettlement.upstreamDispatched = true
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, onSelected)
 	}
 	if !streamSession.SSEStarted() {
@@ -532,6 +551,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if err == nil && flushErr != nil {
 		err = flushErr
 	}
+	quotaSettlement.meta = meta
+	quotaSettlement.dispatchErr = err
 	var streamTTFT time.Duration
 	if meta != nil && meta.TTFTMs > 0 {
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
@@ -539,11 +560,6 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
 	setRoutingTelemetryHeaders(w, meta)
 	if err != nil {
-		if streamCacheHit {
-			releaseQuota(0)
-		} else {
-			releaseQuota(-1)
-		}
 		isBlocked := streamSession.Blocked()
 		errCode := "stream_error"
 		statusCode := http.StatusBadGateway
@@ -608,7 +624,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	resolved := req.Model
 	var costMicros int64
 	if streamCacheHit {
-		releaseQuota(0)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(0, -2)
 		resolved, provider, gm = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, req.Model, cachedStreamChunks)
 		costMicros = 0
 		s.collector.Record(observability.RequestObservation{
@@ -619,7 +636,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			GuardrailRedacted: streamSession.Redacted(),
 		})
 	} else {
-		releaseQuota(streamUsage.TotalTokens)
+		quotaSettlement.actualTokensReconciled = true
+		releaseQuota(streamUsage.TotalTokens, -2)
 		if meta != nil && meta.WinningDeployment != nil {
 			depID = meta.WinningDeployment.ID
 			gm = meta.WinningDeployment.GlobalModel
