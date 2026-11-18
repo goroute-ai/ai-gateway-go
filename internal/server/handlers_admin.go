@@ -109,6 +109,10 @@ func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
+	if org.SoftBudgetMicros < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
+		return
+	}
 	org.IsActive = true
 	if org.BudgetResetPeriod == "" {
 		org.BudgetResetPeriod = domain.BudgetResetMonthly
@@ -334,6 +338,10 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 	if _, ok := s.authorizeAdmin(w, r, team.OrgID, true); !ok {
 		return
 	}
+	if team.SoftBudgetMicros < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
+		return
+	}
 	team.IsActive = true
 	if err := s.repo.CreateTeam(r.Context(), &team); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -369,6 +377,10 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 	}
 	if user.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can create platform_admin users"})
+		return
+	}
+	if user.SoftBudgetMicros < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
 	user.IsActive = true
@@ -411,6 +423,10 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 	}
 	if req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 403, Type: domain.ErrorTypePermission, Code: "platform_admin_required", Message: "Only platform_admin can issue platform_admin keys"})
+		return
+	}
+	if req.SoftBudgetMicros < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
 	vk, err := s.authSvc.IssueVirtualKey(r.Context(), &req)

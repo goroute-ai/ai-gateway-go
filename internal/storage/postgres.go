@@ -538,15 +538,53 @@ func (p *PostgresRepository) ListModelPricingHistory(ctx context.Context, modelI
 	return p.mem.ListModelPricingHistory(ctx, modelID)
 }
 
+func marshalBudgetFallbacks(fallbacks map[string][]string) []byte {
+	if len(fallbacks) == 0 {
+		return []byte("{}")
+	}
+	b, err := json.Marshal(fallbacks)
+	if err != nil || len(b) == 0 || string(b) == "null" {
+		return []byte("{}")
+	}
+	return b
+}
+
+func unmarshalBudgetFallbacks(raw []byte) map[string][]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string][]string
+	if err := json.Unmarshal(raw, &m); err != nil || len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+const orgSelectCols = `id, name, slug, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active`
+
+func scanOrganization(row rowScanner) (*domain.Organization, error) {
+	var o domain.Organization
+	var period string
+	var rawFallbacks []byte
+	if err := row.Scan(
+		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SoftBudgetMicros, &o.ThrottleOnBudgetExceeded, &rawFallbacks, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.MaxConcurrentRequests, &o.IsActive,
+	); err != nil {
+		return nil, err
+	}
+	o.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	o.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
+	return &o, nil
+}
+
 func (p *PostgresRepository) CreateOrganization(ctx context.Context, org *domain.Organization) error {
 	if org.ID == "" {
 		org.ID = uuid.NewString()
 	}
 	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, time.Now().UTC())
 	const q = `
-		INSERT INTO organizations (id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
-	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SpentMicros, string(org.BudgetResetPeriod), org.BudgetResetAt, org.RPMLimit, org.TPMLimit, org.MaxConcurrentRequests, org.IsActive); err != nil {
+		INSERT INTO organizations (id, name, slug, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+	if _, err := p.pool.Exec(ctx, q, org.ID, org.Name, org.Slug, org.MaxBudgetMicros, org.SoftBudgetMicros, org.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(org.BudgetFallbacks), org.SpentMicros, string(org.BudgetResetPeriod), org.BudgetResetAt, org.RPMLimit, org.TPMLimit, org.MaxConcurrentRequests, org.IsActive); err != nil {
 		return err
 	}
 	return p.mem.CreateOrganization(ctx, org)
@@ -556,24 +594,20 @@ func (p *PostgresRepository) GetOrganization(ctx context.Context, id string) (*d
 	if p.pool == nil {
 		return p.mem.GetOrganization(ctx, id)
 	}
-	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM organizations WHERE id = $1`
-	var o domain.Organization
-	var period string
-	if err := p.pool.QueryRow(ctx, q, id).Scan(
-		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.MaxConcurrentRequests, &o.IsActive,
-	); err != nil {
+	const q = `SELECT ` + orgSelectCols + ` FROM organizations WHERE id = $1`
+	o, err := scanOrganization(p.pool.QueryRow(ctx, q, id))
+	if err != nil {
 		return nil, fmt.Errorf("organization not found: %w", err)
 	}
-	o.BudgetResetPeriod = domain.BudgetResetPeriod(period)
-	_ = p.mem.CreateOrganization(ctx, &o)
-	return &o, nil
+	_ = p.mem.CreateOrganization(ctx, o)
+	return o, nil
 }
 
 func (p *PostgresRepository) ListOrganizations(ctx context.Context) ([]*domain.Organization, error) {
 	if p.pool == nil {
 		return p.mem.ListOrganizations(ctx)
 	}
-	const q = `SELECT id, name, slug, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active FROM organizations ORDER BY name ASC`
+	const q = `SELECT ` + orgSelectCols + ` FROM organizations ORDER BY name ASC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -581,16 +615,12 @@ func (p *PostgresRepository) ListOrganizations(ctx context.Context) ([]*domain.O
 	defer rows.Close()
 	var out []*domain.Organization
 	for rows.Next() {
-		var o domain.Organization
-		var period string
-		if err := rows.Scan(
-			&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.SpentMicros, &period, &o.BudgetResetAt, &o.RPMLimit, &o.TPMLimit, &o.MaxConcurrentRequests, &o.IsActive,
-		); err != nil {
+		o, err := scanOrganization(rows)
+		if err != nil {
 			return nil, err
 		}
-		o.BudgetResetPeriod = domain.BudgetResetPeriod(period)
-		_ = p.mem.CreateOrganization(ctx, &o)
-		out = append(out, &o)
+		_ = p.mem.CreateOrganization(ctx, o)
+		out = append(out, o)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -689,17 +719,21 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+const teamSelectCols = `id, org_id, name, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active, created_at, updated_at`
+
 func scanTeam(row rowScanner) (*domain.Team, error) {
 	var t domain.Team
 	var period string
+	var rawFallbacks []byte
 	if err := row.Scan(
-		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SpentMicros, &period, &t.BudgetResetAt,
+		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.SoftBudgetMicros, &t.ThrottleOnBudgetExceeded, &rawFallbacks, &t.SpentMicros, &period, &t.BudgetResetAt,
 		&t.RPMLimit, &t.TPMLimit, &t.MaxConcurrentRequests, &t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
 		&t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	t.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	t.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
 	return &t, nil
 }
 
@@ -714,11 +748,11 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	}
 	const q = `
 		INSERT INTO teams (
-			id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			id, org_id, name, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 	if _, err := p.pool.Exec(ctx, q,
-		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
+		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.SoftBudgetMicros, team.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(team.BudgetFallbacks), team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
 		team.RPMLimit, team.TPMLimit, team.MaxConcurrentRequests, allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
 	); err != nil {
 		return err
@@ -737,14 +771,16 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 	}
 	const q = `
 		UPDATE teams SET
-			name = $2, max_budget_micros = $3, spent_micros = $4, budget_reset_period = $5, budget_reset_at = $6,
-			rpm_limit = $7, tpm_limit = $8, max_concurrent_requests = $9, allowed_models = $10,
-			allowed_mcp_servers = $11, allowed_a2a_agents = $12, allowed_client_apps = $13, is_active = $14,
+			name = $2, max_budget_micros = $3, soft_budget_micros = $4, throttle_on_budget_exceeded = $5, budget_fallbacks = $6,
+			spent_micros = $7, budget_reset_period = $8, budget_reset_at = $9,
+			rpm_limit = $10, tpm_limit = $11, max_concurrent_requests = $12, allowed_models = $13,
+			allowed_mcp_servers = $14, allowed_a2a_agents = $15, allowed_client_apps = $16, is_active = $17,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
-			team.ID, team.Name, team.MaxBudgetMicros, team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
+			team.ID, team.Name, team.MaxBudgetMicros, team.SoftBudgetMicros, team.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(team.BudgetFallbacks),
+			team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
 			team.RPMLimit, team.TPMLimit, team.MaxConcurrentRequests, allowedModels,
 			team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
 		)
@@ -765,11 +801,7 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 }
 
 func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
-	const q = `
-		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
-		       rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-		       is_active, created_at, updated_at
-		FROM teams WHERE id = $1`
+	const q = `SELECT ` + teamSelectCols + ` FROM teams WHERE id = $1`
 	t, err := scanTeam(p.pool.QueryRow(ctx, q, id))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -783,11 +815,7 @@ func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Te
 }
 
 func (p *PostgresRepository) ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error) {
-	const q = `
-		SELECT id, org_id, name, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
-		       rpm_limit, tpm_limit, max_concurrent_requests, allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-		       is_active, created_at, updated_at
-		FROM teams WHERE org_id = $1 ORDER BY created_at ASC`
+	const q = `SELECT ` + teamSelectCols + ` FROM teams WHERE org_id = $1 ORDER BY created_at ASC`
 	rows, err := p.pool.Query(ctx, q, orgID)
 	if err != nil {
 		return nil, err
@@ -824,20 +852,22 @@ func (p *PostgresRepository) DeleteTeam(ctx context.Context, id string) error {
 	return nil
 }
 
-const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active, created_at, updated_at`
+const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
 	var u domain.User
 	var role, period string
+	var rawFallbacks []byte
 	if err := row.Scan(
 		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject,
-		&u.MaxBudgetMicros, &u.SpentMicros, &period, &u.BudgetResetAt,
+		&u.MaxBudgetMicros, &u.SoftBudgetMicros, &u.ThrottleOnBudgetExceeded, &rawFallbacks, &u.SpentMicros, &period, &u.BudgetResetAt,
 		&u.RPMLimit, &u.TPMLimit, &u.MaxConcurrentRequests, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	u.Role = domain.Role(role)
 	u.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	u.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
 	return &u, nil
 }
 
@@ -849,12 +879,12 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 	const q = `
 		INSERT INTO users (
 			id, org_id, team_id, email, name, role, oidc_subject,
-			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)`
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 	if _, err := p.pool.Exec(ctx, q,
 		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
-		user.MaxBudgetMicros, user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
+		user.MaxBudgetMicros, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks), user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 		user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.IsActive,
 	); err != nil {
 		return err
@@ -870,14 +900,16 @@ func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) 
 	const q = `
 		UPDATE users SET
 			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''),
-			max_budget_micros = $7, spent_micros = $8, budget_reset_period = $9, budget_reset_at = $10,
-			rpm_limit = $11, tpm_limit = $12, max_concurrent_requests = $13, is_active = $14,
+			max_budget_micros = $7, soft_budget_micros = $8, throttle_on_budget_exceeded = $9, budget_fallbacks = $10,
+			spent_micros = $11, budget_reset_period = $12, budget_reset_at = $13,
+			rpm_limit = $14, tpm_limit = $15, max_concurrent_requests = $16, is_active = $17,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
 			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
-			user.MaxBudgetMicros, user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
+			user.MaxBudgetMicros, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks),
+			user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 			user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.IsActive,
 		)
 		if err != nil {
@@ -1011,13 +1043,13 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 	const q = `
 		INSERT INTO users (
 			id, org_id, team_id, email, name, role, oidc_subject,
-			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15)
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT DO NOTHING`
 	tag, err := p.pool.Exec(ctx, q,
 		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject,
-		cp.MaxBudgetMicros, cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
+		cp.MaxBudgetMicros, cp.SoftBudgetMicros, cp.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(cp.BudgetFallbacks), cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
 		cp.RPMLimit, cp.TPMLimit, cp.MaxConcurrentRequests, cp.IsActive,
 	)
 	if err != nil {
@@ -1178,22 +1210,24 @@ func (p *PostgresRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, c
 	return m, nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
 	var role, period string
+	var rawFallbacks []byte
 	if err := row.Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
 		&k.AllowedModels, &k.AllowedEndpoints,
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
-		&k.MaxBudgetMicros, &k.SpentMicros, &period, &k.BudgetResetAt,
+		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.ExpiresAt, &k.IsActive,
 	); err != nil {
 		return nil, err
 	}
 	k.Role = domain.Role(role)
 	k.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	k.BudgetFallbacks = unmarshalBudgetFallbacks(rawFallbacks)
 	return &k, nil
 }
 
@@ -1215,14 +1249,14 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		INSERT INTO virtual_keys (
 			id, key_prefix, key_hash, name, org_id, team_id, user_id, role, allowed_models, allowed_endpoints,
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
-			max_budget_micros, spent_micros, budget_reset_period, budget_reset_at,
+			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, expires_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
-		vk.MaxBudgetMicros, vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
+		vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
 	); err != nil {
 		return err
@@ -1258,14 +1292,17 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			allowed_a2a_agents = $11,
 			allowed_client_apps = $12,
 			max_budget_micros = $13,
-			spent_micros = $14,
-			budget_reset_period = $15,
-			budget_reset_at = $16,
-			rpm_limit = $17,
-			tpm_limit = $18,
-			max_concurrent_requests = $19,
-			expires_at = $20,
-			is_active = $21,
+			soft_budget_micros = $14,
+			throttle_on_budget_exceeded = $15,
+			budget_fallbacks = $16,
+			spent_micros = $17,
+			budget_reset_period = $18,
+			budget_reset_at = $19,
+			rpm_limit = $20,
+			tpm_limit = $21,
+			max_concurrent_requests = $22,
+			expires_at = $23,
+			is_active = $24,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -1273,7 +1310,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.TeamID, vk.UserID, string(vk.Role),
 			vk.AllowedModels, vk.AllowedEndpoints,
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
-			vk.MaxBudgetMicros, vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
+			vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.ExpiresAt, vk.IsActive,
 		)
 		if err != nil {

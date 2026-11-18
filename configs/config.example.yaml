@@ -149,6 +149,9 @@ finops:
   batch_size: 250
   flush_interval: 500ms
   worker_count: 4
+  soft_budget_webhook_url: ""
+  soft_budget_cooldown_sec: 3600
+  budget_exceeded_throttle_pct: 0.10
 
 discovery:
   enabled: true

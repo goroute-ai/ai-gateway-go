@@ -124,12 +124,17 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if req.MaxOutputTokens != nil {
 		maxOut = *req.MaxOutputTokens
 	}
-	releaseQuota, quotaErr := s.acquireRequestQuotaWithCost(r.Context(), idCtx, req.Model, estInputTokens, estInputTokens, maxOut, respReqID)
+	acq, quotaErr := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, req.Model, estInputTokens, estInputTokens, maxOut, respReqID)
 	if quotaErr != nil {
 		s.collector.Record(admissionFailureObservation(quotaErr))
 		domain.WriteHTTPError(w, quotaErr)
 		return
 	}
+	if acq.FallbackApplied && acq.EffectiveModel != "" {
+		chatReq.Model = acq.EffectiveModel
+	}
+	applyBudgetPolicyHeaders(w, req.Model, acq)
+	releaseQuota := acq.ReleaseQuota
 	quotaSettlement := &postDispatchSettlement{
 		idCtx:          idCtx,
 		reqID:          respReqID,

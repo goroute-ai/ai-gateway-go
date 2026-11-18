@@ -1052,16 +1052,20 @@ type AdminModelPricingHistory map[string]interface{}
 
 // AdminOrganization defines model for AdminOrganization.
 type AdminOrganization struct {
-	CreatedAt       *time.Time         `json:"created_at,omitempty"`
-	Id              *string            `json:"id,omitempty"`
-	MaxBudgetMicro  *int64             `json:"max_budget_micro,omitempty"`
-	Metadata        *map[string]string `json:"metadata,omitempty"`
-	Name            *string            `json:"name,omitempty"`
-	RpmLimit        *int               `json:"rpm_limit,omitempty"`
-	Slug            *string            `json:"slug,omitempty"`
-	SoftBudgetMicro *int64             `json:"soft_budget_micro,omitempty"`
-	TpmLimit        *int               `json:"tpm_limit,omitempty"`
-	UpdatedAt       *time.Time         `json:"updated_at,omitempty"`
+	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
+	CreatedAt                *time.Time           `json:"created_at,omitempty"`
+	Id                       *string              `json:"id,omitempty"`
+	MaxBudgetMicro           *int64               `json:"max_budget_micro,omitempty"`
+	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
+	Metadata                 *map[string]string   `json:"metadata,omitempty"`
+	Name                     *string              `json:"name,omitempty"`
+	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
+	Slug                     *string              `json:"slug,omitempty"`
+	SoftBudgetMicro          *int64               `json:"soft_budget_micro,omitempty"`
+	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
+	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
+	UpdatedAt                *time.Time           `json:"updated_at,omitempty"`
 }
 
 // AdminPricingUpdateRequest defines model for AdminPricingUpdateRequest.
@@ -1094,44 +1098,50 @@ type AdminSpendSummary map[string]interface{}
 
 // AdminTeam defines model for AdminTeam.
 type AdminTeam struct {
-	AllowedA2aAgents      *[]string  `json:"allowed_a2a_agents,omitempty"`
-	AllowedClientApps     *[]string  `json:"allowed_client_apps,omitempty"`
-	AllowedMcpServers     *[]string  `json:"allowed_mcp_servers,omitempty"`
-	AllowedModels         *[]string  `json:"allowed_models,omitempty"`
-	BudgetResetAt         *time.Time `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod     *string    `json:"budget_reset_period,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
-	Id                    string     `json:"id"`
-	IsActive              bool       `json:"is_active"`
-	MaxBudgetMicros       *int64     `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests *int       `json:"max_concurrent_requests,omitempty"`
-	Name                  string     `json:"name"`
-	OrgId                 string     `json:"org_id"`
-	RpmLimit              *int       `json:"rpm_limit,omitempty"`
-	SpentMicros           *int64     `json:"spent_micros,omitempty"`
-	TpmLimit              *int       `json:"tpm_limit,omitempty"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	AllowedA2aAgents         *[]string            `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps        *[]string            `json:"allowed_client_apps,omitempty"`
+	AllowedMcpServers        *[]string            `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels            *[]string            `json:"allowed_models,omitempty"`
+	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt            *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod        *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt                time.Time            `json:"created_at"`
+	Id                       string               `json:"id"`
+	IsActive                 bool                 `json:"is_active"`
+	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests    *int                 `json:"max_concurrent_requests,omitempty"`
+	Name                     string               `json:"name"`
+	OrgId                    string               `json:"org_id"`
+	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64               `json:"spent_micros,omitempty"`
+	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time            `json:"updated_at"`
 }
 
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
-	BudgetResetAt         *time.Time    `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod     *string       `json:"budget_reset_period,omitempty"`
-	CreatedAt             time.Time     `json:"created_at"`
-	Email                 string        `json:"email"`
-	Id                    string        `json:"id"`
-	IsActive              bool          `json:"is_active"`
-	MaxBudgetMicros       *int64        `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests *int          `json:"max_concurrent_requests,omitempty"`
-	Name                  *string       `json:"name,omitempty"`
-	OidcSubject           *string       `json:"oidc_subject,omitempty"`
-	OrgId                 string        `json:"org_id"`
-	Role                  AdminUserRole `json:"role"`
-	RpmLimit              *int          `json:"rpm_limit,omitempty"`
-	SpentMicros           *int64        `json:"spent_micros,omitempty"`
-	TeamId                *string       `json:"team_id,omitempty"`
-	TpmLimit              *int          `json:"tpm_limit,omitempty"`
-	UpdatedAt             time.Time     `json:"updated_at"`
+	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt            *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod        *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt                time.Time            `json:"created_at"`
+	Email                    string               `json:"email"`
+	Id                       string               `json:"id"`
+	IsActive                 bool                 `json:"is_active"`
+	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests    *int                 `json:"max_concurrent_requests,omitempty"`
+	Name                     *string              `json:"name,omitempty"`
+	OidcSubject              *string              `json:"oidc_subject,omitempty"`
+	OrgId                    string               `json:"org_id"`
+	Role                     AdminUserRole        `json:"role"`
+	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64               `json:"spent_micros,omitempty"`
+	TeamId                   *string              `json:"team_id,omitempty"`
+	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time            `json:"updated_at"`
 }
 
 // AdminUserRole defines model for AdminUser.Role.
@@ -1139,33 +1149,36 @@ type AdminUserRole string
 
 // AdminVirtualKey defines model for AdminVirtualKey.
 type AdminVirtualKey struct {
-	AllowedA2aAgents      *[]string          `json:"allowed_a2a_agents,omitempty"`
-	AllowedClientApps     *[]string          `json:"allowed_client_apps,omitempty"`
-	AllowedEndpoints      *[]string          `json:"allowed_endpoints,omitempty"`
-	AllowedMcpServers     *[]string          `json:"allowed_mcp_servers,omitempty"`
-	AllowedModels         *[]string          `json:"allowed_models,omitempty"`
-	BudgetResetAt         *time.Time         `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod     *string            `json:"budget_reset_period,omitempty"`
-	CreatedAt             time.Time          `json:"created_at"`
-	ExpiresAt             *time.Time         `json:"expires_at,omitempty"`
-	Id                    string             `json:"id"`
-	IsActive              bool               `json:"is_active"`
-	KeyPrefix             string             `json:"key_prefix"`
-	MaxBudgetMicros       *int64             `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests *int               `json:"max_concurrent_requests,omitempty"`
-	Metadata              *map[string]string `json:"metadata,omitempty"`
-	Name                  string             `json:"name"`
-	OrgId                 string             `json:"org_id"`
+	AllowedA2aAgents      *[]string            `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps     *[]string            `json:"allowed_client_apps,omitempty"`
+	AllowedEndpoints      *[]string            `json:"allowed_endpoints,omitempty"`
+	AllowedMcpServers     *[]string            `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels         *[]string            `json:"allowed_models,omitempty"`
+	BudgetFallbacks       *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt         *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod     *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt             time.Time            `json:"created_at"`
+	ExpiresAt             *time.Time           `json:"expires_at,omitempty"`
+	Id                    string               `json:"id"`
+	IsActive              bool                 `json:"is_active"`
+	KeyPrefix             string               `json:"key_prefix"`
+	MaxBudgetMicros       *int64               `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int                 `json:"max_concurrent_requests,omitempty"`
+	Metadata              *map[string]string   `json:"metadata,omitempty"`
+	Name                  string               `json:"name"`
+	OrgId                 string               `json:"org_id"`
 
 	// RawKey Populated once upon key creation or rotation
-	RawKey      *string             `json:"raw_key,omitempty"`
-	Role        AdminVirtualKeyRole `json:"role"`
-	RpmLimit    *int                `json:"rpm_limit,omitempty"`
-	SpentMicros *int64              `json:"spent_micros,omitempty"`
-	TeamId      *string             `json:"team_id,omitempty"`
-	TpmLimit    *int                `json:"tpm_limit,omitempty"`
-	UpdatedAt   time.Time           `json:"updated_at"`
-	UserId      *string             `json:"user_id,omitempty"`
+	RawKey                   *string             `json:"raw_key,omitempty"`
+	Role                     AdminVirtualKeyRole `json:"role"`
+	RpmLimit                 *int                `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros         *int64              `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64              `json:"spent_micros,omitempty"`
+	TeamId                   *string             `json:"team_id,omitempty"`
+	ThrottleOnBudgetExceeded *bool               `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int                `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time           `json:"updated_at"`
+	UserId                   *string             `json:"user_id,omitempty"`
 }
 
 // AdminVirtualKeyRole defines model for AdminVirtualKey.Role.
