@@ -1210,6 +1210,207 @@ func (p *PostgresRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, c
 	return m, nil
 }
 
+const quotaPolicySelectCols = `id, org_id, scope_type, scope_id, model_pattern, rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit, max_concurrent, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, max_iterations, window_ttl_sec, is_active, created_at, updated_at`
+
+func scanQuotaPolicy(row rowScanner) (*domain.QuotaPolicy, error) {
+	var qp domain.QuotaPolicy
+	var scopeType, period string
+	if err := row.Scan(
+		&qp.ID, &qp.OrgID, &scopeType, &qp.ScopeID, &qp.ModelPattern,
+		&qp.RPMLimit, &qp.TPMLimit, &qp.ITPMLimit, &qp.OTPMLimit, &qp.TPDLimit,
+		&qp.MaxConcurrent, &qp.MaxBudgetMicros, &qp.SpentMicros,
+		&period, &qp.BudgetResetAt, &qp.MaxIterations, &qp.WindowTTLSec,
+		&qp.IsActive, &qp.CreatedAt, &qp.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	qp.ScopeType = domain.QuotaScopeType(scopeType)
+	qp.BudgetResetPeriod = domain.BudgetResetPeriod(period)
+	return &qp, nil
+}
+
+func (p *PostgresRepository) syncQuotaPolicyMem(policy *domain.QuotaPolicy) {
+	if p == nil || p.mem == nil || policy == nil {
+		return
+	}
+	p.mem.mu.Lock()
+	tupleKey := quotaPolicyTupleKey(policy.OrgID, policy.ScopeType, policy.ScopeID, policy.ModelPattern)
+	if oldID, ok := p.mem.quotaPoliciesByTuple[tupleKey]; ok && oldID != policy.ID {
+		delete(p.mem.quotaPolicies, oldID)
+	}
+	if existing, ok := p.mem.quotaPolicies[policy.ID]; ok {
+		delete(p.mem.quotaPoliciesByTuple, quotaPolicyTupleKey(existing.OrgID, existing.ScopeType, existing.ScopeID, existing.ModelPattern))
+	}
+	cp := policy.Clone()
+	p.mem.quotaPolicies[cp.ID] = cp
+	p.mem.quotaPoliciesByTuple[tupleKey] = cp.ID
+	p.mem.mu.Unlock()
+}
+
+func (p *PostgresRepository) UpsertQuotaPolicy(ctx context.Context, policy *domain.QuotaPolicy) error {
+	if p.pool == nil {
+		return p.mem.UpsertQuotaPolicy(ctx, policy)
+	}
+	now := time.Now().UTC()
+	if err := normalizeQuotaPolicy(policy, now); err != nil {
+		return err
+	}
+	if policy.ID == "" {
+		policy.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO quota_policies (
+			id, org_id, scope_type, scope_id, model_pattern,
+			rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit,
+			max_concurrent, max_budget_micros, spent_micros,
+			budget_reset_period, budget_reset_at, max_iterations,
+			window_ttl_sec, is_active
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9, $10,
+			$11, $12, $13,
+			$14, $15, $16,
+			$17, $18
+		)
+		ON CONFLICT (org_id, scope_type, scope_id, model_pattern) DO UPDATE SET
+			rpm_limit = EXCLUDED.rpm_limit,
+			tpm_limit = EXCLUDED.tpm_limit,
+			itpm_limit = EXCLUDED.itpm_limit,
+			otpm_limit = EXCLUDED.otpm_limit,
+			tpd_limit = EXCLUDED.tpd_limit,
+			max_concurrent = EXCLUDED.max_concurrent,
+			max_budget_micros = EXCLUDED.max_budget_micros,
+			spent_micros = GREATEST(quota_policies.spent_micros, EXCLUDED.spent_micros),
+			budget_reset_period = EXCLUDED.budget_reset_period,
+			budget_reset_at = EXCLUDED.budget_reset_at,
+			max_iterations = EXCLUDED.max_iterations,
+			window_ttl_sec = EXCLUDED.window_ttl_sec,
+			is_active = EXCLUDED.is_active,
+			updated_at = NOW()
+		RETURNING id, spent_micros, created_at, updated_at`
+
+	if err := p.pool.QueryRow(ctx, q,
+		policy.ID, policy.OrgID, string(policy.ScopeType), policy.ScopeID, policy.ModelPattern,
+		policy.RPMLimit, policy.TPMLimit, policy.ITPMLimit, policy.OTPMLimit, policy.TPDLimit,
+		policy.MaxConcurrent, policy.MaxBudgetMicros, policy.SpentMicros,
+		string(policy.BudgetResetPeriod), policy.BudgetResetAt, policy.MaxIterations,
+		policy.WindowTTLSec, policy.IsActive,
+	).Scan(&policy.ID, &policy.SpentMicros, &policy.CreatedAt, &policy.UpdatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("quota policy conflict: %w", ErrConflict)
+		}
+		return err
+	}
+	p.syncQuotaPolicyMem(policy)
+	return nil
+}
+
+func (p *PostgresRepository) GetQuotaPolicy(ctx context.Context, id string) (*domain.QuotaPolicy, error) {
+	if p.pool == nil {
+		return p.mem.GetQuotaPolicy(ctx, id)
+	}
+	qp, err := scanQuotaPolicy(p.pool.QueryRow(ctx,
+		`SELECT `+quotaPolicySelectCols+` FROM quota_policies WHERE id = $1`, id,
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	return qp, nil
+}
+
+func (p *PostgresRepository) ListQuotaPolicies(ctx context.Context, filter QuotaPolicyFilter) ([]*domain.QuotaPolicy, error) {
+	if p.pool == nil {
+		return p.mem.ListQuotaPolicies(ctx, filter)
+	}
+	var conds []string
+	var args []any
+	addCond := func(col string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf("%s = $%d", col, len(args)))
+	}
+	if v := strings.TrimSpace(filter.OrgID); v != "" {
+		addCond("org_id", v)
+	}
+	if v := strings.ToLower(strings.TrimSpace(string(filter.ScopeType))); v != "" {
+		addCond("scope_type", v)
+	}
+	if v := strings.TrimSpace(filter.ScopeID); v != "" {
+		addCond("scope_id", v)
+	}
+	if v := strings.TrimSpace(filter.ModelPattern); v != "" {
+		addCond("model_pattern", v)
+	}
+	if filter.ActiveOnly {
+		conds = append(conds, "is_active = TRUE")
+	}
+
+	q := `SELECT ` + quotaPolicySelectCols + ` FROM quota_policies`
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY org_id ASC, scope_type ASC, scope_id ASC, model_pattern ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.QuotaPolicy
+	for rows.Next() {
+		qp, scanErr := scanQuotaPolicy(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, qp)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteQuotaPolicy(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteQuotaPolicy(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM quota_policies WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteQuotaPolicy(ctx, id)
+	return nil
+}
+
+func (p *PostgresRepository) IncrementQuotaPolicySpend(ctx context.Context, id string, deltaMicros int64) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("quota policy id is required")
+	}
+	if deltaMicros < 0 {
+		return fmt.Errorf("delta_micros must be non-negative")
+	}
+	if p.pool == nil {
+		return p.mem.IncrementQuotaPolicySpend(ctx, id, deltaMicros)
+	}
+	tag, err := p.pool.Exec(ctx,
+		`UPDATE quota_policies SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`,
+		id, deltaMicros,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("quota policy %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.IncrementQuotaPolicySpend(ctx, id, deltaMicros)
+	return nil
+}
+
 const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
