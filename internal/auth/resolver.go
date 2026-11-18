@@ -524,6 +524,14 @@ func (r *AuthResolver) resolveProxyAuth(ctx context.Context, req *http.Request) 
 			Message:    "User associated with this identity is inactive",
 		}
 	}
+	if !user.SCIMActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "scim_deprovisioned",
+			Message:    "User associated with this identity has been deprovisioned via SCIM",
+		}
+	}
 
 	principal := &domain.Principal{
 		AuthMethod:    "proxy",
@@ -675,6 +683,7 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 			OIDCSubject:       p.subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
 			IsActive:          true,
+			SCIMActive:        true,
 		}
 
 		if oidcRepo, ok := r.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
@@ -717,6 +726,14 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 			Type:       domain.ErrorTypePermission,
 			Code:       "user_inactive",
 			Message:    "User account is inactive",
+		}
+	}
+	if !user.SCIMActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "scim_deprovisioned",
+			Message:    "User account has been deprovisioned via SCIM",
 		}
 	}
 
@@ -830,6 +847,7 @@ func (r *AuthResolver) projectUserIdentity(
 		TeamID:                       teamID,
 		UserID:                       user.ID,
 		Role:                         user.Role,
+		SCIMActive:                   user.SCIMActive,
 		Principal:                    principal,
 		AllowedEndpoints:             []string{"*"},
 		UserRPMLimit:                 user.RPMLimit,

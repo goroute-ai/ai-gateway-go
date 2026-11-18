@@ -786,6 +786,24 @@ func (s *GatewayServer) setupRoutes() {
 		})
 	}
 
+	// SCIM v2 Provisioning (/scim/v2/*)
+	r.Route("/scim/v2", func(scim chi.Router) {
+		scim.Use(s.scimAuthMiddleware)
+		scim.Get("/Users", s.handleSCIMListUsers)
+		scim.Post("/Users", s.handleSCIMCreateUser)
+		scim.Get("/Users/{id}", s.handleSCIMGetUser)
+		scim.Put("/Users/{id}", s.handleSCIMReplaceUser)
+		scim.Patch("/Users/{id}", s.handleSCIMPatchUser)
+		scim.Delete("/Users/{id}", s.handleSCIMDeleteUser)
+
+		scim.Get("/Groups", s.handleSCIMListGroups)
+		scim.Post("/Groups", s.handleSCIMCreateGroup)
+		scim.Get("/Groups/{id}", s.handleSCIMGetGroup)
+		scim.Put("/Groups/{id}", s.handleSCIMReplaceGroup)
+		scim.Patch("/Groups/{id}", s.handleSCIMPatchGroup)
+		scim.Delete("/Groups/{id}", s.handleSCIMDeleteGroup)
+	})
+
 	// Control Plane (/admin/v1/* — Enterprise Management, Governance, Discovery, Security & FinOps API)
 	r.Route("/admin/v1", func(adm chi.Router) {
 		adm.Use(auth.AdminControlPlaneMiddleware(s.authSvc))

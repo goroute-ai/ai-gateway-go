@@ -407,6 +407,8 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 		Name                     *string                   `json:"name,omitempty"`
 		Role                     *domain.Role              `json:"role,omitempty"`
 		OIDCSubject              *string                   `json:"oidc_subject,omitempty"`
+		SCIMExternalID           *string                   `json:"scim_external_id,omitempty"`
+		SCIMActive               *bool                     `json:"scim_active,omitempty"`
 		MaxBudgetMicros          *int64                    `json:"max_budget_micros,omitempty"`
 		SoftBudgetMicros         *int64                    `json:"soft_budget_micros,omitempty"`
 		ThrottleOnBudgetExceeded *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
@@ -496,6 +498,12 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 	if req.OIDCSubject != nil {
 		updated.OIDCSubject = strings.TrimSpace(*req.OIDCSubject)
 	}
+	if req.SCIMExternalID != nil {
+		updated.SCIMExternalID = strings.TrimSpace(*req.SCIMExternalID)
+	}
+	if req.SCIMActive != nil {
+		updated.SCIMActive = *req.SCIMActive
+	}
 	if req.MaxBudgetMicros != nil {
 		if *req.MaxBudgetMicros < 0 {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -571,13 +579,19 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if s.authSvc != nil {
-		s.authSvc.InvalidateOrg(r.Context(), updated.OrgID)
+		if !updated.IsActive || !updated.SCIMActive {
+			s.authSvc.InvalidateUserKeys(r.Context(), updated.OrgID, updated.ID)
+		} else {
+			s.authSvc.InvalidateOrg(r.Context(), updated.OrgID)
+		}
 	}
 	s.audit(r.Context(), updated.OrgID, "user.updated", "user", updated.ID, map[string]any{
-		"email":     updated.Email,
-		"role":      updated.Role,
-		"team_id":   updated.TeamID,
-		"is_active": updated.IsActive,
+		"email":            updated.Email,
+		"role":             updated.Role,
+		"team_id":          updated.TeamID,
+		"scim_external_id": updated.SCIMExternalID,
+		"scim_active":      updated.SCIMActive,
+		"is_active":        updated.IsActive,
 	})
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -703,6 +717,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		RotationIntervalSec      *int64                    `json:"rotation_interval_sec,omitempty"`
 		KeyRotationAt            *time.Time                `json:"key_rotation_at,omitempty"`
 		ExpiresAt                *time.Time                `json:"expires_at,omitempty"`
+		CanImpersonate           *bool                     `json:"can_impersonate,omitempty"`
 		IsActive                 *bool                     `json:"is_active,omitempty"`
 		Metadata                 map[string]string         `json:"metadata,omitempty"`
 	}
@@ -838,6 +853,15 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		updated.AllowedModels = req.AllowedModels.Value
 	}
 	if req.AllowedEndpoints.Set {
+		if op.Role == domain.OperatorRoleTeamAdmin && hasDisallowedTeamAdminEndpoint(req.AllowedEndpoints.Value) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot configure wildcard, /admin, or /scim allowed_endpoints",
+			})
+			return
+		}
 		updated.AllowedEndpoints = req.AllowedEndpoints.Value
 	}
 	if req.AllowedMCPServers.Set {
@@ -961,6 +985,18 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	if req.ExpiresAt != nil {
 		updated.ExpiresAt = req.ExpiresAt
 	}
+	if req.CanImpersonate != nil {
+		if *req.CanImpersonate && op.Role == domain.OperatorRoleTeamAdmin {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot enable can_impersonate on virtual keys",
+			})
+			return
+		}
+		updated.CanImpersonate = *req.CanImpersonate
+	}
 	if req.IsActive != nil {
 		updated.IsActive = *req.IsActive
 	}
@@ -996,6 +1032,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		"max_budget_micros":     saved.MaxBudgetMicros,
 		"rpm_limit":             saved.RPMLimit,
 		"tpm_limit":             saved.TPMLimit,
+		"can_impersonate":       saved.CanImpersonate,
 		"is_active":             saved.IsActive,
 	})
 	writeJSON(w, http.StatusOK, saved)

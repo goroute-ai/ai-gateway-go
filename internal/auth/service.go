@@ -622,6 +622,46 @@ func (s *Service) InvalidateKeyID(ctx context.Context, id string) {
 	s.l1Cache.Delete(id)
 }
 
+// InvalidateUserKeys immediately evicts all virtual keys belonging to userID from L1,
+// L2 Redis, and Pub/Sub across pods, and bumps the organization invalidation epoch.
+func (s *Service) InvalidateUserKeys(ctx context.Context, orgID, userID string) {
+	if s == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	orgID = strings.TrimSpace(orgID)
+	if s.repo != nil && userID != "" {
+		var keys []*domain.VirtualKey
+		if scimRepo, ok := s.repo.(storage.SCIMRepository); ok && scimRepo != nil {
+			keys, _ = scimRepo.ListVirtualKeysByUserID(ctx, orgID, userID)
+		} else if orgID != "" {
+			if allKeys, err := s.repo.ListVirtualKeys(ctx, orgID); err == nil {
+				for _, k := range allKeys {
+					if k != nil && k.UserID == userID {
+						keys = append(keys, k)
+					}
+				}
+			}
+		}
+		for _, vk := range keys {
+			if vk != nil && vk.KeyHash != "" {
+				s.InvalidateKeyHash(ctx, vk.KeyHash)
+			}
+		}
+	}
+	if userID != "" {
+		s.l1Cache.Range(func(k, v any) bool {
+			if entry, ok := v.(l1CacheEntry); ok && entry.identity != nil && entry.identity.UserID == userID && (orgID == "" || entry.identity.OrgID == orgID) {
+				s.l1Cache.Delete(k)
+			}
+			return true
+		})
+	}
+	if orgID != "" {
+		s.InvalidateOrg(ctx, orgID)
+	}
+}
+
 // AuthenticateVirtualKey validates a Bearer `sk-gw-...` token using the L1 Memory -> L2 Redis -> Repository hierarchy.
 func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (*domain.IdentityContext, error) {
 	rawToken = strings.TrimSpace(rawToken)
@@ -713,6 +753,8 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 					OrgID:                       org.ID,
 					Role:                        domain.RoleOrgAdmin,
 					KeyType:                     domain.KeyTypeDefault,
+					SCIMActive:                  true,
+					CanImpersonate:              true,
 					AllowedEndpoints:            []string{"*"},
 					KeyAllowedMCPServers:        []string{"*"},
 					KeyAllowedA2AAgents:         []string{"*"},
@@ -852,6 +894,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		UserID:                      vk.UserID,
 		Role:                        vk.Role,
 		KeyType:                     NormalizeKeyType(vk.KeyType),
+		SCIMActive:                  true,
+		CanImpersonate:              vk.CanImpersonate,
 		RotationIntervalSec:         vk.RotationIntervalSec,
 		KeyRotationAt:               keyRotationAt,
 		KeyAllowedModels:            vk.AllowedModels,
@@ -1020,6 +1064,15 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 				Message:    "User associated with this virtual key is inactive",
 			}
 		}
+		if !user.SCIMActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "scim_deprovisioned",
+				Message:    "User associated with this virtual key has been deprovisioned via SCIM",
+			}
+		}
+		idCtx.SCIMActive = user.SCIMActive
 		idCtx.UserRPMLimit = user.RPMLimit
 		idCtx.UserTPMLimit = user.TPMLimit
 		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
@@ -1170,9 +1223,10 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 
 	if s.ValidateAdminKey(rawToken) {
 		return &domain.OperatorContext{
-			ActorID:    "master_admin",
-			Role:       domain.OperatorRolePlatformAdmin,
-			AuthMethod: "master_key",
+			ActorID:        "master_admin",
+			Role:           domain.OperatorRolePlatformAdmin,
+			AuthMethod:     "master_key",
+			CanImpersonate: true,
 		}, nil
 	}
 
@@ -1214,6 +1268,7 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			OrgID:                 idCtx.OrgID,
 			TeamID:                teamID,
 			AuthMethod:            "virtual_key",
+			CanImpersonate:        idCtx.CanImpersonate,
 			DeprecatedKeyRevokeAt: idCtx.DeprecatedKeyRevokeAt,
 		}, nil
 	}
@@ -1247,6 +1302,14 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Type:       domain.ErrorTypePermission,
 				Code:       "user_inactive",
 				Message:    "Operator user account is inactive",
+			}
+		}
+		if !user.SCIMActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "scim_deprovisioned",
+				Message:    "Operator user account has been deprovisioned via SCIM",
 			}
 		}
 		org, err := s.repo.GetOrganization(ctx, user.OrgID)

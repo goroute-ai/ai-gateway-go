@@ -801,11 +801,36 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 }
 
 func (p *PostgresRepository) GetTeam(ctx context.Context, id string) (*domain.Team, error) {
+	if p.pool == nil {
+		return p.mem.GetTeam(ctx, id)
+	}
 	const q = `SELECT ` + teamSelectCols + ` FROM teams WHERE id = $1`
 	t, err := scanTeam(p.pool.QueryRow(ctx, q, id))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("team %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	cp := cloneTeam(t)
+	_ = p.mem.CreateTeam(ctx, cp)
+	return t, nil
+}
+
+func (p *PostgresRepository) GetTeamByName(ctx context.Context, orgID, name string) (*domain.Team, error) {
+	orgID = strings.TrimSpace(orgID)
+	name = strings.TrimSpace(name)
+	if orgID == "" || name == "" {
+		return nil, fmt.Errorf("team with org_id %q and name %q %w", orgID, name, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetTeamByName(ctx, orgID, name)
+	}
+	const q = `SELECT ` + teamSelectCols + ` FROM teams WHERE org_id = $1 AND name = $2 LIMIT 1`
+	t, err := scanTeam(p.pool.QueryRow(ctx, q, orgID, name))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("team with org_id %q and name %q %w", orgID, name, ErrNotFound)
 		}
 		return nil, err
 	}
@@ -1149,14 +1174,14 @@ func (p *PostgresRepository) DeleteProject(ctx context.Context, id string) error
 	return nil
 }
 
-const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
+const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), COALESCE(scim_external_id, ''), scim_active, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
 	var u domain.User
 	var role, period string
 	var rawFallbacks []byte
 	if err := row.Scan(
-		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject,
+		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.SCIMExternalID, &u.SCIMActive,
 		&u.MaxBudgetMicros, &u.SoftBudgetMicros, &u.ThrottleOnBudgetExceeded, &rawFallbacks, &u.SpentMicros, &period, &u.BudgetResetAt,
 		&u.RPMLimit, &u.TPMLimit, &u.MaxConcurrentRequests, &u.BatchEnqueuedTokenLimit, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
@@ -1172,15 +1197,21 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 	if user.ID == "" {
 		user.ID = uuid.NewString()
 	}
+	if user.IsActive && strings.TrimSpace(user.SCIMExternalID) == "" {
+		user.SCIMActive = true
+	}
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, time.Now().UTC())
+	if p.pool == nil {
+		return p.mem.CreateUser(ctx, user)
+	}
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject,
+			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`
 	if _, err := p.pool.Exec(ctx, q,
-		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.SCIMExternalID, user.SCIMActive,
 		user.MaxBudgetMicros, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks), user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 		user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.BatchEnqueuedTokenLimit, user.IsActive,
 	); err != nil {
@@ -1197,14 +1228,16 @@ func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) 
 	const q = `
 		UPDATE users SET
 			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''),
-			max_budget_micros = $7, soft_budget_micros = $8, throttle_on_budget_exceeded = $9, budget_fallbacks = $10,
-			spent_micros = $11, budget_reset_period = $12, budget_reset_at = $13,
-			rpm_limit = $14, tpm_limit = $15, max_concurrent_requests = $16, batch_enqueued_token_limit = $17, is_active = $18,
+			scim_external_id = NULLIF($7,''), scim_active = $8,
+			max_budget_micros = $9, soft_budget_micros = $10, throttle_on_budget_exceeded = $11, budget_fallbacks = $12,
+			spent_micros = $13, budget_reset_period = $14, budget_reset_at = $15,
+			rpm_limit = $16, tpm_limit = $17, max_concurrent_requests = $18, batch_enqueued_token_limit = $19, is_active = $20,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
 			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+			user.SCIMExternalID, user.SCIMActive,
 			user.MaxBudgetMicros, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks),
 			user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 			user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.BatchEnqueuedTokenLimit, user.IsActive,
@@ -1322,6 +1355,26 @@ func (p *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (
 	return u, nil
 }
 
+func (p *PostgresRepository) GetUserBySCIMExternalID(ctx context.Context, orgID, externalID string) (*domain.User, error) {
+	orgID = strings.TrimSpace(orgID)
+	externalID = strings.TrimSpace(externalID)
+	if orgID == "" || externalID == "" {
+		return nil, fmt.Errorf("user with org_id %q and scim_external_id %q %w", orgID, externalID, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetUserBySCIMExternalID(ctx, orgID, externalID)
+	}
+	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE org_id = $1 AND scim_external_id = $2 LIMIT 1`, orgID, externalID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("user with org_id %q and scim_external_id %q %w", orgID, externalID, ErrNotFound)
+		}
+		return nil, err
+	}
+	_ = p.mem.CreateUser(ctx, u)
+	return u, nil
+}
+
 func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, user *domain.User) (*domain.User, bool, error) {
 	if user == nil || strings.TrimSpace(user.OrgID) == "" {
 		return nil, false, fmt.Errorf("org_id is required to provision user")
@@ -1334,18 +1387,21 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 	if cp.ID == "" {
 		cp.ID = uuid.NewString()
 	}
+	if cp.IsActive && strings.TrimSpace(cp.SCIMExternalID) == "" {
+		cp.SCIMActive = true
+	}
 	now := time.Now().UTC()
 	cp.BudgetResetPeriod, cp.BudgetResetAt = resolveBudgetResetSchedule(cp.BudgetResetPeriod, cp.BudgetResetAt, now)
 
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject,
+			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT DO NOTHING`
 	tag, err := p.pool.Exec(ctx, q,
-		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject,
+		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject, cp.SCIMExternalID, cp.SCIMActive,
 		cp.MaxBudgetMicros, cp.SoftBudgetMicros, cp.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(cp.BudgetFallbacks), cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
 		cp.RPMLimit, cp.TPMLimit, cp.MaxConcurrentRequests, cp.BatchEnqueuedTokenLimit, cp.IsActive,
 	)
@@ -1833,9 +1889,9 @@ func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id strin
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, '')`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate`
 
-const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, '')`
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
@@ -1847,7 +1903,7 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID, &k.CanImpersonate,
 	); err != nil {
 		return nil, err
 	}
@@ -1872,7 +1928,7 @@ func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, er
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID, &k.CanImpersonate,
 		&revokeAt,
 	); err != nil {
 		return nil, time.Time{}, err
@@ -1913,15 +1969,15 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, expires_at, is_active,
-			rotation_interval_sec, key_rotation_at, key_type, project_id
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NULLIF($30,''))`
+			rotation_interval_sec, key_rotation_at, key_type, project_id, can_impersonate
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NULLIF($30,''),$31)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 		vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
-		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID,
+		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate,
 	); err != nil {
 		return err
 	}
@@ -1972,6 +2028,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			key_rotation_at = $27,
 			key_type = COALESCE(NULLIF($28, ''), key_type),
 			project_id = NULLIF($29, ''),
+			can_impersonate = $30,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -1981,7 +2038,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.ExpiresAt, vk.IsActive,
-			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID,
+			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate,
 		)
 		if err != nil {
 			return err
@@ -2026,6 +2083,39 @@ func (p *PostgresRepository) ListVirtualKeys(ctx context.Context, orgID string) 
 		return p.mem.ListVirtualKeys(ctx, orgID)
 	}
 	rows, err := p.pool.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*domain.VirtualKey
+	for rows.Next() {
+		k, err := scanVirtualKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, k)
+	}
+	return list, rows.Err()
+}
+
+func (p *PostgresRepository) ListVirtualKeysByUserID(ctx context.Context, orgID, userID string) ([]*domain.VirtualKey, error) {
+	orgID = strings.TrimSpace(orgID)
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+	if p.pool == nil {
+		return p.mem.ListVirtualKeysByUserID(ctx, orgID, userID)
+	}
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if orgID != "" {
+		rows, err = p.pool.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE org_id = $1 AND user_id = $2 ORDER BY created_at DESC`, orgID, userID)
+	} else {
+		rows, err = p.pool.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -3423,6 +3513,9 @@ func (p *PostgresRepository) MarkBudgetResetsDelivered(ctx context.Context, ids 
 func (p *PostgresRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
 	if log.ID == "" {
 		log.ID = uuid.NewString()
+	}
+	if p.pool == nil {
+		return p.mem.RecordAuditLog(ctx, log)
 	}
 	var orgUUID *uuid.UUID
 	if u, err := uuid.Parse(log.OrgID); err == nil {

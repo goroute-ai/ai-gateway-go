@@ -144,9 +144,11 @@ func (e *RBACEngine) AuthorizeRequestedModel(idCtx *domain.IdentityContext, requ
 	memberRestricted := len(idCtx.TeamMemberAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamMemberAllowedModels, requestedModel)
 	teamRestricted := len(idCtx.TeamAllowedModels) > 0 && !matchesModelAllowlist(idCtx.TeamAllowedModels, requestedModel)
 	if keyRestricted || projectRestricted || memberRestricted || teamRestricted {
-		// Dynamic access group rules may grant additional models for matching trusted attributes.
-		dynamicallyAllowed := len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel)
-		if !dynamicallyAllowed && e != nil {
+		// Dynamic access group rules may grant additional models for matching trusted attributes,
+		// unless the identity has been narrowed for a delegated agent caller.
+		allowDynamic := idCtx.DelegatedUserID == "" && idCtx.DelegatedTeamID == ""
+		dynamicallyAllowed := allowDynamic && len(idCtx.DynamicAllowedModels) > 0 && matchesModelAllowlist(idCtx.DynamicAllowedModels, requestedModel)
+		if !dynamicallyAllowed && allowDynamic && e != nil {
 			if eval, err := e.EvaluateIdentityAccessRules(context.Background(), idCtx); err == nil && matchesModelAllowlist(eval.AllowedModels, requestedModel) {
 				dynamicallyAllowed = true
 			}

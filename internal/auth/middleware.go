@@ -136,6 +136,13 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 				domain.WriteHTTPError(w, err)
 				return
 			}
+			if svc != nil {
+				idCtx, err = ApplyDelegatedCallerNarrowing(r.Context(), svc.Repo(), idCtx, r)
+				if err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
+			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})
 	}
@@ -166,6 +173,13 @@ func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) f
 			if err := enforceReadOnlyKeyMethod(idCtx, r.Method); err != nil {
 				domain.WriteHTTPError(w, err)
 				return
+			}
+			if resolver != nil {
+				idCtx, err = ApplyDelegatedCallerNarrowing(r.Context(), resolver.repo, idCtx, r)
+				if err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})
@@ -200,6 +214,13 @@ func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 			}
 			if op != nil {
 				writeDeprecatedKeyHeaders(w, op.DeprecatedKeyRevokeAt)
+			}
+			if svc != nil {
+				op, err = svc.ResolveImpersonatedOperator(r.Context(), op, r)
+				if err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(WithOperator(r.Context(), op)))
 		})
