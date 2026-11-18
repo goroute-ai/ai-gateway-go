@@ -23,7 +23,7 @@ func TestScanVirtualKey_AndDeprecatedKeyFields(t *testing.T) {
 		int64(10_000_000), int64(5_000_000), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`),
 		int64(1000), "monthly", nil,
 		60, 10000, 10, int64(50000), &expAt, true,
-		int64(86400), &rotAt, "llm_api", "proj-1",
+		int64(86400), &rotAt, "llm_api", "proj-1", false,
 	}
 
 	vk, err := scanVirtualKey(&fakeTeamScanner{values: baseValues})

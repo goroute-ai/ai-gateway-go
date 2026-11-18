@@ -1382,6 +1382,8 @@ type AdminUser struct {
 	OrgId                    string               `json:"org_id"`
 	Role                     AdminUserRole        `json:"role"`
 	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
+	ScimActive               *bool                `json:"scim_active,omitempty"`
+	ScimExternalId           *string              `json:"scim_external_id,omitempty"`
 	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
 	SpentMicros              *int64               `json:"spent_micros,omitempty"`
 	TeamId                   *string              `json:"team_id,omitempty"`
@@ -1403,11 +1405,14 @@ type AdminVirtualKey struct {
 	BudgetFallbacks   *map[string][]string `json:"budget_fallbacks,omitempty"`
 	BudgetResetAt     *time.Time           `json:"budget_reset_at,omitempty"`
 	BudgetResetPeriod *string              `json:"budget_reset_period,omitempty"`
-	CreatedAt         time.Time            `json:"created_at"`
-	ExpiresAt         *time.Time           `json:"expires_at,omitempty"`
-	Id                string               `json:"id"`
-	IsActive          bool                 `json:"is_active"`
-	KeyPrefix         string               `json:"key_prefix"`
+
+	// CanImpersonate Whether this key is authorized to impersonate operators on /admin/v1/* routes
+	CanImpersonate *bool      `json:"can_impersonate,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Id             string     `json:"id"`
+	IsActive       bool       `json:"is_active"`
+	KeyPrefix      string     `json:"key_prefix"`
 
 	// KeyRotationAt Next scheduled automatic rotation timestamp in UTC
 	KeyRotationAt *time.Time `json:"key_rotation_at,omitempty"`

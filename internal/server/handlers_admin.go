@@ -54,6 +54,16 @@ func isPrivilegedOrgOrPlatformRole(role domain.Role) bool {
 	}
 }
 
+func hasDisallowedTeamAdminEndpoint(endpoints []string) bool {
+	for _, ep := range endpoints {
+		trimmed := strings.TrimSpace(ep)
+		if trimmed == "*" || trimmed == "/*" || strings.HasPrefix(trimmed, "/scim") || strings.HasPrefix(trimmed, "/admin") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "", nil
@@ -110,8 +120,21 @@ func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, reso
 		return
 	}
 	actorID := "master_admin"
-	if op := auth.OperatorFromContext(ctx); op != nil && op.ActorID != "" {
-		actorID = op.ActorID
+	var impersonatedBy string
+	if op := auth.OperatorFromContext(ctx); op != nil {
+		if op.ActorID != "" {
+			actorID = op.ActorID
+		}
+		impersonatedBy = op.ImpersonatedByActorID
+	}
+	if impersonatedBy != "" {
+		enriched := make(map[string]any, len(details)+2)
+		for k, v := range details {
+			enriched[k] = v
+		}
+		enriched["actor_id"] = actorID
+		enriched["impersonated_by"] = impersonatedBy
+		details = enriched
 	}
 	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
 		OrgID:      orgID,
@@ -444,6 +467,7 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 		return
 	}
 	user.IsActive = true
+	user.SCIMActive = true
 	if user.Role == "" {
 		user.Role = domain.RoleDeveloper
 	}
@@ -563,6 +587,24 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if op.Role == domain.OperatorRoleTeamAdmin {
+		if req.CanImpersonate {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot issue virtual keys with can_impersonate enabled",
+			})
+			return
+		}
+		if hasDisallowedTeamAdminEndpoint(req.AllowedEndpoints) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot issue virtual keys with wildcard, /admin, or /scim allowed_endpoints",
+			})
+			return
+		}
 		if isPrivilegedOrgOrPlatformRole(req.Role) {
 			domain.WriteHTTPError(w, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
@@ -603,6 +645,7 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		"key_prefix":            vk.KeyPrefix,
 		"name":                  vk.Name,
 		"key_type":              vk.KeyType,
+		"can_impersonate":       vk.CanImpersonate,
 		"rotation_interval_sec": vk.RotationIntervalSec,
 	})
 	writeJSON(w, http.StatusCreated, vk)

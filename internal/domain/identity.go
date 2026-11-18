@@ -31,10 +31,12 @@ const (
 // OperatorContext represents an authenticated Control Plane operator attached to `r.Context()`.
 type OperatorContext struct {
 	ActorID               string       `json:"actor_id"`
+	ImpersonatedByActorID string       `json:"impersonated_by_actor_id,omitempty"`
 	Role                  OperatorRole `json:"role"`
 	OrgID                 string       `json:"org_id,omitempty"`
 	TeamID                string       `json:"team_id,omitempty"`
 	AuthMethod            string       `json:"auth_method"` // "master_key", "virtual_key", "jwt", "session"
+	CanImpersonate        bool         `json:"can_impersonate,omitempty"`
 	DeprecatedKeyRevokeAt *time.Time   `json:"deprecated_key_revoke_at,omitempty"`
 	SessionID             string       `json:"session_id,omitempty"`
 	CSRFToken             string       `json:"csrf_token,omitempty"`
@@ -138,6 +140,8 @@ type User struct {
 	Name                     string              `json:"name"`
 	Role                     Role                `json:"role"`
 	OIDCSubject              string              `json:"oidc_subject,omitempty"`
+	SCIMExternalID           string              `json:"scim_external_id,omitempty"`
+	SCIMActive               bool                `json:"scim_active"`
 	MaxBudgetMicros          int64               `json:"max_budget_micros"`
 	SoftBudgetMicros         int64               `json:"soft_budget_micros"`
 	ThrottleOnBudgetExceeded bool                `json:"throttle_on_budget_exceeded"`
@@ -243,6 +247,7 @@ type VirtualKey struct {
 	RotationIntervalSec      int64               `json:"rotation_interval_sec,omitempty"`
 	KeyRotationAt            *time.Time          `json:"key_rotation_at,omitempty"`
 	ExpiresAt                *time.Time          `json:"expires_at,omitempty"`
+	CanImpersonate           bool                `json:"can_impersonate"`
 	IsActive                 bool                `json:"is_active"`
 	Metadata                 map[string]string   `json:"metadata,omitempty"`
 	CreatedAt                time.Time           `json:"created_at"`
@@ -305,8 +310,12 @@ type IdentityContext struct {
 	TeamID                       string              `json:"team_id,omitempty"`
 	ProjectID                    string              `json:"project_id,omitempty"`
 	UserID                       string              `json:"user_id,omitempty"`
+	DelegatedUserID              string              `json:"delegated_user_id,omitempty"`
+	DelegatedTeamID              string              `json:"delegated_team_id,omitempty"`
 	Role                         Role                `json:"role"`
 	KeyType                      KeyType             `json:"key_type,omitempty"`
+	SCIMActive                   bool                `json:"scim_active"`
+	CanImpersonate               bool                `json:"can_impersonate,omitempty"`
 	RotationIntervalSec          int64               `json:"rotation_interval_sec,omitempty"`
 	KeyRotationAt                *time.Time          `json:"key_rotation_at,omitempty"`
 	DeprecatedKeyRevokeAt        *time.Time          `json:"deprecated_key_revoke_at,omitempty"`

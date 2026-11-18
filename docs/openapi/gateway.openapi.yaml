@@ -771,6 +771,10 @@ components:
           enum: [platform_admin, org_admin, team_admin, developer, service_account, viewer]
         oidc_subject:
           type: string
+        scim_external_id:
+          type: string
+        scim_active:
+          type: boolean
         max_budget_micros:
           type: integer
           format: int64
@@ -1243,6 +1247,9 @@ components:
         expires_at:
           type: string
           format: date-time
+        can_impersonate:
+          type: boolean
+          description: Whether this key is authorized to impersonate operators on /admin/v1/* routes
         is_active:
           type: boolean
         metadata:

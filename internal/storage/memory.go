@@ -779,6 +779,22 @@ func (r *MemoryRepository) GetTeam(ctx context.Context, id string) (*domain.Team
 	return cloneTeam(t), nil
 }
 
+func (r *MemoryRepository) GetTeamByName(ctx context.Context, orgID, name string) (*domain.Team, error) {
+	orgID = strings.TrimSpace(orgID)
+	name = strings.TrimSpace(name)
+	if orgID == "" || name == "" {
+		return nil, fmt.Errorf("team with org_id %q and name %q %w", orgID, name, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, t := range r.teams {
+		if t.OrgID == orgID && t.Name == name {
+			return cloneTeam(t), nil
+		}
+	}
+	return nil, fmt.Errorf("team with org_id %q and name %q %w", orgID, name, ErrNotFound)
+}
+
 func (r *MemoryRepository) ListTeams(ctx context.Context, orgID string) ([]*domain.Team, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -836,6 +852,9 @@ func (r *MemoryRepository) CreateUser(ctx context.Context, user *domain.User) er
 	defer r.mu.Unlock()
 	if user.ID == "" {
 		user.ID = uuid.NewString()
+	}
+	if user.IsActive && strings.TrimSpace(user.SCIMExternalID) == "" {
+		user.SCIMActive = true
 	}
 	now := time.Now().UTC()
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, now)
@@ -1142,11 +1161,26 @@ func (r *MemoryRepository) GetUserByEmail(ctx context.Context, email string) (*d
 	defer r.mu.RUnlock()
 	for _, u := range r.users {
 		if strings.EqualFold(u.Email, email) {
-			cp := *u
-			return &cp, nil
+			return cloneUser(u), nil
 		}
 	}
 	return nil, fmt.Errorf("user with email %q %w", email, ErrNotFound)
+}
+
+func (r *MemoryRepository) GetUserBySCIMExternalID(ctx context.Context, orgID, externalID string) (*domain.User, error) {
+	orgID = strings.TrimSpace(orgID)
+	externalID = strings.TrimSpace(externalID)
+	if orgID == "" || externalID == "" {
+		return nil, fmt.Errorf("user with org_id %q and scim_external_id %q %w", orgID, externalID, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, u := range r.users {
+		if u.OrgID == orgID && u.SCIMExternalID == externalID {
+			return cloneUser(u), nil
+		}
+	}
+	return nil, fmt.Errorf("user with org_id %q and scim_external_id %q %w", orgID, externalID, ErrNotFound)
 }
 
 func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, user *domain.User) (*domain.User, bool, error) {
@@ -1182,6 +1216,9 @@ func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, use
 	cp := *user
 	if cp.ID == "" {
 		cp.ID = uuid.NewString()
+	}
+	if cp.IsActive && strings.TrimSpace(cp.SCIMExternalID) == "" {
+		cp.SCIMActive = true
 	}
 	now := time.Now().UTC()
 	cp.BudgetResetPeriod, cp.BudgetResetAt = resolveBudgetResetSchedule(cp.BudgetResetPeriod, cp.BudgetResetAt, now)
@@ -1601,6 +1638,23 @@ func (r *MemoryRepository) ListVirtualKeys(ctx context.Context, orgID string) ([
 	var out []*domain.VirtualKey
 	for _, vk := range r.keysByID {
 		if orgID == "" || vk.OrgID == orgID {
+			out = append(out, cloneVirtualKey(vk))
+		}
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) ListVirtualKeysByUserID(ctx context.Context, orgID, userID string) ([]*domain.VirtualKey, error) {
+	orgID = strings.TrimSpace(orgID)
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.VirtualKey
+	for _, vk := range r.keysByID {
+		if (orgID == "" || vk.OrgID == orgID) && vk.UserID == userID {
 			out = append(out, cloneVirtualKey(vk))
 		}
 	}
