@@ -1887,6 +1887,7 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.BudgetResetAt = cloneTimePtr(vk.BudgetResetAt)
 	cp.TempBudgetExpiresAt = cloneTimePtr(vk.TempBudgetExpiresAt)
 	cp.KeyRotationAt = cloneTimePtr(vk.KeyRotationAt)
+	cp.StagedCreatedAt = cloneTimePtr(vk.StagedCreatedAt)
 	cp.ExpiresAt = cloneTimePtr(vk.ExpiresAt)
 	if len(vk.Metadata) > 0 {
 		cp.Metadata = make(map[string]string, len(vk.Metadata))

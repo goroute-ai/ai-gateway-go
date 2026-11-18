@@ -228,6 +228,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
 	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
+	authSvc.SetVault(vault)
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
 	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
@@ -314,7 +315,15 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
+	delivery, err := newKeyRotationDelivery(cfg.Auth, netPolicy)
+	if err != nil {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(context.Background())
+		}
+		return nil, err
+	}
 	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
+		Deliver:      delivery,
 		PollInterval: cfg.Auth.KeyRotationPollInterval,
 		GracePeriod:  cfg.Auth.KeyRotationGracePeriod,
 	})
