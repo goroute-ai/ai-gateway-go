@@ -55,18 +55,20 @@ type MemoryRepository struct {
 	budgetResetOutbox      map[string]BudgetResetEvent
 	auditLogs              []*domain.AuditLog
 
-	mcpServers     map[string]*domain.MCPServer
-	mcpTools       map[string]*domain.MCPTool
-	mcpToolsets    map[string]*domain.MCPToolset
-	mcpUserCreds   map[string]*domain.MCPUserCredential
-	a2aAgents      map[string]*domain.A2AAgent
-	a2aTasks       map[string]*domain.A2ATask
-	a2aTaskEvents  map[string][]*domain.A2ATaskEvent
-	a2aStreamPubs  []*domain.A2AStreamPublication
-	a2aOutbox      []*domain.A2AOutboxEvent
-	a2aPushConfigs map[string]*domain.A2APushNotificationConfig
-	files          map[string]*domain.CanonicalFile
-	batches        map[string]*domain.CanonicalBatch
+	mcpServers       map[string]*domain.MCPServer
+	mcpTools         map[string]*domain.MCPTool
+	mcpToolsets      map[string]*domain.MCPToolset
+	mcpUserCreds     map[string]*domain.MCPUserCredential
+	a2aAgents        map[string]*domain.A2AAgent
+	a2aTasks         map[string]*domain.A2ATask
+	a2aTaskEvents    map[string][]*domain.A2ATaskEvent
+	a2aStreamPubs    []*domain.A2AStreamPublication
+	a2aOutbox        []*domain.A2AOutboxEvent
+	a2aPushConfigs   map[string]*domain.A2APushNotificationConfig
+	files            map[string]*domain.CanonicalFile
+	batches          map[string]*domain.CanonicalBatch
+	userCredentials  map[string]*domain.UserCredential
+	operatorSessions map[string]*domain.OperatorSession
 }
 
 type deprecatedKeyHashEntry struct {
@@ -126,6 +128,8 @@ func NewMemoryRepository() *MemoryRepository {
 		a2aTasks:               make(map[string]*domain.A2ATask),
 		a2aTaskEvents:          make(map[string][]*domain.A2ATaskEvent),
 		a2aPushConfigs:         make(map[string]*domain.A2APushNotificationConfig),
+		userCredentials:        make(map[string]*domain.UserCredential),
+		operatorSessions:       make(map[string]*domain.OperatorSession),
 	}
 	r.seedDefaultGlobalCatalogue()
 	return r
@@ -910,6 +914,12 @@ func (r *MemoryRepository) DeleteUser(ctx context.Context, id string) error {
 		if m.UserID == id {
 			delete(r.teamMembershipsByTuple, teamMembershipTupleKey(m.TeamID, m.UserID))
 			delete(r.teamMemberships, mID)
+		}
+	}
+	delete(r.userCredentials, id)
+	for sessID, sess := range r.operatorSessions {
+		if sess != nil && sess.UserID == id {
+			delete(r.operatorSessions, sessID)
 		}
 	}
 	return nil
@@ -3436,5 +3446,168 @@ func (r *MemoryRepository) RotateGuardrailSecrets(ctx context.Context, orgID, id
 	def.EncryptedSecrets = encryptedSecrets
 	def.EncryptedDEK = encryptedDEK
 	def.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func cloneUserCredential(cred *domain.UserCredential) *domain.UserCredential {
+	if cred == nil {
+		return nil
+	}
+	cp := *cred
+	if cred.LockedUntil != nil {
+		t := *cred.LockedUntil
+		cp.LockedUntil = &t
+	}
+	return &cp
+}
+
+func cloneOperatorSession(sess *domain.OperatorSession) *domain.OperatorSession {
+	if sess == nil {
+		return nil
+	}
+	cp := *sess
+	if sess.RevokedAt != nil {
+		t := *sess.RevokedAt
+		cp.RevokedAt = &t
+	}
+	return &cp
+}
+
+func (r *MemoryRepository) UpsertUserPassword(ctx context.Context, userID, passwordHash string, resetRequired bool) error {
+	userID = strings.TrimSpace(userID)
+	passwordHash = strings.TrimSpace(passwordHash)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	if passwordHash == "" {
+		return fmt.Errorf("password_hash is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userCredentials[userID] = &domain.UserCredential{
+		UserID:                userID,
+		PasswordHash:          passwordHash,
+		PasswordResetRequired: resetRequired,
+		FailedAttempts:        0,
+		LockedUntil:           nil,
+		UpdatedAt:             time.Now().UTC(),
+	}
+	return nil
+}
+
+func (r *MemoryRepository) GetUserCredential(ctx context.Context, userID string) (*domain.UserCredential, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cred, ok := r.userCredentials[userID]
+	if !ok || cred == nil {
+		return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+	}
+	return cloneUserCredential(cred), nil
+}
+
+func (r *MemoryRepository) UpdateUserLoginFailure(ctx context.Context, userID string, failedAttempts int, lockedUntil *time.Time) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cred, ok := r.userCredentials[userID]
+	if !ok || cred == nil {
+		return fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+	}
+	cred.FailedAttempts = failedAttempts
+	if lockedUntil != nil {
+		t := lockedUntil.UTC()
+		cred.LockedUntil = &t
+	} else {
+		cred.LockedUntil = nil
+	}
+	cred.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *MemoryRepository) CreateOperatorSession(ctx context.Context, session *domain.OperatorSession) error {
+	if session == nil {
+		return fmt.Errorf("operator session is required")
+	}
+	if strings.TrimSpace(session.UserID) == "" ||
+		strings.TrimSpace(session.OrgID) == "" ||
+		strings.TrimSpace(session.Role) == "" ||
+		strings.TrimSpace(session.CSRFToken) == "" ||
+		session.ExpiresAt.IsZero() {
+		return fmt.Errorf("user_id, org_id, role, csrf_token, and expires_at are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(session.ID) == "" {
+		session.ID = uuid.NewString()
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = time.Now().UTC()
+	}
+	r.operatorSessions[session.ID] = cloneOperatorSession(session)
+	return nil
+}
+
+func (r *MemoryRepository) GetOperatorSession(ctx context.Context, id string) (*domain.OperatorSession, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("operator session %q %w", id, ErrNotFound)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sess, ok := r.operatorSessions[id]
+	if !ok || sess == nil {
+		return nil, fmt.Errorf("operator session %q %w", id, ErrNotFound)
+	}
+	return cloneOperatorSession(sess), nil
+}
+
+func (r *MemoryRepository) RevokeOperatorSession(ctx context.Context, id string, revokedAt time.Time) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("operator session id is required")
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now().UTC()
+	} else {
+		revokedAt = revokedAt.UTC()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sess, ok := r.operatorSessions[id]
+	if !ok || sess == nil {
+		return fmt.Errorf("operator session %q %w", id, ErrNotFound)
+	}
+	if sess.RevokedAt == nil {
+		t := revokedAt
+		sess.RevokedAt = &t
+	}
+	return nil
+}
+
+func (r *MemoryRepository) RevokeAllUserSessions(ctx context.Context, userID string, revokedAt time.Time) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now().UTC()
+	} else {
+		revokedAt = revokedAt.UTC()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, sess := range r.operatorSessions {
+		if sess != nil && sess.UserID == userID && sess.RevokedAt == nil {
+			t := revokedAt
+			sess.RevokedAt = &t
+		}
+	}
 	return nil
 }

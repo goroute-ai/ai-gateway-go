@@ -1611,6 +1611,11 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"l2_cache_ttl":                cfg.Auth.L2CacheTTL.String(),
 			"key_rotation_poll_interval":  cfg.Auth.KeyRotationPollInterval.String(),
 			"key_rotation_grace_period":   cfg.Auth.KeyRotationGracePeriod.String(),
+			"ui_username":                 cfg.Auth.UIUsername,
+			"ui_password":                 redactSecret(cfg.Auth.UIPassword),
+			"session_secret":              redactSecret(cfg.Auth.SessionSecret),
+			"session_ttl":                 cfg.Auth.SessionTTL.String(),
+			"enable_hibp_check":           cfg.Auth.EnableHIBPCheck,
 		},
 		"router": map[string]any{
 			"default_fast_alias":      cfg.Router.DefaultFastAlias,

@@ -54,6 +54,9 @@ type GatewayServer struct {
 	reg                *adapter.Registry
 	vault              *auth.Vault
 	authSvc            *auth.Service
+	sessionMgr         *auth.SessionManager
+	loginThrottle      *auth.LoginThrottle
+	breachScreener     auth.BreachScreener
 	authResolver       *auth.AuthResolver
 	keyRotation        *auth.KeyRotationManager
 	rbac               *auth.RBACEngine
@@ -233,6 +236,15 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		NetworkPolicy: netPolicy,
 	})
 	authSvc.SetJWTVerifier(jwtVerifier)
+	sessionSecret := auth.DeriveSessionSecret(cfg.Auth.SessionSecret, cfg.Auth.MasterEncryptionKey, cfg.Auth.JWTSecret, cfg.Auth.MasterAdminKey)
+	sessionMgr := auth.NewSessionManager(repo, redisFabric, sessionSecret, cfg.Auth.SessionTTL)
+	loginThrottle := auth.NewLoginThrottle(redisFabric)
+	var breachScreener auth.BreachScreener
+	if cfg.Auth.EnableHIBPCheck {
+		breachScreener = auth.NewHIBPRangeClient(cfg.Auth.HIBPBaseURL, netPolicy)
+	}
+	authSvc.SetSessionManager(sessionMgr)
+	authSvc.SetLoginThrottle(loginThrottle)
 
 	var introspector *auth.OAuthIntrospector
 	if strings.TrimSpace(cfg.Auth.Introspection.TokenInfoEndpoint) != "" {
@@ -524,6 +536,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		reg:                reg,
 		vault:              vault,
 		authSvc:            authSvc,
+		sessionMgr:         sessionMgr,
+		loginThrottle:      loginThrottle,
+		breachScreener:     breachScreener,
 		authResolver:       authResolver,
 		keyRotation:        keyRotation,
 		rbac:               rbac,
@@ -624,6 +639,17 @@ func (s *GatewayServer) setupRoutes() {
 
 	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
 	ui.RegisterRoutes(r)
+
+	// Control Plane Authentication (/auth/*)
+	r.Route("/auth", func(authRouter chi.Router) {
+		authRouter.Post("/login", s.handleAuthLogin)
+		authRouter.Group(func(protected chi.Router) {
+			protected.Use(auth.AdminControlPlaneMiddleware(s.authSvc))
+			protected.Post("/logout", s.handleAuthLogout)
+			protected.Get("/me", s.handleAuthMe)
+			protected.Post("/password", s.handleAuthPassword)
+		})
+	})
 
 	// Data Plane (/v1/* — OpenAI-Compatible Unified Inference API)
 	r.Route("/v1", func(v1 chi.Router) {
@@ -985,6 +1011,14 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 
 func (s *GatewayServer) AuthService() *auth.Service {
 	return s.authSvc
+}
+
+func (s *GatewayServer) SessionManager() *auth.SessionManager {
+	return s.sessionMgr
+}
+
+func (s *GatewayServer) LoginThrottle() *auth.LoginThrottle {
+	return s.loginThrottle
 }
 
 func (s *GatewayServer) AuthResolver() *auth.AuthResolver {

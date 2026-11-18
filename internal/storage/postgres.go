@@ -4969,3 +4969,215 @@ func (p *PostgresRepository) RotateGuardrailSecrets(ctx context.Context, orgID, 
 	}
 	return nil
 }
+
+func (p *PostgresRepository) UpsertUserPassword(ctx context.Context, userID, passwordHash string, resetRequired bool) error {
+	userID = strings.TrimSpace(userID)
+	passwordHash = strings.TrimSpace(passwordHash)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	if passwordHash == "" {
+		return fmt.Errorf("password_hash is required")
+	}
+	if p.pool == nil {
+		return p.mem.UpsertUserPassword(ctx, userID, passwordHash, resetRequired)
+	}
+	const q = `
+		INSERT INTO user_credentials (user_id, password_hash, password_reset_required, failed_attempts, locked_until, updated_at)
+		VALUES ($1, $2, $3, 0, NULL, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			password_hash = EXCLUDED.password_hash,
+			password_reset_required = EXCLUDED.password_reset_required,
+			failed_attempts = 0,
+			locked_until = NULL,
+			updated_at = NOW()`
+	if _, err := p.pool.Exec(ctx, q, userID, passwordHash, resetRequired); err != nil {
+		return err
+	}
+	if p.mem != nil {
+		_ = p.mem.UpsertUserPassword(ctx, userID, passwordHash, resetRequired)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) GetUserCredential(ctx context.Context, userID string) (*domain.UserCredential, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetUserCredential(ctx, userID)
+	}
+	const q = `
+		SELECT user_id, password_hash, password_reset_required, failed_attempts, locked_until, updated_at
+		FROM user_credentials
+		WHERE user_id = $1`
+	var cred domain.UserCredential
+	if err := p.pool.QueryRow(ctx, q, userID).Scan(
+		&cred.UserID,
+		&cred.PasswordHash,
+		&cred.PasswordResetRequired,
+		&cred.FailedAttempts,
+		&cred.LockedUntil,
+		&cred.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+		}
+		return nil, err
+	}
+	return &cred, nil
+}
+
+func (p *PostgresRepository) UpdateUserLoginFailure(ctx context.Context, userID string, failedAttempts int, lockedUntil *time.Time) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	if p.pool == nil {
+		return p.mem.UpdateUserLoginFailure(ctx, userID, failedAttempts, lockedUntil)
+	}
+	const q = `
+		UPDATE user_credentials
+		SET failed_attempts = $2, locked_until = $3, updated_at = NOW()
+		WHERE user_id = $1`
+	tag, err := p.pool.Exec(ctx, q, userID, failedAttempts, lockedUntil)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
+	}
+	if p.mem != nil {
+		_ = p.mem.UpdateUserLoginFailure(ctx, userID, failedAttempts, lockedUntil)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) CreateOperatorSession(ctx context.Context, session *domain.OperatorSession) error {
+	if session == nil {
+		return fmt.Errorf("operator session is required")
+	}
+	if strings.TrimSpace(session.UserID) == "" ||
+		strings.TrimSpace(session.OrgID) == "" ||
+		strings.TrimSpace(session.Role) == "" ||
+		strings.TrimSpace(session.CSRFToken) == "" ||
+		session.ExpiresAt.IsZero() {
+		return fmt.Errorf("user_id, org_id, role, csrf_token, and expires_at are required")
+	}
+	if p.pool == nil {
+		return p.mem.CreateOperatorSession(ctx, session)
+	}
+	if strings.TrimSpace(session.ID) == "" {
+		session.ID = uuid.NewString()
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = time.Now().UTC()
+	}
+	const q = `
+		INSERT INTO operator_sessions (id, user_id, org_id, role, csrf_token, expires_at, revoked_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	if _, err := p.pool.Exec(ctx, q,
+		session.ID,
+		session.UserID,
+		session.OrgID,
+		session.Role,
+		session.CSRFToken,
+		session.ExpiresAt.UTC(),
+		session.RevokedAt,
+		session.CreatedAt.UTC(),
+	); err != nil {
+		return err
+	}
+	if p.mem != nil {
+		_ = p.mem.CreateOperatorSession(ctx, session)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) GetOperatorSession(ctx context.Context, id string) (*domain.OperatorSession, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("operator session %q %w", id, ErrNotFound)
+	}
+	if p.pool == nil {
+		return p.mem.GetOperatorSession(ctx, id)
+	}
+	const q = `
+		SELECT id, user_id, org_id, role, csrf_token, expires_at, revoked_at, created_at
+		FROM operator_sessions
+		WHERE id = $1`
+	var sess domain.OperatorSession
+	if err := p.pool.QueryRow(ctx, q, id).Scan(
+		&sess.ID,
+		&sess.UserID,
+		&sess.OrgID,
+		&sess.Role,
+		&sess.CSRFToken,
+		&sess.ExpiresAt,
+		&sess.RevokedAt,
+		&sess.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("operator session %q %w", id, ErrNotFound)
+		}
+		return nil, err
+	}
+	return &sess, nil
+}
+
+func (p *PostgresRepository) RevokeOperatorSession(ctx context.Context, id string, revokedAt time.Time) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("operator session id is required")
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now().UTC()
+	} else {
+		revokedAt = revokedAt.UTC()
+	}
+	if p.pool == nil {
+		return p.mem.RevokeOperatorSession(ctx, id, revokedAt)
+	}
+	const q = `
+		UPDATE operator_sessions
+		SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE id = $1`
+	tag, err := p.pool.Exec(ctx, q, id, revokedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("operator session %q %w", id, ErrNotFound)
+	}
+	if p.mem != nil {
+		_ = p.mem.RevokeOperatorSession(ctx, id, revokedAt)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) RevokeAllUserSessions(ctx context.Context, userID string, revokedAt time.Time) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("user_id is required")
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now().UTC()
+	} else {
+		revokedAt = revokedAt.UTC()
+	}
+	if p.pool == nil {
+		return p.mem.RevokeAllUserSessions(ctx, userID, revokedAt)
+	}
+	const q = `
+		UPDATE operator_sessions
+		SET revoked_at = $2
+		WHERE user_id = $1 AND revoked_at IS NULL`
+	if _, err := p.pool.Exec(ctx, q, userID, revokedAt); err != nil {
+		return err
+	}
+	if p.mem != nil {
+		_ = p.mem.RevokeAllUserSessions(ctx, userID, revokedAt)
+	}
+	return nil
+}

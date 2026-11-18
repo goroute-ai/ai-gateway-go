@@ -324,6 +324,12 @@ type AuthConfig struct {
 	L2CacheTTL              time.Duration       `yaml:"l2_cache_ttl"`
 	KeyRotationPollInterval time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
 	KeyRotationGracePeriod  time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
+	UIUsername              string              `yaml:"ui_username,omitempty"`
+	UIPassword              string              `yaml:"ui_password,omitempty"`
+	SessionSecret           string              `yaml:"session_secret,omitempty"`
+	SessionTTL              time.Duration       `yaml:"session_ttl,omitempty"`
+	EnableHIBPCheck         bool                `yaml:"enable_hibp_check,omitempty"`
+	HIBPBaseURL             string              `yaml:"hibp_base_url,omitempty"`
 }
 
 type RouterConfig struct {
@@ -692,6 +698,28 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 			cfg.Auth.KeyRotationGracePeriod = d
 		}
 	}
+	if v := os.Getenv("GATEWAY_UI_USERNAME"); v != "" {
+		cfg.Auth.UIUsername = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_UI_PASSWORD"); v != "" {
+		cfg.Auth.UIPassword = v
+	}
+	if v := os.Getenv("GATEWAY_SESSION_SECRET"); v != "" {
+		cfg.Auth.SessionSecret = v
+	}
+	if v := os.Getenv("GATEWAY_SESSION_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Auth.SessionTTL = d
+		}
+	}
+	if v := os.Getenv("GATEWAY_ENABLE_HIBP_CHECK"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Auth.EnableHIBPCheck = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_HIBP_BASE_URL"); v != "" {
+		cfg.Auth.HIBPBaseURL = strings.TrimSpace(v)
+	}
 	if v := os.Getenv("GATEWAY_ROUTER_DEFAULT_COOLDOWN"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Router.DefaultCooldown = d
@@ -928,6 +956,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.MaxConcurrentFileUploads < 0 {
 		return fmt.Errorf("invalid server.max_concurrent_file_uploads: %d", c.Server.MaxConcurrentFileUploads)
+	}
+	if c.Auth.SessionTTL <= 0 {
+		c.Auth.SessionTTL = 24 * time.Hour
 	}
 	if len(c.Auth.MasterAdminKey) < 12 {
 		return fmt.Errorf("auth.master_admin_key must be at least 12 characters")

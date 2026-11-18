@@ -45,6 +45,8 @@ type Service struct {
 	allowMasterKeyDataPlane bool
 	customAPIKeyHeader      string
 	jwtVerifier             *JWTVerifier
+	sessionManager          *SessionManager
+	loginThrottle           *LoginThrottle
 	dataPlaneResolver       *AuthResolver
 	l1TTL                   time.Duration
 	l2TTL                   time.Duration
@@ -106,6 +108,36 @@ func (s *Service) JWTVerifier() *JWTVerifier {
 		return nil
 	}
 	return s.jwtVerifier
+}
+
+// SetSessionManager configures Control Plane operator session issuance and verification.
+func (s *Service) SetSessionManager(sm *SessionManager) {
+	if s != nil {
+		s.sessionManager = sm
+	}
+}
+
+// SessionManager returns the configured SessionManager, if any.
+func (s *Service) SessionManager() *SessionManager {
+	if s == nil {
+		return nil
+	}
+	return s.sessionManager
+}
+
+// SetLoginThrottle configures brute-force login throttling.
+func (s *Service) SetLoginThrottle(t *LoginThrottle) {
+	if s != nil {
+		s.loginThrottle = t
+	}
+}
+
+// LoginThrottle returns the configured LoginThrottle, if any.
+func (s *Service) LoginThrottle() *LoginThrottle {
+	if s == nil {
+		return nil
+	}
+	return s.loginThrottle
 }
 
 // SetDataPlaneResolver attaches a unified AuthResolver for DataPlaneMiddleware.
@@ -1120,8 +1152,20 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "invalid_admin_key",
-			Message:    "Valid Master Admin Key, admin Virtual Key, or operator JWT is required to access /admin/v1/* endpoints",
+			Message:    "Valid Master Admin Key, admin Virtual Key, operator JWT, or session is required to access /admin/v1/* endpoints",
 		}
+	}
+
+	if cred.Source == CredentialSourceCookie {
+		if s.sessionManager == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_session",
+				Message:    "Operator session authentication is not configured",
+			}
+		}
+		return s.authenticateSessionToken(ctx, rawToken)
 	}
 
 	if s.ValidateAdminKey(rawToken) {
@@ -1172,6 +1216,10 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 			AuthMethod:            "virtual_key",
 			DeprecatedKeyRevokeAt: idCtx.DeprecatedKeyRevokeAt,
 		}, nil
+	}
+
+	if cred.Source == CredentialSourceBearer && s.sessionManager != nil && strings.Count(rawToken, ".") == 2 && IsSessionTokenAudience(rawToken) {
+		return s.authenticateSessionToken(ctx, rawToken)
 	}
 
 	if cred.Source == CredentialSourceBearer && s.jwtVerifier != nil && s.jwtVerifier.Enabled() && strings.Count(rawToken, ".") == 2 {
@@ -1267,8 +1315,85 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 		StatusCode: http.StatusUnauthorized,
 		Type:       domain.ErrorTypeAuthentication,
 		Code:       "invalid_admin_key",
-		Message:    "Valid Master Admin Key, admin Virtual Key, or operator JWT is required to access /admin/v1/* endpoints",
+		Message:    "Valid Master Admin Key, admin Virtual Key, operator JWT, or session is required to access /admin/v1/* endpoints",
 	}
+}
+
+func (s *Service) authenticateSessionToken(ctx context.Context, rawToken string) (*domain.OperatorContext, error) {
+	claims, sess, err := s.sessionManager.VerifySession(ctx, rawToken)
+	if err != nil {
+		return nil, err
+	}
+	op := &domain.OperatorContext{
+		ActorID:    claims.Subject,
+		Role:       domain.OperatorRole(claims.Role),
+		OrgID:      claims.OrgID,
+		TeamID:     claims.TeamID,
+		AuthMethod: "session",
+		SessionID:  claims.JTI,
+		CSRFToken:  claims.CSRFToken,
+	}
+	if sess != nil && op.CSRFToken == "" {
+		op.CSRFToken = sess.CSRFToken
+	}
+	if claims.Synthetic || claims.Subject == UIAdminActorID {
+		return op, nil
+	}
+	if ul, ok := s.repo.(storage.UserLookupRepository); ok && ul != nil {
+		user, uErr := ul.GetUser(ctx, claims.Subject)
+		if uErr == nil && user != nil {
+			if !user.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "user_inactive",
+					Message:    "Operator user account is inactive",
+				}
+			}
+			org, oErr := s.repo.GetOrganization(ctx, user.OrgID)
+			if oErr != nil || !org.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "organization_inactive",
+					Message:    "Organization associated with this operator is inactive",
+				}
+			}
+			opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+			if !ok {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "insufficient_permissions",
+					Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
+				}
+			}
+			if opRole == domain.OperatorRoleTeamAdmin && user.TeamID != "" {
+				if team, teamErr := s.repo.GetTeam(ctx, user.TeamID); teamErr == nil && team != nil {
+					if team.OrgID != user.OrgID {
+						return nil, &domain.GatewayError{
+							StatusCode: http.StatusForbidden,
+							Type:       domain.ErrorTypePermission,
+							Code:       "team_org_mismatch",
+							Message:    "Team associated with this operator does not belong to its organization",
+						}
+					}
+					if !team.IsActive {
+						return nil, &domain.GatewayError{
+							StatusCode: http.StatusForbidden,
+							Type:       domain.ErrorTypePermission,
+							Code:       "team_inactive",
+							Message:    "Team associated with this operator is inactive",
+						}
+					}
+				}
+			}
+			op.Role = opRole
+			op.OrgID = user.OrgID
+			op.TeamID = user.TeamID
+		}
+	}
+	return op, nil
 }
 
 func mapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
