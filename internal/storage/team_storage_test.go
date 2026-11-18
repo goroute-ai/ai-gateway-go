@@ -66,7 +66,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-1", "org-1", "eng", int64(1000), int64(0), false, []byte("{}"), int64(100), "monthly", nil,
-				10, 1000, 5, []string{"gpt-4.1"}, nil, nil, nil,
+				10, 1000, 5, int64(25000), []string{"gpt-4.1"}, nil, nil, nil,
 				true, now, now,
 			},
 		}
@@ -76,6 +76,9 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		}
 		if team.MaxConcurrentRequests != 5 {
 			t.Fatalf("expected MaxConcurrentRequests=5, got %d", team.MaxConcurrentRequests)
+		}
+		if team.BatchEnqueuedTokenLimit != 25000 {
+			t.Fatalf("expected BatchEnqueuedTokenLimit=25000, got %d", team.BatchEnqueuedTokenLimit)
 		}
 		if team.AllowedMCPServers != nil || team.AllowedA2AAgents != nil || team.AllowedClientApps != nil {
 			t.Fatalf("expected nil slices for NULL columns, got mcp=%#v a2a=%#v apps=%#v",
@@ -87,7 +90,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-2", "org-1", "sec", int64(0), int64(0), false, []byte("{}"), int64(0), "monthly", nil,
-				0, 0, 0, []string{}, []string{}, []string{}, []string{},
+				0, 0, 0, int64(0), []string{}, []string{}, []string{}, []string{},
 				true, now, now,
 			},
 		}
@@ -110,7 +113,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 		scanner := &fakeTeamScanner{
 			values: []any{
 				"team-3", "org-1", "ml", int64(5000), int64(3500), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`), int64(0), "weekly", nil,
-				20, 2000, 12, []string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
+				20, 2000, 12, int64(0), []string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
 				true, now, now,
 			},
 		}

@@ -561,6 +561,7 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 					OrgRPMLimit:                 org.RPMLimit,
 					OrgTPMLimit:                 org.TPMLimit,
 					OrgMaxConcurrent:            org.MaxConcurrentRequests,
+					OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
 					OrgMaxBudgetMicros:          org.MaxBudgetMicros,
 					OrgSoftBudgetMicros:         org.SoftBudgetMicros,
 					OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
@@ -671,6 +672,7 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		KeyRPMLimit:                 vk.RPMLimit,
 		KeyTPMLimit:                 vk.TPMLimit,
 		KeyMaxConcurrent:            vk.MaxConcurrentRequests,
+		KeyBatchEnqueuedTokenLimit:  vk.BatchEnqueuedTokenLimit,
 		KeyMaxBudgetMicros:          vk.MaxBudgetMicros,
 		KeySoftBudgetMicros:         vk.SoftBudgetMicros,
 		KeyThrottleOnBudgetExceeded: vk.ThrottleOnBudgetExceeded,
@@ -679,6 +681,7 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		OrgRPMLimit:                 org.RPMLimit,
 		OrgTPMLimit:                 org.TPMLimit,
 		OrgMaxConcurrent:            org.MaxConcurrentRequests,
+		OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
 		OrgMaxBudgetMicros:          org.MaxBudgetMicros,
 		OrgSoftBudgetMicros:         org.SoftBudgetMicros,
 		OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
@@ -728,6 +731,7 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
+		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
 		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
 		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
@@ -773,6 +777,7 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.UserRPMLimit = user.RPMLimit
 		idCtx.UserTPMLimit = user.TPMLimit
 		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
+		idCtx.UserBatchEnqueuedTokenLimit = user.BatchEnqueuedTokenLimit
 		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
 		idCtx.UserSoftBudgetMicros = user.SoftBudgetMicros
 		idCtx.UserThrottleOnBudgetExceeded = user.ThrottleOnBudgetExceeded

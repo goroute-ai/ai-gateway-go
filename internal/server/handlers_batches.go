@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,9 +18,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const maxBatchJSONLRecordBytes = 4 << 20
@@ -42,9 +45,6 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 			Code:       "unauthenticated",
 			Message:    "Missing virtual key identity context",
 		})
-		return
-	}
-	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
 
@@ -100,17 +100,52 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	est, err := s.estimateBatchInput(r.Context(), idCtx, inputFile.StoragePath)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+
 	batchID := "batch-" + uuid.NewString()
+	if s.limiter != nil {
+		if err := s.limiter.AcquireBatchEnqueuedTokens(r.Context(), idCtx, batchID, est.estimatedTokens); err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+	}
+
+	var releaseBudget func(actualTokens int, overrideCostMicros int64)
+	if identityHasBudget(idCtx) && s.limiter != nil {
+		rawRelease, err := s.limiter.AcquireWithBudget(r.Context(), idCtx, 1, est.reservedCostMicros, batchID)
+		if err != nil {
+			_ = s.limiter.ReleaseBatchEnqueuedTokens(context.Background(), idCtx, batchID)
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		releaseBudget = s.wrapBudgetRelease(context.Background(), idCtx, batchID, rawRelease)
+	}
+
+	rollbackBatchQuotas := func() {
+		if releaseBudget != nil {
+			releaseBudget(-1, -1)
+		}
+		if s.limiter != nil {
+			_ = s.limiter.ReleaseBatchEnqueuedTokens(context.Background(), idCtx, batchID)
+		}
+	}
+
 	batch := &domain.CanonicalBatch{
-		ID:               batchID,
-		OrgID:            idCtx.OrgID,
-		TeamID:           idCtx.TeamID,
-		InputFileID:      inputFile.ID,
-		Endpoint:         payload.Endpoint,
-		Status:           "validating",
-		CompletionWindow: payload.CompletionWindow,
-		CreatedAt:        time.Now().UTC(),
-		Metadata:         payload.Metadata,
+		ID:                 batchID,
+		OrgID:              idCtx.OrgID,
+		TeamID:             idCtx.TeamID,
+		InputFileID:        inputFile.ID,
+		Endpoint:           payload.Endpoint,
+		Status:             "validating",
+		CompletionWindow:   payload.CompletionWindow,
+		CreatedAt:          time.Now().UTC(),
+		Metadata:           payload.Metadata,
+		EstimatedTokens:    est.estimatedTokens,
+		ReservedCostMicros: est.reservedCostMicros,
 		RequestCounts: domain.BatchCounts{
 			Total:     0,
 			Completed: 0,
@@ -119,6 +154,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.repo.CreateBatch(r.Context(), batch); err != nil {
+		rollbackBatchQuotas()
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       domain.ErrorTypeServer,
@@ -130,6 +166,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 
 	respBytes, err := json.Marshal(batch)
 	if err != nil {
+		rollbackBatchQuotas()
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       domain.ErrorTypeServer,
@@ -141,7 +178,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 
 	// Launch background processor only after snapshotting the initial batch response
 	// so background field mutations cannot race with JSON serialization.
-	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile)
+	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile, releaseBudget)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -240,9 +277,183 @@ func (s *GatewayServer) handleCancelBatch(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusInternalServerError, Type: domain.ErrorTypeServer, Code: "batch_update_failed", Message: "Failed to persist batch cancellation"})
 		return
 	}
+	if s.limiter != nil {
+		if relErr := s.limiter.ReleaseBatchEnqueuedTokens(r.Context(), idCtx, b.ID); relErr != nil {
+			logger.Warn("Failed to release batch enqueued token hold on cancel", "batch_id", b.ID, "error", relErr.Error())
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(b)
+}
+
+type batchInputEstimate struct {
+	validRequests      int
+	estimatedTokens    int64
+	reservedCostMicros int64
+}
+
+func (s *GatewayServer) resolveModelMaxOutputTokens(ctx context.Context, orgID, model string) int {
+	if s == nil || s.repo == nil {
+		return 0
+	}
+	if gm, _, err := s.resolveMatchedVerifiedModel(ctx, orgID, model); err == nil && gm != nil && gm.MaxOutputTokens > 0 {
+		return gm.MaxOutputTokens
+	}
+	_, bareModel, canonicalID := config.ParseProviderModel(model)
+	models, err := s.budgetModelCandidates(ctx, "", model)
+	if err != nil {
+		return 0
+	}
+	maxOut := 0
+	for _, gm := range models {
+		if gm == nil {
+			continue
+		}
+		if gm.ID == model || gm.ID == canonicalID || gm.ModelName == model || (bareModel != "" && gm.ModelName == bareModel) {
+			if gm.MaxOutputTokens > maxOut {
+				maxOut = gm.MaxOutputTokens
+			}
+		}
+	}
+	return maxOut
+}
+
+func (s *GatewayServer) estimateBatchInput(ctx context.Context, idCtx *domain.IdentityContext, storagePath string) (batchInputEstimate, error) {
+	diskFile, err := os.Open(storagePath)
+	if err != nil {
+		return batchInputEstimate{}, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_batch_input_file",
+			Message:    "Failed to open batch input file: " + err.Error(),
+		}
+	}
+	defer diskFile.Close()
+
+	const maxInt64 = int64(^uint64(0) >> 1)
+	scanner := bufio.NewScanner(diskFile)
+	scanner.Buffer(make([]byte, 64*1024), maxBatchJSONLRecordBytes)
+
+	var est batchInputEstimate
+	modelMaxOutCache := make(map[string]int)
+	budgeted := identityHasBudget(idCtx)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var item struct {
+			CustomID string                      `json:"custom_id"`
+			Method   string                      `json:"method"`
+			URL      string                      `json:"url"`
+			Body     domain.CanonicalChatRequest `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			continue
+		}
+		est.validRequests++
+
+		reqModel := strings.TrimSpace(item.Body.Model)
+		if reqModel == "" {
+			reqModel = "auto"
+		}
+		reqMaxOut := 0
+		if item.Body.MaxTokens != nil {
+			if *item.Body.MaxTokens < 0 {
+				return batchInputEstimate{}, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_max_tokens",
+					Message:    "max_tokens in batch request cannot be negative",
+				}
+			}
+			reqMaxOut = *item.Body.MaxTokens
+		}
+
+		inputTokens := ratelimit.EstimateRequestTokens(&item.Body)
+		effMaxOut := reqMaxOut
+		if effMaxOut == 0 {
+			cachedOut, ok := modelMaxOutCache[reqModel]
+			if !ok {
+				cachedOut = s.resolveModelMaxOutputTokens(ctx, idCtx.OrgID, reqModel)
+				modelMaxOutCache[reqModel] = cachedOut
+			}
+			effMaxOut = cachedOut
+		}
+
+		lineTokens := int64(inputTokens) + int64(effMaxOut)
+		if lineTokens > maxInt64-est.estimatedTokens {
+			return batchInputEstimate{}, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "batch_token_estimate_overflow",
+				Message:    "Batch total estimated tokens exceed supported range",
+			}
+		}
+		est.estimatedTokens += lineTokens
+
+		if budgeted {
+			budgetInputTokens := inputTokens
+			if encoded, encodeErr := json.Marshal(item.Body); encodeErr != nil {
+				return batchInputEstimate{}, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeBudgetExceeded,
+					Code:       "budget_estimate_unavailable",
+					Message:    "A safe upper-bound cost could not be calculated before dispatch",
+				}
+			} else if len(encoded) > budgetInputTokens {
+				budgetInputTokens = len(encoded)
+			}
+
+			lineCost, costErr := s.tokenBudgetUpperBound(ctx, idCtx.OrgID, reqModel, budgetInputTokens, reqMaxOut)
+			if costErr != nil {
+				if errors.Is(costErr, errBudgetPricingUnverified) {
+					return batchInputEstimate{}, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypeBudgetExceeded,
+						Code:       "pricing_unknown_budget_restricted",
+						Message:    "Budgeted requests require known model pricing",
+					}
+				}
+				return batchInputEstimate{}, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeBudgetExceeded,
+					Code:       "budget_estimate_unavailable",
+					Message:    "A safe upper-bound cost could not be calculated before dispatch",
+				}
+			}
+			if lineCost > maxInt64-est.reservedCostMicros {
+				return batchInputEstimate{}, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeBudgetExceeded,
+					Code:       "budget_estimate_unavailable",
+					Message:    "Batch upper-bound budget estimate exceeds supported range",
+				}
+			}
+			est.reservedCostMicros += lineCost
+		}
+	}
+
+	if scanner.Err() != nil {
+		return batchInputEstimate{}, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_batch_input_file",
+			Message:    "Failed to scan batch input file: " + scanner.Err().Error(),
+		}
+	}
+	if est.validRequests == 0 {
+		return batchInputEstimate{}, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_batch_input_file",
+			Message:    "Batch input file contains no valid JSONL requests",
+		}
+	}
+	return est, nil
 }
 
 func (s *GatewayServer) processBatchAsync(
@@ -250,9 +461,32 @@ func (s *GatewayServer) processBatchAsync(
 	idCtx *domain.IdentityContext,
 	batch *domain.CanonicalBatch,
 	inputFile *domain.CanonicalFile,
+	releaseBudget func(actualTokens int, overrideCostMicros int64),
 ) {
+	totalActualTokens := 0
+	totalCostMicros := int64(0)
+	defer func() {
+		if s.limiter != nil {
+			_ = s.limiter.ReleaseBatchEnqueuedTokens(context.Background(), idCtx, batch.ID)
+		}
+		if releaseBudget != nil {
+			if s.spendWorker != nil {
+				releaseBudget(-1, -1)
+			} else if totalActualTokens > 0 || totalCostMicros > 0 {
+				releaseBudget(totalActualTokens, totalCostMicros)
+			} else {
+				releaseBudget(-1, -1)
+			}
+		}
+	}()
+
 	now := time.Now().UTC()
 	_ = s.repo.UpdateBatchStatus(ctx, batch.ID, "in_progress", "", batch.RequestCounts, nil)
+
+	if batch.CompletionWindow == "24h" && !batch.CreatedAt.IsZero() && now.Sub(batch.CreatedAt) > 24*time.Hour {
+		_ = s.repo.UpdateBatchStatus(ctx, batch.ID, "expired", "", batch.RequestCounts, &now)
+		return
+	}
 
 	diskFile, err := os.Open(inputFile.StoragePath)
 	if err != nil {
@@ -384,6 +618,8 @@ func (s *GatewayServer) processBatchAsync(
 				}
 			}
 			costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+			totalActualTokens += resp.Usage.TotalTokens
+			totalCostMicros += costMicros
 			if s.spendWorker != nil {
 				spendPersistErr = s.spendWorker.Record(ctx, domain.SpendEvent{
 					ID:             "sp_" + uuid.NewString(),

@@ -164,6 +164,7 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 		RPMLimit                 *int                      `json:"rpm_limit,omitempty"`
 		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
 		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
 		AllowedModels            optionalStringSlice       `json:"allowed_models"`
 		AllowedMCPServers        optionalStringSlice       `json:"allowed_mcp_servers"`
 		AllowedA2AAgents         optionalStringSlice       `json:"allowed_a2a_agents"`
@@ -258,6 +259,18 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 			return
 		}
 		updated.MaxConcurrentRequests = *req.MaxConcurrentRequests
+	}
+	if req.BatchEnqueuedTokenLimit != nil {
+		if *req.BatchEnqueuedTokenLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_batch_enqueued_token_limit",
+				Message:    "batch_enqueued_token_limit cannot be negative",
+			})
+			return
+		}
+		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
 	}
 	if req.AllowedModels.Set {
 		updated.AllowedModels = req.AllowedModels.Value
@@ -401,6 +414,7 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 		RPMLimit                 *int                      `json:"rpm_limit,omitempty"`
 		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
 		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
 		IsActive                 *bool                     `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
@@ -534,6 +548,18 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			return
 		}
 		updated.MaxConcurrentRequests = *req.MaxConcurrentRequests
+	}
+	if req.BatchEnqueuedTokenLimit != nil {
+		if *req.BatchEnqueuedTokenLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_batch_enqueued_token_limit",
+				Message:    "batch_enqueued_token_limit cannot be negative",
+			})
+			return
+		}
+		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
 	}
 	if req.IsActive != nil {
 		updated.IsActive = *req.IsActive
@@ -670,6 +696,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		RPMLimit                 *int                      `json:"rpm_limit,omitempty"`
 		TPMLimit                 *int                      `json:"tpm_limit,omitempty"`
 		MaxConcurrentRequests    *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit  *int64                    `json:"batch_enqueued_token_limit,omitempty"`
 		ExpiresAt                *time.Time                `json:"expires_at,omitempty"`
 		IsActive                 *bool                     `json:"is_active,omitempty"`
 		Metadata                 map[string]string         `json:"metadata,omitempty"`
@@ -786,6 +813,18 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		updated.MaxConcurrentRequests = *req.MaxConcurrentRequests
+	}
+	if req.BatchEnqueuedTokenLimit != nil {
+		if *req.BatchEnqueuedTokenLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_batch_enqueued_token_limit",
+				Message:    "batch_enqueued_token_limit cannot be negative",
+			})
+			return
+		}
+		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
 	}
 	if req.ExpiresAt != nil {
 		updated.ExpiresAt = req.ExpiresAt

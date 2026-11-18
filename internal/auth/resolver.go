@@ -793,6 +793,7 @@ func (r *AuthResolver) projectUserIdentity(
 		UserRPMLimit:                 user.RPMLimit,
 		UserTPMLimit:                 user.TPMLimit,
 		UserMaxConcurrent:            user.MaxConcurrentRequests,
+		UserBatchEnqueuedTokenLimit:  user.BatchEnqueuedTokenLimit,
 		UserMaxBudgetMicros:          user.MaxBudgetMicros,
 		UserSoftBudgetMicros:         user.SoftBudgetMicros,
 		UserThrottleOnBudgetExceeded: user.ThrottleOnBudgetExceeded,
@@ -801,6 +802,7 @@ func (r *AuthResolver) projectUserIdentity(
 		OrgRPMLimit:                  org.RPMLimit,
 		OrgTPMLimit:                  org.TPMLimit,
 		OrgMaxConcurrent:             org.MaxConcurrentRequests,
+		OrgBatchEnqueuedTokenLimit:   org.BatchEnqueuedTokenLimit,
 		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
 		OrgSoftBudgetMicros:          org.SoftBudgetMicros,
 		OrgThrottleOnBudgetExceeded:  org.ThrottleOnBudgetExceeded,
@@ -826,6 +828,7 @@ func (r *AuthResolver) projectUserIdentity(
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
+		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
 		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
 		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
 		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded

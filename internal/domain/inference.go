@@ -710,21 +710,23 @@ type BatchCounts struct {
 }
 
 type CanonicalBatch struct {
-	ID               string         `json:"id"`
-	OrgID            string         `json:"org_id"`
-	TeamID           string         `json:"team_id,omitempty"`
-	InputFileID      string         `json:"input_file_id"`
-	OutputFileID     string         `json:"output_file_id,omitempty"`
-	ErrorFileID      string         `json:"error_file_id,omitempty"`
-	Endpoint         string         `json:"endpoint"`
-	Status           string         `json:"status"` // "validating", "in_progress", "completed", "failed", "cancelled"
-	CompletionWindow string         `json:"completion_window"`
-	CreatedAt        time.Time      `json:"created_at"`
-	CompletedAt      *time.Time     `json:"completed_at,omitempty"`
-	Metadata         map[string]any `json:"metadata,omitempty"`
-	RequestCounts    BatchCounts    `json:"request_counts"`
-	UpstreamID       string         `json:"upstream_id,omitempty"`
-	UpstreamProvider string         `json:"upstream_provider,omitempty"`
+	ID                 string         `json:"id"`
+	OrgID              string         `json:"org_id"`
+	TeamID             string         `json:"team_id,omitempty"`
+	InputFileID        string         `json:"input_file_id"`
+	OutputFileID       string         `json:"output_file_id,omitempty"`
+	ErrorFileID        string         `json:"error_file_id,omitempty"`
+	Endpoint           string         `json:"endpoint"`
+	Status             string         `json:"status"` // "validating", "in_progress", "completed", "failed", "cancelled"
+	CompletionWindow   string         `json:"completion_window"`
+	CreatedAt          time.Time      `json:"created_at"`
+	CompletedAt        *time.Time     `json:"completed_at,omitempty"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	RequestCounts      BatchCounts    `json:"request_counts"`
+	EstimatedTokens    int64          `json:"estimated_tokens,omitempty"`
+	ReservedCostMicros int64          `json:"reserved_cost_micros,omitempty"`
+	UpstreamID         string         `json:"upstream_id,omitempty"`
+	UpstreamProvider   string         `json:"upstream_provider,omitempty"`
 }
 
 // --- RESPONSES API ---
