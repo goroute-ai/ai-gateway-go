@@ -1585,6 +1585,31 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 		})
 	}
 
+	ssoProviders := make([]map[string]any, 0, len(cfg.Auth.SSOProviders))
+	for _, p := range cfg.Auth.SSOProviders {
+		ssoProviders = append(ssoProviders, map[string]any{
+			"id":                     p.ID,
+			"name":                   p.Name,
+			"type":                   p.Type,
+			"display_name":           p.DisplayName,
+			"client_id":              p.ClientID,
+			"client_secret":          redactSecret(p.ClientSecret),
+			"issuer":                 p.Issuer,
+			"authorization_endpoint": p.AuthorizationEndpoint,
+			"token_endpoint":         p.TokenEndpoint,
+			"jwks_url":               p.JWKSURL,
+			"discovery_url":          p.DiscoveryURL,
+			"scopes":                 p.Scopes,
+			"redirect_url":           p.RedirectURL,
+			"allowed_email_domains":  p.AllowedEmailDomains,
+			"auto_register":          p.AutoRegister,
+			"default_org_id":         p.DefaultOrgID,
+			"default_team_id":        p.DefaultTeamID,
+			"default_role":           p.DefaultRole,
+			"tenant_id":              p.TenantID,
+		})
+	}
+
 	return map[string]any{
 		"server": map[string]any{
 			"environment":                    cfg.Server.Environment,
@@ -1659,6 +1684,7 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"session_secret":              redactSecret(cfg.Auth.SessionSecret),
 			"session_ttl":                 cfg.Auth.SessionTTL.String(),
 			"enable_hibp_check":           cfg.Auth.EnableHIBPCheck,
+			"sso_providers":               ssoProviders,
 		},
 		"router": map[string]any{
 			"default_fast_alias":      cfg.Router.DefaultFastAlias,

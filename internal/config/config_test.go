@@ -712,3 +712,89 @@ finops:
 		})
 	}
 }
+
+func TestSSOProvidersConfigYAMLAndValidation(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "test")
+
+	yamlContent := `
+server:
+  port: 8080
+  environment: "test"
+auth:
+  sso_providers:
+    - id: "google"
+      display_name: "Google SSO"
+      client_id: "google-cid"
+      client_secret: "os.environ/GOOGLE_SSO_SECRET"
+      allowed_email_domains: ["acme.example.com"]
+      auto_register: true
+      default_org_id: "org_default"
+      default_role: "org_viewer"
+    - name: "microsoft"
+      tenant_id: "tenant-123"
+      client_id: "ms-cid"
+      scopes: ["openid", "email", "profile"]
+    - id: "oidc"
+      display_name: "Enterprise OIDC"
+      client_id: "oidc-cid"
+      issuer: "https://idp.example.com"
+`
+	tmpPath := filepath.Join(t.TempDir(), "sso-config.yaml")
+	if err := os.WriteFile(tmpPath, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("write sso config: %v", err)
+	}
+	cfg, err := config.Load(tmpPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if len(cfg.Auth.SSOProviders) != 3 {
+		t.Fatalf("expected 3 sso_providers, got %d", len(cfg.Auth.SSOProviders))
+	}
+	if cfg.Auth.SSOProviders[1].TenantID != "tenant-123" {
+		t.Fatalf("expected microsoft tenant_id=tenant-123, got %q", cfg.Auth.SSOProviders[1].TenantID)
+	}
+
+	// Negative validation cases
+	invalidCases := []struct {
+		name      string
+		providers []config.SSOProviderConfig
+	}{
+		{
+			name:      "missing id and name",
+			providers: []config.SSOProviderConfig{{ClientID: "cid"}},
+		},
+		{
+			name: "duplicate id/name",
+			providers: []config.SSOProviderConfig{
+				{ID: "google", ClientID: "c1"},
+				{Name: "google", ClientID: "c2"},
+			},
+		},
+		{
+			name:      "missing client_id",
+			providers: []config.SSOProviderConfig{{ID: "google"}},
+		},
+		{
+			name:      "oidc without endpoints or issuer",
+			providers: []config.SSOProviderConfig{{ID: "custom", ClientID: "cid"}},
+		},
+		{
+			name:      "invalid discovery_url",
+			providers: []config.SSOProviderConfig{{ID: "custom", ClientID: "cid", DiscoveryURL: "ftp://idp.example.com"}},
+		},
+		{
+			name:      "disallowed none algorithm",
+			providers: []config.SSOProviderConfig{{ID: "google", ClientID: "cid", Algorithms: []string{"none"}}},
+		},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := config.Default()
+			c.Server.Environment = "test"
+			c.Auth.SSOProviders = tc.providers
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected validation error for %s", tc.name)
+			}
+		})
+	}
+}
