@@ -87,6 +87,7 @@ type ReliabilityManager struct {
 	depBudgets        *DeploymentBudgetTracker
 	failureRates      *failureRateTracker
 	scheduler         *PriorityScheduler
+	priorityLimiter   *DynamicPriorityLimiter
 }
 
 func NewReliabilityManager(
@@ -189,6 +190,14 @@ func (rm *ReliabilityManager) SetScheduler(s *PriorityScheduler) {
 	rm.scheduler = s
 }
 
+// SetPriorityCapacityLimiter attaches a DynamicPriorityLimiter for saturation-aware
+// priority capacity sharing and PTU team share enforcement.
+func (rm *ReliabilityManager) SetPriorityCapacityLimiter(l *DynamicPriorityLimiter) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.priorityLimiter = l
+}
+
 func (rm *ReliabilityManager) getRoutingPlugins() []RoutingPlugin {
 	rm.collabMu.RLock()
 	defer rm.collabMu.RUnlock()
@@ -216,6 +225,94 @@ func (rm *ReliabilityManager) getScheduler() *PriorityScheduler {
 	rm.collabMu.RLock()
 	defer rm.collabMu.RUnlock()
 	return rm.scheduler
+}
+
+func (rm *ReliabilityManager) getPriorityCapacityLimiter() *DynamicPriorityLimiter {
+	rm.collabMu.RLock()
+	defer rm.collabMu.RUnlock()
+	return rm.priorityLimiter
+}
+
+func (rm *ReliabilityManager) acquireDynamicPriorityCapacity(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	group *domain.ModelGroup,
+	req *domain.CanonicalChatRequest,
+	deployments []*domain.Deployment,
+	estTokens int,
+) (func(int), error) {
+	dpl := rm.getPriorityCapacityLimiter()
+	if dpl == nil || !dpl.cfg.Enabled {
+		return func(int) {}, nil
+	}
+	orgID := ""
+	baseRPM, baseTPM := 0, 0
+	if idCtx != nil {
+		orgID = idCtx.OrgID
+		baseRPM = idCtx.TeamRPMLimit
+		if baseRPM <= 0 {
+			baseRPM = idCtx.KeyRPMLimit
+		}
+		baseTPM = idCtx.TeamTPMLimit
+		if baseTPM <= 0 {
+			baseTPM = idCtx.KeyTPMLimit
+		}
+	}
+	model := ""
+	if group != nil {
+		model = group.Alias
+	}
+	if model == "" && req != nil {
+		model = req.Model
+	}
+	callerID := ResolveCallerID(idCtx)
+	className, known := dpl.ResolvePriorityClassName(ctx, idCtx, req)
+
+	var usedRPM, usedTPM, capRPM, capTPM int
+	if rm.loadBalancer != nil {
+		usedRPM, usedTPM, capRPM, capTPM = rm.loadBalancer.AggregateWindowUsage(deployments, time.Now())
+	}
+	if _, err := dpl.Admit(ctx, PriorityCapacityRequest{
+		OrgID:           orgID,
+		Model:           model,
+		CallerID:        callerID,
+		PriorityClass:   className,
+		BaseRPM:         baseRPM,
+		BaseTPM:         baseTPM,
+		CapRPM:          capRPM,
+		CapTPM:          capTPM,
+		UsedRPM:         usedRPM,
+		UsedTPM:         usedTPM,
+		EstimatedTokens: estTokens,
+		KnownClasses:    known,
+	}); err != nil {
+		return nil, err
+	}
+	return func(actualTokens int) {
+		dpl.ReconcileTokens(ctx, orgID, model, callerID, estTokens, actualTokens)
+	}, nil
+}
+
+func (rm *ReliabilityManager) acquireDeploymentPTU(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	dep *domain.Deployment,
+	estTokens int,
+) (func(int), error) {
+	dpl := rm.getPriorityCapacityLimiter()
+	if dpl == nil || dpl.getPTURepo() == nil || idCtx == nil || idCtx.TeamID == "" || dep == nil {
+		return func(int) {}, nil
+	}
+	res, err := dpl.AcquirePTUShare(ctx, idCtx.OrgID, dep.ID, idCtx.TeamID, estTokens)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil || !res.HasShare {
+		return func(int) {}, nil
+	}
+	return func(actualTokens int) {
+		dpl.ReconcilePTUShare(ctx, idCtx.OrgID, dep.ID, idCtx.TeamID, estTokens, actualTokens)
+	}, nil
 }
 
 func (rm *ReliabilityManager) tracerFor(ctx context.Context) trace.Tracer {
@@ -769,6 +866,9 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 	isBudgeted := isBudgetConstrained(idCtx)
 	estTokens := ratelimit.EstimateRequestTokens(req)
@@ -983,6 +1083,14 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			affinityDepID, affinityKey = aff.Lookup(ctx, orgID, group.Alias, hopReq, extractPreviousResponseID(hopReq))
 		}
 
+		reconcilePriority, prioErr := rm.acquireDynamicPriorityCapacity(ctx, idCtx, group, hopReq, deployments, estTokens)
+		if prioErr != nil {
+			lastErr = prioErr
+			rm.releaseUnusedProbes(ctx, deployments, nil)
+			rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+			return nil, meta, prioErr
+		}
+
 		tiers := partitionByPriority(deployments)
 		retryPolicy := rm.effectiveGroupRetryPolicy(group)
 		var groupErr error
@@ -1042,6 +1150,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 					return nil, callErr
 				})
 				if raceErr == nil && resp != nil && winner != nil {
+					reconcilePriority(resp.Usage.TotalTokens)
 					raceLatency := time.Since(raceStart).Milliseconds()
 					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{winner})
 					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, winner.ID)
@@ -1122,6 +1231,17 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				reqCopy := *hopReq
 				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
 
+				reconcilePTU, ptuErr := rm.acquireDeploymentPTU(ctx, idCtx, dep, estTokens)
+				if ptuErr != nil {
+					lastErr = ptuErr
+					groupErr = ptuErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
+					continue
+				}
+
 				depStart := time.Now()
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
@@ -1136,6 +1256,8 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				depLatency := time.Since(depStart).Milliseconds()
 
 				if callErr == nil && resp != nil {
+					reconcilePTU(resp.Usage.TotalTokens)
+					reconcilePriority(resp.Usage.TotalTokens)
 					rm.loadBalancer.OnRequestEnd(dep.ID, depLatency, resp.Usage.TotalTokens)
 					rm.recordSuccess(ctx, dep)
 					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
@@ -1228,6 +1350,9 @@ func (rm *ReliabilityManager) ExecuteStream(
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 	isBudgeted := isBudgetConstrained(idCtx)
 	acc := &streamAccumulator{}
@@ -1497,6 +1622,18 @@ func (rm *ReliabilityManager) ExecuteStream(
 			affinityDepID, affinityKey = aff.Lookup(ctx, orgID, group.Alias, attemptReq, extractPreviousResponseID(attemptReq))
 		}
 
+		reconcilePriority, prioErr := rm.acquireDynamicPriorityCapacity(ctx, idCtx, group, attemptReq, deployments, estTokens)
+		if prioErr != nil {
+			lastErr = prioErr
+			rm.releaseUnusedProbes(ctx, deployments, nil)
+			rm.recordBanditOutcome(orgID, decision, false, time.Since(start).Milliseconds())
+			if firstChunkSentToClient {
+				meta.LatencyMs = time.Since(start).Milliseconds()
+				return acc.MergeUsage(partialUsage, nil), meta, prioErr
+			}
+			return nil, meta, prioErr
+		}
+
 		tiers := partitionByPriority(deployments)
 		retryPolicy := rm.effectiveGroupRetryPolicy(group)
 		var groupErr error
@@ -1569,6 +1706,9 @@ func (rm *ReliabilityManager) ExecuteStream(
 				if raceErr == nil && winner != nil {
 					raceLatency := time.Since(raceStart).Milliseconds()
 					mergedUsage := acc.MergeUsage(partialUsage, raceUsage)
+					if mergedUsage != nil {
+						reconcilePriority(mergedUsage.TotalTokens)
+					}
 					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{winner})
 					rm.pinAffinityOnSuccess(aff, orgID, affinityKey, affinityDepID, winner.ID)
 					meta.RouteDecision.Reason = "hedged_race_winner"
@@ -1688,6 +1828,17 @@ func (rm *ReliabilityManager) ExecuteStream(
 				reqCopy := *attemptReq
 				reqCopy.ResolvedModel = dep.GlobalModel.ModelName
 
+				reconcilePTU, ptuErr := rm.acquireDeploymentPTU(ctx, idCtx, dep, estTokens)
+				if ptuErr != nil {
+					lastErr = ptuErr
+					groupErr = ptuErr
+					trippedDepIDs[dep.ID] = struct{}{}
+					if len(filterOutDepIDs(tierDeployments, trippedDepIDs)) == 0 {
+						break
+					}
+					continue
+				}
+
 				if !firstChunkSentToClient && onSelected != nil {
 					onSelected(dep)
 				}
@@ -1739,6 +1890,8 @@ func (rm *ReliabilityManager) ExecuteStream(
 					if mergedUsage != nil {
 						totalTok = mergedUsage.TotalTokens
 					}
+					reconcilePTU(totalTok)
+					reconcilePriority(totalTok)
 					if continuationCount > 0 {
 						meta.StreamContinued = true
 					}
@@ -1903,6 +2056,9 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -2074,6 +2230,9 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -2256,6 +2415,9 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -2434,6 +2596,9 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -2651,6 +2816,9 @@ func (rm *ReliabilityManager) ExecuteCompletionStream(ctx context.Context, idCtx
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -2844,6 +3012,9 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -3023,6 +3194,9 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -3192,6 +3366,9 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
+		if idCtx.TeamID != "" {
+			ctx = WithCallerTeamID(ctx, idCtx.TeamID)
+		}
 	}
 
 	routeStart := time.Now()
@@ -3503,6 +3680,7 @@ func (rm *ReliabilityManager) getEligibleDeploymentsForRequest(
 	}
 
 	fp := NewFilterPipeline(rm.healthMon, rm.loadBalancer, rm.cfg, rm.getRoutingPlugins()...)
+	fp.SetPriorityLimiter(rm.getPriorityCapacityLimiter())
 	if budgets := rm.getDepBudgetTracker(); budgets != nil {
 		providerCaps := rm.cfg.ProviderBudgets
 		fp.SetBudgetCheck(func(bCtx context.Context, bOrgID string, dep *domain.Deployment) bool {

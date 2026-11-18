@@ -363,6 +363,7 @@ type RouterConfig struct {
 	HedgeDelayMs                   int                     `yaml:"hedge_delay_ms" json:"hedge_delay_ms"`
 	MaxHedgeConcurrency            int                     `yaml:"max_hedge_concurrency" json:"max_hedge_concurrency"`
 	Scheduler                      SchedulerConfig         `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+	PriorityCapacity               PriorityCapacityConfig  `yaml:"priority_capacity,omitempty" json:"priority_capacity,omitempty"`
 }
 
 // SemanticRouterConfig configures embedding-based semantic pre-routing.
@@ -401,6 +402,16 @@ type SchedulerConfig struct {
 	MaxQueueDepth   int           `yaml:"max_queue_depth,omitempty" json:"max_queue_depth,omitempty"`
 	MaxWaitTime     time.Duration `yaml:"max_wait_time,omitempty" json:"max_wait_time,omitempty"`
 	DefaultPriority int           `yaml:"default_priority,omitempty" json:"default_priority,omitempty"`
+}
+
+// PriorityCapacityConfig configures saturation-aware dynamic priority capacity sharing.
+type PriorityCapacityConfig struct {
+	Enabled               bool          `yaml:"enabled" json:"enabled"`
+	SaturationThreshold   float64       `yaml:"saturation_threshold,omitempty" json:"saturation_threshold,omitempty"`
+	ActiveCallerTTL       time.Duration `yaml:"active_caller_ttl,omitempty" json:"active_caller_ttl,omitempty"`
+	WindowDuration        time.Duration `yaml:"window_duration,omitempty" json:"window_duration,omitempty"`
+	DefaultWeight         float64       `yaml:"default_weight,omitempty" json:"default_weight,omitempty"`
+	DefaultBorrowMultiple float64       `yaml:"default_borrow_multiple,omitempty" json:"default_borrow_multiple,omitempty"`
 }
 
 type RateLimitConfig struct {
@@ -496,6 +507,13 @@ func Default() *Config {
 			SessionAffinityTTL:             30 * time.Minute,
 			SessionAffinityRepinOnFailover: true,
 			MaxHedgeConcurrency:            2,
+			PriorityCapacity: PriorityCapacityConfig{
+				SaturationThreshold:   0.80,
+				ActiveCallerTTL:       60 * time.Second,
+				WindowDuration:        60 * time.Second,
+				DefaultWeight:         1.0,
+				DefaultBorrowMultiple: 2.0,
+			},
 		},
 		RateLimit: RateLimitConfig{
 			Enabled:             true,

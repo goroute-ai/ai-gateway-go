@@ -865,16 +865,21 @@ func (p *PostgresRepository) DeleteTeam(ctx context.Context, id string) error {
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, `DELETE FROM teams WHERE id = $1`, id)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				if hasPTU, checkErr := p.HasTeamPTUShares(ctx, id); checkErr == nil && hasPTU {
+					return fmt.Errorf("team %q cannot be deleted while it holds active PTU shares: %w", id, ErrTeamHasActivePTUShares)
+				}
+			}
 			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("team %q %w", id, ErrNotFound)
 		}
+		_ = p.mem.DeleteTeam(ctx, id)
+		return nil
 	}
-	if err := p.mem.DeleteTeam(ctx, id); err != nil && p.pool == nil {
-		return err
-	}
-	return nil
+	return p.mem.DeleteTeam(ctx, id)
 }
 
 const teamMembershipSelectCols = `id, org_id, team_id, user_id, role, max_budget_micros, spent_micros, rpm_limit, tpm_limit, COALESCE(allowed_models, '{}'), created_at, updated_at`
@@ -1762,6 +1767,233 @@ func (p *PostgresRepository) IncrementQuotaPolicySpend(ctx context.Context, id s
 	}
 	_ = p.mem.IncrementQuotaPolicySpend(ctx, id, deltaMicros)
 	return nil
+}
+
+const ptuShareSelectCols = `id, org_id, deployment_id, team_id, reserved_rpm, reserved_tpm, created_at, updated_at`
+
+func scanPTUShare(row rowScanner) (*domain.DeploymentPTUShare, error) {
+	var s domain.DeploymentPTUShare
+	if err := row.Scan(
+		&s.ID, &s.OrgID, &s.DeploymentID, &s.TeamID,
+		&s.ReservedRPM, &s.ReservedTPM, &s.CreatedAt, &s.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (p *PostgresRepository) syncPTUShareMem(share *domain.DeploymentPTUShare) {
+	if p == nil || p.mem == nil || share == nil {
+		return
+	}
+	p.mem.mu.Lock()
+	tupleKey := ptuShareTupleKey(share.DeploymentID, share.TeamID)
+	if oldID, ok := p.mem.ptuSharesByTuple[tupleKey]; ok && oldID != share.ID {
+		delete(p.mem.ptuShares, oldID)
+	}
+	if existing, ok := p.mem.ptuShares[share.ID]; ok {
+		delete(p.mem.ptuSharesByTuple, ptuShareTupleKey(existing.DeploymentID, existing.TeamID))
+	}
+	cp := share.Clone()
+	p.mem.ptuShares[cp.ID] = cp
+	p.mem.ptuSharesByTuple[tupleKey] = cp.ID
+	p.mem.mu.Unlock()
+}
+
+func (p *PostgresRepository) UpsertDeploymentPTUShare(ctx context.Context, share *domain.DeploymentPTUShare) error {
+	if p.pool == nil {
+		return p.mem.UpsertDeploymentPTUShare(ctx, share)
+	}
+	now := time.Now().UTC()
+	if err := normalizePTUShare(share, now); err != nil {
+		return err
+	}
+	if share.ID == "" {
+		share.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO deployment_ptu_shares (
+			id, org_id, deployment_id, team_id, reserved_rpm, reserved_tpm
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (deployment_id, team_id) DO UPDATE SET
+			reserved_rpm = EXCLUDED.reserved_rpm,
+			reserved_tpm = EXCLUDED.reserved_tpm,
+			updated_at = NOW()
+		RETURNING id, created_at, updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		share.ID, share.OrgID, share.DeploymentID, share.TeamID,
+		share.ReservedRPM, share.ReservedTPM,
+	).Scan(&share.ID, &share.CreatedAt, &share.UpdatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("deployment PTU share conflict: %w", ErrConflict)
+		}
+		return err
+	}
+	p.syncPTUShareMem(share)
+	return nil
+}
+
+func (p *PostgresRepository) ListDeploymentPTUShares(ctx context.Context, deploymentID string) ([]*domain.DeploymentPTUShare, error) {
+	if p.pool == nil {
+		return p.mem.ListDeploymentPTUShares(ctx, deploymentID)
+	}
+	deploymentID = strings.TrimSpace(deploymentID)
+	q := `SELECT ` + ptuShareSelectCols + ` FROM deployment_ptu_shares`
+	var args []any
+	if deploymentID != "" {
+		args = append(args, deploymentID)
+		q += ` WHERE deployment_id = $1`
+	}
+	q += ` ORDER BY deployment_id ASC, team_id ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.DeploymentPTUShare
+	for rows.Next() {
+		s, scanErr := scanPTUShare(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresRepository) DeleteDeploymentPTUShare(ctx context.Context, deploymentID, teamID string) error {
+	if p.pool == nil {
+		return p.mem.DeleteDeploymentPTUShare(ctx, deploymentID, teamID)
+	}
+	deploymentID = strings.TrimSpace(deploymentID)
+	teamID = strings.TrimSpace(teamID)
+	tag, err := p.pool.Exec(ctx,
+		`DELETE FROM deployment_ptu_shares WHERE deployment_id = $1 AND team_id = $2`,
+		deploymentID, teamID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("deployment PTU share (%s, %s) %w", deploymentID, teamID, ErrNotFound)
+	}
+	_ = p.mem.DeleteDeploymentPTUShare(ctx, deploymentID, teamID)
+	return nil
+}
+
+func (p *PostgresRepository) HasTeamPTUShares(ctx context.Context, teamID string) (bool, error) {
+	if p.pool == nil {
+		return p.mem.HasTeamPTUShares(ctx, teamID)
+	}
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return false, nil
+	}
+	var exists bool
+	if err := p.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM deployment_ptu_shares WHERE team_id = $1)`,
+		teamID,
+	).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+const priorityClassSelectCols = `id, org_id, name, weight, priority_rank, max_borrow_multiple, created_at`
+
+func scanPriorityClass(row rowScanner) (*domain.PriorityClass, error) {
+	var pc domain.PriorityClass
+	if err := row.Scan(
+		&pc.ID, &pc.OrgID, &pc.Name, &pc.Weight,
+		&pc.PriorityRank, &pc.MaxBorrowMultiple, &pc.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &pc, nil
+}
+
+func (p *PostgresRepository) syncPriorityClassMem(pc *domain.PriorityClass) {
+	if p == nil || p.mem == nil || pc == nil {
+		return
+	}
+	p.mem.mu.Lock()
+	tupleKey := priorityClassTupleKey(pc.OrgID, pc.Name)
+	if oldID, ok := p.mem.priorityClassesByTuple[tupleKey]; ok && oldID != pc.ID {
+		delete(p.mem.priorityClasses, oldID)
+	}
+	if existing, ok := p.mem.priorityClasses[pc.ID]; ok {
+		delete(p.mem.priorityClassesByTuple, priorityClassTupleKey(existing.OrgID, existing.Name))
+	}
+	cp := pc.Clone()
+	p.mem.priorityClasses[cp.ID] = cp
+	p.mem.priorityClassesByTuple[tupleKey] = cp.ID
+	p.mem.mu.Unlock()
+}
+
+func (p *PostgresRepository) UpsertPriorityClass(ctx context.Context, pc *domain.PriorityClass) error {
+	if p.pool == nil {
+		return p.mem.UpsertPriorityClass(ctx, pc)
+	}
+	now := time.Now().UTC()
+	if err := normalizePriorityClass(pc, now); err != nil {
+		return err
+	}
+	if pc.ID == "" {
+		pc.ID = uuid.NewString()
+	}
+	const q = `
+		INSERT INTO priority_classes (
+			id, org_id, name, weight, priority_rank, max_borrow_multiple
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (org_id, name) DO UPDATE SET
+			weight = EXCLUDED.weight,
+			priority_rank = EXCLUDED.priority_rank,
+			max_borrow_multiple = EXCLUDED.max_borrow_multiple
+		RETURNING id, created_at`
+	if err := p.pool.QueryRow(ctx, q,
+		pc.ID, pc.OrgID, pc.Name, pc.Weight, pc.PriorityRank, pc.MaxBorrowMultiple,
+	).Scan(&pc.ID, &pc.CreatedAt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("priority class conflict: %w", ErrConflict)
+		}
+		return err
+	}
+	p.syncPriorityClassMem(pc)
+	return nil
+}
+
+func (p *PostgresRepository) ListPriorityClasses(ctx context.Context, orgID string) ([]*domain.PriorityClass, error) {
+	if p.pool == nil {
+		return p.mem.ListPriorityClasses(ctx, orgID)
+	}
+	orgID = strings.TrimSpace(orgID)
+	q := `SELECT ` + priorityClassSelectCols + ` FROM priority_classes`
+	var args []any
+	if orgID != "" {
+		args = append(args, orgID)
+		q += ` WHERE org_id = $1`
+	}
+	q += ` ORDER BY priority_rank ASC, name ASC, id ASC`
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*domain.PriorityClass
+	for rows.Next() {
+		pc, scanErr := scanPriorityClass(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, pc)
+	}
+	return out, rows.Err()
 }
 
 const accessGroupRuleSelectCols = `id, org_id, name, attribute, operator, value, COALESCE(allowed_models, '{}'), COALESCE(access_group_id, ''), priority, is_active, created_at, updated_at`

@@ -446,3 +446,65 @@ func (lb *LoadBalancer) getOrCreate(depID string) *deploymentTelemetry {
 	}
 	return m
 }
+
+// DeploymentWindowUsage returns the current 1-minute window (usedRPM, usedTPM)
+// for depID from shared Redis routing signals or local telemetry.
+func (lb *LoadBalancer) DeploymentWindowUsage(depID string, now time.Time) (usedRPM, usedTPM int) {
+	if lb == nil || depID == "" {
+		return 0, 0
+	}
+	var signals map[string]deploymentTelemetry
+	if lb.redis != nil && lb.redis.Client() != nil {
+		shared, err := lb.readSharedSignals([]*domain.Deployment{{ID: depID}})
+		if err != nil {
+			lb.setSharedDegraded(true, "capacity_read")
+		} else {
+			lb.setSharedDegraded(false, "capacity_read")
+			signals = shared
+		}
+	}
+	if signals == nil {
+		lb.mu.RLock()
+		defer lb.mu.RUnlock()
+	}
+	return deploymentWindowUsage(lb, signals, depID, now)
+}
+
+// AggregateWindowUsage sums current 1-minute (usedRPM, usedTPM) and configured
+// (capRPM, capTPM) across candidates.
+func (lb *LoadBalancer) AggregateWindowUsage(candidates []*domain.Deployment, now time.Time) (usedRPM, usedTPM, capRPM, capTPM int) {
+	if len(candidates) == 0 {
+		return 0, 0, 0, 0
+	}
+	var signals map[string]deploymentTelemetry
+	if lb != nil && lb.redis != nil && lb.redis.Client() != nil {
+		shared, err := lb.readSharedSignals(candidates)
+		if err != nil {
+			lb.setSharedDegraded(true, "capacity_read")
+		} else {
+			lb.setSharedDegraded(false, "capacity_read")
+			signals = shared
+		}
+	}
+	if lb != nil && signals == nil {
+		lb.mu.RLock()
+		defer lb.mu.RUnlock()
+	}
+	for _, d := range candidates {
+		if d == nil {
+			continue
+		}
+		if d.RPMCapacity > 0 {
+			capRPM += d.RPMCapacity
+		}
+		if d.TPMCapacity > 0 {
+			capTPM += d.TPMCapacity
+		}
+		if lb != nil {
+			uRPM, uTPM := deploymentWindowUsage(lb, signals, d.ID, now)
+			usedRPM += uRPM
+			usedTPM += uTPM
+		}
+	}
+	return usedRPM, usedTPM, capRPM, capTPM
+}

@@ -1551,6 +1551,96 @@ components:
         updated_at:
           type: string
           format: date-time
+    AdminDeploymentPTUShareUpsertRequest:
+      type: object
+      required:
+        - team_id
+      properties:
+        org_id:
+          type: string
+        team_id:
+          type: string
+        reserved_rpm:
+          type: integer
+        reserved_tpm:
+          type: integer
+    AdminDeploymentPTUShare:
+      type: object
+      required:
+        - id
+        - org_id
+        - deployment_id
+        - team_id
+        - reserved_rpm
+        - reserved_tpm
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        deployment_id:
+          type: string
+        team_id:
+          type: string
+        reserved_rpm:
+          type: integer
+        reserved_tpm:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AdminPriorityClassUpsertRequest:
+      type: object
+      required:
+        - name
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        weight:
+          type: number
+          format: double
+        priority_rank:
+          type: integer
+        max_borrow_multiple:
+          type: number
+          format: double
+    AdminPriorityClass:
+      type: object
+      required:
+        - id
+        - org_id
+        - name
+        - weight
+        - priority_rank
+        - max_borrow_multiple
+        - created_at
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        weight:
+          type: number
+          format: double
+        priority_rank:
+          type: integer
+        max_borrow_multiple:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
     AdminOrganization:
       type: object
       properties:
@@ -2911,6 +3001,147 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AdminDeployment'
+  /admin/v1/deployments/{depID}/ptu-shares:
+    post:
+      operationId: upsertDeploymentPTUShare
+      summary: Allocate or update a team's reserved PTU capacity share on a deployment
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDeploymentPTUShareUpsertRequest'
+      responses:
+        '200':
+          description: Upserted deployment PTU team share
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeploymentPTUShare'
+        '400':
+          description: Invalid PTU share or deployment capacity exceeded
+        '403':
+          description: Cross-organization access denied
+        '404':
+          description: Deployment or team not found
+    get:
+      operationId: listDeploymentPTUShares
+      summary: List team PTU capacity shares allocated on a deployment
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of deployment PTU shares
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminDeploymentPTUShare'
+        '403':
+          description: Cross-organization access denied
+        '404':
+          description: Deployment not found
+  /admin/v1/deployments/{depID}/ptu-shares/{teamID}:
+    delete:
+      operationId: deleteDeploymentPTUShare
+      summary: Remove a team's reserved PTU capacity share from a deployment
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted deployment PTU share
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  deployment_id:
+                    type: string
+                  team_id:
+                    type: string
+        '403':
+          description: Cross-organization access denied
+        '404':
+          description: Deployment or PTU share not found
+  /admin/v1/priority-classes:
+    post:
+      operationId: upsertPriorityClass
+      summary: Create or update an organization priority class for dynamic capacity sharing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPriorityClassUpsertRequest'
+      responses:
+        '200':
+          description: Upserted priority class
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPriorityClass'
+        '400':
+          description: Invalid priority class configuration
+        '403':
+          description: Cross-organization access denied
+        '404':
+          description: Organization not found
+    get:
+      operationId: listPriorityClasses
+      summary: List priority classes configured for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of priority classes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminPriorityClass'
   /admin/v1/organizations/{orgID}/guardrails/simulate:
     post:
       operationId: simulateGuardrails

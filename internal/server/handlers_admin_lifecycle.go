@@ -356,7 +356,33 @@ func (s *GatewayServer) handleAdminDeleteTeam(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	if ptuRepo, ok := s.repo.(storage.PTUShareRepository); ok && ptuRepo != nil {
+		hasPTU, err := ptuRepo.HasTeamPTUShares(r.Context(), teamID)
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		if hasPTU {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusConflict,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "team_has_active_ptu_shares",
+				Message:    "Cannot delete team while it has active deployment PTU shares; delete or reassign PTU shares first",
+			})
+			return
+		}
+	}
+
 	if err := s.repo.DeleteTeam(r.Context(), teamID); err != nil {
+		if errors.Is(err, storage.ErrTeamHasActivePTUShares) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusConflict,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "team_has_active_ptu_shares",
+				Message:    "Cannot delete team while it has active deployment PTU shares; delete or reassign PTU shares first",
+			})
+			return
+		}
 		domain.WriteHTTPError(w, err)
 		return
 	}
