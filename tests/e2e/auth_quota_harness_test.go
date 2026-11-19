@@ -199,6 +199,12 @@ func (c *dualNodeTestCluster) setClock(ts time.Time) {
 	}
 	c.node1.SetNowFunc(clock)
 	c.node2.SetNowFunc(clock)
+	if c.node1.AuthService() != nil {
+		c.node1.AuthService().SetNowFunc(clock)
+	}
+	if c.node2.AuthService() != nil {
+		c.node2.AuthService().SetNowFunc(clock)
+	}
 }
 
 func (c *dualNodeTestCluster) now() time.Time {
