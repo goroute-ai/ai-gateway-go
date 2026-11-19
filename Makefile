@@ -1,6 +1,6 @@
-.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
-VERSION ?= v1.20.0
+VERSION ?= v1.21.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -88,6 +88,10 @@ test-e2e-strict:
 	GATEWAY_REDIS_ADDR=$${GATEWAY_REDIS_ADDR:-localhost:16379} \
 	go test -race -v -count=1 ./tests/e2e/...
 
+test-ui-e2e:
+	@echo "==> Running headless Chromium Operator Web UI E2E suite (SSO, Virtual Keys & Multi-Window Quotas)..."
+	bash tests/ui-e2e/run_ui_e2e.sh
+
 test-load:
 	@echo "==> Running load benchmarks & concurrency stress tests..."
 	go test -bench=. -benchmem -run=^$$ ./internal/server ./internal/router
@@ -129,6 +133,9 @@ prod-stack-down:
 	GATEWAY_MASTER_ADMIN_KEY=$${GATEWAY_MASTER_ADMIN_KEY:-down-placeholder} \
 	GATEWAY_MASTER_ENCRYPTION_KEY=$${GATEWAY_MASTER_ENCRYPTION_KEY:-down-placeholder-down-placeholder} \
 	GATEWAY_JWT_SECRET=$${GATEWAY_JWT_SECRET:-down-placeholder} \
+	GATEWAY_UI_PASSWORD=$${GATEWAY_UI_PASSWORD:-down-placeholder} \
+	GATEWAY_SESSION_SECRET=$${GATEWAY_SESSION_SECRET:-down-placeholder-down-placeholder} \
+	GATEWAY_ROTATION_DELIVERY_TOKEN=$${GATEWAY_ROTATION_DELIVERY_TOKEN:-down-placeholder} \
 	docker compose -f deployments/docker-compose.prod-test.yml down -v --remove-orphans
 
 # ------------------------------------------------------------------------------

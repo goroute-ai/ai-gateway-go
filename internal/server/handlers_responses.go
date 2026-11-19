@@ -211,7 +211,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			defer duringHandle.Close()
 		}
 
-		quotaSettlement.upstreamDispatched = true
+		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
 		quotaSettlement.meta = meta
 		quotaSettlement.dispatchErr = err
@@ -561,7 +561,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		u := extractStreamChunksUsage(cachedStreamChunks, estInputTokens)
 		usage = &u
 	} else {
-		quotaSettlement.upstreamDispatched = true
+		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, onSelected)
 	}
 	if !streamSession.SSEStarted() {

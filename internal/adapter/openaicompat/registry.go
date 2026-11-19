@@ -17,10 +17,18 @@ import (
 
 // ProfileRegistry manages certified and custom OpenAI-compatible dialect profiles.
 type ProfileRegistry struct {
-	mu         sync.RWMutex
-	profiles   map[domain.ProviderType]*DialectProfile
-	httpClient *http.Client
-	ssrfPolicy *network.Policy
+	mu                   sync.RWMutex
+	profiles             map[domain.ProviderType]*DialectProfile
+	httpClient           *http.Client
+	ssrfPolicy           *network.Policy
+	allowAmbientCloudIAM bool
+}
+
+// SetAllowAmbientCloudIAM controls opt-in ambient cloud IAM resolution (such as Azure Managed Identity).
+func (r *ProfileRegistry) SetAllowAmbientCloudIAM(allow bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.allowAmbientCloudIAM = allow
 }
 
 // NewProfileRegistry initializes the registry with the Launch Set certified profiles.
@@ -160,18 +168,19 @@ func (r *ProfileRegistry) Get(provider domain.ProviderType) (*DialectProfile, bo
 func (r *ProfileRegistry) CreateAdapter(provider domain.ProviderType) (adapter.ProviderAdapter, error) {
 	r.mu.RLock()
 	profile, ok := r.profiles[provider]
+	allowAmbient := r.allowAmbientCloudIAM
 	r.mu.RUnlock()
 
 	if !ok {
 		return nil, fmt.Errorf("no provider adapter registered for %q", provider)
 	}
 
-	adp := NewAdapter(cloneProfileWithPolicy(profile, r.ssrfPolicy), r.httpClient)
+	adp := NewAdapter(cloneProfileWithPolicyAndIAM(profile, r.ssrfPolicy, allowAmbient), r.httpClient)
 	adp.SetSSRFPolicy(r.ssrfPolicy)
 	return adp, nil
 }
 
-func cloneProfileWithPolicy(profile *DialectProfile, policy *network.Policy) *DialectProfile {
+func cloneProfileWithPolicyAndIAM(profile *DialectProfile, policy *network.Policy, allowAmbient bool) *DialectProfile {
 	if profile == nil {
 		return nil
 	}
@@ -185,6 +194,14 @@ func cloneProfileWithPolicy(profile *DialectProfile, policy *network.Policy) *Di
 		sCopy := *strat
 		sCopy.SSRFPolicy = policy
 		pCopy.EndpointStrategy = &sCopy
+	}
+	if azAuth, ok := profile.AuthStrategy.(*azure.AzureAuthStrategy); ok && azAuth != nil {
+		aCopy := &azure.AzureAuthStrategy{
+			AllowAmbientCloudIAM: allowAmbient,
+			ManagedIdentity:      azAuth.ManagedIdentity,
+			SSRFPolicy:           policy,
+		}
+		pCopy.AuthStrategy = aCopy
 	}
 	return &pCopy
 }

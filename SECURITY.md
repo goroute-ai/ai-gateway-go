@@ -41,7 +41,7 @@ To help us triage and resolve the issue quickly, please include:
 1. **Acknowledgment**: We will acknowledge receipt of your vulnerability report within **48 business hours**.
 2. **Investigation & Assessment**: Our engineering team will assess severity, verify exploitability, and determine affected versions.
 3. **Patch Development**: We will prepare and test an emergency patch cleanly against the supported release branch.
-4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v1.20.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
+4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v1.21.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
 
 ---
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enterprise AI Gateway Unified API
-  version: 1.1.0
+  version: 1.21.0
   description: >
     Production-grade OpenAI-compatible Unified AI Gateway API supporting universal model providers
     (OpenAI, Anthropic Claude, Google Gemini, Google Vertex AI, AWS Bedrock, Cohere, Mistral AI, Ollama,
@@ -18,7 +18,76 @@ components:
       type: http
       scheme: bearer
       description: Virtual API Key (`sk-gw-...`) or Admin Master Key
+    OperatorSession:
+      type: apiKey
+      in: cookie
+      name: goroute_session
+      description: Signed operator session cookie. Cookie-authenticated mutations also require X-CSRF-Token.
   schemas:
+    OperatorProfile:
+      type: object
+      properties:
+        actor_id:
+          type: string
+        role:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        auth_method:
+          type: string
+        session_id:
+          type: string
+    OperatorLoginRequest:
+      type: object
+      required: [password]
+      description: Provide either email or username alongside the password.
+      properties:
+        email:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    OperatorSessionResponse:
+      type: object
+      properties:
+        operator:
+          $ref: '#/components/schemas/OperatorProfile'
+        user:
+          $ref: '#/components/schemas/AdminUser'
+        csrf_token:
+          type: string
+        token:
+          type: string
+        session_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        password_reset_required:
+          type: boolean
+    OperatorPasswordRequest:
+      type: object
+      description: Supply a target user_id or email for an administrative reset. Self-service updates require current_password when a credential exists.
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+        current_password:
+          type: string
+          format: password
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+        password:
+          type: string
+          format: password
+          description: Alternate field for new_password.
     ChatCompletionRequest:
       type: object
       required:
@@ -769,6 +838,9 @@ components:
         role:
           type: string
           enum: [platform_admin, org_admin, team_admin, developer, service_account, viewer]
+        oidc_issuer:
+          type: string
+          description: Verified OIDC issuer that owns the linked subject.
         oidc_subject:
           type: string
         scim_external_id:
@@ -3079,6 +3151,188 @@ components:
       schema:
         type: string
 paths:
+  /auth/login:
+    post:
+      operationId: operatorLogin
+      summary: Sign in with a password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorLoginRequest'
+      responses:
+        '200':
+          description: Operator session issued
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorSessionResponse'
+        '401':
+          description: Invalid credentials
+        '403':
+          description: Account or password policy disallows login
+        '429':
+          description: Login temporarily throttled
+  /auth/me:
+    get:
+      operationId: operatorProfile
+      summary: Get the current operator profile
+      security:
+        - OperatorSession: []
+        - VirtualKeyBearer: []
+      responses:
+        '200':
+          description: Operator profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorSessionResponse'
+        '401':
+          description: Authentication required
+  /auth/logout:
+    post:
+      operationId: operatorLogout
+      summary: Revoke the current operator session
+      security:
+        - OperatorSession: []
+        - VirtualKeyBearer: []
+      parameters:
+        - in: header
+          name: X-CSRF-Token
+          schema:
+            type: string
+          description: Required for cookie authentication.
+      responses:
+        '200':
+          description: Session cleared
+        '401':
+          description: Authentication required
+        '403':
+          description: Invalid CSRF token
+  /auth/password:
+    post:
+      operationId: operatorPasswordUpdate
+      summary: Set or change an operator password
+      security:
+        - OperatorSession: []
+        - VirtualKeyBearer: []
+      parameters:
+        - in: header
+          name: X-CSRF-Token
+          schema:
+            type: string
+          description: Required for cookie authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorPasswordRequest'
+      responses:
+        '200':
+          description: Password updated and prior sessions revoked
+        '400':
+          description: Invalid or breached replacement password
+        '401':
+          description: Authentication required or incorrect current password
+        '403':
+          description: Insufficient privileges or invalid CSRF token
+  /auth/sso/providers:
+    get:
+      operationId: listAuthSSOProviders
+      summary: List configured Control Plane SSO providers
+      security: []
+      responses:
+        '200':
+          description: Configured SSO providers
+  /auth/sso/{provider}/login:
+    get:
+      operationId: startAuthSSOLogin
+      summary: Initiate Control Plane OIDC/SSO PKCE login
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorization URL metadata when format=json
+        '302':
+          description: Redirect to identity provider authorization endpoint
+  /auth/sso/{provider}/callback:
+    get:
+      operationId: completeAuthSSOCallback
+      summary: Complete Control Plane OIDC/SSO callback and establish a session
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session established
+        '302':
+          description: Redirect back to Control Plane UI
+        '401':
+          description: Invalid or unverified identity assertion
+  /auth/cli/start:
+    post:
+      operationId: startAuthCLILogin
+      summary: Start a CLI browser-mediated login transaction
+      security: []
+      responses:
+        '200':
+          description: Pending CLI login challenge created
+  /auth/cli/poll/{login_id}:
+    get:
+      operationId: pollAuthCLILogin
+      summary: Poll CLI browser login status and retrieve a short-lived token once authorized
+      security: []
+      parameters:
+        - in: path
+          name: login_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CLI login status
+        '404':
+          description: Unknown or expired login_id
+  /auth/cli/complete/{login_id}:
+    post:
+      operationId: completeAuthCLILogin
+      summary: Authorize a pending CLI login from an authenticated Control Plane session
+      security:
+        - OperatorSession: []
+        - VirtualKeyBearer: []
+      parameters:
+        - in: path
+          name: login_id
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: X-CSRF-Token
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CLI login authorized
+        '401':
+          description: Authentication required
+        '403':
+          description: Insufficient privileges or invalid CSRF token
   /v1/chat/completions:
     post:
       operationId: createChatCompletion

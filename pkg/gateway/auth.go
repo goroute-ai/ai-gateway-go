@@ -48,6 +48,16 @@ func (m CustomAuthMode) Valid() bool {
 	}
 }
 
+// WithCustomAuthenticator installs an inbound data-plane authentication hook
+// on an embedded gateway. Organization and persisted gateway policies apply
+// to custom identities. A returned virtual key always uses stored key policy.
+func WithCustomAuthenticator(mode CustomAuthMode, authenticator CustomAuthenticator) Option {
+	return func(c *clientConfig) {
+		c.customAuthMode = mode
+		c.customAuthenticator = authenticator
+	}
+}
+
 // AuthDecision represents the authentication outcome returned by a CustomAuthenticator.
 // Callers must populate either Identity (direct IdentityContext) or VirtualKey (gateway virtual key
 // to resolve via standard key lookup), never both.
@@ -56,8 +66,8 @@ type AuthDecision struct {
 	Identity *domain.IdentityContext `json:"identity,omitempty"`
 	// VirtualKey supplies a gateway virtual API key (`sk-gw-...`) to resolve via standard auth.
 	VirtualKey string `json:"virtual_key,omitempty"`
-	// RunPostChecks controls whether gateway RBAC and budget enforcement checks run after
-	// custom authentication succeeds.
+	// RunPostChecks applies model, endpoint, and quota constraints supplied in a
+	// direct Identity. Stored virtual key and tenant policies apply independently.
 	RunPostChecks bool `json:"run_post_checks,omitempty"`
 }
 

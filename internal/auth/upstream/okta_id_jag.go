@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,9 +176,8 @@ func (s *OktaIDJAGStrategy) Apply(ctx context.Context, req *http.Request, authCt
 		}
 	}
 
-	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s",
-		sub, s.tokenEndpoint, s.clientID, s.audience, strings.Join(s.scopes, " "))))
-	cacheKey := "okta_id_jag|" + hex.EncodeToString(cacheKeyHash[:])
+	cacheKey := tokenCacheKey(authCtx, "okta_id_jag", sub, s.tokenEndpoint, s.clientID,
+		s.signingKey, s.audience, strings.Join(s.scopes, " "))
 
 	accessToken, err := s.getOrInitTokenCache().GetOrRefresh(ctx, cacheKey, func(refreshCtx context.Context) (string, time.Duration, error) {
 		// Mint Assertion JWT

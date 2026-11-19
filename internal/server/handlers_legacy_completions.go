@@ -168,8 +168,8 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
-	quotaSettlement.upstreamDispatched = true
-	resp, meta, err := s.reliability.ExecuteCompletion(r.Context(), idCtx, &req)
+	upstreamCtx := quotaSettlement.trackDispatch(r.Context())
+	resp, meta, err := s.reliability.ExecuteCompletion(upstreamCtx, idCtx, &req)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
 	if err != nil {

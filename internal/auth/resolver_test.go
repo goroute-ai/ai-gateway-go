@@ -573,6 +573,13 @@ type simulatedConflictRaceRepo struct {
 	raced      atomic.Bool
 }
 
+func (r *simulatedConflictRaceRepo) GetUserByOIDCIdentity(ctx context.Context, orgID, issuer, subject string) (*domain.User, error) {
+	if !r.raced.Load() {
+		return nil, storage.ErrNotFound
+	}
+	return r.MemoryRepository.GetUserByOIDCIdentity(ctx, orgID, issuer, subject)
+}
+
 func (r *simulatedConflictRaceRepo) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
 	// Simulate initial read miss before another replica inserts concurrently.
 	if !r.raced.Load() {
@@ -609,6 +616,7 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 			Email:             "winner@org-r.example",
 			Name:              "Winner",
 			Role:              domain.RoleDeveloper,
+			OIDCIssuer:        "https://idp.r.example",
 			OIDCSubject:       "sub-race-winner",
 			MaxBudgetMicros:   123456,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
@@ -649,5 +657,154 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 	}
 	if idCtx.UserID != "usr_winner" || idCtx.UserMaxBudgetMicros != 123456 {
 		t.Fatalf("expected re-read winner user usr_winner with budget 123456, got %+v", idCtx)
+	}
+}
+
+func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
+	ctx := context.Background()
+	mem := storage.NewMemoryRepository()
+	_ = mem.CreateOrganization(ctx, &domain.Organization{ID: "org_m", Name: "Org M", Slug: "org-m", IsActive: true})
+
+	_ = mem.CreateUser(ctx, &domain.User{
+		ID:          "usr_a",
+		OrgID:       "org_m",
+		Email:       "user-a@org-m.example",
+		Name:        "User A",
+		Role:        domain.RoleDeveloper,
+		OIDCIssuer:  "https://idp-a.example",
+		OIDCSubject: "same-sub",
+		IsActive:    true,
+	})
+	_ = mem.CreateUser(ctx, &domain.User{
+		ID:          "usr_b",
+		OrgID:       "org_m",
+		Email:       "user-b@org-m.example",
+		Name:        "User B",
+		Role:        domain.RoleDeveloper,
+		OIDCIssuer:  "https://idp-b.example",
+		OIDCSubject: "same-sub",
+		IsActive:    true,
+	})
+	_ = mem.CreateUser(ctx, &domain.User{
+		ID:       "usr_email",
+		OrgID:    "org_m",
+		Email:    "emailonly@org-m.example",
+		Name:     "Email Only",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	})
+	_ = mem.CreateUser(ctx, &domain.User{
+		ID:          "usr_legacy",
+		OrgID:       "org_m",
+		Email:       "legacy@org-m.example",
+		Name:        "Legacy Unbound",
+		Role:        domain.RoleDeveloper,
+		OIDCSubject: "legacy-sub",
+		IsActive:    true,
+	})
+
+	secretA := "issuer-a-secret-material-012345"
+	secretB := "issuer-b-secret-material-012345"
+	multiVerifier := auth.NewJWTVerifier(auth.JWTConfig{
+		Issuers: []auth.OIDCIssuerConfig{
+			{
+				Issuer:       "https://idp-a.example",
+				Audience:     "ai-gateway",
+				Secret:       secretA,
+				AutoRegister: false,
+				DefaultOrgID: "org_m",
+			},
+			{
+				Issuer:       "https://idp-b.example",
+				Audience:     "ai-gateway",
+				Secret:       secretB,
+				AutoRegister: false,
+				DefaultOrgID: "org_m",
+			},
+		},
+	})
+	svc := auth.NewService(mem, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
+	multiResolver := auth.NewAuthResolver(auth.ResolverConfig{
+		Service:            svc,
+		Repo:               mem,
+		JWTVerifier:        multiVerifier,
+		EnableDataPlaneJWT: true,
+		DefaultOrgID:       "org_m",
+	})
+
+	tokA, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+		Subject:   "same-sub",
+		Issuer:    "https://idp-a.example",
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		Email:     "user-a@org-m.example",
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqA.Header.Set("Authorization", "Bearer "+tokA)
+	ctxA, err := multiResolver.ResolveRequest(ctx, reqA)
+	if err != nil || ctxA.UserID != "usr_a" {
+		t.Fatalf("expected usr_a from issuer A, got %+v err=%v", ctxA, err)
+	}
+
+	tokB, _ := auth.SignHS256(secretB, &auth.JWTClaims{
+		Subject:   "same-sub",
+		Issuer:    "https://idp-b.example",
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		Email:     "user-b@org-m.example",
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqB.Header.Set("Authorization", "Bearer "+tokB)
+	ctxB, err := multiResolver.ResolveRequest(ctx, reqB)
+	if err != nil || ctxB.UserID != "usr_b" {
+		t.Fatalf("expected usr_b from issuer B, got %+v err=%v", ctxB, err)
+	}
+
+	// Email match alone must not auto-link.
+	tokEmail, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+		Subject:   "unlinked-sub",
+		Issuer:    "https://idp-a.example",
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		Email:     "emailonly@org-m.example",
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	reqEmail := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqEmail.Header.Set("Authorization", "Bearer "+tokEmail)
+	if _, err := multiResolver.ResolveRequest(ctx, reqEmail); err == nil {
+		t.Fatal("expected rejection when email matches unbound user without (issuer, sub)")
+	}
+
+	// Multi-issuer refuses unbound legacy subject.
+	tokLegacy, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+		Subject:   "legacy-sub",
+		Issuer:    "https://idp-a.example",
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		Email:     "legacy@org-m.example",
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	reqLegacy := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqLegacy.Header.Set("Authorization", "Bearer "+tokLegacy)
+	if _, err := multiResolver.ResolveRequest(ctx, reqLegacy); err == nil {
+		t.Fatal("expected multi-issuer resolver to refuse unbound legacy subject")
+	}
+
+	// Single-issuer resolver allows unambiguous legacy subject.
+	singleVerifier := auth.NewJWTVerifier(auth.JWTConfig{
+		Secret:       secretA,
+		Issuer:       "https://idp-a.example",
+		Audience:     "ai-gateway",
+		AutoRegister: false,
+		DefaultOrgID: "org_m",
+	})
+	singleResolver := auth.NewAuthResolver(auth.ResolverConfig{
+		Service:            svc,
+		Repo:               mem,
+		JWTVerifier:        singleVerifier,
+		EnableDataPlaneJWT: true,
+		DefaultOrgID:       "org_m",
+	})
+	ctxSingleLegacy, err := singleResolver.ResolveRequest(ctx, reqLegacy)
+	if err != nil || ctxSingleLegacy.UserID != "usr_legacy" {
+		t.Fatalf("expected unambiguous single-issuer resolver to accept usr_legacy, got %+v err=%v", ctxSingleLegacy, err)
 	}
 }

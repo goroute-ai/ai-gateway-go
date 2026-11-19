@@ -16,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
@@ -23,7 +24,7 @@ import (
 )
 
 var (
-	version = "v1.8.0"
+	version = "v1.21.0"
 	commit  = "dev"
 	date    = "2026-11-16T00:00:00Z"
 )
@@ -60,8 +61,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	poolOptions, err := postgresPoolOptions(cfg)
+	if err != nil {
+		logger.Error("Invalid PostgreSQL configuration", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
 	if *migrateOnly {
-		if err := runMigrationsOnly(ctx, cfg.Storage.PostgresDSN, "migrations"); err != nil {
+		if err := runMigrationsOnly(ctx, cfg.Storage.PostgresDSN, "migrations", poolOptions); err != nil {
 			logger.Error("Database migration failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
@@ -71,7 +78,7 @@ func main() {
 
 	var repo storage.Repository
 	if cfg.Storage.Mode == "postgres" {
-		pool, err := storage.NewPostgresPool(ctx, cfg.Storage.PostgresDSN)
+		pool, err := storage.NewPostgresPoolWithOptions(ctx, cfg.Storage.PostgresDSN, poolOptions)
 		if err != nil {
 			logger.Error("Failed to connect to PostgreSQL", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -186,13 +193,35 @@ func main() {
 	logger.Info("GoRoute AI Gateway shutdown complete")
 }
 
+func postgresPoolOptions(cfg *config.Config) (storage.PostgresPoolOptions, error) {
+	iam := cfg.Storage.RDSIAM
+	if !iam.Enabled {
+		return storage.PostgresPoolOptions{}, nil
+	}
+	policy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
+	if err != nil {
+		return storage.PostgresPoolOptions{}, err
+	}
+	return storage.PostgresPoolOptions{RDSIAM: &storage.RDSIAMConfig{
+		Enabled:              true,
+		AllowAmbientCloudIAM: cfg.Auth.AllowAmbientCloudIAM,
+		Region:               config.ResolveEnvValue(iam.Region),
+		AccessKeyID:          config.ResolveEnvValue(iam.AccessKeyID),
+		SecretAccessKey:      config.ResolveEnvValue(iam.SecretAccessKey),
+		SessionToken:         config.ResolveEnvValue(iam.SessionToken),
+		RoleARN:              config.ResolveEnvValue(iam.RoleARN),
+		WebIdentityTokenFile: config.ResolveEnvValue(iam.WebIdentityFile),
+		NetPolicy:            policy,
+	}}, nil
+}
+
 // runMigrationsOnly connects to PostgreSQL using dsn, runs all pending migrations in migrationsDir,
 // and closes the pool before returning.
-func runMigrationsOnly(ctx context.Context, dsn, migrationsDir string) error {
+func runMigrationsOnly(ctx context.Context, dsn, migrationsDir string, options storage.PostgresPoolOptions) error {
 	if dsn == "" {
 		return fmt.Errorf("postgres DSN is required for -migrate-only")
 	}
-	pool, err := storage.NewPostgresPool(ctx, dsn)
+	pool, err := storage.NewPostgresPoolWithOptions(ctx, dsn, options)
 	if err != nil {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}

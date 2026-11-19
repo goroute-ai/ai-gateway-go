@@ -44,6 +44,7 @@ auth:
   master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
   master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
   allow_master_key_data_plane: false
+  enable_data_plane_jwt: true
   jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
   jwt_issuer: "https://auth.goroute.local"
   jwt_audience: "goroute-gateway"
@@ -51,6 +52,28 @@ auth:
   default_virtual_key: ""
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
+  enable_hibp_check: true
+  hibp_base_url: "https://mock-upstream:8443/hibp"
+  key_rotation_delivery_url: "https://mock-upstream:8443/webhooks/key-rotation"
+  key_rotation_delivery_token: "os.environ/GATEWAY_ROTATION_DELIVERY_TOKEN"
+  key_rotation_poll_interval: 2s
+  key_rotation_grace_period: 60s
+  oidc_issuers:
+    - issuer: "https://mock-upstream:8443/oidc"
+      audience: "goroute-gateway"
+      discovery_url: "https://mock-upstream:8443/oidc/.well-known/openid-configuration"
+      algorithms:
+        - "RS256"
+      auto_register: false
+  sso_providers:
+    - id: "mock-oidc"
+      display_name: "Mock Enterprise OIDC"
+      type: "oidc"
+      client_id: "goroute-prod-test-client"
+      client_secret: "prod-test-oidc-client-secret"
+      issuer: "https://mock-upstream:8443/oidc"
+      discovery_url: "https://mock-upstream:8443/oidc/.well-known/openid-configuration"
+      redirect_url: "https://localhost:28443/auth/sso/mock-oidc/callback"
 
 router:
   default_fast_alias: "fast"
@@ -81,6 +104,8 @@ finops:
   batch_size: 10
   flush_interval: 100ms
   worker_count: 2
+  soft_budget_webhook_url: "https://mock-upstream:8443/webhooks/soft-budget"
+  soft_budget_cooldown_sec: 1
 
 discovery:
   enabled: true

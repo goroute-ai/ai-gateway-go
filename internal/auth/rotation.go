@@ -187,10 +187,10 @@ func isAllowedReadOnlyPattern(pattern string) bool {
 // the previous hash so deprecation metadata (or immediate revocation) takes effect across all pods, and returns the
 // updated VirtualKey with RawKey populated once.
 func (s *Service) RotateVirtualKeyWithGrace(ctx context.Context, id string, gracePeriod time.Duration) (*domain.VirtualKey, error) {
-	return s.rotateVirtualKeyWithGraceAt(ctx, id, gracePeriod, s.now())
+	return s.rotateVirtualKeyWithGraceAt(ctx, id, gracePeriod, s.now(), nil)
 }
 
-func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gracePeriod time.Duration, now time.Time) (*domain.VirtualKey, error) {
+func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gracePeriod time.Duration, now time.Time, deliver RotationDelivery) (*domain.VirtualKey, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("virtual key id is required")
@@ -209,20 +209,63 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 		return nil, err
 	}
 
-	randBytes := make([]byte, 22)
-	if _, err := rand.Read(randBytes); err != nil {
-		return nil, fmt.Errorf("generate random key bytes: %w", err)
-	}
-	randHex := hex.EncodeToString(randBytes)
-	shortID := randHex[:8]
-	secretPart := randHex[8:]
-	rawKey := fmt.Sprintf("sk-gw-%s-%s", shortID, secretPart)
-
 	now = now.UTC()
+
+	var rawKey, nextPrefix, nextHash string
+	if deliver != nil {
+		if s.vault == nil {
+			return nil, fmt.Errorf("vault is required to stage scheduled virtual key rotation")
+		}
+		if existing.StagedKeyHash != "" && existing.StagedEncryptedRawKey != "" && existing.StagedKeyDEK != "" {
+			rawKey, err = s.vault.DecryptString(existing.StagedEncryptedRawKey, existing.StagedKeyDEK)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt staged virtual key replacement: %w", err)
+			}
+			if HashKey(rawKey) != existing.StagedKeyHash {
+				return nil, fmt.Errorf("staged virtual key replacement failed integrity verification")
+			}
+			nextPrefix = existing.StagedKeyPrefix
+			nextHash = existing.StagedKeyHash
+		} else {
+			rawKey, nextPrefix, nextHash, err = generateVirtualKeyMaterial()
+			if err != nil {
+				return nil, err
+			}
+			encRaw, dekHex, encErr := s.vault.EncryptString(rawKey)
+			if encErr != nil {
+				return nil, fmt.Errorf("encrypt staged virtual key replacement: %w", encErr)
+			}
+			staged := *existing
+			staged.StagedKeyHash = nextHash
+			staged.StagedKeyPrefix = nextPrefix
+			staged.StagedEncryptedRawKey = encRaw
+			staged.StagedKeyDEK = dekHex
+			stagedAt := now
+			staged.StagedCreatedAt = &stagedAt
+			if err := s.repo.UpdateVirtualKey(ctx, &staged); err != nil {
+				return nil, fmt.Errorf("persist staged virtual key replacement: %w", err)
+			}
+			existing = &staged
+		}
+		if err := deliver(ctx, existing.OrgID, existing.ID, rawKey); err != nil {
+			return nil, fmt.Errorf("deliver replacement credential: %w", err)
+		}
+	} else {
+		rawKey, nextPrefix, nextHash, err = generateVirtualKeyMaterial()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	oldHash := existing.KeyHash
 	rotated := *existing
-	rotated.KeyPrefix = fmt.Sprintf("sk-gw-%s", shortID)
-	rotated.KeyHash = HashKey(rawKey)
+	rotated.KeyPrefix = nextPrefix
+	rotated.KeyHash = nextHash
+	rotated.StagedKeyHash = ""
+	rotated.StagedKeyPrefix = ""
+	rotated.StagedEncryptedRawKey = ""
+	rotated.StagedKeyDEK = ""
+	rotated.StagedCreatedAt = nil
 	rotated.IsActive = true
 	if rotated.RotationIntervalSec > 0 {
 		nextRotation := now.Add(time.Duration(rotated.RotationIntervalSec) * time.Second)
@@ -252,8 +295,26 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 	return &rotated, nil
 }
 
+func generateVirtualKeyMaterial() (rawKey, prefix, hash string, err error) {
+	randBytes := make([]byte, 22)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", "", "", fmt.Errorf("generate random key bytes: %w", err)
+	}
+	randHex := hex.EncodeToString(randBytes)
+	shortID := randHex[:8]
+	secretPart := randHex[8:]
+	rawKey = fmt.Sprintf("sk-gw-%s-%s", shortID, secretPart)
+	prefix = fmt.Sprintf("sk-gw-%s", shortID)
+	hash = HashKey(rawKey)
+	return rawKey, prefix, hash, nil
+}
+
+// RotationDelivery acknowledges durable external receipt of a scheduled replacement credential.
+type RotationDelivery func(ctx context.Context, orgID, keyID, replacement string) error
+
 // KeyRotationConfig configures the background scheduled key rotation worker.
 type KeyRotationConfig struct {
+	Deliver            RotationDelivery
 	PollInterval       time.Duration
 	GracePeriod        time.Duration
 	DisableGracePeriod bool
@@ -277,6 +338,7 @@ type KeyRotationSweepResult struct {
 // under a Redis distributed pod lock (`SET gw:lock:key_rotation <podID> NX PX 55000` + Lua release),
 // records audit logs, and purges expired deprecated key hashes.
 type KeyRotationManager struct {
+	deliver      RotationDelivery
 	authSvc      *Service
 	repo         storage.Repository
 	redis        *storage.RedisFabric
@@ -334,6 +396,7 @@ func NewKeyRotationManager(authSvc *Service, repo storage.Repository, redisFabri
 		}
 	}
 	return &KeyRotationManager{
+		deliver:      cfg.Deliver,
 		authSvc:      authSvc,
 		repo:         repo,
 		redis:        redisFabric,
@@ -444,6 +507,10 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		result.PurgedHashes = purged
 	}
 
+	if m.deliver == nil {
+		return result, nil
+	}
+
 	// 2. Rotate virtual keys due for scheduled rotation
 	dueKeys, err := rotRepo.ListVirtualKeysDueForRotation(ctx, now, m.batchSize)
 	if err != nil {
@@ -459,7 +526,7 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		if vk.KeyRotationAt.UTC().After(now) {
 			continue
 		}
-		rotated, rotErr := m.authSvc.rotateVirtualKeyWithGraceAt(ctx, vk.ID, m.gracePeriod, now)
+		rotated, rotErr := m.authSvc.rotateVirtualKeyWithGraceAt(ctx, vk.ID, m.gracePeriod, now, m.deliver)
 		if rotErr != nil {
 			slog.WarnContext(ctx, "auth: scheduled virtual key auto-rotation failed",
 				"virtual_key_id", vk.ID,

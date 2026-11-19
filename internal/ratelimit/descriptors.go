@@ -4,10 +4,12 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
@@ -18,10 +20,14 @@ var checkDescriptorsLua string
 //go:embed scripts/reconcile_descriptors.lua
 var reconcileDescriptorsLua string
 
+//go:embed scripts/renew_descriptors.lua
+var renewDescriptorsLua string
+
 const (
 	defaultDescriptorTPDTTLSec         = 86400 * 2
 	defaultDescriptorIterationTTLSec   = 3600
 	defaultDescriptorReservationTTLSec = 3600
+	rolling24hWindowMs                 = int64(86_400_000)
 )
 
 type localIterCounter struct {
@@ -32,6 +38,12 @@ type localIterCounter struct {
 type localReservationEntry struct {
 	amount    int64
 	expiresAt time.Time
+}
+
+type localRollingSpendEntry struct {
+	id     string
+	tsMs   int64
+	amount int64
 }
 
 // descriptorKeySet holds all Redis Cluster slot-aligned keys for a single descriptor.
@@ -47,6 +59,7 @@ type descriptorKeySet struct {
 	resZSet    string
 	resSum     string
 	resAmounts string
+	r24hZSet   string
 }
 
 func descriptorEntityKey(d domain.RateLimitDescriptor) string {
@@ -80,6 +93,7 @@ func buildDescriptorKeySet(orgID string, d domain.RateLimitDescriptor, nowMin in
 		resZSet:    resZ,
 		resSum:     resS,
 		resAmounts: resA,
+		r24hZSet:   fmt.Sprintf("gw:dq:%s:r24h:%s", tag, entity),
 	}
 }
 
@@ -87,7 +101,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 	nowUTC := now.UTC()
 	nowMin := nowUTC.Unix() / 60
 	utcDay := nowUTC.Format("20060102")
-	keys := make([]string, 0, len(descriptors)*11)
+	keys := make([]string, 0, len(descriptors)*12)
 	for _, d := range descriptors {
 		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
 		keys = append(keys,
@@ -102,6 +116,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 			ks.resZSet,
 			ks.resSum,
 			ks.resAmounts,
+			ks.r24hZSet,
 		)
 	}
 	return keys
@@ -111,7 +126,7 @@ func descriptorReconcileKeys(orgID string, descriptors []domain.RateLimitDescrip
 	nowUTC := now.UTC()
 	nowMin := nowUTC.Unix() / 60
 	utcDay := nowUTC.Format("20060102")
-	keys := make([]string, 0, len(descriptors)*9)
+	keys := make([]string, 0, len(descriptors)*10)
 	for _, d := range descriptors {
 		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
 		keys = append(keys,
@@ -124,6 +139,7 @@ func descriptorReconcileKeys(orgID string, descriptors []domain.RateLimitDescrip
 			ks.resZSet,
 			ks.resSum,
 			ks.resAmounts,
+			ks.r24hZSet,
 		)
 	}
 	return keys
@@ -166,10 +182,131 @@ func boolToInt(b bool) int {
 }
 
 func (l *Limiter) nowUTC() time.Time {
-	if l != nil && l.nowFunc != nil {
-		return l.nowFunc().UTC()
+	if l == nil {
+		return time.Now().UTC()
+	}
+	l.mu.RLock()
+	fn := l.nowFunc
+	l.mu.RUnlock()
+	if fn != nil {
+		return fn().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (l *Limiter) rollingWindowLoader() RollingWindowSpendLoader {
+	if l == nil {
+		return nil
+	}
+	l.mu.RLock()
+	loader := l.rollingLoader
+	l.mu.RUnlock()
+	return loader
+}
+
+func quotaPolicyUnavailableError() *domain.GatewayError {
+	return &domain.GatewayError{
+		StatusCode:    http.StatusServiceUnavailable,
+		Type:          domain.ErrorTypeRateLimit,
+		Code:          "quota_policy_unavailable",
+		Message:       "Unable to evaluate configured quota policies",
+		RetryAfterSec: 5,
+	}
+}
+
+func buildCheckDescriptorArgv(
+	estInput int,
+	estOutput int,
+	reserveMicros int64,
+	reqID string,
+	windowTTL int,
+	concTTL int,
+	now time.Time,
+	active []domain.RateLimitDescriptor,
+) []any {
+	nowMs := now.UTC().UnixMilli()
+	argv := make([]any, 0, 10+len(active)*13)
+	argv = append(argv,
+		len(active),
+		estInput,
+		estOutput,
+		reserveMicros,
+		reqID,
+		windowTTL,
+		defaultDescriptorTPDTTLSec,
+		concTTL,
+		defaultDescriptorReservationTTLSec,
+		nowMs,
+	)
+	var trailingInit []any
+	for _, d := range active {
+		isRolling := d.WindowType == domain.BudgetWindowRolling24h
+		hasInit := isRolling && d.RollingHistoryLoaded
+		argv = append(argv,
+			strings.ToUpper(string(d.ScopeType)),
+			d.RPMLimit,
+			d.TPMLimit,
+			d.ITPMLimit,
+			d.OTPMLimit,
+			d.TPDLimit,
+			d.MaxConcurrent,
+			d.MaxIterations,
+			descriptorIterTTL(d),
+			d.MaxBudgetMicros,
+			d.SpentFloorMicros,
+			boolToInt(isRolling),
+			boolToInt(hasInit),
+		)
+		if hasInit {
+			trailingInit = append(trailingInit, len(d.RollingEntries))
+			for _, entry := range d.RollingEntries {
+				eid := entry.ID
+				if eid == "" {
+					eid = "db"
+				}
+				trailingInit = append(trailingInit, eid, entry.TimestampMs, entry.AmountMicros)
+			}
+		}
+	}
+	if len(trailingInit) > 0 {
+		argv = append(argv, trailingInit...)
+	}
+	return argv
+}
+
+func populateColdRollingDescriptors(
+	ctx context.Context,
+	loader RollingWindowSpendLoader,
+	orgID string,
+	descriptors []domain.RateLimitDescriptor,
+	indices []int,
+	now time.Time,
+) error {
+	nowMs := now.UTC().UnixMilli()
+	for _, idx := range indices {
+		d := &descriptors[idx]
+		if d.WindowType != domain.BudgetWindowRolling24h || d.RollingHistoryLoaded {
+			continue
+		}
+		if loader == nil {
+			if d.SpentFloorMicros > 0 {
+				d.RollingEntries = []domain.RollingSpendEntry{{
+					ID:           "seed",
+					TimestampMs:  nowMs,
+					AmountMicros: d.SpentFloorMicros,
+				}}
+			}
+			d.RollingHistoryLoaded = true
+			continue
+		}
+		entries, err := loader(ctx, orgID, *d, now)
+		if err != nil {
+			return quotaPolicyUnavailableError()
+		}
+		d.RollingEntries = entries
+		d.RollingHistoryLoaded = true
+	}
+	return nil
 }
 
 func descriptorIterTTL(d domain.RateLimitDescriptor) int {
@@ -252,104 +389,102 @@ func (l *Limiter) AcquireDescriptors(
 
 	if l.redis != nil && l.redis.Client() != nil {
 		keys := descriptorCheckKeys(orgID, active, now)
-		argv := make([]any, 0, 9+len(active)*11)
-		argv = append(argv,
-			len(active),
-			estInput,
-			estOutput,
-			reserveMicros,
-			reqID,
-			windowTTL,
-			defaultDescriptorTPDTTLSec,
-			concTTL,
-			defaultDescriptorReservationTTLSec,
-		)
-		for _, d := range active {
-			argv = append(argv,
-				strings.ToUpper(string(d.ScopeType)),
-				d.RPMLimit,
-				d.TPMLimit,
-				d.ITPMLimit,
-				d.OTPMLimit,
-				d.TPDLimit,
-				d.MaxConcurrent,
-				d.MaxIterations,
-				descriptorIterTTL(d),
-				d.MaxBudgetMicros,
-				d.SpentFloorMicros,
-			)
+		// Last key stores a per-attempt admission receipt so Redis retries do not double-admit.
+		keys = append(keys, "")
+		loader := l.rollingWindowLoader()
+		var rollingIndices []int
+		for i, d := range active {
+			if d.WindowType == domain.BudgetWindowRolling24h && d.MaxBudgetMicros > 0 {
+				rollingIndices = append(rollingIndices, i)
+			}
 		}
 
-		res, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			rCtx, cancel := l.withRedisTimeout(ctx)
-			defer cancel()
-			return l.checkDescriptorsScr.Run(rCtx, rdb, keys, argv...).Slice()
-		})
-		if execErr == nil {
-			if slice, ok := res.([]any); ok && len(slice) >= 2 {
-				allowed, _ := slice[0].(int64)
-				reason, _ := slice[1].(string)
-				if allowed == 0 {
-					var current, limit, retryAfter int64
-					if len(slice) >= 3 {
-						current, _ = slice[2].(int64)
-					}
-					if len(slice) >= 4 {
-						limit, _ = slice[3].(int64)
-					}
-					if len(slice) >= 5 {
-						retryAfter, _ = slice[4].(int64)
-					}
-					return nil, toDescriptorQuotaError(reason, current, limit, retryAfter)
-				}
+		for attempt := 0; attempt < 2; attempt++ {
+			keys[len(keys)-1] = "gw:quota:" + orgHashTag(orgID) + ":admission:" + uuid.NewString()
+			argv := buildCheckDescriptorArgv(estInput, estOutput, reserveMicros, reqID, windowTTL, concTTL, now, active)
 
-				recKeys := descriptorReconcileKeys(orgID, active, now)
-				flags := make([]any, 0, len(active)*6)
-				for _, d := range active {
-					flags = append(flags,
-						boolToInt(d.TPMLimit > 0),
-						boolToInt(d.ITPMLimit > 0),
-						boolToInt(d.OTPMLimit > 0),
-						boolToInt(d.TPDLimit > 0),
-						boolToInt(d.MaxConcurrent > 0),
-						boolToInt(d.MaxBudgetMicros > 0),
-					)
-				}
-
-				var once sync.Once
-				return func(actualInput, actualOutput int, actualCostMicros int64) {
-					once.Do(func() {
-						if actualInput < 0 {
-							actualInput = 0
-						}
-						if actualOutput < 0 {
-							actualOutput = 0
-						}
-						inputDelta := actualInput - estInput
-						outputDelta := actualOutput - estOutput
-						totalDelta := (actualInput + actualOutput) - (estInput + estOutput)
-
-						recArgv := make([]any, 0, 8+len(flags))
-						recArgv = append(recArgv,
-							len(active),
-							inputDelta,
-							outputDelta,
-							totalDelta,
-							windowTTL,
-							defaultDescriptorTPDTTLSec,
-							reqID,
-							actualCostMicros,
-						)
-						recArgv = append(recArgv, flags...)
-
-						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-							rCtx, cancel := l.withRedisTimeout(context.Background())
-							defer cancel()
-							return l.reconcileDescriptorsScr.Run(rCtx, rdb, recKeys, recArgv...).Result()
-						})
-					})
-				}, nil
+			res, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+				rCtx, cancel := l.withRedisTimeout(ctx)
+				defer cancel()
+				return l.checkDescriptorsScr.Run(rCtx, rdb, keys, argv...).Slice()
+			})
+			if execErr != nil {
+				break
 			}
+			slice, ok := res.([]any)
+			if !ok || len(slice) < 2 {
+				break
+			}
+			allowed, _ := slice[0].(int64)
+			reason, _ := slice[1].(string)
+			if allowed == 0 {
+				if reason == "ROLLING_WINDOW_COLD" && attempt == 0 && len(rollingIndices) > 0 {
+					if loadErr := populateColdRollingDescriptors(ctx, loader, orgID, active, rollingIndices, now); loadErr != nil {
+						return nil, loadErr
+					}
+					continue
+				}
+				var current, limit, retryAfter int64
+				if len(slice) >= 3 {
+					current, _ = slice[2].(int64)
+				}
+				if len(slice) >= 4 {
+					limit, _ = slice[3].(int64)
+				}
+				if len(slice) >= 5 {
+					retryAfter, _ = slice[4].(int64)
+				}
+				return nil, toDescriptorQuotaError(reason, current, limit, retryAfter)
+			}
+
+			recKeys := descriptorReconcileKeys(orgID, active, now)
+			flags := make([]any, 0, len(active)*7)
+			for _, d := range active {
+				flags = append(flags,
+					boolToInt(d.TPMLimit > 0),
+					boolToInt(d.ITPMLimit > 0),
+					boolToInt(d.OTPMLimit > 0),
+					boolToInt(d.TPDLimit > 0),
+					boolToInt(d.MaxConcurrent > 0),
+					boolToInt(d.MaxBudgetMicros > 0),
+					boolToInt(d.WindowType == domain.BudgetWindowRolling24h),
+				)
+			}
+
+			var once sync.Once
+			return func(actualInput, actualOutput int, actualCostMicros int64) {
+				once.Do(func() {
+					if actualInput < 0 {
+						actualInput = 0
+					}
+					if actualOutput < 0 {
+						actualOutput = 0
+					}
+					inputDelta := actualInput - estInput
+					outputDelta := actualOutput - estOutput
+					totalDelta := (actualInput + actualOutput) - (estInput + estOutput)
+
+					recArgv := make([]any, 0, 9+len(flags))
+					recArgv = append(recArgv,
+						len(active),
+						inputDelta,
+						outputDelta,
+						totalDelta,
+						windowTTL,
+						defaultDescriptorTPDTTLSec,
+						reqID,
+						actualCostMicros,
+						l.nowUTC().UnixMilli(),
+					)
+					recArgv = append(recArgv, flags...)
+
+					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+						rCtx, cancel := l.withRedisTimeout(context.Background())
+						defer cancel()
+						return l.reconcileDescriptorsScr.Run(rCtx, rdb, recKeys, recArgv...).Result()
+					})
+				})
+			}, nil
 		}
 
 		if !fallbackLocal {
@@ -361,7 +496,7 @@ func (l *Limiter) AcquireDescriptors(
 		return nil, limiterUnavailableError()
 	}
 
-	return l.acquireDescriptorsLocal(orgID, reqID, estInput, estOutput, reserveMicros, active, now)
+	return l.acquireDescriptorsLocal(ctx, orgID, reqID, estInput, estOutput, reserveMicros, active, now)
 }
 
 func (l *Limiter) ensureLocalDescMapsLocked() {
@@ -392,9 +527,28 @@ func (l *Limiter) ensureLocalDescMapsLocked() {
 	if l.localDescReservations == nil {
 		l.localDescReservations = make(map[string]map[string]localReservationEntry)
 	}
+	if l.localDescRolling == nil {
+		l.localDescRolling = make(map[string][]localRollingSpendEntry)
+	}
+}
+
+func pruneLocalRollingEntries(entries []localRollingSpendEntry, cutoffMs int64) ([]localRollingSpendEntry, int64) {
+	if len(entries) == 0 {
+		return entries, 0
+	}
+	pruned := make([]localRollingSpendEntry, 0, len(entries))
+	var sum int64
+	for _, entry := range entries {
+		if entry.tsMs > cutoffMs && entry.amount > 0 {
+			pruned = append(pruned, entry)
+			sum += entry.amount
+		}
+	}
+	return pruned, sum
 }
 
 func (l *Limiter) acquireDescriptorsLocal(
+	ctx context.Context,
 	orgID string,
 	reqID string,
 	estInput int,
@@ -403,12 +557,39 @@ func (l *Limiter) acquireDescriptorsLocal(
 	descriptors []domain.RateLimitDescriptor,
 	now time.Time,
 ) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
+	tag := orgHashTag(orgID)
+	localKeys := make([]string, len(descriptors))
+	for i, d := range descriptors {
+		localKeys[i] = tag + ":" + descriptorEntityKey(d)
+	}
+
+	loader := l.rollingWindowLoader()
+	var coldIndices []int
+	l.localMu.Lock()
+	l.ensureLocalDescMapsLocked()
+	for i, d := range descriptors {
+		if d.MaxBudgetMicros > 0 && d.WindowType == domain.BudgetWindowRolling24h && !d.RollingHistoryLoaded {
+			if _, ok := l.localDescRolling[localKeys[i]]; !ok {
+				coldIndices = append(coldIndices, i)
+			}
+		}
+	}
+	l.localMu.Unlock()
+
+	if len(coldIndices) > 0 {
+		if err := populateColdRollingDescriptors(ctx, loader, orgID, descriptors, coldIndices, now); err != nil {
+			return nil, err
+		}
+	}
+
 	l.localMu.Lock()
 	defer l.localMu.Unlock()
 
 	l.ensureLocalDescMapsLocked()
 
 	nowUTC := now.UTC()
+	nowMs := nowUTC.UnixMilli()
+	cutoffMs := nowMs - rolling24hWindowMs
 	nowSec := nowUTC.Unix()
 	nowMin := nowSec / 60
 	utcDay := nowUTC.Format("20060102")
@@ -433,12 +614,6 @@ func (l *Limiter) acquireDescriptorsLocal(
 	if l.localDescDay != utcDay {
 		l.localDescDay = utcDay
 		clear(l.localDescTPD)
-	}
-
-	tag := orgHashTag(orgID)
-	localKeys := make([]string, len(descriptors))
-	for i, d := range descriptors {
-		localKeys[i] = tag + ":" + descriptorEntityKey(d)
 	}
 
 	// Phase 1: Pure read-only validation across all descriptors.
@@ -520,9 +695,26 @@ func (l *Limiter) acquireDescriptorsLocal(
 		}
 
 		if d.MaxBudgetMicros > 0 {
-			curSpent := l.localDescSpent[lk]
-			if d.SpentFloorMicros > curSpent {
-				curSpent = d.SpentFloorMicros
+			var curSpent int64
+			if d.WindowType == domain.BudgetWindowRolling24h {
+				if entries, ok := l.localDescRolling[lk]; ok {
+					pruned, sum := pruneLocalRollingEntries(entries, cutoffMs)
+					l.localDescRolling[lk] = pruned
+					curSpent = sum
+				} else if d.RollingHistoryLoaded {
+					for _, entry := range d.RollingEntries {
+						if entry.TimestampMs > cutoffMs && entry.AmountMicros > 0 {
+							curSpent += entry.AmountMicros
+						}
+					}
+				} else {
+					curSpent = d.SpentFloorMicros
+				}
+			} else {
+				curSpent = l.localDescSpent[lk]
+				if d.SpentFloorMicros > curSpent {
+					curSpent = d.SpentFloorMicros
+				}
 			}
 			if reserveMicros <= 0 || reqID == "" {
 				return nil, toDescriptorQuotaError("BUDGET_ESTIMATE_REQUIRED", curSpent, d.MaxBudgetMicros, 5)
@@ -583,7 +775,29 @@ func (l *Limiter) acquireDescriptorsLocal(
 			l.localDescIter[lk] = entry
 		}
 		if d.MaxBudgetMicros > 0 {
-			if d.SpentFloorMicros > l.localDescSpent[lk] {
+			if d.WindowType == domain.BudgetWindowRolling24h {
+				if _, ok := l.localDescRolling[lk]; !ok {
+					seeded := make([]localRollingSpendEntry, 0, len(d.RollingEntries))
+					if d.RollingHistoryLoaded {
+						for _, entry := range d.RollingEntries {
+							if entry.TimestampMs > cutoffMs && entry.AmountMicros > 0 {
+								seeded = append(seeded, localRollingSpendEntry{
+									id:     entry.ID,
+									tsMs:   entry.TimestampMs,
+									amount: entry.AmountMicros,
+								})
+							}
+						}
+					} else if d.SpentFloorMicros > 0 {
+						seeded = append(seeded, localRollingSpendEntry{
+							id:     "seed",
+							tsMs:   nowMs,
+							amount: d.SpentFloorMicros,
+						})
+					}
+					l.localDescRolling[lk] = seeded
+				}
+			} else if d.SpentFloorMicros > l.localDescSpent[lk] {
 				l.localDescSpent[lk] = d.SpentFloorMicros
 			}
 			resMap := l.localDescReservations[lk]
@@ -662,7 +876,15 @@ func (l *Limiter) acquireDescriptorsLocal(
 						if _, existed := resMap[reqID]; existed {
 							delete(resMap, reqID)
 							if actualCostMicros > 0 {
-								l.localDescSpent[lk] += actualCostMicros
+								if d.WindowType == domain.BudgetWindowRolling24h {
+									l.localDescRolling[lk] = append(l.localDescRolling[lk], localRollingSpendEntry{
+										id:     "s:" + reqID,
+										tsMs:   l.nowUTC().UTC().UnixMilli(),
+										amount: actualCostMicros,
+									})
+								} else {
+									l.localDescSpent[lk] += actualCostMicros
+								}
 							}
 						}
 					}
@@ -691,8 +913,9 @@ func (l *Limiter) ResetBudgetWindowSpend(ctx context.Context, windows []*domain.
 		desc := w.ToDescriptor()
 		lk := orgHashTag(w.OrgID) + ":" + descriptorEntityKey(desc)
 		delete(l.localDescSpent, lk)
+		delete(l.localDescRolling, lk)
 		ks := buildDescriptorKeySet(w.OrgID, desc, nowMin, utcDay)
-		redisKeys = append(redisKeys, ks.spend)
+		redisKeys = append(redisKeys, ks.spend, ks.r24hZSet)
 	}
 	l.localMu.Unlock()
 
@@ -705,4 +928,66 @@ func (l *Limiter) ResetBudgetWindowSpend(ctx context.Context, windows []*domain.
 		return rdb.Del(rCtx, redisKeys...).Result()
 	})
 	return err
+}
+
+// RenewDescriptorLeases extends active budget reservation leases for all budgeted
+// descriptors matching requestID in both Redis and local fallback tracking.
+func (l *Limiter) RenewDescriptorLeases(
+	ctx context.Context,
+	orgID string,
+	descriptors []domain.RateLimitDescriptor,
+	requestID string,
+	ttlSec int,
+) error {
+	if l == nil || requestID == "" || len(descriptors) == 0 {
+		return nil
+	}
+	if ttlSec <= 0 {
+		ttlSec = defaultDescriptorReservationTTLSec
+	}
+	active, err := normalizeDescriptors(orgID, descriptors)
+	if err != nil {
+		return err
+	}
+	var budgeted []domain.RateLimitDescriptor
+	for _, d := range active {
+		if d.MaxBudgetMicros > 0 {
+			budgeted = append(budgeted, d)
+		}
+	}
+	if len(budgeted) == 0 {
+		return nil
+	}
+
+	now := l.nowUTC()
+	newExpiry := now.Add(time.Duration(ttlSec) * time.Second)
+	tag := orgHashTag(orgID)
+	l.localMu.Lock()
+	for _, d := range budgeted {
+		lk := tag + ":" + descriptorEntityKey(d)
+		if resMap := l.localDescReservations[lk]; resMap != nil {
+			if entry, ok := resMap[requestID]; ok {
+				entry.expiresAt = newExpiry
+				resMap[requestID] = entry
+			}
+		}
+	}
+	l.localMu.Unlock()
+
+	if l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	nowMin := now.Unix() / 60
+	utcDay := now.Format("20060102")
+	keys := make([]string, 0, len(budgeted)*3)
+	for _, d := range budgeted {
+		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
+		keys = append(keys, ks.resZSet, ks.resSum, ks.resAmounts)
+	}
+	_, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return l.renewDescriptorsScr.Run(rCtx, rdb, keys, len(budgeted), requestID, ttlSec).Result()
+	})
+	return execErr
 }

@@ -117,24 +117,34 @@ func (p *QuotaPolicy) ToDescriptor() RateLimitDescriptor {
 	}
 }
 
+// RollingSpendEntry represents a timestamped settled spend or active migration hold
+// restored from durable storage to initialize a cold rolling_24h quota counter.
+type RollingSpendEntry struct {
+	ID           string `json:"id"`
+	TimestampMs  int64  `json:"timestamp_ms"`
+	AmountMicros int64  `json:"amount_micros"`
+}
+
 // RateLimitDescriptor is a single runtime quota dimension evaluated atomically
 // alongside all other descriptors attached to a request.
 type RateLimitDescriptor struct {
-	PolicyID         string           `json:"policy_id,omitempty"`
-	ScopeType        QuotaScopeType   `json:"scope_type"`
-	ScopeID          string           `json:"scope_id"`
-	ModelPattern     string           `json:"model_pattern,omitempty"`
-	WindowType       BudgetWindowType `json:"window_type,omitempty"`
-	RPMLimit         int              `json:"rpm_limit,omitempty"`
-	TPMLimit         int              `json:"tpm_limit,omitempty"`
-	ITPMLimit        int              `json:"itpm_limit,omitempty"`
-	OTPMLimit        int              `json:"otpm_limit,omitempty"`
-	TPDLimit         int64            `json:"tpd_limit,omitempty"`
-	MaxConcurrent    int              `json:"max_concurrent,omitempty"`
-	MaxBudgetMicros  int64            `json:"max_budget_micros,omitempty"`
-	SpentFloorMicros int64            `json:"spent_floor_micros,omitempty"`
-	MaxIterations    int              `json:"max_iterations,omitempty"`
-	WindowTTLSec     int              `json:"window_ttl_sec,omitempty"`
+	PolicyID             string              `json:"policy_id,omitempty"`
+	ScopeType            QuotaScopeType      `json:"scope_type"`
+	ScopeID              string              `json:"scope_id"`
+	ModelPattern         string              `json:"model_pattern,omitempty"`
+	WindowType           BudgetWindowType    `json:"window_type,omitempty"`
+	RPMLimit             int                 `json:"rpm_limit,omitempty"`
+	TPMLimit             int                 `json:"tpm_limit,omitempty"`
+	ITPMLimit            int                 `json:"itpm_limit,omitempty"`
+	OTPMLimit            int                 `json:"otpm_limit,omitempty"`
+	TPDLimit             int64               `json:"tpd_limit,omitempty"`
+	MaxConcurrent        int                 `json:"max_concurrent,omitempty"`
+	MaxBudgetMicros      int64               `json:"max_budget_micros,omitempty"`
+	SpentFloorMicros     int64               `json:"spent_floor_micros,omitempty"`
+	RollingEntries       []RollingSpendEntry `json:"-"`
+	RollingHistoryLoaded bool                `json:"-"`
+	MaxIterations        int                 `json:"max_iterations,omitempty"`
+	WindowTTLSec         int                 `json:"window_ttl_sec,omitempty"`
 }
 
 // HasLimits reports whether the descriptor configures at least one positive quota dimension.
@@ -172,16 +182,18 @@ func (w BudgetWindowType) IsValid() bool {
 // BudgetWindowLimit configures a simultaneous budget cap for a specific entity
 // and window_type persisted in budget_window_limits.
 type BudgetWindowLimit struct {
-	ID              string           `json:"id"`
-	OrgID           string           `json:"org_id"`
-	ScopeType       QuotaScopeType   `json:"scope_type"`
-	ScopeID         string           `json:"scope_id"`
-	WindowType      BudgetWindowType `json:"window_type"`
-	MaxBudgetMicros int64            `json:"max_budget_micros"`
-	SpentMicros     int64            `json:"spent_micros"`
-	WindowResetAt   time.Time        `json:"window_reset_at"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
+	ID                   string           `json:"id"`
+	OrgID                string           `json:"org_id"`
+	ScopeType            QuotaScopeType   `json:"scope_type"`
+	ScopeID              string           `json:"scope_id"`
+	WindowType           BudgetWindowType `json:"window_type"`
+	MaxBudgetMicros      int64            `json:"max_budget_micros"`
+	SpentMicros          int64            `json:"spent_micros"`
+	RollingHoldMicros    int64            `json:"rolling_hold_micros,omitempty"`
+	RollingHoldExpiresAt *time.Time       `json:"rolling_hold_expires_at,omitempty"`
+	WindowResetAt        time.Time        `json:"window_reset_at"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
 }
 
 // Clone returns a copy of the BudgetWindowLimit.
@@ -190,6 +202,10 @@ func (b *BudgetWindowLimit) Clone() *BudgetWindowLimit {
 		return nil
 	}
 	cp := *b
+	if b.RollingHoldExpiresAt != nil {
+		t := *b.RollingHoldExpiresAt
+		cp.RollingHoldExpiresAt = &t
+	}
 	return &cp
 }
 

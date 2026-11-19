@@ -31,11 +31,15 @@ type ResolverConfig struct {
 	ProxyDefaultRole           string
 }
 
+// EmbeddedAuthenticator optionally supplies an authenticated data-plane identity.
+type EmbeddedAuthenticator func(context.Context, *http.Request) (*domain.IdentityContext, error)
+
 // AuthResolver resolves Data Plane HTTP requests into a frozen domain.IdentityContext
 // with an attached domain.Principal across Virtual API Keys, OIDC/JWT (with claim-to-key
 // mapping and race-safe JIT user provisioning), OAuth token introspection, and trusted
 // reverse-proxy identity headers.
 type AuthResolver struct {
+	embeddedAuth               EmbeddedAuthenticator
 	authSvc                    *Service
 	repo                       storage.Repository
 	rbac                       *RBACEngine
@@ -87,12 +91,26 @@ func (r *AuthResolver) SetRBAC(rbac *RBACEngine) {
 	}
 }
 
+// SingleJWTIssuer reports whether Data Plane JWT verification is disabled or bound to a single unambiguous issuer.
+func (r *AuthResolver) SingleJWTIssuer() bool {
+	if r == nil || r.jwtVerifier == nil || !r.jwtVerifier.Enabled() {
+		return true
+	}
+	return r.jwtVerifier.SingleIdentityIssuer()
+}
+
 // ExtractorOptions returns the inbound credential extraction options for this resolver.
 func (r *AuthResolver) ExtractorOptions() ExtractorOptions {
 	if r == nil || r.authSvc == nil {
 		return ExtractorOptions{}
 	}
 	return r.authSvc.ExtractorOptions()
+}
+
+// SetEmbeddedAuthenticator configures an SDK hook before the server starts
+// serving requests. A nil identity and nil error defer to built-in auth.
+func (r *AuthResolver) SetEmbeddedAuthenticator(authenticator EmbeddedAuthenticator) {
+	r.embeddedAuth = authenticator
 }
 
 // ResolveRequest authenticates an inbound Data Plane HTTP request and returns a frozen
@@ -104,6 +122,51 @@ func (r *AuthResolver) ResolveRequest(ctx context.Context, req *http.Request) (*
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "unauthenticated",
 			Message:    "Authentication resolver is not configured",
+		}
+	}
+
+	if r.embeddedAuth != nil {
+		identity, err := r.embeddedAuth(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if identity != nil {
+			org, err := r.repo.GetOrganization(ctx, identity.OrgID)
+			if err != nil || org == nil || !org.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "organization_inactive",
+					Message:    "Custom auth must resolve to an active organization",
+				}
+			}
+			clone := *identity
+			if len(clone.AllowedEndpoints) == 0 {
+				clone.AllowedEndpoints = []string{"*"}
+			}
+			if clone.OrgMaxBudgetMicros == 0 {
+				clone.OrgMaxBudgetMicros = org.MaxBudgetMicros
+				clone.OrgTempBudgetIncreaseMicros = org.TempBudgetIncreaseMicros
+				clone.OrgTempBudgetExpiresAt = org.TempBudgetExpiresAt
+				clone.OrgSoftBudgetMicros = org.SoftBudgetMicros
+				clone.OrgThrottleOnBudgetExceeded = org.ThrottleOnBudgetExceeded
+				clone.OrgBudgetFallbacks = domain.CloneBudgetFallbacks(org.BudgetFallbacks)
+				clone.OrgSpentMicros = org.SpentMicros
+			}
+			if clone.OrgRPMLimit == 0 {
+				clone.OrgRPMLimit = org.RPMLimit
+			}
+			if clone.OrgTPMLimit == 0 {
+				clone.OrgTPMLimit = org.TPMLimit
+			}
+			if clone.OrgMaxConcurrent == 0 {
+				clone.OrgMaxConcurrent = org.MaxConcurrentRequests
+			}
+			identity = &clone
+			if r.rbac != nil {
+				identity = r.rbac.EnrichIdentityWithAccessRules(ctx, identity)
+			}
+			return identity, nil
 		}
 	}
 
@@ -198,7 +261,7 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 
 	ov := r.jwtVerifier.VerifierForIssuer(claims.Issuer)
 	effectiveIssuer := strings.TrimSpace(claims.Issuer)
-	if effectiveIssuer == "" && ov != nil {
+	if ov != nil && strings.TrimSpace(ov.Issuer()) != "" {
 		effectiveIssuer = ov.Issuer()
 	}
 
@@ -269,6 +332,8 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 
 	return r.resolveOrProvisionUser(ctx, userResolutionParams{
 		orgID:         orgID,
+		jwt:           true,
+		issuer:        effectiveIssuer,
 		subject:       claims.Subject,
 		email:         claims.Email,
 		displayName:   extractRawDisplayName(claims.RawClaims, claims.Email, claims.Subject),
@@ -477,12 +542,12 @@ func (r *AuthResolver) resolveProxyAuth(ctx context.Context, req *http.Request) 
 				Retryable:  true,
 			}
 		}
-		if candidate != nil && candidate.OIDCSubject != "" && proxyID.UserID != "" && candidate.OIDCSubject != proxyID.UserID && candidate.ID != proxyID.UserID {
+		if candidate != nil && (candidate.OIDCIssuer != "" || (candidate.OIDCSubject != "" && proxyID.UserID != "" && candidate.OIDCSubject != proxyID.UserID && candidate.ID != proxyID.UserID)) {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusUnauthorized,
 				Type:       domain.ErrorTypeAuthentication,
 				Code:       "subject_mismatch",
-				Message:    "Proxy user identifier does not match registered OIDC subject",
+				Message:    "Proxy user identifier does not match registered OIDC identity",
 			}
 		}
 		user = candidate
@@ -568,6 +633,8 @@ func (r *AuthResolver) resolveMemberTeamIDOverride(ctx context.Context, orgID st
 }
 
 type userResolutionParams struct {
+	jwt           bool
+	issuer        string
 	orgID         string
 	subject       string
 	email         string
@@ -610,7 +677,11 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 
 	var user *domain.User
 	if p.subject != "" {
-		user, err = r.lookupUserByOrgAndSubject(ctx, p.orgID, p.subject)
+		if p.jwt {
+			user, err = lookupJWTUser(ctx, r.repo, r.jwtVerifier, p.orgID, p.orgID, p.issuer, p.subject)
+		} else {
+			user, err = r.lookupUserByOrgAndSubject(ctx, p.orgID, p.subject)
+		}
 		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
@@ -622,7 +693,7 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 		}
 	}
 
-	if user == nil && p.email != "" {
+	if user == nil && p.email != "" && !p.jwt {
 		candidate, emailErr := r.lookupUserByOrgAndEmail(ctx, p.orgID, p.email)
 		if emailErr != nil && !errors.Is(emailErr, storage.ErrNotFound) {
 			var gwErr *domain.GatewayError
@@ -638,12 +709,12 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 			}
 		}
 		if candidate != nil {
-			if candidate.OIDCSubject != "" && p.subject != "" && candidate.OIDCSubject != p.subject {
+			if candidate.OIDCIssuer != "" || (candidate.OIDCSubject != "" && p.subject != "" && candidate.OIDCSubject != p.subject) {
 				return nil, &domain.GatewayError{
 					StatusCode:  http.StatusUnauthorized,
 					Type:        domain.ErrorTypeAuthentication,
 					Code:        "subject_mismatch",
-					Message:     "Authenticated subject does not match registered user OIDC subject",
+					Message:     "Authenticated subject does not match registered user OIDC identity",
 					AuthFailure: true,
 				}
 			}
@@ -671,7 +742,11 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 
 		email := strings.TrimSpace(p.email)
 		if email == "" {
-			email = synthesizeOIDCEmail(p.orgID, p.subject)
+			subject := p.subject
+			if p.issuer != "" {
+				subject = p.issuer + "\x00" + subject
+			}
+			email = synthesizeOIDCEmail(p.orgID, subject)
 		}
 
 		jitUser := &domain.User{
@@ -680,6 +755,7 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 			Email:             email,
 			Name:              firstNonEmpty(p.displayName, email, p.subject),
 			Role:              resolveJITRole(p.claimRole, p.defaultRole),
+			OIDCIssuer:        p.issuer,
 			OIDCSubject:       p.subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
 			IsActive:          true,
@@ -704,6 +780,9 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 					Message:    "Unable to provision JIT user: " + jitErr.Error(),
 					Retryable:  true,
 				}
+			}
+			if p.jwt && (createdUser == nil || createdUser.OrgID != p.orgID || createdUser.OIDCIssuer != p.issuer || createdUser.OIDCSubject != p.subject) {
+				return nil, invalidAPIKeyError()
 			}
 			user = createdUser
 		} else {
@@ -739,6 +818,25 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 
 	teamIDOverride := r.resolveMemberTeamIDOverride(ctx, org.ID, user, p.claimTeamID)
 	return r.projectUserIdentity(ctx, org, user, p.principal, teamIDOverride)
+}
+
+// lookupJWTUser resolves an issuer-bound user first. Subject-only accounts are
+// usable only with a single identity provider and an unambiguous repository match.
+func lookupJWTUser(ctx context.Context, repo storage.Repository, verifier *JWTVerifier, orgID, legacyOrgID, issuer, subject string) (*domain.User, error) {
+	users, ok := repo.(storage.OIDCUserRepository)
+	if !ok || users == nil {
+		return nil, storage.ErrNotFound
+	}
+	if orgID != "" && issuer != "" {
+		user, err := users.GetUserByOIDCIdentity(ctx, orgID, issuer, subject)
+		if !errors.Is(err, storage.ErrNotFound) {
+			return user, err
+		}
+	}
+	if !verifier.SingleIdentityIssuer() {
+		return nil, storage.ErrNotFound
+	}
+	return users.GetUserByOIDCIdentity(ctx, legacyOrgID, "", subject)
 }
 
 func (r *AuthResolver) lookupUserByOrgAndSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {

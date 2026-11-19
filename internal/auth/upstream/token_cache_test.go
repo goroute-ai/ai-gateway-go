@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -76,11 +77,13 @@ func TestDistributedTokenCache_MultiPodRedisLockPreventsStampede(t *testing.T) {
 	})
 
 	podA := upstream.NewDistributedTokenCache(fabricA, upstream.DistributedTokenCacheConfig{
+		EncryptionKey:    "gateway-token-cache-test-key",
 		LockTTL:          10 * time.Second,
 		LockWaitTimeout:  2 * time.Second,
 		LockPollInterval: 10 * time.Millisecond,
 	})
 	podB := upstream.NewDistributedTokenCache(fabricB, upstream.DistributedTokenCacheConfig{
+		EncryptionKey:    "gateway-token-cache-test-key",
 		LockTTL:          10 * time.Second,
 		LockWaitTimeout:  2 * time.Second,
 		LockPollInterval: 10 * time.Millisecond,
@@ -127,8 +130,15 @@ func TestDistributedTokenCache_MultiPodRedisLockPreventsStampede(t *testing.T) {
 		}
 	}
 
-	// Verify a fresh Pod C reads directly from Redis L2.
-	podC := upstream.NewDistributedTokenCache(fabricB, upstream.DistributedTokenCacheConfig{})
+	// Verify Redis does not store plaintext token and Pod C reads encrypted L2.
+	for _, k := range mr.Keys() {
+		if v, err := mr.Get(k); err == nil && strings.Contains(v, "shared-pod-token") {
+			t.Fatalf("expected encrypted L2 cache value in %q, found plaintext", k)
+		}
+	}
+	podC := upstream.NewDistributedTokenCache(fabricB, upstream.DistributedTokenCacheConfig{
+		EncryptionKey: "gateway-token-cache-test-key",
+	})
 	tokC, err := podC.GetOrRefresh(context.Background(), "multi-pod-key", func(ctx context.Context) (string, time.Duration, error) {
 		refreshCalls.Add(1)
 		return "should-not-refresh", 5 * time.Minute, nil
@@ -155,6 +165,7 @@ func TestDistributedTokenCache_EarlyRefreshAndInvalidate(t *testing.T) {
 	}
 
 	cache := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{
+		EncryptionKey:    "gateway-token-cache-test-key",
 		EarlyRefreshSkew: 30 * time.Second,
 		Now:              nowFn,
 	})
@@ -193,7 +204,9 @@ func TestDistributedTokenCache_GracefulRedisFailure(t *testing.T) {
 	fabric := storage.NewRedisFabric(mr.Addr(), "", 0)
 	mr.Close() // Simulate Redis outage
 
-	cache := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
+	cache := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{
+		EncryptionKey: "gateway-token-cache-test-key",
+	})
 
 	tok, err := cache.GetOrRefresh(context.Background(), "degraded-key", func(ctx context.Context) (string, time.Duration, error) {
 		return "degraded-ok-token", 5 * time.Minute, nil
@@ -228,8 +241,8 @@ func TestUpstreamStrategies_SharedDistributedTokenCacheAcrossPods(t *testing.T) 
 		}))
 		defer srv.Close()
 
-		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
-		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
+		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
+		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
 		s1 := upstream.NewOAuth2StrategyWithCache(srv.URL, "cid", "csec", []string{"read"}, netPolicy, c1)
 		s2 := upstream.NewOAuth2StrategyWithCache(srv.URL, "cid", "csec", []string{"read"}, netPolicy, c2)
 
@@ -247,6 +260,32 @@ func TestUpstreamStrategies_SharedDistributedTokenCacheAcrossPods(t *testing.T) 
 		if req2.Header.Get("Authorization") != "Bearer oauth2-shared-tok" {
 			t.Fatalf("unexpected auth header on pod 2: %q", req2.Header.Get("Authorization"))
 		}
+
+		// Tenant/server scoping must isolate tokens across CallingOrgID/ServerID.
+		reqOtherOrg, _ := http.NewRequest(http.MethodGet, "https://api.example.com", nil)
+		if err := s2.Apply(context.Background(), reqOtherOrg, &upstream.UpstreamAuthContext{
+			CallingOrgID: "org-other",
+			ServerID:     "srv-2",
+		}); err != nil {
+			t.Fatalf("s2 apply(org-other) failed: %v", err)
+		}
+		if calls.Load() != 2 {
+			t.Fatalf("expected second IdP call for distinct tenant/server scope, got %d", calls.Load())
+		}
+
+		// Empty EncryptionKey disables Redis L2 sharing (no plaintext Redis leak).
+		noKeyMr := miniredis.RunT(t)
+		noKeyFabric := storage.NewRedisFabric(noKeyMr.Addr(), "", 0)
+		defer func() { _ = noKeyFabric.Client().Close() }()
+		cNoKey := upstream.NewDistributedTokenCache(noKeyFabric, upstream.DistributedTokenCacheConfig{})
+		sNoKey := upstream.NewOAuth2StrategyWithCache(srv.URL, "cid", "csec", []string{"read"}, netPolicy, cNoKey)
+		reqNoKey, _ := http.NewRequest(http.MethodGet, "https://api.example.com", nil)
+		if err := sNoKey.Apply(context.Background(), reqNoKey, nil); err != nil {
+			t.Fatalf("sNoKey apply failed: %v", err)
+		}
+		if len(noKeyMr.Keys()) != 0 {
+			t.Fatalf("expected empty Redis when EncryptionKey is unset, got keys %v", noKeyMr.Keys())
+		}
 	})
 
 	t.Run("TokenExchangeStrategy shares L2 across instances", func(t *testing.T) {
@@ -261,8 +300,8 @@ func TestUpstreamStrategies_SharedDistributedTokenCacheAcrossPods(t *testing.T) 
 		}))
 		defer srv.Close()
 
-		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
-		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
+		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
+		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
 
 		s1, err := upstream.NewTokenExchangeStrategy(upstream.TokenExchangeConfig{
 			TokenEndpoint: srv.URL,
@@ -316,8 +355,8 @@ func TestUpstreamStrategies_SharedDistributedTokenCacheAcrossPods(t *testing.T) 
 		}))
 		defer srv.Close()
 
-		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
-		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{})
+		c1 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
+		c2 := upstream.NewDistributedTokenCache(fabric, upstream.DistributedTokenCacheConfig{EncryptionKey: "gateway-token-cache-test-key"})
 
 		s1, err := upstream.NewOktaIDJAGStrategy(upstream.OktaIDJAGConfig{
 			TokenEndpoint: srv.URL,

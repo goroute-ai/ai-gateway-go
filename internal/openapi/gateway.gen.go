@@ -2205,30 +2205,33 @@ type AdminTempBudgetBoostRequest struct {
 
 // AdminUser defines model for AdminUser.
 type AdminUser struct {
-	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
-	BudgetResetAt            *time.Time           `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod        *string              `json:"budget_reset_period,omitempty"`
-	CreatedAt                time.Time            `json:"created_at"`
-	Email                    string               `json:"email"`
-	Id                       string               `json:"id"`
-	IsActive                 bool                 `json:"is_active"`
-	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests    *int                 `json:"max_concurrent_requests,omitempty"`
-	Name                     *string              `json:"name,omitempty"`
-	OidcSubject              *string              `json:"oidc_subject,omitempty"`
-	OrgId                    string               `json:"org_id"`
-	Role                     AdminUserRole        `json:"role"`
-	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
-	ScimActive               *bool                `json:"scim_active,omitempty"`
-	ScimExternalId           *string              `json:"scim_external_id,omitempty"`
-	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
-	SpentMicros              *int64               `json:"spent_micros,omitempty"`
-	TeamId                   *string              `json:"team_id,omitempty"`
-	TempBudgetExpiresAt      *time.Time           `json:"temp_budget_expires_at,omitempty"`
-	TempBudgetIncreaseMicros *int64               `json:"temp_budget_increase_micros,omitempty"`
-	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
-	UpdatedAt                time.Time            `json:"updated_at"`
+	BudgetFallbacks       *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt         *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod     *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt             time.Time            `json:"created_at"`
+	Email                 string               `json:"email"`
+	Id                    string               `json:"id"`
+	IsActive              bool                 `json:"is_active"`
+	MaxBudgetMicros       *int64               `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests *int                 `json:"max_concurrent_requests,omitempty"`
+	Name                  *string              `json:"name,omitempty"`
+
+	// OidcIssuer Verified OIDC issuer that owns the linked subject.
+	OidcIssuer               *string       `json:"oidc_issuer,omitempty"`
+	OidcSubject              *string       `json:"oidc_subject,omitempty"`
+	OrgId                    string        `json:"org_id"`
+	Role                     AdminUserRole `json:"role"`
+	RpmLimit                 *int          `json:"rpm_limit,omitempty"`
+	ScimActive               *bool         `json:"scim_active,omitempty"`
+	ScimExternalId           *string       `json:"scim_external_id,omitempty"`
+	SoftBudgetMicros         *int64        `json:"soft_budget_micros,omitempty"`
+	SpentMicros              *int64        `json:"spent_micros,omitempty"`
+	TeamId                   *string       `json:"team_id,omitempty"`
+	TempBudgetExpiresAt      *time.Time    `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros *int64        `json:"temp_budget_increase_micros,omitempty"`
+	ThrottleOnBudgetExceeded *bool         `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                 *int          `json:"tpm_limit,omitempty"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 // AdminUserRole defines model for AdminUser.Role.
@@ -2954,6 +2957,45 @@ type ModerationResponse struct {
 	} `json:"results"`
 }
 
+// OperatorLoginRequest Provide either email or username alongside the password.
+type OperatorLoginRequest struct {
+	Email    *string `json:"email,omitempty"`
+	Password string  `json:"password"`
+	Username *string `json:"username,omitempty"`
+}
+
+// OperatorPasswordRequest Supply a target user_id or email for an administrative reset. Self-service updates require current_password when a credential exists.
+type OperatorPasswordRequest struct {
+	CurrentPassword *string `json:"current_password,omitempty"`
+	Email           *string `json:"email,omitempty"`
+	NewPassword     *string `json:"new_password,omitempty"`
+
+	// Password Alternate field for new_password.
+	Password *string `json:"password,omitempty"`
+	UserId   *string `json:"user_id,omitempty"`
+}
+
+// OperatorProfile defines model for OperatorProfile.
+type OperatorProfile struct {
+	ActorId    *string `json:"actor_id,omitempty"`
+	AuthMethod *string `json:"auth_method,omitempty"`
+	OrgId      *string `json:"org_id,omitempty"`
+	Role       *string `json:"role,omitempty"`
+	SessionId  *string `json:"session_id,omitempty"`
+	TeamId     *string `json:"team_id,omitempty"`
+}
+
+// OperatorSessionResponse defines model for OperatorSessionResponse.
+type OperatorSessionResponse struct {
+	CsrfToken             *string          `json:"csrf_token,omitempty"`
+	ExpiresAt             *time.Time       `json:"expires_at,omitempty"`
+	Operator              *OperatorProfile `json:"operator,omitempty"`
+	PasswordResetRequired *bool            `json:"password_reset_required,omitempty"`
+	SessionToken          *string          `json:"session_token,omitempty"`
+	Token                 *string          `json:"token,omitempty"`
+	User                  *AdminUser       `json:"user,omitempty"`
+}
+
 // OrgModelPolicy defines model for OrgModelPolicy.
 type OrgModelPolicy struct {
 	ApprovedAt time.Time `json:"approved_at"`
@@ -3471,6 +3513,23 @@ type ListUsersParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// CompleteAuthCLILoginParams defines parameters for CompleteAuthCLILogin.
+type CompleteAuthCLILoginParams struct {
+	XCSRFToken *string `json:"X-CSRF-Token,omitempty"`
+}
+
+// OperatorLogoutParams defines parameters for OperatorLogout.
+type OperatorLogoutParams struct {
+	// XCSRFToken Required for cookie authentication.
+	XCSRFToken *string `json:"X-CSRF-Token,omitempty"`
+}
+
+// OperatorPasswordUpdateParams defines parameters for OperatorPasswordUpdate.
+type OperatorPasswordUpdateParams struct {
+	// XCSRFToken Required for cookie authentication.
+	XCSRFToken *string `json:"X-CSRF-Token,omitempty"`
+}
+
 // CreateAudioTranscriptionMultipartBody defines parameters for CreateAudioTranscription.
 type CreateAudioTranscriptionMultipartBody struct {
 	File  *openapi_types.File `json:"file,omitempty"`
@@ -3632,6 +3691,12 @@ type CreateUserJSONRequestBody = AdminUser
 
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = AdminUser
+
+// OperatorLoginJSONRequestBody defines body for OperatorLogin for application/json ContentType.
+type OperatorLoginJSONRequestBody = OperatorLoginRequest
+
+// OperatorPasswordUpdateJSONRequestBody defines body for OperatorPasswordUpdate for application/json ContentType.
+type OperatorPasswordUpdateJSONRequestBody = OperatorPasswordRequest
 
 // CreateAudioSpeechJSONRequestBody defines body for CreateAudioSpeech for application/json ContentType.
 type CreateAudioSpeechJSONRequestBody = AudioSpeechRequest
@@ -4662,6 +4727,36 @@ type ServerInterface interface {
 	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
 	// (PUT /admin/v1/users/{userID})
 	UpdateUser(w http.ResponseWriter, r *http.Request, userID string)
+	// CompleteAuthCLILogin Authorize a pending CLI login from an authenticated Control Plane session
+	// (POST /auth/cli/complete/{login_id})
+	CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string, params CompleteAuthCLILoginParams)
+	// PollAuthCLILogin Poll CLI browser login status and retrieve a short-lived token once authorized
+	// (GET /auth/cli/poll/{login_id})
+	PollAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string)
+	// StartAuthCLILogin Start a CLI browser-mediated login transaction
+	// (POST /auth/cli/start)
+	StartAuthCLILogin(w http.ResponseWriter, r *http.Request)
+	// OperatorLogin Sign in with a password
+	// (POST /auth/login)
+	OperatorLogin(w http.ResponseWriter, r *http.Request)
+	// OperatorLogout Revoke the current operator session
+	// (POST /auth/logout)
+	OperatorLogout(w http.ResponseWriter, r *http.Request, params OperatorLogoutParams)
+	// OperatorProfile Get the current operator profile
+	// (GET /auth/me)
+	OperatorProfile(w http.ResponseWriter, r *http.Request)
+	// OperatorPasswordUpdate Set or change an operator password
+	// (POST /auth/password)
+	OperatorPasswordUpdate(w http.ResponseWriter, r *http.Request, params OperatorPasswordUpdateParams)
+	// ListAuthSSOProviders List configured Control Plane SSO providers
+	// (GET /auth/sso/providers)
+	ListAuthSSOProviders(w http.ResponseWriter, r *http.Request)
+	// CompleteAuthSSOCallback Complete Control Plane OIDC/SSO callback and establish a session
+	// (GET /auth/sso/{provider}/callback)
+	CompleteAuthSSOCallback(w http.ResponseWriter, r *http.Request, provider string)
+	// StartAuthSSOLogin Initiate Control Plane OIDC/SSO PKCE login
+	// (GET /auth/sso/{provider}/login)
+	StartAuthSSOLogin(w http.ResponseWriter, r *http.Request, provider string)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(w http.ResponseWriter, r *http.Request)
@@ -8151,6 +8246,272 @@ func (siw *ServerInterfaceWrapper) UpdateUser(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// CompleteAuthCLILogin operation middleware
+func (siw *ServerInterfaceWrapper) CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "login_id" -------------
+	var loginId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "login_id", r.PathValue("login_id"), &loginId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "login_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CompleteAuthCLILoginParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = &XCSRFToken
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteAuthCLILogin(w, r, loginId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PollAuthCLILogin operation middleware
+func (siw *ServerInterfaceWrapper) PollAuthCLILogin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "login_id" -------------
+	var loginId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "login_id", r.PathValue("login_id"), &loginId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "login_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PollAuthCLILogin(w, r, loginId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartAuthCLILogin operation middleware
+func (siw *ServerInterfaceWrapper) StartAuthCLILogin(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartAuthCLILogin(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OperatorLogin operation middleware
+func (siw *ServerInterfaceWrapper) OperatorLogin(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OperatorLogin(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OperatorLogout operation middleware
+func (siw *ServerInterfaceWrapper) OperatorLogout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params OperatorLogoutParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = &XCSRFToken
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OperatorLogout(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OperatorProfile operation middleware
+func (siw *ServerInterfaceWrapper) OperatorProfile(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OperatorProfile(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OperatorPasswordUpdate operation middleware
+func (siw *ServerInterfaceWrapper) OperatorPasswordUpdate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params OperatorPasswordUpdateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = &XCSRFToken
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OperatorPasswordUpdate(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAuthSSOProviders operation middleware
+func (siw *ServerInterfaceWrapper) ListAuthSSOProviders(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAuthSSOProviders(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteAuthSSOCallback operation middleware
+func (siw *ServerInterfaceWrapper) CompleteAuthSSOCallback(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteAuthSSOCallback(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartAuthSSOLogin operation middleware
+func (siw *ServerInterfaceWrapper) StartAuthSSOLogin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartAuthSSOLogin(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateAudioSpeech operation middleware
 func (siw *ServerInterfaceWrapper) CreateAudioSpeech(w http.ResponseWriter, r *http.Request) {
 
@@ -8709,6 +9070,16 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/login", wrapper.OperatorLogin)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/me", wrapper.OperatorProfile)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/logout", wrapper.OperatorLogout)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/password", wrapper.OperatorPasswordUpdate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/sso/providers", wrapper.ListAuthSSOProviders)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/sso/{provider}/login", wrapper.StartAuthSSOLogin)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/sso/{provider}/callback", wrapper.CompleteAuthSSOCallback)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/cli/start", wrapper.StartAuthCLILogin)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/cli/poll/{login_id}", wrapper.PollAuthCLILogin)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/cli/complete/{login_id}", wrapper.CompleteAuthCLILogin)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/chat/completions", wrapper.CreateChatCompletion)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/embeddings", wrapper.CreateEmbedding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/models", wrapper.ListModels)
@@ -11839,6 +12210,307 @@ func (response UpdateUser200JSONResponse) VisitUpdateUserResponse(w http.Respons
 	return err
 }
 
+type CompleteAuthCLILoginRequestObject struct {
+	LoginId string `json:"login_id"`
+	Params  CompleteAuthCLILoginParams
+}
+
+type CompleteAuthCLILoginResponseObject interface {
+	VisitCompleteAuthCLILoginResponse(w http.ResponseWriter) error
+}
+
+type CompleteAuthCLILogin200Response struct {
+}
+
+func (response CompleteAuthCLILogin200Response) VisitCompleteAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type CompleteAuthCLILogin401Response struct {
+}
+
+func (response CompleteAuthCLILogin401Response) VisitCompleteAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type CompleteAuthCLILogin403Response struct {
+}
+
+func (response CompleteAuthCLILogin403Response) VisitCompleteAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type PollAuthCLILoginRequestObject struct {
+	LoginId string `json:"login_id"`
+}
+
+type PollAuthCLILoginResponseObject interface {
+	VisitPollAuthCLILoginResponse(w http.ResponseWriter) error
+}
+
+type PollAuthCLILogin200Response struct {
+}
+
+func (response PollAuthCLILogin200Response) VisitPollAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type PollAuthCLILogin404Response struct {
+}
+
+func (response PollAuthCLILogin404Response) VisitPollAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type StartAuthCLILoginRequestObject struct {
+}
+
+type StartAuthCLILoginResponseObject interface {
+	VisitStartAuthCLILoginResponse(w http.ResponseWriter) error
+}
+
+type StartAuthCLILogin200Response struct {
+}
+
+func (response StartAuthCLILogin200Response) VisitStartAuthCLILoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type OperatorLoginRequestObject struct {
+	Body *OperatorLoginJSONRequestBody
+}
+
+type OperatorLoginResponseObject interface {
+	VisitOperatorLoginResponse(w http.ResponseWriter) error
+}
+
+type OperatorLogin200ResponseHeaders struct {
+	SetCookie *string
+}
+
+type OperatorLogin200JSONResponse struct {
+	Body    OperatorSessionResponse
+	Headers OperatorLogin200ResponseHeaders
+}
+
+func (response OperatorLogin200JSONResponse) VisitOperatorLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.SetCookie != nil {
+		w.Header().Set("Set-Cookie", fmt.Sprint(*response.Headers.SetCookie))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OperatorLogin401Response struct {
+}
+
+func (response OperatorLogin401Response) VisitOperatorLoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type OperatorLogin403Response struct {
+}
+
+func (response OperatorLogin403Response) VisitOperatorLoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type OperatorLogin429Response struct {
+}
+
+func (response OperatorLogin429Response) VisitOperatorLoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(429)
+	return nil
+}
+
+type OperatorLogoutRequestObject struct {
+	Params OperatorLogoutParams
+}
+
+type OperatorLogoutResponseObject interface {
+	VisitOperatorLogoutResponse(w http.ResponseWriter) error
+}
+
+type OperatorLogout200Response struct {
+}
+
+func (response OperatorLogout200Response) VisitOperatorLogoutResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type OperatorLogout401Response struct {
+}
+
+func (response OperatorLogout401Response) VisitOperatorLogoutResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type OperatorLogout403Response struct {
+}
+
+func (response OperatorLogout403Response) VisitOperatorLogoutResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type OperatorProfileRequestObject struct {
+}
+
+type OperatorProfileResponseObject interface {
+	VisitOperatorProfileResponse(w http.ResponseWriter) error
+}
+
+type OperatorProfile200JSONResponse OperatorSessionResponse
+
+func (response OperatorProfile200JSONResponse) VisitOperatorProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OperatorProfile401Response struct {
+}
+
+func (response OperatorProfile401Response) VisitOperatorProfileResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type OperatorPasswordUpdateRequestObject struct {
+	Params OperatorPasswordUpdateParams
+	Body   *OperatorPasswordUpdateJSONRequestBody
+}
+
+type OperatorPasswordUpdateResponseObject interface {
+	VisitOperatorPasswordUpdateResponse(w http.ResponseWriter) error
+}
+
+type OperatorPasswordUpdate200Response struct {
+}
+
+func (response OperatorPasswordUpdate200Response) VisitOperatorPasswordUpdateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type OperatorPasswordUpdate400Response struct {
+}
+
+func (response OperatorPasswordUpdate400Response) VisitOperatorPasswordUpdateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type OperatorPasswordUpdate401Response struct {
+}
+
+func (response OperatorPasswordUpdate401Response) VisitOperatorPasswordUpdateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type OperatorPasswordUpdate403Response struct {
+}
+
+func (response OperatorPasswordUpdate403Response) VisitOperatorPasswordUpdateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type ListAuthSSOProvidersRequestObject struct {
+}
+
+type ListAuthSSOProvidersResponseObject interface {
+	VisitListAuthSSOProvidersResponse(w http.ResponseWriter) error
+}
+
+type ListAuthSSOProviders200Response struct {
+}
+
+func (response ListAuthSSOProviders200Response) VisitListAuthSSOProvidersResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type CompleteAuthSSOCallbackRequestObject struct {
+	Provider string `json:"provider"`
+}
+
+type CompleteAuthSSOCallbackResponseObject interface {
+	VisitCompleteAuthSSOCallbackResponse(w http.ResponseWriter) error
+}
+
+type CompleteAuthSSOCallback200Response struct {
+}
+
+func (response CompleteAuthSSOCallback200Response) VisitCompleteAuthSSOCallbackResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type CompleteAuthSSOCallback302Response struct {
+}
+
+func (response CompleteAuthSSOCallback302Response) VisitCompleteAuthSSOCallbackResponse(w http.ResponseWriter) error {
+	w.WriteHeader(302)
+	return nil
+}
+
+type CompleteAuthSSOCallback401Response struct {
+}
+
+func (response CompleteAuthSSOCallback401Response) VisitCompleteAuthSSOCallbackResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type StartAuthSSOLoginRequestObject struct {
+	Provider string `json:"provider"`
+}
+
+type StartAuthSSOLoginResponseObject interface {
+	VisitStartAuthSSOLoginResponse(w http.ResponseWriter) error
+}
+
+type StartAuthSSOLogin200Response struct {
+}
+
+func (response StartAuthSSOLogin200Response) VisitStartAuthSSOLoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type StartAuthSSOLogin302Response struct {
+}
+
+func (response StartAuthSSOLogin302Response) VisitStartAuthSSOLoginResponse(w http.ResponseWriter) error {
+	w.WriteHeader(302)
+	return nil
+}
+
 type CreateAudioSpeechRequestObject struct {
 	Body *CreateAudioSpeechJSONRequestBody
 }
@@ -12713,6 +13385,36 @@ type StrictServerInterface interface {
 	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
 	// (PUT /admin/v1/users/{userID})
 	UpdateUser(ctx context.Context, request UpdateUserRequestObject) (UpdateUserResponseObject, error)
+	// CompleteAuthCLILogin Authorize a pending CLI login from an authenticated Control Plane session
+	// (POST /auth/cli/complete/{login_id})
+	CompleteAuthCLILogin(ctx context.Context, request CompleteAuthCLILoginRequestObject) (CompleteAuthCLILoginResponseObject, error)
+	// PollAuthCLILogin Poll CLI browser login status and retrieve a short-lived token once authorized
+	// (GET /auth/cli/poll/{login_id})
+	PollAuthCLILogin(ctx context.Context, request PollAuthCLILoginRequestObject) (PollAuthCLILoginResponseObject, error)
+	// StartAuthCLILogin Start a CLI browser-mediated login transaction
+	// (POST /auth/cli/start)
+	StartAuthCLILogin(ctx context.Context, request StartAuthCLILoginRequestObject) (StartAuthCLILoginResponseObject, error)
+	// OperatorLogin Sign in with a password
+	// (POST /auth/login)
+	OperatorLogin(ctx context.Context, request OperatorLoginRequestObject) (OperatorLoginResponseObject, error)
+	// OperatorLogout Revoke the current operator session
+	// (POST /auth/logout)
+	OperatorLogout(ctx context.Context, request OperatorLogoutRequestObject) (OperatorLogoutResponseObject, error)
+	// OperatorProfile Get the current operator profile
+	// (GET /auth/me)
+	OperatorProfile(ctx context.Context, request OperatorProfileRequestObject) (OperatorProfileResponseObject, error)
+	// OperatorPasswordUpdate Set or change an operator password
+	// (POST /auth/password)
+	OperatorPasswordUpdate(ctx context.Context, request OperatorPasswordUpdateRequestObject) (OperatorPasswordUpdateResponseObject, error)
+	// ListAuthSSOProviders List configured Control Plane SSO providers
+	// (GET /auth/sso/providers)
+	ListAuthSSOProviders(ctx context.Context, request ListAuthSSOProvidersRequestObject) (ListAuthSSOProvidersResponseObject, error)
+	// CompleteAuthSSOCallback Complete Control Plane OIDC/SSO callback and establish a session
+	// (GET /auth/sso/{provider}/callback)
+	CompleteAuthSSOCallback(ctx context.Context, request CompleteAuthSSOCallbackRequestObject) (CompleteAuthSSOCallbackResponseObject, error)
+	// StartAuthSSOLogin Initiate Control Plane OIDC/SSO PKCE login
+	// (GET /auth/sso/{provider}/login)
+	StartAuthSSOLogin(ctx context.Context, request StartAuthSSOLoginRequestObject) (StartAuthSSOLoginResponseObject, error)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(ctx context.Context, request CreateAudioSpeechRequestObject) (CreateAudioSpeechResponseObject, error)
@@ -16059,6 +16761,273 @@ func (sh *strictHandler) UpdateUser(w http.ResponseWriter, r *http.Request, user
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateUserResponseObject); ok {
 		if err := validResponse.VisitUpdateUserResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteAuthCLILogin operation middleware
+func (sh *strictHandler) CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string, params CompleteAuthCLILoginParams) {
+	var request CompleteAuthCLILoginRequestObject
+
+	request.LoginId = loginId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteAuthCLILogin(ctx, request.(CompleteAuthCLILoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteAuthCLILogin")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteAuthCLILoginResponseObject); ok {
+		if err := validResponse.VisitCompleteAuthCLILoginResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PollAuthCLILogin operation middleware
+func (sh *strictHandler) PollAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string) {
+	var request PollAuthCLILoginRequestObject
+
+	request.LoginId = loginId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PollAuthCLILogin(ctx, request.(PollAuthCLILoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PollAuthCLILogin")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PollAuthCLILoginResponseObject); ok {
+		if err := validResponse.VisitPollAuthCLILoginResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartAuthCLILogin operation middleware
+func (sh *strictHandler) StartAuthCLILogin(w http.ResponseWriter, r *http.Request) {
+	var request StartAuthCLILoginRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartAuthCLILogin(ctx, request.(StartAuthCLILoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartAuthCLILogin")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartAuthCLILoginResponseObject); ok {
+		if err := validResponse.VisitStartAuthCLILoginResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// OperatorLogin operation middleware
+func (sh *strictHandler) OperatorLogin(w http.ResponseWriter, r *http.Request) {
+	var request OperatorLoginRequestObject
+
+	var body OperatorLoginJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OperatorLogin(ctx, request.(OperatorLoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OperatorLogin")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OperatorLoginResponseObject); ok {
+		if err := validResponse.VisitOperatorLoginResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// OperatorLogout operation middleware
+func (sh *strictHandler) OperatorLogout(w http.ResponseWriter, r *http.Request, params OperatorLogoutParams) {
+	var request OperatorLogoutRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OperatorLogout(ctx, request.(OperatorLogoutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OperatorLogout")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OperatorLogoutResponseObject); ok {
+		if err := validResponse.VisitOperatorLogoutResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// OperatorProfile operation middleware
+func (sh *strictHandler) OperatorProfile(w http.ResponseWriter, r *http.Request) {
+	var request OperatorProfileRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OperatorProfile(ctx, request.(OperatorProfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OperatorProfile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OperatorProfileResponseObject); ok {
+		if err := validResponse.VisitOperatorProfileResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// OperatorPasswordUpdate operation middleware
+func (sh *strictHandler) OperatorPasswordUpdate(w http.ResponseWriter, r *http.Request, params OperatorPasswordUpdateParams) {
+	var request OperatorPasswordUpdateRequestObject
+
+	request.Params = params
+
+	var body OperatorPasswordUpdateJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OperatorPasswordUpdate(ctx, request.(OperatorPasswordUpdateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OperatorPasswordUpdate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OperatorPasswordUpdateResponseObject); ok {
+		if err := validResponse.VisitOperatorPasswordUpdateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAuthSSOProviders operation middleware
+func (sh *strictHandler) ListAuthSSOProviders(w http.ResponseWriter, r *http.Request) {
+	var request ListAuthSSOProvidersRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAuthSSOProviders(ctx, request.(ListAuthSSOProvidersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAuthSSOProviders")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAuthSSOProvidersResponseObject); ok {
+		if err := validResponse.VisitListAuthSSOProvidersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteAuthSSOCallback operation middleware
+func (sh *strictHandler) CompleteAuthSSOCallback(w http.ResponseWriter, r *http.Request, provider string) {
+	var request CompleteAuthSSOCallbackRequestObject
+
+	request.Provider = provider
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteAuthSSOCallback(ctx, request.(CompleteAuthSSOCallbackRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteAuthSSOCallback")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteAuthSSOCallbackResponseObject); ok {
+		if err := validResponse.VisitCompleteAuthSSOCallbackResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartAuthSSOLogin operation middleware
+func (sh *strictHandler) StartAuthSSOLogin(w http.ResponseWriter, r *http.Request, provider string) {
+	var request StartAuthSSOLoginRequestObject
+
+	request.Provider = provider
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartAuthSSOLogin(ctx, request.(StartAuthSSOLoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartAuthSSOLogin")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartAuthSSOLoginResponseObject); ok {
+		if err := validResponse.VisitStartAuthSSOLoginResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

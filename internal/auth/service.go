@@ -43,6 +43,7 @@ type Service struct {
 	redis                   *storage.RedisFabric
 	masterAdminKey          string
 	masterEncryptionKey     string
+	vault                   *Vault
 	allowMasterKeyDataPlane bool
 	customAPIKeyHeader      string
 	jwtVerifier             *JWTVerifier
@@ -91,6 +92,18 @@ func (s *Service) now() time.Time {
 // SetMasterEncryptionKey configures the master encryption key used for secret isolation and self-credential checks.
 func (s *Service) SetMasterEncryptionKey(key string) {
 	s.masterEncryptionKey = strings.TrimSpace(key)
+	if s.vault == nil && len(s.masterEncryptionKey) >= 32 {
+		if v, err := NewVault(s.masterEncryptionKey); err == nil {
+			s.vault = v
+		}
+	}
+}
+
+// SetVault attaches the envelope encryption Vault used to encrypt staged replacement credentials.
+func (s *Service) SetVault(v *Vault) {
+	if s != nil {
+		s.vault = v
+	}
 }
 
 // SetAllowMasterKeyDataPlane controls whether MasterAdminKey can synthesize a fallback identity on data-plane endpoints.
@@ -360,6 +373,15 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	}
 	if vk.CreatedAt.IsZero() {
 		vk.CreatedAt = existing.CreatedAt
+	}
+	if vk.StagedKeyHash == "" {
+		vk.StagedKeyHash = existing.StagedKeyHash
+		vk.StagedKeyPrefix = existing.StagedKeyPrefix
+		vk.StagedEncryptedRawKey = existing.StagedEncryptedRawKey
+		vk.StagedKeyDEK = existing.StagedKeyDEK
+		if vk.StagedCreatedAt == nil {
+			vk.StagedCreatedAt = existing.StagedCreatedAt
+		}
 	}
 	vk.TeamID = strings.TrimSpace(vk.TeamID)
 	vk.ProjectID = strings.TrimSpace(vk.ProjectID)

@@ -459,11 +459,13 @@ type SpendEvent struct {
 	ProtocolTarget          string         `json:"protocol_target,omitempty"` // e.g. "mcp:github/search_repos" or "a2a:weather-agent"
 	OrgID                   string         `json:"org_id"`
 	TeamID                  string         `json:"team_id,omitempty"`
+	ProjectID               string         `json:"project_id,omitempty"`
 	UserID                  string         `json:"user_id,omitempty"`
 	VirtualKeyID            string         `json:"virtual_key_id"`
 	EndUserID               string         `json:"end_user_id,omitempty"`
 	Tags                    []string       `json:"tags,omitempty"`
 	ModelAccessGroupIDs     []string       `json:"model_access_group_ids,omitempty"`
+	MatchedQuotaPolicyIDs   []string       `json:"matched_quota_policy_ids,omitempty"`
 	SessionID               string         `json:"session_id,omitempty"`
 	Endpoint                string         `json:"endpoint"`
 	Modality                ModalityType   `json:"modality,omitempty"`

@@ -921,6 +921,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				markProviderDispatch(depCtx, dep)
 				r, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 				depCancel()
 				var usage *domain.TokenUsage
@@ -1124,6 +1125,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 					rm.loadBalancer.OnRequestStart(dep.ID)
 					spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep)
 					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					markProviderDispatch(depCtx, dep)
 					r, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 					depCancel()
 					var usage *domain.TokenUsage
@@ -1246,6 +1248,7 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				markProviderDispatch(depCtx, dep)
 				resp, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 				depCancel()
 				var usage *domain.TokenUsage
@@ -1413,6 +1416,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				markProviderDispatch(depCtx, dep)
 				u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, emit)
 				depCancel()
 				finishGenAIClientSpan(span, u, callErr)
@@ -1670,6 +1674,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 					rm.loadBalancer.OnRequestStart(dep.ID)
 					spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep)
 					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					markProviderDispatch(depCtx, dep)
 					u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, emit)
 					depCancel()
 					finishGenAIClientSpan(span, u, callErr)
@@ -1863,6 +1868,7 @@ func (rm *ReliabilityManager) ExecuteStream(
 					}
 				}
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				markProviderDispatch(depCtx, dep)
 				usage, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
 					if cerr := onChunk(chunk); cerr != nil {
 						clientChunkErr = cerr
@@ -2171,6 +2177,7 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 				rm.loadBalancer.OnRequestStart(dep.ID)
 				spanCtx, span := rm.startGenAIClientSpan(ctx, "embeddings", dep)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+				markProviderDispatch(depCtx, dep)
 				resp, err := adp.Embeddings(depCtx, dep, &reqCopy)
 				depCancel()
 				var usage *domain.TokenUsage
@@ -2736,6 +2743,7 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 					}
 					spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
 					depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
+					markProviderDispatch(depCtx, dep)
 					chatResp, chatErr := adp.ChatCompletion(depCtx, dep, chatReq)
 					depCancel()
 					var usage *domain.TokenUsage

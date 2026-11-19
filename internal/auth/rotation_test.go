@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -349,6 +350,7 @@ func TestKeyRotationManager_DistributedRedisLockAndAutoRotation(t *testing.T) {
 	}
 
 	svc := auth.NewService(repo, redisFabric, "master-secret", 30*time.Second, 5*time.Minute)
+	svc.SetMasterEncryptionKey("rotation-test-master-encryption-key-0123456789")
 	svc.SetNowFunc(getNow)
 
 	dueAt := getNow().Add(-10 * time.Second)
@@ -385,7 +387,12 @@ func TestKeyRotationManager_DistributedRedisLockAndAutoRotation(t *testing.T) {
 	}
 
 	grace := 5 * time.Minute
+	var delivered []string
 	mgr := auth.NewKeyRotationManager(svc, repo, redisFabric, auth.KeyRotationConfig{
+		Deliver: func(_ context.Context, _, _, raw string) error {
+			delivered = append(delivered, raw)
+			return nil
+		},
 		PollInterval: 50 * time.Millisecond,
 		GracePeriod:  grace,
 		LockTTL:      55 * time.Second,
@@ -516,5 +523,143 @@ func TestKeyRotationManager_DistributedRedisLockAndAutoRotation(t *testing.T) {
 	mgr.Stop() // idempotent stop
 	if !rotatedInBG {
 		t.Fatal("expected KeyRotationManager background loop to auto-rotate due key")
+	}
+	if len(delivered) < 2 {
+		t.Fatalf("expected at least 2 delivered replacements, got %d", len(delivered))
+	}
+}
+
+func TestKeyRotationManager_StagedReuseAcrossDeliveryRetriesAndNoDelivery(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{ID: "org_stage", Name: "Stage Org", IsActive: true}); err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	svc := auth.NewService(repo, nil, "master-secret", 30*time.Second, 5*time.Minute)
+	svc.SetMasterEncryptionKey("staging-master-encryption-key-0123456789abcdef")
+	svc.SetNowFunc(func() time.Time { return now })
+
+	dueAt := now.Add(-1 * time.Minute)
+	vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org_stage",
+		Name:                "scheduled-staged-key",
+		KeyType:             domain.KeyTypeLLMAPI,
+		RotationIntervalSec: 3600,
+		KeyRotationAt:       &dueAt,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+	origRaw := vk.RawKey
+	origHash := vk.KeyHash
+
+	// 1. Without a delivery channel, scheduled auto-rotation leaves due keys active.
+	noDeliverMgr := auth.NewKeyRotationManager(svc, repo, nil, auth.KeyRotationConfig{
+		GracePeriod: 10 * time.Minute,
+		Now:         func() time.Time { return now },
+	})
+	noDelRes, err := noDeliverMgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce(nil deliver): %v", err)
+	}
+	if noDelRes.RotatedKeys != 0 {
+		t.Fatalf("expected 0 scheduled rotations when delivery is unconfigured, got %d", noDelRes.RotatedKeys)
+	}
+	stillActive, _ := repo.GetVirtualKeyByID(ctx, vk.ID)
+	if stillActive.KeyHash != origHash || stillActive.StagedKeyHash != "" {
+		t.Fatalf("expected active key unchanged and nothing staged without delivery")
+	}
+
+	// Manual rotation still works even when scheduled delivery is unconfigured.
+	manualKey, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID: "org_stage",
+		Name:  "manual-key",
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey(manual): %v", err)
+	}
+	if rotatedManual, err := svc.RotateVirtualKeyWithGrace(ctx, manualKey.ID, 5*time.Minute); err != nil || rotatedManual.RawKey == "" || rotatedManual.RawKey == manualKey.RawKey {
+		t.Fatalf("expected manual rotation without delivery channel to succeed, got %+v err=%v", rotatedManual, err)
+	}
+
+	// 2. Transient delivery failures persist an encrypted staged key and reuse the exact
+	// same replacement across retries before promoting and starting grace on 2xx ACK.
+	var delivered []string
+	var failDelivery = true
+	mgr := auth.NewKeyRotationManager(svc, repo, nil, auth.KeyRotationConfig{
+		Deliver: func(_ context.Context, orgID, keyID, replacement string) error {
+			delivered = append(delivered, replacement)
+			if failDelivery {
+				return errors.New("delivery webhook returned 503")
+			}
+			return nil
+		},
+		GracePeriod: 15 * time.Minute,
+		Now:         func() time.Time { return now },
+	})
+
+	// Attempt 1 fails -> staged key stored encrypted, old key remains active without grace deprecation.
+	res1, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce attempt 1: %v", err)
+	}
+	if res1.RotatedKeys != 0 || res1.Errors != 1 {
+		t.Fatalf("expected 0 rotations and 1 error on failed delivery, got %+v", res1)
+	}
+	staged1, err := repo.GetVirtualKeyByID(ctx, vk.ID)
+	if err != nil {
+		t.Fatalf("GetVirtualKeyByID after attempt 1: %v", err)
+	}
+	if staged1.KeyHash != origHash {
+		t.Fatal("expected active key hash unchanged before delivery ACK")
+	}
+	if staged1.StagedKeyHash == "" || staged1.StagedEncryptedRawKey == "" || staged1.StagedKeyDEK == "" || staged1.StagedCreatedAt == nil {
+		t.Fatalf("expected encrypted staged replacement fields populated, got %+v", staged1)
+	}
+	if strings.Contains(staged1.StagedEncryptedRawKey, "sk-gw-") {
+		t.Fatal("staged replacement ciphertext must not contain plaintext key")
+	}
+	idOrig1, err := svc.AuthenticateVirtualKey(ctx, origRaw)
+	if err != nil || idOrig1.DeprecatedKeyRevokeAt != nil {
+		t.Fatalf("expected original key active with no grace period before delivery ACK, got %+v err=%v", idOrig1, err)
+	}
+
+	// Attempt 2 fails -> must reuse the EXACT same staged replacement string without re-minting.
+	res2, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce attempt 2: %v", err)
+	}
+	if res2.RotatedKeys != 0 || res2.Errors != 1 || len(delivered) != 2 || delivered[0] != delivered[1] {
+		t.Fatalf("expected retry delivery to reuse exact staged replacement, res=%+v delivered=%v", res2, delivered)
+	}
+
+	// Attempt 3 succeeds (delivery ACK) -> delivers same replacement, promotes to primary,
+	// clears staged fields, and starts old key grace period.
+	failDelivery = false
+	res3, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce attempt 3: %v", err)
+	}
+	if res3.RotatedKeys != 1 || len(delivered) != 3 || delivered[2] != delivered[0] {
+		t.Fatalf("expected promotion on ACK with same replacement, res=%+v delivered=%v", res3, delivered)
+	}
+	promoted, err := repo.GetVirtualKeyByID(ctx, vk.ID)
+	if err != nil {
+		t.Fatalf("GetVirtualKeyByID after ACK: %v", err)
+	}
+	if promoted.KeyHash != auth.HashKey(delivered[0]) {
+		t.Fatal("expected promoted KeyHash to match staged replacement")
+	}
+	if promoted.StagedKeyHash != "" || promoted.StagedEncryptedRawKey != "" || promoted.StagedKeyDEK != "" || promoted.StagedCreatedAt != nil {
+		t.Fatalf("expected staged fields cleared after promotion, got %+v", promoted)
+	}
+	if _, err := svc.AuthenticateVirtualKey(ctx, delivered[0]); err != nil {
+		t.Fatalf("expected promoted replacement key to authenticate: %v", err)
+	}
+	idGrace, err := svc.AuthenticateVirtualKey(ctx, origRaw)
+	if err != nil || idGrace.DeprecatedKeyRevokeAt == nil || !idGrace.DeprecatedKeyRevokeAt.Equal(now.Add(15*time.Minute)) {
+		t.Fatalf("expected old key deprecated with grace period starting at ACK, got %+v err=%v", idGrace, err)
 	}
 }

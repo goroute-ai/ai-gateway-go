@@ -243,14 +243,25 @@ type ServerConfig struct {
 	MaxConcurrentFileUploads  int           `yaml:"max_concurrent_file_uploads"`    // 0 = unlimited
 }
 
+type RDSIAMConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Region          string `yaml:"region"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+	SessionToken    string `yaml:"session_token,omitempty"`
+	RoleARN         string `yaml:"role_arn,omitempty"`
+	WebIdentityFile string `yaml:"web_identity_token_file,omitempty"`
+}
+
 type StorageConfig struct {
-	Mode            string   `yaml:"mode"` // "memory" or "postgres"
-	PostgresDSN     string   `yaml:"postgres_dsn"`
-	RedisAddr       string   `yaml:"redis_addr"`
-	RedisAddrs      []string `yaml:"redis_addrs"`
-	RedisMasterName string   `yaml:"redis_master_name"`
-	RedisPass       string   `yaml:"redis_pass"`
-	RedisDB         int      `yaml:"redis_db"`
+	Mode            string       `yaml:"mode"` // "memory" or "postgres"
+	PostgresDSN     string       `yaml:"postgres_dsn"`
+	RDSIAM          RDSIAMConfig `yaml:"rds_iam,omitempty"`
+	RedisAddr       string       `yaml:"redis_addr"`
+	RedisAddrs      []string     `yaml:"redis_addrs"`
+	RedisMasterName string       `yaml:"redis_master_name"`
+	RedisPass       string       `yaml:"redis_pass"`
+	RedisDB         int          `yaml:"redis_db"`
 }
 
 // OIDCClaimMapping maps custom JWT claim paths to GoRoute identity fields.
@@ -331,31 +342,34 @@ type SSOProviderConfig struct {
 }
 
 type AuthConfig struct {
-	MasterAdminKey          string              `yaml:"master_admin_key"`
-	MasterEncryptionKey     string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	AllowMasterKeyDataPlane bool                `yaml:"allow_master_key_data_plane"`
-	EnableDataPlaneJWT      bool                `yaml:"enable_data_plane_jwt"`
-	CustomAPIKeyHeader      string              `yaml:"custom_api_key_header"`
-	JWTSecret               string              `yaml:"jwt_secret"`
-	JWTIssuer               string              `yaml:"jwt_issuer"`
-	JWTAudience             string              `yaml:"jwt_audience"`
-	OIDCJWKSURL             string              `yaml:"oidc_jwks_url"`
-	OIDCIssuers             []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
-	SSOProviders            []SSOProviderConfig `yaml:"sso_providers,omitempty"`
-	Introspection           IntrospectionConfig `yaml:"introspection,omitempty"`
-	ProxyAuth               ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
-	DefaultOrgID            string              `yaml:"default_org_id"`
-	DefaultVirtualKey       string              `yaml:"default_virtual_key"`
-	L1CacheTTL              time.Duration       `yaml:"l1_cache_ttl"`
-	L2CacheTTL              time.Duration       `yaml:"l2_cache_ttl"`
-	KeyRotationPollInterval time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
-	KeyRotationGracePeriod  time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
-	UIUsername              string              `yaml:"ui_username,omitempty"`
-	UIPassword              string              `yaml:"ui_password,omitempty"`
-	SessionSecret           string              `yaml:"session_secret,omitempty"`
-	SessionTTL              time.Duration       `yaml:"session_ttl,omitempty"`
-	EnableHIBPCheck         bool                `yaml:"enable_hibp_check,omitempty"`
-	HIBPBaseURL             string              `yaml:"hibp_base_url,omitempty"`
+	AllowAmbientCloudIAM     bool                `yaml:"allow_ambient_cloud_iam,omitempty"`
+	MasterAdminKey           string              `yaml:"master_admin_key"`
+	MasterEncryptionKey      string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	AllowMasterKeyDataPlane  bool                `yaml:"allow_master_key_data_plane"`
+	EnableDataPlaneJWT       bool                `yaml:"enable_data_plane_jwt"`
+	CustomAPIKeyHeader       string              `yaml:"custom_api_key_header"`
+	JWTSecret                string              `yaml:"jwt_secret"`
+	JWTIssuer                string              `yaml:"jwt_issuer"`
+	JWTAudience              string              `yaml:"jwt_audience"`
+	OIDCJWKSURL              string              `yaml:"oidc_jwks_url"`
+	OIDCIssuers              []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
+	SSOProviders             []SSOProviderConfig `yaml:"sso_providers,omitempty"`
+	Introspection            IntrospectionConfig `yaml:"introspection,omitempty"`
+	ProxyAuth                ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
+	DefaultOrgID             string              `yaml:"default_org_id"`
+	DefaultVirtualKey        string              `yaml:"default_virtual_key"`
+	L1CacheTTL               time.Duration       `yaml:"l1_cache_ttl"`
+	L2CacheTTL               time.Duration       `yaml:"l2_cache_ttl"`
+	KeyRotationDeliveryURL   string              `yaml:"key_rotation_delivery_url,omitempty"`
+	KeyRotationDeliveryToken string              `yaml:"key_rotation_delivery_token,omitempty"`
+	KeyRotationPollInterval  time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
+	KeyRotationGracePeriod   time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
+	UIUsername               string              `yaml:"ui_username,omitempty"`
+	UIPassword               string              `yaml:"ui_password,omitempty"`
+	SessionSecret            string              `yaml:"session_secret,omitempty"`
+	SessionTTL               time.Duration       `yaml:"session_ttl,omitempty"`
+	EnableHIBPCheck          bool                `yaml:"enable_hibp_check,omitempty"`
+	HIBPBaseURL              string              `yaml:"hibp_base_url,omitempty"`
 }
 
 type RouterConfig struct {

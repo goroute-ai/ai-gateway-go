@@ -20,6 +20,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 type mockOIDCAuthCode struct {
@@ -617,4 +618,176 @@ func TestAuthSSO_LinkedCLILoginViaSSOCallback(t *testing.T) {
 	if pollRec.Code != http.StatusOK || !strings.Contains(pollRec.Body.String(), `"sk-gw-`) {
 		t.Fatalf("expected minted Virtual Key on CLI poll after linked SSO callback, got %d (%s)", pollRec.Code, pollRec.Body.String())
 	}
+}
+
+func TestAuthSSO_MultiIssuerCollisionLegacyFallbackAndNoEmailLinking(t *testing.T) {
+	ctx := context.Background()
+	idpA := newMockOIDCIdP(t)
+	idpB := newMockOIDCIdP(t)
+
+	// Configure two trusted OIDC providers without AutoRegister first to verify
+	// unambiguous issuer isolation, no auto email linking, and multi-issuer legacy rejection.
+	srv, repo, cfg := newSSOTestServer(t, func(c *config.Config) {
+		c.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+		c.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+		c.Auth.DefaultOrgID = "org-sso"
+		c.Auth.SSOProviders = []config.SSOProviderConfig{
+			{
+				ID:                  "idp-a",
+				Name:                "idp-a",
+				Type:                "oidc",
+				DisplayName:         "IdP A",
+				ClientID:            "client-a",
+				ClientSecret:        "secret-a-0123456789abcdef",
+				Issuer:              idpA.URL(),
+				DiscoveryURL:        idpA.URL() + "/.well-known/openid-configuration",
+				Scopes:              []string{"openid", "email", "profile"},
+				AllowedEmailDomains: []string{"trusted.example.com"},
+				AutoRegister:        false,
+				DefaultOrgID:        "org-sso",
+			},
+			{
+				ID:                  "idp-b",
+				Name:                "idp-b",
+				Type:                "oidc",
+				DisplayName:         "IdP B",
+				ClientID:            "client-b",
+				ClientSecret:        "secret-b-0123456789abcdef",
+				Issuer:              idpB.URL(),
+				DiscoveryURL:        idpB.URL() + "/.well-known/openid-configuration",
+				Scopes:              []string{"openid", "email", "profile"},
+				AllowedEmailDomains: []string{"trusted.example.com"},
+				AutoRegister:        false,
+				DefaultOrgID:        "org-sso",
+			},
+		}
+	})
+
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:          "usr-idp-a",
+		OrgID:       "org-sso",
+		Email:       "shared-a@trusted.example.com",
+		Name:        "User A",
+		Role:        domain.RoleOrgAdmin,
+		OIDCIssuer:  idpA.URL(),
+		OIDCSubject: "shared-sub",
+		IsActive:    true,
+	})
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:          "usr-idp-b",
+		OrgID:       "org-sso",
+		Email:       "shared-b@trusted.example.com",
+		Name:        "User B",
+		Role:        domain.RoleOrgAdmin,
+		OIDCIssuer:  idpB.URL(),
+		OIDCSubject: "shared-sub",
+		IsActive:    true,
+	})
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:       "usr-email-only",
+		OrgID:    "org-sso",
+		Email:    "emailonly@trusted.example.com",
+		Name:     "Email Only",
+		Role:     domain.RoleOrgAdmin,
+		IsActive: true,
+	})
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:          "usr-legacy",
+		OrgID:       "org-sso",
+		Email:       "legacy@trusted.example.com",
+		Name:        "Legacy Unbound",
+		Role:        domain.RoleOrgAdmin,
+		OIDCSubject: "legacy-sub",
+		IsActive:    true,
+	})
+
+	oidcCallbackFor := func(targetSrv *server.GatewayServer, prov string, idp *mockOIDCIdP, sub, email string) *httptest.ResponseRecorder {
+		idp.mu.Lock()
+		idp.nextSub = sub
+		idp.nextEmail = email
+		idp.mu.Unlock()
+		loginRec := doJSONReq(t, targetSrv.Handler(), http.MethodGet, "/auth/sso/"+prov+"/login?format=json", nil, nil)
+		if loginRec.Code != http.StatusOK {
+			t.Fatalf("GET /auth/sso/%s/login failed: %d (%s)", prov, loginRec.Code, loginRec.Body.String())
+		}
+		var loginResp struct {
+			AuthorizationURL string `json:"authorization_url"`
+		}
+		_ = json.Unmarshal(loginRec.Body.Bytes(), &loginResp)
+		code, state := runMockIdPAuthorize(t, loginResp.AuthorizationURL)
+		return doJSONReq(t, targetSrv.Handler(), http.MethodGet, "/auth/sso/"+prov+"/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil, nil)
+	}
+
+	// 1. Colliding sub across two issuers resolves strictly to each issuer's bound user.
+	cbA := oidcCallbackFor(srv, "idp-a", idpA, "shared-sub", "shared-a@trusted.example.com")
+	if cbA.Code != http.StatusOK || !strings.Contains(cbA.Body.String(), `"usr-idp-a"`) {
+		t.Fatalf("expected IdP A callback to resolve usr-idp-a, got %d (%s)", cbA.Code, cbA.Body.String())
+	}
+	cbB := oidcCallbackFor(srv, "idp-b", idpB, "shared-sub", "shared-b@trusted.example.com")
+	if cbB.Code != http.StatusOK || !strings.Contains(cbB.Body.String(), `"usr-idp-b"`) {
+		t.Fatalf("expected IdP B callback to resolve usr-idp-b, got %d (%s)", cbB.Code, cbB.Body.String())
+	}
+
+	// 2. Email match without matching (org, issuer, sub) must NOT auto-link existing user.
+	cbEmail := oidcCallbackFor(srv, "idp-a", idpA, "unlinked-sub", "emailonly@trusted.example.com")
+	if cbEmail.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when email matches unbound user (no auto email linking), got %d (%s)", cbEmail.Code, cbEmail.Body.String())
+	}
+
+	// 3. Multi-issuer tenant refuses legacy subject-only binding without explicit oidc_issuer.
+	cbLegacy := oidcCallbackFor(srv, "idp-a", idpA, "legacy-sub", "legacy@trusted.example.com")
+	if cbLegacy.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for legacy unbound subject under multi-issuer config, got %d (%s)", cbLegacy.Code, cbLegacy.Body.String())
+	}
+
+	// 4. Administrator explicitly binds oidc_issuer via PUT /admin/v1/users/{id}, unblocking login.
+	bindRec := doJSONReq(t, srv.Handler(), http.MethodPut, "/admin/v1/users/usr-legacy", map[string]any{
+		"oidc_issuer": idpA.URL(),
+	}, map[string]string{"Authorization": "Bearer " + cfg.Auth.MasterAdminKey})
+	if bindRec.Code != http.StatusOK {
+		t.Fatalf("PUT /admin/v1/users/usr-legacy failed: %d (%s)", bindRec.Code, bindRec.Body.String())
+	}
+	cbLegacyBound := oidcCallbackFor(srv, "idp-a", idpA, "legacy-sub", "legacy@trusted.example.com")
+	if cbLegacyBound.Code != http.StatusOK || !strings.Contains(cbLegacyBound.Body.String(), `"usr-legacy"`) {
+		t.Fatalf("expected bound legacy user login to succeed, got %d (%s)", cbLegacyBound.Code, cbLegacyBound.Body.String())
+	}
+
+	// 5. Single-issuer tenant preserves unambiguous legacy subject-only binding automatically.
+	idpSingle := newMockOIDCIdP(t)
+	singleSrv, singleRepo, _ := newSSOTestServer(t, func(c *config.Config) {
+		c.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+		c.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+		c.Auth.DefaultOrgID = "org-sso"
+		c.Auth.SSOProviders = []config.SSOProviderConfig{
+			{
+				ID:           "idp-only",
+				Name:         "idp-only",
+				Type:         "oidc",
+				DisplayName:  "Single IdP",
+				ClientID:     "client-only",
+				ClientSecret: "secret-only-0123456789abcdef",
+				Issuer:       idpSingle.URL(),
+				DiscoveryURL: idpSingle.URL() + "/.well-known/openid-configuration",
+				Scopes:       []string{"openid", "email"},
+				DefaultOrgID: "org-sso",
+			},
+		}
+	})
+	_ = singleRepo.CreateUser(ctx, &domain.User{
+		ID:          "usr-single-legacy",
+		OrgID:       "org-sso",
+		Email:       "single-legacy@trusted.example.com",
+		Name:        "Single Legacy",
+		Role:        domain.RoleOrgAdmin,
+		OIDCSubject: "single-legacy-sub",
+		IsActive:    true,
+	})
+	cbSingle := oidcCallbackFor(singleSrv, "idp-only", idpSingle, "single-legacy-sub", "single-legacy@trusted.example.com")
+	if cbSingle.Code != http.StatusOK || !strings.Contains(cbSingle.Body.String(), `"usr-single-legacy"`) {
+		t.Fatalf("expected unambiguous single-issuer legacy user login to succeed, got %d (%s)", cbSingle.Code, cbSingle.Body.String())
+	}
+	if _, err := singleRepo.GetUser(ctx, "usr-single-legacy"); err != nil {
+		t.Fatalf("sanity check: %v", err)
+	}
+	_ = storage.ErrNotFound
 }

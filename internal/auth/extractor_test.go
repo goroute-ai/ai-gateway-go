@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -308,16 +309,41 @@ func TestExtractCredentials_GeminiQueryKey(t *testing.T) {
 		})
 	}
 
-	t.Run("Primary header takes precedence over Gemini query key", func(t *testing.T) {
+	t.Run("Conflicting Gemini header and query key are rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent?key=query-key", nil)
 		req.Header.Set("x-goog-api-key", "header-key")
 
-		cred, err := auth.ExtractCredentials(req, auth.ExtractorOptions{})
+		_, err := auth.ExtractCredentials(req, auth.ExtractorOptions{})
+		var gatewayErr *domain.GatewayError
+		if !errors.As(err, &gatewayErr) || gatewayErr.Code != "ambiguous_gateway_credentials" {
+			t.Fatalf("expected ambiguous credentials error, got %v", err)
+		}
+	})
+
+	t.Run("Custom override header wins over conflicting query and headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent?key=query-key", nil)
+		req.Header.Set("x-goog-api-key", "header-key")
+		req.Header.Set("X-Proxy-API-Key", "override-key")
+
+		cred, err := auth.ExtractCredentials(req, auth.ExtractorOptions{CustomHeaderName: "X-Proxy-API-Key"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cred.Token != "header-key" || cred.Source != auth.CredentialSourceHeaderKey {
-			t.Fatalf("got %+v, want header-key with header_key source", cred)
+		if cred.Token != "override-key" || cred.Source != auth.CredentialSourceCustomHeader {
+			t.Fatalf("got %+v, want override-key with custom_header source", cred)
+		}
+	})
+
+	t.Run("Conflicting WebSocket subprotocol and query credentials are rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/realtime?api_key=sk-gw-query", nil)
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Sec-WebSocket-Protocol", "realtime, openai-insecure-api-key.sk-gw-proto")
+
+		_, err := auth.ExtractCredentials(req, auth.ExtractorOptions{})
+		var gatewayErr *domain.GatewayError
+		if !errors.As(err, &gatewayErr) || gatewayErr.Code != "ambiguous_gateway_credentials" {
+			t.Fatalf("expected ambiguous credentials error, got %v", err)
 		}
 	})
 }

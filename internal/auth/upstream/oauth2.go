@@ -82,7 +82,7 @@ func (s *OAuth2Strategy) Type() string {
 }
 
 func (s *OAuth2Strategy) Apply(ctx context.Context, req *http.Request, authCtx *UpstreamAuthContext) error {
-	token, err := s.getToken(ctx)
+	token, err := s.getToken(ctx, authCtx)
 	if err != nil {
 		return fmt.Errorf("oauth2 client credentials: %w", err)
 	}
@@ -100,8 +100,8 @@ func (s *OAuth2Strategy) Apply(ctx context.Context, req *http.Request, authCtx *
 	return nil
 }
 
-func (s *OAuth2Strategy) getToken(ctx context.Context) (string, error) {
-	cacheKey := fmt.Sprintf("oauth2|%s|%s|%s", s.TokenEndpoint, s.ClientID, strings.Join(s.Scopes, " "))
+func (s *OAuth2Strategy) getToken(ctx context.Context, authCtx *UpstreamAuthContext) (string, error) {
+	cacheKey := tokenCacheKey(authCtx, "oauth2", s.TokenEndpoint, s.ClientID, s.ClientSecret, strings.Join(s.Scopes, " "))
 	return s.getOrInitTokenCache().GetOrRefresh(ctx, cacheKey, func(refreshCtx context.Context) (string, time.Duration, error) {
 		form := url.Values{
 			"grant_type":    {"client_credentials"},

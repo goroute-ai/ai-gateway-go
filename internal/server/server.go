@@ -25,6 +25,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openaicompat"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -98,6 +99,34 @@ type GatewayServer struct {
 	uploadSem          chan struct{}
 	uploadInFlightMu   sync.Mutex
 	uploadInFlight     map[string]int64
+	nowMu              sync.RWMutex
+	nowFunc            func() time.Time
+}
+
+func (s *GatewayServer) nowUTC() time.Time {
+	if s == nil {
+		return time.Now().UTC()
+	}
+	s.nowMu.RLock()
+	fn := s.nowFunc
+	s.nowMu.RUnlock()
+	if fn != nil {
+		return fn().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// SetNowFunc overrides the wall-clock source used for quota admission and rolling windows.
+func (s *GatewayServer) SetNowFunc(fn func() time.Time) {
+	if s == nil {
+		return
+	}
+	s.nowMu.Lock()
+	s.nowFunc = fn
+	s.nowMu.Unlock()
+	if s.limiter != nil {
+		s.limiter.SetNowFunc(fn)
+	}
 }
 
 // parseCustomProviderOperations maps string operation names from CustomProviderConfig
@@ -202,6 +231,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	ollamaAdp.SetMediaFetcher(mediaClient, mediaPolicy)
 	vertexAdp := vertex.NewAdapter(adapterClient, netPolicy)
 	vertexAdp.SetMediaFetcher(mediaClient, mediaPolicy)
+	vertexAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
+	bedrockAdp := bedrock.NewAdapter(adapterClient, netPolicy)
+	bedrockAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
 
 	reg := adapter.NewRegistry()
 	reg.Register(openaiAdp)
@@ -209,11 +241,12 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	reg.Register(geminiAdp)
 	reg.Register(mistralAdp)
 	reg.Register(ollamaAdp)
-	reg.Register(bedrock.NewAdapter(adapterClient, netPolicy))
+	reg.Register(bedrockAdp)
 	reg.Register(vertexAdp)
 	reg.Register(cohere.NewAdapter(adapterClient, netPolicy))
 
 	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
+	profileReg.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
 	for _, custom := range cfg.Providers.CustomOpenAICompatible {
 		opts := openaicompat.CustomProfileOptions{
 			SupportedOperations: parseCustomProviderOperations(custom.SupportedOperations),
@@ -228,6 +261,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
 	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
+	authSvc.SetVault(vault)
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
 	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
@@ -314,7 +348,15 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
+	delivery, err := newKeyRotationDelivery(cfg.Auth, netPolicy)
+	if err != nil {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(context.Background())
+		}
+		return nil, err
+	}
 	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
+		Deliver:      delivery,
 		PollInterval: cfg.Auth.KeyRotationPollInterval,
 		GracePeriod:  cfg.Auth.KeyRotationGracePeriod,
 	})
@@ -324,6 +366,11 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	limiter.SetDefaultEstimatedTPM(cfg.RateLimit.DefaultEstimatedTPM)
 	limiter.SetRedisTimeout(cfg.RateLimit.RedisTimeout)
 	limiter.SetGlobalLimits(cfg.RateLimit.GlobalRPMLimit, cfg.RateLimit.GlobalTPMLimit, cfg.RateLimit.GlobalMaxConcurrent)
+	if rHistRepo, ok := repo.(storage.RollingSpendHistoryRepository); ok && rHistRepo != nil {
+		limiter.SetRollingWindowLoader(func(ctx context.Context, orgID string, d domain.RateLimitDescriptor, now time.Time) ([]domain.RollingSpendEntry, error) {
+			return rHistRepo.ListRollingWindowHistory(ctx, orgID, d.ScopeType, d.ScopeID, now)
+		})
+	}
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewService(repo)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
@@ -529,6 +576,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
+	mcpAuthResolver.SetTokenCache(upstream.NewDistributedTokenCache(redisFabric, upstream.DistributedTokenCacheConfig{
+		EncryptionKey: cfg.Auth.MasterEncryptionKey,
+	}))
 	mcpHub := mcp.NewHub(repo, vault, rbac, mcpDispatcher, mcpAuthResolver)
 
 	mcpSecret := cfg.MCP.CacheKeySecret

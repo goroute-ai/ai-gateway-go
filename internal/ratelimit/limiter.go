@@ -29,6 +29,9 @@ var reconcileGlobalLua string
 //go:embed scripts/rollback_acquire.lua
 var rollbackAcquireLua string
 
+//go:embed scripts/rollback_global.lua
+var rollbackGlobalLua string
+
 //go:embed scripts/record_spend.lua
 var recordSpendLua string
 
@@ -52,6 +55,10 @@ type SpendIncrementEvent struct {
 	CostMicros   int64
 }
 
+// RollingWindowSpendLoader restores timestamped trailing-24h spend entries and
+// active migration holds from durable storage when a rolling_24h counter is cold.
+type RollingWindowSpendLoader func(ctx context.Context, orgID string, descriptor domain.RateLimitDescriptor, now time.Time) ([]domain.RollingSpendEntry, error)
+
 // Limiter enforces RPM, TPM, Concurrency, and Budget limits across Virtual Key, Team, User, Organization, and Global scopes.
 // Uses atomic Redis Lua scripts; configured quotas fail closed when Redis is unavailable.
 type Limiter struct {
@@ -61,6 +68,7 @@ type Limiter struct {
 	reconcileScr            *redis.Script
 	reconcileGlobalScr      *redis.Script
 	rollbackScr             *redis.Script
+	rollbackGlobalScr       *redis.Script
 	spendScr                *redis.Script
 	resetBudgetScr          *redis.Script
 	renewScr                *redis.Script
@@ -69,6 +77,7 @@ type Limiter struct {
 	batchReleaseScr         *redis.Script
 	checkDescriptorsScr     *redis.Script
 	reconcileDescriptorsScr *redis.Script
+	renewDescriptorsScr     *redis.Script
 	windowSec               int
 	concTTLSec              int
 	nowFunc                 func() time.Time
@@ -81,6 +90,7 @@ type Limiter struct {
 	globalRPM               int
 	globalTPM               int
 	globalMaxConc           int
+	rollingLoader           RollingWindowSpendLoader
 
 	localMu               sync.Mutex
 	localWindowMin        int64
@@ -102,6 +112,7 @@ type Limiter struct {
 	localDescIter         map[string]localIterCounter
 	localDescSpent        map[string]int64
 	localDescReservations map[string]map[string]localReservationEntry
+	localDescRolling      map[string][]localRollingSpendEntry
 }
 
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
@@ -118,6 +129,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		reconcileScr:            redis.NewScript(reconcileLua),
 		reconcileGlobalScr:      redis.NewScript(reconcileGlobalLua),
 		rollbackScr:             redis.NewScript(rollbackAcquireLua),
+		rollbackGlobalScr:       redis.NewScript(rollbackGlobalLua),
 		spendScr:                redis.NewScript(recordSpendLua),
 		resetBudgetScr:          redis.NewScript(resetBudgetSpendLua),
 		renewScr:                redis.NewScript(renewReservationLua),
@@ -126,6 +138,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		batchReleaseScr:         redis.NewScript(batchEnqueuedReleaseLua),
 		checkDescriptorsScr:     redis.NewScript(checkDescriptorsLua),
 		reconcileDescriptorsScr: redis.NewScript(reconcileDescriptorsLua),
+		renewDescriptorsScr:     redis.NewScript(renewDescriptorsLua),
 		windowSec:               windowSec,
 		concTTLSec:              concTTLSec,
 		enabled:                 true,
@@ -145,6 +158,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		localDescIter:           make(map[string]localIterCounter),
 		localDescSpent:          make(map[string]int64),
 		localDescReservations:   make(map[string]map[string]localReservationEntry),
+		localDescRolling:        make(map[string][]localRollingSpendEntry),
 	}
 }
 
@@ -154,6 +168,27 @@ func (l *Limiter) SetFallbackToLocalOnOutage(fallback bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.fallbackToLocalOnOutage = fallback
+}
+
+// SetRollingWindowLoader configures the durable repository loader used to restore
+// timestamped trailing-24h spend history on cold rolling_24h quota counters.
+func (l *Limiter) SetRollingWindowLoader(loader RollingWindowSpendLoader) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rollingLoader = loader
+}
+
+// SetNowFunc overrides the wall-clock source used by the limiter (primarily for deterministic tests).
+func (l *Limiter) SetNowFunc(fn func() time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.nowFunc = fn
 }
 
 // SetEnabled enables or disables rate limiting enforcement.
@@ -212,11 +247,21 @@ func (l *Limiter) withRedisTimeout(ctx context.Context) (context.Context, contex
 // maximum spend is reserved atomically before dispatch.
 // Returns a release function that MUST be called after the request finishes to decrement concurrency and reconcile token deltas.
 func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int) (func(actualTokens int), error) {
-	release, err := l.acquire(ctx, idCtx, estimatedTokens, 0, "")
+	release, _, err := l.acquire(ctx, idCtx, estimatedTokens, 0, "")
 	if err != nil {
 		return nil, err
 	}
 	return func(actualTokens int) { release(actualTokens, 0) }, nil
+}
+
+// AcquireWithRollback behaves like Acquire and additionally returns an undo hook
+// that reverts RPM, TPM, and concurrency increments if a downstream quota step rejects.
+func (l *Limiter) AcquireWithRollback(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int) (func(actualTokens int), func(), error) {
+	release, rollback, err := l.acquire(ctx, idCtx, estimatedTokens, 0, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	return func(actualTokens int) { release(actualTokens, 0) }, rollback, nil
 }
 
 // AcquireSession enforces rate/concurrency limits and verifies that any configured
@@ -322,6 +367,17 @@ func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.Identit
 func (l *Limiter) AcquireWithBudget(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), error) {
 	if reserveMicros < 0 || requestID == "" {
 		return nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
+	}
+	release, _, err := l.acquire(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+	return release, err
+}
+
+// AcquireWithBudgetAndRollback behaves like AcquireWithBudget and additionally
+// returns an undo hook that reverts RPM, TPM, concurrency, and budget reservations
+// if a downstream quota step rejects before dispatch.
+func (l *Limiter) AcquireWithBudgetAndRollback(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), func(), error) {
+	if reserveMicros < 0 || requestID == "" {
+		return nil, nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
 	}
 	return l.acquire(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
 }
@@ -429,10 +485,10 @@ func spendKeys(keyID, teamID, userID, orgID string) []string {
 	}
 }
 
-func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
+func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), func(), error) {
 	enabled, fallbackLocal, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
 	if !enabled || idCtx == nil {
-		return func(int, int64) {}, nil
+		return func(int, int64) {}, func() {}, nil
 	}
 	if estimatedTokens <= 0 {
 		if defaultEstTPM > 0 {
@@ -466,77 +522,92 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 				allowed, _ := slice[0].(int64)
 				reason, _ := slice[1].(string)
 				if allowed == 0 {
-					return nil, toQuotaError(reason)
+					return nil, nil, toQuotaError(reason)
 				}
 
 				gKeys := globalAcquireKeys(nowMin)
+				rollbackOrg := func() {
+					rbKeys := rollbackKeys(keys)
+					rbArgv := []any{
+						estimatedTokens, requestID,
+						idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent,
+						idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent,
+						idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent,
+					}
+					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+						rCtx, cancel := l.withRedisTimeout(context.Background())
+						defer cancel()
+						return l.rollbackScr.Run(rCtx, rdb, rbKeys, rbArgv...).Result()
+					})
+				}
 				if hasGlobal {
 					gRes, gErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 						rCtx, cancel := l.withRedisTimeout(ctx)
 						defer cancel()
 						return l.checkGlobalScript.Run(rCtx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens, l.windowSec*2, l.concTTLSec).Slice()
 					})
-					rollbackOrg := func() {
-						rbKeys := rollbackKeys(keys)
-						rbArgv := []any{
-							estimatedTokens, requestID,
-							idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent,
-							idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent,
-							idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent,
-						}
-						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-							rCtx, cancel := l.withRedisTimeout(context.Background())
-							defer cancel()
-							return l.rollbackScr.Run(rCtx, rdb, rbKeys, rbArgv...).Result()
-						})
-					}
 					if gErr != nil {
 						rollbackOrg()
 						if fallbackLocal {
 							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
 						}
-						return nil, limiterUnavailableError()
+						return nil, nil, limiterUnavailableError()
 					}
 					if gSlice, ok := gRes.([]any); ok && len(gSlice) >= 2 {
 						gAllowed, _ := gSlice[0].(int64)
 						gReason, _ := gSlice[1].(string)
 						if gAllowed == 0 {
 							rollbackOrg()
-							return nil, toQuotaError(gReason)
+							return nil, nil, toQuotaError(gReason)
 						}
 					} else {
 						rollbackOrg()
 						if fallbackLocal {
 							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
 						}
-						return nil, limiterUnavailableError()
+						return nil, nil, limiterUnavailableError()
 					}
 				}
 
-				return func(actualTokens int, actualCostMicros int64) {
-					delta := actualTokens - estimatedTokens
-					resKeys := reconcileKeys(keys)
-					settle := []any{delta, l.windowSec * 2, requestID, actualCostMicros, reserveMicros}
-					if actualTokens < 0 {
-						settle[3] = int64(-1)
-					} else {
-						// Successful requests settle the reservation with their SpendEvent,
-						// which atomically swaps reserved cost for actual spend.
-						settle[3] = int64(-2)
-					}
-					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-						rCtx, cancel := l.withRedisTimeout(context.Background())
-						defer cancel()
-						return l.reconcileScr.Run(rCtx, rdb, resKeys, settle...).Result()
+				var settledOrRolledBack sync.Once
+				rollbackAll := func() {
+					settledOrRolledBack.Do(func() {
+						rollbackOrg()
+						if hasGlobal {
+							_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+								rCtx, cancel := l.withRedisTimeout(context.Background())
+								defer cancel()
+								return l.rollbackGlobalScr.Run(rCtx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens).Result()
+							})
+						}
 					})
-					if hasGlobal {
+				}
+				return func(actualTokens int, actualCostMicros int64) {
+					settledOrRolledBack.Do(func() {
+						delta := actualTokens - estimatedTokens
+						resKeys := reconcileKeys(keys)
+						settle := []any{delta, l.windowSec * 2, requestID, actualCostMicros, reserveMicros}
+						if actualTokens < 0 {
+							settle[3] = int64(-1)
+						} else {
+							// Successful requests settle the reservation with their SpendEvent,
+							// which atomically swaps reserved cost for actual spend.
+							settle[3] = int64(-2)
+						}
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 							rCtx, cancel := l.withRedisTimeout(context.Background())
 							defer cancel()
-							return l.reconcileGlobalScr.Run(rCtx, rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc).Result()
+							return l.reconcileScr.Run(rCtx, rdb, resKeys, settle...).Result()
 						})
-					}
-				}, nil
+						if hasGlobal {
+							_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+								rCtx, cancel := l.withRedisTimeout(context.Background())
+								defer cancel()
+								return l.reconcileGlobalScr.Run(rCtx, rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc).Result()
+							})
+						}
+					})
+				}, rollbackAll, nil
 			}
 		}
 	}
@@ -545,12 +616,12 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 		return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
 	}
 	if hasConfiguredLimits(idCtx) || hasGlobal {
-		return nil, limiterUnavailableError()
+		return nil, nil, limiterUnavailableError()
 	}
-	return func(int, int64) {}, nil
+	return func(int, int64) {}, func() {}, nil
 }
 
-func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string, nowMin int64, gRPM, gTPM, gConc int) (func(int, int64), error) {
+func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string, nowMin int64, gRPM, gTPM, gConc int) (func(int, int64), func(), error) {
 	l.localMu.Lock()
 	defer l.localMu.Unlock()
 
@@ -578,12 +649,12 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 		}
 		if bs.maxB > 0 {
 			if reserveMicros <= 0 || requestID == "" {
-				return nil, toQuotaError("BUDGET_ESTIMATE_REQUIRED")
+				return nil, nil, toQuotaError("BUDGET_ESTIMATE_REQUIRED")
 			}
 			resMap := l.localReservations[bs.key]
 			if resMap != nil {
 				if _, exists := resMap[requestID]; exists {
-					return nil, toQuotaError("BUDGET_RESERVATION_CONFLICT")
+					return nil, nil, toQuotaError("BUDGET_RESERVATION_CONFLICT")
 				}
 			}
 			var reserved int64
@@ -591,7 +662,7 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 				reserved += amt
 			}
 			if l.localSpent[bs.key]+reserved+reserveMicros > bs.maxB {
-				return nil, toQuotaError(bs.errCode)
+				return nil, nil, toQuotaError(bs.errCode)
 			}
 		}
 	}
@@ -622,7 +693,7 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 	}
 	for _, qc := range checks {
 		if qc.limit > 0 && qc.bucket[qc.key]+qc.delta > qc.limit {
-			return nil, toQuotaError(qc.errCode)
+			return nil, nil, toQuotaError(qc.errCode)
 		}
 	}
 
@@ -678,6 +749,71 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 	}
 
 	var once sync.Once
+	rollbackLocal := func() {
+		once.Do(func() {
+			l.localMu.Lock()
+			defer l.localMu.Unlock()
+
+			decrInt := func(m map[string]int, k string, delta int) {
+				if m[k] >= delta {
+					m[k] -= delta
+				} else {
+					m[k] = 0
+				}
+			}
+			decrInt(l.localConc, "key:"+idCtx.VirtualKeyID, 1)
+			if idCtx.TeamMaxConcurrent > 0 {
+				decrInt(l.localConc, "team:"+idCtx.TeamID, 1)
+			}
+			if idCtx.UserMaxConcurrent > 0 {
+				decrInt(l.localConc, "user:"+idCtx.UserID, 1)
+			}
+			if idCtx.OrgMaxConcurrent > 0 {
+				decrInt(l.localConc, "org:"+idCtx.OrgID, 1)
+			}
+			if gConc > 0 {
+				decrInt(l.localConc, "global", 1)
+			}
+
+			if l.localWindowMin == nowMin {
+				decrInt(l.localRPM, "key:"+idCtx.VirtualKeyID, 1)
+				decrInt(l.localTPM, "key:"+idCtx.VirtualKeyID, estimatedTokens)
+				if idCtx.TeamRPMLimit > 0 {
+					decrInt(l.localRPM, "team:"+idCtx.TeamID, 1)
+				}
+				if idCtx.TeamTPMLimit > 0 {
+					decrInt(l.localTPM, "team:"+idCtx.TeamID, estimatedTokens)
+				}
+				if idCtx.UserRPMLimit > 0 {
+					decrInt(l.localRPM, "user:"+idCtx.UserID, 1)
+				}
+				if idCtx.UserTPMLimit > 0 {
+					decrInt(l.localTPM, "user:"+idCtx.UserID, estimatedTokens)
+				}
+				if idCtx.OrgRPMLimit > 0 {
+					decrInt(l.localRPM, "org:"+idCtx.OrgID, 1)
+				}
+				if idCtx.OrgTPMLimit > 0 {
+					decrInt(l.localTPM, "org:"+idCtx.OrgID, estimatedTokens)
+				}
+				if gRPM > 0 {
+					decrInt(l.localRPM, "global", 1)
+				}
+				if gTPM > 0 {
+					decrInt(l.localTPM, "global", estimatedTokens)
+				}
+			}
+
+			if requestID != "" {
+				for _, bs := range bScopes {
+					if resMap := l.localReservations[bs.key]; resMap != nil {
+						delete(resMap, requestID)
+					}
+				}
+			}
+		})
+	}
+
 	return func(actualTokens int, actualCostMicros int64) {
 		once.Do(func() {
 			l.localMu.Lock()
@@ -725,7 +861,7 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 				}
 			}
 		})
-	}, nil
+	}, rollbackLocal, nil
 }
 
 func hasConfiguredLimits(idCtx *domain.IdentityContext) bool {

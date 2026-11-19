@@ -1,26 +1,50 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type webhookRecord struct {
+	AuthHeader string          `json:"auth_header,omitempty"`
+	Body       json.RawMessage `json:"body"`
+	ReceivedAt string          `json:"received_at"`
+}
 
 var (
 	totalRequests atomic.Int64
 	secretPNGHits atomic.Int64
 	lastTrace     atomic.Value
+	jwksOutage    atomic.Bool
+
+	mockRSAKey *rsa.PrivateKey
+	mockRSAKID = "mock-rsa-1"
+
+	hibpMu       sync.Mutex
+	hibpPrefixes []string
+
+	webhookMu        sync.Mutex
+	softBudgetHooks  []webhookRecord
+	keyRotationHooks []webhookRecord
 )
 
 const onePixelPNG = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
@@ -87,6 +111,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	var keyErr error
+	mockRSAKey, keyErr = rsa.GenerateKey(rand.Reader, 2048)
+	if keyErr != nil {
+		log.Fatalf("generate mock RSA keypair: %v", keyErr)
+	}
 	lastTrace.Store("")
 
 	mux := http.NewServeMux()
@@ -120,9 +149,19 @@ func main() {
 	mux.HandleFunc("/mcp", handleMCP)
 	mux.HandleFunc("/.well-known/agent-card.json", handleAgentCard)
 	mux.HandleFunc("/a2a", handleA2A)
+	mux.HandleFunc("/oidc/.well-known/openid-configuration", handleOIDCDiscovery)
+	mux.HandleFunc("/oidc/jwks", handleOIDCJWKS)
+	mux.HandleFunc("/oidc/admin/mint-jwt", handleOIDCMintJWT)
+	mux.HandleFunc("/oidc/admin/jwks-outage", handleOIDCJWKSOutage)
+	mux.HandleFunc("/hibp/range/", handleHIBPRange)
+	mux.HandleFunc("/hibp/audit", handleHIBPAudit)
+	mux.HandleFunc("/webhooks/soft-budget", handleWebhookSoftBudget)
+	mux.HandleFunc("/webhooks/key-rotation", handleWebhookKeyRotation)
+	mux.HandleFunc("/webhooks/audit", handleWebhookAudit)
 
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" && r.URL.Path != "/debug/stats" {
+		p := r.URL.Path
+		if p != "/healthz" && p != "/debug/stats" && !strings.HasPrefix(p, "/oidc/admin/") && p != "/hibp/audit" && p != "/webhooks/audit" {
 			totalRequests.Add(1)
 			if tp := r.Header.Get("Traceparent"); tp != "" {
 				lastTrace.Store(tp)
@@ -400,6 +439,174 @@ func handleA2A(w http.ResponseWriter, r *http.Request) {
 			"role":      "ROLE_AGENT",
 			"parts":     []map[string]any{{"text": "Acknowledged by mock A2A agent"}},
 		},
+	})
+}
+
+func handleOIDCDiscovery(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"issuer":                                "https://mock-upstream:8443/oidc",
+		"authorization_endpoint":                "https://mock-upstream:8443/oidc/authorize",
+		"token_endpoint":                        "https://mock-upstream:8443/oidc/token",
+		"userinfo_endpoint":                     "https://mock-upstream:8443/oidc/userinfo",
+		"jwks_uri":                              "https://mock-upstream:8443/oidc/jwks",
+		"response_types_supported":              []string{"code"},
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
+	})
+}
+
+func handleOIDCJWKS(w http.ResponseWriter, r *http.Request) {
+	if jwksOutage.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "jwks_unavailable"})
+		return
+	}
+	n := base64.RawURLEncoding.EncodeToString(mockRSAKey.PublicKey.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(mockRSAKey.PublicKey.E)).Bytes())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keys": []map[string]any{{
+			"kty": "RSA",
+			"kid": mockRSAKID,
+			"use": "sig",
+			"alg": "RS256",
+			"n":   n,
+			"e":   e,
+		}},
+	})
+}
+
+func handleOIDCMintJWT(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var req struct {
+		Sub     string   `json:"sub"`
+		Email   string   `json:"email"`
+		OrgID   string   `json:"org_id"`
+		TeamIDs []string `json:"team_ids"`
+		Role    string   `json:"role"`
+		Aud     string   `json:"aud"`
+		TTLSec  int64    `json:"ttl_sec"`
+		KID     string   `json:"kid"`
+		Iss     string   `json:"iss"`
+	}
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	if strings.TrimSpace(req.Iss) == "" {
+		req.Iss = "https://mock-upstream:8443/oidc"
+	}
+	if strings.TrimSpace(req.Aud) == "" {
+		req.Aud = "goroute-gateway"
+	}
+	if req.TTLSec <= 0 {
+		req.TTLSec = 600
+	}
+	if strings.TrimSpace(req.KID) == "" {
+		req.KID = mockRSAKID
+	}
+	now := time.Now().UTC().Unix()
+	claims := map[string]any{
+		"iss": req.Iss,
+		"sub": req.Sub,
+		"aud": req.Aud,
+		"iat": now,
+		"exp": now + req.TTLSec,
+	}
+	if req.Email != "" {
+		claims["email"] = req.Email
+	}
+	if req.OrgID != "" {
+		claims["org_id"] = req.OrgID
+	}
+	if len(req.TeamIDs) > 0 {
+		claims["team_ids"] = req.TeamIDs
+	}
+	if req.Role != "" {
+		claims["role"] = req.Role
+	}
+	hdrBytes, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": req.KID})
+	payBytes, _ := json.Marshal(claims)
+	signingInput := base64.RawURLEncoding.EncodeToString(hdrBytes) + "." + base64.RawURLEncoding.EncodeToString(payBytes)
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, mockRSAKey, crypto.SHA256, digest[:])
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	tok := signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+	writeJSON(w, http.StatusOK, map[string]string{"token": tok})
+}
+
+func handleOIDCJWKSOutage(w http.ResponseWriter, r *http.Request) {
+	fail := r.URL.Query().Get("fail")
+	jwksOutage.Store(fail == "1" || strings.EqualFold(fail, "true"))
+	writeJSON(w, http.StatusOK, map[string]any{"jwks_outage": jwksOutage.Load()})
+}
+
+func handleHIBPRange(w http.ResponseWriter, r *http.Request) {
+	prefix := strings.ToUpper(strings.TrimPrefix(r.URL.Path, "/hibp/range/"))
+	hibpMu.Lock()
+	hibpPrefixes = append(hibpPrefixes, prefix)
+	hibpMu.Unlock()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if strings.EqualFold(prefix, "CBFDA") {
+		_, _ = io.WriteString(w, "C6008F9CAB4083784CBD1874F76618D2A97:99999\r\n")
+		return
+	}
+	_, _ = io.WriteString(w, "00000000000000000000000000000000000:0\r\n")
+}
+
+func handleHIBPAudit(w http.ResponseWriter, r *http.Request) {
+	hibpMu.Lock()
+	cp := append([]string(nil), hibpPrefixes...)
+	hibpMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"prefixes": cp, "count": len(cp)})
+}
+
+func handleWebhookSoftBudget(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	raw := json.RawMessage(body)
+	if !json.Valid(raw) {
+		raw, _ = json.Marshal(string(body))
+	}
+	webhookMu.Lock()
+	softBudgetHooks = append(softBudgetHooks, webhookRecord{
+		AuthHeader: r.Header.Get("Authorization"),
+		Body:       raw,
+		ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	webhookMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func handleWebhookKeyRotation(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	raw := json.RawMessage(body)
+	if !json.Valid(raw) {
+		raw, _ = json.Marshal(string(body))
+	}
+	webhookMu.Lock()
+	keyRotationHooks = append(keyRotationHooks, webhookRecord{
+		AuthHeader: r.Header.Get("Authorization"),
+		Body:       raw,
+		ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	webhookMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func handleWebhookAudit(w http.ResponseWriter, r *http.Request) {
+	webhookMu.Lock()
+	softCopy := append([]webhookRecord(nil), softBudgetHooks...)
+	rotCopy := append([]webhookRecord(nil), keyRotationHooks...)
+	webhookMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"soft_budget":  softCopy,
+		"key_rotation": rotCopy,
 	})
 }
 

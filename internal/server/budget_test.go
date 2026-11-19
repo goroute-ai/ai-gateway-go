@@ -782,3 +782,99 @@ func TestPreDispatchVsPostDispatchCancellationSettlement(t *testing.T) {
 		})
 	}
 }
+
+func TestHybridAdmissionRollbackAndDescriptorLeaseRenewerAndHardCap(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	redisFabric := storage.NewRedisFabric(mr.Addr(), "", 0)
+	defer func() { _ = redisFabric.Client().Close() }()
+
+	repo := storage.NewMemoryRepository()
+	if err := repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
+		ID:                    "openai/gpt-4.1",
+		Provider:              domain.ProviderOpenAI,
+		ModelName:             "gpt-4.1",
+		InputCostMicrosPer1M:  2_000_000,
+		OutputCostMicrosPer1M: 8_000_000,
+		MaxOutputTokens:       100,
+		PricingStatus:         domain.PricingStatusVerified,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := &budgetLookupStats{leaseRenewInterval: 15 * time.Millisecond}
+	s := &GatewayServer{
+		repo:        repo,
+		limiter:     ratelimit.NewLimiter(redisFabric, 60, 300),
+		budgetStats: stats,
+		cfg:         config.Default(),
+	}
+
+	// 1. Hybrid admission rollback: key has RPM=1, TPM=100; project has TPM=10 (< 50 est tokens).
+	// When descriptor acquisition fails on project TPM, key RPM/TPM must roll back cleanly.
+	idBlockedByDesc := &domain.IdentityContext{
+		VirtualKeyID:    "vk-hyb-rb",
+		OrgID:           "org-hyb-rb",
+		ProjectID:       "proj-tight",
+		KeyRPMLimit:     1,
+		KeyTPMLimit:     100,
+		ProjectTPMLimit: 10,
+	}
+	if _, _, err := s.acquireQuotaWithThrottle(ctx, idBlockedByDesc, "openai/gpt-4.1", 50, 50, 0, "req-hyb-fail"); err == nil {
+		t.Fatal("expected descriptor project TPM limit rejection")
+	}
+
+	// Verify key RPM=1 was NOT consumed by the failed hybrid admission.
+	idClean := &domain.IdentityContext{
+		VirtualKeyID: "vk-hyb-rb",
+		OrgID:        "org-hyb-rb",
+		KeyRPMLimit:  1,
+		KeyTPMLimit:  100,
+	}
+	relClean, _, err := s.acquireQuotaWithThrottle(ctx, idClean, "openai/gpt-4.1", 50, 50, 0, "req-hyb-ok")
+	if err != nil {
+		t.Fatalf("expected zero partial RPM/TPM charge after failed descriptor step, got: %v", err)
+	}
+	relClean(50, 0, 0)
+
+	// 2. Descriptor-only budget lease renewal (no legacy 4-scope budgets configured).
+	idDescLease := &domain.IdentityContext{
+		VirtualKeyID:           "vk-desc-lease",
+		OrgID:                  "org-desc-lease",
+		ProjectID:              "proj-lease-srv",
+		ProjectMaxBudgetMicros: 5_000_000,
+	}
+	relLease, _, err := s.acquireQuotaWithThrottle(ctx, idDescLease, "openai/gpt-4.1", 100, 100, 100, "req-desc-lease")
+	if err != nil {
+		t.Fatalf("acquireQuotaWithThrottle(desc-lease): %v", err)
+	}
+	beforeRenewals := stats.leaseRenewals.Load()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if stats.leaseRenewals.Load() >= beforeRenewals+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stats.leaseRenewals.Load() < beforeRenewals+2 {
+		t.Fatalf("expected descriptor reservation lease renewals, got delta=%d", stats.leaseRenewals.Load()-beforeRenewals)
+	}
+	relLease(-1, -1, -1)
+
+	// 3. Soft-throttling preserves hard cap on unthrottled scope:
+	// Key has ThrottleOnBudgetExceeded=true (exhausted), but Org has hard cap without throttle.
+	idHardCap := &domain.IdentityContext{
+		VirtualKeyID:                "vk-soft-org-hard",
+		OrgID:                       "org-soft-org-hard",
+		KeyRPMLimit:                 10,
+		KeyMaxBudgetMicros:          100,
+		KeySpentMicros:              100,
+		KeyThrottleOnBudgetExceeded: true,
+		OrgMaxBudgetMicros:          50,
+		OrgSpentMicros:              100,
+		OrgThrottleOnBudgetExceeded: false,
+	}
+	if _, _, err := s.acquireQuotaWithThrottle(ctx, idHardCap, "openai/gpt-4.1", 100, 100, 100, "req-hard-cap"); err == nil {
+		t.Fatal("expected unthrottled Org hard cap to reject even when key soft-throttle is active")
+	}
+}

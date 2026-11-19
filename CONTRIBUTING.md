@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is a Go service and embeddable SDK (`v1.20.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v1.21.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 
@@ -20,7 +20,7 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (`$1.00 = 1,000,000 µ$`). Never use floating-point math for cost accumulation or pricing.
 3. **SSRF-Protected Network Egress**: All outbound HTTP traffic to upstream LLM providers or webhooks must route through the SSRF-guarded transport in `internal/security/network`. Admin credential `BaseURL` inputs and adapter `ListModels` endpoints must validate URLs via `adapter.ValidateAndResolveBaseURL`, and remote media fetches must use the strict HTTPS-only public `mediaPolicy`.
 4. **Multi-Tenant Isolation & Security Headers**: Boundary 1 Virtual Key / JWT authentication, tri-state multi-tenant RBAC allowlists (`null` inherit vs `[]` deny all across `Org > Team > User > VirtualKey`), fail-closed quota/policy checks, Redis Pub/Sub cross-replica invalidation, and `SecurityHeadersMiddleware` ([`internal/server/security_headers.go`](./internal/server/security_headers.go)) must be preserved across all endpoints.
-5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and both primary `/v1` and `/admin/v1` routes are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
+5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and `/v1`, `/admin/v1`, and `/auth` routes (`106` OpenAPI paths) are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
 7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 500 KB` uncompressed and `<= 150 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
 8. **Secret & CI Hygiene**: Never commit real or realistic secret/token literals—even in unit tests (construct synthetic fixtures dynamically if needed). Keep tests compatible with `.gitleaks.toml` and GitHub Push Protection.
@@ -58,9 +58,10 @@ make ui-build
 # Build the gateway executable (with embedded UI)
 make build
 
-# Optional: start PostgreSQL 16 + Redis 7 and run strict live-stack E2E tests
+# Optional: start PostgreSQL 16 + Redis 7 and run strict live-stack Go & Browser UI E2E tests (see docs/TESTING.md)
 make test-live-up
 make test-e2e-strict
+make test-ui-e2e
 make test-live-down
 
 # Optional: run security checks
@@ -174,7 +175,7 @@ gitleaks detect --source=. --config=.gitleaks.toml --no-git
 go build -o /dev/null ./cmd/gateway
 ```
 
-When changing storage, auth, caching, FinOps, or HTTP routes, also verify live PostgreSQL + Redis E2E tests (`make test-live-up && make test-e2e-strict && make test-live-down`).
+When changing storage, auth, caching, FinOps, or HTTP/UI routes, also verify live PostgreSQL + Redis Go and Playwright UI E2E tests (`make test-live-up && make test-e2e-strict && make test-ui-e2e && make test-live-down`, see [`docs/TESTING.md`](./docs/TESTING.md)).
 
 ---
 

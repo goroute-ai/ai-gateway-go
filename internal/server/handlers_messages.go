@@ -255,7 +255,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		defer duringHandle.Close()
 	}
 
-	quotaSettlement.upstreamDispatched = true
+	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
@@ -547,7 +547,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
 		usage = &u
 	} else {
-		quotaSettlement.upstreamDispatched = true
+		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 			winningDep = dep
 			quotaSettlement.selectedDep = dep

@@ -2,8 +2,6 @@ package upstream
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -143,10 +141,8 @@ func (s *TokenExchangeStrategy) Apply(ctx context.Context, req *http.Request, au
 
 	subjectToken := strings.TrimSpace(authCtx.DelegatedToken)
 
-	// Compute deterministic cache key (hashed inside DistributedTokenCache)
-	cacheKeyHash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s",
-		s.tokenEndpoint, s.clientID, subjectToken, s.resource, s.audience, s.scope)))
-	cacheKey := "rfc8693|" + hex.EncodeToString(cacheKeyHash[:])
+	cacheKey := tokenCacheKey(authCtx, "rfc8693", s.tokenEndpoint, s.clientID, s.clientSecret,
+		subjectToken, s.subjectTokenType, s.resource, s.audience, s.scope)
 
 	accessToken, err := s.getOrInitTokenCache().GetOrRefresh(ctx, cacheKey, func(refreshCtx context.Context) (string, time.Duration, error) {
 		// Perform RFC 8693 Token Exchange POST

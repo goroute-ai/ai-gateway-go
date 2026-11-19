@@ -705,4 +705,47 @@ func TestRBAC_ModelAccessGroupAuthorization(t *testing.T) {
 	if err := rbac.AuthorizeRequestedModel(otherCtx, "gpt-4o"); err != nil {
 		t.Fatalf("expected org-1 to access gpt-4o unaffected by org-2 group: %v", err)
 	}
+
+	// 5. Explicit project and team-member restrictions reject broader dynamic grants,
+	// while explicit ModelAccessGroup references inside ProjectAllowedModels/TeamMemberAllowedModels succeed.
+	projRestrictedCtx := &domain.IdentityContext{
+		VirtualKeyID:         "vk-proj-res",
+		KeyPrefix:            "sk-gw-pr",
+		OrgID:                "org-1",
+		TeamID:               "team-regular",
+		ProjectID:            "proj-1",
+		ProjectAllowedModels: []string{"gpt-4o-mini"},
+		DynamicAllowedModels: []string{"claude-3-5-sonnet", "gpt-4o"},
+		AccessGroups:         []string{"tier-gold"},
+	}
+	err = rbac.AuthorizeRequestedModel(projRestrictedCtx, "claude-3-5-sonnet")
+	if !errors.As(err, &gwErr) || gwErr.Code != "project_model_restricted" {
+		t.Fatalf("expected project_model_restricted despite dynamic grant, got %v", err)
+	}
+
+	memberRestrictedCtx := &domain.IdentityContext{
+		VirtualKeyID:            "vk-mem-res",
+		KeyPrefix:               "sk-gw-mr",
+		OrgID:                   "org-1",
+		TeamID:                  "team-regular",
+		TeamMemberAllowedModels: []string{"gpt-4o-mini"},
+		DynamicAllowedModels:    []string{"claude-3-5-sonnet"},
+		AccessGroups:            []string{"tier-gold"},
+	}
+	err = rbac.AuthorizeRequestedModel(memberRestrictedCtx, "claude-3-5-sonnet")
+	if !errors.As(err, &gwErr) || gwErr.Code != "team_member_model_restricted" {
+		t.Fatalf("expected team_member_model_restricted despite dynamic grant, got %v", err)
+	}
+
+	explicitMAGMemberAndProjCtx := &domain.IdentityContext{
+		VirtualKeyID:            "vk-mag-exp",
+		KeyPrefix:               "sk-gw-me",
+		OrgID:                   "org-1",
+		ProjectID:               "proj-1",
+		ProjectAllowedModels:    []string{"tier-gold"},
+		TeamMemberAllowedModels: []string{"tier-gold"},
+	}
+	if err := rbac.AuthorizeRequestedModel(explicitMAGMemberAndProjCtx, "claude-3-5-sonnet"); err != nil {
+		t.Fatalf("expected explicit tier-gold reference in project & member allowlists to authorize: %v", err)
+	}
 }

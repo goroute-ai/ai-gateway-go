@@ -32,19 +32,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-async function computePasswordSha1(password: string): Promise<string | undefined> {
-  try {
-    if (typeof crypto === 'undefined' || !crypto.subtle) return undefined;
-    const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(password));
-    return Array.from(new Uint8Array(buf))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('')
-      .toUpperCase();
-  } catch {
-    return undefined;
-  }
-}
-
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const queryClient = useQueryClient();
   const [adminKey, setAdminKey] = useState<string>('');
@@ -122,12 +109,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!trimmed || !password) {
       throw new Error('Email/username and password are required.');
     }
-    const password_sha1 = await computePasswordSha1(password);
     const res = await authApi.loginPassword({
       email: trimmed,
       username: trimmed,
       password,
-      ...(password_sha1 ? { password_sha1 } : {}),
     });
     setAdminKey('');
     syncCsrf(res.csrf_token || null);
@@ -189,12 +174,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const updatePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
-    const password_sha1 = await computePasswordSha1(newPassword);
     await authApi.updatePassword(
       {
         ...(currentPassword ? { current_password: currentPassword } : {}),
         new_password: newPassword,
-        ...(password_sha1 ? { password_sha1 } : {}),
       },
       adminKey || undefined
     );

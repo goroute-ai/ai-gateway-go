@@ -546,6 +546,7 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 		Email                    *string                   `json:"email,omitempty"`
 		Name                     *string                   `json:"name,omitempty"`
 		Role                     *domain.Role              `json:"role,omitempty"`
+		OIDCIssuer               *string                   `json:"oidc_issuer,omitempty"`
 		OIDCSubject              *string                   `json:"oidc_subject,omitempty"`
 		SCIMExternalID           *string                   `json:"scim_external_id,omitempty"`
 		SCIMActive               *bool                     `json:"scim_active,omitempty"`
@@ -634,6 +635,9 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			return
 		}
 		updated.Role = *req.Role
+	}
+	if req.OIDCIssuer != nil {
+		updated.OIDCIssuer = strings.TrimSpace(*req.OIDCIssuer)
 	}
 	if req.OIDCSubject != nil {
 		updated.OIDCSubject = strings.TrimSpace(*req.OIDCSubject)

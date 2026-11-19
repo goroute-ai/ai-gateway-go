@@ -1193,14 +1193,14 @@ func (p *PostgresRepository) DeleteProject(ctx context.Context, id string) error
 	return nil
 }
 
-const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), COALESCE(scim_external_id, ''), scim_active, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
+const userSelectCols = `id, org_id, COALESCE(team_id, ''), email, name, role, COALESCE(oidc_subject, ''), oidc_issuer, COALESCE(scim_external_id, ''), scim_active, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active, created_at, updated_at`
 
 func scanUser(row rowScanner) (*domain.User, error) {
 	var u domain.User
 	var role, period string
 	var rawFallbacks []byte
 	if err := row.Scan(
-		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.SCIMExternalID, &u.SCIMActive,
+		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &role, &u.OIDCSubject, &u.OIDCIssuer, &u.SCIMExternalID, &u.SCIMActive,
 		&u.MaxBudgetMicros, &u.TempBudgetIncreaseMicros, &u.TempBudgetExpiresAt, &u.SoftBudgetMicros, &u.ThrottleOnBudgetExceeded, &rawFallbacks, &u.SpentMicros, &period, &u.BudgetResetAt,
 		&u.RPMLimit, &u.TPMLimit, &u.MaxConcurrentRequests, &u.BatchEnqueuedTokenLimit, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
@@ -1225,12 +1225,12 @@ func (p *PostgresRepository) CreateUser(ctx context.Context, user *domain.User) 
 	}
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
+			id, org_id, team_id, email, name, role, oidc_subject, oidc_issuer, scim_external_id, scim_active,
 			max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`
 	if _, err := p.pool.Exec(ctx, q,
-		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.SCIMExternalID, user.SCIMActive,
+		user.ID, user.OrgID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.OIDCIssuer, user.SCIMExternalID, user.SCIMActive,
 		user.MaxBudgetMicros, user.TempBudgetIncreaseMicros, user.TempBudgetExpiresAt, user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks), user.SpentMicros, string(user.BudgetResetPeriod), user.BudgetResetAt,
 		user.RPMLimit, user.TPMLimit, user.MaxConcurrentRequests, user.BatchEnqueuedTokenLimit, user.IsActive,
 	); err != nil {
@@ -1246,17 +1246,17 @@ func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) 
 	user.BudgetResetPeriod, user.BudgetResetAt = resolveBudgetResetSchedule(user.BudgetResetPeriod, user.BudgetResetAt, time.Now().UTC())
 	const q = `
 		UPDATE users SET
-			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''),
-			scim_external_id = NULLIF($7,''), scim_active = $8,
-			max_budget_micros = $9, temp_budget_increase_micros = $10, temp_budget_expires_at = $11,
-			soft_budget_micros = $12, throttle_on_budget_exceeded = $13, budget_fallbacks = $14,
-			spent_micros = $15, budget_reset_period = $16, budget_reset_at = $17,
-			rpm_limit = $18, tpm_limit = $19, max_concurrent_requests = $20, batch_enqueued_token_limit = $21, is_active = $22,
+			team_id = NULLIF($2,''), email = $3, name = $4, role = $5, oidc_subject = NULLIF($6,''), oidc_issuer = $7,
+			scim_external_id = NULLIF($8,''), scim_active = $9,
+			max_budget_micros = $10, temp_budget_increase_micros = $11, temp_budget_expires_at = $12,
+			soft_budget_micros = $13, throttle_on_budget_exceeded = $14, budget_fallbacks = $15,
+			spent_micros = $16, budget_reset_period = $17, budget_reset_at = $18,
+			rpm_limit = $19, tpm_limit = $20, max_concurrent_requests = $21, batch_enqueued_token_limit = $22, is_active = $23,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
-			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject,
+			user.ID, user.TeamID, user.Email, user.Name, string(user.Role), user.OIDCSubject, user.OIDCIssuer,
 			user.SCIMExternalID, user.SCIMActive,
 			user.MaxBudgetMicros, user.TempBudgetIncreaseMicros, user.TempBudgetExpiresAt,
 			user.SoftBudgetMicros, user.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(user.BudgetFallbacks),
@@ -1340,21 +1340,38 @@ func (p *PostgresRepository) DeleteUser(ctx context.Context, id string) error {
 }
 
 func (p *PostgresRepository) GetUserByOrgAndOIDCSubject(ctx context.Context, orgID, subject string) (*domain.User, error) {
-	if orgID == "" || subject == "" {
-		return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
+	return p.GetUserByOIDCIdentity(ctx, orgID, "", subject)
+}
+
+func (p *PostgresRepository) GetUserByOIDCIdentity(ctx context.Context, orgID, issuer, subject string) (*domain.User, error) {
+	if subject == "" || (orgID == "" && issuer != "") {
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
 	}
 	if p.pool == nil {
-		return p.mem.GetUserByOrgAndOIDCSubject(ctx, orgID, subject)
+		return p.mem.GetUserByOIDCIdentity(ctx, orgID, issuer, subject)
 	}
-	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE org_id = $1 AND oidc_subject = $2 LIMIT 1`, orgID, subject))
+	query := `SELECT ` + userSelectCols + ` FROM users WHERE oidc_subject = $1 AND oidc_issuer = $2`
+	args := []any{subject, issuer}
+	if orgID != "" {
+		query += ` AND org_id = $3`
+		args = append(args, orgID)
+	}
+	rows, err := p.pool.Query(ctx, query+` LIMIT 2`, args...)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("user with org_id %q and oidc_subject %q %w", orgID, subject, ErrNotFound)
-		}
 		return nil, err
 	}
-	_ = p.mem.CreateUser(ctx, u)
-	return u, nil
+	users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*domain.User, error) { return scanUser(row) })
+	if err != nil {
+		return nil, err
+	}
+	switch len(users) {
+	case 0:
+		return nil, fmt.Errorf("user with org_id %q issuer %q and oidc_subject %q %w", orgID, issuer, subject, ErrNotFound)
+	case 1:
+		return users[0], nil
+	default:
+		return nil, fmt.Errorf("multiple users share oidc identity: %w", ErrConflict)
+	}
 }
 
 func (p *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
@@ -1416,13 +1433,13 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 
 	const q = `
 		INSERT INTO users (
-			id, org_id, team_id, email, name, role, oidc_subject, scim_external_id, scim_active,
+			id, org_id, team_id, email, name, role, oidc_subject, oidc_issuer, scim_external_id, scim_active,
 			max_budget_micros, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, max_concurrent_requests, batch_enqueued_token_limit, is_active
-		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		ON CONFLICT DO NOTHING`
 	tag, err := p.pool.Exec(ctx, q,
-		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject, cp.SCIMExternalID, cp.SCIMActive,
+		cp.ID, cp.OrgID, cp.TeamID, cp.Email, cp.Name, string(cp.Role), cp.OIDCSubject, cp.OIDCIssuer, cp.SCIMExternalID, cp.SCIMActive,
 		cp.MaxBudgetMicros, cp.SoftBudgetMicros, cp.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(cp.BudgetFallbacks), cp.SpentMicros, string(cp.BudgetResetPeriod), cp.BudgetResetAt,
 		cp.RPMLimit, cp.TPMLimit, cp.MaxConcurrentRequests, cp.BatchEnqueuedTokenLimit, cp.IsActive,
 	)
@@ -1438,9 +1455,9 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 		return &cp, true, nil
 	}
 
-	// Concurrent creation or pre-existing user: re-read deterministically by (org_id, oidc_subject), then email.
+	// Concurrent creation or pre-existing user: re-read deterministically by (org_id, oidc_issuer, oidc_subject), then email.
 	if cp.OIDCSubject != "" {
-		existing, err := p.GetUserByOrgAndOIDCSubject(ctx, cp.OrgID, cp.OIDCSubject)
+		existing, err := p.GetUserByOIDCIdentity(ctx, cp.OrgID, cp.OIDCIssuer, cp.OIDCSubject)
 		if err == nil && existing != nil {
 			return existing, false, nil
 		}
@@ -1454,8 +1471,8 @@ func (p *PostgresRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, u
 			if existing.OrgID != cp.OrgID {
 				return nil, false, fmt.Errorf("email %q already belongs to another organization: %w", cp.Email, ErrConflict)
 			}
-			if existing.OIDCSubject != "" && cp.OIDCSubject != "" && existing.OIDCSubject != cp.OIDCSubject {
-				return nil, false, fmt.Errorf("email %q is bound to another OIDC subject: %w", cp.Email, ErrConflict)
+			if existing.OIDCIssuer != "" || cp.OIDCIssuer != "" || (existing.OIDCSubject != "" && cp.OIDCSubject != "" && existing.OIDCSubject != cp.OIDCSubject) {
+				return nil, false, fmt.Errorf("email %q is bound to another OIDC identity: %w", cp.Email, ErrConflict)
 			}
 			return existing, false, nil
 		}
@@ -1918,7 +1935,7 @@ func (p *PostgresRepository) HasTeamPTUShares(ctx context.Context, teamID string
 	return exists, nil
 }
 
-const budgetWindowSelectCols = `id, org_id, scope_type, scope_id, window_type, max_budget_micros, spent_micros, window_reset_at, created_at, updated_at`
+const budgetWindowSelectCols = `id, org_id, scope_type, scope_id, window_type, max_budget_micros, spent_micros, window_reset_at, rolling_hold_micros, rolling_hold_expires_at, created_at, updated_at`
 
 func scanBudgetWindowLimit(row rowScanner) (*domain.BudgetWindowLimit, error) {
 	var bw domain.BudgetWindowLimit
@@ -1926,6 +1943,7 @@ func scanBudgetWindowLimit(row rowScanner) (*domain.BudgetWindowLimit, error) {
 	if err := row.Scan(
 		&bw.ID, &bw.OrgID, &scopeType, &bw.ScopeID, &windowType,
 		&bw.MaxBudgetMicros, &bw.SpentMicros, &bw.WindowResetAt,
+		&bw.RollingHoldMicros, &bw.RollingHoldExpiresAt,
 		&bw.CreatedAt, &bw.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -2031,7 +2049,143 @@ func (p *PostgresRepository) ListBudgetWindowLimits(ctx context.Context, filter 
 		}
 		out = append(out, bw)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-24 * time.Hour)
+	for _, bw := range out {
+		if bw.WindowType != domain.BudgetWindowRolling24h {
+			continue
+		}
+		recentSum, rErr := p.postgresRollingWindowSpend(ctx, bw, cutoff)
+		if rErr != nil {
+			return nil, rErr
+		}
+		if bw.RollingHoldExpiresAt != nil && now.Before(bw.RollingHoldExpiresAt.UTC()) && bw.RollingHoldMicros > 0 {
+			recentSum += bw.RollingHoldMicros
+		}
+		bw.SpentMicros = recentSum
+	}
+	return out, nil
+}
+
+func rollingSpendScopeFilter(orgID string, scopeType domain.QuotaScopeType, scopeID string, nextArg int) (string, []any, bool) {
+	switch scopeType {
+	case domain.QuotaScopeOrg:
+		return fmt.Sprintf("org_id = $%d", nextArg), []any{orgID}, true
+	case domain.QuotaScopeTeam:
+		return fmt.Sprintf("org_id = $%d AND team_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeUser:
+		return fmt.Sprintf("org_id = $%d AND user_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeKey:
+		return fmt.Sprintf("org_id = $%d AND virtual_key_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeTeamMember:
+		teamID, userID, ok := strings.Cut(scopeID, ":")
+		if !ok || teamID == "" || userID == "" {
+			return "", nil, false
+		}
+		return fmt.Sprintf("org_id = $%d AND team_id = $%d AND user_id = $%d", nextArg, nextArg+1, nextArg+2), []any{orgID, teamID, userID}, true
+	case domain.QuotaScopeProject:
+		return fmt.Sprintf("org_id = $%d AND project_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeEndUser:
+		return fmt.Sprintf("org_id = $%d AND end_user_id = $%d", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeTag:
+		return fmt.Sprintf("org_id = $%d AND $%d = ANY(tags)", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	case domain.QuotaScopeModelAccessGroup:
+		return fmt.Sprintf("org_id = $%d AND $%d = ANY(model_access_group_ids)", nextArg, nextArg+1), []any{orgID, scopeID}, true
+	default:
+		return "", nil, false
+	}
+}
+
+func (p *PostgresRepository) postgresRollingWindowSpend(ctx context.Context, bw *domain.BudgetWindowLimit, cutoff time.Time) (int64, error) {
+	if p == nil || p.pool == nil || bw == nil {
+		return 0, nil
+	}
+	condSQL, scopeArgs, ok := rollingSpendScopeFilter(bw.OrgID, bw.ScopeType, bw.ScopeID, 2)
+	if !ok {
+		return 0, nil
+	}
+	var sum int64
+	q := `SELECT COALESCE(SUM(cost_micros), 0) FROM spend_logs WHERE created_at > $1 AND ` + condSQL
+	args := append([]any{cutoff}, scopeArgs...)
+	if err := p.pool.QueryRow(ctx, q, args...).Scan(&sum); err != nil {
+		return 0, err
+	}
+	return sum, nil
+}
+
+func (p *PostgresRepository) ListRollingWindowHistory(ctx context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, now time.Time) ([]domain.RollingSpendEntry, error) {
+	orgID = strings.TrimSpace(orgID)
+	scopeType = domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(scopeType))))
+	scopeID = strings.TrimSpace(scopeID)
+	if orgID == "" || scopeID == "" || !scopeType.IsValid() {
+		return nil, nil
+	}
+	nowUTC := now.UTC()
+	if nowUTC.IsZero() {
+		nowUTC = time.Now().UTC()
+	}
+	if p == nil || p.pool == nil {
+		return p.mem.ListRollingWindowHistory(ctx, orgID, scopeType, scopeID, nowUTC)
+	}
+
+	condSQL, scopeArgs, ok := rollingSpendScopeFilter(orgID, scopeType, scopeID, 2)
+	if !ok {
+		return nil, nil
+	}
+	cutoff := nowUTC.Add(-24 * time.Hour)
+	q := `SELECT id, created_at, cost_micros FROM spend_logs WHERE created_at > $1 AND cost_micros > 0 AND ` + condSQL + ` ORDER BY created_at ASC, id ASC`
+	args := append([]any{cutoff}, scopeArgs...)
+
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.RollingSpendEntry
+	for rows.Next() {
+		var id string
+		var createdAt time.Time
+		var costMicros int64
+		if scanErr := rows.Scan(&id, &createdAt, &costMicros); scanErr != nil {
+			return nil, scanErr
+		}
+		if costMicros <= 0 {
+			continue
+		}
+		out = append(out, domain.RollingSpendEntry{
+			ID:           "db:" + id,
+			TimestampMs:  createdAt.UTC().UnixMilli(),
+			AmountMicros: costMicros,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var bwID string
+	var holdMicros int64
+	var holdExp *time.Time
+	holdErr := p.pool.QueryRow(ctx,
+		`SELECT id, rolling_hold_micros, rolling_hold_expires_at
+		 FROM budget_window_limits
+		 WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3 AND window_type = 'rolling_24h'`,
+		orgID, string(scopeType), scopeID,
+	).Scan(&bwID, &holdMicros, &holdExp)
+	if holdErr != nil && !errors.Is(holdErr, pgx.ErrNoRows) {
+		return nil, holdErr
+	}
+	if holdErr == nil && holdMicros > 0 && holdExp != nil && holdExp.UTC().After(nowUTC) {
+		out = append(out, domain.RollingSpendEntry{
+			ID:           "hold:" + bwID,
+			TimestampMs:  holdExp.UTC().Add(-24 * time.Hour).UnixMilli(),
+			AmountMicros: holdMicros,
+		})
+	}
+	return out, nil
 }
 
 func (p *PostgresRepository) IncrementBudgetWindowSpend(ctx context.Context, orgID string, scopeType domain.QuotaScopeType, scopeID string, deltaMicros int64) error {
@@ -2050,9 +2204,20 @@ func (p *PostgresRepository) IncrementBudgetWindowSpend(ctx context.Context, org
 	if p.pool == nil {
 		return p.mem.IncrementBudgetWindowSpend(ctx, orgID, scopeType, scopeID, deltaMicros)
 	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(24 * time.Hour)
 	if _, err := p.pool.Exec(ctx,
-		`UPDATE budget_window_limits SET spent_micros = spent_micros + $4, updated_at = NOW() WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3`,
-		orgID, string(scopeType), scopeID, deltaMicros,
+		`UPDATE budget_window_limits
+		 SET spent_micros = CASE WHEN window_type = 'rolling_24h' THEN spent_micros ELSE spent_micros + $4 END,
+		     rolling_hold_micros = CASE
+		         WHEN window_type <> 'rolling_24h' THEN rolling_hold_micros
+		         WHEN rolling_hold_expires_at IS NULL OR rolling_hold_expires_at <= $5 THEN $4
+		         ELSE rolling_hold_micros + $4
+		     END,
+		     rolling_hold_expires_at = CASE WHEN window_type = 'rolling_24h' THEN $6 ELSE rolling_hold_expires_at END,
+		     updated_at = NOW()
+		 WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3`,
+		orgID, string(scopeType), scopeID, deltaMicros, now, expiresAt,
 	); err != nil {
 		return err
 	}
@@ -2077,7 +2242,7 @@ func (p *PostgresRepository) ResetExpiredBudgetWindowsWithResults(ctx context.Co
 	defer tx.Rollback(ctx)
 
 	rows, err := tx.Query(ctx,
-		`SELECT `+budgetWindowSelectCols+` FROM budget_window_limits WHERE window_reset_at <= $1 FOR UPDATE`,
+		`SELECT `+budgetWindowSelectCols+` FROM budget_window_limits WHERE window_type <> 'rolling_24h' AND window_reset_at <= $1 FOR UPDATE`,
 		nowUTC,
 	)
 	if err != nil {
@@ -2384,9 +2549,9 @@ func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id strin
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(staged_key_hash, ''), COALESCE(staged_key_prefix, ''), COALESCE(staged_encrypted_raw_key, ''), COALESCE(staged_key_dek, ''), staged_created_at, COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
 
-const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(vk.staged_key_hash, ''), COALESCE(vk.staged_key_prefix, ''), COALESCE(vk.staged_encrypted_raw_key, ''), COALESCE(vk.staged_key_dek, ''), vk.staged_created_at, COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
@@ -2398,7 +2563,7 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.TempBudgetIncreaseMicros, &k.TempBudgetExpiresAt, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt, &keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
 	); err != nil {
 		return nil, err
 	}
@@ -2424,7 +2589,7 @@ func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, er
 		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.TempBudgetIncreaseMicros, &k.TempBudgetExpiresAt, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
-		&k.RotationIntervalSec, &k.KeyRotationAt, &keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
+		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt, &keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
 		&revokeAt,
 	); err != nil {
 		return nil, time.Time{}, err
@@ -2536,11 +2701,16 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			is_active = $30,
 			rotation_interval_sec = $31,
 			key_rotation_at = $32,
-			key_type = COALESCE(NULLIF($33, ''), key_type),
-			project_id = NULLIF($34, ''),
-			can_impersonate = $35,
-			tags = $36,
-			metadata = $37,
+			staged_key_hash = NULLIF($33, ''),
+			staged_key_prefix = NULLIF($34, ''),
+			staged_encrypted_raw_key = NULLIF($35, ''),
+			staged_key_dek = NULLIF($36, ''),
+			staged_created_at = $37,
+			key_type = COALESCE(NULLIF($38, ''), key_type),
+			project_id = NULLIF($39, ''),
+			can_impersonate = $40,
+			tags = $41,
+			metadata = $42,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -2550,7 +2720,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.TempBudgetIncreaseMicros, vk.TempBudgetExpiresAt, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
-			vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
+			vk.RotationIntervalSec, vk.KeyRotationAt, vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
 		)
 		if err != nil {
 			return err
@@ -3482,21 +3652,23 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	const insertQ = `
 		INSERT INTO spend_logs (
 			id, request_id, trace_id, org_id, team_id, user_id, virtual_key_id,
-			end_user_id, tags, session_id,
+			project_id, end_user_id, tags, session_id, model_access_group_ids, matched_quota_policy_ids,
 			endpoint, modality, modality_units, requested_model, resolved_model, provider,
 			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 			cost_micros, pricing_version, pricing_status, pricing_provenance_source,
-			latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count
+			latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
 		) VALUES (
 			$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
-			NULLIF($8,''),$9,NULLIF($10,''),
-			$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,
-			$22,$23,$24,$25,
-			$26,$27,$28,$29,$30,$31,$32
+			COALESCE(NULLIF($8,''), (SELECT project_id FROM virtual_keys WHERE id = NULLIF($7,''))),
+			NULLIF($9,''),$10,NULLIF($11,''),$12,$13,
+			$14,$15,$16,$17,$18,$19,
+			$20,$21,$22,$23,$24,
+			$25,$26,$27,$28,
+			$29,$30,$31,$32,$33,$34,$35,$36
 		)
 		ON CONFLICT (id) DO NOTHING
-		RETURNING org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''), cost_micros`
+		RETURNING org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''),
+			COALESCE(project_id, ''), model_access_group_ids, matched_quota_policy_ids, cost_micros`
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -3504,6 +3676,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	}
 	defer tx.Rollback(ctx)
 
+	nowFallback := time.Now().UTC()
 	batch := &pgx.Batch{}
 	for _, ev := range events {
 		id := ev.ID
@@ -3534,19 +3707,37 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		if evTags == nil {
 			evTags = []string{}
 		}
+		evMAGs := ev.ModelAccessGroupIDs
+		if evMAGs == nil {
+			evMAGs = []string{}
+		}
+		evPolicyIDs := ev.MatchedQuotaPolicyIDs
+		if evPolicyIDs == nil {
+			evPolicyIDs = []string{}
+		}
+		createdAt := ev.CreatedAt.UTC()
+		if createdAt.IsZero() {
+			createdAt = nowFallback
+		}
 		batch.Queue(insertQ,
 			id, ev.RequestID, ev.TraceID, orgID, ev.TeamID, ev.UserID, ev.VirtualKeyID,
-			ev.EndUserID, evTags, ev.SessionID,
+			ev.ProjectID, ev.EndUserID, evTags, ev.SessionID, evMAGs, evPolicyIDs,
 			ev.Endpoint, modality, modUnitsJSON, ev.RequestedModel, ev.ResolvedModel, string(ev.Provider),
 			ev.Usage.PromptTokens, ev.Usage.CompletionTokens, ev.Usage.CachedPromptTokens, ev.Usage.ReasoningTokens, ev.Usage.TotalTokens,
 			ev.CostMicros, pv, pricingStatus, ev.PricingProvenanceSource,
-			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount,
+			ev.LatencyMs, ev.TTFTMs, ev.StatusCode, ev.IsStream, ev.CacheHit, ev.FallbackAttempted, ev.RetryCount, createdAt,
 		)
 	}
 	orgTotals := make(map[string]int64)
 	teamTotals := make(map[string]int64)
 	userTotals := make(map[string]int64)
 	keyTotals := make(map[string]int64)
+	projectTotals := make(map[string]int64)
+	type teamMemberKey struct {
+		teamID string
+		userID string
+	}
+	memberTotals := make(map[teamMemberKey]int64)
 	type orgTupleKey struct {
 		orgID string
 		id    string
@@ -3554,6 +3745,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	endUserTotals := make(map[orgTupleKey]int64)
 	tagTotals := make(map[orgTupleKey]int64)
 	magTotals := make(map[string]int64)
+	policyTotals := make(map[string]int64)
 	type bwSpendKey struct {
 		orgID     string
 		scopeType domain.QuotaScopeType
@@ -3563,9 +3755,10 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 
 	br := tx.SendBatch(ctx, batch)
 	for i := range events {
-		var orgID, teamID, userID, keyID string
+		var orgID, teamID, userID, keyID, projectID string
+		var magIDs, policyIDs []string
 		var costMicros int64
-		err := br.QueryRow().Scan(&orgID, &teamID, &userID, &keyID, &costMicros)
+		err := br.QueryRow().Scan(&orgID, &teamID, &userID, &keyID, &projectID, &magIDs, &policyIDs, &costMicros)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -3597,8 +3790,17 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 					bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeKey, scopeID: keyID}] += costMicros
 				}
 			}
-			if orgID != "" && teamID != "" && userID != "" {
-				bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeTeamMember, scopeID: teamID + ":" + userID}] += costMicros
+			if projectID != "" {
+				projectTotals[projectID] += costMicros
+				if orgID != "" {
+					bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeProject, scopeID: projectID}] += costMicros
+				}
+			}
+			if teamID != "" && userID != "" {
+				memberTotals[teamMemberKey{teamID: teamID, userID: userID}] += costMicros
+				if orgID != "" {
+					bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeTeamMember, scopeID: teamID + ":" + userID}] += costMicros
+				}
 			}
 			if orgID != "" && ev.EndUserID != "" {
 				endUserTotals[orgTupleKey{orgID: orgID, id: ev.EndUserID}] += costMicros
@@ -3612,15 +3814,32 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 				tagTotals[orgTupleKey{orgID: orgID, id: tagName}] += costMicros
 				bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeTag, scopeID: tagName}] += costMicros
 			}
-			for _, magID := range ev.ModelAccessGroupIDs {
+			seenMAGs := make(map[string]struct{}, len(magIDs))
+			for _, magID := range magIDs {
 				magID = strings.TrimSpace(magID)
 				if magID == "" {
 					continue
 				}
+				if _, dup := seenMAGs[magID]; dup {
+					continue
+				}
+				seenMAGs[magID] = struct{}{}
 				magTotals[magID] += costMicros
 				if orgID != "" {
 					bwTotals[bwSpendKey{orgID: orgID, scopeType: domain.QuotaScopeModelAccessGroup, scopeID: magID}] += costMicros
 				}
+			}
+			seenPolicies := make(map[string]struct{}, len(policyIDs))
+			for _, qpID := range policyIDs {
+				qpID = strings.TrimSpace(qpID)
+				if qpID == "" {
+					continue
+				}
+				if _, dup := seenPolicies[qpID]; dup {
+					continue
+				}
+				seenPolicies[qpID] = struct{}{}
+				policyTotals[qpID] += costMicros
 			}
 		}
 	}
@@ -3646,6 +3865,29 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 	for _, d := range sortedSpendDeltas(keyTotals) {
 		updateBatch.Queue(`UPDATE virtual_keys SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
 		updateCount++
+	}
+	for _, d := range sortedSpendDeltas(projectTotals) {
+		updateBatch.Queue(`UPDATE projects SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
+	if len(memberTotals) > 0 {
+		mKeys := make([]teamMemberKey, 0, len(memberTotals))
+		for k := range memberTotals {
+			mKeys = append(mKeys, k)
+		}
+		sort.Slice(mKeys, func(i, j int) bool {
+			if mKeys[i].teamID != mKeys[j].teamID {
+				return mKeys[i].teamID < mKeys[j].teamID
+			}
+			return mKeys[i].userID < mKeys[j].userID
+		})
+		for _, k := range mKeys {
+			updateBatch.Queue(
+				`UPDATE team_memberships SET spent_micros = spent_micros + $3, updated_at = NOW() WHERE team_id = $1 AND user_id = $2`,
+				k.teamID, k.userID, memberTotals[k],
+			)
+			updateCount++
+		}
 	}
 	if len(endUserTotals) > 0 {
 		euKeys := make([]orgTupleKey, 0, len(endUserTotals))
@@ -3689,6 +3931,10 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		updateBatch.Queue(`UPDATE model_access_groups SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
 		updateCount++
 	}
+	for _, d := range sortedSpendDeltas(policyTotals) {
+		updateBatch.Queue(`UPDATE quota_policies SET spent_micros = spent_micros + $2, updated_at = NOW() WHERE id = $1`, d.id, d.costMicros)
+		updateCount++
+	}
 	if len(bwTotals) > 0 {
 		bwKeys := make([]bwSpendKey, 0, len(bwTotals))
 		for k := range bwTotals {
@@ -3705,7 +3951,7 @@ func (p *PostgresRepository) RecordSpendBatch(ctx context.Context, events []doma
 		})
 		for _, k := range bwKeys {
 			updateBatch.Queue(
-				`UPDATE budget_window_limits SET spent_micros = spent_micros + $4, updated_at = NOW() WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3`,
+				`UPDATE budget_window_limits SET spent_micros = spent_micros + $4, updated_at = NOW() WHERE org_id = $1 AND scope_type = $2 AND scope_id = $3 AND window_type <> 'rolling_24h'`,
 				k.orgID, string(k.scopeType), k.scopeID, bwTotals[k],
 			)
 			updateCount++
@@ -3815,14 +4061,20 @@ func (p *PostgresRepository) ListSpendLogs(ctx context.Context, orgID string, li
 	var args []any
 	if orgID != "" {
 		q = `
-			SELECT id, request_id, trace_id, org_id, endpoint, requested_model, resolved_model, provider,
+			SELECT id, request_id, trace_id, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''),
+				COALESCE(project_id, ''), COALESCE(end_user_id, ''), tags, COALESCE(session_id, ''),
+				model_access_group_ids, matched_quota_policy_ids,
+				endpoint, requested_model, resolved_model, provider,
 				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 				cost_micros, pricing_version, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
 			FROM spend_logs WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2`
 		args = []any{orgID, limit}
 	} else {
 		q = `
-			SELECT id, request_id, trace_id, org_id, endpoint, requested_model, resolved_model, provider,
+			SELECT id, request_id, trace_id, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), COALESCE(virtual_key_id, ''),
+				COALESCE(project_id, ''), COALESCE(end_user_id, ''), tags, COALESCE(session_id, ''),
+				model_access_group_ids, matched_quota_policy_ids,
+				endpoint, requested_model, resolved_model, provider,
 				prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
 				cost_micros, pricing_version, latency_ms, ttft_ms, status_code, is_stream, cache_hit, fallback_attempted, retry_count, created_at
 			FROM spend_logs ORDER BY created_at DESC LIMIT $1`
@@ -3840,7 +4092,10 @@ func (p *PostgresRepository) ListSpendLogs(ctx context.Context, orgID string, li
 		var ev domain.SpendEvent
 		var prov string
 		if err := rows.Scan(
-			&ev.ID, &ev.RequestID, &ev.TraceID, &ev.OrgID, &ev.Endpoint, &ev.RequestedModel, &ev.ResolvedModel, &prov,
+			&ev.ID, &ev.RequestID, &ev.TraceID, &ev.OrgID, &ev.TeamID, &ev.UserID, &ev.VirtualKeyID,
+			&ev.ProjectID, &ev.EndUserID, &ev.Tags, &ev.SessionID,
+			&ev.ModelAccessGroupIDs, &ev.MatchedQuotaPolicyIDs,
+			&ev.Endpoint, &ev.RequestedModel, &ev.ResolvedModel, &prov,
 			&ev.Usage.PromptTokens, &ev.Usage.CompletionTokens, &ev.Usage.CachedPromptTokens, &ev.Usage.ReasoningTokens, &ev.Usage.TotalTokens,
 			&ev.CostMicros, &ev.PricingVersion, &ev.LatencyMs, &ev.TTFTMs, &ev.StatusCode, &ev.IsStream, &ev.CacheHit, &ev.FallbackAttempted, &ev.RetryCount, &ev.CreatedAt,
 		); err != nil {

@@ -94,6 +94,8 @@ type Client struct {
 type Option func(*clientConfig)
 
 type clientConfig struct {
+	customAuthMode       CustomAuthMode
+	customAuthenticator  CustomAuthenticator
 	configPath           string
 	remoteURL            string
 	apiKey               string
@@ -202,6 +204,10 @@ func New(opts ...Option) (*Client, error) {
 		opt(cc)
 	}
 
+	mode, authModeErr := ParseCustomAuthMode(string(cc.customAuthMode))
+	if authModeErr != nil {
+		return nil, authModeErr
+	}
 	if cc.silentLogs {
 		logger.Init(logger.Config{Output: io.Discard})
 	} else if cc.customLogger != nil {
@@ -211,6 +217,9 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	if cc.remoteURL != "" {
+		if mode != CustomAuthModeOff {
+			return nil, fmt.Errorf("WithCustomAuthenticator requires an embedded gateway")
+		}
 		if len(cc.guardrailScanners) > 0 {
 			return nil, fmt.Errorf("WithGuardrailScanner requires an embedded gateway and cannot be combined with WithRemote")
 		}
@@ -480,6 +489,43 @@ func New(opts ...Option) (*Client, error) {
 			cleanupOnErr()
 			return nil, regErr
 		}
+	}
+	if mode != CustomAuthModeOff {
+		gw.AuthResolver().SetEmbeddedAuthenticator(func(ctx context.Context, req *http.Request) (*domain.IdentityContext, error) {
+			decision, err := EvaluateCustomAuth(ctx, req, mode, cc.customAuthenticator)
+			if err != nil || decision == nil {
+				return nil, err
+			}
+			if vKey := strings.TrimSpace(decision.VirtualKey); vKey != "" {
+				if !strings.HasPrefix(vKey, "sk-gw-") {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusUnauthorized,
+						Type:       domain.ErrorTypeAuthentication,
+						Code:       "invalid_custom_auth_key",
+						Message:    "Custom auth must return a gateway virtual key",
+					}
+				}
+				return gw.AuthService().AuthenticateVirtualKey(ctx, vKey)
+			}
+			identity := *decision.Identity
+			if !decision.RunPostChecks {
+				identity = domain.IdentityContext{
+					OrgID:            identity.OrgID,
+					TeamID:           identity.TeamID,
+					UserID:           identity.UserID,
+					ProjectID:        identity.ProjectID,
+					VirtualKeyID:     identity.VirtualKeyID,
+					KeyPrefix:        identity.KeyPrefix,
+					KeyType:          identity.KeyType,
+					Role:             identity.Role,
+					Principal:        identity.Principal,
+					AllowedEndpoints: []string{"*"},
+				}
+			} else if len(identity.AllowedEndpoints) == 0 {
+				identity.AllowedEndpoints = []string{"*"}
+			}
+			return &identity, nil
+		})
 	}
 	gw.StartWorkers(context.Background())
 

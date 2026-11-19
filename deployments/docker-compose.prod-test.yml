@@ -65,6 +65,8 @@ services:
       - no-new-privileges:true
     volumes:
       - ${GOROUTE_PROD_RUN_DIR:-/tmp/goroute-prod-test}/tls:/etc/goroute/tls:ro
+    ports:
+      - "127.0.0.1:29443:8443"
     networks:
       upstream-net:
         ipv4_address: 172.29.10.20
@@ -103,6 +105,7 @@ services:
       GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:?GATEWAY_MASTER_ADMIN_KEY must be set}"
       GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:?GATEWAY_MASTER_ENCRYPTION_KEY must be set}"
       GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET:?GATEWAY_JWT_SECRET must be set}"
+      GATEWAY_ROTATION_DELIVERY_TOKEN: "${GATEWAY_ROTATION_DELIVERY_TOKEN:?GATEWAY_ROTATION_DELIVERY_TOKEN must be set}"
       SSL_CERT_FILE: "/etc/goroute/tls/ca-bundle.crt"
     volumes:
       - ./../configs/config.prod-test.yaml:/etc/goroute/config.yaml:ro
@@ -142,6 +145,10 @@ services:
       GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET}"
       GATEWAY_JWT_ISSUER: "https://auth.goroute.local"
       GATEWAY_JWT_AUDIENCE: "goroute-gateway"
+      GATEWAY_UI_USERNAME: "prod-admin"
+      GATEWAY_UI_PASSWORD: "${GATEWAY_UI_PASSWORD:?GATEWAY_UI_PASSWORD must be set}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:?GATEWAY_SESSION_SECRET must be set}"
+      GATEWAY_ROTATION_DELIVERY_TOKEN: "${GATEWAY_ROTATION_DELIVERY_TOKEN:?GATEWAY_ROTATION_DELIVERY_TOKEN must be set}"
       OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://otel-collector:4318/v1/metrics"
       SSL_CERT_FILE: "/etc/goroute/tls/ca-bundle.crt"
     volumes:
@@ -193,6 +200,10 @@ services:
       GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET}"
       GATEWAY_JWT_ISSUER: "https://auth.goroute.local"
       GATEWAY_JWT_AUDIENCE: "goroute-gateway"
+      GATEWAY_UI_USERNAME: "prod-admin"
+      GATEWAY_UI_PASSWORD: "${GATEWAY_UI_PASSWORD:?GATEWAY_UI_PASSWORD must be set}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:?GATEWAY_SESSION_SECRET must be set}"
+      GATEWAY_ROTATION_DELIVERY_TOKEN: "${GATEWAY_ROTATION_DELIVERY_TOKEN:?GATEWAY_ROTATION_DELIVERY_TOKEN must be set}"
       OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://otel-collector:4318/v1/metrics"
       SSL_CERT_FILE: "/etc/goroute/tls/ca-bundle.crt"
     volumes:

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -185,7 +184,7 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 	if s == nil {
 		return func(int, int, int64) {}, nil
 	}
-	now := time.Now().UTC()
+	now := s.nowUTC()
 	effID := applyEffectiveTempBudgets(id, now)
 	extDescriptors, descErr := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
 	if descErr != nil {
@@ -228,23 +227,23 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 		return func(int, int, int64) {}, nil
 	}
 
-	var legacyRel func(actualTokens int, overrideCostMicros int64)
+	var legacyRawRel func(actualTokens int, overrideCostMicros int64)
+	var legacyRollback func()
 	if legacyHasBudget {
-		rel, err := s.limiter.AcquireWithBudget(ctx, effID, rateTokens, reserve, requestID)
+		rel, rb, err := s.limiter.AcquireWithBudgetAndRollback(ctx, effID, rateTokens, reserve, requestID)
 		if err != nil {
 			return nil, err
 		}
-		legacyRel = s.wrapBudgetRelease(ctx, effID, requestID, rel)
+		legacyRawRel = rel
+		legacyRollback = rb
 	} else {
-		rel, err := s.limiter.Acquire(ctx, effID, rateTokens)
+		rel, rb, err := s.limiter.AcquireWithRollback(ctx, effID, rateTokens)
 		if err != nil {
 			return nil, err
 		}
-		var legacyOnce sync.Once
-		legacyRel = func(actualTokens int, _ int64) {
-			legacyOnce.Do(func() {
-				rel(actualTokens)
-			})
+		legacyRollback = rb
+		legacyRawRel = func(actualTokens int, _ int64) {
+			rel(actualTokens)
 		}
 	}
 
@@ -265,14 +264,31 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 		var err error
 		descRel, err = s.limiter.AcquireDescriptors(ctx, orgID, requestID, estInput, estOutput, reserve, extDescriptors)
 		if err != nil {
-			legacyRel(-1, -1)
+			if legacyRollback != nil {
+				legacyRollback()
+			}
 			return nil, err
+		}
+	}
+
+	stopRenewer := s.startReservationLeaseRenewerWithDescriptors(ctx, effID, extDescriptors, requestID)
+	var legacyRel func(actualTokens int, overrideCostMicros int64)
+	if legacyHasBudget {
+		legacyRel = s.wrapBudgetReleaseWithRenewer(effID, requestID, stopRenewer, legacyRawRel)
+	} else {
+		var legacyOnce sync.Once
+		legacyRel = func(actualTokens int, _ int64) {
+			legacyOnce.Do(func() {
+				stopRenewer()
+				legacyRawRel(actualTokens, 0)
+			})
 		}
 	}
 
 	var once sync.Once
 	return func(actualInput, actualOutput int, overrideCostMicros int64) {
 		once.Do(func() {
+			stopRenewer()
 			if actualInput < 0 {
 				if legacyRel != nil {
 					legacyRel(-1, -1)
@@ -309,7 +325,7 @@ func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *dom
 
 func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), bool, error) {
 	pct := s.budgetExceededThrottlePct()
-	currID := applyEffectiveTempBudgets(id, time.Now().UTC())
+	currID := applyEffectiveTempBudgets(id, s.nowUTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {
@@ -340,7 +356,7 @@ func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id
 		return func(int) {}, false, nil
 	}
 	pct := s.budgetExceededThrottlePct()
-	currID := id
+	currID := applyEffectiveTempBudgets(id, s.nowUTC())
 	throttled := false
 
 	for attempt := 0; attempt < 5; attempt++ {

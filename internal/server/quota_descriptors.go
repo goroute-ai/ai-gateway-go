@@ -17,11 +17,13 @@ import (
 type requestQuotaStateContextKey struct{}
 
 type requestQuotaState struct {
-	EndUserID           string
-	Tags                []string
-	TagCandidates       []string
-	SessionID           string
-	ModelAccessGroupIDs []string
+	ProjectID             string
+	EndUserID             string
+	Tags                  []string
+	TagCandidates         []string
+	SessionID             string
+	ModelAccessGroupIDs   []string
+	MatchedQuotaPolicyIDs []string
 }
 
 func appendUniqueQuotaStr(dst []string, vals ...string) []string {
@@ -79,6 +81,9 @@ func withRequestQuotaState(
 	state := &requestQuotaState{
 		EndUserID: strings.TrimSpace(bodyUser),
 	}
+	if id != nil && id.ProjectID != "" {
+		state.ProjectID = id.ProjectID
+	}
 	if ext != nil {
 		state.SessionID = strings.TrimSpace(ext.SessionID)
 		state.Tags = appendUniqueQuotaStr(state.Tags, ext.Tags...)
@@ -115,6 +120,9 @@ func enrichSpendEventFromContext(ctx context.Context, ev domain.SpendEvent) doma
 	if state == nil {
 		return ev
 	}
+	if ev.ProjectID == "" && state.ProjectID != "" {
+		ev.ProjectID = state.ProjectID
+	}
 	if ev.EndUserID == "" && state.EndUserID != "" {
 		ev.EndUserID = state.EndUserID
 	}
@@ -126,6 +134,9 @@ func enrichSpendEventFromContext(ctx context.Context, ev domain.SpendEvent) doma
 	}
 	if len(ev.ModelAccessGroupIDs) == 0 && len(state.ModelAccessGroupIDs) > 0 {
 		ev.ModelAccessGroupIDs = slices.Clone(state.ModelAccessGroupIDs)
+	}
+	if len(ev.MatchedQuotaPolicyIDs) == 0 && len(state.MatchedQuotaPolicyIDs) > 0 {
+		ev.MatchedQuotaPolicyIDs = slices.Clone(state.MatchedQuotaPolicyIDs)
 	}
 	return ev
 }
@@ -285,6 +296,13 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 	}
 	var out []domain.RateLimitDescriptor
 	state := requestQuotaStateFromContext(ctx)
+	if state != nil {
+		state.ModelAccessGroupIDs = nil
+		state.MatchedQuotaPolicyIDs = nil
+		if state.ProjectID == "" && effID.ProjectID != "" {
+			state.ProjectID = effID.ProjectID
+		}
+	}
 
 	if tmID := teamMemberScopeID(effID.TeamID, effID.UserID); tmID != "" {
 		d := domain.RateLimitDescriptor{
@@ -448,6 +466,9 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 			if desc.ScopeType == domain.QuotaScopeAgentSession && desc.WindowTTLSec <= 0 && s.cfg != nil && s.cfg.RateLimit.DefaultAgentSessionTTLSec > 0 {
 				desc.WindowTTLSec = s.cfg.RateLimit.DefaultAgentSessionTTLSec
 			}
+			if state != nil && qp.ID != "" {
+				state.MatchedQuotaPolicyIDs = appendUniqueQuotaStr(state.MatchedQuotaPolicyIDs, qp.ID)
+			}
 			if desc.HasLimits() {
 				out = append(out, desc)
 			}
@@ -469,8 +490,8 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
 				continue
 			}
-			if !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
-				// Window has expired and is awaiting background reset.
+			if bw.WindowType != domain.BudgetWindowRolling24h && !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
+				// Periodic window has expired and is awaiting background reset.
 				desc.SpentFloorMicros = 0
 			}
 			if desc.HasLimits() {
@@ -655,7 +676,7 @@ func (s *GatewayServer) requestHasBudget(ctx context.Context, id *domain.Identit
 	if s == nil || id == nil {
 		return false
 	}
-	ext, err := s.buildExtendedQuotaDescriptors(ctx, id, model, time.Now().UTC())
+	ext, err := s.buildExtendedQuotaDescriptors(ctx, id, model, s.nowUTC())
 	if err != nil {
 		return false
 	}

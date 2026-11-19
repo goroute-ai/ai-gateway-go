@@ -27,7 +27,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-type v120MockAdapter struct {
+type routingMockAdapter struct {
 	provider      domain.ProviderType
 	supportsPref  bool
 	chatFn        func(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error)
@@ -37,11 +37,11 @@ type v120MockAdapter struct {
 	capturedReqs  []domain.CanonicalChatRequest
 }
 
-func (a *v120MockAdapter) Provider() domain.ProviderType { return a.provider }
+func (a *routingMockAdapter) Provider() domain.ProviderType { return a.provider }
 
-func (a *v120MockAdapter) SupportsAssistantPrefill() bool { return a.supportsPref }
+func (a *routingMockAdapter) SupportsAssistantPrefill() bool { return a.supportsPref }
 
-func (a *v120MockAdapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
+func (a *routingMockAdapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 	a.mu.Lock()
 	a.capturedCalls = append(a.capturedCalls, dep.ID)
 	if req != nil {
@@ -60,7 +60,7 @@ func (a *v120MockAdapter) ChatCompletion(ctx context.Context, dep *domain.Deploy
 	}, nil
 }
 
-func (a *v120MockAdapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+func (a *routingMockAdapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 	a.mu.Lock()
 	a.capturedCalls = append(a.capturedCalls, dep.ID)
 	if req != nil {
@@ -73,17 +73,17 @@ func (a *v120MockAdapter) StreamChatCompletion(ctx context.Context, dep *domain.
 	return nil, errors.New("stream not configured")
 }
 
-func (a *v120MockAdapter) Embeddings(context.Context, *domain.Deployment, *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
+func (a *routingMockAdapter) Embeddings(context.Context, *domain.Deployment, *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (a *v120MockAdapter) HealthCheck(context.Context, *domain.Deployment) error { return nil }
+func (a *routingMockAdapter) HealthCheck(context.Context, *domain.Deployment) error { return nil }
 
-func (a *v120MockAdapter) ListModels(context.Context, *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
+func (a *routingMockAdapter) ListModels(context.Context, *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
 	return nil, nil
 }
 
-func (a *v120MockAdapter) calls() []string {
+func (a *routingMockAdapter) calls() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]string, len(a.capturedCalls))
@@ -91,7 +91,7 @@ func (a *v120MockAdapter) calls() []string {
 	return out
 }
 
-func (a *v120MockAdapter) reqs() []domain.CanonicalChatRequest {
+func (a *routingMockAdapter) reqs() []domain.CanonicalChatRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]domain.CanonicalChatRequest, len(a.capturedReqs))
@@ -99,29 +99,29 @@ func (a *v120MockAdapter) reqs() []domain.CanonicalChatRequest {
 	return out
 }
 
-type v120NoPrefillAdapter struct {
+type routingNoPrefillAdapter struct {
 	provider domain.ProviderType
 	streamFn func(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error)
 	calls    atomic.Int32
 }
 
-func (a *v120NoPrefillAdapter) Provider() domain.ProviderType { return a.provider }
-func (a *v120NoPrefillAdapter) ChatCompletion(context.Context, *domain.Deployment, *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
+func (a *routingNoPrefillAdapter) Provider() domain.ProviderType { return a.provider }
+func (a *routingNoPrefillAdapter) ChatCompletion(context.Context, *domain.Deployment, *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 	return nil, errors.New("not implemented")
 }
-func (a *v120NoPrefillAdapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
+func (a *routingNoPrefillAdapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 	a.calls.Add(1)
 	return a.streamFn(ctx, dep, req, onChunk)
 }
-func (a *v120NoPrefillAdapter) Embeddings(context.Context, *domain.Deployment, *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
+func (a *routingNoPrefillAdapter) Embeddings(context.Context, *domain.Deployment, *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }
-func (a *v120NoPrefillAdapter) HealthCheck(context.Context, *domain.Deployment) error { return nil }
-func (a *v120NoPrefillAdapter) ListModels(context.Context, *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
+func (a *routingNoPrefillAdapter) HealthCheck(context.Context, *domain.Deployment) error { return nil }
+func (a *routingNoPrefillAdapter) ListModels(context.Context, *domain.ProviderCredential) ([]domain.DiscoveredModel, error) {
 	return nil, nil
 }
 
-func newV120TestEnv(t *testing.T, redisFabric *storage.RedisFabric, cfg config.RouterConfig) (*storage.MemoryRepository, *adapter.Registry, *auth.Vault, *auth.RBACEngine, *LoadBalancer, *ReliabilityManager, *domain.Organization) {
+func newRoutingTestEnv(t *testing.T, redisFabric *storage.RedisFabric, cfg config.RouterConfig) (*storage.MemoryRepository, *adapter.Registry, *auth.Vault, *auth.RBACEngine, *LoadBalancer, *ReliabilityManager, *domain.Organization) {
 	t.Helper()
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
@@ -130,7 +130,7 @@ func newV120TestEnv(t *testing.T, redisFabric *storage.RedisFabric, cfg config.R
 		t.Fatalf("NewVault: %v", err)
 	}
 	rbac := auth.NewRBACEngine(repo)
-	org := &domain.Organization{Name: "V120Org", Slug: "v120-org", IsActive: true}
+	org := &domain.Organization{Name: "ReliabilityTestOrg", Slug: "reliability-test-org", IsActive: true}
 	if err := repo.CreateOrganization(ctx, org); err != nil {
 		t.Fatalf("CreateOrganization: %v", err)
 	}
@@ -141,7 +141,7 @@ func newV120TestEnv(t *testing.T, redisFabric *storage.RedisFabric, cfg config.R
 	return repo, reg, vault, rbac, lb, rm, org
 }
 
-func registerV120ModelAndDep(
+func registerRoutingModelAndDep(
 	t *testing.T,
 	repo *storage.MemoryRepository,
 	vault *auth.Vault,
@@ -183,21 +183,21 @@ func registerV120ModelAndDep(
 	return dep
 }
 
-func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
+func TestReliability_ContextWindowFallbackAndOverrides(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("prefilter_128k_escapes_to_1m_with_overrides_without_mutating_caller_req", func(t *testing.T) {
 		cfg := config.RouterConfig{BaseRetryDelay: time.Millisecond, MaxRetryDelay: 5 * time.Millisecond}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
-		adp := &v120MockAdapter{provider: domain.ProviderOpenAI}
+		adp := &routingMockAdapter{provider: domain.ProviderOpenAI}
 		reg.Register(adp)
 
 		longGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "long-1m", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 		if err := repo.CreateModelGroup(ctx, longGroup); err != nil {
 			t.Fatal(err)
 		}
-		longDep := registerV120ModelAndDep(t, repo, vault, org.ID, longGroup, &domain.GlobalModel{
+		longDep := registerRoutingModelAndDep(t, repo, vault, org.ID, longGroup, &domain.GlobalModel{
 			ID: "openai/gpt-4.1-1m", Provider: domain.ProviderOpenAI, ModelName: "gpt-4.1-1m",
 			MaxInputTokens: 1000000, SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-1m", "http://localhost")
@@ -223,7 +223,7 @@ func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
 		if err := repo.CreateModelGroup(ctx, primaryGroup); err != nil {
 			t.Fatal(err)
 		}
-		primaryDep := registerV120ModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
+		primaryDep := registerRoutingModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
 			ID: "openai/gpt-4o-128k", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o-128k",
 			MaxInputTokens: 128000, SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-128k", "http://localhost")
@@ -283,10 +283,10 @@ func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
 			MaxRetryDelay:    5 * time.Millisecond,
 			DefaultFallbacks: []domain.FallbackTarget{{GroupAliasOrID: "default-1m"}},
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
 		var primaryDepID string
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider: domain.ProviderOpenAI,
 			chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 				if dep.ID == primaryDepID {
@@ -301,7 +301,7 @@ func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
 		if err := repo.CreateModelGroup(ctx, defaultGroup); err != nil {
 			t.Fatal(err)
 		}
-		defaultDep := registerV120ModelAndDep(t, repo, vault, org.ID, defaultGroup, &domain.GlobalModel{
+		defaultDep := registerRoutingModelAndDep(t, repo, vault, org.ID, defaultGroup, &domain.GlobalModel{
 			ID: "openai/gpt-4.1-default", Provider: domain.ProviderOpenAI, ModelName: "gpt-4.1-default",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-default", "http://localhost")
@@ -310,7 +310,7 @@ func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
 		if err := repo.CreateModelGroup(ctx, primaryGroup); err != nil {
 			t.Fatal(err)
 		}
-		primaryDep := registerV120ModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
+		primaryDep := registerRoutingModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
 			ID: "openai/gpt-4o-small", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o-small",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-small", "http://localhost")
@@ -335,18 +335,18 @@ func TestV120_ContextWindowFallbackAndOverrides(t *testing.T) {
 	})
 }
 
-func TestV120_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
+func TestReliability_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.RouterConfig{
 		BaseRetryDelay:    time.Millisecond,
 		MaxRetryDelay:     5 * time.Millisecond,
 		DefaultMaxRetries: 2,
 	}
-	repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+	repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
 	var mode atomic.Int32 // 0 = upstream content_policy, 1 = local guardrail_blocked
 	var primaryDepID, cpDepID, generalDepID string
-	adp := &v120MockAdapter{
+	adp := &routingMockAdapter{
 		provider: domain.ProviderOpenAI,
 		chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 			if dep.ID == primaryDepID {
@@ -368,7 +368,7 @@ func TestV120_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
 
 	cpGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "cp-safe", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 	_ = repo.CreateModelGroup(ctx, cpGroup)
-	cpDep := registerV120ModelAndDep(t, repo, vault, org.ID, cpGroup, &domain.GlobalModel{
+	cpDep := registerRoutingModelAndDep(t, repo, vault, org.ID, cpGroup, &domain.GlobalModel{
 		ID: "openai/cp-model", Provider: domain.ProviderOpenAI, ModelName: "cp-model",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-cp", "http://localhost")
@@ -376,7 +376,7 @@ func TestV120_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
 
 	genGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "gen-fb", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 	_ = repo.CreateModelGroup(ctx, genGroup)
-	genDep := registerV120ModelAndDep(t, repo, vault, org.ID, genGroup, &domain.GlobalModel{
+	genDep := registerRoutingModelAndDep(t, repo, vault, org.ID, genGroup, &domain.GlobalModel{
 		ID: "openai/gen-model", Provider: domain.ProviderOpenAI, ModelName: "gen-model",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-gen", "http://localhost")
@@ -391,7 +391,7 @@ func TestV120_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
 		IsActive:               true,
 	}
 	_ = repo.CreateModelGroup(ctx, primaryGroup)
-	primaryDep := registerV120ModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
+	primaryDep := registerRoutingModelAndDep(t, repo, vault, org.ID, primaryGroup, &domain.GlobalModel{
 		ID: "openai/primary-cp", Provider: domain.ProviderOpenAI, ModelName: "primary-cp",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-primary-cp", "http://localhost")
@@ -440,7 +440,7 @@ func TestV120_ContentPolicyFallbackVsLocalGuardrailFailClosed(t *testing.T) {
 	}
 }
 
-func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
+func TestReliability_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("429_vs_400_vs_multi_and_single_deployment_401", func(t *testing.T) {
@@ -457,13 +457,13 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 				DefaultRetries:    1,
 			},
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
 		var calls429 atomic.Int32
 		var mode atomic.Int32 // 0=429->succeed on 3rd, 1=400, 2=401 on depA then ok on depB
 		var depAuthA, depAuthB string
 
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider: domain.ProviderOpenAI,
 			chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 				switch mode.Load() {
@@ -487,7 +487,7 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 		// Single-deployment group for 429 vs 400 vs single-dep 401.
 		singleGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-single", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, singleGroup)
-		singleDep := registerV120ModelAndDep(t, repo, vault, org.ID, singleGroup, &domain.GlobalModel{
+		singleDep := registerRoutingModelAndDep(t, repo, vault, org.ID, singleGroup, &domain.GlobalModel{
 			ID: "openai/retry-single", Provider: domain.ProviderOpenAI, ModelName: "retry-single",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-single", "http://localhost")
@@ -533,15 +533,17 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 		}
 
 		// 4) Multi-deployment 401 fails over from depA to depB and succeeds.
-		multiGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-multi", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
+		multiGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "retry-multi", RoutingStrategy: domain.StrategyLowestCost, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, multiGroup)
-		dep1 := registerV120ModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
-			ID: "openai/retry-multi", Provider: domain.ProviderOpenAI, ModelName: "retry-multi",
-			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
+		dep1 := registerRoutingModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
+			ID: "openai/retry-multi-a", Provider: domain.ProviderOpenAI, ModelName: "retry-multi-a",
+			InputCostMicrosPer1M: 1,
+			SupportsInference:    true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-auth-1", "http://localhost")
-		dep2 := registerV120ModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
-			ID: "openai/retry-multi", Provider: domain.ProviderOpenAI, ModelName: "retry-multi",
-			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
+		dep2 := registerRoutingModelAndDep(t, repo, vault, org.ID, multiGroup, &domain.GlobalModel{
+			ID: "openai/retry-multi-b", Provider: domain.ProviderOpenAI, ModelName: "retry-multi-b",
+			InputCostMicrosPer1M: 2,
+			SupportsInference:    true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-auth-2", "http://localhost")
 		depAuthA = dep1.ID
 		depAuthB = dep2.ID
@@ -579,12 +581,12 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 				MaxCooldownSeconds: 2,
 			},
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, rf, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, rf, cfg)
 
 		var return429 atomic.Bool
 		return429.Store(true)
 		var retryAfter atomic.Int32
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider: domain.ProviderOpenAI,
 			chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 				if return429.Load() {
@@ -604,7 +606,7 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 			IsActive:         true,
 		}
 		_ = repo.CreateModelGroup(ctx, loneGroup)
-		loneDep := registerV120ModelAndDep(t, repo, vault, org.ID, loneGroup, &domain.GlobalModel{
+		loneDep := registerRoutingModelAndDep(t, repo, vault, org.ID, loneGroup, &domain.GlobalModel{
 			ID: "openai/lone-429", Provider: domain.ProviderOpenAI, ModelName: "lone-429",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-lone", "http://localhost")
@@ -635,7 +637,7 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 			IsActive: true,
 		}
 		_ = repo.CreateModelGroup(ctx, loneGroup2)
-		loneDep2 := registerV120ModelAndDep(t, repo, vault, org.ID, loneGroup2, &domain.GlobalModel{
+		loneDep2 := registerRoutingModelAndDep(t, repo, vault, org.ID, loneGroup2, &domain.GlobalModel{
 			ID: "openai/lone-429", Provider: domain.ProviderOpenAI, ModelName: "lone-429",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-lone-override", "http://localhost")
@@ -672,11 +674,11 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 			IsActive: true,
 		}
 		_ = repo.CreateModelGroup(ctx, rateGroup)
-		rateDep := registerV120ModelAndDep(t, repo, vault, org.ID, rateGroup, &domain.GlobalModel{
+		rateDep := registerRoutingModelAndDep(t, repo, vault, org.ID, rateGroup, &domain.GlobalModel{
 			ID: "openai/rate-trip", Provider: domain.ProviderOpenAI, ModelName: "rate-trip",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-rate-1", "http://localhost")
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, rateGroup, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, rateGroup, &domain.GlobalModel{
 			ID: "openai/rate-trip", Provider: domain.ProviderOpenAI, ModelName: "rate-trip",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-rate-2", "http://localhost")
@@ -696,7 +698,7 @@ func TestV120_PerExceptionRetryPolicyAndLoneDeploymentSafetyNet(t *testing.T) {
 	})
 }
 
-func TestV120_FilterChainRegionTagsPluginCapacityBudgetsAndScheduler(t *testing.T) {
+func TestReliability_FilterChainRegionTagsPluginCapacityBudgetsAndScheduler(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)
 	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
@@ -710,10 +712,10 @@ func TestV120_FilterChainRegionTagsPluginCapacityBudgetsAndScheduler(t *testing.
 			string(domain.ProviderAnthropic): 1000,
 		},
 	}
-	repo, reg, vault, _, lb, rm, org := newV120TestEnv(t, rf, cfg)
+	repo, reg, vault, _, lb, rm, org := newRoutingTestEnv(t, rf, cfg)
 
-	oaiAdp := &v120MockAdapter{provider: domain.ProviderOpenAI}
-	antAdp := &v120MockAdapter{provider: domain.ProviderAnthropic}
+	oaiAdp := &routingMockAdapter{provider: domain.ProviderOpenAI}
+	antAdp := &routingMockAdapter{provider: domain.ProviderAnthropic}
 	reg.Register(oaiAdp)
 	reg.Register(antAdp)
 
@@ -817,7 +819,7 @@ func TestV120_FilterChainRegionTagsPluginCapacityBudgetsAndScheduler(t *testing.
 
 	schedGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "sched-group", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 	_ = repo.CreateModelGroup(ctx, schedGroup)
-	_ = registerV120ModelAndDep(t, repo, vault, org.ID, schedGroup, &domain.GlobalModel{
+	_ = registerRoutingModelAndDep(t, repo, vault, org.ID, schedGroup, &domain.GlobalModel{
 		ID: "openai/sched", Provider: domain.ProviderOpenAI, ModelName: "sched",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-sched", "http://localhost")
@@ -895,7 +897,7 @@ func TestV120_FilterChainRegionTagsPluginCapacityBudgetsAndScheduler(t *testing.
 	}
 }
 
-func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
+func TestReliability_AffinityPinAndFailoverRepin(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)
 	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
@@ -911,13 +913,13 @@ func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
 		SessionAffinityRepinOnFailover: true,
 		PromptCacheAffinity:            true,
 	}
-	repo, reg, vault, rbac, lb, rm1, org := newV120TestEnv(t, rf, cfg)
+	repo, reg, vault, rbac, lb, rm1, org := newRoutingTestEnv(t, rf, cfg)
 	aff1 := NewAffinityStoreFromRouterConfig(rf, cfg)
 	rm1.SetAffinityStore(aff1)
 
 	var failDepID atomic.Value
 	failDepID.Store("")
-	adp := &v120MockAdapter{
+	adp := &routingMockAdapter{
 		provider: domain.ProviderOpenAI,
 		chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 			if target, _ := failDepID.Load().(string); target != "" && dep.ID == target {
@@ -930,11 +932,11 @@ func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
 
 	group := &domain.ModelGroup{OrgID: org.ID, Alias: "aff-group", RoutingStrategy: domain.StrategyRoundRobin, MaxRetries: 1, FailureThreshold: 1, CooldownSeconds: 1, IsActive: true}
 	_ = repo.CreateModelGroup(ctx, group)
-	dep1 := registerV120ModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
+	dep1 := registerRoutingModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
 		ID: "openai/aff", Provider: domain.ProviderOpenAI, ModelName: "aff",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-1", "http://localhost")
-	dep2 := registerV120ModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
+	dep2 := registerRoutingModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
 		ID: "openai/aff", Provider: domain.ProviderOpenAI, ModelName: "aff",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 	}, "dep-2", "http://localhost")
@@ -1073,7 +1075,7 @@ func TestV120_AffinityPinAndFailoverRepin(t *testing.T) {
 	}
 }
 
-func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
+func TestReliability_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("sse_drops_after_3_chunks_and_continues_with_prefill_combined_usage_and_otel_event", func(t *testing.T) {
@@ -1123,7 +1125,7 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 			EnableMidStreamContinuation: true,
 			MaxStreamContinuations:      1,
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
 		pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
 		if err != nil {
@@ -1136,11 +1138,11 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 		sr := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 		defer func() { _ = tp.Shutdown(ctx) }()
-		rm.SetTracer(tp.Tracer("v120-test"))
+		rm.SetTracer(tp.Tracer("reliability-test"))
 
 		group := &domain.ModelGroup{OrgID: org.ID, Alias: "stream-cont", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, group)
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
 			ID: "openai/gpt-4o", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-a", srvA.URL)
@@ -1238,11 +1240,11 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 			EnableMidStreamContinuation: true,
 			MaxStreamContinuations:      1,
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 
 		var emitToolCalls atomic.Bool
 		var dep2Calls atomic.Int32
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider:     domain.ProviderOpenAI,
 			supportsPref: true,
 			streamFn: func(_ context.Context, dep *domain.Deployment, _ *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
@@ -1271,7 +1273,7 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 
 		group := &domain.ModelGroup{OrgID: org.ID, Alias: "refuse-group", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, group)
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, group, &domain.GlobalModel{
 			ID: "openai/refuse", Provider: domain.ProviderOpenAI, ModelName: "refuse",
 			SupportsInference: true, SupportsStreaming: true, Capabilities: domain.ModelCapabilities{Streaming: domain.CapabilitySupported, StructuredOutputs: domain.CapabilitySupported},
 			LifecycleStatus: domain.ModelStatusActive,
@@ -1315,7 +1317,7 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 		}
 
 		// 3. Non-prefill adapter refusal.
-		noPrefillAdp := &v120NoPrefillAdapter{
+		noPrefillAdp := &routingNoPrefillAdapter{
 			provider: domain.ProviderGemini,
 			streamFn: func(_ context.Context, _ *domain.Deployment, _ *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 				_ = onChunk(&domain.CanonicalStreamChunk{ID: "np1", Choices: []domain.CanonicalStreamChoice{{Index: 0, Delta: domain.CanonicalStreamDelta{Content: "hello"}}}})
@@ -1325,11 +1327,11 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 		reg.Register(noPrefillAdp)
 		npGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "no-prefill-group", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, npGroup)
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
 			ID: "gemini/np-1", Provider: domain.ProviderGemini, ModelName: "np-1",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "np-dep-1", "http://localhost")
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
 			ID: "gemini/np-2", Provider: domain.ProviderGemini, ModelName: "np-2",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "np-dep-2", "http://localhost")
@@ -1369,7 +1371,7 @@ func TestV120_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 	})
 }
 
-func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
+func TestReliability_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("fastest_response_and_hedge_after_ms_and_comma_separated_models_chat_and_stream", func(t *testing.T) {
@@ -1381,11 +1383,11 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 			FailureThreshold:    1,
 			DefaultCooldown:     10 * time.Second,
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 		rm.SetAffinityStore(NewAffinityStoreFromRouterConfig(nil, cfg))
 
 		var slowCanceled atomic.Bool
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider: domain.ProviderOpenAI,
 			chatFn: func(rCtx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 				if strings.Contains(dep.DeploymentName, "slow") {
@@ -1426,11 +1428,11 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 			IsActive:         true,
 		}
 		_ = repo.CreateModelGroup(ctx, fastestGroup)
-		depSlow := registerV120ModelAndDep(t, repo, vault, org.ID, fastestGroup, &domain.GlobalModel{
+		depSlow := registerRoutingModelAndDep(t, repo, vault, org.ID, fastestGroup, &domain.GlobalModel{
 			ID: "openai/fastest-slow", Provider: domain.ProviderOpenAI, ModelName: "fastest-slow",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-slow", "http://localhost")
-		depFast := registerV120ModelAndDep(t, repo, vault, org.ID, fastestGroup, &domain.GlobalModel{
+		depFast := registerRoutingModelAndDep(t, repo, vault, org.ID, fastestGroup, &domain.GlobalModel{
 			ID: "openai/fastest-fast", Provider: domain.ProviderOpenAI, ModelName: "fastest-fast",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-fast", "http://localhost")
@@ -1490,11 +1492,11 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 			IsActive:        true,
 		}
 		_ = repo.CreateModelGroup(ctx, hedgeExtGroup)
-		depExtSlow := registerV120ModelAndDep(t, repo, vault, org.ID, hedgeExtGroup, &domain.GlobalModel{
+		depExtSlow := registerRoutingModelAndDep(t, repo, vault, org.ID, hedgeExtGroup, &domain.GlobalModel{
 			ID: "openai/ext-slow", Provider: domain.ProviderOpenAI, ModelName: "ext-slow",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-ext-slow", "http://localhost")
-		depExtFast := registerV120ModelAndDep(t, repo, vault, org.ID, hedgeExtGroup, &domain.GlobalModel{
+		depExtFast := registerRoutingModelAndDep(t, repo, vault, org.ID, hedgeExtGroup, &domain.GlobalModel{
 			ID: "openai/ext-fast", Provider: domain.ProviderOpenAI, ModelName: "ext-fast",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-ext-fast", "http://localhost")
@@ -1521,11 +1523,11 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 		fastAliasGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "fast-alias", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, slowAliasGroup)
 		_ = repo.CreateModelGroup(ctx, fastAliasGroup)
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, slowAliasGroup, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, slowAliasGroup, &domain.GlobalModel{
 			ID: "openai/alias-slow", Provider: domain.ProviderOpenAI, ModelName: "alias-slow",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-alias-slow", "http://localhost")
-		depAliasFast := registerV120ModelAndDep(t, repo, vault, org.ID, fastAliasGroup, &domain.GlobalModel{
+		depAliasFast := registerRoutingModelAndDep(t, repo, vault, org.ID, fastAliasGroup, &domain.GlobalModel{
 			ID: "openai/alias-fast", Provider: domain.ProviderOpenAI, ModelName: "alias-fast",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-alias-fast", "http://localhost")
@@ -1570,12 +1572,12 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 				CandidateModels: []string{"bandit-arm"},
 			},
 		}
-		repo, reg, vault, _, _, rm, org := newV120TestEnv(t, nil, cfg)
+		repo, reg, vault, _, _, rm, org := newRoutingTestEnv(t, nil, cfg)
 		bandit := NewBanditPreRouter(cfg, nil, WithBanditRepository(repo), WithBanditMaxLatencyMs(30))
 		rm.intelligentRouter.SetBanditPreRouter(bandit)
 
 		var outcomeMode atomic.Int32 // 0=fast ok, 1=refusal, 2=slow (>30ms), 3=error
-		adp := &v120MockAdapter{
+		adp := &routingMockAdapter{
 			provider: domain.ProviderOpenAI,
 			chatFn: func(_ context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
 				switch outcomeMode.Load() {
@@ -1610,7 +1612,7 @@ func TestV120_HedgedRacingAndBanditRewardUpdates(t *testing.T) {
 
 		armGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "bandit-arm", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, armGroup)
-		_ = registerV120ModelAndDep(t, repo, vault, org.ID, armGroup, &domain.GlobalModel{
+		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, armGroup, &domain.GlobalModel{
 			ID: "openai/bandit-arm", Provider: domain.ProviderOpenAI, ModelName: "bandit-arm",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "dep-bandit", "http://localhost")

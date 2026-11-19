@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
@@ -284,5 +285,280 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 				t.Fatalf("expected column %s.%s to exist after migrations", tc.table, col)
 			}
 		}
+	}
+}
+
+func TestPostgres_Migration0034_UpgradeAndRollbackConflictPreflight(t *testing.T) {
+	ctx := context.Background()
+	pool, err := NewPostgresPool(ctx, livePostgresDSN())
+	if err != nil {
+		if os.Getenv("GATEWAY_REQUIRE_LIVE_DEPS") == "1" {
+			t.Fatalf("GATEWAY_REQUIRE_LIVE_DEPS=1 set, but PostgreSQL unreachable: %v", err)
+		}
+		t.Skipf("skipping live PostgreSQL migration 0034 test: %v", err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	var pre0034 []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") && !strings.HasPrefix(e.Name(), "0034_") {
+			pre0034 = append(pre0034, filepath.Join(migrationsDir, e.Name()))
+		}
+	}
+	sort.Strings(pre0034)
+	for _, file := range pre0034 {
+		if err := RunMigrations(ctx, pool, file); err != nil {
+			t.Fatalf("apply %s: %v", file, err)
+		}
+	}
+
+	// Populate 0033 rows before upgrading to 0034.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO organizations (id, name, slug) VALUES ('org-m34', 'Mig34 Org', 'org-m34');
+		INSERT INTO teams (id, org_id, name) VALUES ('team-m34', 'org-m34', 'Mig34 Team');
+		INSERT INTO users (id, org_id, team_id, email, name, oidc_subject)
+			VALUES ('usr-m34-1', 'org-m34', 'team-m34', 'u1@m34.example', 'User 1', 'shared-sub');
+		INSERT INTO virtual_keys (id, key_prefix, key_hash, name, org_id, team_id, user_id)
+			VALUES ('vk-m34', 'sk-gw-m34', 'hash-m34', 'Mig34 VK', 'org-m34', 'team-m34', 'usr-m34-1');
+		INSERT INTO budget_window_limits (id, org_id, scope_type, scope_id, window_type, max_budget_micros, spent_micros, window_reset_at)
+			VALUES ('bw-m34', 'org-m34', 'key', 'vk-m34', 'rolling_24h', 100000, 75000, NOW() - INTERVAL '48 hours');
+	`); err != nil {
+		t.Fatalf("seed 0033 rows: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO spend_logs (id, request_id, org_id, team_id, user_id, virtual_key_id, endpoint, requested_model, resolved_model, provider, cost_micros, created_at)
+		VALUES ('sp-m34-recent', 'req-m34', 'org-m34', 'team-m34', 'usr-m34-1', 'vk-m34', '/v1/chat/completions', 'gpt-4.1', 'gpt-4.1', 'openai', 20000, $1)
+	`, time.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seed 0033 spend_log: %v", err)
+	}
+
+	// Upgrade to 0034.
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("upgrade 0033 -> 0034: %v", err)
+	}
+
+	// Insert two users with distinct issuers sharing nonempty (org_id, oidc_subject).
+	if _, err := pool.Exec(ctx, `
+		UPDATE users SET oidc_issuer = 'https://issuer-a.example' WHERE id = 'usr-m34-1';
+		INSERT INTO users (id, org_id, team_id, email, name, oidc_issuer, oidc_subject)
+			VALUES ('usr-m34-2', 'org-m34', 'team-m34', 'u2@m34.example', 'User 2', 'https://issuer-b.example', 'shared-sub');
+	`); err != nil {
+		t.Fatalf("insert duplicate subject bindings across issuers: %v", err)
+	}
+
+	downPath := filepath.Join(migrationsDir, "0034_auth_quota_reconciliation.down.sql")
+	downSQL, err := os.ReadFile(downPath)
+	if err != nil {
+		t.Fatalf("read 0034 down migration: %v", err)
+	}
+
+	// Rollback must fail with descriptive error and preserve all rows and 0034 schema objects.
+	_, rollbackErr := pool.Exec(ctx, string(downSQL))
+	if rollbackErr == nil {
+		t.Fatal("expected 0034 rollback to abort when duplicate nonempty (org_id, oidc_subject) bindings exist")
+	}
+	if !strings.Contains(rollbackErr.Error(), "duplicate nonempty (org_id, oidc_subject)") || !strings.Contains(rollbackErr.Error(), "idx_users_org_oidc_subject") {
+		t.Fatalf("unexpected rollback error message: %v", rollbackErr)
+	}
+
+	var userCount int
+	var hasIssuerCol, hasHoldCol bool
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE org_id = 'org-m34' AND oidc_subject = 'shared-sub'`).Scan(&userCount); err != nil {
+		t.Fatalf("count preserved bindings: %v", err)
+	}
+	if userCount != 2 {
+		t.Fatalf("expected both identity bindings preserved after failed rollback, got %d", userCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='oidc_issuer')`).Scan(&hasIssuerCol); err != nil || !hasIssuerCol {
+		t.Fatalf("expected users.oidc_issuer preserved after aborted rollback (has=%v, err=%v)", hasIssuerCol, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='budget_window_limits' AND column_name='rolling_hold_micros')`).Scan(&hasHoldCol); err != nil || !hasHoldCol {
+		t.Fatalf("expected budget_window_limits.rolling_hold_micros preserved after aborted rollback (has=%v, err=%v)", hasHoldCol, err)
+	}
+
+	// Explicitly resolve the conflict, then rollback and reapply cleanly.
+	if _, err := pool.Exec(ctx, `UPDATE users SET oidc_subject = 'resolved-sub-2' WHERE id = 'usr-m34-2'`); err != nil {
+		t.Fatalf("resolve duplicate conflict: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(downSQL)); err != nil {
+		t.Fatalf("expected 0034 rollback to succeed after resolving duplicate bindings: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = '0034_auth_quota_reconciliation.up.sql'`); err != nil {
+		t.Fatalf("delete 0034 schema_migrations row: %v", err)
+	}
+	var legacyIndexExists, issuerColStillExists bool
+	_ = pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_users_org_oidc_subject')`).Scan(&legacyIndexExists)
+	_ = pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='oidc_issuer')`).Scan(&issuerColStillExists)
+	if !legacyIndexExists || issuerColStillExists {
+		t.Fatalf("expected legacy index restored (%v) and oidc_issuer dropped (%v) after rollback", legacyIndexExists, issuerColStillExists)
+	}
+
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("reapply 0034 after clean rollback: %v", err)
+	}
+}
+
+func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
+	ctx := context.Background()
+	pool, err := NewPostgresPool(ctx, livePostgresDSN())
+	if err != nil {
+		if os.Getenv("GATEWAY_REQUIRE_LIVE_DEPS") == "1" {
+			t.Fatalf("GATEWAY_REQUIRE_LIVE_DEPS=1 set, but PostgreSQL unreachable: %v", err)
+		}
+		t.Skipf("skipping live PostgreSQL migration lifecycle test: %v", err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir fresh 0001..0034 failed: %v", err)
+	}
+
+	expectedTables := []string{
+		"jwt_key_mappings",
+		"virtual_key_deprecated_hashes",
+		"access_group_rules",
+		"team_memberships",
+		"projects",
+		"quota_policies",
+		"budget_window_limits",
+		"end_users",
+		"tags",
+		"model_access_groups",
+		"model_access_group_members",
+		"deployment_ptu_shares",
+		"priority_classes",
+		"user_credentials",
+		"operator_sessions",
+	}
+	for _, tbl := range expectedTables {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, tbl).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected table %s after 0001..0034 (exists=%v, err=%v)", tbl, exists, err)
+		}
+	}
+
+	expectedCols := []struct {
+		table string
+		col   string
+	}{
+		{"batches", "estimated_tokens"},
+		{"batches", "reserved_cost_micros"},
+		{"organizations", "soft_budget_micros"},
+		{"organizations", "throttle_on_budget_exceeded"},
+		{"organizations", "budget_fallbacks"},
+		{"organizations", "self_serve_budget_policy"},
+		{"virtual_keys", "rotation_interval_sec"},
+		{"virtual_keys", "key_rotation_at"},
+		{"virtual_keys", "key_type"},
+		{"virtual_keys", "project_id"},
+		{"virtual_keys", "can_impersonate"},
+		{"virtual_keys", "temp_budget_increase_micros"},
+		{"virtual_keys", "staged_key_hash"},
+		{"users", "scim_external_id"},
+		{"users", "scim_active"},
+		{"users", "oidc_issuer"},
+		{"spend_logs", "project_id"},
+		{"spend_logs", "model_access_group_ids"},
+		{"spend_logs", "matched_quota_policy_ids"},
+		{"spend_logs", "end_user_id"},
+		{"spend_logs", "tags"},
+		{"spend_logs", "session_id"},
+		{"budget_window_limits", "rolling_hold_micros"},
+		{"budget_window_limits", "rolling_hold_expires_at"},
+	}
+	for _, tc := range expectedCols {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected column %s.%s after 0001..0034 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+		}
+	}
+
+	for _, idx := range []string{"idx_users_org_issuer_subject", "idx_users_org_scim_external_id"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1
+			)`, idx).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected index %s after 0001..0034 (exists=%v, err=%v)", idx, exists, err)
+		}
+	}
+
+	// Exercise reverse down migrations from 0034 down through 0022.
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	var waveDowns []string
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" && name < "0035_" {
+			waveDowns = append(waveDowns, name)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
+	if len(waveDowns) != 13 {
+		t.Fatalf("expected 13 down migrations for 0022..0034, got %d: %v", len(waveDowns), waveDowns)
+	}
+	for _, f := range waveDowns {
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
+		if err != nil {
+			t.Fatalf("read down migration %s: %v", f, err)
+		}
+		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+			t.Fatalf("exec down migration %s: %v", f, err)
+		}
+		upName := strings.TrimSuffix(f, ".down.sql") + ".up.sql"
+		if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, upName); err != nil {
+			t.Fatalf("delete schema_migrations %s: %v", upName, err)
+		}
+	}
+
+	for _, removedTable := range []string{"jwt_key_mappings", "operator_sessions"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, removedTable).Scan(&exists); err != nil || exists {
+			t.Fatalf("expected table %s removed after 0034..0022 rollback (exists=%v, err=%v)", removedTable, exists, err)
+		}
+	}
+
+	// Reapply 0022..0034 cleanly and verify idempotency.
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir reapply 0022..0034 failed: %v", err)
+	}
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir second idempotent reapply failed: %v", err)
+	}
+	var jwtMapExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'jwt_key_mappings'
+		)`).Scan(&jwtMapExists); err != nil || !jwtMapExists {
+		t.Fatalf("expected jwt_key_mappings restored after reapply (exists=%v, err=%v)", jwtMapExists, err)
 	}
 }

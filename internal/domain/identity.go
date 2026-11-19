@@ -149,6 +149,7 @@ type User struct {
 	Email                    string              `json:"email"`
 	Name                     string              `json:"name"`
 	Role                     Role                `json:"role"`
+	OIDCIssuer               string              `json:"oidc_issuer,omitempty"`
 	OIDCSubject              string              `json:"oidc_subject,omitempty"`
 	SCIMExternalID           string              `json:"scim_external_id,omitempty"`
 	SCIMActive               bool                `json:"scim_active"`
@@ -263,6 +264,11 @@ type VirtualKey struct {
 	MaxBudgetPerSessionMicros int64               `json:"max_budget_per_session_micros,omitempty"`
 	RotationIntervalSec       int64               `json:"rotation_interval_sec,omitempty"`
 	KeyRotationAt             *time.Time          `json:"key_rotation_at,omitempty"`
+	StagedKeyHash             string              `json:"-"`
+	StagedKeyPrefix           string              `json:"-"`
+	StagedEncryptedRawKey     string              `json:"-"`
+	StagedKeyDEK              string              `json:"-"`
+	StagedCreatedAt           *time.Time          `json:"-"`
 	ExpiresAt                 *time.Time          `json:"expires_at,omitempty"`
 	CanImpersonate            bool                `json:"can_impersonate"`
 	IsActive                  bool                `json:"is_active"`

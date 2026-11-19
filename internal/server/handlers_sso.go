@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,10 +26,9 @@ import (
 )
 
 type authLoginRequest struct {
-	Email        string `json:"email"`
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-	PasswordSHA1 string `json:"password_sha1,omitempty"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type authPasswordRequest struct {
@@ -36,7 +37,6 @@ type authPasswordRequest struct {
 	CurrentPassword string `json:"current_password,omitempty"`
 	NewPassword     string `json:"new_password"`
 	Password        string `json:"password,omitempty"`
-	PasswordSHA1    string `json:"password_sha1,omitempty"`
 }
 
 const minControlPlanePasswordLen = 8
@@ -96,15 +96,30 @@ func (s *GatewayServer) lookupUserByEmail(ctx context.Context, email string) (*d
 	return nil, storage.ErrNotFound
 }
 
-func (s *GatewayServer) checkPasswordHIBP(ctx context.Context, sha1Hex string) (bool, error) {
+// screenPassword uses SHA-1 solely for the HIBP k-anonymity prefix protocol, not password storage.
+func (s *GatewayServer) screenPassword(w http.ResponseWriter, r *http.Request, password string, rejectionStatus int) bool {
 	if s == nil || s.cfg == nil || !s.cfg.Auth.EnableHIBPCheck || s.breachScreener == nil {
-		return false, nil
+		return true
 	}
-	sha1Hex = strings.TrimSpace(sha1Hex)
-	if sha1Hex == "" {
-		return false, nil
+	digest := sha1.Sum([]byte(password))
+	breached, err := s.breachScreener.CheckDigest(r.Context(), hex.EncodeToString(digest[:]))
+	if err != nil {
+		logger.WarnContext(r.Context(), "HIBP password breach check failed; continuing",
+			slog.String("component", "auth"),
+			slog.String("error", err.Error()),
+		)
+		return true
 	}
-	return s.breachScreener.CheckDigest(ctx, sha1Hex)
+	if !breached {
+		return true
+	}
+	domain.WriteHTTPError(w, &domain.GatewayError{
+		StatusCode: rejectionStatus,
+		Type:       domain.ErrorTypeInvalidRequest,
+		Code:       "breached_password",
+		Message:    "Password has appeared in a known data breach; choose a different password",
+	})
+	return false
 }
 
 func (s *GatewayServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
@@ -177,15 +192,10 @@ func (s *GatewayServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) 
 			s.loginThrottle.RecordSuccess(r.Context(), identifier, clientIP)
 		}
 
-		resetRequired := false
-		if breached, err := s.checkPasswordHIBP(r.Context(), req.PasswordSHA1); err != nil {
-			logger.WarnContext(r.Context(), "HIBP password breach check failed; continuing login",
-				slog.String("component", "auth"),
-				slog.String("error", err.Error()),
-			)
-		} else if breached {
-			resetRequired = true
+		if !s.screenPassword(w, r, req.Password, http.StatusForbidden) {
+			return
 		}
+		resetRequired := false
 
 		orgID := strings.TrimSpace(s.cfg.Auth.DefaultOrgID)
 		if orgID == "" {
@@ -312,25 +322,15 @@ func (s *GatewayServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resetRequired := cred.PasswordResetRequired
-	if breached, err := s.checkPasswordHIBP(r.Context(), req.PasswordSHA1); err != nil {
-		logger.WarnContext(r.Context(), "HIBP password breach check failed; continuing login",
-			slog.String("component", "auth"),
-			slog.String("user_id", user.ID),
-			slog.String("error", err.Error()),
-		)
-	} else if breached {
-		resetRequired = true
+	if !s.screenPassword(w, r, req.Password, http.StatusForbidden) {
+		return
 	}
 
-	targetHash := cred.PasswordHash
+	resetRequired := cred.PasswordResetRequired
 	if needsUpgrade {
 		if upgraded, hashErr := auth.HashPasswordScrypt(req.Password); hashErr == nil {
-			targetHash = upgraded
+			_ = sessRepo.UpsertUserPassword(r.Context(), user.ID, upgraded, resetRequired)
 		}
-	}
-	if needsUpgrade || resetRequired != cred.PasswordResetRequired {
-		_ = sessRepo.UpsertUserPassword(r.Context(), user.ID, targetHash, resetRequired)
 	}
 
 	issued, err := s.sessionMgr.IssueSession(r.Context(), user.ID, user.OrgID, user.TeamID, opRole)
@@ -520,19 +520,7 @@ func (s *GatewayServer) handleAuthPassword(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if breached, hibpErr := s.checkPasswordHIBP(r.Context(), req.PasswordSHA1); hibpErr != nil {
-		logger.WarnContext(r.Context(), "HIBP password breach check failed during password update",
-			slog.String("component", "auth"),
-			slog.String("user_id", targetUser.ID),
-			slog.String("error", hibpErr.Error()),
-		)
-	} else if breached {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "breached_password",
-			Message:    "Password has appeared in a known data breach; choose a different password",
-		})
+	if !s.screenPassword(w, r, newPassword, http.StatusBadRequest) {
 		return
 	}
 
@@ -969,9 +957,23 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 		}
 	}
 
+	singleTrustedIssuer := s.ssoMgr != nil && len(s.ssoMgr.ListProviders()) == 1 &&
+		(s.authResolver == nil || s.authResolver.SingleJWTIssuer())
+
 	var user *domain.User
 	if oidcRepo, ok := s.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
-		user, err = oidcRepo.GetUserByOrgAndOIDCSubject(ctx, orgID, claims.Subject)
+		user, err = oidcRepo.GetUserByOIDCIdentity(ctx, orgID, claims.Issuer, claims.Subject)
+		if errors.Is(err, storage.ErrNotFound) && singleTrustedIssuer {
+			user, err = oidcRepo.GetUserByOIDCIdentity(ctx, orgID, "", claims.Subject)
+		}
+		if errors.Is(err, storage.ErrConflict) {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusConflict,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "ambiguous_oidc_identity",
+				Message:    "Multiple OIDC users share this subject without a bound issuer; contact an administrator to bind oidc_issuer",
+			}
+		}
 		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
@@ -983,41 +985,18 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 		}
 	} else {
 		u, lookupErr := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
-		if lookupErr == nil && u != nil && u.OrgID == orgID {
-			user = u
-		}
-	}
-
-	if user == nil && claims.Email != "" {
-		candidate, emailErr := s.lookupUserByEmail(ctx, claims.Email)
-		if emailErr != nil && !errors.Is(emailErr, storage.ErrNotFound) {
+		if lookupErr != nil && !errors.Is(lookupErr, storage.ErrNotFound) {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
 				Type:       domain.ErrorTypeServer,
 				Code:       "user_lookup_unavailable",
-				Message:    "Unable to resolve SSO user identity by email",
+				Message:    "Unable to resolve SSO user identity",
 				Retryable:  true,
 			}
 		}
-		if candidate != nil {
-			if candidate.OrgID != orgID {
-				return nil, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "cross_org_access_denied",
-					Message:    "User email belongs to a different organization",
-				}
-			}
-			if candidate.OIDCSubject != "" && candidate.OIDCSubject != claims.Subject {
-				return nil, &domain.GatewayError{
-					StatusCode:  http.StatusUnauthorized,
-					Type:        domain.ErrorTypeAuthentication,
-					Code:        "subject_mismatch",
-					Message:     "SSO subject does not match registered user OIDC subject",
-					AuthFailure: true,
-				}
-			}
-			user = candidate
+		if lookupErr == nil && u != nil && u.OrgID == orgID &&
+			(u.OIDCIssuer == claims.Issuer || (u.OIDCIssuer == "" && singleTrustedIssuer)) {
+			user = u
 		}
 	}
 
@@ -1069,7 +1048,11 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 
 		email := strings.TrimSpace(claims.Email)
 		if email == "" {
-			email = fmt.Sprintf("%s@%s.oidc.local", sanitizeSSOEmailPart(claims.Subject, "oidc-user"), sanitizeSSOEmailPart(orgID, "default"))
+			email = fmt.Sprintf("%s@%s.%s.oidc.local",
+				sanitizeSSOEmailPart(claims.Subject, "oidc-user"),
+				sanitizeSSOEmailPart(claims.Issuer, "issuer"),
+				sanitizeSSOEmailPart(orgID, "default"),
+			)
 		}
 		name := strings.TrimSpace(claims.DisplayName)
 		if name == "" {
@@ -1082,6 +1065,7 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			Email:             email,
 			Name:              name,
 			Role:              resolveSSOProvisionRole(claims.Role, p.DefaultRole()),
+			OIDCIssuer:        claims.Issuer,
 			OIDCSubject:       claims.Subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
 			IsActive:          true,

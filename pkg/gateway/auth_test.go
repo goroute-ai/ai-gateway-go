@@ -1,9 +1,11 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -288,4 +290,169 @@ func TestEvaluateCustomAuth_InvalidInputs(t *testing.T) {
 	if !errors.As(err, &gwErr) || gwErr.Code != "invalid_request" {
 		t.Fatalf("expected invalid_request for nil http.Request, got %v", err)
 	}
+}
+
+func TestWithCustomAuthenticator_EmbeddedHTTP(t *testing.T) {
+	mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"custom-auth-ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"totalTokenCount":8}}`)
+	}))
+	defer mockGemini.Close()
+
+	t.Run("rejects remote gateway combination", func(t *testing.T) {
+		_, err := gateway.New(
+			gateway.WithRemote("https://gateway.example.com", "sk-gw-remote"),
+			gateway.WithCustomAuthenticator(gateway.CustomAuthModeOn, gateway.CustomAuthenticatorFunc(func(context.Context, *http.Request) (*gateway.AuthDecision, error) {
+				return nil, nil
+			})),
+		)
+		if err == nil {
+			t.Fatal("expected WithRemote + WithCustomAuthenticator to fail")
+		}
+	})
+
+	t.Run("on mode enforces RunPostChecks, VirtualKey, and active org", func(t *testing.T) {
+		var mode string
+		gw, err := gateway.New(
+			gateway.WithSilentLogs(),
+			gateway.WithAllowPrivateNetworks(),
+			gateway.WithModelList(gateway.ModelEntry{
+				ModelName: "fast",
+				Model:     "gemini/gemini-2.5-flash",
+				APIKey:    "dummy-gemini-key",
+				APIBase:   mockGemini.URL,
+			}),
+			gateway.WithCustomAuthenticator(gateway.CustomAuthModeOn, gateway.CustomAuthenticatorFunc(func(ctx context.Context, r *http.Request) (*gateway.AuthDecision, error) {
+				switch r.Header.Get("X-Test-Scenario") {
+				case "post-checks-deny":
+					return &gateway.AuthDecision{
+						Identity: &domain.IdentityContext{
+							OrgID:            "org_default",
+							KeyPrefix:        "sk-cust-1",
+							Role:             domain.RoleDeveloper,
+							KeyAllowedModels: []string{"other-model"},
+						},
+						RunPostChecks: true,
+					}, nil
+				case "skip-inline-checks":
+					return &gateway.AuthDecision{
+						Identity: &domain.IdentityContext{
+							OrgID:            "org_default",
+							KeyPrefix:        "sk-cust-2",
+							Role:             domain.RoleDeveloper,
+							KeyAllowedModels: []string{"other-model"},
+						},
+						RunPostChecks: false,
+					}, nil
+				case "inactive-org":
+					return &gateway.AuthDecision{
+						Identity: &domain.IdentityContext{
+							OrgID: "missing_org",
+							Role:  domain.RoleDeveloper,
+						},
+						RunPostChecks: true,
+					}, nil
+				case "bad-vk":
+					return &gateway.AuthDecision{VirtualKey: "not-a-gateway-key"}, nil
+				default:
+					return &gateway.AuthDecision{
+						VirtualKey: mode,
+					}, nil
+				}
+			})),
+		)
+		if err != nil {
+			t.Fatalf("gateway.New failed: %v", err)
+		}
+		defer gw.Close()
+		mode = issuedKeyRaw(t, gw)
+
+		ctx := context.Background()
+		reqPost := func(scenario string) *http.Response {
+			r, err := http.NewRequestWithContext(ctx, http.MethodPost, gw.BaseURL()+"/v1/chat/completions", bytes.NewBufferString(`{"model":"fast","messages":[{"role":"user","content":"hi"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Test-Scenario", scenario)
+			resp, err := http.DefaultClient.Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return resp
+		}
+
+		// RunPostChecks=true enforces KeyAllowedModels -> 403
+		r1 := reqPost("post-checks-deny")
+		r1.Body.Close()
+		if r1.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 when RunPostChecks enforces KeyAllowedModels, got %d", r1.StatusCode)
+		}
+
+		// RunPostChecks=false ignores inline KeyAllowedModels -> 200
+		r2 := reqPost("skip-inline-checks")
+		b2, _ := io.ReadAll(r2.Body)
+		r2.Body.Close()
+		if r2.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 when RunPostChecks=false on active org, got %d: %s", r2.StatusCode, string(b2))
+		}
+
+		// Inactive/missing org is still rejected -> 403
+		r3 := reqPost("inactive-org")
+		r3.Body.Close()
+		if r3.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 for missing/inactive org, got %d", r3.StatusCode)
+		}
+
+		// Invalid VirtualKey prefix rejected -> 401
+		r4 := reqPost("bad-vk")
+		r4.Body.Close()
+		if r4.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for non-sk-gw VirtualKey, got %d", r4.StatusCode)
+		}
+
+		// Valid VirtualKey resolves via standard virtual key auth -> 200
+		r5 := reqPost("valid-vk")
+		r5.Body.Close()
+		if r5.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 when VirtualKey resolves through AuthService, got %d", r5.StatusCode)
+		}
+	})
+
+	t.Run("auto mode abstains to standard virtual key auth", func(t *testing.T) {
+		gw, err := gateway.New(
+			gateway.WithSilentLogs(),
+			gateway.WithAllowPrivateNetworks(),
+			gateway.WithModelList(gateway.ModelEntry{
+				ModelName: "fast",
+				Model:     "gemini/gemini-2.5-flash",
+				APIKey:    "dummy-gemini-key",
+				APIBase:   mockGemini.URL,
+			}),
+			gateway.WithCustomAuthenticator(gateway.CustomAuthModeAuto, gateway.CustomAuthenticatorFunc(func(context.Context, *http.Request) (*gateway.AuthDecision, error) {
+				return nil, nil
+			})),
+		)
+		if err != nil {
+			t.Fatalf("gateway.New failed: %v", err)
+		}
+		defer gw.Close()
+		res, err := gw.Chat(context.Background(), "fast", "hello")
+		if err != nil || res.Content != "custom-auth-ok" {
+			t.Fatalf("expected fallback to default virtual key to succeed, got res=%+v err=%v", res, err)
+		}
+	})
+}
+
+func issuedKeyRaw(t *testing.T, gw *gateway.Client) string {
+	t.Helper()
+	vk, err := gw.IssueVirtualKey(context.Background(), domain.VirtualKey{
+		OrgID:         "org_default",
+		Name:          "custom-auth-vk",
+		Role:          domain.RoleDeveloper,
+		AllowedModels: []string{"fast"},
+	})
+	if err != nil || vk == nil || vk.RawKey == "" {
+		t.Fatalf("IssueVirtualKey failed: vk=%+v err=%v", vk, err)
+	}
+	return vk.RawKey
 }
