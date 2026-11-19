@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
 VERSION ?= v1.20.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -87,6 +87,10 @@ test-e2e-strict:
 	GATEWAY_POSTGRES_DSN=$${GATEWAY_POSTGRES_DSN:-postgres://gateway:gateway@localhost:15432/aigateway_test?sslmode=disable} \
 	GATEWAY_REDIS_ADDR=$${GATEWAY_REDIS_ADDR:-localhost:16379} \
 	go test -race -v -count=1 ./tests/e2e/...
+
+test-ui-e2e:
+	@echo "==> Running headless Chromium Operator Web UI E2E suite (GW-AQ-19)..."
+	bash tests/ui-e2e/run_ui_e2e.sh
 
 test-load:
 	@echo "==> Running load benchmarks & concurrency stress tests..."

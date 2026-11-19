@@ -15,6 +15,7 @@ paths = [
   '''^web/src/views/GuardrailsView\.tsx$''',
   '''^web/dist/assets/GuardrailsView-.*\.js$''',
   '''^internal/ui/dist/assets/GuardrailsView-.*\.js$''',
+  '''^tests/ui-e2e/node_modules/''',
 ]
 regexes = [
   '''sk-gw-master-admin-default-key-change-me''',
@@ -26,4 +27,7 @@ regexes = [
   '''idNew1\.KeyRPMLimit''',
   '''incoming-oidc-hs256-secret-32-bytes''',
   '''vault-outbound-hs256-secret-32b''',
+  '''imdsV2SecretKey''',
+  '''test-hs256-secret-for-fail-closed''',
+  '''IQoJb3JpZ2luX2VjECoaCXVzLWVhc3QtMSJG''',
 ]
