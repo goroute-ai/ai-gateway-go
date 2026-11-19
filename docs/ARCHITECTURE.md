@@ -94,7 +94,7 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`118` OpenAPI paths: `28` `/v1`, `80` `/admin/v1`, `10` `/auth`, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`120` OpenAPI paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login, SCIM v2 provisioning, HIBP screening, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -273,7 +273,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `28` `/v1` paths, `80` `/admin/v1` paths, and `10` `/auth` paths (`118` total paths, verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `28` `/v1` paths, `82` `/admin/v1` paths, and `10` `/auth` paths (`120` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
@@ -539,7 +539,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0035`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns.
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0036`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`.
 
 #### 1. Multi-Tenant Identity, Federation, SSO & RBAC
 - **`organizations` & `teams`** (`0001`, `0015`, `0022`, `0023`, `0030`, `0031`): Root tenant and departmental boundaries with integer micro-dollar budgets (`max_budget_micros`, `spent_micros`, `soft_budget_micros`, `budget_duration_seconds`, `budget_reset_at`), RPM/TPM/TPD/concurrency limits, and default fallback models.
@@ -710,10 +710,10 @@ ai-gateway-go/
 │   ├── CONFIGURATION_GUIDE.md        # Comprehensive YAML, Go SDK & environment configuration guide
 │   ├── UPGRADING.md                  # Zero-downtime upgrade guide & migration 0034 rollback safety runbook
 │   ├── TESTING.md                    # 5-tier verification manual (unit, live Postgres/Redis E2E, Chromium UI, HA containers)
-│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 118 paths + MCP + A2A + 5 Providers)
+│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 120 paths + MCP + A2A + 5 Providers)
 │   └── specs/                        # Pinned vendor specifications (MCP 2026-07-28 & A2A v1.0 protobuf)
 ├── migrations/
-│   └── 0001..0035_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0035_production_governance_hardening)
+│   └── 0001..0036_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0036_production_routing_hardening)
 ├── tests/
 │   ├── canary/                       # Opt-in live cloud/IdP canary smoke checks (-tags=canary)
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites

@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	version = "v1.22.0"
+	version = "v1.23.0"
 	commit  = "dev"
 	date    = "2026-11-19T00:00:00Z"
 )

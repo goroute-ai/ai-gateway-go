@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.23.0] - 2026-11-19
+
+### Production Routing & Guardrail Hardening, Rolling KEK Sinks & Codebase Quality Modernization
+
+#### Added
+- **Distributed Redis Slot Leases, Saturation Fallbacks & Migration `0036` (`migrations/0036_production_routing_hardening`, `internal/router/deployment_slots.go`)**: Added cluster-aligned Redis ZSET deployment slot leases (`acquire_deployment_slot.lua`, `release_deployment_slot.lua`), saturation fallback routing (`saturation_fallbacks`, `disable_cooldowns`, `drop_unsupported_params`), per-deployment `itpm_capacity` / `otpm_capacity` / `max_parallel_requests`, `quota_policies.rpd_limit`, and team/key `min_priority_rank` + `allowed_routing_tags`.
+- **Unified Routing Hints & Guardrail Sensitive Routing Across All 12 Pipelines (`internal/guardrails/`, `internal/server/`, `internal/a2a/`)**: Enforced unified request routing hints and Layer-1 `GuardrailActionRoute` (`sensitive_route_target`) consistently across chat, responses, messages, completions, embeddings, rerank, moderations, images, audio, async batches, realtime WebSockets, and A2A pipelines, alongside `pkg/gateway` non-chat `RoutingHints`.
+- **Rolling Master KEKs & Transactional Key Secret Sinks (`internal/auth/`, `internal/server/key_rotation_sinks.go`, `internal/config/`)**: Added `auth.previous_master_encryption_keys` multi-KEK decryption support, early sink config validation, throttled rotation-failure audits, and transactional `KeySecretSink` drivers (`webhook`, HashiCorp `vault_kv2`, `aws_secrets_manager`).
+- **Control Plane & Admin Ergonomics (`internal/server/`, `docs/openapi/gateway.openapi.yaml`, `web/`)**: Added deterministic provider credential auto-resolution on `POST /admin/v1/deployments`, exposed full router policies in `GET /admin/v1/config`, synced OpenAPI `3.1.0` (`120` paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`), and updated Operator Web UI views + Playwright UI E2E coverage.
+- **Go Quality Tooling & Documentation (`docs/CODE_QUALITY_AUDIT.md`, `.golangci.yml`, `Makefile`)**: Integrated `samber/cc-skills-golang` coding standards (`.agents/rules/golang-skills.md`, `.claude/rules/golang-skills.md`), added `.golangci.yml` + `make lint` / `make deadcode` targets, added `doc.go` package docs to `29` packages, added exported API godocs and `pkg/gateway/example_test.go`, and published the [Code Quality Audit](./docs/CODE_QUALITY_AUDIT.md).
+
+#### Changed & Refactored
+- **Adapter Parameter Isolation & Telemetry (`internal/router/sanitization.go`, `internal/server/`)**: Scoped OpenAI-only extra parameter stripping strictly to native non-OpenAI adapters, propagated `X-Gateway-Dropped-Params` pre-stream and across fallbacks, and fixed non-chat stream slot/usage settlement.
+- **Modular Go Architecture (`internal/config/`, `internal/router/chat_execution.go`, `internal/server/`, `internal/mcp/hub.go`, `internal/storage/`)**: Removed dead/unreachable helpers and decomposed large functions/files into domain-focused modules, including extracting `chat_execution.go` (`ExecuteChat`/`ExecuteStream` with shared hedged-race helpers) and splitting monolithic `postgres.go` and `memory.go` into domain-aligned files (`*_org_user.go`, `*_quotas.go`, `*_keys_access.go`, `*_routing.go`, `*_guardrails.go`, `*_spend_audit.go`, `*_protocols_files.go`).
+
+#### Security & Static Analysis Fixes
+- Replaced deprecated `middleware.RealIP` in `internal/server/server.go` with `trustedRealIPMiddleware` gated strictly behind `trustedProxyCIDRs`.
+- Replaced deprecated `trace.NewNoopTracerProvider()` with `noop.NewTracerProvider()` in `internal/observability/` and resolved `ineffassign`, `SA4006`, `S1009`, `S1031`, `ST1005`, `ST1008`, `unconvert`, `predeclared`, `errname`, `SA1032`, and `noctx` static analysis findings.
+
+---
+
 ## [1.22.0] - 2026-11-19
 
 ### Enterprise Key Governance, Self-Service Controls, Diff Audits, KEK Rotation & Response Rate-Limit Telemetry

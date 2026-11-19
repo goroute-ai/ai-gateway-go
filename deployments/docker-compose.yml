@@ -26,8 +26,8 @@ services:
 
   gateway-migrate:
     # Prebuilt alternative (replace 'build:' with 'image:'):
-    # image: qaadir/ai-gateway:1.22.0
-    # image: ghcr.io/goroute-ai/ai-gateway-go:1.22.0
+    # image: qaadir/ai-gateway:1.23.0
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.23.0
     build:
       context: ..
       dockerfile: deployments/Dockerfile
@@ -46,8 +46,8 @@ services:
 
   ai-gateway:
     # Prebuilt alternative (replace 'build:' with 'image:'):
-    # image: qaadir/ai-gateway:1.22.0
-    # image: ghcr.io/goroute-ai/ai-gateway-go:1.22.0
+    # image: qaadir/ai-gateway:1.23.0
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.23.0
     build:
       context: ..
       dockerfile: deployments/Dockerfile

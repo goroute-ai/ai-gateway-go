@@ -1,8 +1,8 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.22.0`\
+> **Version**: `v1.23.0`\
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`118` OpenAPI paths: `28` `/v1`, `80` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`120` OpenAPI paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---

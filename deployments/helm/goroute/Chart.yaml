@@ -2,8 +2,8 @@ apiVersion: v2
 name: goroute
 description: Production Helm chart for GoRoute AI Gateway
 type: application
-version: 0.6.0
-appVersion: "1.22.0"
+version: 0.7.0
+appVersion: "1.23.0"
 home: https://github.com/goroute-ai/ai-gateway-go
 icon: https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/assets/logo-dark.png
 sources:
@@ -28,10 +28,12 @@ annotations:
       url: https://hub.docker.com/r/qaadir/ai-gateway
   artifacthub.io/images: |
     - name: ai-gateway
-      image: ghcr.io/goroute-ai/ai-gateway-go:1.22.0
+      image: ghcr.io/goroute-ai/ai-gateway-go:1.23.0
   artifacthub.io/changes: |
     - kind: added
-      description: Added self-service key APIs, team member permissions, bulk key/membership operations, dynamic 429 cooldowns, 2xx X-RateLimit headers, redacted audit diffs, KeySecretSink, and transactional Master KEK rotation (migration 0035).
+      description: Added distributed Redis ZSET deployment slot leases, saturation fallbacks, unified routing hints & GuardrailActionRoute across all 12 pipelines, rolling Master KEKs + transactional secret sinks, and migration 0036_production_routing_hardening.
+    - kind: changed
+      description: Completed Go codebase quality audit, dead-code removal, package/API documentation, and modular refactoring across config, router, server, MCP, and storage packages.
 dependencies:
   - name: postgresql
     version: "16.x.x"
