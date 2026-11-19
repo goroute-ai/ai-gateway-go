@@ -406,3 +406,159 @@ func TestPostgres_Migration0034_UpgradeAndRollbackConflictPreflight(t *testing.T
 		t.Fatalf("reapply 0034 after clean rollback: %v", err)
 	}
 }
+
+func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
+	ctx := context.Background()
+	pool, err := NewPostgresPool(ctx, livePostgresDSN())
+	if err != nil {
+		if os.Getenv("GATEWAY_REQUIRE_LIVE_DEPS") == "1" {
+			t.Fatalf("GATEWAY_REQUIRE_LIVE_DEPS=1 set, but PostgreSQL unreachable: %v", err)
+		}
+		t.Skipf("skipping live PostgreSQL migration lifecycle test: %v", err)
+	}
+	defer pool.Close()
+
+	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir fresh 0001..0034 failed: %v", err)
+	}
+
+	expectedTables := []string{
+		"jwt_key_mappings",
+		"virtual_key_deprecated_hashes",
+		"access_group_rules",
+		"team_memberships",
+		"projects",
+		"quota_policies",
+		"budget_window_limits",
+		"end_users",
+		"tags",
+		"model_access_groups",
+		"model_access_group_members",
+		"deployment_ptu_shares",
+		"priority_classes",
+		"user_credentials",
+		"operator_sessions",
+	}
+	for _, tbl := range expectedTables {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, tbl).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected table %s after 0001..0034 (exists=%v, err=%v)", tbl, exists, err)
+		}
+	}
+
+	expectedCols := []struct {
+		table string
+		col   string
+	}{
+		{"batches", "estimated_tokens"},
+		{"batches", "reserved_cost_micros"},
+		{"organizations", "soft_budget_micros"},
+		{"organizations", "throttle_on_budget_exceeded"},
+		{"organizations", "budget_fallbacks"},
+		{"organizations", "self_serve_budget_policy"},
+		{"virtual_keys", "rotation_interval_sec"},
+		{"virtual_keys", "key_rotation_at"},
+		{"virtual_keys", "key_type"},
+		{"virtual_keys", "project_id"},
+		{"virtual_keys", "can_impersonate"},
+		{"virtual_keys", "temp_budget_increase_micros"},
+		{"virtual_keys", "staged_key_hash"},
+		{"users", "scim_external_id"},
+		{"users", "scim_active"},
+		{"users", "oidc_issuer"},
+		{"spend_logs", "project_id"},
+		{"spend_logs", "model_access_group_ids"},
+		{"spend_logs", "matched_quota_policy_ids"},
+		{"spend_logs", "end_user_id"},
+		{"spend_logs", "tags"},
+		{"spend_logs", "session_id"},
+		{"budget_window_limits", "rolling_hold_micros"},
+		{"budget_window_limits", "rolling_hold_expires_at"},
+	}
+	for _, tc := range expectedCols {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected column %s.%s after 0001..0034 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+		}
+	}
+
+	for _, idx := range []string{"idx_users_org_issuer_subject", "idx_users_org_scim_external_id"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1
+			)`, idx).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected index %s after 0001..0034 (exists=%v, err=%v)", idx, exists, err)
+		}
+	}
+
+	// Exercise reverse down migrations from 0034 down through 0022.
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	var waveDowns []string
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" && name < "0035_" {
+			waveDowns = append(waveDowns, name)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
+	if len(waveDowns) != 13 {
+		t.Fatalf("expected 13 down migrations for 0022..0034, got %d: %v", len(waveDowns), waveDowns)
+	}
+	for _, f := range waveDowns {
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
+		if err != nil {
+			t.Fatalf("read down migration %s: %v", f, err)
+		}
+		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+			t.Fatalf("exec down migration %s: %v", f, err)
+		}
+		upName := strings.TrimSuffix(f, ".down.sql") + ".up.sql"
+		if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, upName); err != nil {
+			t.Fatalf("delete schema_migrations %s: %v", upName, err)
+		}
+	}
+
+	for _, removedTable := range []string{"jwt_key_mappings", "operator_sessions"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, removedTable).Scan(&exists); err != nil || exists {
+			t.Fatalf("expected table %s removed after 0034..0022 rollback (exists=%v, err=%v)", removedTable, exists, err)
+		}
+	}
+
+	// Reapply 0022..0034 cleanly and verify idempotency.
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir reapply 0022..0034 failed: %v", err)
+	}
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir second idempotent reapply failed: %v", err)
+	}
+	var jwtMapExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'jwt_key_mappings'
+		)`).Scan(&jwtMapExists); err != nil || !jwtMapExists {
+		t.Fatalf("expected jwt_key_mappings restored after reapply (exists=%v, err=%v)", jwtMapExists, err)
+	}
+}
