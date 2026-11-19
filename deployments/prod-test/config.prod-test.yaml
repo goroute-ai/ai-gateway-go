@@ -1,0 +1,139 @@
+server:
+  environment: "production"
+  host: "0.0.0.0"
+  port: 8080
+  public_base_url: "https://gateway.prod.test:18443"
+  enable_hsts: true
+  cors_allowed_origins:
+    - "https://gateway.prod.test:18443"
+  cors_allow_credentials: true
+
+logging:
+  level: "info"
+  format: "json"
+
+storage:
+  mode: "postgres"
+  postgres_dsn: "os.environ/GATEWAY_POSTGRES_DSN"
+  redis_addr: "redis:6379"
+  redis_pass: "os.environ/GATEWAY_REDIS_PASS"
+  redis_db: 0
+
+auth:
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
+  allow_master_key_data_plane: false
+  enable_data_plane_jwt: true
+  default_org_id: "org_default"
+  auth_start_rate_limit_per_min: 30
+  oidc_issuers:
+    - name: "keycloak-prod"
+      issuer: "https://auth.prod.test:18443/realms/goroute-prod"
+      audience: "goroute-gateway"
+      allowed_email_domains:
+        - "goroute.local"
+      auto_register: true
+      default_org_id: "org_default"
+      claim_mapping:
+        org_id: "org_id"
+        role: "role"
+        groups: "groups"
+      group_role_mappings:
+        - group: "goroute-platform-admins"
+          role: "platform_admin"
+        - group: "goroute-org-admins"
+          role: "org_admin"
+        - group: "goroute-org-viewers"
+          role: "org_viewer"
+        - group: "goroute-developers"
+          role: "developer"
+      role_mapping_strategy: "highest_privilege"
+      group_team_mappings:
+        goroute-team-alpha: "team-prod-alpha"
+      default_role: "developer"
+    - name: "keycloak-tenant-b"
+      issuer: "https://auth.prod.test:18443/realms/tenant-b"
+      audience: "goroute-gateway"
+      allowed_email_domains:
+        - "tenantb.local"
+      auto_register: false
+      org_claim: "org_id"
+  introspection:
+    issuer: "https://auth.prod.test:18443/realms/goroute-prod"
+    endpoint: "https://auth.prod.test:18443/realms/goroute-prod/protocol/openid-connect/token/introspect"
+    audience: "goroute-gateway"
+    client_id: "os.environ/GATEWAY_INTROSPECTION_CLIENT_ID"
+    client_secret: "os.environ/GATEWAY_INTROSPECTION_CLIENT_SECRET"
+    mode: "auto"
+    cache_ttl: "3s"
+    default_org_id: "org_default"
+  sso_providers:
+    - id: "keycloak"
+      display_name: "Keycloak Production"
+      type: "oidc"
+      client_id: "goroute-gateway"
+      client_secret: "os.environ/KEYCLOAK_SSO_SECRET"
+      issuer: "https://auth.prod.test:18443/realms/goroute-prod"
+      redirect_url: "https://gateway.prod.test:18443/auth/sso/keycloak/callback"
+      scopes: ["openid", "profile", "email"]
+      allowed_email_domains:
+        - "goroute.local"
+      auto_register: true
+      default_org_id: "org_default"
+      default_role: "org_viewer"
+      allow_privileged_role_claims: true
+      claim_mapping:
+        org_id: "org_id"
+        role: "role"
+        groups: "groups"
+      group_role_mappings:
+        - group: "goroute-platform-admins"
+          role: "platform_admin"
+        - group: "goroute-org-admins"
+          role: "org_admin"
+        - group: "goroute-org-viewers"
+          role: "org_viewer"
+        - group: "goroute-developers"
+          role: "developer"
+      role_mapping_strategy: "highest_privilege"
+      group_team_mappings:
+        goroute-team-alpha: "team-prod-alpha"
+      sync_roles_on_login: true
+  external_authorizer:
+    enabled: true
+    mode: "webhook"
+    url: "https://fixtures.prod.test:18443/authz/webhook"
+    timeout: "2s"
+    fail_mode: "closed"
+    cache_ttl: "0s"
+    hmac_secret: "os.environ/PROD_AUTHZ_HMAC_SECRET"
+
+audit:
+  siem_webhook:
+    enabled: true
+    url: "https://fixtures.prod.test:18443/siem/audit"
+    secret: "os.environ/PROD_SIEM_HMAC_SECRET"
+    batch_size: 10
+    flush_interval: "500ms"
+    timeout: "3s"
+    max_queue_size: 1024
+
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: false
+
+security:
+  network:
+    inbound_caller:
+      expose_on_public_internet: true
+      trusted_proxy_cidrs:
+        - "172.30.10.200/32"
+    outbound_ssrf:
+      allow_private_networks: false
+      allow_insecure_http: false
+      allow_loopback_http: false
+      allowed_schemes:
+        - "https"
+      allowed_private_cidrs:
+        - "172.30.10.200/32"

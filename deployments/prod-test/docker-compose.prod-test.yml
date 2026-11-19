@@ -1,0 +1,250 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - data_net
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: prod-test-pg-password-2026
+      POSTGRES_DB: aigateway
+    volumes:
+      - ./init-dbs.sql:/docker-entrypoint-initdb.d/01-init-dbs.sql:ro
+      - ../../.tmp/prod-test-certs:/certs:ro
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /tmp/pg-ssl &&
+        cp /certs/server.crt /tmp/pg-ssl/server.crt &&
+        cp /certs/server.key /tmp/pg-ssl/server.key &&
+        chown -R postgres:postgres /tmp/pg-ssl &&
+        chmod 600 /tmp/pg-ssl/server.key &&
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/pg-ssl/server.crt -c ssl_key_file=/tmp/pg-ssl/server.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - data_net
+    command: ["redis-server", "--requirepass", "prod-test-redis-pass-2026", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "prod-test-redis-pass-2026", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    networks:
+      - edge_net
+      - data_net
+    command:
+      - start
+      - --import-realm
+      - --http-enabled=true
+      - --hostname=https://auth.prod.test:18443
+      - --proxy-headers=xforwarded
+      - --health-enabled=true
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: gateway
+      KC_DB_PASSWORD: prod-test-pg-password-2026
+      KC_BOOTSTRAP_ADMIN_USERNAME: kcadmin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: prod-test-kc-admin-2026
+    volumes:
+      - ./realm-prod-test.json:/opt/keycloak/data/import/realm-prod-test.json:ro
+      - ./realm-tenant-b.json:/opt/keycloak/data/import/realm-tenant-b.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
+  caddy:
+    image: caddy:2-alpine
+    networks:
+      edge_net:
+        ipv4_address: 172.30.10.200
+    ports:
+      - "127.0.0.1:18443:18443"
+      - "127.0.0.1:18444:18444"
+      - "127.0.0.1:18445:18445"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../.tmp/prod-test-certs:/certs:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  ssrf-trap:
+    image: caddy:2-alpine
+    networks:
+      ssrf_trap_net:
+        ipv4_address: 172.30.30.10
+    command: ["caddy", "respond", "--listen", ":8080", "--body", "SSRF_TRAP_REACHED", "--status", "200"]
+
+  prod-test-fixtures:
+    build:
+      context: ../..
+      dockerfile: deployments/prod-test/Dockerfile.fixtures
+    image: goroute-prod-test-fixtures:prod-test
+    networks:
+      - edge_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      FIXTURES_ADDR: ":8080"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
+
+  gateway-migrate:
+    build:
+      context: ../..
+      dockerfile: deployments/Dockerfile
+    image: goroute-ai-gateway:prod-test
+    networks:
+      - data_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml", "-migrate-only"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      GATEWAY_SESSION_SECRET: "prod-test-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
+      GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
+      GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
+    volumes:
+      - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/prod-test-certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ai-gateway-1:
+    image: goroute-ai-gateway:prod-test
+    networks:
+      - edge_net
+      - data_net
+      - ssrf_trap_net
+    extra_hosts:
+      - "gateway.prod.test:172.30.10.200"
+      - "auth.prod.test:172.30.10.200"
+      - "fixtures.prod.test:172.30.10.200"
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      GATEWAY_SESSION_SECRET: "prod-test-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
+      GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
+      GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
+    volumes:
+      - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/prod-test-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+  ai-gateway-2:
+    image: goroute-ai-gateway:prod-test
+    networks:
+      - edge_net
+      - data_net
+      - ssrf_trap_net
+    extra_hosts:
+      - "gateway.prod.test:172.30.10.200"
+      - "auth.prod.test:172.30.10.200"
+      - "fixtures.prod.test:172.30.10.200"
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      GATEWAY_SESSION_SECRET: "prod-test-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
+      GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
+      GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
+    volumes:
+      - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/prod-test-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+networks:
+  edge_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  data_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
+  ssrf_trap_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.30.0/24
