@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.21.2] - 2026-11-19
+
+### Added
+
+- **Multi-Registry Container Publishing (Docker Hub + GHCR)**: Updated [docker-publish.yml](./.github/workflows/docker-publish.yml) to publish multi-arch (`linux/amd64`, `linux/arm64`) Distroless images to both `docker.io/qaadir/ai-gateway` and `ghcr.io/goroute-ai/ai-gateway-go` with bare (`1.21.2`), `v`-prefixed (`v1.21.2`), major/minor, and `latest` tags, and auto-sync [deployments/DOCKERHUB.md](./deployments/DOCKERHUB.md) via `peter-evans/dockerhub-description`.
+- **Supply-Chain Signing & Build Provenance**: Enabled BuildKit `provenance: mode=max` and SPDX SBOMs, keyless OIDC Cosign image signing in `docker-publish.yml`, and SLSA GitHub Artifact Attestations (`actions/attest-build-provenance`) on release archives and the packaged Helm chart in [release.yml](./.github/workflows/release.yml).
+- **OCI Helm Chart & Artifact Hub Metadata**: Added automated `helm push` to `oci://ghcr.io/goroute-ai/charts` on release tags, enriched [Chart.yaml](./deployments/helm/goroute/Chart.yaml) (`0.5.2`) with Artifact Hub annotations, added automated Go Module Proxy / `pkg.go.dev` indexing warmup, and added conditional Homebrew tap formula updates (`goroute-ai/homebrew-tap`).
+
+### Changed
+
+- Updated [README.md](./README.md), [install.sh](./install.sh), [deployments/docker-compose.yml](./deployments/docker-compose.yml), and documentation version references for `v1.21.2`.
+
+---
+
 ## [1.21.1] - 2026-11-19
 
 ### Security

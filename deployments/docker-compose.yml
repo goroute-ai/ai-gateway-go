@@ -25,6 +25,9 @@ services:
       retries: 5
 
   gateway-migrate:
+    # Prebuilt alternative (replace 'build:' with 'image:'):
+    # image: qaadir/ai-gateway:1.21.2
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.21.2
     build:
       context: ..
       dockerfile: deployments/Dockerfile
@@ -42,6 +45,9 @@ services:
     restart: "no"
 
   ai-gateway:
+    # Prebuilt alternative (replace 'build:' with 'image:'):
+    # image: qaadir/ai-gateway:1.21.2
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.21.2
     build:
       context: ..
       dockerfile: deployments/Dockerfile

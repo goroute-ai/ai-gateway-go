@@ -2,8 +2,12 @@ apiVersion: v2
 name: goroute
 description: Production Helm chart for GoRoute AI Gateway
 type: application
-version: 0.5.1
-appVersion: "1.21.1"
+version: 0.5.2
+appVersion: "1.21.2"
+home: https://github.com/goroute-ai/ai-gateway-go
+icon: https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/assets/logo-dark.png
+sources:
+  - https://github.com/goroute-ai/ai-gateway-go
 keywords:
   - ai-gateway
   - llm
@@ -12,6 +16,22 @@ keywords:
   - goroute
 maintainers:
   - name: GoRoute Maintainers
+    url: https://github.com/goroute-ai/ai-gateway-go
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: GitHub Repository
+      url: https://github.com/goroute-ai/ai-gateway-go
+    - name: Go SDK (pkg.go.dev)
+      url: https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway
+    - name: Docker Hub
+      url: https://hub.docker.com/r/qaadir/ai-gateway
+  artifacthub.io/images: |
+    - name: ai-gateway
+      image: ghcr.io/goroute-ai/ai-gateway-go:1.21.2
+  artifacthub.io/changes: |
+    - kind: added
+      description: Published multi-arch images to Docker Hub alongside GHCR, added OCI Helm distribution, Cosign signing, and SLSA build provenance.
 dependencies:
   - name: postgresql
     version: "16.x.x"
