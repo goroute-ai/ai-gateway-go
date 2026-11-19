@@ -27,7 +27,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 
 `make release-check` runs `gofmt -w` through its `fmt` prerequisite, then vet, generation, unit tests, and E2E tests. It modifies files and requires PostgreSQL and Redis; inspect its prerequisites before running it on an existing worktree. `make ui-build` writes generated files under `internal/ui/dist/`.
 
-## v1.20.0 Invariants
+## Release Invariants (v1.21.0)
 
 - Route provider and tool egress through `internal/security/network`; validate custom `BaseURL` inputs via `adapter.ValidateAndResolveBaseURL`, isolate untrusted user media fetches behind `DefaultPublicMediaPolicy` (`mediaPolicy`/`mediaClient`), and keep private-network preflight probes restricted to `platform_admin`.
 - Preserve tenant identity, tri-state JSON allowlist semantics (`null` = Inherit vs `[]` = Deny All via `optionalStringSlice` and explicit JSON tags without `,omitempty` on `IdentityContext`, `Team`, and `VirtualKey`), and fail-closed authorization across `PreRouter`, `DeploymentFilterChain`, operator roles, virtual keys, MCP tools, and A2A agents.
@@ -39,7 +39,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 - Preserve durable spend delivery, idempotent Redis reconciliation, upper-bound budget reservations, lease renewal, and budget-reset synchronization across multi-replica PostgreSQL/Redis deployments.
 - Preserve streaming guardrail inspection and redaction, including fail-closed policy handling, `logging_only` behavior, pre-first-chunk `X-Gateway-Provider`/`X-Gateway-Model` emission, and CORS `Access-Control-Expose-Headers`.
 - Treat OpenAPI and protocol specs as contract sources. `make specgen` validates OpenAPI/MCP/A2A specs and enforces both primary `/v1` and `/admin/v1` route parity; it does not verify alias, MCP, or A2A routes automatically.
-- Keep `pkg/gateway` public SDK types self-contained (including `WithRoutingPlugin`, `WithPreRouter`, `WithRoutingHints`, `ConnectRealtime`, modality/spend helpers, and `WithHTTPClient`), model pricing history append-only, and `internal/ui/dist/` strictly synced with `web/dist/` within the `<= 500 KB` / `<= 150 KB` gzip bundle budget.
+- Keep `pkg/gateway` public SDK types self-contained (including `WithRoutingPlugin`, `WithPreRouter`, `WithRoutingHints`, `WithKeyRotationSecretSink`, `CustomAuthenticator`, `ConnectRealtime`, modality/spend helpers, and `WithHTTPClient`), model pricing history append-only, and `internal/ui/dist/` strictly synced with `web/dist/` within the `<= 560 KB` / `<= 150 KB` gzip bundle budget.
 
 ## Scoped Rules
 

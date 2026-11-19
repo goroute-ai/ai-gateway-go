@@ -127,10 +127,13 @@ func (s *GatewayServer) handleAdminUpsertEndUser(w http.ResponseWriter, r *http.
 		return
 	}
 
-	s.audit(r.Context(), eu.OrgID, "end_user.upserted", "end_user", eu.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidateEndUser(r.Context(), eu.OrgID, eu.EndUserID)
+	}
+	s.auditWithDiff(r.Context(), eu.OrgID, "end_user.upserted", "end_user", eu.ID, map[string]any{
 		"end_user_id": eu.EndUserID,
 		"is_active":   eu.IsActive,
-	})
+	}, nil, eu)
 	status := http.StatusOK
 	if r.Method == http.MethodPost {
 		status = http.StatusCreated
@@ -281,9 +284,12 @@ func (s *GatewayServer) handleAdminDeleteEndUser(w http.ResponseWriter, r *http.
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "end_user.deleted", "end_user", existing.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidateEndUser(r.Context(), existing.OrgID, existing.EndUserID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "end_user.deleted", "end_user", existing.ID, map[string]any{
 		"end_user_id": existing.EndUserID,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": existing.ID})
 }
 
@@ -375,10 +381,13 @@ func (s *GatewayServer) handleAdminUpsertTag(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.audit(r.Context(), t.OrgID, "tag.upserted", "tag", t.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_tags", t.OrgID)
+	}
+	s.auditWithDiff(r.Context(), t.OrgID, "tag.upserted", "tag", t.ID, map[string]any{
 		"tag":       t.Tag,
 		"is_active": t.IsActive,
-	})
+	}, nil, t)
 	status := http.StatusOK
 	if r.Method == http.MethodPost {
 		status = http.StatusCreated
@@ -529,9 +538,12 @@ func (s *GatewayServer) handleAdminDeleteTag(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "tag.deleted", "tag", existing.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_tags", existing.OrgID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "tag.deleted", "tag", existing.ID, map[string]any{
 		"tag": existing.Tag,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": existing.ID})
 }
 
@@ -642,10 +654,13 @@ func (s *GatewayServer) handleAdminUpsertModelAccessGroup(w http.ResponseWriter,
 		group.Members = members
 	}
 
-	s.audit(r.Context(), group.OrgID, "model_access_group.upserted", "model_access_group", group.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_mag", group.OrgID)
+	}
+	s.auditWithDiff(r.Context(), group.OrgID, "model_access_group.upserted", "model_access_group", group.ID, map[string]any{
 		"name":      group.Name,
 		"is_active": group.IsActive,
-	})
+	}, nil, group)
 	status := http.StatusOK
 	if r.Method == http.MethodPost {
 		status = http.StatusCreated
@@ -807,9 +822,12 @@ func (s *GatewayServer) handleAdminDeleteModelAccessGroup(w http.ResponseWriter,
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "model_access_group.deleted", "model_access_group", existing.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_mag", existing.OrgID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "model_access_group.deleted", "model_access_group", existing.ID, map[string]any{
 		"name": existing.Name,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": existing.ID})
 }
 
@@ -889,11 +907,14 @@ func (s *GatewayServer) handleAdminAddModelAccessGroupMember(w http.ResponseWrit
 		})
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "model_access_group_member.added", "model_access_group_member", member.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_mag", existing.OrgID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "model_access_group_member.added", "model_access_group_member", member.ID, map[string]any{
 		"group_id":    existing.ID,
 		"member_type": member.MemberType,
 		"member_id":   member.MemberID,
-	})
+	}, nil, member)
 	writeJSON(w, http.StatusCreated, member)
 }
 
@@ -1015,8 +1036,11 @@ func (s *GatewayServer) handleAdminRemoveModelAccessGroupMember(w http.ResponseW
 		domain.WriteHTTPError(w, delErr)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "model_access_group_member.removed", "model_access_group_member", memberIDParam, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_mag", existing.OrgID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "model_access_group_member.removed", "model_access_group_member", memberIDParam, map[string]any{
 		"group_id": existing.ID,
-	})
+	}, map[string]any{"group_id": existing.ID, "member_id": memberIDParam}, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": memberIDParam})
 }

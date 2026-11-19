@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
@@ -212,44 +213,57 @@ func (l *Limiter) withRedisTimeout(ctx context.Context) (context.Context, contex
 // maximum spend is reserved atomically before dispatch.
 // Returns a release function that MUST be called after the request finishes to decrement concurrency and reconcile token deltas.
 func (l *Limiter) Acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int) (func(actualTokens int), error) {
-	release, err := l.acquire(ctx, idCtx, estimatedTokens, 0, "")
+	rel, _, err := l.AcquireWithMeta(ctx, idCtx, estimatedTokens)
+	return rel, err
+}
+
+// AcquireWithMeta enforces rate limits without budget reservation and returns tightest-scope
+// rate-limit header metadata for emission on inference responses.
+func (l *Limiter) AcquireWithMeta(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int) (func(actualTokens int), *domain.RateLimitHeaderMetadata, error) {
+	release, meta, err := l.acquireWithMeta(ctx, idCtx, estimatedTokens, 0, "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func(actualTokens int) { release(actualTokens, 0) }, nil
+	return func(actualTokens int) { release(actualTokens, 0) }, meta, nil
 }
 
 // AcquireSession enforces rate/concurrency limits and verifies that any configured
 // budget still has remaining headroom before opening a long-lived session (e.g. Realtime WS),
 // without holding a synthetic budget reservation across idle session lifetime.
 func (l *Limiter) AcquireSession(ctx context.Context, idCtx *domain.IdentityContext) (func(), error) {
+	rel, _, err := l.AcquireSessionWithMeta(ctx, idCtx)
+	return rel, err
+}
+
+// AcquireSessionWithMeta behaves like AcquireSession and also returns rate-limit header metadata.
+func (l *Limiter) AcquireSessionWithMeta(ctx context.Context, idCtx *domain.IdentityContext) (func(), *domain.RateLimitHeaderMetadata, error) {
 	if l == nil || idCtx == nil {
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 	if !hasBudget(idCtx) {
-		release, err := l.Acquire(ctx, idCtx, 1)
+		release, meta, err := l.AcquireWithMeta(ctx, idCtx, 1)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return func() { release(1) }, nil
+		return func() { release(1) }, meta, nil
 	}
 	enabled, fallbackLocal, _, _, _, _ := l.configSnapshot()
 	if !enabled {
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 	if err := l.checkBudgetHeadroom(ctx, idCtx, fallbackLocal); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rateOnly := *idCtx
 	rateOnly.KeyMaxBudgetMicros = 0
 	rateOnly.TeamMaxBudgetMicros = 0
 	rateOnly.UserMaxBudgetMicros = 0
 	rateOnly.OrgMaxBudgetMicros = 0
-	release, err := l.Acquire(ctx, &rateOnly, 1)
+	release, meta, err := l.AcquireWithMeta(ctx, &rateOnly, 1)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func() { release(1) }, nil
+	return func() { release(1) }, meta, nil
 }
 
 func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.IdentityContext, fallbackLocal bool) error {
@@ -320,10 +334,17 @@ func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.Identit
 // and cost after dispatch; a negative token count releases the reservation
 // without charging spend.
 func (l *Limiter) AcquireWithBudget(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), error) {
+	rel, _, err := l.AcquireWithBudgetAndMeta(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+	return rel, err
+}
+
+// AcquireWithBudgetAndMeta behaves like AcquireWithBudget and additionally returns tightest-scope
+// rate-limit telemetry headers for emission on 2xx responses.
+func (l *Limiter) AcquireWithBudgetAndMeta(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), *domain.RateLimitHeaderMetadata, error) {
 	if reserveMicros < 0 || requestID == "" {
-		return nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
+		return nil, nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
 	}
-	return l.acquire(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+	return l.acquireWithMeta(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
 }
 
 func orgHashTag(orgID string) string {
@@ -347,19 +368,19 @@ func acquireKeys(idCtx *domain.IdentityContext, nowMin int64) []string {
 	return []string{
 		fmt.Sprintf("gw:rl:%s:rpm:key:%s:%d", tag, idCtx.VirtualKeyID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:key:%s:%d", tag, idCtx.VirtualKeyID, nowMin),
-		fmt.Sprintf("gw:rl:%s:conc:%s", tag, idCtx.VirtualKeyID),
+		fmt.Sprintf("gw:rl:%s:zconc:%s", tag, idCtx.VirtualKeyID),
 		fmt.Sprintf("gw:spend:%s:key:%s", tag, idCtx.VirtualKeyID),
 		fmt.Sprintf("gw:rl:%s:rpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:team:%s:%d", tag, idCtx.TeamID, nowMin),
-		fmt.Sprintf("gw:rl:%s:conc:team:%s", tag, idCtx.TeamID),
+		fmt.Sprintf("gw:rl:%s:zconc:team:%s", tag, idCtx.TeamID),
 		fmt.Sprintf("gw:spend:%s:team:%s", tag, idCtx.TeamID),
 		fmt.Sprintf("gw:rl:%s:rpm:user:%s:%d", tag, idCtx.UserID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:user:%s:%d", tag, idCtx.UserID, nowMin),
-		fmt.Sprintf("gw:rl:%s:conc:user:%s", tag, idCtx.UserID),
+		fmt.Sprintf("gw:rl:%s:zconc:user:%s", tag, idCtx.UserID),
 		fmt.Sprintf("gw:spend:%s:user:%s", tag, idCtx.UserID),
 		fmt.Sprintf("gw:rl:%s:rpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
 		fmt.Sprintf("gw:rl:%s:tpm:org:%s:%d", tag, idCtx.OrgID, nowMin),
-		fmt.Sprintf("gw:rl:%s:conc:org:%s", tag, idCtx.OrgID),
+		fmt.Sprintf("gw:rl:%s:zconc:org:%s", tag, idCtx.OrgID),
 		fmt.Sprintf("gw:spend:%s:org:%s", tag, idCtx.OrgID),
 		keyResZ, keyResS, keyResA,
 		teamResZ, teamResS, teamResA,
@@ -372,7 +393,7 @@ func globalAcquireKeys(nowMin int64) []string {
 	return []string{
 		fmt.Sprintf("gw:rl:{global}:rpm:%d", nowMin),
 		fmt.Sprintf("gw:rl:{global}:tpm:%d", nowMin),
-		"gw:rl:{global}:conc",
+		"gw:rl:{global}:zconc",
 	}
 }
 
@@ -430,9 +451,14 @@ func spendKeys(keyID, teamID, userID, orgID string) []string {
 }
 
 func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), error) {
+	rel, _, err := l.acquireWithMeta(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+	return rel, err
+}
+
+func (l *Limiter) acquireWithMeta(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), *domain.RateLimitHeaderMetadata, error) {
 	enabled, fallbackLocal, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
 	if !enabled || idCtx == nil {
-		return func(int, int64) {}, nil
+		return func(int, int64) {}, nil, nil
 	}
 	if estimatedTokens <= 0 {
 		if defaultEstTPM > 0 {
@@ -441,9 +467,14 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 			estimatedTokens = 1
 		}
 	}
+	slotID := requestID
+	if slotID == "" && reserveMicros == 0 {
+		slotID = uuid.NewString()
+	}
 
 	hasGlobal := gRPM > 0 || gTPM > 0 || gConc > 0
-	nowMin := time.Now().Unix() / 60
+	now := l.nowUTC()
+	nowMin := now.Unix() / 60
 
 	// Try Redis Atomic Lua script first if Redis is configured
 	if l.redis != nil && l.redis.Client() != nil {
@@ -453,7 +484,7 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 			idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent, idCtx.TeamMaxBudgetMicros, idCtx.TeamSpentMicros,
 			idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent, idCtx.UserMaxBudgetMicros, idCtx.UserSpentMicros,
 			idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent, idCtx.OrgMaxBudgetMicros, idCtx.OrgSpentMicros,
-			estimatedTokens, l.windowSec * 2, l.concTTLSec, reserveMicros, requestID, 3600,
+			estimatedTokens, l.windowSec * 2, l.concTTLSec, reserveMicros, slotID, 3600,
 		}
 
 		res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -466,20 +497,21 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 				allowed, _ := slice[0].(int64)
 				reason, _ := slice[1].(string)
 				if allowed == 0 {
-					return nil, toQuotaError(reason)
+					return nil, nil, parseLuaDenyError(reason, slice, now)
 				}
+				meta := parseLuaAllowMeta(slice)
 
 				gKeys := globalAcquireKeys(nowMin)
 				if hasGlobal {
 					gRes, gErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 						rCtx, cancel := l.withRedisTimeout(ctx)
 						defer cancel()
-						return l.checkGlobalScript.Run(rCtx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens, l.windowSec*2, l.concTTLSec).Slice()
+						return l.checkGlobalScript.Run(rCtx, rdb, gKeys, gRPM, gTPM, gConc, estimatedTokens, l.windowSec*2, l.concTTLSec, slotID).Slice()
 					})
 					rollbackOrg := func() {
 						rbKeys := rollbackKeys(keys)
 						rbArgv := []any{
-							estimatedTokens, requestID,
+							estimatedTokens, slotID,
 							idCtx.TeamRPMLimit, idCtx.TeamTPMLimit, idCtx.TeamMaxConcurrent,
 							idCtx.UserRPMLimit, idCtx.UserTPMLimit, idCtx.UserMaxConcurrent,
 							idCtx.OrgRPMLimit, idCtx.OrgTPMLimit, idCtx.OrgMaxConcurrent,
@@ -493,35 +525,34 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 					if gErr != nil {
 						rollbackOrg()
 						if fallbackLocal {
-							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, slotID, nowMin, gRPM, gTPM, gConc)
 						}
-						return nil, limiterUnavailableError()
+						return nil, nil, limiterUnavailableError()
 					}
 					if gSlice, ok := gRes.([]any); ok && len(gSlice) >= 2 {
 						gAllowed, _ := gSlice[0].(int64)
 						gReason, _ := gSlice[1].(string)
 						if gAllowed == 0 {
 							rollbackOrg()
-							return nil, toQuotaError(gReason)
+							return nil, nil, parseLuaDenyError(gReason, gSlice, now)
 						}
+						meta = MergeRateLimitMetadata(meta, parseLuaAllowMeta(gSlice))
 					} else {
 						rollbackOrg()
 						if fallbackLocal {
-							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+							return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, slotID, nowMin, gRPM, gTPM, gConc)
 						}
-						return nil, limiterUnavailableError()
+						return nil, nil, limiterUnavailableError()
 					}
 				}
 
 				return func(actualTokens int, actualCostMicros int64) {
 					delta := actualTokens - estimatedTokens
 					resKeys := reconcileKeys(keys)
-					settle := []any{delta, l.windowSec * 2, requestID, actualCostMicros, reserveMicros}
+					settle := []any{delta, l.windowSec * 2, slotID, actualCostMicros, reserveMicros}
 					if actualTokens < 0 {
 						settle[3] = int64(-1)
-					} else {
-						// Successful requests settle the reservation with their SpendEvent,
-						// which atomically swaps reserved cost for actual spend.
+					} else if reserveMicros > 0 {
 						settle[3] = int64(-2)
 					}
 					_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -533,24 +564,24 @@ func (l *Limiter) acquire(ctx context.Context, idCtx *domain.IdentityContext, es
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 							rCtx, cancel := l.withRedisTimeout(context.Background())
 							defer cancel()
-							return l.reconcileGlobalScr.Run(rCtx, rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc).Result()
+							return l.reconcileGlobalScr.Run(rCtx, rdb, []string{gKeys[2], gKeys[1]}, delta, l.windowSec*2, gTPM, gConc, slotID).Result()
 						})
 					}
-				}, nil
+				}, meta, nil
 			}
 		}
 	}
 
 	if fallbackLocal {
-		return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, requestID, nowMin, gRPM, gTPM, gConc)
+		return l.acquireLocal(idCtx, estimatedTokens, reserveMicros, slotID, nowMin, gRPM, gTPM, gConc)
 	}
 	if hasConfiguredLimits(idCtx) || hasGlobal {
-		return nil, limiterUnavailableError()
+		return nil, nil, limiterUnavailableError()
 	}
-	return func(int, int64) {}, nil
+	return func(int, int64) {}, nil, nil
 }
 
-func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string, nowMin int64, gRPM, gTPM, gConc int) (func(int, int64), error) {
+func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string, nowMin int64, gRPM, gTPM, gConc int) (func(int, int64), *domain.RateLimitHeaderMetadata, error) {
 	l.localMu.Lock()
 	defer l.localMu.Unlock()
 
@@ -578,12 +609,12 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 		}
 		if bs.maxB > 0 {
 			if reserveMicros <= 0 || requestID == "" {
-				return nil, toQuotaError("BUDGET_ESTIMATE_REQUIRED")
+				return nil, nil, toQuotaError("BUDGET_ESTIMATE_REQUIRED")
 			}
 			resMap := l.localReservations[bs.key]
 			if resMap != nil {
 				if _, exists := resMap[requestID]; exists {
-					return nil, toQuotaError("BUDGET_RESERVATION_CONFLICT")
+					return nil, nil, toQuotaError("BUDGET_RESERVATION_CONFLICT")
 				}
 			}
 			var reserved int64
@@ -591,7 +622,7 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 				reserved += amt
 			}
 			if l.localSpent[bs.key]+reserved+reserveMicros > bs.maxB {
-				return nil, toQuotaError(bs.errCode)
+				return nil, nil, toQuotaError(bs.errCode)
 			}
 		}
 	}
@@ -620,9 +651,14 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 		{l.localTPM, "global", estimatedTokens, gTPM, "GLOBAL_TPM_EXCEEDED"},
 		{l.localConc, "global", 1, gConc, "GLOBAL_CONCURRENCY_EXCEEDED"},
 	}
+	now := l.nowUTC()
+	retryMin := int(60 - (now.Unix() % 60))
+	if retryMin <= 0 {
+		retryMin = 60
+	}
 	for _, qc := range checks {
 		if qc.limit > 0 && qc.bucket[qc.key]+qc.delta > qc.limit {
-			return nil, toQuotaError(qc.errCode)
+			return nil, nil, buildQuotaDenyError(qc.errCode, int64(qc.bucket[qc.key]), int64(qc.limit), int64(retryMin), now)
 		}
 	}
 
@@ -664,6 +700,30 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 	}
 	if gConc > 0 {
 		l.localConc["global"]++
+	}
+
+	var meta domain.RateLimitHeaderMetadata
+	for _, qc := range checks {
+		if qc.limit <= 0 {
+			continue
+		}
+		rem := qc.limit - qc.bucket[qc.key]
+		if rem < 0 {
+			rem = 0
+		}
+		if strings.HasSuffix(qc.errCode, "_RPM_EXCEEDED") {
+			if meta.LimitRequests == 0 || rem < meta.RemainingRequests {
+				meta.LimitRequests = qc.limit
+				meta.RemainingRequests = rem
+				meta.ResetRequestsSeconds = retryMin
+			}
+		} else if strings.HasSuffix(qc.errCode, "_TPM_EXCEEDED") {
+			if meta.LimitTokens == 0 || rem < meta.RemainingTokens {
+				meta.LimitTokens = qc.limit
+				meta.RemainingTokens = rem
+				meta.ResetTokensSeconds = retryMin
+			}
+		}
 	}
 
 	if reserveMicros > 0 && requestID != "" {
@@ -725,7 +785,7 @@ func (l *Limiter) acquireLocal(idCtx *domain.IdentityContext, estimatedTokens in
 				}
 			}
 		})
-	}, nil
+	}, &meta, nil
 }
 
 func hasConfiguredLimits(idCtx *domain.IdentityContext) bool {
@@ -942,4 +1002,204 @@ func toQuotaError(code string) *domain.GatewayError {
 		Message:       fmt.Sprintf("Rate limit or quota exceeded (%s)", code),
 		RetryAfterSec: 15,
 	}
+}
+
+// MergeRateLimitMetadata combines two RateLimitHeaderMetadata values, retaining the tightest
+// remaining request and token windows across multiple quota passes.
+func MergeRateLimitMetadata(a, b *domain.RateLimitHeaderMetadata) *domain.RateLimitHeaderMetadata {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := *a
+	if b.LimitRequests > 0 && (out.LimitRequests == 0 || b.RemainingRequests < out.RemainingRequests) {
+		out.LimitRequests = b.LimitRequests
+		out.RemainingRequests = b.RemainingRequests
+		out.ResetRequestsSeconds = b.ResetRequestsSeconds
+	}
+	if b.LimitTokens > 0 && (out.LimitTokens == 0 || b.RemainingTokens < out.RemainingTokens) {
+		out.LimitTokens = b.LimitTokens
+		out.RemainingTokens = b.RemainingTokens
+		out.ResetTokensSeconds = b.ResetTokensSeconds
+	}
+	return &out
+}
+
+// ClearEntitySpend directly clears Redis and local live spend counters when an operator resets spend.
+func (l *Limiter) ClearEntitySpend(ctx context.Context, scope storage.EntitySpendScope, orgID, entityID, secondaryID string) error {
+	if l == nil || orgID == "" || entityID == "" {
+		return nil
+	}
+	tag := orgHashTag(orgID)
+	var keys []string
+	switch scope {
+	case storage.EntitySpendScopeKey:
+		keys = []string{
+			fmt.Sprintf("gw:spend:%s:key:%s", tag, entityID),
+			fmt.Sprintf("gw:dq:%s:spend:key:%s", tag, entityID),
+		}
+		l.localMu.Lock()
+		delete(l.localSpent, "key:"+entityID)
+		delete(l.localDescSpent, tag+":key:"+entityID)
+		l.localMu.Unlock()
+	case storage.EntitySpendScopeTeamMember:
+		scopeID := entityID + ":" + secondaryID
+		keys = []string{
+			fmt.Sprintf("gw:dq:%s:spend:team_member:%s", tag, scopeID),
+		}
+		l.localMu.Lock()
+		delete(l.localDescSpent, tag+":team_member:"+scopeID)
+		l.localMu.Unlock()
+	default:
+		return fmt.Errorf("unsupported spend scope %q", scope)
+	}
+	if len(keys) == 0 || l.redis == nil || l.redis.Client() == nil {
+		return nil
+	}
+	_, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return rdb.Del(rCtx, keys...).Result()
+	})
+	return err
+}
+
+// MarkUpstream429Throttle sets a brief org/key-scoped soft throttle hint when upstream providers return 429.
+func (l *Limiter) MarkUpstream429Throttle(ctx context.Context, orgID, keyID string, cooldown time.Duration) {
+	if l == nil || l.redis == nil || l.redis.Client() == nil || orgID == "" || keyID == "" {
+		return
+	}
+	if cooldown <= 0 {
+		cooldown = 2 * time.Second
+	}
+	if cooldown > 15*time.Second {
+		cooldown = 15 * time.Second
+	}
+	k := fmt.Sprintf("gw:rl:%s:dyn_throttle:%s", orgHashTag(orgID), keyID)
+	_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return rdb.Set(rCtx, k, "1", cooldown).Result()
+	})
+}
+
+// CheckUpstream429Throttle returns (retryAfterSec, true) if the key is temporarily in dynamic 429 cooldown.
+func (l *Limiter) CheckUpstream429Throttle(ctx context.Context, orgID, keyID string) (int, bool) {
+	if l == nil || l.redis == nil || l.redis.Client() == nil || orgID == "" || keyID == "" {
+		return 0, false
+	}
+	k := fmt.Sprintf("gw:rl:%s:dyn_throttle:%s", orgHashTag(orgID), keyID)
+	res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+		rCtx, cancel := l.withRedisTimeout(ctx)
+		defer cancel()
+		return rdb.TTL(rCtx, k).Result()
+	})
+	if err != nil {
+		return 0, false
+	}
+	ttl, ok := res.(time.Duration)
+	if !ok || ttl <= 0 {
+		return 0, false
+	}
+	sec := int(ttl.Seconds())
+	if sec <= 0 {
+		sec = 1
+	}
+	return sec, true
+}
+
+func parseLuaAllowMeta(slice []any) *domain.RateLimitHeaderMetadata {
+	if len(slice) < 8 {
+		return nil
+	}
+	limReq, _ := slice[2].(int64)
+	remReq, _ := slice[3].(int64)
+	resReq, _ := slice[4].(int64)
+	limTok, _ := slice[5].(int64)
+	remTok, _ := slice[6].(int64)
+	resTok, _ := slice[7].(int64)
+	if limReq <= 0 && limTok <= 0 {
+		return nil
+	}
+	return &domain.RateLimitHeaderMetadata{
+		LimitRequests:        int(limReq),
+		RemainingRequests:    int(remReq),
+		ResetRequestsSeconds: int(resReq),
+		LimitTokens:          int(limTok),
+		RemainingTokens:      int(remTok),
+		ResetTokensSeconds:   int(resTok),
+	}
+}
+
+func parseLuaDenyError(code string, slice []any, now time.Time) *domain.GatewayError {
+	var cur, lim, retryAfter int64
+	if len(slice) >= 3 {
+		cur, _ = slice[2].(int64)
+	}
+	if len(slice) >= 4 {
+		lim, _ = slice[3].(int64)
+	}
+	if len(slice) >= 5 {
+		retryAfter, _ = slice[4].(int64)
+	}
+	return buildQuotaDenyError(code, cur, lim, retryAfter, now)
+}
+
+func buildQuotaDenyError(code string, current, limit, retryAfter int64, now time.Time) *domain.GatewayError {
+	gwErr := toQuotaError(code)
+	if retryAfter > 0 {
+		gwErr.RetryAfterSec = int(retryAfter)
+	}
+	if code == "BUDGET_ESTIMATE_REQUIRED" {
+		return gwErr
+	}
+	scope, limitType := parseScopeAndLimitType(code)
+	resetSec := gwErr.RetryAfterSec
+	meta := &domain.RateLimitHeaderMetadata{
+		Scope:     scope,
+		LimitType: limitType,
+		ResetAt:   now.UTC().Add(time.Duration(resetSec) * time.Second).Format(time.RFC3339),
+	}
+	rem := int(limit - current)
+	if rem < 0 {
+		rem = 0
+	}
+	switch limitType {
+	case "rpm":
+		meta.LimitRequests = int(limit)
+		meta.RemainingRequests = rem
+		meta.ResetRequestsSeconds = resetSec
+	case "tpm", "itpm", "otpm", "tpd":
+		meta.LimitTokens = int(limit)
+		meta.RemainingTokens = rem
+		meta.ResetTokensSeconds = resetSec
+	}
+	gwErr.RateLimitMeta = meta
+	return gwErr
+}
+
+func parseScopeAndLimitType(code string) (string, string) {
+	upper := strings.ToUpper(strings.TrimSpace(code))
+	suffixes := []struct {
+		suffix string
+		typ    string
+	}{
+		{"_RPM_EXCEEDED", "rpm"},
+		{"_TPM_EXCEEDED", "tpm"},
+		{"_ITPM_EXCEEDED", "itpm"},
+		{"_OTPM_EXCEEDED", "otpm"},
+		{"_TPD_EXCEEDED", "tpd"},
+		{"_CONCURRENCY_EXCEEDED", "concurrency"},
+		{"_ITERATIONS_EXCEEDED", "iterations"},
+		{"_BUDGET_EXCEEDED", "budget"},
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(upper, s.suffix) {
+			scope := strings.ToLower(strings.TrimSuffix(upper, s.suffix))
+			return scope, s.typ
+		}
+	}
+	return "", ""
 }

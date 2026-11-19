@@ -29,11 +29,11 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, SQL migrations (`0001`–`0021`), change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0034`), change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces (`73` OpenAPI paths):*
-   - Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI paths, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
+   *Authoritative endpoint and protocol guide for data plane, admin control plane, and web interfaces (`108` OpenAPI paths):*
+   - Unified Multi-Modal Data Plane (`28` `/v1` OpenAPI paths, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
    - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
@@ -58,7 +58,7 @@ docs/
    - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
    - 6-stage routing pipeline and Reliability Manager (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`, priority tier step-downs, specialized fallback chains, and mid-stream recovery).
-   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0021`), and distributed caching/Redis cluster keyspace.
+   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0034`), and distributed caching/Redis cluster keyspace.
 
 5. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*

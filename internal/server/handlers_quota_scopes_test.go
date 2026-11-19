@@ -209,6 +209,7 @@ func TestEndUserTagModelAccessGroupAndAgentSessionRuntimeEnforcement(t *testing.
 	// Configure RPMLimit=1 on end-user-auto-1 -> 1st call under limit succeeds, 2nd call hits 429 end_user_rpm_exceeded.
 	autoEU.RPMLimit = 1
 	require.NoError(t, env.repo.UpsertEndUser(ctx, autoEU))
+	env.gw.RBAC().InvalidateEndUser(ctx, "org_a", "end-user-auto-1")
 	recEURPM1 := doInferenceJSONRequestWithHeaders(t, env.handler, "/v1/chat/completions", vkTeamA1.RawKey, nil, map[string]any{
 		"model":    "gpt-4.1",
 		"user":     "end-user-auto-1",
@@ -230,6 +231,7 @@ func TestEndUserTagModelAccessGroupAndAgentSessionRuntimeEnforcement(t *testing.
 		EndUserID: "blocked-eu",
 		IsActive:  false,
 	}))
+	env.gw.RBAC().InvalidateEndUser(ctx, "org_a", "blocked-eu")
 	recBlocked := doInferenceJSONRequestWithHeaders(t, env.handler, "/v1/chat/completions", vkTeamA1.RawKey, nil, map[string]any{
 		"model":    "gpt-4.1",
 		"user":     "blocked-eu",
@@ -245,6 +247,7 @@ func TestEndUserTagModelAccessGroupAndAgentSessionRuntimeEnforcement(t *testing.
 		RPMLimit: 1,
 		IsActive: true,
 	}))
+	env.gw.RBAC().InvalidatePolicyScope(ctx, "rbac_tags", "org_a")
 	recTag1 := doInferenceJSONRequestWithHeaders(t, env.handler, "/v1/chat/completions", vkTeamA1.RawKey, map[string]string{
 		"X-Gateway-Tags": "campaign:launch",
 	}, map[string]any{
@@ -297,6 +300,7 @@ func TestEndUserTagModelAccessGroupAndAgentSessionRuntimeEnforcement(t *testing.
 		MemberType: domain.ModelAccessGroupMemberTeam,
 		MemberID:   "team_a1",
 	}))
+	env.gw.RBAC().InvalidatePolicyScope(ctx, "rbac_mag", "org_a")
 
 	// Non-member team_a2 is denied access to gpt-4.1-mini -> 403 model_access_group_denied
 	recMAGDenied := doInferenceJSONRequestWithHeaders(t, env.handler, "/v1/chat/completions", vkTeamA2.RawKey, nil, map[string]any{

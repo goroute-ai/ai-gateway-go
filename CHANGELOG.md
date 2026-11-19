@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.21.0] - 2026-11-19
+
+### Enterprise Access Governance, Zero-Downtime Key Rotation, Multi-Dimensional Quotas & Control-Plane Hardening
+
+#### Authentication, Virtual Key Lifecycle & Multi-Tenant RBAC (`migrations/0024`–`0028`, `0033`, `0034`, `internal/auth/`, `internal/server/`)
+- **Virtual Key Types, Dual-Active Grace Rotation & Secret Sinks (`0025`, `0034`)**: Added `KeyType` capability presets (`default`, `llm_api`, `management`, `read_only`, `service_account`), `RotateVirtualKeyWithGrace` storing previous SHA-256 hashes in `virtual_key_deprecated_hashes` with `X-Gateway-Deprecated-Key-Revoke-At` warnings, Redis-distributed pod-locked `KeyRotationManager` (`SET NX PX` + Lua unlock), SSRF-checked lifecycle webhooks (`virtual_key.auto_rotated`, `key_expiry_alert`), and thread-safe pluggable `KeySecretSink` delivery (`SetSecretSink`, `GatewayServer.SetKeyRotationSecretSink`, `pkg/gateway.WithKeyRotationSecretSink`).
+- **Deprecated Grace Cache & Revocation Consistency**: Added `ListDeprecatedVirtualKeyHashesByKeyID` (`DeprecatedKeyLookupRepository`) and transactional `BulkUpdateVirtualKeys` grace-hash purging across `PostgresRepository` and `MemoryRepository`, plus L1/Redis L2/PubSub invalidation of deprecated grace hashes on `RevokeKeyWithActor`, `InvalidateKeyID`, `UpdateVirtualKey`, and `handleAdminBulkUpdateKeys` (with trimmed & deduplicated `key_ids`).
+- **JWT Claim Mappings, Dynamic Access Rules & Operator Control-Plane Auth (`0024`, `0026`, `0028`, `0033`)**: Added OIDC JWKS / Data Plane JWT resolution (`jwt_key_mappings`), attribute-based priority `AccessGroupRule` evaluation (`jwt_claims.*`, `user_id`, `email`, `user_role`, `team_id`, `issuer`), RFC 7662 token introspection, CIDR proxy auth, SCIM user/group sync & deprovisioning (`InvalidateUserKeys`), operator impersonation & delegated narrowing (`internal/auth/impersonation.go`), scrypt password credentials with optional HIBP k-anonymity breach checks, revocable HTTP-only Cookie sessions (`CSRF` tokens), and OIDC PKCE browser/CLI login flows.
+- **Projects, Team Memberships, Self-Service Permissions & Ownership Guards (`0027`, `0034`)**: Added `projects` (with optional `enforce_project_model_quota`), `team_memberships` (`bulk` sync with `remove_user_ids` + `reset-spend` + `default_member_allowed_models`), `team_member_permissions` enforced on developer self-service endpoints (`/v1/self/keys*`), `self_serve_budget_policy` (`disabled`, `lower_only`, `ceiling`), and `team_admin` guards against privilege escalation or attributing keys to `platform_admin`/`org_admin` users or `service_account` keys.
+- **Transactional Master KEK Rotation & Redacted `auditWithDiff` (`0034`)**: Added atomic `RotateKEKsTransactionally` (`pgx.Tx` + `FOR UPDATE` across credentials, MCP servers, A2A agents, and guardrails) with `"vault_kek_rotated"` Redis Pub/Sub notices, plus redacted `before_value`/`after_value` audit snapshots across key, team, org, project, quota, policy, guardrail, credential, PTU, SCIM, and password mutations.
+
+#### Multi-Dimensional Quotas, Rate Limiting & Priority PTU Sharing (`migrations/0022`, `0023`, `0029`–`0032`, `internal/ratelimit/`, `internal/router/`, `internal/server/`)
+- **Multi-Dimensional Quota Engine (`0029`–`0031`)**: Added reusable `quota_policies` (`quota_policy_attachments`), per-model `budget_window_limits` (`ITPM`, `OTPM`, `TPD`, custom windows), `model_access_groups`, end-user/tag/agent-session quotas, `enforce_guaranteed_throughput` (`SumChildKeyThroughput`), soft-budget webhooks & `budget_exceeded_throttle_pct` throttling/fallbacks (`0023`), and dynamic upstream 429 cooldowns.
+- **Atomic Lua Enforcement & Uniform `X-RateLimit-*` Headers**: Executed multi-descriptor quota checks inside single `{org:<orgID>}` Redis Cluster hash-tag Lua calls (`check_descriptors.lua`, `reconcile_descriptors.lua` with expired-bucket negative-delta guards, and ZSET `:zconc:` concurrency tracking with streaming disconnect cleanup), emitting `X-RateLimit-*` on both `429` and `2xx` responses across all inference modalities.
+- **Saturation-Aware PTU Capacity Borrowing (`0032`, `internal/router/priority_capacity.go`)**: Added per-deployment `DeploymentPTUShare` reservations and `PriorityClass` weights with `0.80` saturation-threshold borrowing and weighted fair sharing.
+
+#### Operator Web UI, Public SDK & OpenAPI Parity (`docs/openapi/`, `pkg/gateway/`, `web/`, `internal/ui/`)
+- **Control Plane UI Additions (`web/src/`)**: Added password/SSO login, team member permissions & bulk membership/spend-reset controls in `OrganizationsView`, key rotation/grace/block/unblock/bulk controls in `KeysView`, role-gated Master KEK rotation in `ConfigView`, and multi-dimensional quota tabs in `FinOpsView` (`500.04 KB` uncompressed within `<= 560 KB`, `147.51 KB` gzipped within `<= 150 KB`).
+- **Public SDK & OpenAPI (`108` Paths)**: Expanded `docs/openapi/gateway.openapi.yaml` (`28` `/v1` + `80` `/admin/v1` paths), added `pkg/gateway.CustomAuthenticator` (`off`/`on`/`auto`), and exported `KeySecretSink` / `WithKeyRotationSecretSink`.
+
+---
+
 ## [1.20.0] - 2026-11-18
 
 ### Intelligent Routing, Resilient Failover, Affinity, Pre-Routers & Hedged Racing

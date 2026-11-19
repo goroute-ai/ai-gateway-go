@@ -270,6 +270,10 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 	}{
 		{"model_groups", []string{"context_window_fallbacks", "content_policy_fallbacks", "fallback_targets", "retry_policy", "cooldown_policy"}},
 		{"model_deployments", []string{"tags", "max_budget_micros", "budget_reset_period"}},
+		{"organizations", []string{"enforce_guaranteed_throughput", "developer_self_serve_keys", "key_expiry_alert_days", "lifecycle_webhook_url"}},
+		{"teams", []string{"enforce_guaranteed_throughput", "default_member_max_budget_micros", "default_member_rpm_limit", "default_member_tpm_limit", "default_member_allowed_models", "team_member_permissions"}},
+		{"virtual_keys", []string{"last_rotated_at", "rotation_count", "revoked_at", "revoked_by", "expiry_alert_sent_days"}},
+		{"audit_logs", []string{"before_value", "after_value"}},
 	} {
 		for _, col := range tc.cols {
 			var exists bool

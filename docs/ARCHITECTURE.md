@@ -92,7 +92,7 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (24 `/v1` OpenAPI paths, 73 total OpenAPI paths across `/v1` and `/admin/v1`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`), retries, specialized fallbacks, mid-stream SSE continuation & translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`28` `/v1` OpenAPI paths, `108` total OpenAPI paths across `/v1` and `/admin/v1`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`), retries, specialized fallbacks, mid-stream SSE continuation & translation. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ User $\rightarrow$ Key), 4-layer model access control, AES-256-GCM provider credential vault. | `internal/auth`, `internal/modelmgmt` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), real-time budget enforcement, hierarchical RPM/TPM rate limiting, automated budget reset schedules. | `internal/finops`, `internal/ratelimit` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -271,7 +271,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `24` `/v1` paths and `49` `/admin/v1` control-plane contracts (`73` total paths, verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `28` `/v1` paths and `80` `/admin/v1` control-plane contracts (`108` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
@@ -491,7 +491,7 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
    - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics (`window.location.pathname` + `history.pushState`), enabling deep-linking and browser navigation.
 3. **Frontend Bundle Budget Enforcement**:
    - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
-   - Total uncompressed bundle size is constrained to `<= 500 KB` (gzipped `<= 150 KB`, CSS `<= 35 KB` / `<= 8 KB` gzipped), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+   - Total uncompressed bundle size is constrained to `<= 560 KB` (gzipped `<= 150 KB`, CSS `<= 35 KB` / `<= 8 KB` gzipped), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
 4. **Reproducible Container Builds**:
    - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
 5. **Interactive Operator Capabilities**:
@@ -529,7 +529,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0021`):
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0034`):
 
 #### 1. Multi-Tenant Identity & RBAC
 - **`organizations`** (`0001`): Root enterprise tenant boundary. Columns: `id` (VARCHAR PK), `name`, `max_budget_micros` (INT8), `spent_micros` (INT8), `created_at`, `updated_at`.
@@ -725,7 +725,8 @@ ai-gateway-go/
 │   ├── 0020_specialized_fallbacks.up.sql
 │   ├── 0020_specialized_fallbacks.down.sql
 │   ├── 0021_deployment_tags_and_budgets.up.sql
-│   └── 0021_deployment_tags_and_budgets.down.sql
+│   ├── 0021_deployment_tags_and_budgets.down.sql
+│   └── 0022..0034 (governance, rotation grace, quotas, PTU shares, sessions, audit diffs)
 ├── tests/
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
 │   └── e2e/                          # End-to-end integration, protocols, clustering & resilience suites

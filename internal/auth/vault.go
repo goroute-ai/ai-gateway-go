@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -18,7 +19,9 @@ import (
 // Each credential record receives its own randomly generated 256-bit Data Encryption Key (DEK),
 // and the DEK is encrypted using the Gateway's 256-bit Master Key Encryption Key (KEK).
 type Vault struct {
-	kek []byte
+	mu           sync.RWMutex
+	kek          []byte
+	previousKEKs [][]byte
 }
 
 func NewVault(masterKey string) (*Vault, error) {
@@ -33,6 +36,76 @@ func NewVault(masterKey string) (*Vault, error) {
 		kek = sum[:]
 	}
 	return &Vault{kek: kek}, nil
+}
+
+func (v *Vault) decryptDEKLocked(nonce, encDEK []byte) ([]byte, error) {
+	if dek, err := aesGCMDecrypt(v.kek, nonce, encDEK); err == nil {
+		return dek, nil
+	} else if len(v.previousKEKs) == 0 {
+		return nil, err
+	}
+	for i := len(v.previousKEKs) - 1; i >= 0; i-- {
+		if dek, err := aesGCMDecrypt(v.previousKEKs[i], nonce, encDEK); err == nil {
+			return dek, nil
+		}
+	}
+	return nil, fmt.Errorf("decrypt DEK with current or previous KEKs failed")
+}
+
+// PromoteKEK atomically swaps in newVault's KEK as primary while keeping prior KEKs for in-flight decrypts.
+func (v *Vault) PromoteKEK(newVault *Vault) error {
+	if v == nil || newVault == nil {
+		return fmt.Errorf("vault and newVault cannot be nil")
+	}
+	newVault.mu.RLock()
+	nextKEK := append([]byte(nil), newVault.kek...)
+	newVault.mu.RUnlock()
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.kek) > 0 {
+		v.previousKEKs = append(v.previousKEKs, append([]byte(nil), v.kek...))
+	}
+	v.kek = nextKEK
+	return nil
+}
+
+// ReWrapString re-encrypts a generic packed DEK hex string under newVault's KEK without modifying ciphertext.
+func (v *Vault) ReWrapString(dekHex string, newVault *Vault) (string, error) {
+	if v == nil || newVault == nil {
+		return "", fmt.Errorf("vault and newVault cannot be nil")
+	}
+	dekHex = strings.TrimSpace(dekHex)
+	if dekHex == "" {
+		return "", nil
+	}
+	packedDEK, err := hex.DecodeString(dekHex)
+	if err != nil || len(packedDEK) < 12 {
+		return "", fmt.Errorf("invalid packed DEK hex: %w", err)
+	}
+	dekNonce := packedDEK[:12]
+	encDEK := packedDEK[12:]
+
+	v.mu.RLock()
+	dek, err := v.decryptDEKLocked(dekNonce, encDEK)
+	v.mu.RUnlock()
+	if err != nil {
+		return "", fmt.Errorf("decrypt DEK with old KEK: %w", err)
+	}
+	defer func() {
+		for i := range dek {
+			dek[i] = 0
+		}
+	}()
+
+	newVault.mu.RLock()
+	newEncDEK, newDEKNonce, err := aesGCMEncrypt(newVault.kek, dek)
+	newVault.mu.RUnlock()
+	if err != nil {
+		return "", fmt.Errorf("encrypt DEK with new KEK: %w", err)
+	}
+	packedNew := append(newDEKNonce, newEncDEK...)
+	return hex.EncodeToString(packedNew), nil
 }
 
 // EncryptCredential encrypts a plaintext provider API key into cred's envelope fields and clears DecryptedAPIKey.
@@ -56,7 +129,9 @@ func (v *Vault) EncryptCredential(cred *domain.ProviderCredential, rawAPIKey str
 	}
 
 	// 3. Encrypt DEK with Master KEK
+	v.mu.RLock()
 	encDEK, dekNonce, err := aesGCMEncrypt(v.kek, dek)
+	v.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("encrypt DEK with KEK: %w", err)
 	}
@@ -93,7 +168,9 @@ func (v *Vault) ReWrapCredential(cred *domain.ProviderCredential, newVault *Vaul
 	if cred == nil || newVault == nil {
 		return nil, fmt.Errorf("credential and newVault cannot be nil")
 	}
-	dek, err := aesGCMDecrypt(v.kek, cred.DEKNonce, cred.EncryptedDEK)
+	v.mu.RLock()
+	dek, err := v.decryptDEKLocked(cred.DEKNonce, cred.EncryptedDEK)
+	v.mu.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("decrypt DEK with old KEK: %w", err)
 	}
@@ -103,7 +180,9 @@ func (v *Vault) ReWrapCredential(cred *domain.ProviderCredential, newVault *Vaul
 		}
 	}()
 
+	newVault.mu.RLock()
 	newEncDEK, newDEKNonce, err := aesGCMEncrypt(newVault.kek, dek)
+	newVault.mu.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("encrypt DEK with new KEK: %w", err)
 	}
@@ -129,7 +208,9 @@ func (v *Vault) DecryptCredential(cred *domain.ProviderCredential) (string, erro
 		return "", nil
 	}
 
-	dek, err := aesGCMDecrypt(v.kek, cred.DEKNonce, cred.EncryptedDEK)
+	v.mu.RLock()
+	dek, err := v.decryptDEKLocked(cred.DEKNonce, cred.EncryptedDEK)
+	v.mu.RUnlock()
 	if err != nil {
 		return "", fmt.Errorf("decrypt DEK: %w", err)
 	}
@@ -167,7 +248,9 @@ func (v *Vault) EncryptString(plaintext string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("encrypt data: %w", err)
 	}
+	v.mu.RLock()
 	encDEK, dekNonce, err := aesGCMEncrypt(v.kek, dek)
+	v.mu.RUnlock()
 	if err != nil {
 		return "", "", fmt.Errorf("encrypt DEK: %w", err)
 	}
@@ -197,7 +280,9 @@ func (v *Vault) DecryptString(encHex, dekHex string) (string, error) {
 
 	dekNonce := packedDEK[:12]
 	encDEK := packedDEK[12:]
-	dek, err := aesGCMDecrypt(v.kek, dekNonce, encDEK)
+	v.mu.RLock()
+	dek, err := v.decryptDEKLocked(dekNonce, encDEK)
+	v.mu.RUnlock()
 	if err != nil {
 		return "", fmt.Errorf("decrypt DEK: %w", err)
 	}

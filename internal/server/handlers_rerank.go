@@ -104,7 +104,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	// Account for query and document lengths, including structured documents.
 	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateRerankCostUpperBound(gm, len(req.Documents))
 	})
 	if err != nil {

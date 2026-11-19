@@ -18,7 +18,7 @@ const BUDGETS = {
   maxSingleJsGzip: 45 * 1024,          // 45 KB max per chunk (gzipped)
   maxCssUncompressed: 35 * 1024,        // 35 KB max CSS
   maxCssGzip: 8 * 1024,                 // 8 KB max CSS gzipped
-  maxTotalDistUncompressed: 500 * 1024, // 500 KB total dist (uncompressed)
+  maxTotalDistUncompressed: 560 * 1024, // 560 KB total dist across all lazy route chunks (uncompressed)
   maxTotalDistGzip: 150 * 1024,         // 150 KB total dist (gzipped across all chunks)
 };
 

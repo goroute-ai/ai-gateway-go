@@ -62,6 +62,99 @@ type UserLookupRepository interface {
 	GetUser(ctx context.Context, id string) (*domain.User, error)
 }
 
+// VirtualKeyAuthBundle holds all identity entities resolved for an inbound Virtual Key in a single lookup.
+type VirtualKeyAuthBundle struct {
+	Key                   *domain.VirtualKey
+	Org                   *domain.Organization
+	Team                  *domain.Team
+	Project               *domain.Project
+	User                  *domain.User
+	TeamMembership        *domain.TeamMembership
+	Deprecated            bool
+	DeprecatedKeyRevokeAt time.Time
+}
+
+// VirtualKeyBundleLookup resolves an active or grace-period deprecated virtual key and its
+// organization, team, project, user, and team membership records in a single storage call.
+type VirtualKeyBundleLookup interface {
+	GetVirtualKeyAuthBundleByHash(ctx context.Context, keyHash string, now time.Time) (*VirtualKeyAuthBundle, error)
+}
+
+// OrganizationUpdateRepository persists updates to organization governance and budget policies.
+type OrganizationUpdateRepository interface {
+	UpdateOrganization(ctx context.Context, org *domain.Organization) error
+}
+
+// VirtualKeyFilter controls server-side filtering and pagination for ListVirtualKeysFiltered.
+type VirtualKeyFilter struct {
+	OrgID     string
+	Status    string // "", "active", "revoked", "expired"
+	TeamID    string
+	UserID    string
+	ProjectID string
+	Search    string
+	Limit     int
+	Offset    int
+}
+
+// VirtualKeyBulkPatch defines partial mutable fields applied across multiple keys.
+type VirtualKeyBulkPatch struct {
+	IsActive        *bool
+	MaxBudgetMicros *int64
+	RPMLimit        *int
+	TPMLimit        *int
+	AllowedModels   []string // non-nil replaces allowed_models
+	RevokedBy       string
+}
+
+// EntitySpendScope identifies a persisted spend counter reset target.
+type EntitySpendScope string
+
+const (
+	EntitySpendScopeKey        EntitySpendScope = "key"
+	EntitySpendScopeTeamMember EntitySpendScope = "team_member"
+)
+
+// KeyGovernanceRepository provides extended key filtering, bulk lifecycle, spend reset,
+// guaranteed-throughput checks, and expiry alerting storage operations.
+type KeyGovernanceRepository interface {
+	ListVirtualKeysFiltered(ctx context.Context, filter VirtualKeyFilter) ([]*domain.VirtualKey, int, error)
+	BulkUpdateVirtualKeys(ctx context.Context, orgID string, ids []string, patch VirtualKeyBulkPatch) ([]*domain.VirtualKey, error)
+	ResetEntitySpend(ctx context.Context, scope EntitySpendScope, orgID, entityID, secondaryID string) error
+	SumChildKeyThroughput(ctx context.Context, orgID, teamID, excludeKeyID string) (rpmSum int, tpmSum int, err error)
+	ListVirtualKeysExpiringBefore(ctx context.Context, cutoff time.Time, limit int) ([]*domain.VirtualKey, error)
+	MarkVirtualKeyExpiryAlertSent(ctx context.Context, keyID string, alertDay int) error
+	MarkVirtualKeyRotated(ctx context.Context, keyID string, rotatedAt time.Time) error
+	RevokeVirtualKeyWithActor(ctx context.Context, id, revokedBy string) error
+	UnblockVirtualKey(ctx context.Context, id string) error
+}
+
+// KEKRotationBatch holds encrypted records across all vault-protected resources.
+type KEKRotationBatch struct {
+	Credentials []*domain.ProviderCredential
+	MCPServers  []*domain.MCPServer
+	A2AAgents   []*domain.A2AAgent
+	Guardrails  []*domain.GuardrailDefinition
+}
+
+// KEKRotationSummary reports counts of entities updated during a transactional KEK rotation.
+type KEKRotationSummary struct {
+	CredentialsRewrapped int `json:"credentials_rewrapped"`
+	MCPServersRewrapped  int `json:"mcp_servers_rewrapped"`
+	A2AAgentsRewrapped   int `json:"a2a_agents_rewrapped"`
+	GuardrailsRewrapped  int `json:"guardrails_rewrapped"`
+}
+
+// KEKRotationRepository atomically loads, locks, re-wraps, and commits DEKs under a single transaction.
+type KEKRotationRepository interface {
+	RotateKEKsTransactionally(ctx context.Context, rewrap func(batch KEKRotationBatch) (KEKRotationBatch, error)) (KEKRotationSummary, error)
+}
+
+// TeamMembershipBulkSyncRepository transactionally upserts and removes team memberships in one operation.
+type TeamMembershipBulkSyncRepository interface {
+	BulkSyncTeamMemberships(ctx context.Context, orgID, teamID string, upserts []*domain.TeamMembership, removeUserIDs []string) (upserted []*domain.TeamMembership, removed int, err error)
+}
+
 // TeamSpendRepository is an optional extension of Repository for team-scoped FinOps spend queries.
 type TeamSpendRepository interface {
 	GetTeamSpendSummary(ctx context.Context, orgID, teamID string) (*SpendSummary, error)

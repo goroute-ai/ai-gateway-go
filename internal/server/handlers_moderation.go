@@ -98,12 +98,13 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	// Estimate the actual text volume, not only the number of input elements.
 	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	releaseQuota, rlMeta, err := s.limiter.AcquireWithMeta(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	domain.WriteRateLimitHeaders(w, rlMeta)
 
 	modReq := &domain.CanonicalModerationRequest{
 		RequestID: reqID,

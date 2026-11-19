@@ -48,6 +48,8 @@ auth:
   master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
   master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
   allow_master_key_data_plane: false
+  enable_data_plane_jwt: false
+  custom_api_key_header: ""
   jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
   jwt_issuer: ""
   jwt_audience: ""
@@ -56,6 +58,12 @@ auth:
   default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
+  key_rotation_poll_interval: 1m
+  key_rotation_grace_period: 24h
+  key_expiry_alert_poll_interval: 1h
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
+  session_ttl: 12h
+  enable_hibp_check: false
 
 router:
   default_fast_alias: "fast"
@@ -143,6 +151,7 @@ rate_limit:
   global_rpm_limit: 0
   global_tpm_limit: 0
   global_max_concurrent: 0
+  dynamic_on_upstream_429: false     # Optional brief per-key soft cooldown after upstream 429 rate-limits
 
 finops:
   channel_buffer_size: 16384

@@ -1,4 +1,4 @@
--- Atomic Post-Request Descriptor Token Reconciliation, Concurrency Release, & Budget Settlement
+-- Atomic Post-Request Descriptor Token Reconciliation, Self-Healing ZSET Concurrency Release, & Budget Settlement
 -- Every key in KEYS MUST carry the same {org:<orgID>} Redis Cluster hash tag.
 --
 -- Per-descriptor KEYS (9 keys per descriptor idx = 0..count-1, kbase = idx * 9):
@@ -6,29 +6,11 @@
 --   KEYS[kbase + 2]: itpm_key
 --   KEYS[kbase + 3]: otpm_key
 --   KEYS[kbase + 4]: tpd_key
---   KEYS[kbase + 5]: conc_key
+--   KEYS[kbase + 5]: zconc_key
 --   KEYS[kbase + 6]: spend_key
 --   KEYS[kbase + 7]: res_zset_key
 --   KEYS[kbase + 8]: res_sum_key
 --   KEYS[kbase + 9]: res_amounts_key
---
--- Fixed header ARGV[1..8]:
---   ARGV[1]: count (number of descriptors)
---   ARGV[2]: input_delta (actualInput - estInput)
---   ARGV[3]: output_delta (actualOutput - estOutput)
---   ARGV[4]: total_delta ((actualInput + actualOutput) - (estInput + estOutput))
---   ARGV[5]: window_ttl_sec (TTL for 60s minute buckets)
---   ARGV[6]: tpd_ttl_sec (TTL for 86,400s UTC day bucket)
---   ARGV[7]: request_id
---   ARGV[8]: actual_cost_micros (>= 0 settles reservation & charges spend, -1 refunds without charge, -2 leaves reservation for outbox)
---
--- Per-descriptor flags ARGV (6 args per descriptor idx = 0..count-1, abase = 8 + idx * 6):
---   ARGV[abase + 1]: has_tpm (1 or 0)
---   ARGV[abase + 2]: has_itpm (1 or 0)
---   ARGV[abase + 3]: has_otpm (1 or 0)
---   ARGV[abase + 4]: has_tpd (1 or 0)
---   ARGV[abase + 5]: has_conc (1 or 0)
---   ARGV[abase + 6]: has_budget (1 or 0)
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
@@ -50,6 +32,9 @@ local function adjust_counter(key, delta, ttl)
     if delta == 0 then
         return
     end
+    if delta < 0 and redis.call("EXISTS", key) == 0 then
+        return
+    end
     local v = redis.call("INCRBY", key, delta)
     if v < 0 then
         redis.call("SET", key, 0, "EX", ttl)
@@ -66,7 +51,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 2]
     local otpm_key = KEYS[kbase + 3]
     local tpd_key = KEYS[kbase + 4]
-    local conc_key = KEYS[kbase + 5]
+    local zconc_key = KEYS[kbase + 5]
     local spend_key = KEYS[kbase + 6]
     local res_zset = KEYS[kbase + 7]
     local res_sum = KEYS[kbase + 8]
@@ -79,11 +64,8 @@ for idx = 0, count - 1 do
     local has_conc = tonumber(ARGV[abase + 5]) or 0
     local has_budget = tonumber(ARGV[abase + 6]) or 0
 
-    if has_conc == 1 then
-        local c = tonumber(redis.call("GET", conc_key) or "0")
-        if c > 0 then
-            redis.call("DECR", conc_key)
-        end
+    if has_conc == 1 and zconc_key ~= "" and request_id ~= "" then
+        redis.call("ZREM", zconc_key, request_id)
     end
 
     if has_tpm == 1 and total_delta ~= 0 then

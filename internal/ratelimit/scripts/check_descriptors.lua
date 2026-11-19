@@ -7,40 +7,16 @@
 --   KEYS[kbase + 3]:  itpm_key        (60s minute bucket)
 --   KEYS[kbase + 4]:  otpm_key        (60s minute bucket)
 --   KEYS[kbase + 5]:  tpd_key         (86,400s UTC day bucket)
---   KEYS[kbase + 6]:  conc_key        (TTL-guarded concurrency counter)
+--   KEYS[kbase + 6]:  zconc_key       (self-healing ZSET concurrency slots)
 --   KEYS[kbase + 7]:  iter_key        (session TTL-guarded iteration counter)
 --   KEYS[kbase + 8]:  spend_key       (accumulated spend in micro-dollars)
 --   KEYS[kbase + 9]:  res_zset_key    (reservation expiration sorted set)
 --   KEYS[kbase + 10]: res_sum_key     (O(1) active reserved micro-dollars sum)
 --   KEYS[kbase + 11]: res_amounts_key (request_id -> reserved micro-dollars hash)
---
--- Fixed header ARGV[1..9]:
---   ARGV[1]: count (number of descriptors)
---   ARGV[2]: est_input (estimated input tokens, >= 0)
---   ARGV[3]: est_output (estimated output tokens, >= 0)
---   ARGV[4]: reserve_micros (conservative upper-bound cost in micro-dollars, >= 0)
---   ARGV[5]: request_id
---   ARGV[6]: window_ttl_sec (TTL for 60s minute buckets)
---   ARGV[7]: tpd_ttl_sec (TTL for 86,400s UTC day bucket)
---   ARGV[8]: conc_ttl_sec (TTL for concurrency counter)
---   ARGV[9]: reservation_ttl_sec (TTL for budget reservation lease)
---
--- Per-descriptor ARGV (11 args per descriptor idx = 0..count-1, abase = 9 + idx * 11):
---   ARGV[abase + 1]:  scope_upper (e.g. "KEY", "TEAM", "AGENT_SESSION", "MODEL_PER_KEY")
---   ARGV[abase + 2]:  rpm_limit
---   ARGV[abase + 3]:  tpm_limit
---   ARGV[abase + 4]:  itpm_limit
---   ARGV[abase + 5]:  otpm_limit
---   ARGV[abase + 6]:  tpd_limit
---   ARGV[abase + 7]:  max_concurrent
---   ARGV[abase + 8]:  max_iterations
---   ARGV[abase + 9]:  iter_ttl_sec
---   ARGV[abase + 10]: max_budget_micros
---   ARGV[abase + 11]: spent_floor_micros
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
-    return {1, "OK"}
+    return {1, "OK", 0, 0, 0, 0, 0, 0}
 end
 
 local est_input = tonumber(ARGV[2]) or 0
@@ -94,8 +70,7 @@ local function incr_ttl(key, delta, ttl)
     return v
 end
 
--- Phase 1: Pure read-only validation across all descriptors.
--- Zero Redis writes occur until every descriptor passes every configured limit.
+-- Phase 1: Pure read-only admission checks (cleaning expired ZSET slots/reservations).
 local pending_add = {}
 local pending_res = {}
 
@@ -108,7 +83,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 3]
     local otpm_key = KEYS[kbase + 4]
     local tpd_key = KEYS[kbase + 5]
-    local conc_key = KEYS[kbase + 6]
+    local zconc_key = KEYS[kbase + 6]
     local iter_key = KEYS[kbase + 7]
     local spend_key = KEYS[kbase + 8]
     local res_zset = KEYS[kbase + 9]
@@ -168,11 +143,12 @@ for idx = 0, count - 1 do
     end
 
     if max_conc > 0 then
-        local cur = tonumber(redis.call("GET", conc_key) or "0") + (pending_add[conc_key] or 0)
+        redis.call("ZREMRANGEBYSCORE", zconc_key, "-inf", now)
+        local cur = tonumber(redis.call("ZCARD", zconc_key) or "0") + (pending_add[zconc_key] or 0)
         if (cur + 1) > max_conc then
             return {0, scope .. "_CONCURRENCY_EXCEEDED", cur, max_conc, 5}
         end
-        pending_add[conc_key] = (pending_add[conc_key] or 0) + 1
+        pending_add[zconc_key] = (pending_add[zconc_key] or 0) + 1
     end
 
     if max_iter > 0 then
@@ -227,7 +203,30 @@ for idx = 0, count - 1 do
     end
 end
 
--- Phase 2: All descriptors admitted; atomically apply all counter mutations and reservations.
+-- Phase 2: All descriptors admitted; atomically apply all counter mutations, ZSET slots, and reservations.
+local tight_lim_req, tight_rem_req = 0, 0
+local tight_lim_tok, tight_rem_tok = 0, 0
+local function track_req(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_req == 0 or rem < tight_rem_req then
+            tight_lim_req = limit
+            tight_rem_req = rem
+        end
+    end
+end
+local function track_tok(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_tok == 0 or rem < tight_rem_tok then
+            tight_lim_tok = limit
+            tight_rem_tok = rem
+        end
+    end
+end
+
 for idx = 0, count - 1 do
     local kbase = idx * 11
     local abase = 9 + idx * 11
@@ -237,7 +236,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 3]
     local otpm_key = KEYS[kbase + 4]
     local tpd_key = KEYS[kbase + 5]
-    local conc_key = KEYS[kbase + 6]
+    local zconc_key = KEYS[kbase + 6]
     local iter_key = KEYS[kbase + 7]
     local spend_key = KEYS[kbase + 8]
     local res_zset = KEYS[kbase + 9]
@@ -256,10 +255,10 @@ for idx = 0, count - 1 do
     local spent_floor = tonumber(ARGV[abase + 11]) or 0
 
     if rpm_limit > 0 then
-        incr_ttl(rpm_key, 1, window_ttl)
+        track_req(rpm_limit, incr_ttl(rpm_key, 1, window_ttl))
     end
-    if tpm_limit > 0 and est_total > 0 then
-        incr_ttl(tpm_key, est_total, window_ttl)
+    if tpm_limit > 0 then
+        track_tok(tpm_limit, incr_ttl(tpm_key, est_total, window_ttl))
     end
     if itpm_limit > 0 and est_input > 0 then
         incr_ttl(itpm_key, est_input, window_ttl)
@@ -270,9 +269,9 @@ for idx = 0, count - 1 do
     if tpd_limit > 0 and est_total > 0 then
         incr_ttl(tpd_key, est_total, tpd_ttl)
     end
-    if max_conc > 0 then
-        redis.call("INCRBY", conc_key, 1)
-        redis.call("EXPIRE", conc_key, conc_ttl)
+    if max_conc > 0 and request_id ~= "" then
+        redis.call("ZADD", zconc_key, now + conc_ttl, request_id)
+        redis.call("EXPIRE", zconc_key, conc_ttl + 60)
     end
     if max_iter > 0 then
         incr_ttl(iter_key, 1, iter_ttl)
@@ -295,4 +294,4 @@ for idx = 0, count - 1 do
     end
 end
 
-return {1, "OK"}
+return {1, "OK", tight_lim_req, tight_rem_req, retry_min, tight_lim_tok, tight_rem_tok, retry_min}

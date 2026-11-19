@@ -142,12 +142,12 @@ func (s *GatewayServer) handleAdminCreateJWTMapping(w http.ResponseWriter, r *ht
 		return
 	}
 
-	s.audit(r.Context(), mapping.OrgID, "jwt_mapping.created", "jwt_key_mapping", mapping.ID, map[string]any{
+	s.auditWithDiff(r.Context(), mapping.OrgID, "jwt_mapping.created", "jwt_key_mapping", mapping.ID, map[string]any{
 		"issuer":         mapping.Issuer,
 		"claim_name":     mapping.ClaimName,
 		"claim_value":    mapping.ClaimValue,
 		"virtual_key_id": mapping.VirtualKeyID,
-	})
+	}, nil, mapping)
 	writeJSON(w, http.StatusCreated, mapping)
 }
 
@@ -238,11 +238,11 @@ func (s *GatewayServer) handleAdminDeleteJWTMapping(w http.ResponseWriter, r *ht
 		return
 	}
 
-	s.audit(r.Context(), existing.OrgID, "jwt_mapping.deleted", "jwt_key_mapping", id, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "jwt_mapping.deleted", "jwt_key_mapping", id, map[string]any{
 		"issuer":         existing.Issuer,
 		"claim_name":     existing.ClaimName,
 		"claim_value":    existing.ClaimValue,
 		"virtual_key_id": existing.VirtualKeyID,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }

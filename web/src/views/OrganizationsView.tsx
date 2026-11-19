@@ -16,13 +16,15 @@ import type {
   Organization,
   Team,
   User,
-  OrgProviderSubscription,
-  OrgModelPolicy,
   SelfServeBudgetPolicy,
 } from '../types';
 import { Building2, Users, Layers, ShieldCheck, Plus, Pencil, Trash2 } from 'lucide-react';
 
 const cell = 'px-4 py-2.5';
+const panel = 'bg-surface-base border border-border-subtle rounded-xl';
+const rowCard = 'flex items-center justify-between p-2 rounded-lg bg-surface-elevated border border-border-subtle text-xs';
+const icoBtn = 'p-1 text-brand-muted rounded';
+const g2 = 'grid grid-cols-2 gap-3';
 
 const FormModal: React.FC<{
   open: boolean;
@@ -52,19 +54,19 @@ const SoftPolicyFields: React.FC<{
         min="0"
         value={f.softBudget || ''}
         onChange={(e) => set('softBudget', e.target.value)}
-        placeholder="Soft Budget Alert USD"
+        placeholder="Soft Alert USD"
         className={INPUT_CLS}
       />
       <label className="flex items-center gap-2 text-xs text-brand-body cursor-pointer">
         <input type="checkbox" checked={!!f.throttle} onChange={(e) => set('throttle', e.target.checked)} />
-        <span>Throttle on budget exceeded</span>
+        <span>Throttle</span>
       </label>
     </div>
     <textarea
       rows={2}
       value={f.fallbacks || ''}
       onChange={(e) => set('fallbacks', e.target.value)}
-      placeholder="Budget fallbacks (model: fallback1, fallback2)"
+      placeholder="Fallbacks (model: fb1, fb2)"
       className={MONO_INPUT_CLS}
     />
   </>
@@ -74,7 +76,7 @@ export const OrganizationsView: React.FC = () => {
   const { adminKey, isUnlocked, activeOrgId, setActiveOrgId } = useAuth();
   const qc = useQueryClient();
   const [tab, setTab] = useState<'orgs' | 'teams' | 'users' | 'policies'>('orgs');
-  const [modal, setModal] = useState<'org' | 'team' | 'user' | 'sub' | 'policy' | null>(null);
+  const [modal, setModal] = useState<'org' | 'team' | 'user' | 'sub' | 'policy' | 'members' | null>(null);
   const [f, setF] = useState<Record<string, any>>({
     reset: 'monthly',
     role: 'developer',
@@ -87,33 +89,31 @@ export const OrganizationsView: React.FC = () => {
   });
   const [formErr, setFormErr] = useState<string | null>(null);
   const set = (k: string, v: any) => setF((p) => ({ ...p, [k]: v }));
+  const openM = (kind: typeof modal, patch: Record<string, any>) => { setFormErr(null); setF((p) => ({ ...p, ...patch })); setModal(kind); };
+  const txt = (k: string, ph: string, type = 'text') => (
+    <input type={type} min={type === 'number' ? '0' : undefined} step={ph.includes('USD') ? '0.01' : undefined} value={f[k] || ''} onChange={(e) => set(k, e.target.value)} placeholder={ph} className={INPUT_CLS} />
+  );
+  const chk = (k: string, label: string) => (
+    <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f[k]} onChange={(e) => set(k, e.target.checked)} />{label}</label>
+  );
 
   const orgsQ = useQuery({ queryKey: ['admin', 'orgs', adminKey], queryFn: () => adminApi.listOrgs(adminKey), enabled: isUnlocked });
   const teamsQ = useQuery({ queryKey: ['admin', 'teams', adminKey, activeOrgId], queryFn: () => adminApi.listTeams(adminKey, activeOrgId), enabled: isUnlocked && !!activeOrgId });
   const usersQ = useQuery({ queryKey: ['admin', 'users', adminKey, activeOrgId], queryFn: () => adminApi.listUsers(adminKey, activeOrgId), enabled: isUnlocked && !!activeOrgId });
   const subsQ = useQuery({ queryKey: ['admin', 'org-subscriptions', adminKey, activeOrgId], queryFn: () => adminApi.getOrgSubscriptions(adminKey, activeOrgId), enabled: isUnlocked && !!activeOrgId && tab === 'policies' });
   const polsQ = useQuery({ queryKey: ['admin', 'org-model-policies', adminKey, activeOrgId], queryFn: () => adminApi.getOrgModelPolicies(adminKey, activeOrgId), enabled: isUnlocked && !!activeOrgId && tab === 'policies' });
+  const membersQ = useQuery({ queryKey: ['admin', 'team-members', adminKey, f.membersTeamId], queryFn: () => adminApi.listTeamMembers(adminKey, f.membersTeamId, activeOrgId), enabled: isUnlocked && modal === 'members' && !!f.membersTeamId });
 
   const inv = (k: string) => qc.invalidateQueries({ queryKey: ['admin', k, adminKey] });
-  const createOrg = useMutation({ mutationFn: (d: Partial<Organization>) => adminApi.createOrg(adminKey, d), onSuccess: (c) => { inv('orgs'); setModal(null); if (c?.id) setActiveOrgId(c.id); } });
-  const saveTeam = useMutation({
-    mutationFn: (d: Partial<Team> & { _editId?: string }) => {
-      const { _editId, ...body } = d;
-      return _editId ? adminApi.updateTeam(adminKey, _editId, body) : adminApi.createTeam(adminKey, body);
-    },
-    onSuccess: () => { inv('teams'); setModal(null); },
+  const saveMut = useMutation({
+    mutationFn: ({ fn }: { k: string; fn: () => Promise<any>; pick?: boolean }) => fn(),
+    onSuccess: (res, vars) => { inv(vars.k); setModal(null); if (vars.pick && res?.id && !f.editOrgId) setActiveOrgId(res.id); },
   });
-  const deleteTeam = useMutation({ mutationFn: (id: string) => adminApi.deleteTeam(adminKey, id), onSuccess: () => inv('teams') });
-  const saveUser = useMutation({
-    mutationFn: (d: Partial<User> & { _editId?: string }) => {
-      const { _editId, ...body } = d;
-      return _editId ? adminApi.updateUser(adminKey, _editId, body) : adminApi.createUser(adminKey, body);
-    },
-    onSuccess: () => { inv('users'); setModal(null); },
+  const delMut = useMutation({
+    mutationFn: ({ kind, id }: { kind: 'teams' | 'users'; id: string }) =>
+      kind === 'teams' ? adminApi.deleteTeam(adminKey, id) : adminApi.deleteUser(adminKey, id),
+    onSuccess: (_, v) => inv(v.kind),
   });
-  const deleteUser = useMutation({ mutationFn: (id: string) => adminApi.deleteUser(adminKey, id), onSuccess: () => inv('users') });
-  const setSub = useMutation({ mutationFn: (d: Partial<OrgProviderSubscription>) => adminApi.setOrgSubscription(adminKey, activeOrgId, d), onSuccess: () => { inv('org-subscriptions'); setModal(null); } });
-  const setPol = useMutation({ mutationFn: (d: Partial<OrgModelPolicy>) => adminApi.setOrgModelPolicy(adminKey, activeOrgId, d), onSuccess: () => { inv('org-model-policies'); setModal(null); } });
 
   const budgetPatch = (budgetKey: string, zeroDefault = false) => {
     setFormErr(null);
@@ -156,13 +156,13 @@ export const OrganizationsView: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-brand-title flex items-center gap-2"><Building2 className="w-5 h-5 text-accent-primary" />Organizations, Teams &amp; Policies</h1>
-          <p className="text-xs text-brand-muted mt-0.5">Active org: <code className="text-accent-primary font-mono">{activeOrgId}</code></p>
+          <h1 className="text-xl font-bold text-brand-title flex items-center gap-2"><Building2 className="w-5 h-5 text-accent-primary" />Organizations &amp; Teams</h1>
+          <p className="text-xs text-brand-muted mt-0.5">Org: <code className="text-accent-primary font-mono">{activeOrgId}</code></p>
         </div>
         <div className="flex gap-2">
-          {tab === 'orgs' && <button onClick={() => { setFormErr(null); setF((p) => ({ ...p, orgName: '', orgId: '', orgBudget: '', softBudget: '', throttle: false, fallbacks: '', selfServe: 'disabled' })); setModal('org'); }} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
-          {tab === 'teams' && <button onClick={() => { setFormErr(null); setF((p) => ({ ...p, editTeamId: '', teamName: '', teamId: '', teamBudget: '', softBudget: '', throttle: false, fallbacks: '', active: true })); setModal('team'); }} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
-          {tab === 'users' && <button onClick={() => { setFormErr(null); setF((p) => ({ ...p, editUserId: '', email: '', userName: '', userId: '', userTeamId: '', userBudget: '', softBudget: '', throttle: false, fallbacks: '', role: 'developer', active: true })); setModal('user'); }} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
+          {tab === 'orgs' && <button onClick={() => openM('org', { editOrgId: '', orgName: '', orgId: '', orgBudget: '', softBudget: '', throttle: false, fallbacks: '', selfServe: 'disabled', orgRpm: '', orgTpm: '', orgGuarantee: false, devSelfKeys: false, webhookUrl: '', expiryDays: '7, 1' })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
+          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', softBudget: '', throttle: false, fallbacks: '', teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
+          {tab === 'users' && <button onClick={() => openM('user', { editUserId: '', email: '', userName: '', userId: '', userTeamId: '', userBudget: '', softBudget: '', throttle: false, fallbacks: '', role: 'developer', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
           {tab === 'policies' && <>
             <button onClick={() => setModal('sub')} className="px-3 py-1.5 rounded-md border border-accent-primary/30 text-accent-primary text-xs font-semibold">+ Provider Sub</button>
             <button onClick={() => setModal('policy')} className={BTN_PRIMARY}>+ Model Policy</button>
@@ -178,23 +178,17 @@ export const OrganizationsView: React.FC = () => {
         ))}
       </div>
 
-      {orgsQ.isError && <ErrorAlert error={orgsQ.error} title="Failed to load organizations" onRetry={() => orgsQ.refetch()} />}
-      {tab === 'teams' && teamsQ.isError && <ErrorAlert error={teamsQ.error} title="Failed to load teams" onRetry={() => teamsQ.refetch()} />}
-      {tab === 'teams' && deleteTeam.isError && <ErrorAlert error={deleteTeam.error} title="Failed to delete team" />}
-      {tab === 'users' && usersQ.isError && <ErrorAlert error={usersQ.error} title="Failed to load users" onRetry={() => usersQ.refetch()} />}
-      {tab === 'users' && deleteUser.isError && <ErrorAlert error={deleteUser.error} title="Failed to delete user" />}
-      {tab === 'policies' && subsQ.isError && <ErrorAlert error={subsQ.error} title="Failed to load subscriptions" onRetry={() => subsQ.refetch()} />}
-      {tab === 'policies' && polsQ.isError && <ErrorAlert error={polsQ.error} title="Failed to load model policies" onRetry={() => polsQ.refetch()} />}
-      {tab === 'policies' && !modal && setSub.isError && <ErrorAlert error={setSub.error} title="Failed to update provider subscription" />}
-      {tab === 'policies' && !modal && setPol.isError && <ErrorAlert error={setPol.error} title="Failed to update model policy" />}
+      {(orgsQ.error || teamsQ.error || delMut.error || usersQ.error || subsQ.error || polsQ.error || (!modal && saveMut.error)) && (
+        <ErrorAlert error={orgsQ.error || teamsQ.error || delMut.error || usersQ.error || subsQ.error || polsQ.error || saveMut.error} title="Operation failed" />
+      )}
 
       {tab !== 'policies' ? (
-        <div className="bg-surface-base border border-border-subtle rounded-xl overflow-x-auto">
+        <div className={`${panel} overflow-x-auto`}>
           <table className="w-full text-left text-xs">
             <thead className="bg-surface-elevated border-b border-border-subtle text-brand-muted font-mono uppercase text-[10px]">
               <tr>
-                {tab === 'orgs' && ['Name', 'ID', 'Budget & Policy', 'Spend', 'Reset', 'Status', 'Scope'].map((h) => <th key={h} className={cell}>{h}</th>)}
-                {tab === 'teams' && ['Team', 'ID', 'Budget & Policy', 'Spend', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
+                {tab === 'orgs' && ['Name', 'ID', 'Budget', 'Spend', 'Reset', 'Status', 'Scope'].map((h) => <th key={h} className={cell}>{h}</th>)}
+                {tab === 'teams' && ['Team', 'ID', 'Budget', 'Spend', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
                 {tab === 'users' && ['Email', 'Name', 'Team', 'Budget', 'Role', 'Status', 'Actions'].map((h) => <th key={h} className={cell}>{h}</th>)}
               </tr>
             </thead>
@@ -207,7 +201,12 @@ export const OrganizationsView: React.FC = () => {
                   <td className={`${cell} font-mono text-status-success`}>{formatUSD(o.spent_micros)}</td>
                   <td className={`${cell} font-mono capitalize text-brand-muted`}>{o.budget_reset_period || 'monthly'}</td>
                   <td className={cell}><Badge variant={o.is_active ? 'success' : 'danger'}>{o.is_active ? 'Active' : 'Inactive'}</Badge></td>
-                  <td className={cell}>{activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}</td>
+                  <td className={cell}>
+                    <div className="flex items-center gap-2">
+                      {activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}
+                      <button onClick={() => openM('org', { editOrgId: o.id, orgName: o.name, orgBudget: microsToUsdInput(o.max_budget_micros), softBudget: microsToUsdInput(o.soft_budget_micros), throttle: !!o.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(o.budget_fallbacks), reset: o.budget_reset_period || 'monthly', selfServe: o.self_serve_budget_policy || 'disabled', orgRpm: o.rpm_limit ? String(o.rpm_limit) : '', orgTpm: o.tpm_limit ? String(o.tpm_limit) : '', orgGuarantee: !!o.enforce_guaranteed_throughput, devSelfKeys: !!o.developer_self_serve_keys, webhookUrl: o.lifecycle_webhook_url || '', expiryDays: (o.key_expiry_alert_days || [7, 1]).join(', '), active: o.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {tab === 'teams' && teams.map((t) => (
@@ -218,8 +217,9 @@ export const OrganizationsView: React.FC = () => {
                   <td className={`${cell} font-mono text-status-success`}>{formatUSD(t.spent_micros)}</td>
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => { setFormErr(null); setF((p) => ({ ...p, editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), softBudget: microsToUsdInput(t.soft_budget_micros), throttle: !!t.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(t.budget_fallbacks), active: t.is_active })); setModal('team'); }} className="p-1 text-brand-muted hover:text-brand-title rounded" title="Edit team"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) deleteTeam.mutate(t.id); }} disabled={deleteTeam.isPending} className="p-1 text-brand-muted hover:text-status-danger rounded" title="Delete team"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('members', { membersTeamId: t.id, membersTeamName: t.name, addUserIds: '', rmUserIds: '' })} className="px-1.5 py-0.5 text-[10px] font-mono text-accent-primary hover:underline" title="Sync members">Members</button>
+                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), softBudget: microsToUsdInput(t.soft_budget_micros), throttle: !!t.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(t.budget_fallbacks), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) delMut.mutate({ kind: 'teams', id: t.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
               ))}
@@ -232,8 +232,8 @@ export const OrganizationsView: React.FC = () => {
                   <td className={cell}><Badge variant="info">{u.role}</Badge></td>
                   <td className={cell}><Badge variant={u.is_active ? 'success' : 'danger'}>{u.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => { setFormErr(null); setF((p) => ({ ...p, editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', userBudget: microsToUsdInput(u.max_budget_micros), softBudget: microsToUsdInput(u.soft_budget_micros), throttle: !!u.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(u.budget_fallbacks), role: u.role, active: u.is_active })); setModal('user'); }} className="p-1 text-brand-muted hover:text-brand-title rounded" title="Edit user"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) deleteUser.mutate(u.id); }} disabled={deleteUser.isPending} className="p-1 text-brand-muted hover:text-status-danger rounded" title="Delete user"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('user', { editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', userBudget: microsToUsdInput(u.max_budget_micros), softBudget: microsToUsdInput(u.soft_budget_micros), throttle: !!u.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(u.budget_fallbacks), role: u.role, active: u.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) delMut.mutate({ kind: 'users', id: u.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
               ))}
@@ -242,23 +242,23 @@ export const OrganizationsView: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <div className="bg-surface-base border border-border-subtle rounded-xl p-4 space-y-2">
+          <div className={`${panel} p-4 space-y-2`}>
             <h3 className="text-sm font-semibold text-brand-title">Layer 2: Provider Subscriptions</h3>
             {subs.map((s) => (
-              <div key={s.provider} className="flex items-center justify-between p-2 rounded-lg bg-surface-elevated border border-border-subtle text-xs">
+              <div key={s.provider} className={rowCard}>
                 <span className="font-mono font-semibold text-brand-title uppercase">{s.provider}</span>
-                <button onClick={() => setSub.mutate({ provider: s.provider, is_enabled: !s.is_enabled, auto_enable_new: s.auto_enable_new })}>
+                <button onClick={() => saveMut.mutate({ k: 'org-subscriptions', fn: () => adminApi.setOrgSubscription(adminKey, activeOrgId, { provider: s.provider, is_enabled: !s.is_enabled, auto_enable_new: s.auto_enable_new }) })}>
                   <Badge variant={s.is_enabled ? 'success' : 'danger'}>{s.is_enabled ? 'Enabled' : 'Disabled'}</Badge>
                 </button>
               </div>
             ))}
           </div>
-          <div className="bg-surface-base border border-border-subtle rounded-xl p-4 space-y-2">
+          <div className={`${panel} p-4 space-y-2`}>
             <h3 className="text-sm font-semibold text-brand-title">Layer 3: Org Model Policies</h3>
             {pols.map((p) => (
-              <div key={p.global_model_id} className="flex items-center justify-between p-2 rounded-lg bg-surface-elevated border border-border-subtle text-xs">
+              <div key={p.global_model_id} className={rowCard}>
                 <span className="font-mono text-brand-body truncate mr-2">{p.global_model_id}</span>
-                <button onClick={() => setPol.mutate({ global_model_id: p.global_model_id, is_enabled: !p.is_enabled })}>
+                <button onClick={() => saveMut.mutate({ k: 'org-model-policies', fn: () => adminApi.setOrgModelPolicy(adminKey, activeOrgId, { global_model_id: p.global_model_id, is_enabled: !p.is_enabled }) })}>
                   <Badge variant={p.is_enabled ? 'success' : 'danger'}>{p.is_enabled ? 'Allowed' : 'Blocked'}</Badge>
                 </button>
               </div>
@@ -267,56 +267,101 @@ export const OrganizationsView: React.FC = () => {
         </div>
       )}
 
-      <FormModal open={modal === 'org'} onClose={() => setModal(null)} title="Create Organization" submitLabel="Create" pending={createOrg.isPending} error={formErr || createOrg.error} onSubmit={() => {
+      <FormModal open={modal === 'org'} onClose={() => setModal(null)} title={f.editOrgId ? `Edit Org` : 'Create Org'} submitLabel={f.editOrgId ? 'Save' : 'Create'} pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
         try {
-          createOrg.mutate({
-            ...(f.orgId?.trim() && { id: f.orgId.trim() }),
+          const days = String(f.expiryDays || '').split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
+          const body: Partial<Organization> = {
+            ...(!f.editOrgId && f.orgId?.trim() && { id: f.orgId.trim() }),
             name: (f.orgName || '').trim(),
             budget_reset_period: f.reset,
             self_serve_budget_policy: f.selfServe as SelfServeBudgetPolicy,
-            ...budgetPatch('orgBudget'),
-          });
+            rpm_limit: f.orgRpm ? parseInt(f.orgRpm, 10) : 0,
+            tpm_limit: f.orgTpm ? parseInt(f.orgTpm, 10) : 0,
+            enforce_guaranteed_throughput: !!f.orgGuarantee,
+            developer_self_serve_keys: !!f.devSelfKeys,
+            lifecycle_webhook_url: (f.webhookUrl || '').trim(),
+            key_expiry_alert_days: days,
+            ...budgetPatch('orgBudget', !!f.editOrgId),
+          };
+          saveMut.mutate({ k: 'orgs', pick: true, fn: () => f.editOrgId ? adminApi.updateOrg(adminKey, f.editOrgId, body) : adminApi.createOrg(adminKey, body) });
         } catch (err: any) { setFormErr(err?.message || 'Invalid fallbacks'); }
       }}>
-        <input required value={f.orgName || ''} onChange={(e) => set('orgName', e.target.value)} placeholder="Organization Name *" className={INPUT_CLS} />
-        <input value={f.orgId || ''} onChange={(e) => set('orgId', e.target.value)} placeholder="Organization ID (optional)" className={INPUT_CLS} />
+        <input required value={f.orgName || ''} onChange={(e) => set('orgName', e.target.value)} placeholder="Org Name *" className={INPUT_CLS} />
+        {!f.editOrgId && txt('orgId', 'Org ID (optional)')}
         <div className="grid grid-cols-3 gap-2">
-          <input type="number" step="0.01" min="0" value={f.orgBudget || ''} onChange={(e) => set('orgBudget', e.target.value)} placeholder="Max Budget USD" className={INPUT_CLS} />
+          {txt('orgBudget', 'Max USD', 'number')}
           <select value={f.reset} onChange={(e) => set('reset', e.target.value)} className={INPUT_CLS}><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="never">Never</option></select>
-          <select value={f.selfServe} onChange={(e) => set('selfServe', e.target.value)} className={INPUT_CLS} title="Self-serve budget policy">
-            <option value="disabled">Self-serve: Disabled</option>
-            <option value="lower_only">Self-serve: Lower Only</option>
-            <option value="ceiling">Self-serve: Ceiling</option>
+          <select value={f.selfServe} onChange={(e) => set('selfServe', e.target.value)} className={INPUT_CLS} title="Self-serve">
+            <option value="disabled">Disabled</option>
+            <option value="lower_only">Lower Only</option>
+            <option value="ceiling">Ceiling</option>
           </select>
+        </div>
+        <div className={g2}>
+          {txt('orgRpm', 'RPM', 'number')}
+          {txt('orgTpm', 'TPM', 'number')}
+          {chk('orgGuarantee', 'Guaranteed Throughput')}
+          {chk('devSelfKeys', 'Self-Serve Keys')}
+          {txt('webhookUrl', 'Webhook URL')}
+          {txt('expiryDays', 'Expiry Days')}
         </div>
         <SoftPolicyFields f={f} set={set} />
       </FormModal>
 
-      <FormModal open={modal === 'team'} onClose={() => setModal(null)} title={f.editTeamId ? `Edit Team (${f.editTeamId})` : `Create Team (${activeOrgId})`} submitLabel={f.editTeamId ? 'Save' : 'Create'} pending={saveTeam.isPending} error={formErr || saveTeam.error} onSubmit={() => {
+      <FormModal open={modal === 'team'} onClose={() => setModal(null)} title={f.editTeamId ? `Edit Team (${f.editTeamId})` : 'Create Team'} submitLabel={f.editTeamId ? 'Save' : 'Create'} pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
         try {
-          saveTeam.mutate({
-            _editId: f.editTeamId || undefined,
+          const defMemM = usdToMicros(f.defMemBudget || '');
+          const body: Partial<Team> = {
             org_id: activeOrgId,
             ...(!f.editTeamId && f.teamId?.trim() && { id: f.teamId.trim() }),
             name: (f.teamName || '').trim(),
+            rpm_limit: f.teamRpm ? parseInt(f.teamRpm, 10) : 0,
+            enforce_guaranteed_throughput: !!f.teamGuarantee,
+            default_member_max_budget_micros: defMemM ?? 0,
+            default_member_rpm_limit: f.defMemRpm ? parseInt(f.defMemRpm, 10) : 0,
+            team_member_permissions: (f.teamPerms || '').split(',').map((s: string) => s.trim()).filter(Boolean),
             ...budgetPatch('teamBudget', true),
             is_active: !!f.active,
-          });
-        } catch (err: any) { setFormErr(err?.message || 'Invalid fallbacks'); }
+          };
+          saveMut.mutate({ k: 'teams', fn: () => f.editTeamId ? adminApi.updateTeam(adminKey, f.editTeamId, body) : adminApi.createTeam(adminKey, body) });
+        } catch (err: any) { setFormErr(err?.message || 'Invalid'); }
       }}>
         <input required value={f.teamName || ''} onChange={(e) => set('teamName', e.target.value)} placeholder="Team Name *" className={INPUT_CLS} />
-        <div className="grid grid-cols-2 gap-3">
-          {!f.editTeamId && <input value={f.teamId || ''} onChange={(e) => set('teamId', e.target.value)} placeholder="Team ID (optional)" className={INPUT_CLS} />}
-          <input type="number" step="0.01" min="0" value={f.teamBudget || ''} onChange={(e) => set('teamBudget', e.target.value)} placeholder="Max Budget USD (0=unlimited)" className={INPUT_CLS} />
+        <div className={g2}>
+          {!f.editTeamId && txt('teamId', 'Team ID')}
+          {txt('teamBudget', 'Max USD', 'number')}
+          {txt('teamRpm', 'Team RPM', 'number')}
+          {txt('defMemBudget', 'Member USD', 'number')}
+          {txt('defMemRpm', 'Member RPM', 'number')}
         </div>
+        {txt('teamPerms', 'Member Perms (keys:create,keys:rotate,keys:revoke)')}
+        {chk('teamGuarantee', 'Guaranteed Throughput')}
         <SoftPolicyFields f={f} set={set} />
-        {f.editTeamId && <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
+        {f.editTeamId && chk('active', 'Active')}
       </FormModal>
 
-      <FormModal open={modal === 'user'} onClose={() => setModal(null)} title={f.editUserId ? `Edit User (${f.editUserId})` : `Create User (${activeOrgId})`} submitLabel={f.editUserId ? 'Save' : 'Create'} pending={saveUser.isPending} error={formErr || saveUser.error} onSubmit={() => {
+      <FormModal open={modal === 'members'} onClose={() => setModal(null)} title={`Members: ${f.membersTeamName || f.membersTeamId}`} submitLabel="Sync" pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
+        const parse = (v?: string) => (v || '').split(',').map((s) => s.trim()).filter(Boolean);
+        saveMut.mutate({ k: 'team-members', fn: () => adminApi.bulkSyncTeamMembers(adminKey, f.membersTeamId, { org_id: activeOrgId, members: parse(f.addUserIds).map((user_id) => ({ user_id })), remove_user_ids: parse(f.rmUserIds) }) });
+      }}>
+        {txt('addUserIds', 'Add User IDs')}
+        {txt('rmUserIds', 'Remove User IDs')}
+        <div className="max-h-40 overflow-y-auto border border-border-subtle rounded p-2 text-xs space-y-1">
+          {(membersQ.data?.data || []).map((m) => (
+            <div key={m.user_id} className="flex items-center justify-between font-mono">
+              <span>{m.user_id} ({m.role})</span>
+              <span className="flex items-center gap-2">
+                <span className="text-status-success">{formatUSD(m.spent_micros || 0)}</span>
+                <button type="button" onClick={() => adminApi.resetTeamMemberSpend(adminKey, f.membersTeamId, m.user_id).then(() => inv('team-members'))} className="text-accent-primary" title="Reset spend">$0</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      </FormModal>
+
+      <FormModal open={modal === 'user'} onClose={() => setModal(null)} title={f.editUserId ? 'Edit User' : 'Create User'} submitLabel={f.editUserId ? 'Save' : 'Create'} pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
         try {
-          saveUser.mutate({
-            _editId: f.editUserId || undefined,
+          const body: Partial<User> = {
             org_id: activeOrgId,
             email: (f.email || '').trim(),
             role: f.role,
@@ -325,32 +370,33 @@ export const OrganizationsView: React.FC = () => {
             team_id: f.userTeamId || '',
             ...budgetPatch('userBudget', true),
             is_active: !!f.active,
-          });
-        } catch (err: any) { setFormErr(err?.message || 'Invalid fallbacks'); }
+          };
+          saveMut.mutate({ k: 'users', fn: () => f.editUserId ? adminApi.updateUser(adminKey, f.editUserId, body) : adminApi.createUser(adminKey, body) });
+        } catch (err: any) { setFormErr(err?.message || 'Invalid'); }
       }}>
         <input type="email" required value={f.email || ''} onChange={(e) => set('email', e.target.value)} placeholder="Email *" className={INPUT_CLS} />
-        <div className="grid grid-cols-2 gap-3">
-          <input value={f.userName || ''} onChange={(e) => set('userName', e.target.value)} placeholder="Display Name" className={INPUT_CLS} />
-          {!f.editUserId && <input value={f.userId || ''} onChange={(e) => set('userId', e.target.value)} placeholder="User ID (optional)" className={INPUT_CLS} />}
+        <div className={g2}>
+          {txt('userName', 'Name')}
+          {!f.editUserId && txt('userId', 'User ID')}
         </div>
         <div className="grid grid-cols-3 gap-2">
           <select value={f.userTeamId || ''} onChange={(e) => set('userTeamId', e.target.value)} className={INPUT_CLS}><option value="">No Team</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
           <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}>{['developer', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'service_account'].map((r) => <option key={r} value={r}>{r}</option>)}</select>
-          <input type="number" step="0.01" min="0" value={f.userBudget || ''} onChange={(e) => set('userBudget', e.target.value)} placeholder="Max Budget USD" className={INPUT_CLS} />
+          {txt('userBudget', 'Max USD', 'number')}
         </div>
         <SoftPolicyFields f={f} set={set} />
-        {f.editUserId && <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.active} onChange={(e) => set('active', e.target.checked)} />Active</label>}
+        {f.editUserId && chk('active', 'Active')}
       </FormModal>
 
-      <FormModal open={modal === 'sub'} onClose={() => setModal(null)} title="Set Provider Subscription" pending={setSub.isPending} error={setSub.error} onSubmit={() => setSub.mutate({ provider: f.subProv, is_enabled: f.subOn, auto_enable_new: f.subAuto })}>
-        <input required value={f.subProv} onChange={(e) => set('subProv', e.target.value)} placeholder="Provider (e.g. openai)" className={INPUT_CLS} />
-        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.subOn} onChange={(e) => set('subOn', e.target.checked)} />Enabled</label>
-        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.subAuto} onChange={(e) => set('subAuto', e.target.checked)} />Auto-enable new models</label>
+      <FormModal open={modal === 'sub'} onClose={() => setModal(null)} title="Provider Sub" pending={saveMut.isPending} error={saveMut.error} onSubmit={() => saveMut.mutate({ k: 'org-subscriptions', fn: () => adminApi.setOrgSubscription(adminKey, activeOrgId, { provider: f.subProv, is_enabled: f.subOn, auto_enable_new: f.subAuto }) })}>
+        <input required value={f.subProv} onChange={(e) => set('subProv', e.target.value)} placeholder="Provider" className={INPUT_CLS} />
+        {chk('subOn', 'Enabled')}
+        {chk('subAuto', 'Auto-enable')}
       </FormModal>
 
-      <FormModal open={modal === 'policy'} onClose={() => setModal(null)} title="Set Org Model Policy" pending={setPol.isPending} error={setPol.error} onSubmit={() => setPol.mutate({ global_model_id: (f.polModel || '').trim(), is_enabled: f.polOn })}>
-        <input required value={f.polModel || ''} onChange={(e) => set('polModel', e.target.value)} placeholder="Global Model ID (e.g. openai/gpt-4.1)" className={INPUT_CLS} />
-        <label className="flex items-center gap-2 text-xs text-brand-body"><input type="checkbox" checked={!!f.polOn} onChange={(e) => set('polOn', e.target.checked)} />Allow Model</label>
+      <FormModal open={modal === 'policy'} onClose={() => setModal(null)} title="Model Policy" pending={saveMut.isPending} error={saveMut.error} onSubmit={() => saveMut.mutate({ k: 'org-model-policies', fn: () => adminApi.setOrgModelPolicy(adminKey, activeOrgId, { global_model_id: (f.polModel || '').trim(), is_enabled: f.polOn }) })}>
+        {txt('polModel', 'Global Model ID')}
+        {chk('polOn', 'Allow Model')}
       </FormModal>
     </div>
   );

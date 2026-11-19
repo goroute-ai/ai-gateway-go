@@ -58,6 +58,8 @@ export const adminApi = {
     apiFetch<{ data: Organization[] }>('/admin/v1/organizations', {}, key),
   createOrg: (key: string, data: Partial<Organization>) =>
     apiFetch<Organization>('/admin/v1/organizations', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateOrg: (key: string, orgId: string, data: Partial<Organization>) =>
+    apiFetch<Organization>(`/admin/v1/organizations/${enc(orgId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
   getOrgSubscriptions: (key: string, orgId: string) =>
     apiFetch<{ data: OrgProviderSubscription[] }>(`/admin/v1/organizations/${enc(orgId)}/subscriptions`, {}, key),
   setOrgSubscription: (key: string, orgId: string, data: Partial<OrgProviderSubscription>) =>
@@ -76,6 +78,22 @@ export const adminApi = {
     apiFetch<Team>(`/admin/v1/teams/${enc(teamId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
   deleteTeam: (key: string, teamId: string) =>
     apiFetch<{ status: string; id: string }>(`/admin/v1/teams/${enc(teamId)}`, { method: 'DELETE' }, key),
+  listTeamMembers: (key: string, teamId: string, orgId?: string) =>
+    apiFetch<{ data: Array<{ user_id: string; role: string; max_budget_micros?: number; spent_micros?: number }> }>(`/admin/v1/teams/${enc(teamId)}/members${qs({ org_id: orgId })}`, {}, key),
+  bulkSyncTeamMembers: (
+    key: string,
+    teamId: string,
+    data: {
+      org_id?: string;
+      members?: Array<{ user_id: string; role?: string }>;
+      remove_user_ids?: string[];
+    }
+  ) =>
+    apiFetch<{ upserted: number; removed: number }>(`/admin/v1/teams/${enc(teamId)}/members/bulk`, { method: 'POST', body: JSON.stringify(data) }, key),
+  resetTeamMemberSpend: (key: string, teamId: string, userId: string) =>
+    apiFetch<{ status: string }>(`/admin/v1/teams/${enc(teamId)}/members/${enc(userId)}/reset-spend`, { method: 'POST' }, key),
+  rotateMasterKEK: (key: string, newMasterKey: string) =>
+    apiFetch<{ status: string; rewrapped: Record<string, any>; multi_pod_notice?: string }>('/admin/v1/security/rotate-kek', { method: 'POST', body: JSON.stringify({ new_master_key: newMasterKey }) }, key),
   listUsers: (key: string, orgId?: string) =>
     apiFetch<{ data: User[] }>(`/admin/v1/users${qs({ org_id: orgId })}`, {}, key),
   createUser: (key: string, data: Partial<User>) =>
@@ -86,12 +104,20 @@ export const adminApi = {
     apiFetch<{ status: string; id: string }>(`/admin/v1/users/${enc(userId)}`, { method: 'DELETE' }, key),
 
   // Virtual Keys
-  listKeys: (key: string, orgId?: string) =>
-    apiFetch<{ data: VirtualKey[] }>(`/admin/v1/keys${qs({ org_id: orgId })}`, {}, key),
+  listKeys: (key: string, params?: string | Record<string, string | number | undefined>) =>
+    apiFetch<{ data: VirtualKey[]; total?: number }>(`/admin/v1/keys${qs(typeof params === 'string' ? { org_id: params } : params || {})}`, {}, key),
   issueKey: (key: string, data: Partial<VirtualKey>) =>
     apiFetch<VirtualKey>('/admin/v1/keys', { method: 'POST', body: JSON.stringify(data) }, key),
   updateKey: (key: string, keyId: string, data: Partial<VirtualKey>) =>
     apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  blockKey: (key: string, keyId: string, reason?: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${enc(keyId)}/block`, { method: 'POST', body: JSON.stringify({ reason }) }, key),
+  unblockKey: (key: string, keyId: string) =>
+    apiFetch<VirtualKey>(`/admin/v1/keys/${enc(keyId)}/unblock`, { method: 'POST' }, key),
+  resetKeySpend: (key: string, keyId: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/keys/${enc(keyId)}/reset-spend`, { method: 'POST' }, key),
+  bulkUpdateKeys: (key: string, data: { org_id?: string; key_ids: string[]; is_active?: boolean; max_budget_micros?: number; rpm_limit?: number; tpm_limit?: number; allowed_models?: string[] }) =>
+    apiFetch<{ updated: number; data: VirtualKey[] }>('/admin/v1/keys/bulk-update', { method: 'POST', body: JSON.stringify(data) }, key),
   rotateKey: (key: string, keyId: string, data?: { org_id?: string; grace_period_seconds?: number }) =>
     apiFetch<VirtualKey>(
       `/admin/v1/keys/${enc(keyId)}/rotate`,

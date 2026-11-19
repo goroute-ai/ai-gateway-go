@@ -1511,6 +1511,27 @@ func (e ToolPolicyUpsertRequestOutputPolicy) Valid() bool {
 	}
 }
 
+// Defines values for ListVirtualKeysParamsStatus.
+const (
+	ListVirtualKeysParamsStatusActive  ListVirtualKeysParamsStatus = "active"
+	ListVirtualKeysParamsStatusExpired ListVirtualKeysParamsStatus = "expired"
+	ListVirtualKeysParamsStatusRevoked ListVirtualKeysParamsStatus = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the ListVirtualKeysParamsStatus enum.
+func (e ListVirtualKeysParamsStatus) Valid() bool {
+	switch e {
+	case ListVirtualKeysParamsStatusActive:
+		return true
+	case ListVirtualKeysParamsStatusExpired:
+		return true
+	case ListVirtualKeysParamsStatusRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RemoveModelAccessGroupMemberParamsMemberType.
 const (
 	RemoveModelAccessGroupMemberParamsMemberTypeKey     RemoveModelAccessGroupMemberParamsMemberType = "key"
@@ -1923,23 +1944,28 @@ type AdminModelPricingHistory map[string]interface{}
 
 // AdminOrganization defines model for AdminOrganization.
 type AdminOrganization struct {
-	BudgetFallbacks          *map[string][]string                    `json:"budget_fallbacks,omitempty"`
-	CreatedAt                *time.Time                              `json:"created_at,omitempty"`
-	Id                       *string                                 `json:"id,omitempty"`
-	MaxBudgetMicro           *int64                                  `json:"max_budget_micro,omitempty"`
-	MaxBudgetMicros          *int64                                  `json:"max_budget_micros,omitempty"`
-	Metadata                 *map[string]string                      `json:"metadata,omitempty"`
-	Name                     *string                                 `json:"name,omitempty"`
-	RpmLimit                 *int                                    `json:"rpm_limit,omitempty"`
-	SelfServeBudgetPolicy    *AdminOrganizationSelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
-	Slug                     *string                                 `json:"slug,omitempty"`
-	SoftBudgetMicro          *int64                                  `json:"soft_budget_micro,omitempty"`
-	SoftBudgetMicros         *int64                                  `json:"soft_budget_micros,omitempty"`
-	TempBudgetExpiresAt      *time.Time                              `json:"temp_budget_expires_at,omitempty"`
-	TempBudgetIncreaseMicros *int64                                  `json:"temp_budget_increase_micros,omitempty"`
-	ThrottleOnBudgetExceeded *bool                                   `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int                                    `json:"tpm_limit,omitempty"`
-	UpdatedAt                *time.Time                              `json:"updated_at,omitempty"`
+	BudgetFallbacks             *map[string][]string                    `json:"budget_fallbacks,omitempty"`
+	CreatedAt                   *time.Time                              `json:"created_at,omitempty"`
+	DeveloperSelfServeKeys      *bool                                   `json:"developer_self_serve_keys,omitempty"`
+	EnforceGuaranteedThroughput *bool                                   `json:"enforce_guaranteed_throughput,omitempty"`
+	Id                          *string                                 `json:"id,omitempty"`
+	KeyExpiryAlertDays          *[]int                                  `json:"key_expiry_alert_days,omitempty"`
+	LifecycleWebhookUrl         *string                                 `json:"lifecycle_webhook_url,omitempty"`
+	MaxBudgetMicro              *int64                                  `json:"max_budget_micro,omitempty"`
+	MaxBudgetMicros             *int64                                  `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests       *int                                    `json:"max_concurrent_requests,omitempty"`
+	Metadata                    *map[string]string                      `json:"metadata,omitempty"`
+	Name                        *string                                 `json:"name,omitempty"`
+	RpmLimit                    *int                                    `json:"rpm_limit,omitempty"`
+	SelfServeBudgetPolicy       *AdminOrganizationSelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
+	Slug                        *string                                 `json:"slug,omitempty"`
+	SoftBudgetMicro             *int64                                  `json:"soft_budget_micro,omitempty"`
+	SoftBudgetMicros            *int64                                  `json:"soft_budget_micros,omitempty"`
+	TempBudgetExpiresAt         *time.Time                              `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros    *int64                                  `json:"temp_budget_increase_micros,omitempty"`
+	ThrottleOnBudgetExceeded    *bool                                   `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                    *int                                    `json:"tpm_limit,omitempty"`
+	UpdatedAt                   *time.Time                              `json:"updated_at,omitempty"`
 }
 
 // AdminOrganizationSelfServeBudgetPolicy defines model for AdminOrganization.SelfServeBudgetPolicy.
@@ -2135,28 +2161,34 @@ type AdminTagUpsertRequestBudgetResetPeriod string
 
 // AdminTeam defines model for AdminTeam.
 type AdminTeam struct {
-	AllowedA2aAgents         *[]string            `json:"allowed_a2a_agents,omitempty"`
-	AllowedClientApps        *[]string            `json:"allowed_client_apps,omitempty"`
-	AllowedMcpServers        *[]string            `json:"allowed_mcp_servers,omitempty"`
-	AllowedModels            *[]string            `json:"allowed_models,omitempty"`
-	BudgetFallbacks          *map[string][]string `json:"budget_fallbacks,omitempty"`
-	BudgetResetAt            *time.Time           `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod        *string              `json:"budget_reset_period,omitempty"`
-	CreatedAt                time.Time            `json:"created_at"`
-	Id                       string               `json:"id"`
-	IsActive                 bool                 `json:"is_active"`
-	MaxBudgetMicros          *int64               `json:"max_budget_micros,omitempty"`
-	MaxConcurrentRequests    *int                 `json:"max_concurrent_requests,omitempty"`
-	Name                     string               `json:"name"`
-	OrgId                    string               `json:"org_id"`
-	RpmLimit                 *int                 `json:"rpm_limit,omitempty"`
-	SoftBudgetMicros         *int64               `json:"soft_budget_micros,omitempty"`
-	SpentMicros              *int64               `json:"spent_micros,omitempty"`
-	TempBudgetExpiresAt      *time.Time           `json:"temp_budget_expires_at,omitempty"`
-	TempBudgetIncreaseMicros *int64               `json:"temp_budget_increase_micros,omitempty"`
-	ThrottleOnBudgetExceeded *bool                `json:"throttle_on_budget_exceeded,omitempty"`
-	TpmLimit                 *int                 `json:"tpm_limit,omitempty"`
-	UpdatedAt                time.Time            `json:"updated_at"`
+	AllowedA2aAgents             *[]string            `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps            *[]string            `json:"allowed_client_apps,omitempty"`
+	AllowedMcpServers            *[]string            `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels                *[]string            `json:"allowed_models,omitempty"`
+	BudgetFallbacks              *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt                *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod            *string              `json:"budget_reset_period,omitempty"`
+	CreatedAt                    time.Time            `json:"created_at"`
+	DefaultMemberAllowedModels   *[]string            `json:"default_member_allowed_models,omitempty"`
+	DefaultMemberMaxBudgetMicros *int64               `json:"default_member_max_budget_micros,omitempty"`
+	DefaultMemberRpmLimit        *int                 `json:"default_member_rpm_limit,omitempty"`
+	DefaultMemberTpmLimit        *int                 `json:"default_member_tpm_limit,omitempty"`
+	EnforceGuaranteedThroughput  *bool                `json:"enforce_guaranteed_throughput,omitempty"`
+	Id                           string               `json:"id"`
+	IsActive                     bool                 `json:"is_active"`
+	MaxBudgetMicros              *int64               `json:"max_budget_micros,omitempty"`
+	MaxConcurrentRequests        *int                 `json:"max_concurrent_requests,omitempty"`
+	Name                         string               `json:"name"`
+	OrgId                        string               `json:"org_id"`
+	RpmLimit                     *int                 `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros             *int64               `json:"soft_budget_micros,omitempty"`
+	SpentMicros                  *int64               `json:"spent_micros,omitempty"`
+	TeamMemberPermissions        *[]string            `json:"team_member_permissions,omitempty"`
+	TempBudgetExpiresAt          *time.Time           `json:"temp_budget_expires_at,omitempty"`
+	TempBudgetIncreaseMicros     *int64               `json:"temp_budget_increase_micros,omitempty"`
+	ThrottleOnBudgetExceeded     *bool                `json:"throttle_on_budget_exceeded,omitempty"`
+	TpmLimit                     *int                 `json:"tpm_limit,omitempty"`
+	UpdatedAt                    time.Time            `json:"updated_at"`
 }
 
 // AdminTeamMembership defines model for AdminTeamMembership.
@@ -2246,18 +2278,20 @@ type AdminVirtualKey struct {
 	BudgetResetPeriod *string              `json:"budget_reset_period,omitempty"`
 
 	// CanImpersonate Whether this key is authorized to impersonate operators on /admin/v1/* routes
-	CanImpersonate *bool      `json:"can_impersonate,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	Id             string     `json:"id"`
-	IsActive       bool       `json:"is_active"`
-	KeyPrefix      string     `json:"key_prefix"`
+	CanImpersonate      *bool      `json:"can_impersonate,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
+	ExpiryAlertSentDays *[]int     `json:"expiry_alert_sent_days,omitempty"`
+	Id                  string     `json:"id"`
+	IsActive            bool       `json:"is_active"`
+	KeyPrefix           string     `json:"key_prefix"`
 
 	// KeyRotationAt Next scheduled automatic rotation timestamp in UTC
 	KeyRotationAt *time.Time `json:"key_rotation_at,omitempty"`
 
 	// KeyType Capability preset controlling default allowed endpoints, role, and user binding
 	KeyType               *AdminVirtualKeyKeyType `json:"key_type,omitempty"`
+	LastRotatedAt         *time.Time              `json:"last_rotated_at,omitempty"`
 	MaxBudgetMicros       *int64                  `json:"max_budget_micros,omitempty"`
 	MaxConcurrentRequests *int                    `json:"max_concurrent_requests,omitempty"`
 	Metadata              *map[string]string      `json:"metadata,omitempty"`
@@ -2266,8 +2300,11 @@ type AdminVirtualKey struct {
 	ProjectId             *string                 `json:"project_id,omitempty"`
 
 	// RawKey Populated once upon key creation or rotation
-	RawKey *string             `json:"raw_key,omitempty"`
-	Role   AdminVirtualKeyRole `json:"role"`
+	RawKey        *string             `json:"raw_key,omitempty"`
+	RevokedAt     *time.Time          `json:"revoked_at,omitempty"`
+	RevokedBy     *string             `json:"revoked_by,omitempty"`
+	Role          AdminVirtualKeyRole `json:"role"`
+	RotationCount *int                `json:"rotation_count,omitempty"`
 
 	// RotationIntervalSec Automatic key rotation interval in seconds (0 disables scheduled rotation)
 	RotationIntervalSec      *int64     `json:"rotation_interval_sec,omitempty"`
@@ -3311,7 +3348,33 @@ type ListJWTKeyMappingsParams struct {
 
 // ListVirtualKeysParams defines parameters for ListVirtualKeys.
 type ListVirtualKeysParams struct {
-	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	OrgId     *string                      `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Status    *ListVirtualKeysParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	TeamId    *string                      `form:"team_id,omitempty" json:"team_id,omitempty"`
+	UserId    *string                      `form:"user_id,omitempty" json:"user_id,omitempty"`
+	ProjectId *string                      `form:"project_id,omitempty" json:"project_id,omitempty"`
+	Search    *string                      `form:"search,omitempty" json:"search,omitempty"`
+	Limit     *int                         `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset    *int                         `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// ListVirtualKeysParamsStatus defines parameters for ListVirtualKeys.
+type ListVirtualKeysParamsStatus string
+
+// BulkUpdateVirtualKeysJSONBody defines parameters for BulkUpdateVirtualKeys.
+type BulkUpdateVirtualKeysJSONBody struct {
+	AllowedModels   *[]string `json:"allowed_models,omitempty"`
+	IsActive        *bool     `json:"is_active,omitempty"`
+	KeyIds          []string  `json:"key_ids"`
+	MaxBudgetMicros *int64    `json:"max_budget_micros,omitempty"`
+	OrgId           *string   `json:"org_id,omitempty"`
+	RpmLimit        *int      `json:"rpm_limit,omitempty"`
+	TpmLimit        *int      `json:"tpm_limit,omitempty"`
+}
+
+// BlockVirtualKeyJSONBody defines parameters for BlockVirtualKey.
+type BlockVirtualKeyJSONBody struct {
+	Reason *string `json:"reason,omitempty"`
 }
 
 // ListMCPServersParams defines parameters for ListMCPServers.
@@ -3422,6 +3485,11 @@ type ListQuotaPoliciesParams struct {
 	ActiveOnly   *bool   `form:"active_only,omitempty" json:"active_only,omitempty"`
 }
 
+// RotateMasterKEKJSONBody defines parameters for RotateMasterKEK.
+type RotateMasterKEKJSONBody struct {
+	NewMasterKey string `json:"new_master_key"`
+}
+
 // ListSpendLogsParams defines parameters for ListSpendLogs.
 type ListSpendLogsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -3459,6 +3527,13 @@ type ListTeamsParams struct {
 type ListTeamMembersParams struct {
 	OrgId  *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 	UserId *string `form:"user_id,omitempty" json:"user_id,omitempty"`
+}
+
+// BulkUpsertTeamMembersJSONBody defines parameters for BulkUpsertTeamMembers.
+type BulkUpsertTeamMembersJSONBody struct {
+	Members       *[]AdminTeamMembershipUpsertRequest `json:"members,omitempty"`
+	OrgId         *string                             `json:"org_id,omitempty"`
+	RemoveUserIds *[]string                           `json:"remove_user_ids,omitempty"`
 }
 
 // DeleteTeamMemberParams defines parameters for DeleteTeamMember.
@@ -3549,8 +3624,14 @@ type CreateJWTKeyMappingJSONRequestBody = AdminJWTKeyMappingCreateRequest
 // IssueVirtualKeyJSONRequestBody defines body for IssueVirtualKey for application/json ContentType.
 type IssueVirtualKeyJSONRequestBody = AdminVirtualKey
 
+// BulkUpdateVirtualKeysJSONRequestBody defines body for BulkUpdateVirtualKeys for application/json ContentType.
+type BulkUpdateVirtualKeysJSONRequestBody BulkUpdateVirtualKeysJSONBody
+
 // UpdateVirtualKeyJSONRequestBody defines body for UpdateVirtualKey for application/json ContentType.
 type UpdateVirtualKeyJSONRequestBody = AdminVirtualKey
+
+// BlockVirtualKeyJSONRequestBody defines body for BlockVirtualKey for application/json ContentType.
+type BlockVirtualKeyJSONRequestBody BlockVirtualKeyJSONBody
 
 // RotateVirtualKeyJSONRequestBody defines body for RotateVirtualKey for application/json ContentType.
 type RotateVirtualKeyJSONRequestBody = AdminVirtualKeyRotateRequest
@@ -3582,6 +3663,9 @@ type CreateModelGroupJSONRequestBody = AdminModelGroup
 // CreateOrganizationJSONRequestBody defines body for CreateOrganization for application/json ContentType.
 type CreateOrganizationJSONRequestBody = AdminOrganization
 
+// UpdateOrganizationJSONRequestBody defines body for UpdateOrganization for application/json ContentType.
+type UpdateOrganizationJSONRequestBody = AdminOrganization
+
 // CreateGuardrailDefinitionJSONRequestBody defines body for CreateGuardrailDefinition for application/json ContentType.
 type CreateGuardrailDefinitionJSONRequestBody = GuardrailDefinitionWriteRequest
 
@@ -3612,6 +3696,9 @@ type UpdateProjectJSONRequestBody = AdminProjectRequest
 // UpsertQuotaPolicyJSONRequestBody defines body for UpsertQuotaPolicy for application/json ContentType.
 type UpsertQuotaPolicyJSONRequestBody = AdminQuotaPolicyUpsertRequest
 
+// RotateMasterKEKJSONRequestBody defines body for RotateMasterKEK for application/json ContentType.
+type RotateMasterKEKJSONRequestBody RotateMasterKEKJSONBody
+
 // CreateTagJSONRequestBody defines body for CreateTag for application/json ContentType.
 type CreateTagJSONRequestBody = AdminTagUpsertRequest
 
@@ -3626,6 +3713,9 @@ type UpdateTeamJSONRequestBody = AdminTeam
 
 // UpsertTeamMemberJSONRequestBody defines body for UpsertTeamMember for application/json ContentType.
 type UpsertTeamMemberJSONRequestBody = AdminTeamMembershipUpsertRequest
+
+// BulkUpsertTeamMembersJSONRequestBody defines body for BulkUpsertTeamMembers for application/json ContentType.
+type BulkUpsertTeamMembersJSONRequestBody BulkUpsertTeamMembersJSONBody
 
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = AdminUser
@@ -3671,6 +3761,9 @@ type CreateRerankJSONRequestBody = RerankRequest
 
 // CreateResponseJSONRequestBody defines body for CreateResponse for application/json ContentType.
 type CreateResponseJSONRequestBody = ResponsesAPIRequest
+
+// CreateSelfServiceKeyJSONRequestBody defines body for CreateSelfServiceKey for application/json ContentType.
+type CreateSelfServiceKeyJSONRequestBody = AdminVirtualKey
 
 // CountTokensJSONRequestBody defines body for CountTokens for application/json ContentType.
 type CountTokensJSONRequestBody = TokenizeRequest
@@ -4464,12 +4557,24 @@ type ServerInterface interface {
 	// IssueVirtualKey Issue a new virtual API key
 	// (POST /admin/v1/keys)
 	IssueVirtualKey(w http.ResponseWriter, r *http.Request)
+	// BulkUpdateVirtualKeys Bulk update status, budgets, rate limits, or allowed models across up to 250 virtual keys
+	// (POST /admin/v1/keys/bulk-update)
+	BulkUpdateVirtualKeys(w http.ResponseWriter, r *http.Request)
 	// RevokeVirtualKeyByID Revoke a virtual API key by ID
 	// (DELETE /admin/v1/keys/{keyID})
 	RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Request, keyID string)
+	// GetVirtualKey Retrieve virtual API key metadata and budget status without secret hash
+	// (GET /admin/v1/keys/{keyID})
+	GetVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
 	// (PUT /admin/v1/keys/{keyID})
 	UpdateVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// BlockVirtualKey Immediately block an active virtual API key with optional reason
+	// (POST /admin/v1/keys/{keyID}/block)
+	BlockVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// ResetVirtualKeySpend Reset accumulated micro-dollar spend for a virtual API key
+	// (POST /admin/v1/keys/{keyID}/reset-spend)
+	ResetVirtualKeySpend(w http.ResponseWriter, r *http.Request, keyID string)
 	// RevokeVirtualKey Revoke a virtual API key
 	// (POST /admin/v1/keys/{keyID}/revoke)
 	RevokeVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
@@ -4479,6 +4584,9 @@ type ServerInterface interface {
 	// SetVirtualKeyTempBudget Apply or clear a temporary budget boost with expiration for a virtual API key
 	// (POST /admin/v1/keys/{keyID}/temp-budget)
 	SetVirtualKeyTempBudget(w http.ResponseWriter, r *http.Request, keyID string)
+	// UnblockVirtualKey Restore a previously blocked or revoked virtual API key
+	// (POST /admin/v1/keys/{keyID}/unblock)
+	UnblockVirtualKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
 	// (POST /admin/v1/mcp/credentials)
 	SetMCPUserCredential(w http.ResponseWriter, r *http.Request)
@@ -4539,6 +4647,9 @@ type ServerInterface interface {
 	// CreateOrganization Create an organization
 	// (POST /admin/v1/organizations)
 	CreateOrganization(w http.ResponseWriter, r *http.Request)
+	// UpdateOrganization Update organization governance, throughput guarantees, self-service, and webhook settings
+	// (PUT /admin/v1/organizations/{orgID})
+	UpdateOrganization(w http.ResponseWriter, r *http.Request, orgID string)
 	// ListGuardrailBindings List guardrail bindings for an organization
 	// (GET /admin/v1/organizations/{orgID}/guardrail-bindings)
 	ListGuardrailBindings(w http.ResponseWriter, r *http.Request, orgID string, params ListGuardrailBindingsParams)
@@ -4608,6 +4719,9 @@ type ServerInterface interface {
 	// DeleteQuotaPolicy Delete a scoped quota policy
 	// (DELETE /admin/v1/quotas/{policyID})
 	DeleteQuotaPolicy(w http.ResponseWriter, r *http.Request, policyID string)
+	// RotateMasterKEK Zero-downtime envelope DEK re-wrapping under a new master KEK (platform_admin only)
+	// (POST /admin/v1/security/rotate-kek)
+	RotateMasterKEK(w http.ResponseWriter, r *http.Request)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams)
@@ -4647,9 +4761,15 @@ type ServerInterface interface {
 	// UpsertTeamMember Add or update an M:N user membership within a team
 	// (POST /admin/v1/teams/{teamID}/members)
 	UpsertTeamMember(w http.ResponseWriter, r *http.Request, teamID string)
+	// BulkUpsertTeamMembers Bulk add, update, or remove team memberships inheriting team default limits when omitted
+	// (POST /admin/v1/teams/{teamID}/members/bulk)
+	BulkUpsertTeamMembers(w http.ResponseWriter, r *http.Request, teamID string)
 	// DeleteTeamMember Remove a user's membership from a team
 	// (DELETE /admin/v1/teams/{teamID}/members/{userID})
 	DeleteTeamMember(w http.ResponseWriter, r *http.Request, teamID string, userID string, params DeleteTeamMemberParams)
+	// ResetTeamMemberSpend Reset accumulated micro-dollar spend for a user within a team
+	// (POST /admin/v1/teams/{teamID}/members/{userID}/reset-spend)
+	ResetTeamMemberSpend(w http.ResponseWriter, r *http.Request, teamID string, userID string)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(w http.ResponseWriter, r *http.Request, params ListUsersParams)
@@ -4719,6 +4839,9 @@ type ServerInterface interface {
 	// CreateImageVariation Generate variations from a PNG image
 	// (POST /v1/images/variations)
 	CreateImageVariation(w http.ResponseWriter, r *http.Request)
+	// GetVirtualKeySelfInfo Retrieve metadata, limits, spend, and expiration for the calling virtual API key
+	// (GET /v1/key/info)
+	GetVirtualKeySelfInfo(w http.ResponseWriter, r *http.Request)
 	// CreateAnthropicMessage Anthropic Claude Messages ingress bridge with bidirectional SSE streaming
 	// (POST /v1/messages)
 	CreateAnthropicMessage(w http.ResponseWriter, r *http.Request)
@@ -4740,6 +4863,18 @@ type ServerInterface interface {
 	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(w http.ResponseWriter, r *http.Request)
+	// ListSelfServiceKeys List virtual API keys owned by the authenticated developer
+	// (GET /v1/self/keys)
+	ListSelfServiceKeys(w http.ResponseWriter, r *http.Request)
+	// CreateSelfServiceKey Issue a governed self-service virtual API key bound to the authenticated user
+	// (POST /v1/self/keys)
+	CreateSelfServiceKey(w http.ResponseWriter, r *http.Request)
+	// RevokeSelfServiceKey Revoke a virtual API key owned by the authenticated user
+	// (DELETE /v1/self/keys/{keyID})
+	RevokeSelfServiceKey(w http.ResponseWriter, r *http.Request, keyID string)
+	// RotateSelfServiceKey Rotate a virtual API key owned by the authenticated user
+	// (POST /v1/self/keys/{keyID}/rotate)
+	RotateSelfServiceKey(w http.ResponseWriter, r *http.Request, keyID string)
 	// CountTokens Precise token counting and prompt breakdown
 	// (POST /v1/tokenize)
 	CountTokens(w http.ResponseWriter, r *http.Request)
@@ -5964,6 +6099,97 @@ func (siw *ServerInterfaceWrapper) ListVirtualKeys(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "team_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "team_id", r.URL.Query(), &params.TeamId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "user_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "user_id", r.URL.Query(), &params.UserId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "user_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "project_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "project_id", r.URL.Query(), &params.ProjectId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "project_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "search" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "search", r.URL.Query(), &params.Search, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "search"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "search", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListVirtualKeys(w, r, params)
 	}))
@@ -5980,6 +6206,20 @@ func (siw *ServerInterfaceWrapper) IssueVirtualKey(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.IssueVirtualKey(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// BulkUpdateVirtualKeys operation middleware
+func (siw *ServerInterfaceWrapper) BulkUpdateVirtualKeys(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BulkUpdateVirtualKeys(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6015,6 +6255,32 @@ func (siw *ServerInterfaceWrapper) RevokeVirtualKeyByID(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// GetVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) GetVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateVirtualKey operation middleware
 func (siw *ServerInterfaceWrapper) UpdateVirtualKey(w http.ResponseWriter, r *http.Request) {
 
@@ -6032,6 +6298,58 @@ func (siw *ServerInterfaceWrapper) UpdateVirtualKey(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// BlockVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) BlockVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BlockVirtualKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResetVirtualKeySpend operation middleware
+func (siw *ServerInterfaceWrapper) ResetVirtualKeySpend(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetVirtualKeySpend(w, r, keyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6110,6 +6428,32 @@ func (siw *ServerInterfaceWrapper) SetVirtualKeyTempBudget(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetVirtualKeyTempBudget(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnblockVirtualKey operation middleware
+func (siw *ServerInterfaceWrapper) UnblockVirtualKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnblockVirtualKey(w, r, keyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6682,6 +7026,32 @@ func (siw *ServerInterfaceWrapper) CreateOrganization(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateOrganization(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateOrganization operation middleware
+func (siw *ServerInterfaceWrapper) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgID" -------------
+	var orgID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateOrganization(w, r, orgID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7571,6 +7941,20 @@ func (siw *ServerInterfaceWrapper) DeleteQuotaPolicy(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// RotateMasterKEK operation middleware
+func (siw *ServerInterfaceWrapper) RotateMasterKEK(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateMasterKEK(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSpendLogs operation middleware
 func (siw *ServerInterfaceWrapper) ListSpendLogs(w http.ResponseWriter, r *http.Request) {
 
@@ -8001,6 +8385,32 @@ func (siw *ServerInterfaceWrapper) UpsertTeamMember(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// BulkUpsertTeamMembers operation middleware
+func (siw *ServerInterfaceWrapper) BulkUpsertTeamMembers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BulkUpsertTeamMembers(w, r, teamID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DeleteTeamMember operation middleware
 func (siw *ServerInterfaceWrapper) DeleteTeamMember(w http.ResponseWriter, r *http.Request) {
 
@@ -8043,6 +8453,41 @@ func (siw *ServerInterfaceWrapper) DeleteTeamMember(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteTeamMember(w, r, teamID, userID, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResetTeamMemberSpend operation middleware
+func (siw *ServerInterfaceWrapper) ResetTeamMemberSpend(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "teamID" -------------
+	var teamID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "teamID", r.PathValue("teamID"), &teamID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "teamID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "userID" -------------
+	var userID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userID", r.PathValue("userID"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetTeamMemberSpend(w, r, teamID, userID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8477,6 +8922,20 @@ func (siw *ServerInterfaceWrapper) CreateImageVariation(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// GetVirtualKeySelfInfo operation middleware
+func (siw *ServerInterfaceWrapper) GetVirtualKeySelfInfo(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetVirtualKeySelfInfo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateAnthropicMessage operation middleware
 func (siw *ServerInterfaceWrapper) CreateAnthropicMessage(w http.ResponseWriter, r *http.Request) {
 
@@ -8566,6 +9025,86 @@ func (siw *ServerInterfaceWrapper) CreateResponse(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateResponse(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSelfServiceKeys operation middleware
+func (siw *ServerInterfaceWrapper) ListSelfServiceKeys(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSelfServiceKeys(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSelfServiceKey operation middleware
+func (siw *ServerInterfaceWrapper) CreateSelfServiceKey(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSelfServiceKey(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeSelfServiceKey operation middleware
+func (siw *ServerInterfaceWrapper) RevokeSelfServiceKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeSelfServiceKey(w, r, keyID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateSelfServiceKey operation middleware
+func (siw *ServerInterfaceWrapper) RotateSelfServiceKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "keyID" -------------
+	var keyID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "keyID", r.PathValue("keyID"), &keyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "keyID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateSelfServiceKey(w, r, keyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8762,6 +9301,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.DeleteUser)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/users/{userID}", wrapper.UpdateUser)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.RevokeVirtualKeyByID)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.GetVirtualKey)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/keys/{keyID}", wrapper.UpdateVirtualKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/rotate", wrapper.RotateVirtualKey)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/config", wrapper.GetRuntimeConfig)
@@ -8849,6 +9389,19 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/tool-policies", wrapper.UpsertToolPolicy)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/tool-policies/{policyID}", wrapper.DeleteToolPolicy)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-usage", wrapper.GetGuardrailUsageSummary)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/key/info", wrapper.GetVirtualKeySelfInfo)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/self/keys", wrapper.ListSelfServiceKeys)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/self/keys", wrapper.CreateSelfServiceKey)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/self/keys/{keyID}", wrapper.RevokeSelfServiceKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/self/keys/{keyID}/rotate", wrapper.RotateSelfServiceKey)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/organizations/{orgID}", wrapper.UpdateOrganization)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/bulk-update", wrapper.BulkUpdateVirtualKeys)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/block", wrapper.BlockVirtualKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/unblock", wrapper.UnblockVirtualKey)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/keys/{keyID}/reset-spend", wrapper.ResetVirtualKeySpend)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/teams/{teamID}/members/bulk", wrapper.BulkUpsertTeamMembers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/teams/{teamID}/members/{userID}/reset-spend", wrapper.ResetTeamMemberSpend)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/security/rotate-kek", wrapper.RotateMasterKEK)
 
 	return m
 }
@@ -10051,7 +10604,10 @@ type ListVirtualKeysResponseObject interface {
 }
 
 type ListVirtualKeys200JSONResponse struct {
-	Data *[]AdminVirtualKey `json:"data,omitempty"`
+	Data   *[]AdminVirtualKey `json:"data,omitempty"`
+	Limit  *int               `json:"limit,omitempty"`
+	Offset *int               `json:"offset,omitempty"`
+	Total  *int               `json:"total,omitempty"`
 }
 
 func (response ListVirtualKeys200JSONResponse) VisitListVirtualKeysResponse(w http.ResponseWriter) error {
@@ -10088,6 +10644,31 @@ func (response IssueVirtualKey201JSONResponse) VisitIssueVirtualKeyResponse(w ht
 	return err
 }
 
+type BulkUpdateVirtualKeysRequestObject struct {
+	Body *BulkUpdateVirtualKeysJSONRequestBody
+}
+
+type BulkUpdateVirtualKeysResponseObject interface {
+	VisitBulkUpdateVirtualKeysResponse(w http.ResponseWriter) error
+}
+
+type BulkUpdateVirtualKeys200JSONResponse struct {
+	Data    *[]AdminVirtualKey `json:"data,omitempty"`
+	Updated *int               `json:"updated,omitempty"`
+}
+
+func (response BulkUpdateVirtualKeys200JSONResponse) VisitBulkUpdateVirtualKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RevokeVirtualKeyByIDRequestObject struct {
 	KeyID string `json:"keyID"`
 }
@@ -10099,6 +10680,28 @@ type RevokeVirtualKeyByIDResponseObject interface {
 type RevokeVirtualKeyByID200JSONResponse AdminDeleteStatusResponse
 
 func (response RevokeVirtualKeyByID200JSONResponse) VisitRevokeVirtualKeyByIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type GetVirtualKeyResponseObject interface {
+	VisitGetVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type GetVirtualKey200JSONResponse AdminVirtualKey
+
+func (response GetVirtualKey200JSONResponse) VisitGetVirtualKeyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -10122,6 +10725,51 @@ type UpdateVirtualKeyResponseObject interface {
 type UpdateVirtualKey200JSONResponse AdminVirtualKey
 
 func (response UpdateVirtualKey200JSONResponse) VisitUpdateVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BlockVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+	Body  *BlockVirtualKeyJSONRequestBody
+}
+
+type BlockVirtualKeyResponseObject interface {
+	VisitBlockVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type BlockVirtualKey200JSONResponse AdminDeleteStatusResponse
+
+func (response BlockVirtualKey200JSONResponse) VisitBlockVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetVirtualKeySpendRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type ResetVirtualKeySpendResponseObject interface {
+	VisitResetVirtualKeySpendResponse(w http.ResponseWriter) error
+}
+
+type ResetVirtualKeySpend200JSONResponse map[string]interface{}
+
+func (response ResetVirtualKeySpend200JSONResponse) VisitResetVirtualKeySpendResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -10223,6 +10871,28 @@ type SetVirtualKeyTempBudget404Response struct {
 func (response SetVirtualKeyTempBudget404Response) VisitSetVirtualKeyTempBudgetResponse(w http.ResponseWriter) error {
 	w.WriteHeader(404)
 	return nil
+}
+
+type UnblockVirtualKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type UnblockVirtualKeyResponseObject interface {
+	VisitUnblockVirtualKeyResponse(w http.ResponseWriter) error
+}
+
+type UnblockVirtualKey200JSONResponse AdminVirtualKey
+
+func (response UnblockVirtualKey200JSONResponse) VisitUnblockVirtualKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type SetMCPUserCredentialRequestObject struct {
@@ -10766,6 +11436,29 @@ func (response CreateOrganization201JSONResponse) VisitCreateOrganizationRespons
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateOrganizationRequestObject struct {
+	OrgID string `json:"orgID"`
+	Body  *UpdateOrganizationJSONRequestBody
+}
+
+type UpdateOrganizationResponseObject interface {
+	VisitUpdateOrganizationResponse(w http.ResponseWriter) error
+}
+
+type UpdateOrganization200JSONResponse AdminOrganization
+
+func (response UpdateOrganization200JSONResponse) VisitUpdateOrganizationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -11361,6 +12054,28 @@ func (response DeleteQuotaPolicy404Response) VisitDeleteQuotaPolicyResponse(w ht
 	return nil
 }
 
+type RotateMasterKEKRequestObject struct {
+	Body *RotateMasterKEKJSONRequestBody
+}
+
+type RotateMasterKEKResponseObject interface {
+	VisitRotateMasterKEKResponse(w http.ResponseWriter) error
+}
+
+type RotateMasterKEK200JSONResponse map[string]interface{}
+
+func (response RotateMasterKEK200JSONResponse) VisitRotateMasterKEKResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListSpendLogsRequestObject struct {
 	Params ListSpendLogsParams
 }
@@ -11716,6 +12431,33 @@ func (response UpsertTeamMember200JSONResponse) VisitUpsertTeamMemberResponse(w 
 	return err
 }
 
+type BulkUpsertTeamMembersRequestObject struct {
+	TeamID string `json:"teamID"`
+	Body   *BulkUpsertTeamMembersJSONRequestBody
+}
+
+type BulkUpsertTeamMembersResponseObject interface {
+	VisitBulkUpsertTeamMembersResponse(w http.ResponseWriter) error
+}
+
+type BulkUpsertTeamMembers200JSONResponse struct {
+	Data     *[]AdminTeamMembership `json:"data,omitempty"`
+	Removed  *int                   `json:"removed,omitempty"`
+	Upserted *int                   `json:"upserted,omitempty"`
+}
+
+func (response BulkUpsertTeamMembers200JSONResponse) VisitBulkUpsertTeamMembersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type DeleteTeamMemberRequestObject struct {
 	TeamID string `json:"teamID"`
 	UserID string `json:"userID"`
@@ -11729,6 +12471,29 @@ type DeleteTeamMemberResponseObject interface {
 type DeleteTeamMember200JSONResponse AdminDeleteStatusResponse
 
 func (response DeleteTeamMember200JSONResponse) VisitDeleteTeamMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResetTeamMemberSpendRequestObject struct {
+	TeamID string `json:"teamID"`
+	UserID string `json:"userID"`
+}
+
+type ResetTeamMemberSpendResponseObject interface {
+	VisitResetTeamMemberSpendResponse(w http.ResponseWriter) error
+}
+
+type ResetTeamMemberSpend200JSONResponse map[string]interface{}
+
+func (response ResetTeamMemberSpend200JSONResponse) VisitResetTeamMemberSpendResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -12222,6 +12987,27 @@ func (response CreateImageVariation200Response) VisitCreateImageVariationRespons
 	return nil
 }
 
+type GetVirtualKeySelfInfoRequestObject struct {
+}
+
+type GetVirtualKeySelfInfoResponseObject interface {
+	VisitGetVirtualKeySelfInfoResponse(w http.ResponseWriter) error
+}
+
+type GetVirtualKeySelfInfo200JSONResponse AdminVirtualKey
+
+func (response GetVirtualKeySelfInfo200JSONResponse) VisitGetVirtualKeySelfInfoResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateAnthropicMessageRequestObject struct {
 	Body *CreateAnthropicMessageJSONRequestBody
 }
@@ -12339,6 +13125,95 @@ type CreateResponseResponseObject interface {
 type CreateResponse200JSONResponse ResponsesAPIResponse
 
 func (response CreateResponse200JSONResponse) VisitCreateResponseResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSelfServiceKeysRequestObject struct {
+}
+
+type ListSelfServiceKeysResponseObject interface {
+	VisitListSelfServiceKeysResponse(w http.ResponseWriter) error
+}
+
+type ListSelfServiceKeys200JSONResponse struct {
+	Data *[]AdminVirtualKey `json:"data,omitempty"`
+}
+
+func (response ListSelfServiceKeys200JSONResponse) VisitListSelfServiceKeysResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateSelfServiceKeyRequestObject struct {
+	Body *CreateSelfServiceKeyJSONRequestBody
+}
+
+type CreateSelfServiceKeyResponseObject interface {
+	VisitCreateSelfServiceKeyResponse(w http.ResponseWriter) error
+}
+
+type CreateSelfServiceKey201JSONResponse AdminVirtualKey
+
+func (response CreateSelfServiceKey201JSONResponse) VisitCreateSelfServiceKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeSelfServiceKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type RevokeSelfServiceKeyResponseObject interface {
+	VisitRevokeSelfServiceKeyResponse(w http.ResponseWriter) error
+}
+
+type RevokeSelfServiceKey200JSONResponse AdminDeleteStatusResponse
+
+func (response RevokeSelfServiceKey200JSONResponse) VisitRevokeSelfServiceKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateSelfServiceKeyRequestObject struct {
+	KeyID string `json:"keyID"`
+}
+
+type RotateSelfServiceKeyResponseObject interface {
+	VisitRotateSelfServiceKeyResponse(w http.ResponseWriter) error
+}
+
+type RotateSelfServiceKey200JSONResponse AdminVirtualKey
+
+func (response RotateSelfServiceKey200JSONResponse) VisitRotateSelfServiceKeyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -12515,12 +13390,24 @@ type StrictServerInterface interface {
 	// IssueVirtualKey Issue a new virtual API key
 	// (POST /admin/v1/keys)
 	IssueVirtualKey(ctx context.Context, request IssueVirtualKeyRequestObject) (IssueVirtualKeyResponseObject, error)
+	// BulkUpdateVirtualKeys Bulk update status, budgets, rate limits, or allowed models across up to 250 virtual keys
+	// (POST /admin/v1/keys/bulk-update)
+	BulkUpdateVirtualKeys(ctx context.Context, request BulkUpdateVirtualKeysRequestObject) (BulkUpdateVirtualKeysResponseObject, error)
 	// RevokeVirtualKeyByID Revoke a virtual API key by ID
 	// (DELETE /admin/v1/keys/{keyID})
 	RevokeVirtualKeyByID(ctx context.Context, request RevokeVirtualKeyByIDRequestObject) (RevokeVirtualKeyByIDResponseObject, error)
+	// GetVirtualKey Retrieve virtual API key metadata and budget status without secret hash
+	// (GET /admin/v1/keys/{keyID})
+	GetVirtualKey(ctx context.Context, request GetVirtualKeyRequestObject) (GetVirtualKeyResponseObject, error)
 	// UpdateVirtualKey Update a virtual API key's metadata, scopes, budgets, and rate limits
 	// (PUT /admin/v1/keys/{keyID})
 	UpdateVirtualKey(ctx context.Context, request UpdateVirtualKeyRequestObject) (UpdateVirtualKeyResponseObject, error)
+	// BlockVirtualKey Immediately block an active virtual API key with optional reason
+	// (POST /admin/v1/keys/{keyID}/block)
+	BlockVirtualKey(ctx context.Context, request BlockVirtualKeyRequestObject) (BlockVirtualKeyResponseObject, error)
+	// ResetVirtualKeySpend Reset accumulated micro-dollar spend for a virtual API key
+	// (POST /admin/v1/keys/{keyID}/reset-spend)
+	ResetVirtualKeySpend(ctx context.Context, request ResetVirtualKeySpendRequestObject) (ResetVirtualKeySpendResponseObject, error)
 	// RevokeVirtualKey Revoke a virtual API key
 	// (POST /admin/v1/keys/{keyID}/revoke)
 	RevokeVirtualKey(ctx context.Context, request RevokeVirtualKeyRequestObject) (RevokeVirtualKeyResponseObject, error)
@@ -12530,6 +13417,9 @@ type StrictServerInterface interface {
 	// SetVirtualKeyTempBudget Apply or clear a temporary budget boost with expiration for a virtual API key
 	// (POST /admin/v1/keys/{keyID}/temp-budget)
 	SetVirtualKeyTempBudget(ctx context.Context, request SetVirtualKeyTempBudgetRequestObject) (SetVirtualKeyTempBudgetResponseObject, error)
+	// UnblockVirtualKey Restore a previously blocked or revoked virtual API key
+	// (POST /admin/v1/keys/{keyID}/unblock)
+	UnblockVirtualKey(ctx context.Context, request UnblockVirtualKeyRequestObject) (UnblockVirtualKeyResponseObject, error)
 	// SetMCPUserCredential Store a per-user encrypted credential for an MCP server
 	// (POST /admin/v1/mcp/credentials)
 	SetMCPUserCredential(ctx context.Context, request SetMCPUserCredentialRequestObject) (SetMCPUserCredentialResponseObject, error)
@@ -12590,6 +13480,9 @@ type StrictServerInterface interface {
 	// CreateOrganization Create an organization
 	// (POST /admin/v1/organizations)
 	CreateOrganization(ctx context.Context, request CreateOrganizationRequestObject) (CreateOrganizationResponseObject, error)
+	// UpdateOrganization Update organization governance, throughput guarantees, self-service, and webhook settings
+	// (PUT /admin/v1/organizations/{orgID})
+	UpdateOrganization(ctx context.Context, request UpdateOrganizationRequestObject) (UpdateOrganizationResponseObject, error)
 	// ListGuardrailBindings List guardrail bindings for an organization
 	// (GET /admin/v1/organizations/{orgID}/guardrail-bindings)
 	ListGuardrailBindings(ctx context.Context, request ListGuardrailBindingsRequestObject) (ListGuardrailBindingsResponseObject, error)
@@ -12659,6 +13552,9 @@ type StrictServerInterface interface {
 	// DeleteQuotaPolicy Delete a scoped quota policy
 	// (DELETE /admin/v1/quotas/{policyID})
 	DeleteQuotaPolicy(ctx context.Context, request DeleteQuotaPolicyRequestObject) (DeleteQuotaPolicyResponseObject, error)
+	// RotateMasterKEK Zero-downtime envelope DEK re-wrapping under a new master KEK (platform_admin only)
+	// (POST /admin/v1/security/rotate-kek)
+	RotateMasterKEK(ctx context.Context, request RotateMasterKEKRequestObject) (RotateMasterKEKResponseObject, error)
 	// ListSpendLogs List spend log records for an organization
 	// (GET /admin/v1/spend/logs)
 	ListSpendLogs(ctx context.Context, request ListSpendLogsRequestObject) (ListSpendLogsResponseObject, error)
@@ -12698,9 +13594,15 @@ type StrictServerInterface interface {
 	// UpsertTeamMember Add or update an M:N user membership within a team
 	// (POST /admin/v1/teams/{teamID}/members)
 	UpsertTeamMember(ctx context.Context, request UpsertTeamMemberRequestObject) (UpsertTeamMemberResponseObject, error)
+	// BulkUpsertTeamMembers Bulk add, update, or remove team memberships inheriting team default limits when omitted
+	// (POST /admin/v1/teams/{teamID}/members/bulk)
+	BulkUpsertTeamMembers(ctx context.Context, request BulkUpsertTeamMembersRequestObject) (BulkUpsertTeamMembersResponseObject, error)
 	// DeleteTeamMember Remove a user's membership from a team
 	// (DELETE /admin/v1/teams/{teamID}/members/{userID})
 	DeleteTeamMember(ctx context.Context, request DeleteTeamMemberRequestObject) (DeleteTeamMemberResponseObject, error)
+	// ResetTeamMemberSpend Reset accumulated micro-dollar spend for a user within a team
+	// (POST /admin/v1/teams/{teamID}/members/{userID}/reset-spend)
+	ResetTeamMemberSpend(ctx context.Context, request ResetTeamMemberSpendRequestObject) (ResetTeamMemberSpendResponseObject, error)
 	// ListUsers List users for an organization
 	// (GET /admin/v1/users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
@@ -12770,6 +13672,9 @@ type StrictServerInterface interface {
 	// CreateImageVariation Generate variations from a PNG image
 	// (POST /v1/images/variations)
 	CreateImageVariation(ctx context.Context, request CreateImageVariationRequestObject) (CreateImageVariationResponseObject, error)
+	// GetVirtualKeySelfInfo Retrieve metadata, limits, spend, and expiration for the calling virtual API key
+	// (GET /v1/key/info)
+	GetVirtualKeySelfInfo(ctx context.Context, request GetVirtualKeySelfInfoRequestObject) (GetVirtualKeySelfInfoResponseObject, error)
 	// CreateAnthropicMessage Anthropic Claude Messages ingress bridge with bidirectional SSE streaming
 	// (POST /v1/messages)
 	CreateAnthropicMessage(ctx context.Context, request CreateAnthropicMessageRequestObject) (CreateAnthropicMessageResponseObject, error)
@@ -12791,6 +13696,18 @@ type StrictServerInterface interface {
 	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(ctx context.Context, request CreateResponseRequestObject) (CreateResponseResponseObject, error)
+	// ListSelfServiceKeys List virtual API keys owned by the authenticated developer
+	// (GET /v1/self/keys)
+	ListSelfServiceKeys(ctx context.Context, request ListSelfServiceKeysRequestObject) (ListSelfServiceKeysResponseObject, error)
+	// CreateSelfServiceKey Issue a governed self-service virtual API key bound to the authenticated user
+	// (POST /v1/self/keys)
+	CreateSelfServiceKey(ctx context.Context, request CreateSelfServiceKeyRequestObject) (CreateSelfServiceKeyResponseObject, error)
+	// RevokeSelfServiceKey Revoke a virtual API key owned by the authenticated user
+	// (DELETE /v1/self/keys/{keyID})
+	RevokeSelfServiceKey(ctx context.Context, request RevokeSelfServiceKeyRequestObject) (RevokeSelfServiceKeyResponseObject, error)
+	// RotateSelfServiceKey Rotate a virtual API key owned by the authenticated user
+	// (POST /v1/self/keys/{keyID}/rotate)
+	RotateSelfServiceKey(ctx context.Context, request RotateSelfServiceKeyRequestObject) (RotateSelfServiceKeyResponseObject, error)
 	// CountTokens Precise token counting and prompt breakdown
 	// (POST /v1/tokenize)
 	CountTokens(ctx context.Context, request CountTokensRequestObject) (CountTokensResponseObject, error)
@@ -14167,6 +15084,37 @@ func (sh *strictHandler) IssueVirtualKey(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// BulkUpdateVirtualKeys operation middleware
+func (sh *strictHandler) BulkUpdateVirtualKeys(w http.ResponseWriter, r *http.Request) {
+	var request BulkUpdateVirtualKeysRequestObject
+
+	var body BulkUpdateVirtualKeysJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BulkUpdateVirtualKeys(ctx, request.(BulkUpdateVirtualKeysRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BulkUpdateVirtualKeys")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BulkUpdateVirtualKeysResponseObject); ok {
+		if err := validResponse.VisitBulkUpdateVirtualKeysResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // RevokeVirtualKeyByID operation middleware
 func (sh *strictHandler) RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Request, keyID string) {
 	var request RevokeVirtualKeyByIDRequestObject
@@ -14186,6 +15134,32 @@ func (sh *strictHandler) RevokeVirtualKeyByID(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RevokeVirtualKeyByIDResponseObject); ok {
 		if err := validResponse.VisitRevokeVirtualKeyByIDResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetVirtualKey operation middleware
+func (sh *strictHandler) GetVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request GetVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetVirtualKey(ctx, request.(GetVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitGetVirtualKeyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -14219,6 +15193,68 @@ func (sh *strictHandler) UpdateVirtualKey(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateVirtualKeyResponseObject); ok {
 		if err := validResponse.VisitUpdateVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// BlockVirtualKey operation middleware
+func (sh *strictHandler) BlockVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request BlockVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	var body BlockVirtualKeyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BlockVirtualKey(ctx, request.(BlockVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BlockVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BlockVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitBlockVirtualKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetVirtualKeySpend operation middleware
+func (sh *strictHandler) ResetVirtualKeySpend(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request ResetVirtualKeySpendRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetVirtualKeySpend(ctx, request.(ResetVirtualKeySpendRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetVirtualKeySpend")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetVirtualKeySpendResponseObject); ok {
+		if err := validResponse.VisitResetVirtualKeySpendResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -14314,6 +15350,32 @@ func (sh *strictHandler) SetVirtualKeyTempBudget(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetVirtualKeyTempBudgetResponseObject); ok {
 		if err := validResponse.VisitSetVirtualKeyTempBudgetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UnblockVirtualKey operation middleware
+func (sh *strictHandler) UnblockVirtualKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request UnblockVirtualKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UnblockVirtualKey(ctx, request.(UnblockVirtualKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UnblockVirtualKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UnblockVirtualKeyResponseObject); ok {
+		if err := validResponse.VisitUnblockVirtualKeyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -14877,6 +15939,39 @@ func (sh *strictHandler) CreateOrganization(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateOrganizationResponseObject); ok {
 		if err := validResponse.VisitCreateOrganizationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateOrganization operation middleware
+func (sh *strictHandler) UpdateOrganization(w http.ResponseWriter, r *http.Request, orgID string) {
+	var request UpdateOrganizationRequestObject
+
+	request.OrgID = orgID
+
+	var body UpdateOrganizationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateOrganization(ctx, request.(UpdateOrganizationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateOrganization")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateOrganizationResponseObject); ok {
+		if err := validResponse.VisitUpdateOrganizationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -15552,6 +16647,37 @@ func (sh *strictHandler) DeleteQuotaPolicy(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// RotateMasterKEK operation middleware
+func (sh *strictHandler) RotateMasterKEK(w http.ResponseWriter, r *http.Request) {
+	var request RotateMasterKEKRequestObject
+
+	var body RotateMasterKEKJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateMasterKEK(ctx, request.(RotateMasterKEKRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateMasterKEK")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateMasterKEKResponseObject); ok {
+		if err := validResponse.VisitRotateMasterKEKResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListSpendLogs operation middleware
 func (sh *strictHandler) ListSpendLogs(w http.ResponseWriter, r *http.Request, params ListSpendLogsParams) {
 	var request ListSpendLogsRequestObject
@@ -15922,6 +17048,39 @@ func (sh *strictHandler) UpsertTeamMember(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// BulkUpsertTeamMembers operation middleware
+func (sh *strictHandler) BulkUpsertTeamMembers(w http.ResponseWriter, r *http.Request, teamID string) {
+	var request BulkUpsertTeamMembersRequestObject
+
+	request.TeamID = teamID
+
+	var body BulkUpsertTeamMembersJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BulkUpsertTeamMembers(ctx, request.(BulkUpsertTeamMembersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BulkUpsertTeamMembers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BulkUpsertTeamMembersResponseObject); ok {
+		if err := validResponse.VisitBulkUpsertTeamMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // DeleteTeamMember operation middleware
 func (sh *strictHandler) DeleteTeamMember(w http.ResponseWriter, r *http.Request, teamID string, userID string, params DeleteTeamMemberParams) {
 	var request DeleteTeamMemberRequestObject
@@ -15943,6 +17102,33 @@ func (sh *strictHandler) DeleteTeamMember(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteTeamMemberResponseObject); ok {
 		if err := validResponse.VisitDeleteTeamMemberResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetTeamMemberSpend operation middleware
+func (sh *strictHandler) ResetTeamMemberSpend(w http.ResponseWriter, r *http.Request, teamID string, userID string) {
+	var request ResetTeamMemberSpendRequestObject
+
+	request.TeamID = teamID
+	request.UserID = userID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetTeamMemberSpend(ctx, request.(ResetTeamMemberSpendRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetTeamMemberSpend")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetTeamMemberSpendResponseObject); ok {
+		if err := validResponse.VisitResetTeamMemberSpendResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -16588,6 +17774,30 @@ func (sh *strictHandler) CreateImageVariation(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// GetVirtualKeySelfInfo operation middleware
+func (sh *strictHandler) GetVirtualKeySelfInfo(w http.ResponseWriter, r *http.Request) {
+	var request GetVirtualKeySelfInfoRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetVirtualKeySelfInfo(ctx, request.(GetVirtualKeySelfInfoRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetVirtualKeySelfInfo")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetVirtualKeySelfInfoResponseObject); ok {
+		if err := validResponse.VisitGetVirtualKeySelfInfoResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateAnthropicMessage operation middleware
 func (sh *strictHandler) CreateAnthropicMessage(w http.ResponseWriter, r *http.Request) {
 	var request CreateAnthropicMessageRequestObject
@@ -16784,6 +17994,113 @@ func (sh *strictHandler) CreateResponse(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateResponseResponseObject); ok {
 		if err := validResponse.VisitCreateResponseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSelfServiceKeys operation middleware
+func (sh *strictHandler) ListSelfServiceKeys(w http.ResponseWriter, r *http.Request) {
+	var request ListSelfServiceKeysRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSelfServiceKeys(ctx, request.(ListSelfServiceKeysRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSelfServiceKeys")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSelfServiceKeysResponseObject); ok {
+		if err := validResponse.VisitListSelfServiceKeysResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateSelfServiceKey operation middleware
+func (sh *strictHandler) CreateSelfServiceKey(w http.ResponseWriter, r *http.Request) {
+	var request CreateSelfServiceKeyRequestObject
+
+	var body CreateSelfServiceKeyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateSelfServiceKey(ctx, request.(CreateSelfServiceKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateSelfServiceKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateSelfServiceKeyResponseObject); ok {
+		if err := validResponse.VisitCreateSelfServiceKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeSelfServiceKey operation middleware
+func (sh *strictHandler) RevokeSelfServiceKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request RevokeSelfServiceKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeSelfServiceKey(ctx, request.(RevokeSelfServiceKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeSelfServiceKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeSelfServiceKeyResponseObject); ok {
+		if err := validResponse.VisitRevokeSelfServiceKeyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RotateSelfServiceKey operation middleware
+func (sh *strictHandler) RotateSelfServiceKey(w http.ResponseWriter, r *http.Request, keyID string) {
+	var request RotateSelfServiceKeyRequestObject
+
+	request.KeyID = keyID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateSelfServiceKey(ctx, request.(RotateSelfServiceKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateSelfServiceKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateSelfServiceKeyResponseObject); ok {
+		if err := validResponse.VisitRotateSelfServiceKeyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

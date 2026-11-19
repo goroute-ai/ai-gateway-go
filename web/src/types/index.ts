@@ -87,6 +87,10 @@ export interface Organization {
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  enforce_guaranteed_throughput?: boolean;
+  developer_self_serve_keys?: boolean;
+  key_expiry_alert_days?: number[];
+  lifecycle_webhook_url?: string;
   is_active: boolean;
   created_at?: string;
 }
@@ -106,6 +110,12 @@ export interface Team {
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  enforce_guaranteed_throughput?: boolean;
+  default_member_max_budget_micros?: number;
+  default_member_rpm_limit?: number;
+  default_member_tpm_limit?: number;
+  default_member_allowed_models?: string[];
+  team_member_permissions?: string[];
   allowed_models?: string[];
   allowed_mcp_servers?: string[] | null;
   allowed_a2a_agents?: string[] | null;

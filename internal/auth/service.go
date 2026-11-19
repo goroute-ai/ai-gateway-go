@@ -16,12 +16,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 )
 
 type l1CacheEntry struct {
@@ -52,6 +54,8 @@ type Service struct {
 	l1TTL                   time.Duration
 	l2TTL                   time.Duration
 	l1Cache                 sync.Map // keyHash -> l1CacheEntry
+	authFlight              singleflight.Group
+	invalidationSeq         atomic.Uint64
 	invalidationMu          sync.Mutex
 	invalidationCancel      context.CancelFunc
 	nowFn                   func() time.Time
@@ -412,6 +416,7 @@ func (s *Service) UpdateVirtualKey(ctx context.Context, vk *domain.VirtualKey) e
 	if vk.KeyHash != "" && vk.KeyHash != existing.KeyHash {
 		s.InvalidateKeyHash(ctx, vk.KeyHash)
 	}
+	s.invalidateDeprecatedKeyHashes(ctx, vk.ID, existing.KeyHash, vk.KeyHash, !vk.IsActive)
 	return nil
 }
 
@@ -425,28 +430,51 @@ func (s *Service) RotateVirtualKey(ctx context.Context, id string) (*domain.Virt
 // RevokeKey marks a Virtual Key inactive and immediately evicts it (and any deprecated grace hashes)
 // from L1 and L2 caches across all pods.
 func (s *Service) RevokeKey(ctx context.Context, id string) error {
+	return s.RevokeKeyWithActor(ctx, id, "")
+}
+
+// RevokeKeyWithActor marks a Virtual Key inactive with actor attribution and immediately evicts caches.
+func (s *Service) RevokeKeyWithActor(ctx context.Context, id, revokedBy string) error {
 	vk, err := s.repo.GetVirtualKeyByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	if err := s.repo.RevokeVirtualKey(ctx, id); err != nil {
+	if govRepo, ok := s.repo.(storage.KeyGovernanceRepository); ok && govRepo != nil {
+		if err := govRepo.RevokeVirtualKeyWithActor(ctx, id, revokedBy); err != nil {
+			return err
+		}
+	} else if err := s.repo.RevokeVirtualKey(ctx, id); err != nil {
 		return err
 	}
 	s.InvalidateKeyHash(ctx, vk.KeyHash)
-	if depRev, ok := s.repo.(storage.DeprecatedKeyRevocationRepository); ok && depRev != nil {
-		if deprecatedHashes, err := depRev.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, id); err == nil {
-			for _, h := range deprecatedHashes {
-				if h != "" && h != vk.KeyHash {
-					s.InvalidateKeyHash(ctx, h)
-				}
-			}
+	s.invalidateDeprecatedKeyHashes(ctx, id, vk.KeyHash, "", true)
+	return nil
+}
+
+func (s *Service) invalidateDeprecatedKeyHashes(ctx context.Context, keyID, skipHashA, skipHashB string, deleteRows bool) {
+	if s == nil || s.repo == nil || strings.TrimSpace(keyID) == "" {
+		return
+	}
+	var hashes []string
+	if deleteRows {
+		if depRev, ok := s.repo.(storage.DeprecatedKeyRevocationRepository); ok && depRev != nil {
+			hashes, _ = depRev.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, keyID)
+		}
+	} else {
+		if depLookup, ok := s.repo.(storage.DeprecatedKeyLookupRepository); ok && depLookup != nil {
+			hashes, _ = depLookup.ListDeprecatedVirtualKeyHashesByKeyID(ctx, keyID)
 		}
 	}
-	return nil
+	for _, h := range hashes {
+		if h != "" && h != skipHashA && h != skipHashB {
+			s.InvalidateKeyHash(ctx, h)
+		}
+	}
 }
 
 // InvalidateKeyHash evicts a key from local L1 cache, deletes its L2 Redis key, and broadcasts Pub/Sub eviction.
 func (s *Service) InvalidateKeyHash(ctx context.Context, keyHash string) {
+	s.invalidationSeq.Add(1)
 	s.l1Cache.Delete(keyHash)
 	if s.redis != nil {
 		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -466,6 +494,7 @@ func (s *Service) InvalidateOrg(ctx context.Context, orgID string) {
 	if orgID == "" {
 		return
 	}
+	s.invalidationSeq.Add(1)
 	s.evictL1ByOrg(orgID)
 	if s.redis != nil {
 		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -485,6 +514,7 @@ func (s *Service) InvalidateTeam(ctx context.Context, teamID string) {
 	if teamID == "" {
 		return
 	}
+	s.invalidationSeq.Add(1)
 	s.evictL1ByTeam(teamID)
 	if s.redis != nil {
 		if _, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
@@ -542,6 +572,7 @@ func (s *Service) AddInvalidationHandler(fn func(storage.InvalidationEvent)) {
 }
 
 func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
+	s.invalidationSeq.Add(1)
 	switch ev.Type {
 	case "key":
 		if ev.KeyHash != "" {
@@ -555,6 +586,9 @@ func (s *Service) handleInvalidation(ev storage.InvalidationEvent) {
 		if ev.EntityID != "" {
 			s.evictL1ByTeam(ev.EntityID)
 		}
+	case "vault_kek_rotated":
+		slog.Warn("auth: master KEK rotated by peer gateway instance; roll peer instances with the updated master encryption key",
+			"source_pod", ev.EntityID)
 	}
 
 	s.invalidationMu.Lock()
@@ -612,15 +646,19 @@ func (s *Service) StopInvalidationListener() {
 	}
 }
 
-// InvalidateKeyID invalidates a virtual key by its entity ID, looking up its key hash when available.
+// InvalidateKeyID invalidates a virtual key (and any deprecated grace hashes) by its entity ID.
 func (s *Service) InvalidateKeyID(ctx context.Context, id string) {
+	var activeHash string
 	if s.repo != nil {
 		if vk, err := s.repo.GetVirtualKeyByID(ctx, id); err == nil && vk != nil && vk.KeyHash != "" {
-			s.InvalidateKeyHash(ctx, vk.KeyHash)
-			return
+			activeHash = vk.KeyHash
+			s.InvalidateKeyHash(ctx, activeHash)
 		}
 	}
-	s.l1Cache.Delete(id)
+	s.invalidateDeprecatedKeyHashes(ctx, id, activeHash, "", false)
+	if activeHash == "" {
+		s.l1Cache.Delete(id)
+	}
 }
 
 // InvalidateUserKeys immediately evicts all virtual keys belonging to userID from L1,
@@ -664,6 +702,8 @@ func (s *Service) InvalidateUserKeys(ctx context.Context, orgID, userID string) 
 }
 
 // AuthenticateVirtualKey validates a Bearer `sk-gw-...` token using the L1 Memory -> L2 Redis -> Repository hierarchy.
+// Concurrent misses for the same keyHash are collapsed via singleflight and guarded by a pre-read invalidation lease
+// so stale DB reads never overwrite concurrent revocations or rotations.
 func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (*domain.IdentityContext, error) {
 	rawToken = strings.TrimSpace(rawToken)
 	if rawToken == "" {
@@ -678,134 +718,157 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 	keyHash := HashKey(rawToken)
 	now := s.now()
 
-	// 1. Check L1 In-Memory Cache
-	if val, ok := s.l1Cache.Load(keyHash); ok {
-		entry := val.(l1CacheEntry)
-		if now.Before(entry.expiresAt) {
-			if isKeyExpired(entry.keyExpiresAt, now) {
-				s.l1Cache.Delete(keyHash)
-				return nil, expiredVirtualKeyError()
-			}
-			if entry.identity != nil && entry.identity.DeprecatedKeyRevokeAt != nil && !now.Before(*entry.identity.DeprecatedKeyRevokeAt) {
-				s.l1Cache.Delete(keyHash)
-			} else {
-				return entry.identity, nil
-			}
-		} else {
-			s.l1Cache.Delete(keyHash)
-		}
+	// 1. Check L1 In-Memory Cache (lock-free fast path)
+	if idCtx, err, hit := s.loadL1Identity(keyHash, now); hit {
+		return idCtx, err
 	}
 
-	// 2. Check L2 Redis Cache
-	if s.redis != nil {
-		res, err := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Get(ctx, authCacheKey(keyHash)).Result()
-		})
-		if err == nil {
-			if jsonStr, ok := res.(string); ok && jsonStr != "" {
-				var cached cachedIdentity
-				if json.Unmarshal([]byte(jsonStr), &cached) == nil && cached.Identity.VirtualKeyID != "" {
-					if isKeyExpired(cached.KeyExpiresAt, now) {
-						s.l1Cache.Delete(keyHash)
-						return nil, expiredVirtualKeyError()
-					}
-					deprecatedExpired := cached.Identity.DeprecatedKeyRevokeAt != nil && !now.Before(*cached.Identity.DeprecatedKeyRevokeAt)
-					if !deprecatedExpired {
-						orgEpoch, teamEpoch := s.fetchEpochs(ctx, cached.Identity.OrgID, cached.Identity.TeamID)
-						if orgEpoch == cached.OrgEpoch && teamEpoch == cached.TeamEpoch {
-							idCtx := cached.Identity
-							l1Exp := now.Add(s.l1TTL)
-							if idCtx.DeprecatedKeyRevokeAt != nil && idCtx.DeprecatedKeyRevokeAt.Before(l1Exp) {
-								l1Exp = *idCtx.DeprecatedKeyRevokeAt
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+
+	// 2. Collapse concurrent L2/DB misses per keyHash via singleflight.
+	lookupCtx := context.WithoutCancel(ctx)
+	if _, hasDeadline := lookupCtx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		lookupCtx, cancel = context.WithTimeout(lookupCtx, 10*time.Second)
+		defer cancel()
+	}
+
+	val, err, _ := s.authFlight.Do(keyHash, func() (any, error) {
+		now := s.now()
+		if idCtx, l1Err, hit := s.loadL1Identity(keyHash, now); hit {
+			if l1Err != nil {
+				return nil, l1Err
+			}
+			return idCtx, nil
+		}
+
+		// Check L2 Redis Cache
+		if s.redis != nil {
+			res, rErr := s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+				return rdb.Get(lookupCtx, authCacheKey(keyHash)).Result()
+			})
+			if rErr == nil {
+				if jsonStr, ok := res.(string); ok && jsonStr != "" {
+					var cached cachedIdentity
+					if json.Unmarshal([]byte(jsonStr), &cached) == nil && cached.Identity.VirtualKeyID != "" {
+						if isKeyExpired(cached.KeyExpiresAt, now) {
+							s.l1Cache.Delete(keyHash)
+							return nil, expiredVirtualKeyError()
+						}
+						deprecatedExpired := cached.Identity.DeprecatedKeyRevokeAt != nil && !now.Before(*cached.Identity.DeprecatedKeyRevokeAt)
+						if !deprecatedExpired {
+							orgEpoch, teamEpoch := s.fetchEpochs(lookupCtx, cached.Identity.OrgID, cached.Identity.TeamID)
+							if orgEpoch == cached.OrgEpoch && teamEpoch == cached.TeamEpoch {
+								idCtx := cached.Identity
+								l1Exp := now.Add(s.l1TTL)
+								if idCtx.DeprecatedKeyRevokeAt != nil && idCtx.DeprecatedKeyRevokeAt.Before(l1Exp) {
+									l1Exp = *idCtx.DeprecatedKeyRevokeAt
+								}
+								s.l1Cache.Store(keyHash, l1CacheEntry{
+									identity:     &idCtx,
+									expiresAt:    l1Exp,
+									keyExpiresAt: cached.KeyExpiresAt,
+								})
+								return &idCtx, nil
 							}
-							s.l1Cache.Store(keyHash, l1CacheEntry{
-								identity:     &idCtx,
-								expiresAt:    l1Exp,
-								keyExpiresAt: cached.KeyExpiresAt,
-							})
-							return &idCtx, nil
 						}
 					}
 				}
 			}
 		}
-	}
 
-	// 3. Query Durable Repository (primary key hash, then active deprecated grace hash)
-	var deprecatedRevokeAt *time.Time
-	vk, err := s.repo.GetVirtualKeyByHash(ctx, keyHash)
-	if err != nil {
-		if rotRepo, ok := s.repo.(storage.KeyRotationRepository); ok && rotRepo != nil {
-			if depVK, revokeAt, depErr := rotRepo.GetActiveDeprecatedVirtualKey(ctx, keyHash, now); depErr == nil && depVK != nil && now.Before(revokeAt) {
-				vk = depVK
-				err = nil
-				revUTC := revokeAt.UTC()
-				deprecatedRevokeAt = &revUTC
-			}
-		}
-	}
-	if err != nil || vk == nil || !vk.IsActive {
-		// Admin convenience: allow MasterAdminKey on /v1/* Data Plane only when explicitly enabled
-		if err != nil && s.allowMasterKeyDataPlane && s.ValidateAdminKey(rawToken) {
-			if org := s.resolveDefaultActiveOrg(ctx); org != nil {
-				idCtx := &domain.IdentityContext{
-					VirtualKeyID:                "vk_master_admin",
-					KeyPrefix:                   "master-admin",
-					OrgID:                       org.ID,
-					Role:                        domain.RoleOrgAdmin,
-					KeyType:                     domain.KeyTypeDefault,
-					SCIMActive:                  true,
-					CanImpersonate:              true,
-					AllowedEndpoints:            []string{"*"},
-					KeyAllowedMCPServers:        []string{"*"},
-					KeyAllowedA2AAgents:         []string{"*"},
-					OrgRPMLimit:                 org.RPMLimit,
-					OrgTPMLimit:                 org.TPMLimit,
-					OrgMaxConcurrent:            org.MaxConcurrentRequests,
-					OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
-					OrgMaxBudgetMicros:          org.MaxBudgetMicros,
-					OrgSoftBudgetMicros:         org.SoftBudgetMicros,
-					OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
-					OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
-					OrgSpentMicros:              org.SpentMicros,
+		// Capture pre-read invalidation lease before hitting durable storage.
+		preSeq := s.invalidationSeq.Load()
+
+		var (
+			vk                 *domain.VirtualKey
+			idCtx              *domain.IdentityContext
+			deprecatedRevokeAt *time.Time
+			lookupErr          error
+		)
+		if bundleRepo, ok := s.repo.(storage.VirtualKeyBundleLookup); ok && bundleRepo != nil {
+			var bundle *storage.VirtualKeyAuthBundle
+			bundle, lookupErr = bundleRepo.GetVirtualKeyAuthBundleByHash(lookupCtx, keyHash, now)
+			if lookupErr == nil && bundle != nil && bundle.Key != nil {
+				vk = bundle.Key
+				if bundle.Deprecated && !bundle.DeprecatedKeyRevokeAt.IsZero() {
+					revUTC := bundle.DeprecatedKeyRevokeAt.UTC()
+					deprecatedRevokeAt = &revUTC
 				}
-				s.l1Cache.Store(keyHash, l1CacheEntry{
-					identity:  idCtx,
-					expiresAt: now.Add(s.l1TTL),
-				})
-				return idCtx, nil
+				if vk.IsActive {
+					if vk.ExpiresAt != nil && !now.Before(*vk.ExpiresAt) {
+						return nil, expiredVirtualKeyError()
+					}
+					idCtx, lookupErr = s.identityFromAuthBundle(vk, bundle)
+					if lookupErr == nil && deprecatedRevokeAt != nil {
+						idCtx.DeprecatedKeyRevokeAt = deprecatedRevokeAt
+					}
+				}
+			}
+		} else {
+			vk, lookupErr = s.repo.GetVirtualKeyByHash(lookupCtx, keyHash)
+			if lookupErr != nil {
+				if rotRepo, ok := s.repo.(storage.KeyRotationRepository); ok && rotRepo != nil {
+					if depVK, revokeAt, depErr := rotRepo.GetActiveDeprecatedVirtualKey(lookupCtx, keyHash, now); depErr == nil && depVK != nil && now.Before(revokeAt) {
+						vk = depVK
+						lookupErr = nil
+						revUTC := revokeAt.UTC()
+						deprecatedRevokeAt = &revUTC
+					}
+				}
+			}
+			if lookupErr == nil && vk != nil && vk.IsActive {
+				if vk.ExpiresAt != nil && !now.Before(*vk.ExpiresAt) {
+					return nil, expiredVirtualKeyError()
+				}
+				idCtx, lookupErr = s.resolveVirtualKeyIdentity(lookupCtx, vk)
+				if lookupErr == nil && deprecatedRevokeAt != nil {
+					idCtx.DeprecatedKeyRevokeAt = deprecatedRevokeAt
+				}
 			}
 		}
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "invalid_api_key",
-			Message:    "Invalid or revoked virtual API key",
-		}
-	}
-	if vk.ExpiresAt != nil && !now.Before(*vk.ExpiresAt) {
-		return nil, expiredVirtualKeyError()
-	}
 
-	idCtx, err := s.resolveVirtualKeyIdentity(ctx, vk)
-	if err != nil {
-		return nil, err
-	}
-	if deprecatedRevokeAt != nil {
-		idCtx.DeprecatedKeyRevokeAt = deprecatedRevokeAt
-	}
-
-	// Hydrate L2 Redis + L1 Memory (capping TTLs to deprecatedRevokeAt when in grace window)
-	var keyExpiresAt *time.Time
-	if vk.ExpiresAt != nil {
-		expiresAt := vk.ExpiresAt.UTC()
-		keyExpiresAt = &expiresAt
-	}
-	l1ExpiresAt := now.Add(s.l1TTL)
-	l2TTL := s.l2TTL
-	if deprecatedRevokeAt != nil {
-		remaining := deprecatedRevokeAt.Sub(now)
-		if remaining <= 0 {
+		if lookupErr != nil && idCtx == nil {
+			// Preserve explicit permission/availability GatewayErrors from bundle resolution (e.g. org inactive).
+			var gwErr *domain.GatewayError
+			if errors.As(lookupErr, &gwErr) {
+				return nil, gwErr
+			}
+			// Admin convenience: allow MasterAdminKey on /v1/* Data Plane only when explicitly enabled
+			if s.allowMasterKeyDataPlane && s.ValidateAdminKey(rawToken) {
+				if org := s.resolveDefaultActiveOrg(lookupCtx); org != nil {
+					masterCtx := &domain.IdentityContext{
+						VirtualKeyID:                "vk_master_admin",
+						KeyPrefix:                   "master-admin",
+						OrgID:                       org.ID,
+						Role:                        domain.RoleOrgAdmin,
+						KeyType:                     domain.KeyTypeDefault,
+						SCIMActive:                  true,
+						CanImpersonate:              true,
+						AllowedEndpoints:            []string{"*"},
+						KeyAllowedMCPServers:        []string{"*"},
+						KeyAllowedA2AAgents:         []string{"*"},
+						OrgRPMLimit:                 org.RPMLimit,
+						OrgTPMLimit:                 org.TPMLimit,
+						OrgMaxConcurrent:            org.MaxConcurrentRequests,
+						OrgBatchEnqueuedTokenLimit:  org.BatchEnqueuedTokenLimit,
+						OrgMaxBudgetMicros:          org.MaxBudgetMicros,
+						OrgSoftBudgetMicros:         org.SoftBudgetMicros,
+						OrgThrottleOnBudgetExceeded: org.ThrottleOnBudgetExceeded,
+						OrgBudgetFallbacks:          domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+						OrgSpentMicros:              org.SpentMicros,
+					}
+					if s.invalidationSeq.Load() == preSeq {
+						s.l1Cache.Store(keyHash, l1CacheEntry{
+							identity:  masterCtx,
+							expiresAt: now.Add(s.l1TTL),
+						})
+					}
+					return masterCtx, nil
+				}
+			}
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusUnauthorized,
 				Type:       domain.ErrorTypeAuthentication,
@@ -813,33 +876,312 @@ func (s *Service) AuthenticateVirtualKey(ctx context.Context, rawToken string) (
 				Message:    "Invalid or revoked virtual API key",
 			}
 		}
-		if deprecatedRevokeAt.Before(l1ExpiresAt) {
-			l1ExpiresAt = *deprecatedRevokeAt
+
+		if vk == nil || !vk.IsActive || idCtx == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_api_key",
+				Message:    "Invalid or revoked virtual API key",
+			}
 		}
-		if remaining < l2TTL {
-			l2TTL = remaining
+
+		var keyExpiresAt *time.Time
+		if vk.ExpiresAt != nil {
+			expiresAt := vk.ExpiresAt.UTC()
+			keyExpiresAt = &expiresAt
 		}
-	}
-	orgEpoch, teamEpoch := s.fetchEpochs(ctx, idCtx.OrgID, idCtx.TeamID)
-	cacheEntry := cachedIdentity{
-		Identity:     *idCtx,
-		KeyExpiresAt: keyExpiresAt,
-		OrgEpoch:     orgEpoch,
-		TeamEpoch:    teamEpoch,
-	}
-	if s.redis != nil && l2TTL > 0 {
-		if b, err := json.Marshal(cacheEntry); err == nil {
-			_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-				return rdb.Set(ctx, authCacheKey(keyHash), b, l2TTL).Result()
+		l1ExpiresAt := now.Add(s.l1TTL)
+		l2TTL := s.l2TTL
+		if deprecatedRevokeAt != nil {
+			remaining := deprecatedRevokeAt.Sub(now)
+			if remaining <= 0 {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusUnauthorized,
+					Type:       domain.ErrorTypeAuthentication,
+					Code:       "invalid_api_key",
+					Message:    "Invalid or revoked virtual API key",
+				}
+			}
+			if deprecatedRevokeAt.Before(l1ExpiresAt) {
+				l1ExpiresAt = *deprecatedRevokeAt
+			}
+			if remaining < l2TTL {
+				l2TTL = remaining
+			}
+		}
+
+		// Anti-stampede lease guard: skip cache write if an invalidation landed during the DB read.
+		if s.invalidationSeq.Load() == preSeq {
+			orgEpoch, teamEpoch := s.fetchEpochs(lookupCtx, idCtx.OrgID, idCtx.TeamID)
+			cacheEntry := cachedIdentity{
+				Identity:     *idCtx,
+				KeyExpiresAt: keyExpiresAt,
+				OrgEpoch:     orgEpoch,
+				TeamEpoch:    teamEpoch,
+			}
+			if s.redis != nil && l2TTL > 0 {
+				if b, mErr := json.Marshal(cacheEntry); mErr == nil {
+					_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+						return rdb.Set(lookupCtx, authCacheKey(keyHash), b, l2TTL).Result()
+					})
+				}
+			}
+			s.l1Cache.Store(keyHash, l1CacheEntry{
+				identity:     idCtx,
+				expiresAt:    l1ExpiresAt,
+				keyExpiresAt: keyExpiresAt,
 			})
 		}
-	}
-	s.l1Cache.Store(keyHash, l1CacheEntry{
-		identity:     idCtx,
-		expiresAt:    l1ExpiresAt,
-		keyExpiresAt: keyExpiresAt,
-	})
 
+		return idCtx, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	idCtx, ok := val.(*domain.IdentityContext)
+	if !ok || idCtx == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_api_key",
+			Message:    "Invalid or revoked virtual API key",
+		}
+	}
+	return idCtx, nil
+}
+
+func (s *Service) loadL1Identity(keyHash string, now time.Time) (*domain.IdentityContext, error, bool) {
+	val, ok := s.l1Cache.Load(keyHash)
+	if !ok {
+		return nil, nil, false
+	}
+	entry := val.(l1CacheEntry)
+	if !now.Before(entry.expiresAt) {
+		s.l1Cache.Delete(keyHash)
+		return nil, nil, false
+	}
+	if isKeyExpired(entry.keyExpiresAt, now) {
+		s.l1Cache.Delete(keyHash)
+		return nil, expiredVirtualKeyError(), true
+	}
+	if entry.identity != nil && entry.identity.DeprecatedKeyRevokeAt != nil && !now.Before(*entry.identity.DeprecatedKeyRevokeAt) {
+		s.l1Cache.Delete(keyHash)
+		return nil, nil, false
+	}
+	return entry.identity, nil, true
+}
+
+func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.VirtualKeyAuthBundle) (*domain.IdentityContext, error) {
+	if bundle == nil || bundle.Org == nil || !bundle.Org.IsActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "organization_inactive",
+			Message:    "Organization associated with this virtual key is inactive",
+		}
+	}
+	org := bundle.Org
+	var keyRotationAt *time.Time
+	if vk.KeyRotationAt != nil {
+		t := vk.KeyRotationAt.UTC()
+		keyRotationAt = &t
+	}
+	idCtx := &domain.IdentityContext{
+		VirtualKeyID:                 vk.ID,
+		KeyPrefix:                    vk.KeyPrefix,
+		OrgID:                        vk.OrgID,
+		TeamID:                       vk.TeamID,
+		ProjectID:                    vk.ProjectID,
+		UserID:                       vk.UserID,
+		Role:                         vk.Role,
+		KeyType:                      NormalizeKeyType(vk.KeyType),
+		SCIMActive:                   true,
+		CanImpersonate:               vk.CanImpersonate,
+		RotationIntervalSec:          vk.RotationIntervalSec,
+		KeyRotationAt:                keyRotationAt,
+		KeyAllowedModels:             vk.AllowedModels,
+		AllowedEndpoints:             vk.AllowedEndpoints,
+		KeyAllowedMCPServers:         vk.AllowedMCPServers,
+		KeyAllowedA2AAgents:          vk.AllowedA2AAgents,
+		KeyAllowedClientApps:         vk.AllowedClientApps,
+		KeyRPMLimit:                  vk.RPMLimit,
+		KeyTPMLimit:                  vk.TPMLimit,
+		KeyMCPRPMLimit:               vk.MCPRPMLimit,
+		KeyMaxConcurrent:             vk.MaxConcurrentRequests,
+		KeyBatchEnqueuedTokenLimit:   vk.BatchEnqueuedTokenLimit,
+		KeyMaxIterations:             vk.MaxIterations,
+		KeyMaxBudgetPerSessionMicros: vk.MaxBudgetPerSessionMicros,
+		KeyTags:                      slices.Clone(vk.Tags),
+		KeyMetadata:                  maps.Clone(vk.Metadata),
+		KeyMaxBudgetMicros:           vk.MaxBudgetMicros,
+		KeyTempBudgetIncreaseMicros:  vk.TempBudgetIncreaseMicros,
+		KeyTempBudgetExpiresAt:       vk.TempBudgetExpiresAt,
+		KeySoftBudgetMicros:          vk.SoftBudgetMicros,
+		KeyThrottleOnBudgetExceeded:  vk.ThrottleOnBudgetExceeded,
+		KeyBudgetFallbacks:           domain.CloneBudgetFallbacks(vk.BudgetFallbacks),
+		KeySpentMicros:               vk.SpentMicros,
+		OrgRPMLimit:                  org.RPMLimit,
+		OrgTPMLimit:                  org.TPMLimit,
+		OrgMaxConcurrent:             org.MaxConcurrentRequests,
+		OrgBatchEnqueuedTokenLimit:   org.BatchEnqueuedTokenLimit,
+		OrgMaxIterations:             org.MaxIterations,
+		OrgMaxBudgetPerSessionMicros: org.MaxBudgetPerSessionMicros,
+		OrgMaxBudgetMicros:           org.MaxBudgetMicros,
+		OrgTempBudgetIncreaseMicros:  org.TempBudgetIncreaseMicros,
+		OrgTempBudgetExpiresAt:       org.TempBudgetExpiresAt,
+		OrgSoftBudgetMicros:          org.SoftBudgetMicros,
+		OrgThrottleOnBudgetExceeded:  org.ThrottleOnBudgetExceeded,
+		OrgBudgetFallbacks:           domain.CloneBudgetFallbacks(org.BudgetFallbacks),
+		OrgSpentMicros:               org.SpentMicros,
+	}
+
+	if vk.ProjectID != "" {
+		proj := bundle.Project
+		if proj == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "project_not_found",
+				Message:    "Project associated with this virtual key was not found",
+			}
+		}
+		if proj.OrgID != vk.OrgID {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "project_org_mismatch",
+				Message:    "Project associated with this virtual key does not belong to its organization",
+			}
+		}
+		if vk.TeamID != "" && proj.TeamID != vk.TeamID {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "project_team_mismatch",
+				Message:    "Project associated with this virtual key does not belong to its team",
+			}
+		}
+		if !proj.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "project_inactive",
+				Message:    "Project associated with this virtual key is inactive",
+			}
+		}
+		if idCtx.TeamID == "" {
+			idCtx.TeamID = proj.TeamID
+		}
+		idCtx.ProjectAllowedModels = slices.Clone(proj.AllowedModels)
+		idCtx.ProjectMaxBudgetMicros = proj.MaxBudgetMicros
+		idCtx.ProjectSpentMicros = proj.SpentMicros
+		idCtx.ProjectRPMLimit = proj.RPMLimit
+		idCtx.ProjectTPMLimit = proj.TPMLimit
+		idCtx.ProjectEnforceModelQuota = proj.EnforceProjectModelQuota
+	}
+
+	if idCtx.TeamID != "" {
+		team := bundle.Team
+		if team == nil && idCtx.TeamID != vk.TeamID {
+			if t, err := s.repo.GetTeam(context.Background(), idCtx.TeamID); err == nil {
+				team = t
+			}
+		}
+		if team == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_not_found",
+				Message:    "Team associated with this virtual key was not found",
+			}
+		}
+		if team.OrgID != vk.OrgID {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_org_mismatch",
+				Message:    "Team associated with this virtual key does not belong to its organization",
+			}
+		}
+		if !team.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "team_inactive",
+				Message:    "Team associated with this virtual key is inactive",
+			}
+		}
+		idCtx.TeamAllowedModels = team.AllowedModels
+		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
+		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
+		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamRPMLimit = team.RPMLimit
+		idCtx.TeamTPMLimit = team.TPMLimit
+		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit
+		idCtx.TeamMaxConcurrent = team.MaxConcurrentRequests
+		idCtx.TeamBatchEnqueuedTokenLimit = team.BatchEnqueuedTokenLimit
+		idCtx.TeamMaxIterations = team.MaxIterations
+		idCtx.TeamMaxBudgetPerSessionMicros = team.MaxBudgetPerSessionMicros
+		idCtx.TeamMaxBudgetMicros = team.MaxBudgetMicros
+		idCtx.TeamTempBudgetIncreaseMicros = team.TempBudgetIncreaseMicros
+		idCtx.TeamTempBudgetExpiresAt = team.TempBudgetExpiresAt
+		idCtx.TeamSoftBudgetMicros = team.SoftBudgetMicros
+		idCtx.TeamThrottleOnBudgetExceeded = team.ThrottleOnBudgetExceeded
+		idCtx.TeamBudgetFallbacks = domain.CloneBudgetFallbacks(team.BudgetFallbacks)
+		idCtx.TeamSpentMicros = team.SpentMicros
+	}
+
+	if vk.UserID != "" {
+		user := bundle.User
+		if user == nil || user.OrgID != vk.OrgID {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_not_found",
+				Message:    "User associated with this virtual key was not found in organization",
+			}
+		}
+		if !user.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_inactive",
+				Message:    "User associated with this virtual key is inactive",
+			}
+		}
+		if !user.SCIMActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "scim_deprovisioned",
+				Message:    "User associated with this virtual key has been deprovisioned via SCIM",
+			}
+		}
+		idCtx.SCIMActive = user.SCIMActive
+		idCtx.UserRPMLimit = user.RPMLimit
+		idCtx.UserTPMLimit = user.TPMLimit
+		idCtx.UserMaxConcurrent = user.MaxConcurrentRequests
+		idCtx.UserBatchEnqueuedTokenLimit = user.BatchEnqueuedTokenLimit
+		idCtx.UserMaxBudgetMicros = user.MaxBudgetMicros
+		idCtx.UserTempBudgetIncreaseMicros = user.TempBudgetIncreaseMicros
+		idCtx.UserTempBudgetExpiresAt = user.TempBudgetExpiresAt
+		idCtx.UserSoftBudgetMicros = user.SoftBudgetMicros
+		idCtx.UserThrottleOnBudgetExceeded = user.ThrottleOnBudgetExceeded
+		idCtx.UserBudgetFallbacks = domain.CloneBudgetFallbacks(user.BudgetFallbacks)
+		idCtx.UserSpentMicros = user.SpentMicros
+
+		if idCtx.TeamID != "" && bundle.TeamMembership != nil {
+			m := bundle.TeamMembership
+			if m.OrgID == vk.OrgID && m.TeamID == idCtx.TeamID {
+				idCtx.TeamMemberAllowedModels = slices.Clone(m.AllowedModels)
+				idCtx.TeamMemberMaxBudgetMicros = m.MaxBudgetMicros
+				idCtx.TeamMemberSpentMicros = m.SpentMicros
+				idCtx.TeamMemberRPMLimit = m.RPMLimit
+				idCtx.TeamMemberTPMLimit = m.TPMLimit
+			}
+		}
+	}
 	return idCtx, nil
 }
 
@@ -1490,6 +1832,185 @@ func mapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
 		return domain.OperatorRoleTeamAdmin, true
 	default:
 		return "", false
+	}
+}
+
+// AuthenticateSelfServiceUser resolves an active authenticated user and corresponding
+// non-elevated OperatorContext for governed developer self-service endpoints (`/v1/self/*`).
+// Master admin keys and inference-only (`llm_api`) keys are explicitly rejected.
+func (s *Service) AuthenticateSelfServiceUser(ctx context.Context, cred ExtractedCredentials) (*domain.User, *domain.OperatorContext, error) {
+	rawToken := strings.TrimSpace(cred.Token)
+	if rawToken == "" {
+		return nil, nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_credentials",
+			Message:    "Valid user session, JWT, or non-inference user virtual key is required",
+		}
+	}
+
+	resolveUser := func(userID, orgID string) (*domain.User, error) {
+		var (
+			user *domain.User
+			err  error
+		)
+		if orgID != "" {
+			user, err = s.lookupUser(ctx, orgID, userID)
+		} else if ul, ok := s.repo.(storage.UserLookupRepository); ok {
+			user, err = ul.GetUser(ctx, userID)
+		} else {
+			err = storage.ErrNotFound
+		}
+		if err != nil || user == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "unknown_user",
+				Message:    "Authenticated principal is not bound to an active user",
+			}
+		}
+		if !user.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_inactive",
+				Message:    "User account is inactive",
+			}
+		}
+		if !user.SCIMActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "scim_deprovisioned",
+				Message:    "User account has been deprovisioned",
+			}
+		}
+		if user.OrgID != "" {
+			org, oErr := s.repo.GetOrganization(ctx, user.OrgID)
+			if oErr != nil || org == nil || !org.IsActive {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "organization_inactive",
+					Message:    "Organization associated with this user is inactive",
+				}
+			}
+		}
+		return user, nil
+	}
+
+	if cred.Source == CredentialSourceCookie || (cred.Source == CredentialSourceBearer && s.sessionManager != nil && strings.Count(rawToken, ".") == 2 && IsSessionTokenAudience(rawToken)) {
+		if s.sessionManager == nil {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_session",
+				Message:    "User session authentication is not configured",
+			}
+		}
+		op, err := s.authenticateSessionToken(ctx, rawToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		if op == nil || op.ActorID == "" || op.ActorID == "master_admin" {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_identity_required",
+				Message:    "Self-service developer key endpoints require an authenticated user identity",
+			}
+		}
+		user, uErr := resolveUser(op.ActorID, op.OrgID)
+		if uErr != nil {
+			return nil, nil, uErr
+		}
+		return user, op, nil
+	}
+
+	if strings.HasPrefix(rawToken, "sk-gw-") {
+		idCtx, err := s.AuthenticateVirtualKey(ctx, rawToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		if idCtx.KeyType == domain.KeyTypeLLMAPI || idCtx.KeyType == domain.KeyTypeReadOnly {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "key_type_not_allowed",
+				Message:    fmt.Sprintf("Virtual keys with key_type %q cannot mutate self-service keys", idCtx.KeyType),
+			}
+		}
+		if strings.TrimSpace(idCtx.UserID) == "" {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_identity_required",
+				Message:    "Virtual key must be bound to a user_id for self-service access",
+			}
+		}
+		user, uErr := resolveUser(idCtx.UserID, idCtx.OrgID)
+		if uErr != nil {
+			return nil, nil, uErr
+		}
+		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		if !ok {
+			opRole = domain.OperatorRole(user.Role)
+		}
+		teamID := idCtx.TeamID
+		if teamID == "" {
+			teamID = user.TeamID
+		}
+		return user, &domain.OperatorContext{
+			ActorID:               user.ID,
+			Role:                  opRole,
+			OrgID:                 user.OrgID,
+			TeamID:                teamID,
+			AuthMethod:            "virtual_key",
+			DeprecatedKeyRevokeAt: idCtx.DeprecatedKeyRevokeAt,
+		}, nil
+	}
+
+	if cred.Source == CredentialSourceBearer && s.jwtVerifier != nil && s.jwtVerifier.Enabled() && strings.Count(rawToken, ".") == 2 {
+		claims, err := s.jwtVerifier.Verify(ctx, rawToken)
+		if err != nil {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "invalid_token",
+				Message:    "Invalid or expired JWT: " + err.Error(),
+			}
+		}
+		user, err := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
+		if err != nil || user == nil {
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "unknown_user",
+				Message:    "No user mapped to JWT subject",
+			}
+		}
+		checkedUser, uErr := resolveUser(user.ID, user.OrgID)
+		if uErr != nil {
+			return nil, nil, uErr
+		}
+		opRole, ok := mapDomainRoleToOperatorRole(checkedUser.Role)
+		if !ok {
+			opRole = domain.OperatorRole(checkedUser.Role)
+		}
+		return checkedUser, &domain.OperatorContext{
+			ActorID:    checkedUser.ID,
+			Role:       opRole,
+			OrgID:      checkedUser.OrgID,
+			TeamID:     checkedUser.TeamID,
+			AuthMethod: "jwt",
+		}, nil
+	}
+
+	return nil, nil, &domain.GatewayError{
+		StatusCode: http.StatusUnauthorized,
+		Type:       domain.ErrorTypeAuthentication,
+		Code:       "invalid_credentials",
+		Message:    "Valid user session, JWT, or non-inference user virtual key is required",
 	}
 }
 

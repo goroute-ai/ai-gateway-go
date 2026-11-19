@@ -7,8 +7,18 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
+
+// KeyRotatedSecretEvent carries a newly minted virtual key secret produced during automated rotation.
+type KeyRotatedSecretEvent = auth.KeyRotatedSecretEvent
+
+// KeySecretSink receives newly minted virtual key secrets from scheduled rotation sweeps.
+type KeySecretSink = auth.KeySecretSink
+
+// KeySecretSinkFunc adapts a Go function into a KeySecretSink.
+type KeySecretSinkFunc = auth.KeySecretSinkFunc
 
 // CustomAuthMode controls how a CustomAuthenticator participates in inbound request authentication.
 type CustomAuthMode string

@@ -733,12 +733,13 @@ func (s *GatewayServer) handleAdminCreateGuardrailDefinition(w http.ResponseWrit
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), orgID, "guardrail_definition.created", "guardrail_definition", def.ID, map[string]any{
+	dto := toGuardrailDefinitionDTO(def)
+	s.auditWithDiff(r.Context(), orgID, "guardrail_definition.created", "guardrail_definition", def.ID, map[string]any{
 		"name":     def.Name,
 		"provider": def.Provider,
 		"status":   def.Status,
-	})
-	writeJSON(w, http.StatusCreated, toGuardrailDefinitionDTO(def))
+	}, nil, dto)
+	writeJSON(w, http.StatusCreated, dto)
 }
 
 func (s *GatewayServer) handleAdminListGuardrailDefinitions(w http.ResponseWriter, r *http.Request) {
@@ -857,11 +858,12 @@ func (s *GatewayServer) handleAdminUpdateGuardrailDefinition(w http.ResponseWrit
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "guardrail_definition.updated", "guardrail_definition", updated.ID, map[string]any{
+	dto := toGuardrailDefinitionDTO(updated)
+	s.auditWithDiff(r.Context(), existing.OrgID, "guardrail_definition.updated", "guardrail_definition", updated.ID, map[string]any{
 		"name":   updated.Name,
 		"status": updated.Status,
-	})
-	writeJSON(w, http.StatusOK, toGuardrailDefinitionDTO(updated))
+	}, toGuardrailDefinitionDTO(existing), dto)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *GatewayServer) handleAdminPatchGuardrailDefinition(w http.ResponseWriter, r *http.Request) {
@@ -989,11 +991,12 @@ func (s *GatewayServer) handleAdminPatchGuardrailDefinition(w http.ResponseWrite
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "guardrail_definition.patched", "guardrail_definition", cp.ID, map[string]any{
+	dto := toGuardrailDefinitionDTO(&cp)
+	s.auditWithDiff(r.Context(), existing.OrgID, "guardrail_definition.patched", "guardrail_definition", cp.ID, map[string]any{
 		"name":   cp.Name,
 		"status": cp.Status,
-	})
-	writeJSON(w, http.StatusOK, toGuardrailDefinitionDTO(&cp))
+	}, toGuardrailDefinitionDTO(existing), dto)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *GatewayServer) handleAdminDeleteGuardrailDefinition(w http.ResponseWriter, r *http.Request) {
@@ -1010,9 +1013,9 @@ func (s *GatewayServer) handleAdminDeleteGuardrailDefinition(w http.ResponseWrit
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "guardrail_definition.deleted", "guardrail_definition", guardrailID, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "guardrail_definition.deleted", "guardrail_definition", guardrailID, map[string]any{
 		"name": existing.Name,
-	})
+	}, toGuardrailDefinitionDTO(existing), nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "deleted",
 		"deleted": true,
@@ -1048,10 +1051,11 @@ func (s *GatewayServer) handleAdminSetGuardrailDefinitionStatus(w http.ResponseW
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "guardrail_definition.status_updated", "guardrail_definition", cp.ID, map[string]any{
+	dto := toGuardrailDefinitionDTO(&cp)
+	s.auditWithDiff(r.Context(), existing.OrgID, "guardrail_definition.status_updated", "guardrail_definition", cp.ID, map[string]any{
 		"status": cp.Status,
-	})
-	writeJSON(w, http.StatusOK, toGuardrailDefinitionDTO(&cp))
+	}, toGuardrailDefinitionDTO(existing), dto)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *GatewayServer) handleAdminCreateGuardrailBinding(w http.ResponseWriter, r *http.Request) {
@@ -1116,11 +1120,11 @@ func (s *GatewayServer) handleAdminCreateGuardrailBinding(w http.ResponseWriter,
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), orgID, "guardrail_binding.created", "guardrail_binding", binding.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "guardrail_binding.created", "guardrail_binding", binding.ID, map[string]any{
 		"guardrail_id":   binding.GuardrailID,
 		"guardrail_name": binding.GuardrailName,
 		"is_locked":      binding.IsLocked,
-	})
+	}, nil, binding)
 	writeJSON(w, http.StatusCreated, binding)
 }
 
@@ -1161,7 +1165,7 @@ func (s *GatewayServer) handleAdminDeleteGuardrailBinding(w http.ResponseWriter,
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), binding.OrgID, "guardrail_binding.deleted", "guardrail_binding", bindingID, nil)
+	s.auditWithDiff(r.Context(), binding.OrgID, "guardrail_binding.deleted", "guardrail_binding", bindingID, nil, binding, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "deleted",
 		"deleted": true,
@@ -1218,15 +1222,32 @@ func (s *GatewayServer) handleAdminUpsertToolPolicy(w http.ResponseWriter, r *ht
 		InputPolicy:  req.InputPolicy,
 		OutputPolicy: req.OutputPolicy,
 	}
+	var beforePol *storage.ToolPolicy
+	if pol.ID != "" {
+		beforePol, _ = tpRepo.GetToolPolicy(r.Context(), orgID, pol.ID)
+	} else if existingList, listErr := tpRepo.ListToolPolicies(r.Context(), storage.ToolPolicyFilter{
+		OrgID:        orgID,
+		TeamID:       pol.TeamID,
+		VirtualKeyID: pol.VirtualKeyID,
+		ToolName:     pol.ToolName,
+	}); listErr == nil {
+		for _, item := range existingList {
+			if item != nil && item.TeamID == pol.TeamID && item.VirtualKeyID == pol.VirtualKeyID && item.ToolName == pol.ToolName {
+				cp := *item
+				beforePol = &cp
+				break
+			}
+		}
+	}
 	if err := tpRepo.UpsertToolPolicy(r.Context(), pol); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), orgID, "tool_policy.upserted", "tool_policy", pol.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "tool_policy.upserted", "tool_policy", pol.ID, map[string]any{
 		"tool_name":     pol.ToolName,
 		"input_policy":  pol.InputPolicy,
 		"output_policy": pol.OutputPolicy,
-	})
+	}, beforePol, pol)
 	writeJSON(w, http.StatusOK, pol)
 }
 
@@ -1265,7 +1286,8 @@ func (s *GatewayServer) handleAdminDeleteToolPolicy(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 500, Type: domain.ErrorTypeServer, Message: "tool policy repository unavailable"})
 		return
 	}
-	if _, err := tpRepo.GetToolPolicy(r.Context(), orgID, policyID); err != nil {
+	beforePol, err := tpRepo.GetToolPolicy(r.Context(), orgID, policyID)
+	if err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 404, Type: domain.ErrorTypeNotFound, Code: "tool_policy_not_found", Message: "Tool policy not found"})
 		return
 	}
@@ -1273,7 +1295,7 @@ func (s *GatewayServer) handleAdminDeleteToolPolicy(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), orgID, "tool_policy.deleted", "tool_policy", policyID, nil)
+	s.auditWithDiff(r.Context(), orgID, "tool_policy.deleted", "tool_policy", policyID, nil, beforePol, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "deleted",
 		"deleted": true,

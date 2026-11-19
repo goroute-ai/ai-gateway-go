@@ -433,11 +433,11 @@ func (s *GatewayServer) handleSCIMCreateUser(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.audit(r.Context(), orgID, "scim.user.created", "user", user.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.user.created", "user", user.ID, map[string]any{
 		"email":            user.Email,
 		"scim_external_id": user.SCIMExternalID,
 		"scim_active":      user.SCIMActive,
-	})
+	}, nil, user)
 	writeSCIMJSON(w, http.StatusCreated, s.toSCIMUser(r.Context(), orgID, user))
 }
 
@@ -545,12 +545,12 @@ func (s *GatewayServer) handleSCIMDeleteUser(w http.ResponseWriter, r *http.Requ
 	if s.authSvc != nil {
 		s.authSvc.InvalidateUserKeys(r.Context(), orgID, updated.ID)
 	}
-	s.audit(r.Context(), orgID, "scim.user.deprovisioned", "user", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.user.deprovisioned", "user", updated.ID, map[string]any{
 		"email":            updated.Email,
 		"scim_external_id": updated.SCIMExternalID,
 		"scim_active":      false,
 		"is_active":        false,
-	})
+	}, existing, &updated)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -559,12 +559,12 @@ func (s *GatewayServer) handleSCIMUserActiveTransition(ctx context.Context, orgI
 		if s.authSvc != nil {
 			s.authSvc.InvalidateUserKeys(ctx, orgID, curr.ID)
 		}
-		s.audit(ctx, orgID, "scim.user.deprovisioned", "user", curr.ID, map[string]any{
+		s.auditWithDiff(ctx, orgID, "scim.user.deprovisioned", "user", curr.ID, map[string]any{
 			"email":            curr.Email,
 			"scim_external_id": curr.SCIMExternalID,
 			"scim_active":      curr.SCIMActive,
 			"is_active":        curr.IsActive,
-		})
+		}, prev, curr)
 		return
 	}
 	if (prev != nil && (!prev.SCIMActive || !prev.IsActive)) && curr.SCIMActive && curr.IsActive {
@@ -572,12 +572,12 @@ func (s *GatewayServer) handleSCIMUserActiveTransition(ctx context.Context, orgI
 			s.authSvc.InvalidateUserKeys(ctx, orgID, curr.ID)
 		}
 	}
-	s.audit(ctx, orgID, "scim.user.updated", "user", curr.ID, map[string]any{
+	s.auditWithDiff(ctx, orgID, "scim.user.updated", "user", curr.ID, map[string]any{
 		"email":            curr.Email,
 		"scim_external_id": curr.SCIMExternalID,
 		"scim_active":      curr.SCIMActive,
 		"is_active":        curr.IsActive,
-	})
+	}, prev, curr)
 }
 
 func (s *GatewayServer) lookupSCIMUser(ctx context.Context, orgID, userID string) (*domain.User, error) {
@@ -677,10 +677,10 @@ func (s *GatewayServer) handleSCIMCreateGroup(w http.ResponseWriter, r *http.Req
 		writeSCIMError(w, http.StatusBadRequest, "invalidValue", err.Error())
 		return
 	}
-	s.audit(r.Context(), orgID, "scim.group.created", "team", team.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.group.created", "team", team.ID, map[string]any{
 		"name":         team.Name,
 		"member_count": len(req.Members),
-	})
+	}, nil, team)
 	writeSCIMJSON(w, http.StatusCreated, s.toSCIMGroup(r.Context(), orgID, team))
 }
 
@@ -736,10 +736,10 @@ func (s *GatewayServer) handleSCIMReplaceGroup(w http.ResponseWriter, r *http.Re
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), updated.ID)
 	}
-	s.audit(r.Context(), orgID, "scim.group.updated", "team", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.group.updated", "team", updated.ID, map[string]any{
 		"name":         updated.Name,
 		"member_count": len(req.Members),
-	})
+	}, existing, &updated)
 	writeSCIMJSON(w, http.StatusOK, s.toSCIMGroup(r.Context(), orgID, &updated))
 }
 
@@ -871,10 +871,10 @@ func (s *GatewayServer) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Requ
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), updated.ID)
 	}
-	s.audit(r.Context(), orgID, "scim.group.patched", "team", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.group.patched", "team", updated.ID, map[string]any{
 		"name":         updated.Name,
 		"member_count": len(currentMembers),
-	})
+	}, existing, &updated)
 	writeSCIMJSON(w, http.StatusOK, s.toSCIMGroup(r.Context(), orgID, &updated))
 }
 
@@ -933,9 +933,9 @@ func (s *GatewayServer) handleSCIMDeleteGroup(w http.ResponseWriter, r *http.Req
 		s.authSvc.InvalidateTeam(r.Context(), existing.ID)
 		s.authSvc.InvalidateOrg(r.Context(), orgID)
 	}
-	s.audit(r.Context(), orgID, "scim.group.deleted", "team", existing.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "scim.group.deleted", "team", existing.ID, map[string]any{
 		"name": existing.Name,
-	})
+	}, existing, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

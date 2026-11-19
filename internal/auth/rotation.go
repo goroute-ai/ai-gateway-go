@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
 )
@@ -45,6 +46,7 @@ var ManagementAllowedEndpoints = []string{
 var ReadOnlyAllowedEndpoints = []string{
 	"/v1/models",
 	"/models",
+	"/v1/key/info",
 	"/v1/files",
 	"/v1/files/*",
 	"/files",
@@ -245,11 +247,60 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 	if err := s.repo.UpdateVirtualKey(ctx, &rotated); err != nil {
 		return nil, err
 	}
+	if govRepo, ok := s.repo.(storage.KeyGovernanceRepository); ok && govRepo != nil {
+		_ = govRepo.MarkVirtualKeyRotated(ctx, rotated.ID, now)
+	}
+	rotated.LastRotatedAt = &now
+	rotated.RotationCount = existing.RotationCount + 1
 	if oldHash != "" {
 		s.InvalidateKeyHash(ctx, oldHash)
 	}
 	rotated.RawKey = rawKey
 	return &rotated, nil
+}
+
+// KeyRotatedSecretEvent carries the newly minted raw key for out-of-band in-process delivery
+// to a secret manager without logging or sending plaintext keys in webhooks or audit trails.
+type KeyRotatedSecretEvent struct {
+	OrgID                 string     `json:"org_id"`
+	TeamID                string     `json:"team_id,omitempty"`
+	UserID                string     `json:"user_id,omitempty"`
+	VirtualKeyID          string     `json:"virtual_key_id"`
+	Name                  string     `json:"name"`
+	KeyPrefix             string     `json:"key_prefix"`
+	PreviousKeyPrefix     string     `json:"previous_key_prefix,omitempty"`
+	RawKey                string     `json:"raw_key"`
+	DeprecatedKeyRevokeAt *time.Time `json:"deprecated_key_revoke_at,omitempty"`
+	NextRotationAt        *time.Time `json:"next_rotation_at,omitempty"`
+	RotatedAt             time.Time  `json:"rotated_at"`
+}
+
+// KeySecretSink receives newly minted virtual key secrets from automated rotation sweeps
+// so embedders can push rotated credentials into external vaults (e.g., Secrets Manager, Vault).
+type KeySecretSink interface {
+	DeliverRotatedSecret(ctx context.Context, event KeyRotatedSecretEvent) error
+}
+
+// KeySecretSinkFunc adapts a Go function into a KeySecretSink.
+type KeySecretSinkFunc func(ctx context.Context, event KeyRotatedSecretEvent) error
+
+// DeliverRotatedSecret invokes f(ctx, event).
+func (f KeySecretSinkFunc) DeliverRotatedSecret(ctx context.Context, event KeyRotatedSecretEvent) error {
+	return f(ctx, event)
+}
+
+// KeyAutoRotatedWebhookPayload is posted to Organization.LifecycleWebhookURL without raw key material.
+type KeyAutoRotatedWebhookPayload struct {
+	Event                 string     `json:"event"`
+	OrgID                 string     `json:"org_id"`
+	VirtualKeyID          string     `json:"virtual_key_id"`
+	Name                  string     `json:"name"`
+	KeyPrefix             string     `json:"key_prefix"`
+	PreviousKeyPrefix     string     `json:"previous_key_prefix,omitempty"`
+	GracePeriodSeconds    int64      `json:"grace_period_seconds"`
+	DeprecatedKeyRevokeAt *time.Time `json:"deprecated_key_revoke_at,omitempty"`
+	NextRotationAt        *time.Time `json:"next_rotation_at,omitempty"`
+	Timestamp             time.Time  `json:"timestamp"`
 }
 
 // KeyRotationConfig configures the background scheduled key rotation worker.
@@ -260,6 +311,9 @@ type KeyRotationConfig struct {
 	LockTTL            time.Duration
 	BatchSize          int
 	PodID              string
+	NetworkPolicy      *network.Policy
+	HTTPClient         *http.Client
+	SecretSink         KeySecretSink
 	Now                func() time.Time
 }
 
@@ -269,13 +323,14 @@ type KeyRotationSweepResult struct {
 	PurgedHashes  int64
 	RotatedKeys   int
 	RotatedKeyIDs []string
+	WebhooksSent  int
 	Errors        int
 }
 
 // KeyRotationManager periodically scans for virtual keys due for scheduled rotation
 // (`key_rotation_at <= now`), rotates them with a configurable dual-active grace period
 // under a Redis distributed pod lock (`SET gw:lock:key_rotation <podID> NX PX 55000` + Lua release),
-// records audit logs, and purges expired deprecated key hashes.
+// records audit logs, dispatches SSRF-checked webhooks, delivers new secrets to KeySecretSink, and purges expired deprecated key hashes.
 type KeyRotationManager struct {
 	authSvc      *Service
 	repo         storage.Repository
@@ -285,6 +340,9 @@ type KeyRotationManager struct {
 	lockTTL      time.Duration
 	batchSize    int
 	podID        string
+	netPolicy    *network.Policy
+	httpClient   *http.Client
+	secretSink   KeySecretSink
 	nowFn        func() time.Time
 
 	mu      sync.Mutex
@@ -333,6 +391,10 @@ func NewKeyRotationManager(authSvc *Service, repo storage.Repository, redisFabri
 			nowFn = func() time.Time { return time.Now().UTC() }
 		}
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = network.NewHTTPClient(cfg.NetworkPolicy)
+	}
 	return &KeyRotationManager{
 		authSvc:      authSvc,
 		repo:         repo,
@@ -342,8 +404,31 @@ func NewKeyRotationManager(authSvc *Service, repo storage.Repository, redisFabri
 		lockTTL:      lockTTL,
 		batchSize:    batchSize,
 		podID:        podID,
+		netPolicy:    cfg.NetworkPolicy,
+		httpClient:   httpClient,
+		secretSink:   cfg.SecretSink,
 		nowFn:        nowFn,
 	}
+}
+
+// SetSecretSink updates the in-process KeySecretSink notified whenever automated rotation mints a new key.
+func (m *KeyRotationManager) SetSecretSink(sink KeySecretSink) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.secretSink = sink
+	m.mu.Unlock()
+}
+
+func (m *KeyRotationManager) currentSecretSink() KeySecretSink {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	sink := m.secretSink
+	m.mu.Unlock()
+	return sink
 }
 
 // PodID returns this manager's unique distributed lock owner identifier.
@@ -482,8 +567,11 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		if rotated.KeyRotationAt != nil {
 			details["next_rotation_at"] = rotated.KeyRotationAt.UTC().Format(time.RFC3339)
 		}
+		var revokeAtPtr *time.Time
 		if m.gracePeriod > 0 {
-			details["deprecated_key_revoke_at"] = now.Add(m.gracePeriod).UTC().Format(time.RFC3339)
+			revAt := now.Add(m.gracePeriod).UTC()
+			revokeAtPtr = &revAt
+			details["deprecated_key_revoke_at"] = revAt.Format(time.RFC3339)
 		}
 		_ = m.repo.RecordAuditLog(ctx, &domain.AuditLog{
 			OrgID:      rotated.OrgID,
@@ -493,6 +581,49 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 			ResourceID: rotated.ID,
 			Details:    details,
 		})
+
+		if secretSink := m.currentSecretSink(); secretSink != nil && rotated.RawKey != "" {
+			if sinkErr := secretSink.DeliverRotatedSecret(ctx, KeyRotatedSecretEvent{
+				OrgID:                 rotated.OrgID,
+				TeamID:                rotated.TeamID,
+				UserID:                rotated.UserID,
+				VirtualKeyID:          rotated.ID,
+				Name:                  rotated.Name,
+				KeyPrefix:             rotated.KeyPrefix,
+				PreviousKeyPrefix:     vk.KeyPrefix,
+				RawKey:                rotated.RawKey,
+				DeprecatedKeyRevokeAt: revokeAtPtr,
+				NextRotationAt:        rotated.KeyRotationAt,
+				RotatedAt:             now,
+			}); sinkErr != nil {
+				slog.WarnContext(ctx, "auth: failed to deliver rotated key secret to sink",
+					"org_id", rotated.OrgID, "virtual_key_id", rotated.ID, "error", sinkErr)
+				result.Errors++
+			}
+		}
+
+		if org, orgErr := m.repo.GetOrganization(ctx, rotated.OrgID); orgErr == nil && org != nil && org.IsActive {
+			if webhookURL := strings.TrimSpace(org.LifecycleWebhookURL); webhookURL != "" {
+				if sendErr := dispatchLifecycleWebhook(ctx, m.httpClient, m.netPolicy, webhookURL, KeyAutoRotatedWebhookPayload{
+					Event:                 "virtual_key.auto_rotated",
+					OrgID:                 rotated.OrgID,
+					VirtualKeyID:          rotated.ID,
+					Name:                  rotated.Name,
+					KeyPrefix:             rotated.KeyPrefix,
+					PreviousKeyPrefix:     vk.KeyPrefix,
+					GracePeriodSeconds:    int64(m.gracePeriod / time.Second),
+					DeprecatedKeyRevokeAt: revokeAtPtr,
+					NextRotationAt:        rotated.KeyRotationAt,
+					Timestamp:             now,
+				}); sendErr != nil {
+					slog.WarnContext(ctx, "auth: failed to dispatch key auto-rotation webhook",
+						"org_id", rotated.OrgID, "virtual_key_id", rotated.ID, "error", sendErr)
+					result.Errors++
+				} else {
+					result.WebhooksSent++
+				}
+			}
+		}
 
 		result.RotatedKeys++
 		result.RotatedKeyIDs = append(result.RotatedKeyIDs, rotated.ID)

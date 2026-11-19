@@ -587,6 +587,7 @@ type getUserTrackingRepo struct {
 	*storage.MemoryRepository
 	getUserCalls  atomic.Int32
 	listUserCalls atomic.Int32
+	bundleCalls   atomic.Int32
 }
 
 func (r *getUserTrackingRepo) GetUser(ctx context.Context, id string) (*domain.User, error) {
@@ -597,6 +598,11 @@ func (r *getUserTrackingRepo) GetUser(ctx context.Context, id string) (*domain.U
 func (r *getUserTrackingRepo) ListUsers(ctx context.Context, orgID string) ([]*domain.User, error) {
 	r.listUserCalls.Add(1)
 	return nil, errors.New("ListUsers should not be called during virtual key issuance or authentication")
+}
+
+func (r *getUserTrackingRepo) GetVirtualKeyAuthBundleByHash(ctx context.Context, keyHash string, now time.Time) (*storage.VirtualKeyAuthBundle, error) {
+	r.bundleCalls.Add(1)
+	return r.MemoryRepository.GetVirtualKeyAuthBundleByHash(ctx, keyHash, now)
 }
 
 func TestVirtualKeyIssueAndAuthUseGetUserNotListUsers(t *testing.T) {
@@ -685,8 +691,11 @@ func TestVirtualKeyIssueAndAuthUseGetUserNotListUsers(t *testing.T) {
 	if got := repo.listUserCalls.Load(); got != 0 {
 		t.Fatalf("expected 0 ListUsers calls, got %d", got)
 	}
-	if got := repo.getUserCalls.Load(); got != 5 {
-		t.Fatalf("expected 5 GetUser calls (3 IssueVirtualKey + 2 AuthenticateVirtualKey), got %d", got)
+	if got := repo.getUserCalls.Load(); got != 3 {
+		t.Fatalf("expected 3 GetUser calls from IssueVirtualKey, got %d", got)
+	}
+	if got := repo.bundleCalls.Load(); got != 2 {
+		t.Fatalf("expected 2 GetVirtualKeyAuthBundleByHash calls from AuthenticateVirtualKey, got %d", got)
 	}
 }
 

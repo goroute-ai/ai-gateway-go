@@ -62,6 +62,7 @@ type GatewayServer struct {
 	cliLoginStore      *auth.CLILoginStore
 	authResolver       *auth.AuthResolver
 	keyRotation        *auth.KeyRotationManager
+	keyExpiryAlerts    *auth.KeyExpiryAlertManager
 	rbac               *auth.RBACEngine
 	limiter            *ratelimit.Limiter
 	respCache          *cache.ResponseCache
@@ -315,8 +316,13 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
 	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
-		PollInterval: cfg.Auth.KeyRotationPollInterval,
-		GracePeriod:  cfg.Auth.KeyRotationGracePeriod,
+		PollInterval:  cfg.Auth.KeyRotationPollInterval,
+		GracePeriod:   cfg.Auth.KeyRotationGracePeriod,
+		NetworkPolicy: netPolicy,
+	})
+	keyExpiryAlerts := auth.NewKeyExpiryAlertManager(repo, redisFabric, auth.KeyExpiryAlertConfig{
+		PollInterval:  cfg.Auth.KeyExpiryAlertPollInterval,
+		NetworkPolicy: netPolicy,
 	})
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
 	limiter.SetEnabled(cfg.RateLimit.Enabled)
@@ -325,7 +331,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	limiter.SetRedisTimeout(cfg.RateLimit.RedisTimeout)
 	limiter.SetGlobalLimits(cfg.RateLimit.GlobalRPMLimit, cfg.RateLimit.GlobalTPMLimit, cfg.RateLimit.GlobalMaxConcurrent)
 	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
-	modelMgmtSvc := modelmgmt.NewService(repo)
+	modelMgmtSvc := modelmgmt.NewServiceWithRBAC(repo, rbac)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
 
 	collector := observability.NewCollector()
@@ -413,6 +419,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	relMgr := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, redisFabric, cfg.Router)
 	relMgr.SetCollector(collector)
 	relMgr.SetHealthMonitor(healthMon)
+	relMgr.SetLimiter(limiter, cfg.RateLimit.DynamicOnUpstream429)
 
 	affinityStore := router.NewAffinityStoreFromRouterConfig(redisFabric, cfg.Router)
 	affinityStore.SetCollector(collector)
@@ -573,6 +580,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		cliLoginStore:      cliLoginStore,
 		authResolver:       authResolver,
 		keyRotation:        keyRotation,
+		keyExpiryAlerts:    keyExpiryAlerts,
 		rbac:               rbac,
 		limiter:            limiter,
 		respCache:          respCache,
@@ -607,6 +615,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		uploadInFlight:     make(map[string]int64),
 	}
 	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
+	relMgr.SetFallbackQuotaChecker(s.checkFallbackModelQuota)
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
 		if s.tracerShutdown != nil {
@@ -728,6 +737,18 @@ func (s *GatewayServer) setupRoutes() {
 
 		// Guardrails Data Plane evaluation
 		v1.Post("/guardrails/apply", s.handleApplyGuardrails)
+
+		// Data Plane Self-Inspection
+		v1.Get("/key/info", s.handleKeySelfInfo)
+	})
+
+	// Governed Developer Self-Service Keys (/v1/self/*)
+	r.Route("/v1/self", func(self chi.Router) {
+		self.Use(auth.SelfServiceMiddleware(s.authSvc))
+		self.Get("/keys", s.handleSelfListKeys)
+		self.Post("/keys", s.handleSelfCreateKey)
+		self.Delete("/keys/{keyID}", s.handleSelfRevokeKey)
+		self.Post("/keys/{keyID}/rotate", s.handleSelfRotateKey)
 	})
 
 	// Unversioned and protocol-specific aliases for SDK compatibility
@@ -850,6 +871,7 @@ func (s *GatewayServer) setupRoutes() {
 		// Organizations, 4-Layer Policies & Security Guardrails
 		adm.Post("/organizations", s.handleAdminCreateOrg)
 		adm.Get("/organizations", s.handleAdminListOrgs)
+		adm.Put("/organizations/{orgID}", s.handleAdminUpdateOrg)
 		adm.Post("/organizations/{orgID}/subscriptions", s.handleAdminSetOrgSubscription)
 		adm.Get("/organizations/{orgID}/subscriptions", s.handleAdminGetOrgSubscriptions)
 		adm.Post("/organizations/{orgID}/models", s.handleAdminSetOrgModelPolicy)
@@ -883,7 +905,9 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Put("/teams/{teamID}", s.handleAdminUpdateTeam)
 		adm.Delete("/teams/{teamID}", s.handleAdminDeleteTeam)
 		adm.Post("/teams/{teamID}/members", s.handleAdminUpsertTeamMember)
+		adm.Post("/teams/{teamID}/members/bulk", s.handleAdminBulkTeamMembers)
 		adm.Get("/teams/{teamID}/members", s.handleAdminListTeamMembers)
+		adm.Post("/teams/{teamID}/members/{userID}/reset-spend", s.handleAdminResetTeamMemberSpend)
 		adm.Delete("/teams/{teamID}/members/{userID}", s.handleAdminDeleteTeamMember)
 		adm.Post("/projects", s.handleAdminCreateProject)
 		adm.Get("/projects", s.handleAdminListProjects)
@@ -897,8 +921,13 @@ func (s *GatewayServer) setupRoutes() {
 		// Virtual API Keys & JWT Claim-to-Key Mappings
 		adm.Post("/keys", s.handleAdminIssueKey)
 		adm.Get("/keys", s.handleAdminListKeys)
+		adm.Post("/keys/bulk-update", s.handleAdminBulkUpdateKeys)
+		adm.Get("/keys/{keyID}", s.handleAdminGetKey)
 		adm.Put("/keys/{keyID}", s.handleAdminUpdateKey)
 		adm.Post("/keys/{keyID}/rotate", s.handleAdminRotateKey)
+		adm.Post("/keys/{keyID}/block", s.handleAdminBlockKey)
+		adm.Post("/keys/{keyID}/unblock", s.handleAdminUnblockKey)
+		adm.Post("/keys/{keyID}/reset-spend", s.handleAdminResetKeySpend)
 		adm.Post("/keys/{keyID}/revoke", s.handleAdminRevokeKey)
 		adm.Delete("/keys/{keyID}", s.handleAdminRevokeKey)
 		adm.Post("/jwt-mappings", s.handleAdminCreateJWTMapping)
@@ -968,6 +997,7 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
 		adm.Get("/audit/logs", s.handleAdminAuditLogs)
 		adm.Get("/config", s.handleAdminGetConfig)
+		adm.Post("/security/rotate-kek", s.handleAdminRotateKEK)
 
 		// MCP Enterprise Management: Servers, Toolsets, Tools, Tool Sync & BYOK Credentials
 		adm.Post("/mcp/servers", s.handleAdminCreateMCPServer)
@@ -1140,6 +1170,15 @@ func (s *GatewayServer) KeyRotationManager() *auth.KeyRotationManager {
 	return s.keyRotation
 }
 
+// SetKeyRotationSecretSink registers an in-process sink that receives newly minted secrets
+// produced by background scheduled virtual key rotations.
+func (s *GatewayServer) SetKeyRotationSecretSink(sink auth.KeySecretSink) {
+	if s == nil || s.keyRotation == nil {
+		return
+	}
+	s.keyRotation.SetSecretSink(sink)
+}
+
 func (s *GatewayServer) RBAC() *auth.RBACEngine {
 	return s.rbac
 }
@@ -1149,6 +1188,9 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	s.authSvc.StartInvalidationListener(ctx)
 	if s.keyRotation != nil {
 		s.keyRotation.Start(ctx)
+	}
+	if s.keyExpiryAlerts != nil {
+		s.keyExpiryAlerts.Start(ctx)
 	}
 	s.spendWorker.Start(ctx)
 	s.healthMon.Start(ctx)
@@ -1226,6 +1268,9 @@ func (s *GatewayServer) warmupSemanticPreRouter(ctx context.Context) {
 func (s *GatewayServer) Shutdown(ctx context.Context) {
 	if s.keyRotation != nil {
 		s.keyRotation.Stop()
+	}
+	if s.keyExpiryAlerts != nil {
+		s.keyExpiryAlerts.Stop()
 	}
 	s.authSvc.StopInvalidationListener()
 	if s.a2aPublisher != nil {

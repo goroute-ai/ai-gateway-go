@@ -227,25 +227,31 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	}
 
 	var req struct {
-		OrgID                     *string                   `json:"org_id,omitempty"`
-		Name                      *string                   `json:"name,omitempty"`
-		MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
-		SoftBudgetMicros          *int64                    `json:"soft_budget_micros,omitempty"`
-		ThrottleOnBudgetExceeded  *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
-		BudgetFallbacks           map[string][]string       `json:"budget_fallbacks,omitempty"`
-		BudgetResetPeriod         *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
-		RPMLimit                  *int                      `json:"rpm_limit,omitempty"`
-		TPMLimit                  *int                      `json:"tpm_limit,omitempty"`
-		MCPRPMLimit               *int                      `json:"mcp_rpm_limit,omitempty"`
-		MaxConcurrentRequests     *int                      `json:"max_concurrent_requests,omitempty"`
-		BatchEnqueuedTokenLimit   *int64                    `json:"batch_enqueued_token_limit,omitempty"`
-		MaxIterations             *int                      `json:"max_iterations,omitempty"`
-		MaxBudgetPerSessionMicros *int64                    `json:"max_budget_per_session_micros,omitempty"`
-		AllowedModels             optionalStringSlice       `json:"allowed_models"`
-		AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
-		AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
-		AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
-		IsActive                  *bool                     `json:"is_active,omitempty"`
+		OrgID                        *string                   `json:"org_id,omitempty"`
+		Name                         *string                   `json:"name,omitempty"`
+		MaxBudgetMicros              *int64                    `json:"max_budget_micros,omitempty"`
+		SoftBudgetMicros             *int64                    `json:"soft_budget_micros,omitempty"`
+		ThrottleOnBudgetExceeded     *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
+		BudgetFallbacks              map[string][]string       `json:"budget_fallbacks,omitempty"`
+		BudgetResetPeriod            *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
+		RPMLimit                     *int                      `json:"rpm_limit,omitempty"`
+		TPMLimit                     *int                      `json:"tpm_limit,omitempty"`
+		MCPRPMLimit                  *int                      `json:"mcp_rpm_limit,omitempty"`
+		MaxConcurrentRequests        *int                      `json:"max_concurrent_requests,omitempty"`
+		BatchEnqueuedTokenLimit      *int64                    `json:"batch_enqueued_token_limit,omitempty"`
+		MaxIterations                *int                      `json:"max_iterations,omitempty"`
+		MaxBudgetPerSessionMicros    *int64                    `json:"max_budget_per_session_micros,omitempty"`
+		AllowedModels                optionalStringSlice       `json:"allowed_models"`
+		AllowedMCPServers            optionalStringSlice       `json:"allowed_mcp_servers"`
+		AllowedA2AAgents             optionalStringSlice       `json:"allowed_a2a_agents"`
+		AllowedClientApps            optionalStringSlice       `json:"allowed_client_apps"`
+		EnforceGuaranteedThroughput  *bool                     `json:"enforce_guaranteed_throughput,omitempty"`
+		DefaultMemberMaxBudgetMicros *int64                    `json:"default_member_max_budget_micros,omitempty"`
+		DefaultMemberRPMLimit        *int                      `json:"default_member_rpm_limit,omitempty"`
+		DefaultMemberTPMLimit        *int                      `json:"default_member_tpm_limit,omitempty"`
+		DefaultMemberAllowedModels   optionalStringSlice       `json:"default_member_allowed_models"`
+		TeamMemberPermissions        optionalStringSlice       `json:"team_member_permissions"`
+		IsActive                     *bool                     `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -399,6 +405,36 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	if req.AllowedClientApps.Set {
 		updated.AllowedClientApps = req.AllowedClientApps.Value
 	}
+	if req.EnforceGuaranteedThroughput != nil {
+		updated.EnforceGuaranteedThroughput = *req.EnforceGuaranteedThroughput
+	}
+	if req.DefaultMemberMaxBudgetMicros != nil {
+		if *req.DefaultMemberMaxBudgetMicros < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_budget", Message: "default_member_max_budget_micros cannot be negative"})
+			return
+		}
+		updated.DefaultMemberMaxBudgetMicros = *req.DefaultMemberMaxBudgetMicros
+	}
+	if req.DefaultMemberRPMLimit != nil {
+		if *req.DefaultMemberRPMLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_rpm_limit", Message: "default_member_rpm_limit cannot be negative"})
+			return
+		}
+		updated.DefaultMemberRPMLimit = *req.DefaultMemberRPMLimit
+	}
+	if req.DefaultMemberTPMLimit != nil {
+		if *req.DefaultMemberTPMLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_tpm_limit", Message: "default_member_tpm_limit cannot be negative"})
+			return
+		}
+		updated.DefaultMemberTPMLimit = *req.DefaultMemberTPMLimit
+	}
+	if req.DefaultMemberAllowedModels.Set {
+		updated.DefaultMemberAllowedModels = req.DefaultMemberAllowedModels.Value
+	}
+	if req.TeamMemberPermissions.Set {
+		updated.TeamMemberPermissions = req.TeamMemberPermissions.Value
+	}
 	if req.IsActive != nil {
 		updated.IsActive = *req.IsActive
 	}
@@ -410,11 +446,11 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), updated.ID)
 	}
-	s.audit(r.Context(), updated.OrgID, "team.updated", "team", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), updated.OrgID, "team.updated", "team", updated.ID, map[string]any{
 		"name":              updated.Name,
 		"max_budget_micros": updated.MaxBudgetMicros,
 		"is_active":         updated.IsActive,
-	})
+	}, existing, &updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -503,9 +539,9 @@ func (s *GatewayServer) handleAdminDeleteTeam(w http.ResponseWriter, r *http.Req
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), teamID)
 	}
-	s.audit(r.Context(), existing.OrgID, "team.deleted", "team", teamID, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "team.deleted", "team", teamID, map[string]any{
 		"name": existing.Name,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": teamID})
 }
 
@@ -728,14 +764,14 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			s.authSvc.InvalidateOrg(r.Context(), updated.OrgID)
 		}
 	}
-	s.audit(r.Context(), updated.OrgID, "user.updated", "user", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), updated.OrgID, "user.updated", "user", updated.ID, map[string]any{
 		"email":            updated.Email,
 		"role":             updated.Role,
 		"team_id":          updated.TeamID,
 		"scim_external_id": updated.SCIMExternalID,
 		"scim_active":      updated.SCIMActive,
 		"is_active":        updated.IsActive,
-	})
+	}, existing, updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -798,9 +834,9 @@ func (s *GatewayServer) handleAdminDeleteUser(w http.ResponseWriter, r *http.Req
 	if s.authSvc != nil {
 		s.authSvc.InvalidateOrg(r.Context(), existing.OrgID)
 	}
-	s.audit(r.Context(), existing.OrgID, "user.deleted", "user", userID, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "user.deleted", "user", userID, map[string]any{
 		"email": existing.Email,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": userID})
 }
 
@@ -964,13 +1000,20 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	}
 	if req.UserID != nil {
 		newUserID := strings.TrimSpace(*req.UserID)
-		if op.Role == domain.OperatorRoleTeamAdmin && newUserID != "" && !s.userBelongsToTeam(r.Context(), existing.OrgID, op.TeamID, newUserID) {
+		effectiveKeyType := auth.NormalizeKeyType(updated.KeyType)
+		if req.KeyType != nil {
+			effectiveKeyType = auth.NormalizeKeyType(*req.KeyType)
+		}
+		if effectiveKeyType == domain.KeyTypeServiceAccount && req.KeyType == nil && newUserID != "" {
 			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "cross_team_access_denied",
-				Message:    "team_admin can only bind virtual keys to users belonging to their own team",
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_service_account_user",
+				Message:    "service_account virtual keys cannot be attributed to a user_id",
 			})
+			return
+		}
+		if !s.validateTeamAdminKeyTargetUser(r.Context(), w, op, existing.OrgID, newUserID) {
 			return
 		}
 		updated.UserID = newUserID
@@ -1188,11 +1231,26 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	}
 	if req.IsActive != nil {
 		updated.IsActive = *req.IsActive
+		if !*req.IsActive {
+			if updated.RevokedAt == nil {
+				now := time.Now().UTC()
+				updated.RevokedAt = &now
+			}
+			if op != nil && op.ActorID != "" {
+				updated.RevokedBy = op.ActorID
+			}
+		} else {
+			updated.RevokedAt = nil
+			updated.RevokedBy = ""
+		}
 	}
 	if req.Metadata != nil {
 		updated.Metadata = req.Metadata
 	}
 
+	if !s.enforceGuaranteedThroughput(r.Context(), w, updated.OrgID, updated.TeamID, updated.ID, updated.RPMLimit, updated.TPMLimit) {
+		return
+	}
 	if err := s.authSvc.UpdateVirtualKey(r.Context(), &updated); err != nil {
 		var gwErr *domain.GatewayError
 		if errors.As(err, &gwErr) {
@@ -1211,7 +1269,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	if err != nil || saved == nil {
 		saved = &updated
 	}
-	s.audit(r.Context(), saved.OrgID, "virtual_key.updated", "virtual_key", saved.ID, map[string]any{
+	s.auditWithDiff(r.Context(), saved.OrgID, "virtual_key.updated", "virtual_key", saved.ID, map[string]any{
 		"name":                  saved.Name,
 		"team_id":               saved.TeamID,
 		"project_id":            saved.ProjectID,
@@ -1223,7 +1281,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		"tpm_limit":             saved.TPMLimit,
 		"can_impersonate":       saved.CanImpersonate,
 		"is_active":             saved.IsActive,
-	})
+	}, existing, saved)
 	writeJSON(w, http.StatusOK, saved)
 }
 
@@ -1295,10 +1353,10 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), rotated.OrgID, "virtual_key.rotated", "virtual_key", rotated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), rotated.OrgID, "virtual_key.rotated", "virtual_key", rotated.ID, map[string]any{
 		"key_prefix":           rotated.KeyPrefix,
 		"name":                 rotated.Name,
 		"grace_period_seconds": int64(gracePeriod / time.Second),
-	})
+	}, existing, rotated)
 	writeJSON(w, http.StatusOK, rotated)
 }

@@ -1,8 +1,8 @@
 -- Atomic Rollback of Org-Scoped Acquisition (used when Global Limits fail after Org Acquisition)
--- KEYS[1]: key_rpm,  KEYS[2]: key_tpm,  KEYS[3]: key_conc
--- KEYS[4]: team_rpm, KEYS[5]: team_tpm, KEYS[6]: team_conc
--- KEYS[7]: user_rpm, KEYS[8]: user_tpm, KEYS[9]: user_conc
--- KEYS[10]: org_rpm, KEYS[11]: org_tpm, KEYS[12]: org_conc
+-- KEYS[1]: key_rpm,  KEYS[2]: key_tpm,  KEYS[3]: key_zconc
+-- KEYS[4]: team_rpm, KEYS[5]: team_tpm, KEYS[6]: team_zconc
+-- KEYS[7]: user_rpm, KEYS[8]: user_tpm, KEYS[9]: user_zconc
+-- KEYS[10]: org_rpm, KEYS[11]: org_tpm, KEYS[12]: org_zconc
 -- KEYS[13..15]: key_res_zset,  key_res_sum,  key_res_amounts
 -- KEYS[16..18]: team_res_zset, team_res_sum, team_res_amounts
 -- KEYS[19..21]: user_res_zset, user_res_sum, user_res_amounts
@@ -27,19 +27,25 @@ local function decr_floor(key, delta)
     end
 end
 
+local function release_conc(key)
+    if key ~= "" and request_id ~= "" then
+        redis.call("ZREM", key, request_id)
+    end
+end
+
 decr_floor(KEYS[1], 1)
 decr_floor(KEYS[2], est_tokens)
-decr_floor(KEYS[3], 1)
+release_conc(KEYS[3])
 
 if tonumber(ARGV[3]) > 0 then decr_floor(KEYS[4], 1) end
 if tonumber(ARGV[4]) > 0 then decr_floor(KEYS[5], est_tokens) end
-if tonumber(ARGV[5]) > 0 then decr_floor(KEYS[6], 1) end
+if tonumber(ARGV[5]) > 0 then release_conc(KEYS[6]) end
 if tonumber(ARGV[6]) > 0 then decr_floor(KEYS[7], 1) end
 if tonumber(ARGV[7]) > 0 then decr_floor(KEYS[8], est_tokens) end
-if tonumber(ARGV[8]) > 0 then decr_floor(KEYS[9], 1) end
+if tonumber(ARGV[8]) > 0 then release_conc(KEYS[9]) end
 if tonumber(ARGV[9]) > 0 then decr_floor(KEYS[10], 1) end
 if tonumber(ARGV[10]) > 0 then decr_floor(KEYS[11], est_tokens) end
-if tonumber(ARGV[11]) > 0 then decr_floor(KEYS[12], 1) end
+if tonumber(ARGV[11]) > 0 then release_conc(KEYS[12]) end
 
 if request_id ~= "" then
     local scopes = {

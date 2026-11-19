@@ -44,11 +44,12 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 	}
 
 	if s.limiter != nil {
-		releaseSession, err := s.limiter.AcquireSession(r.Context(), idCtx)
+		releaseSession, rlMeta, err := s.limiter.AcquireSessionWithMeta(r.Context(), idCtx)
 		if err != nil {
 			domain.WriteHTTPError(w, err)
 			return
 		}
+		domain.WriteRateLimitHeaders(w, rlMeta)
 		defer releaseSession()
 	}
 

@@ -105,11 +105,11 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.RoutingHints`, `gateway.RouterOptions`, `gateway.FallbackTarget`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.0
 ```
 
 ```go
-// Embedded gateway with silent stdout logging and v1.20.0 routing options
+// Embedded gateway with silent stdout logging and routing/rotation options
 gw, err := gateway.New(
     gateway.WithModelList(
         gateway.ModelEntry{
@@ -614,6 +614,14 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
 | `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
 | `auth.l2_cache_ttl` | — | `5m` | Redis L2 cache TTL for virtual key identity and permissions. |
+| `auth.enable_data_plane_jwt` | — | `false` | Allows verified OIDC/JWT bearer tokens on data-plane routes (`jwt_key_mappings` + JIT user resolution). |
+| `auth.custom_api_key_header` | — | `""` | Optional custom header name accepted for virtual API keys alongside `Authorization: Bearer`. |
+| `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background sweep interval for due virtual key rotations and expired grace-hash cleanup. |
+| `auth.key_rotation_grace_period` | `GATEWAY_KEY_ROTATION_GRACE_PERIOD` | `24h` | Dual-active grace window for previous key hashes during automated virtual key rotation. |
+| `auth.key_expiry_alert_poll_interval` | — | `1h` | Background poll interval for organization `key_expiry_alert_days` webhook notifications. |
+| `auth.session_secret` | `GATEWAY_SESSION_SECRET` | `""` | Signing secret for Control Plane operator cookie sessions (`POST /auth/login`). |
+| `auth.session_ttl` | `GATEWAY_SESSION_TTL` | — | Lifetime of revocable operator UI sessions in `operator_sessions`. |
+| `auth.enable_hibp_check` | `GATEWAY_ENABLE_HIBP_CHECK` | `false` | Enables k-anonymity breached-password checks on operator password updates. |
 | `router.default_fast_alias` | — | `"fast"` | Default model group aliased to low-latency models. |
 | `router.default_reasoning_alias` | — | `"reasoning"` | Default model group aliased to high-reasoning frontier models. |
 | `router.default_coding_alias` | — | `"coding"` | Default model group aliased to code generation models. |

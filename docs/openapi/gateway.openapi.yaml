@@ -1155,6 +1155,23 @@ components:
           type: array
           items:
             type: string
+        enforce_guaranteed_throughput:
+          type: boolean
+        default_member_max_budget_micros:
+          type: integer
+          format: int64
+        default_member_rpm_limit:
+          type: integer
+        default_member_tpm_limit:
+          type: integer
+        default_member_allowed_models:
+          type: array
+          items:
+            type: string
+        team_member_permissions:
+          type: array
+          items:
+            type: string
         is_active:
           type: boolean
         created_at:
@@ -1265,6 +1282,20 @@ components:
         expires_at:
           type: string
           format: date-time
+        expiry_alert_sent_days:
+          type: array
+          items:
+            type: integer
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_by:
+          type: string
+        last_rotated_at:
+          type: string
+          format: date-time
+        rotation_count:
+          type: integer
         can_impersonate:
           type: boolean
           description: Whether this key is authorized to impersonate operators on /admin/v1/* routes
@@ -1701,6 +1732,18 @@ components:
           type: integer
         tpm_limit:
           type: integer
+        max_concurrent_requests:
+          type: integer
+        enforce_guaranteed_throughput:
+          type: boolean
+        developer_self_serve_keys:
+          type: boolean
+        key_expiry_alert_days:
+          type: array
+          items:
+            type: integer
+        lifecycle_webhook_url:
+          type: string
         metadata:
           type: object
           additionalProperties:
@@ -4004,6 +4047,22 @@ paths:
         '409':
           description: Conflict when active virtual keys still reference the user
   /admin/v1/keys/{keyID}:
+    get:
+      operationId: getVirtualKey
+      summary: Retrieve virtual API key metadata and budget status without secret hash
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Virtual API key details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
     put:
       operationId: updateVirtualKey
       summary: Update a virtual API key's metadata, scopes, budgets, and rate limits
@@ -4212,6 +4271,42 @@ paths:
           required: false
           schema:
             type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, revoked, expired]
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
       responses:
         '200':
           description: List of virtual API keys
@@ -4220,6 +4315,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
                   data:
                     type: array
                     items:
@@ -5973,3 +6074,297 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GuardrailUsageSummary'
+  /v1/key/info:
+    get:
+      operationId: getVirtualKeySelfInfo
+      summary: Retrieve metadata, limits, spend, and expiration for the calling virtual API key
+      responses:
+        '200':
+          description: Active virtual key metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+  /v1/self/keys:
+    get:
+      operationId: listSelfServiceKeys
+      summary: List virtual API keys owned by the authenticated developer
+      responses:
+        '200':
+          description: Owned virtual API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminVirtualKey'
+    post:
+      operationId: createSelfServiceKey
+      summary: Issue a governed self-service virtual API key bound to the authenticated user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVirtualKey'
+      responses:
+        '201':
+          description: Issued self-service virtual API key with one-time raw_key secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+  /v1/self/keys/{keyID}:
+    delete:
+      operationId: revokeSelfServiceKey
+      summary: Revoke a virtual API key owned by the authenticated user
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Self-service key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /v1/self/keys/{keyID}/rotate:
+    post:
+      operationId: rotateSelfServiceKey
+      summary: Rotate a virtual API key owned by the authenticated user
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rotated self-service virtual API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+  /admin/v1/organizations/{orgID}:
+    put:
+      operationId: updateOrganization
+      summary: Update organization governance, throughput guarantees, self-service, and webhook settings
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOrganization'
+      responses:
+        '200':
+          description: Updated organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrganization'
+  /admin/v1/keys/bulk-update:
+    post:
+      operationId: bulkUpdateVirtualKeys
+      summary: Bulk update status, budgets, rate limits, or allowed models across up to 250 virtual keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key_ids]
+              properties:
+                org_id:
+                  type: string
+                key_ids:
+                  type: array
+                  items:
+                    type: string
+                is_active:
+                  type: boolean
+                max_budget_micros:
+                  type: integer
+                  format: int64
+                rpm_limit:
+                  type: integer
+                tpm_limit:
+                  type: integer
+                allowed_models:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Updated keys count and entities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminVirtualKey'
+  /admin/v1/keys/{keyID}/block:
+    post:
+      operationId: blockVirtualKey
+      summary: Immediately block an active virtual API key with optional reason
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Virtual key blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+  /admin/v1/keys/{keyID}/unblock:
+    post:
+      operationId: unblockVirtualKey
+      summary: Restore a previously blocked or revoked virtual API key
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Virtual key restored to active status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVirtualKey'
+  /admin/v1/keys/{keyID}/reset-spend:
+    post:
+      operationId: resetVirtualKeySpend
+      summary: Reset accumulated micro-dollar spend for a virtual API key
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Virtual key spend reset
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/teams/{teamID}/members/bulk:
+    post:
+      operationId: bulkUpsertTeamMembers
+      summary: Bulk add, update, or remove team memberships inheriting team default limits when omitted
+      parameters:
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                org_id:
+                  type: string
+                remove_user_ids:
+                  type: array
+                  items:
+                    type: string
+                members:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AdminTeamMembershipUpsertRequest'
+      responses:
+        '200':
+          description: Synchronized team memberships
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upserted:
+                    type: integer
+                  removed:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminTeamMembership'
+  /admin/v1/teams/{teamID}/members/{userID}/reset-spend:
+    post:
+      operationId: resetTeamMemberSpend
+      summary: Reset accumulated micro-dollar spend for a user within a team
+      parameters:
+        - name: teamID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team membership spend reset
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /admin/v1/security/rotate-kek:
+    post:
+      operationId: rotateMasterKEK
+      summary: Zero-downtime envelope DEK re-wrapping under a new master KEK (platform_admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_master_key]
+              properties:
+                new_master_key:
+                  type: string
+      responses:
+        '200':
+          description: Master KEK rotation summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true

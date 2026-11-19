@@ -331,31 +331,32 @@ type SSOProviderConfig struct {
 }
 
 type AuthConfig struct {
-	MasterAdminKey          string              `yaml:"master_admin_key"`
-	MasterEncryptionKey     string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	AllowMasterKeyDataPlane bool                `yaml:"allow_master_key_data_plane"`
-	EnableDataPlaneJWT      bool                `yaml:"enable_data_plane_jwt"`
-	CustomAPIKeyHeader      string              `yaml:"custom_api_key_header"`
-	JWTSecret               string              `yaml:"jwt_secret"`
-	JWTIssuer               string              `yaml:"jwt_issuer"`
-	JWTAudience             string              `yaml:"jwt_audience"`
-	OIDCJWKSURL             string              `yaml:"oidc_jwks_url"`
-	OIDCIssuers             []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
-	SSOProviders            []SSOProviderConfig `yaml:"sso_providers,omitempty"`
-	Introspection           IntrospectionConfig `yaml:"introspection,omitempty"`
-	ProxyAuth               ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
-	DefaultOrgID            string              `yaml:"default_org_id"`
-	DefaultVirtualKey       string              `yaml:"default_virtual_key"`
-	L1CacheTTL              time.Duration       `yaml:"l1_cache_ttl"`
-	L2CacheTTL              time.Duration       `yaml:"l2_cache_ttl"`
-	KeyRotationPollInterval time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
-	KeyRotationGracePeriod  time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
-	UIUsername              string              `yaml:"ui_username,omitempty"`
-	UIPassword              string              `yaml:"ui_password,omitempty"`
-	SessionSecret           string              `yaml:"session_secret,omitempty"`
-	SessionTTL              time.Duration       `yaml:"session_ttl,omitempty"`
-	EnableHIBPCheck         bool                `yaml:"enable_hibp_check,omitempty"`
-	HIBPBaseURL             string              `yaml:"hibp_base_url,omitempty"`
+	MasterAdminKey             string              `yaml:"master_admin_key"`
+	MasterEncryptionKey        string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	AllowMasterKeyDataPlane    bool                `yaml:"allow_master_key_data_plane"`
+	EnableDataPlaneJWT         bool                `yaml:"enable_data_plane_jwt"`
+	CustomAPIKeyHeader         string              `yaml:"custom_api_key_header"`
+	JWTSecret                  string              `yaml:"jwt_secret"`
+	JWTIssuer                  string              `yaml:"jwt_issuer"`
+	JWTAudience                string              `yaml:"jwt_audience"`
+	OIDCJWKSURL                string              `yaml:"oidc_jwks_url"`
+	OIDCIssuers                []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
+	SSOProviders               []SSOProviderConfig `yaml:"sso_providers,omitempty"`
+	Introspection              IntrospectionConfig `yaml:"introspection,omitempty"`
+	ProxyAuth                  ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
+	DefaultOrgID               string              `yaml:"default_org_id"`
+	DefaultVirtualKey          string              `yaml:"default_virtual_key"`
+	L1CacheTTL                 time.Duration       `yaml:"l1_cache_ttl"`
+	L2CacheTTL                 time.Duration       `yaml:"l2_cache_ttl"`
+	KeyRotationPollInterval    time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
+	KeyRotationGracePeriod     time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
+	KeyExpiryAlertPollInterval time.Duration       `yaml:"key_expiry_alert_poll_interval,omitempty"`
+	UIUsername                 string              `yaml:"ui_username,omitempty"`
+	UIPassword                 string              `yaml:"ui_password,omitempty"`
+	SessionSecret              string              `yaml:"session_secret,omitempty"`
+	SessionTTL                 time.Duration       `yaml:"session_ttl,omitempty"`
+	EnableHIBPCheck            bool                `yaml:"enable_hibp_check,omitempty"`
+	HIBPBaseURL                string              `yaml:"hibp_base_url,omitempty"`
 }
 
 type RouterConfig struct {
@@ -453,6 +454,7 @@ type RateLimitConfig struct {
 	DefaultAgentSessionMaxIterations   int           `yaml:"default_agent_session_max_iterations" json:"default_agent_session_max_iterations"`
 	DefaultAgentSessionMaxBudgetMicros int64         `yaml:"default_agent_session_max_budget_micros" json:"default_agent_session_max_budget_micros"`
 	DefaultAgentSessionTTLSec          int           `yaml:"default_agent_session_ttl_sec" json:"default_agent_session_ttl_sec"`
+	DynamicOnUpstream429               bool          `yaml:"dynamic_on_upstream_429" json:"dynamic_on_upstream_429"`
 }
 
 type FinOpsConfig struct {

@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.20.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0)
+[![Release](https://img.shields.io/badge/Release-v1.21.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
@@ -38,7 +38,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.0
 ```
 
 ```go
@@ -98,14 +98,14 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0).*
 
 ### Path 3: Container Image (`ghcr.io`) & Production Stack (Docker Compose)
 
 Run the published multi-arch Distroless container image directly from [GitHub Packages](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go):
 
 ```bash
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.20.0
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.21.0
 # Or track latest stable: docker pull ghcr.io/goroute-ai/ai-gateway-go:latest
 ```
 
@@ -392,9 +392,9 @@ Returns:
 
 ---
 
-### 6. Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI Paths)
+### 6. Unified Multi-Modal Data Plane (`28` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Both primary `/v1` (`24` paths) and `/admin/v1` (`49` paths) contract parity are enforced by `make specgen` (`73` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Both primary `/v1` (`28` paths) and `/admin/v1` (`80` paths) contract parity are enforced by `make specgen` (`108` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -517,7 +517,7 @@ GoRoute embeds a production React 18 + TypeScript + Tailwind single-page applica
 
 - **Zero Node.js Runtime Overhead**: Static bundles are compiled at build time and served directly from memory.
 - **Interactive Guardrail Studio & Simulator**: Configure baseline PII/secret/toxicity policies, manage named cloud/OSS/Starlark guardrails and tool trust policies, simulate requests via `/v1/guardrails/apply`, and track micro-dollar guardrail usage.
-- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 500 KB` uncompressed (`<= 150 KB` gzipped) via `web/scripts/check-budget.mjs`.
+- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 560 KB` uncompressed (`<= 150 KB` gzipped) via `web/scripts/check-budget.mjs`.
 
 ---
 
@@ -588,10 +588,10 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 24 `/v1` OpenAPI paths, Admin Control Plane groups (`73` total paths), and UI; see documented contract gaps.         |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 28 `/v1` OpenAPI paths, Admin Control Plane groups (`108` total paths), and UI; see documented contract gaps.         |
 | **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`router.*`, `semantic_router.*`, `bandit.*`, `scheduler.*`), SDK options, and env vars.                    |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas (`0001`–`0021`).         |
-| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all subsystems and `v1.20.0` routing engines. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas (`0001`–`0034`).         |
+| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all subsystems, quota engines, and routing pipelines. |
 | **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts and vendor protocol specifications.                            |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 

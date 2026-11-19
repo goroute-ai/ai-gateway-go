@@ -651,6 +651,7 @@ func cloneOrganization(org *domain.Organization) *domain.Organization {
 	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(org.BudgetFallbacks)
 	cp.BudgetResetAt = cloneTimePtr(org.BudgetResetAt)
 	cp.TempBudgetExpiresAt = cloneTimePtr(org.TempBudgetExpiresAt)
+	cp.KeyExpiryAlertDays = slices.Clone(org.KeyExpiryAlertDays)
 	if len(org.Metadata) > 0 {
 		cp.Metadata = make(map[string]string, len(org.Metadata))
 		for k, v := range org.Metadata {
@@ -701,6 +702,38 @@ func (r *MemoryRepository) ListOrganizations(ctx context.Context) ([]*domain.Org
 		out = append(out, cloneOrganization(o))
 	}
 	return out, nil
+}
+
+func (r *MemoryRepository) UpdateOrganization(ctx context.Context, org *domain.Organization) error {
+	if org == nil || org.ID == "" {
+		return fmt.Errorf("organization id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.orgs[org.ID]
+	if !ok {
+		return fmt.Errorf("organization %q %w", org.ID, ErrNotFound)
+	}
+	if org.SelfServeBudgetPolicy == "" {
+		org.SelfServeBudgetPolicy = existing.SelfServeBudgetPolicy
+		if org.SelfServeBudgetPolicy == "" {
+			org.SelfServeBudgetPolicy = domain.SelfServeBudgetDisabled
+		}
+	} else {
+		p := domain.SelfServeBudgetPolicy(strings.ToLower(strings.TrimSpace(string(org.SelfServeBudgetPolicy))))
+		if !p.IsValid() {
+			return fmt.Errorf("invalid self_serve_budget_policy %q", org.SelfServeBudgetPolicy)
+		}
+		org.SelfServeBudgetPolicy = p
+	}
+	now := time.Now().UTC()
+	if org.CreatedAt.IsZero() {
+		org.CreatedAt = existing.CreatedAt
+	}
+	org.BudgetResetPeriod, org.BudgetResetAt = resolveBudgetResetSchedule(org.BudgetResetPeriod, org.BudgetResetAt, now)
+	org.UpdatedAt = now
+	r.orgs[org.ID] = cloneOrganization(org)
+	return nil
 }
 
 func (r *MemoryRepository) SetOrgProviderSubscription(ctx context.Context, sub *domain.OrgProviderSubscription) error {
@@ -768,6 +801,8 @@ func cloneTeam(team *domain.Team) *domain.Team {
 	cp.AllowedMCPServers = slices.Clone(team.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(team.AllowedClientApps)
+	cp.DefaultMemberAllowedModels = slices.Clone(team.DefaultMemberAllowedModels)
+	cp.TeamMemberPermissions = slices.Clone(team.TeamMemberPermissions)
 	return &cp
 }
 
@@ -1075,6 +1110,168 @@ func (r *MemoryRepository) DeleteTeamMembership(_ context.Context, teamID, userI
 	delete(r.teamMembershipsByTuple, tupleKey)
 	delete(r.teamMemberships, id)
 	return nil
+}
+
+func (r *MemoryRepository) BulkSyncTeamMemberships(_ context.Context, orgID, teamID string, upserts []*domain.TeamMembership, removeUserIDs []string) ([]*domain.TeamMembership, int, error) {
+	orgID = strings.TrimSpace(orgID)
+	teamID = strings.TrimSpace(teamID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now().UTC()
+	var results []*domain.TeamMembership
+	for _, entry := range upserts {
+		if entry == nil {
+			continue
+		}
+		m := cloneTeamMembership(entry)
+		m.OrgID = orgID
+		m.TeamID = teamID
+		if err := normalizeTeamMembership(m); err != nil {
+			return nil, 0, err
+		}
+		tupleKey := teamMembershipTupleKey(m.TeamID, m.UserID)
+		if existingID, ok := r.teamMembershipsByTuple[tupleKey]; ok {
+			existing := r.teamMemberships[existingID]
+			m.ID = existing.ID
+			m.CreatedAt = existing.CreatedAt
+			if existing.SpentMicros > m.SpentMicros {
+				m.SpentMicros = existing.SpentMicros
+			}
+			m.UpdatedAt = now
+		} else {
+			if m.ID == "" {
+				m.ID = uuid.NewString()
+			}
+			if m.CreatedAt.IsZero() {
+				m.CreatedAt = now
+			}
+			m.UpdatedAt = now
+			r.teamMembershipsByTuple[tupleKey] = m.ID
+		}
+		stored := cloneTeamMembership(m)
+		r.teamMemberships[stored.ID] = stored
+		results = append(results, cloneTeamMembership(stored))
+	}
+
+	var removed int
+	for _, rawUID := range removeUserIDs {
+		uid := strings.TrimSpace(rawUID)
+		if uid == "" {
+			continue
+		}
+		tupleKey := teamMembershipTupleKey(teamID, uid)
+		if existingID, ok := r.teamMembershipsByTuple[tupleKey]; ok {
+			delete(r.teamMembershipsByTuple, tupleKey)
+			delete(r.teamMemberships, existingID)
+			removed++
+		}
+	}
+	return results, removed, nil
+}
+
+func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap func(batch KEKRotationBatch) (KEKRotationBatch, error)) (KEKRotationSummary, error) {
+	var summary KEKRotationSummary
+	if rewrap == nil {
+		return summary, fmt.Errorf("rewrap callback is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	batch := KEKRotationBatch{
+		Credentials: make([]*domain.ProviderCredential, 0, len(r.credentials)),
+		MCPServers:  make([]*domain.MCPServer, 0, len(r.mcpServers)),
+		A2AAgents:   make([]*domain.A2AAgent, 0, len(r.a2aAgents)),
+		Guardrails:  make([]*domain.GuardrailDefinition, 0, len(r.guardrailDefs)),
+	}
+	for _, c := range r.credentials {
+		if c == nil || len(c.EncryptedDEK) == 0 {
+			continue
+		}
+		cp := *c
+		cp.EncryptedAPIKey = slices.Clone(c.EncryptedAPIKey)
+		cp.DataNonce = slices.Clone(c.DataNonce)
+		cp.EncryptedDEK = slices.Clone(c.EncryptedDEK)
+		cp.DEKNonce = slices.Clone(c.DEKNonce)
+		batch.Credentials = append(batch.Credentials, &cp)
+	}
+	for _, s := range r.mcpServers {
+		if s == nil || strings.TrimSpace(s.EncryptedAuthDEK) == "" {
+			continue
+		}
+		cp := *s
+		batch.MCPServers = append(batch.MCPServers, &cp)
+	}
+	for _, a := range r.a2aAgents {
+		if a == nil || strings.TrimSpace(a.EncryptedAuthDEK) == "" {
+			continue
+		}
+		cp := *a
+		batch.A2AAgents = append(batch.A2AAgents, &cp)
+	}
+	for _, g := range r.guardrailDefs {
+		if g == nil || strings.TrimSpace(g.EncryptedDEK) == "" {
+			continue
+		}
+		batch.Guardrails = append(batch.Guardrails, cloneGuardrailDefinition(g))
+	}
+
+	updated, err := rewrap(batch)
+	if err != nil {
+		return KEKRotationSummary{}, err
+	}
+
+	now := time.Now().UTC()
+	for _, c := range updated.Credentials {
+		if c == nil || c.ID == "" {
+			continue
+		}
+		if _, ok := r.credentials[c.ID]; ok {
+			cp := *c
+			cp.UpdatedAt = now
+			cp.DecryptedAPIKey = ""
+			r.credentials[c.ID] = &cp
+			summary.CredentialsRewrapped++
+		}
+	}
+	for _, s := range updated.MCPServers {
+		if s == nil || s.ID == "" {
+			continue
+		}
+		if existing, ok := r.mcpServers[s.ID]; ok {
+			cp := *existing
+			cp.EncryptedAuthDEK = s.EncryptedAuthDEK
+			cp.ConfigVersion++
+			cp.UpdatedAt = now
+			r.mcpServers[s.ID] = &cp
+			summary.MCPServersRewrapped++
+		}
+	}
+	for _, a := range updated.A2AAgents {
+		if a == nil || a.ID == "" {
+			continue
+		}
+		if existing, ok := r.a2aAgents[a.ID]; ok {
+			cp := *existing
+			cp.EncryptedAuthDEK = a.EncryptedAuthDEK
+			cp.UpdatedAt = now
+			r.a2aAgents[a.ID] = &cp
+			summary.A2AAgentsRewrapped++
+		}
+	}
+	for _, g := range updated.Guardrails {
+		if g == nil || g.ID == "" {
+			continue
+		}
+		if existing, ok := r.guardrailDefs[g.ID]; ok {
+			cp := cloneGuardrailDefinition(existing)
+			cp.EncryptedDEK = g.EncryptedDEK
+			cp.UpdatedAt = now
+			r.guardrailDefs[g.ID] = cp
+			summary.GuardrailsRewrapped++
+		}
+	}
+	return summary, nil
 }
 
 func (r *MemoryRepository) CreateProject(_ context.Context, p *domain.Project) error {
@@ -1874,10 +2071,13 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
 	cp.Tags = slices.Clone(vk.Tags)
+	cp.ExpiryAlertSentDays = slices.Clone(vk.ExpiryAlertSentDays)
 	cp.BudgetResetAt = cloneTimePtr(vk.BudgetResetAt)
 	cp.TempBudgetExpiresAt = cloneTimePtr(vk.TempBudgetExpiresAt)
 	cp.KeyRotationAt = cloneTimePtr(vk.KeyRotationAt)
+	cp.LastRotatedAt = cloneTimePtr(vk.LastRotatedAt)
 	cp.ExpiresAt = cloneTimePtr(vk.ExpiresAt)
+	cp.RevokedAt = cloneTimePtr(vk.RevokedAt)
 	if len(vk.Metadata) > 0 {
 		cp.Metadata = make(map[string]string, len(vk.Metadata))
 		for k, v := range vk.Metadata {
@@ -1997,14 +2197,318 @@ func (r *MemoryRepository) ListVirtualKeysByUserID(ctx context.Context, orgID, u
 }
 
 func (r *MemoryRepository) RevokeVirtualKey(ctx context.Context, id string) error {
+	return r.RevokeVirtualKeyWithActor(ctx, id, "")
+}
+
+func (r *MemoryRepository) RevokeVirtualKeyWithActor(_ context.Context, id, revokedBy string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	vk, ok := r.keysByID[id]
 	if !ok {
-		return fmt.Errorf("virtual key %q not found", id)
+		return fmt.Errorf("virtual key %q %w", id, ErrNotFound)
 	}
+	now := time.Now().UTC()
 	vk.IsActive = false
+	vk.RevokedAt = &now
+	vk.RevokedBy = strings.TrimSpace(revokedBy)
+	vk.UpdatedAt = now
+	return nil
+}
+
+func (r *MemoryRepository) UnblockVirtualKey(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	vk, ok := r.keysByID[id]
+	if !ok {
+		return fmt.Errorf("virtual key %q %w", id, ErrNotFound)
+	}
+	vk.IsActive = true
+	vk.RevokedAt = nil
+	vk.RevokedBy = ""
 	vk.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *MemoryRepository) GetVirtualKeyAuthBundleByHash(_ context.Context, keyHash string, now time.Time) (*VirtualKeyAuthBundle, error) {
+	keyHash = strings.TrimSpace(keyHash)
+	if keyHash == "" {
+		return nil, fmt.Errorf("virtual key %w", ErrNotFound)
+	}
+	nowUTC := now.UTC()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var (
+		vk         *domain.VirtualKey
+		deprecated bool
+		revokeAt   time.Time
+	)
+	if found, ok := r.keysByHash[keyHash]; ok && found != nil {
+		vk = found
+	} else if entry, ok := r.deprecatedKeyHashes[keyHash]; ok && entry != nil && nowUTC.Before(entry.revokeAt) {
+		if target, exists := r.keysByID[entry.virtualKeyID]; exists && target != nil {
+			vk = target
+			deprecated = true
+			revokeAt = entry.revokeAt
+		}
+	}
+	if vk == nil {
+		return nil, fmt.Errorf("virtual key %w", ErrNotFound)
+	}
+
+	bundle := &VirtualKeyAuthBundle{
+		Key:                   cloneVirtualKey(vk),
+		Deprecated:            deprecated,
+		DeprecatedKeyRevokeAt: revokeAt,
+	}
+	if org, ok := r.orgs[vk.OrgID]; ok && org != nil {
+		bundle.Org = cloneOrganization(org)
+	}
+	if vk.TeamID != "" {
+		if team, ok := r.teams[vk.TeamID]; ok && team != nil {
+			bundle.Team = cloneTeam(team)
+		}
+	}
+	if vk.ProjectID != "" {
+		if proj, ok := r.projects[vk.ProjectID]; ok && proj != nil {
+			bundle.Project = cloneProject(proj)
+		}
+	}
+	if vk.UserID != "" {
+		if user, ok := r.users[vk.UserID]; ok && user != nil {
+			bundle.User = cloneUser(user)
+		}
+		if vk.TeamID != "" {
+			if tmID, ok := r.teamMembershipsByTuple[teamMembershipTupleKey(vk.TeamID, vk.UserID)]; ok {
+				if tm, exists := r.teamMemberships[tmID]; exists && tm != nil {
+					bundle.TeamMembership = cloneTeamMembership(tm)
+				}
+			}
+		}
+	}
+	return bundle, nil
+}
+
+func (r *MemoryRepository) ListVirtualKeysFiltered(_ context.Context, filter VirtualKeyFilter) ([]*domain.VirtualKey, int, error) {
+	nowUTC := time.Now().UTC()
+	statusFilter := strings.ToLower(strings.TrimSpace(filter.Status))
+	search := strings.ToLower(strings.TrimSpace(filter.Search))
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	matched := make([]*domain.VirtualKey, 0)
+	for _, vk := range r.keysByID {
+		if vk == nil {
+			continue
+		}
+		if filter.OrgID != "" && vk.OrgID != filter.OrgID {
+			continue
+		}
+		if filter.TeamID != "" && vk.TeamID != filter.TeamID {
+			continue
+		}
+		if filter.UserID != "" && vk.UserID != filter.UserID {
+			continue
+		}
+		if filter.ProjectID != "" && vk.ProjectID != filter.ProjectID {
+			continue
+		}
+		expired := vk.ExpiresAt != nil && !nowUTC.Before(vk.ExpiresAt.UTC())
+		switch statusFilter {
+		case "active":
+			if !vk.IsActive || expired {
+				continue
+			}
+		case "revoked":
+			if vk.IsActive {
+				continue
+			}
+		case "expired":
+			if !expired {
+				continue
+			}
+		}
+		if search != "" {
+			if !strings.Contains(strings.ToLower(vk.ID), search) &&
+				!strings.Contains(strings.ToLower(vk.KeyPrefix), search) &&
+				!strings.Contains(strings.ToLower(vk.Name), search) {
+				continue
+			}
+		}
+		matched = append(matched, cloneVirtualKey(vk))
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID < matched[j].ID
+	})
+	total := len(matched)
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []*domain.VirtualKey{}, total, nil
+	}
+	end := total
+	if filter.Limit > 0 && offset+filter.Limit < end {
+		end = offset + filter.Limit
+	}
+	return matched[offset:end], total, nil
+}
+
+func (r *MemoryRepository) BulkUpdateVirtualKeys(_ context.Context, orgID string, ids []string, patch VirtualKeyBulkPatch) ([]*domain.VirtualKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	var updated []*domain.VirtualKey
+	for _, id := range ids {
+		vk, ok := r.keysByID[id]
+		if !ok || vk == nil {
+			return nil, fmt.Errorf("virtual key %q %w", id, ErrNotFound)
+		}
+		if orgID != "" && vk.OrgID != orgID {
+			return nil, fmt.Errorf("virtual key %q %w", id, ErrNotFound)
+		}
+		if patch.IsActive != nil {
+			vk.IsActive = *patch.IsActive
+			if !vk.IsActive {
+				t := now
+				vk.RevokedAt = &t
+				vk.RevokedBy = strings.TrimSpace(patch.RevokedBy)
+				for h, entry := range r.deprecatedKeyHashes {
+					if entry != nil && entry.virtualKeyID == vk.ID {
+						delete(r.deprecatedKeyHashes, h)
+					}
+				}
+			} else {
+				vk.RevokedAt = nil
+				vk.RevokedBy = ""
+			}
+		}
+		if patch.MaxBudgetMicros != nil {
+			vk.MaxBudgetMicros = *patch.MaxBudgetMicros
+		}
+		if patch.RPMLimit != nil {
+			vk.RPMLimit = *patch.RPMLimit
+		}
+		if patch.TPMLimit != nil {
+			vk.TPMLimit = *patch.TPMLimit
+		}
+		if patch.AllowedModels != nil {
+			vk.AllowedModels = slices.Clone(patch.AllowedModels)
+		}
+		vk.UpdatedAt = now
+		updated = append(updated, cloneVirtualKey(vk))
+	}
+	return updated, nil
+}
+
+func (r *MemoryRepository) ResetEntitySpend(_ context.Context, scope EntitySpendScope, orgID, entityID, secondaryID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	switch scope {
+	case EntitySpendScopeKey:
+		vk, ok := r.keysByID[entityID]
+		if !ok || vk == nil || (orgID != "" && vk.OrgID != orgID) {
+			return fmt.Errorf("virtual key %q %w", entityID, ErrNotFound)
+		}
+		vk.SpentMicros = 0
+		vk.UpdatedAt = now
+		return nil
+	case EntitySpendScopeTeamMember:
+		id, ok := r.teamMembershipsByTuple[teamMembershipTupleKey(entityID, secondaryID)]
+		if !ok {
+			return fmt.Errorf("team membership (%q, %q) %w", entityID, secondaryID, ErrNotFound)
+		}
+		m, ok := r.teamMemberships[id]
+		if !ok || m == nil || (orgID != "" && m.OrgID != orgID) {
+			return fmt.Errorf("team membership (%q, %q) %w", entityID, secondaryID, ErrNotFound)
+		}
+		m.SpentMicros = 0
+		m.UpdatedAt = now
+		return nil
+	default:
+		return fmt.Errorf("unsupported spend reset scope %q", scope)
+	}
+}
+
+func (r *MemoryRepository) SumChildKeyThroughput(_ context.Context, orgID, teamID, excludeKeyID string) (int, int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var rpmSum, tpmSum int
+	for _, vk := range r.keysByID {
+		if vk == nil || !vk.IsActive {
+			continue
+		}
+		if excludeKeyID != "" && vk.ID == excludeKeyID {
+			continue
+		}
+		if orgID != "" && vk.OrgID != orgID {
+			continue
+		}
+		if teamID != "" {
+			if vk.TeamID != teamID {
+				continue
+			}
+		}
+		rpmSum += vk.RPMLimit
+		tpmSum += vk.TPMLimit
+	}
+	return rpmSum, tpmSum, nil
+}
+
+func (r *MemoryRepository) ListVirtualKeysExpiringBefore(_ context.Context, cutoff time.Time, limit int) ([]*domain.VirtualKey, error) {
+	cutoffUTC := cutoff.UTC()
+	nowUTC := time.Now().UTC()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*domain.VirtualKey
+	for _, vk := range r.keysByID {
+		if vk == nil || !vk.IsActive || vk.ExpiresAt == nil {
+			continue
+		}
+		expUTC := vk.ExpiresAt.UTC()
+		if expUTC.After(nowUTC) && !expUTC.After(cutoffUTC) {
+			out = append(out, cloneVirtualKey(vk))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ExpiresAt.Before(*out[j].ExpiresAt)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *MemoryRepository) MarkVirtualKeyExpiryAlertSent(_ context.Context, keyID string, alertDay int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	vk, ok := r.keysByID[keyID]
+	if !ok || vk == nil {
+		return fmt.Errorf("virtual key %q %w", keyID, ErrNotFound)
+	}
+	if !slices.Contains(vk.ExpiryAlertSentDays, alertDay) {
+		vk.ExpiryAlertSentDays = append(vk.ExpiryAlertSentDays, alertDay)
+	}
+	return nil
+}
+
+func (r *MemoryRepository) MarkVirtualKeyRotated(_ context.Context, keyID string, rotatedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	vk, ok := r.keysByID[keyID]
+	if !ok || vk == nil {
+		return fmt.Errorf("virtual key %q %w", keyID, ErrNotFound)
+	}
+	ts := rotatedAt.UTC()
+	vk.LastRotatedAt = &ts
+	vk.RotationCount++
+	vk.UpdatedAt = ts
 	return nil
 }
 
@@ -2062,6 +2566,23 @@ func (r *MemoryRepository) DeleteExpiredDeprecatedVirtualKeyHashes(ctx context.C
 		}
 	}
 	return deleted, nil
+}
+
+func (r *MemoryRepository) ListDeprecatedVirtualKeyHashesByKeyID(_ context.Context, virtualKeyID string) ([]string, error) {
+	virtualKeyID = strings.TrimSpace(virtualKeyID)
+	if virtualKeyID == "" {
+		return nil, nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var hashes []string
+	for h, entry := range r.deprecatedKeyHashes {
+		if entry != nil && entry.virtualKeyID == virtualKeyID {
+			hashes = append(hashes, h)
+		}
+	}
+	sort.Strings(hashes)
+	return hashes, nil
 }
 
 func (r *MemoryRepository) DeleteDeprecatedVirtualKeyHashesByKeyID(ctx context.Context, virtualKeyID string) ([]string, error) {
@@ -2777,6 +3298,9 @@ func (r *MemoryRepository) RecordAuditLog(ctx context.Context, log *domain.Audit
 		log.CreatedAt = time.Now().UTC()
 	}
 	cp := *log
+	cp.Details = cloneAnyMap(log.Details)
+	cp.BeforeValue = cloneAnyMap(log.BeforeValue)
+	cp.AfterValue = cloneAnyMap(log.AfterValue)
 	r.auditLogs = append(r.auditLogs, &cp)
 	return nil
 }
@@ -2792,6 +3316,9 @@ func (r *MemoryRepository) ListAuditLogs(ctx context.Context, orgID string, limi
 		l := r.auditLogs[i]
 		if orgID == "" || l.OrgID == orgID {
 			cp := *l
+			cp.Details = cloneAnyMap(l.Details)
+			cp.BeforeValue = cloneAnyMap(l.BeforeValue)
+			cp.AfterValue = cloneAnyMap(l.AfterValue)
 			out = append(out, &cp)
 		}
 	}

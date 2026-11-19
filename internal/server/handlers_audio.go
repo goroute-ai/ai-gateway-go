@@ -126,12 +126,13 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	// Audio tokenization varies by provider. Use the upload size and optional
 	// prompt for a conservative preflight estimate rather than a fixed allowance.
 	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	releaseQuota, rlMeta, err := s.limiter.AcquireWithMeta(r.Context(), idCtx, estTokens)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	domain.WriteRateLimitHeaders(w, rlMeta)
 
 	sttReq := domain.CanonicalAudioTranscriptionRequest{
 		RequestID:      reqID,
@@ -324,7 +325,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 
 	// TTS quota follows the target model's text token profile.
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateAudioTTSCostUpperBound(gm, len([]rune(raw.Input)))
 	})
 	if err != nil {

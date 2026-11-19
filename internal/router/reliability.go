@@ -68,26 +68,29 @@ type ExecutionMeta struct {
 // intra-group retries with full-jitter backoff, 3-state circuit breakers (Closed/Open/Half-Open),
 // active health-probe awareness, and cross-provider fallback chains.
 type ReliabilityManager struct {
-	repo              storage.Repository
-	registry          *adapter.Registry
-	intelligentRouter *IntelligentRouter
-	loadBalancer      *LoadBalancer
-	vault             *auth.Vault
-	rbac              *auth.RBACEngine
-	redis             *storage.RedisFabric
-	healthMon         *health.Monitor
-	collector         *observability.Collector
-	tracer            trace.Tracer
-	cfg               config.RouterConfig
-	mu                sync.Mutex
-	cooldowns         map[string]*cooldownState
-	collabMu          sync.RWMutex
-	plugins           []RoutingPlugin
-	affinity          *AffinityStore
-	depBudgets        *DeploymentBudgetTracker
-	failureRates      *failureRateTracker
-	scheduler         *PriorityScheduler
-	priorityLimiter   *DynamicPriorityLimiter
+	repo                 storage.Repository
+	registry             *adapter.Registry
+	intelligentRouter    *IntelligentRouter
+	loadBalancer         *LoadBalancer
+	vault                *auth.Vault
+	rbac                 *auth.RBACEngine
+	redis                *storage.RedisFabric
+	healthMon            *health.Monitor
+	collector            *observability.Collector
+	tracer               trace.Tracer
+	cfg                  config.RouterConfig
+	mu                   sync.Mutex
+	cooldowns            map[string]*cooldownState
+	collabMu             sync.RWMutex
+	plugins              []RoutingPlugin
+	affinity             *AffinityStore
+	depBudgets           *DeploymentBudgetTracker
+	failureRates         *failureRateTracker
+	scheduler            *PriorityScheduler
+	priorityLimiter      *DynamicPriorityLimiter
+	limiter              *ratelimit.Limiter
+	dynamic429           bool
+	fallbackQuotaChecker func(context.Context, *domain.IdentityContext, string, int) error
 }
 
 func NewReliabilityManager(
@@ -181,6 +184,46 @@ func (rm *ReliabilityManager) SetDeploymentBudgetTracker(b *DeploymentBudgetTrac
 	rm.collabMu.Lock()
 	defer rm.collabMu.Unlock()
 	rm.depBudgets = b
+}
+
+// SetLimiter attaches the rate limiter and dynamic upstream 429 throttle flag.
+func (rm *ReliabilityManager) SetLimiter(lim *ratelimit.Limiter, dynamic429 bool) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.limiter = lim
+	rm.dynamic429 = dynamic429
+}
+
+// SetFallbackQuotaChecker registers a hook that enforces per-model quota/budget rules on fallback hops.
+func (rm *ReliabilityManager) SetFallbackQuotaChecker(fn func(context.Context, *domain.IdentityContext, string, int) error) {
+	rm.collabMu.Lock()
+	defer rm.collabMu.Unlock()
+	rm.fallbackQuotaChecker = fn
+}
+
+func (rm *ReliabilityManager) authorizeFallbackHop(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	fallbackAlias string,
+	estTokens int,
+) error {
+	if idCtx == nil || strings.TrimSpace(fallbackAlias) == "" {
+		return nil
+	}
+	if rm.rbac != nil {
+		if err := rm.rbac.AuthorizeRequestedModel(idCtx, fallbackAlias); err != nil {
+			return err
+		}
+	}
+	rm.collabMu.RLock()
+	checker := rm.fallbackQuotaChecker
+	rm.collabMu.RUnlock()
+	if checker != nil {
+		if err := checker(ctx, idCtx, fallbackAlias, estTokens); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetScheduler attaches a bounded PriorityScheduler for request admission control.
@@ -1035,6 +1078,16 @@ func (rm *ReliabilityManager) ExecuteChat(ctx context.Context, idCtx *domain.Ide
 			hopReq = applyFallbackOverrides(req, current.overrides)
 		}
 		if current.depth > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, estTokens); hopErr != nil {
+				lastErr = hopErr
+				logger.WarnContext(ctx, "Fallback model blocked by authorization or quota policy",
+					slog.String("component", "router"),
+					slog.String("primary_alias", decision.ModelGroup.Alias),
+					slog.String("fallback_alias", group.Alias),
+					slog.String("error", hopErr.Error()),
+				)
+				continue
+			}
 			meta.FallbackAttempted = true
 			setFallbackMetaReason(meta, current.reason)
 			logger.WarnContext(ctx, "Cross-provider fallback activated",
@@ -1557,6 +1610,16 @@ func (rm *ReliabilityManager) ExecuteStream(
 			hopBaseReq = applyFallbackOverrides(req, current.overrides)
 		}
 		if current.depth > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, ratelimit.EstimateRequestTokens(hopBaseReq)); hopErr != nil {
+				lastErr = hopErr
+				logger.WarnContext(ctx, "Streaming fallback model blocked by authorization or quota policy",
+					slog.String("component", "router"),
+					slog.String("primary_alias", decision.ModelGroup.Alias),
+					slog.String("fallback_alias", group.Alias),
+					slog.String("error", hopErr.Error()),
+				)
+				continue
+			}
 			meta.FallbackAttempted = true
 			setFallbackMetaReason(meta, current.reason)
 			logger.WarnContext(ctx, "Cross-provider fallback activated",
@@ -2093,6 +2156,10 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for embeddings",
 				slog.String("component", "router"),
@@ -2267,6 +2334,10 @@ func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.I
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for rerank",
 				slog.String("component", "router"),
@@ -2452,6 +2523,10 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for moderation",
 				slog.String("component", "router"),
@@ -2633,6 +2708,10 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for completion",
 				slog.String("component", "router"),
@@ -2853,6 +2932,10 @@ func (rm *ReliabilityManager) ExecuteCompletionStream(ctx context.Context, idCtx
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for completion stream",
 				slog.String("component", "router"),
@@ -3049,6 +3132,10 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for audio transcription",
 				slog.String("component", "router"),
@@ -3231,6 +3318,10 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for speech",
 				slog.String("component", "router"),
@@ -3403,6 +3494,10 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 
 	for groupIdx, group := range groupChain {
 		if groupIdx > 0 {
+			if hopErr := rm.authorizeFallbackHop(ctx, idCtx, group.Alias, 0); hopErr != nil {
+				lastErr = hopErr
+				continue
+			}
 			meta.FallbackAttempted = true
 			logger.WarnContext(ctx, "Cross-provider fallback activated for image",
 				slog.String("component", "router"),
@@ -4020,6 +4115,25 @@ func (rm *ReliabilityManager) recordAttemptFailure(
 	cooldownPolicy := effectiveCooldownPolicy(rm.cfg, group)
 	errClass := errorRetryClass(gwErr, activeTotal)
 	cooldownDur := effectiveCooldownDuration(cooldownPolicy, groupCooldownSec, rm.cfg.DefaultCooldown, gwErr.RetryAfterSec)
+
+	if gwErr.StatusCode == http.StatusTooManyRequests {
+		rm.collabMu.RLock()
+		lim := rm.limiter
+		dyn429 := rm.dynamic429
+		rm.collabMu.RUnlock()
+		if dyn429 && lim != nil {
+			if idCtx := auth.IdentityFromContext(ctx); idCtx != nil && (idCtx.OrgID != "" || idCtx.VirtualKeyID != "") {
+				throttleDur := cooldownDur
+				if gwErr.RetryAfterSec > 0 {
+					throttleDur = time.Duration(gwErr.RetryAfterSec) * time.Second
+				}
+				if throttleDur <= 0 {
+					throttleDur = 30 * time.Second
+				}
+				lim.MarkUpstream429Throttle(ctx, idCtx.OrgID, idCtx.VirtualKeyID, throttleDur)
+			}
+		}
+	}
 
 	var reqs, fails int
 	if rm.failureRates != nil {

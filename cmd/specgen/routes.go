@@ -49,7 +49,7 @@ func checkRouteGroupCoverage(serverFile, groupPrefix string, specPaths map[strin
 			return true
 		}
 		prefix, ok := stringLiteral(call.Args[0])
-		if !ok || prefix != groupPrefix {
+		if !ok || (prefix != groupPrefix && !(groupPrefix == "/v1" && prefix == "/v1/self")) {
 			return true
 		}
 		callback, ok := call.Args[1].(*ast.FuncLit)

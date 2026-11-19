@@ -440,7 +440,8 @@ func TestTempBudgetRepository_PersistenceAndScanners(t *testing.T) {
 	orgRow := &fakeTeamScanner{
 		values: []any{
 			"org-scan", "Scan Org", "scan-org", int64(5000), int64(1000), &future, "lower_only",
-			int64(0), false, []byte("{}"), int64(250), "monthly", nil, 10, 100, 5, int64(0), 0, int64(0), true,
+			int64(0), false, []byte("{}"), int64(250), "monthly", nil, 10, 100, 5, int64(0), 0, int64(0),
+			true, false, []int32{7, 1}, "https://hooks.example.com/keys", true,
 		},
 	}
 	scannedOrg, err := scanOrganization(orgRow)

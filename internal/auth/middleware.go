@@ -43,8 +43,9 @@ func enforceReadOnlyKeyMethod(idCtx *domain.IdentityContext, method string) erro
 type ctxKey int
 
 const (
-	identityContextKey ctxKey = 1
-	operatorContextKey ctxKey = 2
+	identityContextKey        ctxKey = 1
+	operatorContextKey        ctxKey = 2
+	selfServiceUserContextKey ctxKey = 3
 )
 
 // WithIdentity attaches IdentityContext to a context.Context.
@@ -68,6 +69,19 @@ func WithOperator(ctx context.Context, op *domain.OperatorContext) context.Conte
 // OperatorFromContext retrieves the authenticated OperatorContext from context.Context.
 func OperatorFromContext(ctx context.Context) *domain.OperatorContext {
 	if v, ok := ctx.Value(operatorContextKey).(*domain.OperatorContext); ok {
+		return v
+	}
+	return nil
+}
+
+// WithSelfServiceUser attaches the authenticated self-service domain.User to context.Context.
+func WithSelfServiceUser(ctx context.Context, u *domain.User) context.Context {
+	return context.WithValue(ctx, selfServiceUserContextKey, u)
+}
+
+// SelfServiceUserFromContext retrieves the authenticated self-service domain.User from context.Context.
+func SelfServiceUserFromContext(ctx context.Context) *domain.User {
+	if v, ok := ctx.Value(selfServiceUserContextKey).(*domain.User); ok {
 		return v
 	}
 	return nil
@@ -223,6 +237,41 @@ func AdminControlPlaneMiddleware(svc *Service) func(http.Handler) http.Handler {
 				}
 			}
 			next.ServeHTTP(w, r.WithContext(WithOperator(r.Context(), op)))
+		})
+	}
+}
+
+// SelfServiceMiddleware protects `/v1/self/*` governed developer endpoints and enforces
+// session CSRF checks without allowing master-key bypass or cross-user impersonation.
+func SelfServiceMiddleware(svc *Service) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var opts ExtractorOptions
+			if svc != nil {
+				opts = svc.ExtractorOptions()
+			}
+			cred, err := ExtractAdminCredentials(r, opts)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			user, op, err := svc.AuthenticateSelfServiceUser(r.Context(), cred)
+			if err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+			if cred.Source == CredentialSourceCookie && IsMutatingHTTPMethod(r.Method) {
+				if err := ValidateCSRF(r, op); err != nil {
+					domain.WriteHTTPError(w, err)
+					return
+				}
+			}
+			if op != nil {
+				writeDeprecatedKeyHeaders(w, op.DeprecatedKeyRevokeAt)
+			}
+			ctx := WithOperator(r.Context(), op)
+			ctx = WithSelfServiceUser(ctx, user)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

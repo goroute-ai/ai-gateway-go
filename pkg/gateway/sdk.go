@@ -94,21 +94,29 @@ type Client struct {
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	configPath           string
-	remoteURL            string
-	apiKey               string
-	modelList            []ModelEntry
-	httpClient           *http.Client
-	demoMocksFallback    bool
-	allowPrivateNetworks bool
-	customLogger         *slog.Logger
-	silentLogs           bool
-	logLevel             string
-	guardrailScanners    []guardrailScannerEntry
-	routingPlugins       []routingPluginEntry
-	preRouters           []preRouterEntry
-	preRouterAliases     []preRouterAliasEntry
-	routerMutations      []func(*config.RouterConfig)
+	configPath            string
+	remoteURL             string
+	apiKey                string
+	modelList             []ModelEntry
+	httpClient            *http.Client
+	demoMocksFallback     bool
+	allowPrivateNetworks  bool
+	customLogger          *slog.Logger
+	silentLogs            bool
+	logLevel              string
+	guardrailScanners     []guardrailScannerEntry
+	routingPlugins        []routingPluginEntry
+	preRouters            []preRouterEntry
+	preRouterAliases      []preRouterAliasEntry
+	routerMutations       []func(*config.RouterConfig)
+	keyRotationSecretSink KeySecretSink
+}
+
+// WithKeyRotationSecretSink registers a KeySecretSink for scheduled virtual key rotations in embedded mode.
+func WithKeyRotationSecretSink(sink KeySecretSink) Option {
+	return func(c *clientConfig) {
+		c.keyRotationSecretSink = sink
+	}
 }
 
 // WithLogger configures a custom slog.Logger for embedded gateway operation.
@@ -481,6 +489,9 @@ func New(opts ...Option) (*Client, error) {
 			return nil, regErr
 		}
 	}
+	if cc.keyRotationSecretSink != nil {
+		gw.SetKeyRotationSecretSink(cc.keyRotationSecretSink)
+	}
 	gw.StartWorkers(context.Background())
 
 	ts := httptest.NewServer(gw.Handler())
@@ -549,6 +560,14 @@ func (c *Client) Close() {
 	for _, ms := range c.mockServers {
 		ms.Close()
 	}
+}
+
+// SetKeyRotationSecretSink updates the embedded gateway's KeySecretSink at runtime (no-op on remote clients).
+func (c *Client) SetKeyRotationSecretSink(sink KeySecretSink) {
+	if c == nil || c.embeddedGW == nil {
+		return
+	}
+	c.embeddedGW.SetKeyRotationSecretSink(sink)
 }
 
 // BaseURL returns the HTTP base URL of the gateway (useful when exposing an embedded gateway or inspecting endpoints).

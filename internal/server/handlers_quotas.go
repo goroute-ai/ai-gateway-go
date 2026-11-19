@@ -130,12 +130,15 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 		return
 	}
 
-	s.audit(r.Context(), policy.OrgID, "quota_policy.upserted", "quota_policy", policy.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_quotas", policy.OrgID)
+	}
+	s.auditWithDiff(r.Context(), policy.OrgID, "quota_policy.upserted", "quota_policy", policy.ID, map[string]any{
 		"scope_type":    policy.ScopeType,
 		"scope_id":      policy.ScopeID,
 		"model_pattern": policy.ModelPattern,
 		"is_active":     policy.IsActive,
-	})
+	}, nil, policy)
 	writeJSON(w, http.StatusOK, policy)
 }
 
@@ -253,11 +256,14 @@ func (s *GatewayServer) handleAdminDeleteQuotaPolicy(w http.ResponseWriter, r *h
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), existing.OrgID, "quota_policy.deleted", "quota_policy", policyID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_quotas", existing.OrgID)
+	}
+	s.auditWithDiff(r.Context(), existing.OrgID, "quota_policy.deleted", "quota_policy", policyID, map[string]any{
 		"scope_type":    existing.ScopeType,
 		"scope_id":      existing.ScopeID,
 		"model_pattern": existing.ModelPattern,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": policyID})
 }
 
@@ -329,12 +335,15 @@ func (s *GatewayServer) handleAdminUpsertBudgetWindow(w http.ResponseWriter, r *
 		return
 	}
 
-	s.audit(r.Context(), limit.OrgID, "budget_window.upserted", "budget_window", limit.ID, map[string]any{
+	if s.rbac != nil {
+		s.rbac.InvalidatePolicyScope(r.Context(), "rbac_bw", limit.OrgID)
+	}
+	s.auditWithDiff(r.Context(), limit.OrgID, "budget_window.upserted", "budget_window", limit.ID, map[string]any{
 		"scope_type":        limit.ScopeType,
 		"scope_id":          limit.ScopeID,
 		"window_type":       limit.WindowType,
 		"max_budget_micros": limit.MaxBudgetMicros,
-	})
+	}, nil, limit)
 	writeJSON(w, http.StatusOK, limit)
 }
 
@@ -551,9 +560,9 @@ func (s *GatewayServer) handleAdminSetKeyTempBudget(w http.ResponseWriter, r *ht
 		saved.TempBudgetExpiresAt = expiresAt
 	}
 
-	s.audit(r.Context(), existing.OrgID, "virtual_key.temp_budget_updated", "virtual_key", existing.ID, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "virtual_key.temp_budget_updated", "virtual_key", existing.ID, map[string]any{
 		"temp_budget_increase_micros": increaseMicros,
 		"temp_budget_expires_at":      expiresAt,
-	})
+	}, existing, saved)
 	writeJSON(w, http.StatusOK, saved)
 }
