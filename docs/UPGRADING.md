@@ -1,15 +1,15 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.21.1`**.
+This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.21.2`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
 
-## Upgrading from v1.21.0
+## Upgrading from v1.21.0 / v1.21.1
 
-v1.21.1 uses the existing schema through migration `0034`. Before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate. After upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
+`v1.21.2` is a drop-in distribution and release-automation upgrade over `v1.21.1` using the existing database schema through migration `0034` (no schema changes between `v1.21.1` and `v1.21.2`). When upgrading from `v1.21.0` or earlier, review the `v1.21.1` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
 ## 1. Summary of Breaking & Behavior Changes (`v1.21.0`)
 
