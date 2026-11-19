@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -317,7 +318,7 @@ func TestRDSIAMTokenProvider_RefreshAndBeforeConnect(t *testing.T) {
 	}
 
 	// Verify configurePostgresPool attaches BeforeConnect when RDSIAM.Enabled is true.
-	poolCfg, err := configurePostgresPool("postgres://iam_user@rds.internal:5432/appdb", PostgresPoolOptions{
+	poolCfg, err := configurePostgresPool("postgres://iam_user@rds.internal:5432/appdb?sslmode=verify-full", PostgresPoolOptions{
 		RDSIAM: &RDSIAMConfig{
 			Enabled:         true,
 			Region:          "us-east-1",
@@ -330,5 +331,26 @@ func TestRDSIAMTokenProvider_RefreshAndBeforeConnect(t *testing.T) {
 	}
 	if poolCfg.BeforeConnect == nil {
 		t.Fatal("expected configurePostgresPool to install BeforeConnect hook for RDS IAM")
+	}
+}
+
+func TestRDSIAMPoolRequiresVerifiedTLSBeforeConnecting(t *testing.T) {
+	opts := PostgresPoolOptions{RDSIAM: &RDSIAMConfig{Enabled: true, Region: "us-east-1"}}
+	for _, mode := range []string{"disable", "allow", "prefer", "require"} {
+		t.Run(mode, func(t *testing.T) {
+			dsn := "postgres://iam_user@127.0.0.1:1/appdb?sslmode=" + mode
+			if _, err := NewPostgresPoolWithOptions(t.Context(), dsn, opts); !errors.Is(err, errRDSIAMVerifiedTLS) {
+				t.Fatalf("want verified TLS configuration error before dialing, got %v", err)
+			}
+		})
+	}
+	for _, mode := range []string{"verify-ca", "verify-full"} {
+		t.Run(mode, func(t *testing.T) {
+			dsn := "postgres://iam_user@rds-one.internal,rds-two.internal/appdb?sslmode=" + mode
+			cfg, err := configurePostgresPool(dsn, opts)
+			if err != nil || cfg.BeforeConnect == nil {
+				t.Fatalf("want TLS-verified primary and fallback with IAM hook, got %v", err)
+			}
+		})
 	}
 }

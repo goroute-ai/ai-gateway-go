@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.21.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0)
+[![Release](https://img.shields.io/badge/Release-v1.21.1-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.1)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
@@ -38,7 +38,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.1
 ```
 
 ```go
@@ -98,14 +98,14 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.1).*
 
 ### Path 3: Container Image (`ghcr.io`) & Production Stack (Docker Compose)
 
 Run the published multi-arch Distroless container image directly from [GitHub Packages](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go):
 
 ```bash
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.21.0
+docker pull ghcr.io/goroute-ai/ai-gateway-go:1.21.1
 # Or track latest stable: docker pull ghcr.io/goroute-ai/ai-gateway-go:latest
 ```
 

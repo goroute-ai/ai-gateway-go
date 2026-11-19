@@ -13,7 +13,7 @@
 --   KEYS[kbase + 9]: res_amounts_key
 --   KEYS[kbase + 10]: r24h_zset_key
 --
--- Fixed header ARGV[1..9]:
+-- Fixed header ARGV[1..10]:
 --   ARGV[1]: count (number of descriptors)
 --   ARGV[2]: input_delta (actualInput - estInput)
 --   ARGV[3]: output_delta (actualOutput - estOutput)
@@ -24,7 +24,9 @@
 --   ARGV[8]: actual_cost_micros (>= 0 settles reservation & charges spend, -1 refunds without charge, -2 leaves reservation for outbox)
 --   ARGV[9]: rolling_now_ms (optional unix millisecond timestamp for trailing 24h windows)
 --
--- Per-descriptor flags ARGV (7 args per descriptor idx = 0..count-1, abase = 9 + idx * 7):
+--   ARGV[10]: stable rolling settlement identity
+--
+-- Per-descriptor flags ARGV (7 args per descriptor idx = 0..count-1, abase = 10 + idx * 7):
 --   ARGV[abase + 1]: has_tpm (1 or 0)
 --   ARGV[abase + 2]: has_itpm (1 or 0)
 --   ARGV[abase + 3]: has_otpm (1 or 0)
@@ -49,6 +51,7 @@ if actual_cost == nil then
     actual_cost = -1
 end
 local rolling_now_ms = tonumber(ARGV[9]) or 0
+local rolling_id = ARGV[10]
 if rolling_now_ms <= 0 then
     local time_parts = redis.call("TIME")
     rolling_now_ms = tonumber(time_parts[1]) * 1000 + math.floor((tonumber(time_parts[2]) or 0) / 1000)
@@ -68,7 +71,7 @@ end
 
 for idx = 0, count - 1 do
     local kbase = idx * 10
-    local abase = 9 + idx * 7
+    local abase = 10 + idx * 7
 
     local tpm_key = KEYS[kbase + 1]
     local itpm_key = KEYS[kbase + 2]
@@ -122,7 +125,7 @@ for idx = 0, count - 1 do
         if removed > 0 and actual_cost >= 0 then
             if is_rolling == 1 then
                 if actual_cost > 0 then
-                    redis.call("ZADD", r24h_zset, rolling_now_ms, "s:" .. request_id .. ":" .. actual_cost)
+                    redis.call("ZADD", r24h_zset, "NX", rolling_now_ms, rolling_id .. ":" .. actual_cost)
                 end
                 if redis.call("EXISTS", r24h_zset) == 1 then
                     redis.call("EXPIRE", r24h_zset, 90000)

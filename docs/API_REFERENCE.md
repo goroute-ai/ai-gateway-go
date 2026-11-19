@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.21.0`  
+> **Version**: `v1.21.1`\
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`106` OpenAPI paths: `24` `/v1`, `72` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
@@ -1172,4 +1172,5 @@ GoRoute separates **operation-level adapter support** (`OperationSupportChecker`
 
 For callers with active budgets, GoRoute requires a verified/custom price (`PricingStatusVerified` or `PricingStatusCustom`) and a deterministic pre-dispatch upper bound:
 - **Supported with pre-dispatch reservation & settlement when verified/custom rates and an estimator are available**: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`, and `/v1/audio/speech` (TTS billed by Unicode character/rune count `len([]rune(input))` for both reservation and settlement).
-- **Fail-closed for budgeted callers (`503 budget_estimate_unavailable`)**: `/v1/audio/transcriptions`, `/v1/moderations`, `/v1/batches`, and `/v1/realtime` remain unavailable to budgeted callers until safe pre-dispatch upper-bound estimators exist.
+- **Realtime and batch**: WebSocket turns and individual JSONL batch items check applicable descriptor quotas before provider dispatch. A denied batch item records its quota error in the batch output. Submission still reserves enqueued tokens and applicable legacy budgets for the batch.
+- **Fail-closed for budgeted callers (`503 budget_estimate_unavailable`)**: Audio transcription, audio translation, and moderation require a safe pre-dispatch cost estimator before they can accept requests subject to a spend cap.

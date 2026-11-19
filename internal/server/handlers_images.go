@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -139,6 +140,8 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 	// Include the prompt size as well as each generated image's work allowance.
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, req.Quality, req.Size, req.N)
 	})
@@ -150,21 +153,12 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
-	}
-
-	releaseQuota(estTokens)
-	for i := range resp.Data {
-		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
 	}
 
 	var gm *domain.GlobalModel
@@ -184,6 +178,9 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		numImages = req.N
 	}
 	costMicros := finops.CalculateImageCostMicros(gm, req.Quality, req.Size, numImages)
+	releaseQuota(estTokens, costMicros)
+	outputErr := s.sanitizeImagePrompts(r.Context(), idCtx.OrgID, resp.Data)
+	status := modalityResponseStatus(outputErr)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
 	s.collector.Record(observability.RequestObservation{
@@ -191,7 +188,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		DeploymentID:   depID,
 		DeploymentName: depName,
 		Model:          resp.Model,
-		StatusCode:     http.StatusOK,
+		StatusCode:     status,
 		LatencyMs:      meta.LatencyMs,
 		RoutingMicros:  meta.RoutingMicros,
 		CostMicros:     costMicros,
@@ -224,7 +221,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		PricingProvenanceSource: provenance,
 		CostMicros:              costMicros,
 		LatencyMs:               meta.LatencyMs,
-		StatusCode:              http.StatusOK,
+		StatusCode:              status,
 		Modality:                domain.ModalityImage,
 		ModalityUnits: map[string]any{
 			"images_count": numImages,
@@ -233,6 +230,10 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		},
 		CreatedAt: time.Now().UTC(),
 	}) {
+		return
+	}
+	if outputErr != nil {
+		domain.WriteHTTPError(w, outputErr)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(resp)
@@ -329,6 +330,8 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		MaskFilename:  maskName,
 	}
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
 	})
@@ -340,17 +343,9 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		domain.WriteHTTPError(w, err)
 		return
-	}
-	releaseQuota(estTokens)
-	for i := range resp.Data {
-		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
 	}
 
 	var gm *domain.GlobalModel
@@ -369,6 +364,9 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		numImages = n
 	}
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, numImages)
+	releaseQuota(estTokens, costMicros)
+	outputErr := s.sanitizeImagePrompts(r.Context(), idCtx.OrgID, resp.Data)
+	status := modalityResponseStatus(outputErr)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 	var provenance string
 	if gm != nil {
@@ -390,7 +388,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		PricingStatus:           pricingStatus,
 		PricingProvenanceSource: provenance,
 		CostMicros:              costMicros,
-		StatusCode:              http.StatusOK,
+		StatusCode:              status,
 		Modality:                domain.ModalityImage,
 		ModalityUnits:           map[string]any{"images_count": numImages, "quality": "standard", "size": size},
 		CreatedAt:               time.Now().UTC(),
@@ -399,6 +397,10 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if outputErr != nil {
+		domain.WriteHTTPError(w, outputErr)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -464,6 +466,8 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		ImageFilename: imageName,
 	}
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
 	})
@@ -475,17 +479,9 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		domain.WriteHTTPError(w, err)
 		return
-	}
-	releaseQuota(estTokens)
-	for i := range resp.Data {
-		resp.Data[i].RevisedPrompt, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Data[i].RevisedPrompt)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
 	}
 
 	var gm *domain.GlobalModel
@@ -504,6 +500,9 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		numImages = n
 	}
 	costMicros := finops.CalculateImageCostMicros(gm, "standard", size, numImages)
+	releaseQuota(estTokens, costMicros)
+	outputErr := s.sanitizeImagePrompts(r.Context(), idCtx.OrgID, resp.Data)
+	status := modalityResponseStatus(outputErr)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 	var provenance string
 	if gm != nil {
@@ -525,7 +524,7 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		PricingStatus:           pricingStatus,
 		PricingProvenanceSource: provenance,
 		CostMicros:              costMicros,
-		StatusCode:              http.StatusOK,
+		StatusCode:              status,
 		Modality:                domain.ModalityImage,
 		ModalityUnits:           map[string]any{"images_count": numImages, "quality": "standard", "size": size},
 		CreatedAt:               time.Now().UTC(),
@@ -534,5 +533,20 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if outputErr != nil {
+		domain.WriteHTTPError(w, outputErr)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *GatewayServer) sanitizeImagePrompts(ctx context.Context, orgID string, data []domain.ImageItem) error {
+	for i := range data {
+		prompt, err := s.sanitizeGuardrailText(ctx, orgID, data[i].RevisedPrompt)
+		if err != nil {
+			return err
+		}
+		data[i].RevisedPrompt = prompt
+	}
+	return nil
 }

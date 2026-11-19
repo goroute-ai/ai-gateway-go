@@ -235,8 +235,10 @@ func TestE2E_Quota_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 
 	// 2. /v1/batches JSONL estimation & separate batch enqueued hold + cancel release.
 	var batchGate sync.Mutex
+	var batchCalls atomic.Int32
 	batchBlocked := true
 	batchUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		batchCalls.Add(1)
 		for {
 			batchGate.Lock()
 			blk := batchBlocked
@@ -318,8 +320,37 @@ func TestE2E_Quota_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 		val, _ := cluster.redisFabric.Client().Get(ctx, enqKey).Result()
 		return val == "0" || val == ""
 	})
-	if rB3, rawB3 := cluster.c2.doJSON(http.MethodPost, "/v1/batches", map[string]string{"Authorization": "Bearer " + vkBatch.RawKey}, bPayload, nil); rB3.StatusCode != http.StatusCreated {
+	var b3 domain.CanonicalBatch
+	if rB3, rawB3 := cluster.c2.doJSON(http.MethodPost, "/v1/batches", map[string]string{"Authorization": "Bearer " + vkBatch.RawKey}, bPayload, &b3); rB3.StatusCode != http.StatusCreated {
 		t.Fatalf("expected batch creation on node2 after cancel/completion release, got %d: %s", rB3.StatusCode, string(rawB3))
+	}
+	cluster.waitForCondition(5*time.Second, "allowed batch finishes", func() bool {
+		batch, err := cluster.pgRepo.GetBatch(ctx, org.ID, b3.ID)
+		return err == nil && batch.Status == "completed"
+	})
+	cluster.waitForCondition(5*time.Second, "completed batch releases its enqueue hold", func() bool {
+		val, _ := cluster.redisFabric.Client().Get(ctx, enqKey).Result()
+		return val == "0" || val == ""
+	})
+
+	if err := cluster.pgRepo.UpsertBudgetWindowLimit(ctx, &domain.BudgetWindowLimit{
+		OrgID: org.ID, ScopeType: domain.QuotaScopeKey, ScopeID: vkBatch.ID,
+		WindowType: domain.BudgetWindowDaily, MaxBudgetMicros: 100, SpentMicros: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := batchCalls.Load()
+	var denied domain.CanonicalBatch
+	resp, body := cluster.c1.doJSON(http.MethodPost, "/v1/batches", map[string]string{"Authorization": "Bearer " + vkBatch.RawKey}, bPayload, &denied)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("submit descriptor-budgeted batch (%d): %s", resp.StatusCode, body)
+	}
+	cluster.waitForCondition(5*time.Second, "descriptor-budgeted batch reports both items denied", func() bool {
+		batch, err := cluster.pgRepo.GetBatch(ctx, org.ID, denied.ID)
+		return err == nil && batch.Status == "completed" && batch.RequestCounts.Failed == 2
+	})
+	if got := batchCalls.Load(); got != before {
+		t.Fatalf("denied batch reached upstream: before=%d after=%d", before, got)
 	}
 }
 

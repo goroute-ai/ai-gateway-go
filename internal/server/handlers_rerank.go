@@ -104,6 +104,8 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	// Account for query and document lengths, including structured documents.
 	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateRerankCostUpperBound(gm, len(req.Documents))
 	})
@@ -115,24 +117,12 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	resp, meta, err := s.reliability.ExecuteRerank(r.Context(), idCtx, &req)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
-	}
-	releaseQuota(resp.Usage.TotalTokens)
-	for i := range resp.Results {
-		if resp.Results[i].Document == nil {
-			continue
-		}
-		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Results[i].Document)
-		if sanitizeErr != nil {
-			domain.WriteHTTPError(w, sanitizeErr)
-			return
-		}
-		resp.Results[i].Document = updated.(map[string]any)
 	}
 
 	var gm *domain.GlobalModel
@@ -152,6 +142,20 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		searchUnits = 1
 	}
 	costMicros := finops.CalculateRerankCostMicros(gm, searchUnits)
+	releaseQuota(resp.Usage.TotalTokens, costMicros)
+	var outputErr error
+	for i := range resp.Results {
+		if resp.Results[i].Document == nil {
+			continue
+		}
+		updated, _, sanitizeErr := s.sanitizeGuardrailValue(r.Context(), idCtx.OrgID, resp.Results[i].Document)
+		if sanitizeErr != nil {
+			outputErr = sanitizeErr
+			break
+		}
+		resp.Results[i].Document = updated.(map[string]any)
+	}
+	status := modalityResponseStatus(outputErr)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
 	s.collector.Record(observability.RequestObservation{
@@ -159,7 +163,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		DeploymentID:   depID,
 		DeploymentName: depName,
 		Model:          resp.Model,
-		StatusCode:     http.StatusOK,
+		StatusCode:     status,
 		LatencyMs:      meta.LatencyMs,
 		RoutingMicros:  meta.RoutingMicros,
 		CostMicros:     costMicros,
@@ -192,11 +196,15 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		PricingProvenanceSource: provenance,
 		CostMicros:              costMicros,
 		LatencyMs:               meta.LatencyMs,
-		StatusCode:              http.StatusOK,
+		StatusCode:              status,
 		Modality:                domain.ModalityRerank,
 		ModalityUnits:           map[string]any{"search_units": searchUnits},
 		CreatedAt:               time.Now().UTC(),
 	}) {
+		return
+	}
+	if outputErr != nil {
+		domain.WriteHTTPError(w, outputErr)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(resp)

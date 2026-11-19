@@ -1665,7 +1665,7 @@ func (r *MemoryRepository) ListBudgetWindowLimits(_ context.Context, filter Budg
 			continue
 		}
 		cp := bw.Clone()
-		if cp.WindowType == domain.BudgetWindowRolling24h {
+		if !filter.SkipRollingSpend && cp.WindowType == domain.BudgetWindowRolling24h {
 			recent := r.rollingWindowSpendLocked(cp, cutoff)
 			if cp.RollingHoldExpiresAt != nil && now.Before(cp.RollingHoldExpiresAt.UTC()) && cp.RollingHoldMicros > 0 {
 				recent += cp.RollingHoldMicros

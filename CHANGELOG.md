@@ -11,12 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.21.1] - 2026-11-19
+
+### Security
+
+- Require certificate-verified PostgreSQL TLS for AWS RDS IAM connections, including connection fallbacks.
+
+### Fixed
+
+- Apply descriptor limits before dispatching image, speech, rerank, and individual batch requests.
+- Deduplicate rolling 24-hour spend when recovering Redis state from PostgreSQL.
+- Skip organization-wide rolling spend aggregation during quota admission.
+- Document the `400 ambiguous_gateway_credentials` response and the upgrade requirements for AWS RDS IAM.
+
+See the [upgrade guide](./docs/UPGRADING.md#upgrading-from-v1210) for rollout details.
+
+---
+
 ## [1.21.0] - 2026-11-19
 
 ### Enterprise Authentication, Federation, Multi-Dimensional Quotas & Release Hardening
 
 #### 1. Enterprise Authentication, Multi-Issuer OIDC, Federation & Embedded SDK Auth (`migrations/0024`, `0034`, `internal/auth/`, `pkg/gateway/`)
-- **Credential Extraction & Conflict Rejection (`internal/auth/extractor.go`)**: Added configurable custom API key header override (`auth.custom_api_key_header`) and strict fail-closed rejection (`401`) when conflicting credentials appear across supported headers/sources.
+- **Credential Extraction & Conflict Rejection (`internal/auth/extractor.go`)**: Added configurable custom API key header override (`auth.custom_api_key_header`) and strict fail-closed rejection (`400 ambiguous_gateway_credentials`) when conflicting credentials appear across supported headers/sources.
 - **Multi-Issuer OIDC/JWT Verification & Identity Binding (`internal/auth/jwt.go`, `resolver.go`, `migrations/0024`, `0034`)**: Added `auth.oidc_issuers[]` supporting `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, `ES384`, and `EdDSA` (alongside `HS256`), OIDC discovery, allowed email domain restrictions, custom `claim_mapping` (including nested dot paths), optional JIT user registration, explicit JWT claim-to-key mappings (`/admin/v1/jwt-mappings`), and stale-JWKS grace fallback during IdP outages. Migration `0034` introduces `users.oidc_issuer` and binds identities uniquely by `(org_id, oidc_issuer, oidc_subject)` (`idx_users_org_issuer_subject`), restricting legacy subject-only fallback strictly to single unambiguous issuer configurations.
 - **RFC 7662 Token Introspection, UserInfo & Reverse-Proxy Auth (`internal/auth/introspection.go`, `proxy_auth.go`)**: Added `auth.introspection` (OAuth 2.0 RFC 7662 / OIDC UserInfo with Redis + L1 caching) and CIDR-guarded `auth.proxy_auth` (`trusted_proxy_cidrs` + header mapping, rejecting untrusted peers with `403`).
 - **Embedded Go SDK `WithCustomAuthenticator` (`pkg/gateway/auth.go`)**: Exported `CustomAuthModeOff`, `CustomAuthModeOn`, `CustomAuthModeAuto`, `AuthDecision` (`Identity`, `VirtualKey`, `RunPostChecks`), and `WithCustomAuthenticator` wired through the embedded HTTP server with RBAC and quota enforcement (#138).

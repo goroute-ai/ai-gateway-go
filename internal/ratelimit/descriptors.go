@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -351,6 +352,20 @@ func (l *Limiter) AcquireDescriptors(
 	reserveMicros int64,
 	descriptors []domain.RateLimitDescriptor,
 ) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
+	return l.AcquireDescriptorsWithSettlementID(ctx, orgID, reqID, "", estInput, estOutput, reserveMicros, descriptors)
+}
+
+// AcquireDescriptorsWithSettlementID shares a spend event ID with durable quota history.
+func (l *Limiter) AcquireDescriptorsWithSettlementID(
+	ctx context.Context,
+	orgID string,
+	reqID string,
+	settlementID string,
+	estInput int,
+	estOutput int,
+	reserveMicros int64,
+	descriptors []domain.RateLimitDescriptor,
+) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
 	noop := func(int, int, int64) {}
 	if l == nil {
 		return noop, nil
@@ -377,6 +392,10 @@ func (l *Limiter) AcquireDescriptors(
 		return noop, nil
 	}
 
+	rollingID := "s:" + reqID
+	if settlementID != "" {
+		rollingID = "db:" + settlementID
+	}
 	now := l.nowUTC()
 	windowTTL := l.windowSec * 2
 	if windowTTL <= 0 {
@@ -464,7 +483,7 @@ func (l *Limiter) AcquireDescriptors(
 					outputDelta := actualOutput - estOutput
 					totalDelta := (actualInput + actualOutput) - (estInput + estOutput)
 
-					recArgv := make([]any, 0, 9+len(flags))
+					recArgv := make([]any, 0, 10+len(flags))
 					recArgv = append(recArgv,
 						len(active),
 						inputDelta,
@@ -475,6 +494,7 @@ func (l *Limiter) AcquireDescriptors(
 						reqID,
 						actualCostMicros,
 						l.nowUTC().UnixMilli(),
+						rollingID,
 					)
 					recArgv = append(recArgv, flags...)
 
@@ -496,7 +516,7 @@ func (l *Limiter) AcquireDescriptors(
 		return nil, limiterUnavailableError()
 	}
 
-	return l.acquireDescriptorsLocal(ctx, orgID, reqID, estInput, estOutput, reserveMicros, active, now)
+	return l.acquireDescriptorsLocal(ctx, orgID, reqID, rollingID, estInput, estOutput, reserveMicros, active, now)
 }
 
 func (l *Limiter) ensureLocalDescMapsLocked() {
@@ -528,8 +548,33 @@ func (l *Limiter) ensureLocalDescMapsLocked() {
 		l.localDescReservations = make(map[string]map[string]localReservationEntry)
 	}
 	if l.localDescRolling == nil {
-		l.localDescRolling = make(map[string][]localRollingSpendEntry)
+		l.localDescRolling = make(map[string]localRollingWindow)
 	}
+}
+
+type localRollingWindow struct {
+	initialized bool
+	entries     []localRollingSpendEntry
+}
+
+func mergeLocalRollingHistory(entries []localRollingSpendEntry, history []domain.RollingSpendEntry, cutoffMs int64) []localRollingSpendEntry {
+	restored := make(map[string]struct{}, len(history))
+	merged := make([]localRollingSpendEntry, 0, len(entries)+len(history))
+	for _, entry := range history {
+		if entry.TimestampMs <= cutoffMs || entry.AmountMicros <= 0 {
+			continue
+		}
+		if _, exists := restored[entry.ID]; !exists {
+			restored[entry.ID] = struct{}{}
+			merged = append(merged, localRollingSpendEntry{entry.ID, entry.TimestampMs, entry.AmountMicros})
+		}
+	}
+	for _, entry := range entries {
+		if _, exists := restored[entry.id]; !exists {
+			merged = append(merged, entry)
+		}
+	}
+	return merged
 }
 
 func pruneLocalRollingEntries(entries []localRollingSpendEntry, cutoffMs int64) ([]localRollingSpendEntry, int64) {
@@ -551,6 +596,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	ctx context.Context,
 	orgID string,
 	reqID string,
+	rollingID string,
 	estInput int,
 	estOutput int,
 	reserveMicros int64,
@@ -569,7 +615,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	l.ensureLocalDescMapsLocked()
 	for i, d := range descriptors {
 		if d.MaxBudgetMicros > 0 && d.WindowType == domain.BudgetWindowRolling24h && !d.RollingHistoryLoaded {
-			if _, ok := l.localDescRolling[localKeys[i]]; !ok {
+			if !l.localDescRolling[localKeys[i]].initialized {
 				coldIndices = append(coldIndices, i)
 			}
 		}
@@ -617,6 +663,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	}
 
 	// Phase 1: Pure read-only validation across all descriptors.
+	pendingRolling := make(map[string]localRollingWindow)
 	pendingRPM := make(map[string]int)
 	pendingTPM := make(map[string]int)
 	pendingITPM := make(map[string]int)
@@ -697,19 +744,17 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.MaxBudgetMicros > 0 {
 			var curSpent int64
 			if d.WindowType == domain.BudgetWindowRolling24h {
-				if entries, ok := l.localDescRolling[lk]; ok {
-					pruned, sum := pruneLocalRollingEntries(entries, cutoffMs)
-					l.localDescRolling[lk] = pruned
-					curSpent = sum
-				} else if d.RollingHistoryLoaded {
-					for _, entry := range d.RollingEntries {
-						if entry.TimestampMs > cutoffMs && entry.AmountMicros > 0 {
-							curSpent += entry.AmountMicros
-						}
+				window := l.localDescRolling[lk]
+				entries := window.entries
+				if !window.initialized {
+					if !d.RollingHistoryLoaded {
+						return nil, quotaPolicyUnavailableError()
 					}
-				} else {
-					curSpent = d.SpentFloorMicros
+					entries = mergeLocalRollingHistory(entries, d.RollingEntries, cutoffMs)
 				}
+				pruned, sum := pruneLocalRollingEntries(entries, cutoffMs)
+				pendingRolling[lk] = localRollingWindow{initialized: true, entries: pruned}
+				curSpent = sum
 			} else {
 				curSpent = l.localDescSpent[lk]
 				if d.SpentFloorMicros > curSpent {
@@ -776,27 +821,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		}
 		if d.MaxBudgetMicros > 0 {
 			if d.WindowType == domain.BudgetWindowRolling24h {
-				if _, ok := l.localDescRolling[lk]; !ok {
-					seeded := make([]localRollingSpendEntry, 0, len(d.RollingEntries))
-					if d.RollingHistoryLoaded {
-						for _, entry := range d.RollingEntries {
-							if entry.TimestampMs > cutoffMs && entry.AmountMicros > 0 {
-								seeded = append(seeded, localRollingSpendEntry{
-									id:     entry.ID,
-									tsMs:   entry.TimestampMs,
-									amount: entry.AmountMicros,
-								})
-							}
-						}
-					} else if d.SpentFloorMicros > 0 {
-						seeded = append(seeded, localRollingSpendEntry{
-							id:     "seed",
-							tsMs:   nowMs,
-							amount: d.SpentFloorMicros,
-						})
-					}
-					l.localDescRolling[lk] = seeded
-				}
+				l.localDescRolling[lk] = pendingRolling[lk]
 			} else if d.SpentFloorMicros > l.localDescSpent[lk] {
 				l.localDescSpent[lk] = d.SpentFloorMicros
 			}
@@ -877,11 +902,18 @@ func (l *Limiter) acquireDescriptorsLocal(
 							delete(resMap, reqID)
 							if actualCostMicros > 0 {
 								if d.WindowType == domain.BudgetWindowRolling24h {
-									l.localDescRolling[lk] = append(l.localDescRolling[lk], localRollingSpendEntry{
-										id:     "s:" + reqID,
-										tsMs:   l.nowUTC().UTC().UnixMilli(),
-										amount: actualCostMicros,
+									window := l.localDescRolling[lk]
+									existing := slices.ContainsFunc(window.entries, func(entry localRollingSpendEntry) bool {
+										return strings.HasPrefix(rollingID, "db:") && entry.id == rollingID
 									})
+									if !existing {
+										window.entries = append(window.entries, localRollingSpendEntry{
+											id:     rollingID,
+											tsMs:   l.nowUTC().UTC().UnixMilli(),
+											amount: actualCostMicros,
+										})
+										l.localDescRolling[lk] = window
+									}
 								} else {
 									l.localDescSpent[lk] += actualCostMicros
 								}

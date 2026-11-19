@@ -1,11 +1,15 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.21.0`** (from `v1.20.0` or earlier).
+This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.21.1`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
+
+## Upgrading from v1.21.0
+
+v1.21.1 uses the existing schema through migration `0034`. Before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate. After upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
 ## 1. Summary of Breaking & Behavior Changes (`v1.21.0`)
 
@@ -14,14 +18,14 @@ This guide covers safe zero-downtime upgrades and rollback precautions when upgr
 2. **Issuer-Bound OIDC Identities (`(org_id, oidc_issuer, oidc_subject)`)**:
    - Data Plane JWT and Control Plane OIDC bindings now isolate subjects per issuer via `users.oidc_issuer` and unique index `idx_users_org_issuer_subject`.
    - Legacy rows with empty `oidc_issuer` resolve only when exactly one trusted issuer can be determined unambiguously for the tenant; multi-issuer deployments require explicit administrator issuer binding.
-3. **Conflicting Inbound Credentials Fail Closed (`401`)**:
-   - Presenting different credentials simultaneously across supported sources (e.g., mismatched `Authorization` bearer token and `X-API-Key` / configured `auth.custom_api_key_header`) is rejected with `401` rather than silently preferring one header.
+3. **Conflicting Inbound Credentials Fail Closed (`400`)**:
+   - Presenting different credentials simultaneously across supported sources (e.g., mismatched `Authorization` bearer token and `X-API-Key` / configured `auth.custom_api_key_header`) is rejected with `400 ambiguous_gateway_credentials`.
 4. **Scheduled Key Auto-Rotation Requires HTTPS Delivery + Bearer Token**:
    - Keys with `rotation_interval_sec > 0` remain untouched unless `auth.key_rotation_delivery_url` (strictly `https://`, without embedded userinfo, query strings, or fragments) and `auth.key_rotation_delivery_token` are configured. Replacement secrets are encrypted at rest during staged retries and promoted only after a `2xx` ACK.
 5. **Server-Side Password Breach Screening (`auth.enable_hibp_check`)**:
    - Passwords are submitted over TLS to `POST /auth/login` and `POST /auth/password`; client-side SHA-1 hashing (`password_sha1`) is removed. When `enable_hibp_check: true`, GoRoute hashes server-side, queries HIBP k-anonymity range APIs with strictly the **5-character uppercase SHA-1 prefix**, and fails open on upstream HIBP availability errors according to existing availability settings.
 6. **AWS RDS IAM Requires TLS Verification (`sslmode=verify-full` / `verify-ca`)**:
-   - Enabling `storage.rds_iam.enabled: true` with `sslmode=disable` or `sslmode=allow` fails closed at startup.
+   - When `storage.rds_iam.enabled: true`, every PostgreSQL connection candidate must verify the server certificate. Use `sslmode=verify-full` or `verify-ca`. The gateway rejects unverified TLS or plaintext fallback before dialing.
 
 ---
 
@@ -60,7 +64,7 @@ During upgrade (`0034`), existing `rolling_24h` rows in `budget_window_limits` a
 **Operational Recovery Boundary**:
 - PostgreSQL `spend_logs` is the source of truth for **persisted settled spend** within the trailing 24 hours.
 - If Redis loses all keys or loses only the `rolling_24h` sorted set (`gw:dq:{org:<orgID>}:r24h:<entity>`), admission detects the missing `__init__:0` sentinel and atomically reloads trailing 24h spend from PostgreSQL inside the `{org:<orgID>}` hash slot.
-- **Limitation**: Unsettled in-flight reservations or settlements that existed *only* in Redis prior to flush/crash cannot be reconstructed from PostgreSQL `spend_logs`.
+- **Limitation**: Unsettled in-flight reservations or settlements that existed *only* in Redis prior to flush/crash cannot be reconstructed from PostgreSQL `spend_logs`. Older Redis entries keyed by request ID can temporarily count alongside persisted spend if recovery runs while older replicas are still settling requests. Those entries age out of the 24-hour window.
 
 ---
 

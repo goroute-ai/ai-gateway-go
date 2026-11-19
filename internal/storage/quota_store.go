@@ -110,6 +110,8 @@ type BudgetWindowFilter struct {
 	ScopeType  domain.QuotaScopeType
 	ScopeID    string
 	WindowType domain.BudgetWindowType
+	// SkipRollingSpend returns rolling window definitions without aggregating historical spend.
+	SkipRollingSpend bool
 }
 
 // BudgetWindowRepository is an optional Repository extension for managing

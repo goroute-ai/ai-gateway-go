@@ -449,7 +449,7 @@ func modalityRate(value any) (int64, bool) {
 	}
 }
 
-func (s *GatewayServer) acquireModalityBudget(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int), error) {
+func (s *GatewayServer) acquireModalityBudget(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int, int64), error) {
 	release, _, err := s.acquireModalityQuotaWithThrottle(ctx, id, model, rateTokens, requestID, estimator)
 	return release, err
 }

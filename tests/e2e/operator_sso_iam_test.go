@@ -491,9 +491,9 @@ func TestE2E_IAM_DistributedUpstreamTokenCacheRDSIAMAndOptInCloudIAM(t *testing.
 	if err != nil || !strings.Contains(rdsTok, "Action=connect") || !strings.Contains(rdsTok, "DBUser=iam_gateway") {
 		t.Fatalf("expected signed RDS IAM auth token containing Action=connect & DBUser, got tok=%q err=%v", rdsTok, err)
 	}
-	if _, err := storage.NewPostgresPoolWithOptions(ctx, "postgres://iam_gateway@db.prod.us-east-1.rds.amazonaws.com:5432/aigateway?sslmode=disable", storage.PostgresPoolOptions{
+	if _, err := storage.NewPostgresPoolWithOptions(ctx, "postgres://iam_gateway@127.0.0.1:1/aigateway?sslmode=disable", storage.PostgresPoolOptions{
 		RDSIAM: &storage.RDSIAMConfig{Enabled: true, Region: "us-east-1", AccessKeyID: "AKIA...", SecretAccessKey: "secret"},
-	}); err == nil {
-		t.Fatalf("expected RDS IAM pool creation with sslmode=disable to fail TLS enforcement")
+	}); err == nil || !strings.Contains(err.Error(), "requires certificate-verified TLS") {
+		t.Fatalf("expected RDS IAM TLS configuration error, got %v", err)
 	}
 }

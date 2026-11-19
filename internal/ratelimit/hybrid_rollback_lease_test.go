@@ -373,3 +373,54 @@ func TestLimiter_Rolling24hColdRecovery_HoldConcurrentAndFailClosed(t *testing.T
 		}
 	})
 }
+
+func TestRollingColdRecoveryCountsRedisAndDurableSettlementOnce(t *testing.T) {
+	run := func(t *testing.T, redisMode bool) {
+		var mr *miniredis.Miniredis
+		var redisFabric *storage.RedisFabric
+		if redisMode {
+			mr = miniredis.RunT(t)
+			redisFabric = storage.NewRedisFabric(mr.Addr(), "", 0)
+			t.Cleanup(func() { _ = redisFabric.Client().Close() })
+		}
+		lim := NewLimiter(redisFabric, 60, 60)
+		lim.SetFallbackToLocalOnOutage(!redisMode)
+		now := time.Date(2026, 11, 19, 6, 0, 0, 0, time.UTC)
+		lim.SetNowFunc(func() time.Time { return now })
+		desc := domain.RateLimitDescriptor{
+			ScopeType: domain.QuotaScopeKey, ScopeID: "vk-overlap",
+			WindowType: domain.BudgetWindowRolling24h, MaxBudgetMicros: 1000,
+		}
+		var history []domain.RollingSpendEntry
+		lim.SetRollingWindowLoader(func(context.Context, string, domain.RateLimitDescriptor, time.Time) ([]domain.RollingSpendEntry, error) {
+			return history, nil
+		})
+
+		release, err := lim.AcquireDescriptorsWithSettlementID(t.Context(), "org-overlap", "request-one", "event-one", 10, 10, 400, []domain.RateLimitDescriptor{desc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if redisMode {
+			key := buildDescriptorKeySet("org-overlap", desc, now.Unix()/60, now.Format("20060102"))
+			mr.Del(key.r24hZSet)
+		} else {
+			lim.localMu.Lock()
+			delete(lim.localDescRolling, orgHashTag("org-overlap")+":"+descriptorEntityKey(desc))
+			lim.localMu.Unlock()
+		}
+		// The reservation survived eviction. Settlement reaches both stores before the next admission.
+		release(10, 10, 400)
+		history = []domain.RollingSpendEntry{{ID: "db:event-one", TimestampMs: now.UnixMilli(), AmountMicros: 400}}
+
+		next, err := lim.AcquireDescriptorsWithSettlementID(t.Context(), "org-overlap", "request-two", "event-two", 10, 10, 600, []domain.RateLimitDescriptor{desc})
+		if err != nil {
+			t.Fatalf("the recovered 400-micro charge leaves room for 600: %v", err)
+		}
+		if _, err := lim.AcquireDescriptors(t.Context(), "org-overlap", "request-three", 10, 10, 1, []domain.RateLimitDescriptor{desc}); err == nil {
+			t.Fatal("admission must count both the recovered charge and the live reservation")
+		}
+		next(-1, -1, -1)
+	}
+	t.Run("redis", func(t *testing.T) { run(t, true) })
+	t.Run("memory", func(t *testing.T) { run(t, false) })
+}

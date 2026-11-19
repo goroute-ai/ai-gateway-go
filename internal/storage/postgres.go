@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +62,14 @@ func configurePostgresPool(dsn string, opts PostgresPoolOptions) (*pgxpool.Confi
 		cfg.MaxConnIdleTime = 5 * time.Minute
 	}
 	if opts.RDSIAM != nil && opts.RDSIAM.Enabled {
+		if !postgresTLSVerifiesCertificate(cfg.ConnConfig.TLSConfig) {
+			return nil, errRDSIAMVerifiedTLS
+		}
+		for _, fallback := range cfg.ConnConfig.Fallbacks {
+			if !postgresTLSVerifiesCertificate(fallback.TLSConfig) {
+				return nil, errRDSIAMVerifiedTLS
+			}
+		}
 		iamCfg := *opts.RDSIAM
 		if iamCfg.Host == "" {
 			iamCfg.Host = cfg.ConnConfig.Host
@@ -78,6 +87,13 @@ func configurePostgresPool(dsn string, opts PostgresPoolOptions) (*pgxpool.Confi
 		cfg.BeforeConnect = provider.BeforeConnect
 	}
 	return cfg, nil
+}
+
+var errRDSIAMVerifiedTLS = errors.New("rds_iam: PostgreSQL requires certificate-verified TLS for every connection (use sslmode=verify-full or verify-ca)")
+
+func postgresTLSVerifiesCertificate(cfg *tls.Config) bool {
+	// pgx implements verify-ca with its own certificate chain verifier.
+	return cfg != nil && (!cfg.InsecureSkipVerify || cfg.VerifyPeerCertificate != nil)
 }
 
 // NewPostgresPool creates a configured pgxpool.Pool for PostgreSQL 16+ persistence.
@@ -2051,6 +2067,9 @@ func (p *PostgresRepository) ListBudgetWindowLimits(ctx context.Context, filter 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if filter.SkipRollingSpend {
+		return out, nil
 	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-24 * time.Hour)
