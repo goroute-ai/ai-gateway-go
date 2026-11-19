@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
 VERSION ?= v1.22.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -36,6 +36,21 @@ lint: vet
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		echo "==> Running golangci-lint..."; \
 		golangci-lint run ./...; \
+	elif [ -x "$$(go env GOPATH)/bin/golangci-lint" ]; then \
+		echo "==> Running golangci-lint from GOPATH/bin..."; \
+		"$$(go env GOPATH)/bin/golangci-lint" run ./...; \
+	else \
+		echo "golangci-lint not installed; run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+	fi
+
+deadcode:
+	@echo "==> Running deadcode reachability analysis..."
+	@if command -v deadcode >/dev/null 2>&1; then \
+		deadcode ./cmd/... ./internal/... ./pkg/...; \
+	elif [ -x "$$(go env GOPATH)/bin/deadcode" ]; then \
+		"$$(go env GOPATH)/bin/deadcode" ./cmd/... ./internal/... ./pkg/...; \
+	else \
+		echo "deadcode not installed; run: go install golang.org/x/tools/cmd/deadcode@latest"; \
 	fi
 
 specgen:
