@@ -23,11 +23,13 @@ const (
 	defaultMaxTokens = 4096
 )
 
+// Adapter implements adapter.ProviderAdapter for the Anthropic Messages API.
 type Adapter struct {
 	client     *http.Client
 	ssrfPolicy *network.Policy
 }
 
+// NewAdapter creates an Anthropic Adapter using client, or a default pooled HTTP client when nil.
 func NewAdapter(client *http.Client) *Adapter {
 	if client == nil {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)

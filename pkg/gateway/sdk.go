@@ -1045,10 +1045,8 @@ func (c *Client) CallMCP(ctx context.Context, route string, reqBody []byte, head
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 
-	if headers != nil {
-		for k, v := range headers {
-			httpReq.Header[k] = v
-		}
+	for k, v := range headers {
+		httpReq.Header[k] = v
 	}
 
 	resp, err := c.httpClient.Do(httpReq)

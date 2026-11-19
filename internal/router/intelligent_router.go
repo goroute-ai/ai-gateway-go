@@ -54,6 +54,7 @@ type IntelligentRouter struct {
 	orgGroupsCache map[string]cachedOrgModelGroups
 }
 
+// NewIntelligentRouter initializes a Stage 1 IntelligentRouter with default alias fallbacks.
 func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *IntelligentRouter {
 	if cfg.DefaultFastAlias == "" {
 		cfg.DefaultFastAlias = "fast"

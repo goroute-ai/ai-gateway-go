@@ -1010,7 +1010,7 @@ func buildVertexClaudePayload(req *domain.CanonicalChatRequest, stream bool) ([]
 						if p.ImageURL != nil && p.ImageURL.URL != "" {
 							mime, b64, ok := parseDataURI(p.ImageURL.URL)
 							if !ok {
-								return nil, fmt.Errorf("Vertex Claude image input must be materialized as base64 before request construction")
+								return nil, fmt.Errorf("vertex claude image input must be materialized as base64 before request construction")
 							}
 							blocks = append(blocks, map[string]any{
 								"type":   "image",
@@ -1019,7 +1019,7 @@ func buildVertexClaudePayload(req *domain.CanonicalChatRequest, stream bool) ([]
 						}
 					case "document":
 						if p.Document != nil && p.Document.URL != "" && p.Document.Data == "" {
-							return nil, fmt.Errorf("Vertex Claude document input must be materialized as base64 before request construction")
+							return nil, fmt.Errorf("vertex claude document input must be materialized as base64 before request construction")
 						}
 						if p.Document != nil && p.Document.Data != "" {
 							mime := p.Document.MimeType

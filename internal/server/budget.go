@@ -186,10 +186,6 @@ func (s *GatewayServer) tokenBudgetUpperBound(ctx context.Context, orgID, model 
 	return bound, nil
 }
 
-func (s *GatewayServer) acquireRequestQuota(ctx context.Context, id *domain.IdentityContext, model string, inputTokens, requestedOutput int, requestID string) (func(int), error) {
-	return s.acquireRequestQuotaWithBound(ctx, id, model, inputTokens, inputTokens, requestedOutput, requestID)
-}
-
 func (s *GatewayServer) reservationLeaseRenewInterval() time.Duration {
 	if s != nil && s.budgetStats != nil && s.budgetStats.leaseRenewInterval > 0 {
 		return s.budgetStats.leaseRenewInterval

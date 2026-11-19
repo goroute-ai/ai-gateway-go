@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
-	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 func TestLimiterFailsClosedWithoutRedisForConfiguredLimits(t *testing.T) {

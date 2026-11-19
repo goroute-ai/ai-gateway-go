@@ -19,6 +19,7 @@ type RequestValidator struct {
 	compiledOverrides []compiledModelOverride
 }
 
+// NewRequestValidator compiles model-specific dialect overrides and returns a RequestValidator for profile.
 func NewRequestValidator(profile *DialectProfile) *RequestValidator {
 	v := &RequestValidator{profile: profile}
 	if profile != nil && len(profile.ModelOverrides) > 0 {
@@ -63,14 +64,14 @@ func (v *RequestValidator) ShapeRequest(req *domain.CanonicalChatRequest, model 
 		shaped.Temperature = nil
 		dropped = append(dropped, "temperature")
 	} else if effectiveConstraints.SupportedTemperature != nil && shaped.Temperature != nil {
-		min := effectiveConstraints.SupportedTemperature[0]
-		max := effectiveConstraints.SupportedTemperature[1]
-		if *shaped.Temperature < min || *shaped.Temperature > max {
+		minTemp := effectiveConstraints.SupportedTemperature[0]
+		maxTemp := effectiveConstraints.SupportedTemperature[1]
+		if *shaped.Temperature < minTemp || *shaped.Temperature > maxTemp {
 			return nil, nil, &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,
 				Type:       domain.ErrorTypeInvalidRequest,
 				Code:       "unsupported_parameter",
-				Message:    fmt.Sprintf("Model %q requires temperature in range [%.1f, %.1f], got %.2f", model, min, max, *shaped.Temperature),
+				Message:    fmt.Sprintf("Model %q requires temperature in range [%.1f, %.1f], got %.2f", model, minTemp, maxTemp, *shaped.Temperature),
 			}
 		}
 	}
@@ -239,14 +240,14 @@ func (v *RequestValidator) ValidateAndResolveConstraints(req *domain.CanonicalCh
 	}
 
 	if effectiveConstraints.SupportedTemperature != nil && req.Temperature != nil {
-		min := effectiveConstraints.SupportedTemperature[0]
-		max := effectiveConstraints.SupportedTemperature[1]
-		if *req.Temperature < min || *req.Temperature > max {
+		minTemp := effectiveConstraints.SupportedTemperature[0]
+		maxTemp := effectiveConstraints.SupportedTemperature[1]
+		if *req.Temperature < minTemp || *req.Temperature > maxTemp {
 			return nil, nil, &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,
 				Type:       domain.ErrorTypeInvalidRequest,
 				Code:       "unsupported_parameter",
-				Message:    fmt.Sprintf("Model %q requires temperature in range [%.1f, %.1f], got %.2f", model, min, max, *req.Temperature),
+				Message:    fmt.Sprintf("Model %q requires temperature in range [%.1f, %.1f], got %.2f", model, minTemp, maxTemp, *req.Temperature),
 			}
 		}
 	}

@@ -133,7 +133,7 @@ func TestBudgetAwareRouting_FallbackChain(t *testing.T) {
 		OrgID:              org.ID,
 		KeyMaxBudgetMicros: 10_000_000, // strict budget
 	}
-	resp, meta, err = rm.ExecuteChat(ctx, budgetedCtx, &domain.CanonicalChatRequest{
+	_, meta, err = rm.ExecuteChat(ctx, budgetedCtx, &domain.CanonicalChatRequest{
 		Model: "primary-group",
 		Messages: []domain.CanonicalMessage{
 			{Role: "user", Content: "Hello"},

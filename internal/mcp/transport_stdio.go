@@ -34,7 +34,6 @@ type StdioSecurityPolicy struct {
 // StdioTransport executes local tools via isolated stdio subprocesses.
 type StdioTransport struct {
 	policy StdioSecurityPolicy
-	mu     sync.Mutex
 }
 
 // NewStdioTransport creates a new StdioTransport with the given security policy.

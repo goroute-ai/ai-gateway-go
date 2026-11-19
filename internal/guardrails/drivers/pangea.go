@@ -208,7 +208,7 @@ func (d *PangeaDriver) Evaluate(ctx context.Context, input *domain.GuardrailEval
 		}}
 	}
 
-	decision := domain.GuardrailDecisionAllow
+	var decision domain.GuardrailDecision
 	switch {
 	case d.hasExplicitAct && d.explicitAction == domain.GuardrailActionAudit:
 		decision = domain.GuardrailDecisionFlag

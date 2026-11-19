@@ -8,8 +8,9 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
+// A2A JSON-RPC 2.0 protocol error codes returned during agent task validation and dispatch.
 const (
-	// A2A JSON-RPC Protocol Error Codes
+	// CodeBudgetExceeded indicates the task exceeded allocated budget or maximum iterations.
 	CodeBudgetExceeded             = -32000 // Task has exceeded allocated budget or maximum iterations
 	CodeTaskNotFound               = -32001 // Requested task ID not found or forbidden by visibility policy
 	CodeTaskCancelled              = -32002 // Task was cancelled

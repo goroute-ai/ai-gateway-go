@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
+	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 )
 
 func TestCatalog_LoadingAndCount(t *testing.T) {

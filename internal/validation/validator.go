@@ -27,6 +27,7 @@ type Validator struct {
 	fallbackOnUnsupportedParams atomic.Bool
 }
 
+// NewValidator creates a pre-routing Validator backed by repo for model capability and limit lookups.
 func NewValidator(repo storage.Repository) *Validator {
 	return &Validator{repo: repo}
 }

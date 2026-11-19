@@ -5,6 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
@@ -17,13 +25,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync/atomic"
-	"testing"
-	"time"
 )
 
 func TestGuardrailTextInputAndOutputHelpers(t *testing.T) {

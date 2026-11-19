@@ -197,7 +197,7 @@ func LookupByProviderAndModel(prov domain.ProviderType, modelName string) (*doma
 // family when its exact model ID is absent from the embedded catalog. It never
 // infers pricing; unknown pricing remains fail-closed for budgeted requests.
 func ApplyGeneralizations(prov domain.ProviderType, modelName string) (*domain.GlobalModel, bool) {
-	normProv := domain.ProviderType(config.NormalizeProvider(string(prov)))
+	normProv := config.NormalizeProvider(string(prov))
 	cleanName := strings.TrimSpace(modelName)
 	inf := InferFamilyCapabilities(cleanName)
 	if normProv == "" || cleanName == "" || !inf.Inferred || !IsCallableProvider(normProv) {

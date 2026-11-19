@@ -224,6 +224,8 @@ func TestWithComponent(t *testing.T) {
 
 func TestHTTPMiddleware_InferenceMeta(t *testing.T) {
 	// Ensure SetInferenceMeta is safe on nil or unattached context.
+	//lint:ignore SA1012 intentionally verifying nil-context safety
+	//nolint:staticcheck // SA1012: intentionally verifying nil-context safety
 	logger.SetInferenceMeta(nil, logger.InferenceMeta{Model: "ignored"})
 	logger.SetInferenceMeta(context.Background(), logger.InferenceMeta{Model: "ignored"})
 

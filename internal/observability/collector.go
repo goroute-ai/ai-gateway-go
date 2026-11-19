@@ -213,6 +213,7 @@ type Collector struct {
 	additionalMetrics     func() map[string]float64
 }
 
+// NewCollector creates a bounded, concurrency-safe telemetry Collector.
 func NewCollector() *Collector {
 	return &Collector{
 		providers:      make(map[string]*providerInternal),

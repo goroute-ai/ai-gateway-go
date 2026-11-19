@@ -45,6 +45,7 @@ func (a *Adapter) SetSSRFPolicy(policy *network.Policy) {
 	a.ssrfPolicy = policy
 }
 
+// Provider returns the configured OpenAI-compatible dialect identifier.
 func (a *Adapter) Provider() domain.ProviderType {
 	return a.profile.ID
 }
@@ -55,6 +56,7 @@ func (a *Adapter) SupportsAssistantPrefill() bool {
 	return true
 }
 
+// Profile returns the underlying DialectProfile describing this adapter's wire conventions.
 func (a *Adapter) Profile() *DialectProfile {
 	return a.profile
 }

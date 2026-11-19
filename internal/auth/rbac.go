@@ -64,6 +64,7 @@ type cachedValue[T any] struct {
 	expiresAt time.Time
 }
 
+// NewRBACEngine creates an RBACEngine backed by repo with a 15-second local policy cache TTL.
 func NewRBACEngine(repo storage.Repository) *RBACEngine {
 	return &RBACEngine{
 		repo:     repo,

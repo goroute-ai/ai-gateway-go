@@ -57,6 +57,7 @@ type ResponseCache struct {
 	epochNanos  atomic.Uint64
 }
 
+// MetricsSnapshot captures point-in-time cache hit, miss, and epoch-check counters.
 type MetricsSnapshot struct {
 	L1Hits      uint64
 	L1Misses    uint64
@@ -152,10 +153,12 @@ func (l *boundedL1) stats() (size, capacity int, evicted uint64) {
 	return len(l.items), l.capacity, l.evicted
 }
 
+// NewResponseCache creates a ResponseCache with the default L1 capacity and optional Redis L2 backing.
 func NewResponseCache(enabled bool, ttl time.Duration, redisFabric *storage.RedisFabric) *ResponseCache {
 	return NewResponseCacheWithL1Capacity(enabled, ttl, defaultL1Capacity, redisFabric)
 }
 
+// NewResponseCacheWithL1Capacity creates a ResponseCache with an explicit bounded L1 LRU capacity.
 func NewResponseCacheWithL1Capacity(enabled bool, ttl time.Duration, maxL1Entries int, redisFabric *storage.RedisFabric) *ResponseCache {
 	if ttl <= 0 {
 		ttl = time.Hour
@@ -285,6 +288,7 @@ func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Get retrieves a cached chat completion from L1 or Redis L2 if unexpired and matching current invalidation epochs.
 func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalChatResponse, bool) {
 	if c == nil || key == "" {
 		return nil, false
@@ -337,10 +341,12 @@ func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalC
 	return cloneResponse(entry.Response), true
 }
 
+// Set stores resp in the response cache without an explicit organization scope.
 func (c *ResponseCache) Set(ctx context.Context, key string, resp *domain.CanonicalChatResponse) {
 	c.SetWithMeta(ctx, key, "", resp)
 }
 
+// SetWithMeta stores resp in L1 and Redis L2 tagged with the current orgID and model invalidation epochs.
 func (c *ResponseCache) SetWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalChatResponse) {
 	if c == nil || key == "" || resp == nil {
 		return

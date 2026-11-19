@@ -145,7 +145,7 @@ func main() {
 	var grpcSrv *grpc.Server
 	if cfg.Server.GRPCPort > 0 {
 		grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.GRPCPort)
-		lis, err := net.Listen("tcp", grpcAddr)
+		lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", grpcAddr)
 		if err != nil {
 			logger.Error("Failed to listen for A2A gRPC server", slog.String("addr", grpcAddr), slog.String("error", err.Error()))
 			os.Exit(1)
@@ -240,8 +240,15 @@ func runHealthcheck() int {
 			port = parsed
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(port))+"/readyz", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ai-gateway] healthcheck failed: %v\n", err)
+		return 1
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/readyz")
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ai-gateway] healthcheck failed: %v\n", err)
 		return 1

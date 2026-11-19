@@ -35,6 +35,7 @@ func deriveKEK(rawKey string) ([]byte, error) {
 	return sum[:], nil
 }
 
+// NewVault creates an AES-256-GCM encryption Vault derived from masterKey.
 func NewVault(masterKey string) (*Vault, error) {
 	return NewVaultWithPreviousKeys(masterKey, nil)
 }

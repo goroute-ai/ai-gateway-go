@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type traceContextKey struct{}
@@ -97,7 +98,7 @@ func TraceFromContext(ctx context.Context) TraceContext {
 
 // TraceMiddleware injects W3C `traceparent` and `X-Trace-Id` headers on every request and response.
 func TraceMiddleware(next http.Handler) http.Handler {
-	return TraceMiddlewareWithTracer(trace.NewNoopTracerProvider().Tracer("ai-gateway-go"))(next)
+	return TraceMiddlewareWithTracer(noop.NewTracerProvider().Tracer("ai-gateway-go"))(next)
 }
 
 type statusResponseWriter struct {
@@ -143,9 +144,11 @@ func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// TraceMiddlewareWithTracer returns HTTP middleware that extracts incoming W3C trace context
+// and starts a server span for each request using the provided OpenTelemetry tracer.
 func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Handler {
 	if tracer == nil {
-		tracer = trace.NewNoopTracerProvider().Tracer("ai-gateway-go")
+		tracer = noop.NewTracerProvider().Tracer("ai-gateway-go")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

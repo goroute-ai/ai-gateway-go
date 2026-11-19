@@ -34,6 +34,7 @@ type HTTPClientOptions struct {
 	MaxIdleConnsPerHost   int
 }
 
+// DefaultHTTPClientOptions returns the baseline timeouts and connection pool limits for upstream HTTP clients.
 func DefaultHTTPClientOptions() HTTPClientOptions {
 	return HTTPClientOptions{
 		RequestTimeout:        2 * time.Minute,
@@ -58,6 +59,7 @@ type HTTPClientMetrics struct {
 	idleTimeouts       atomic.Uint64
 }
 
+// HTTPClientMetricsSnapshot is an immutable point-in-time copy of HTTPClientMetrics counters.
 type HTTPClientMetricsSnapshot struct {
 	Requests           uint64
 	DialAttempts       uint64
@@ -71,8 +73,10 @@ type HTTPClientMetricsSnapshot struct {
 	IdleTimeouts       uint64
 }
 
+// NewHTTPClientMetrics initializes an atomic HTTPClientMetrics counter set.
 func NewHTTPClientMetrics() *HTTPClientMetrics { return &HTTPClientMetrics{} }
 
+// Snapshot returns a consistent copy of the recorded upstream HTTP client metrics.
 func (m *HTTPClientMetrics) Snapshot() HTTPClientMetricsSnapshot {
 	if m == nil {
 		return HTTPClientMetricsSnapshot{}

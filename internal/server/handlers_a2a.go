@@ -198,10 +198,9 @@ func (s *GatewayServer) writeA2AError(w http.ResponseWriter, err error) {
 	}
 
 	var a2aErr *a2a.A2AError
-	statusCode := http.StatusInternalServerError
-	errCode := "internal_error"
-
 	if errors.As(err, &a2aErr) {
+		var statusCode int
+		var errCode string
 		switch a2aErr.Code {
 		case a2a.CodeBudgetExceeded:
 			statusCode = http.StatusBadRequest

@@ -43,8 +43,7 @@ func TestActiveTenantRegistry_SlidingTTLExpiry_RedisAndMemory(t *testing.T) {
 
 		// Advance 20s and register team:b (low) and team:c (high).
 		now = now.Add(20 * time.Second)
-		total, byClass, err = reg.Register(ctx, "org-1", "gpt-4.1", "team:b", "low")
-		if err != nil {
+		if _, _, err = reg.Register(ctx, "org-1", "gpt-4.1", "team:b", "low"); err != nil {
 			t.Fatalf("Register team:b: %v", err)
 		}
 		total, byClass, err = reg.Register(ctx, "org-1", "gpt-4.1", "team:c", "high")
@@ -77,8 +76,7 @@ func TestActiveTenantRegistry_SlidingTTLExpiry_RedisAndMemory(t *testing.T) {
 		}
 
 		// Refresh team:b at t+35s, then advance to t+55s -> team:c expires, team:b stays active.
-		total, byClass, err = reg.Register(ctx, "org-1", "gpt-4.1", "team:b", "low")
-		if err != nil {
+		if _, _, err = reg.Register(ctx, "org-1", "gpt-4.1", "team:b", "low"); err != nil {
 			t.Fatalf("refresh team:b: %v", err)
 		}
 		now = now.Add(20 * time.Second)

@@ -1111,67 +1111,6 @@ func (s *GatewayServer) evaluateNonChatTextGuardrails(
 	return out, nil
 }
 
-func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, raw any) (any, error) {
-	idCtx := auth.IdentityFromContext(ctx)
-	if idCtx == nil {
-		idCtx = &domain.IdentityContext{OrgID: orgID}
-	} else if idCtx.OrgID == "" && orgID != "" {
-		cp := *idCtx
-		cp.OrgID = orgID
-		idCtx = &cp
-	}
-	return s.guardrailInputValueWithRoute(ctx, nil, nil, idCtx, nil, nil, "non_chat", raw)
-}
-
-func (s *GatewayServer) guardrailInputValueWithRoute(
-	ctx context.Context,
-	w http.ResponseWriter,
-	r *http.Request,
-	idCtx *domain.IdentityContext,
-	model *string,
-	ext *domain.GoRouteExtensions,
-	resource string,
-	raw any,
-) (any, error) {
-	switch v := raw.(type) {
-	case nil:
-		return nil, nil
-	case string:
-		vals, err := s.evaluateNonChatTextGuardrails(ctx, w, r, idCtx, model, ext, resource, v)
-		if err != nil {
-			return nil, err
-		}
-		if len(vals) == 0 {
-			return v, nil
-		}
-		return vals[0], nil
-	case []string:
-		return s.evaluateNonChatTextGuardrails(ctx, w, r, idCtx, model, ext, resource, v...)
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			next, err := s.guardrailInputValueWithRoute(ctx, w, r, idCtx, model, ext, resource, item)
-			if err != nil {
-				return nil, err
-			}
-			out[i] = next
-		}
-		return out, nil
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for k, item := range v {
-			next, err := s.guardrailInputValueWithRoute(ctx, w, r, idCtx, model, ext, resource, item)
-			if err != nil {
-				return nil, err
-			}
-			out[k] = next
-		}
-		return out, nil
-	default:
-		return raw, nil
-	}
-}
-
 func (s *GatewayServer) sanitizeGuardrailValue(ctx context.Context, orgID string, raw any) (any, bool, error) {
 	if s == nil || drivers.IsInternalGuardrailOrigin(ctx) {
 		return raw, false, nil

@@ -149,33 +149,38 @@ func ParseRetryAfter(h http.Header) int {
 	return 0
 }
 
-// Registry manages registered ProviderAdapters by ProviderType.
+// DynamicAdapterResolver resolves custom or lazily-configured ProviderAdapters by provider type.
 type DynamicAdapterResolver func(p domain.ProviderType) (ProviderAdapter, bool)
 
+// Registry manages registered ProviderAdapters by ProviderType.
 type Registry struct {
 	mu              sync.RWMutex
 	adapters        map[domain.ProviderType]ProviderAdapter
 	dynamicResolver DynamicAdapterResolver
 }
 
+// NewRegistry initializes an empty provider adapter Registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		adapters: make(map[domain.ProviderType]ProviderAdapter),
 	}
 }
 
+// SetDynamicResolver registers a fallback resolver consulted when a provider is absent from the static map.
 func (r *Registry) SetDynamicResolver(resolver DynamicAdapterResolver) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dynamicResolver = resolver
 }
 
+// Register adds or replaces a ProviderAdapter keyed by its Provider() identifier.
 func (r *Registry) Register(a ProviderAdapter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.adapters[a.Provider()] = a
 }
 
+// Get returns the ProviderAdapter registered for p, falling back to the dynamic resolver if configured.
 func (r *Registry) Get(p domain.ProviderType) (ProviderAdapter, error) {
 	r.mu.RLock()
 	a, ok := r.adapters[p]
@@ -192,6 +197,7 @@ func (r *Registry) Get(p domain.ProviderType) (ProviderAdapter, error) {
 	return nil, fmt.Errorf("no provider adapter registered for %q", p)
 }
 
+// All returns a snapshot slice of all statically registered ProviderAdapters.
 func (r *Registry) All() []ProviderAdapter {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

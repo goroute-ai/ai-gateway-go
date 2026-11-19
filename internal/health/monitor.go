@@ -50,6 +50,7 @@ type Monitor struct {
 	stopOnce     sync.Once
 }
 
+// NewMonitor creates an active health Monitor that periodically probes configured deployments.
 func NewMonitor(repo storage.Repository, registry *adapter.Registry, vault *auth.Vault, interval, probeTimeout time.Duration) *Monitor {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -68,6 +69,7 @@ func NewMonitor(repo storage.Repository, registry *adapter.Registry, vault *auth
 	}
 }
 
+// Start begins periodic background health probing until ctx is canceled or Stop is called.
 func (m *Monitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
 	go func() {
@@ -85,6 +87,7 @@ func (m *Monitor) Start(ctx context.Context) {
 	}()
 }
 
+// Stop terminates the background health probing goroutine.
 func (m *Monitor) Stop() {
 	m.stopOnce.Do(func() {
 		close(m.stopCh)

@@ -63,6 +63,7 @@ type Service struct {
 	invalidationHandlers    []func(storage.InvalidationEvent)
 }
 
+// NewService creates a virtual-key and identity authentication Service with L1/L2 caching.
 func NewService(repo storage.Repository, redisFabric *storage.RedisFabric, masterAdminKey string, l1TTL, l2TTL time.Duration) *Service {
 	if l1TTL <= 0 {
 		l1TTL = 15 * time.Second
@@ -659,6 +660,7 @@ func (s *Service) StartInvalidationListener(ctx context.Context) {
 	}()
 }
 
+// StopInvalidationListener terminates the background Redis Pub/Sub invalidation listener.
 func (s *Service) StopInvalidationListener() {
 	s.invalidationMu.Lock()
 	defer s.invalidationMu.Unlock()

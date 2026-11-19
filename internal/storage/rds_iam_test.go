@@ -246,7 +246,7 @@ func TestRDSIAMTokenProvider_RefreshAndBeforeConnect(t *testing.T) {
 <AssumeRoleResponse>
   <AssumeRoleResult>
     <Credentials>
-      <AccessKeyId>ASIAKEY_` + string(rune('0'+n)) + `</AccessKeyId>
+      <AccessKeyId>ASIAKEY_` + string('0'+n) + `</AccessKeyId>
       <SecretAccessKey>secret</SecretAccessKey>
       <SessionToken>sess</SessionToken>
       <Expiration>` + exp + `</Expiration>

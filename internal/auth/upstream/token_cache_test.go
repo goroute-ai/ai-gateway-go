@@ -173,7 +173,7 @@ func TestDistributedTokenCache_EarlyRefreshAndInvalidate(t *testing.T) {
 	var seq atomic.Int32
 	refreshFn := func(ctx context.Context) (string, time.Duration, error) {
 		n := seq.Add(1)
-		return "tok-v" + string(rune('0'+n)), 120 * time.Second, nil
+		return "tok-v" + string('0'+n), 120 * time.Second, nil
 	}
 
 	t1, err := cache.GetOrRefresh(context.Background(), "exp-key", refreshFn)

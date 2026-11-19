@@ -228,63 +228,6 @@ func matchesQuotaModelPattern(pattern, requestedModel string) bool {
 	return false
 }
 
-// buildIdentityBaseDescriptors builds descriptors for the four legacy identity
-// scopes (key, team, user, org) with active temporary budget boosts applied.
-func buildIdentityBaseDescriptors(effID *domain.IdentityContext) []domain.RateLimitDescriptor {
-	if effID == nil {
-		return nil
-	}
-	candidates := []domain.RateLimitDescriptor{
-		{
-			ScopeType:        domain.QuotaScopeKey,
-			ScopeID:          effID.VirtualKeyID,
-			ModelPattern:     "*",
-			RPMLimit:         effID.KeyRPMLimit,
-			TPMLimit:         effID.KeyTPMLimit,
-			MaxConcurrent:    effID.KeyMaxConcurrent,
-			MaxBudgetMicros:  effID.KeyMaxBudgetMicros,
-			SpentFloorMicros: effID.KeySpentMicros,
-		},
-		{
-			ScopeType:        domain.QuotaScopeTeam,
-			ScopeID:          effID.TeamID,
-			ModelPattern:     "*",
-			RPMLimit:         effID.TeamRPMLimit,
-			TPMLimit:         effID.TeamTPMLimit,
-			MaxConcurrent:    effID.TeamMaxConcurrent,
-			MaxBudgetMicros:  effID.TeamMaxBudgetMicros,
-			SpentFloorMicros: effID.TeamSpentMicros,
-		},
-		{
-			ScopeType:        domain.QuotaScopeUser,
-			ScopeID:          effID.UserID,
-			ModelPattern:     "*",
-			RPMLimit:         effID.UserRPMLimit,
-			TPMLimit:         effID.UserTPMLimit,
-			MaxConcurrent:    effID.UserMaxConcurrent,
-			MaxBudgetMicros:  effID.UserMaxBudgetMicros,
-			SpentFloorMicros: effID.UserSpentMicros,
-		},
-		{
-			ScopeType:        domain.QuotaScopeOrg,
-			ScopeID:          effID.OrgID,
-			ModelPattern:     "*",
-			RPMLimit:         effID.OrgRPMLimit,
-			TPMLimit:         effID.OrgTPMLimit,
-			MaxConcurrent:    effID.OrgMaxConcurrent,
-			MaxBudgetMicros:  effID.OrgMaxBudgetMicros,
-			SpentFloorMicros: effID.OrgSpentMicros,
-		},
-	}
-	var out []domain.RateLimitDescriptor
-	for _, d := range candidates {
-		if d.ScopeID != "" && d.HasLimits() {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 // buildExtendedQuotaDescriptors builds descriptors not covered by the legacy 4-scope
 // limiter: team_member, project, end_user, tag, model_access_group, agent_session,
 // active QuotaPolicy entries (including per-model ITPM/OTPM/TPD/RPM/TPM/concurrency/budget
@@ -656,30 +599,6 @@ func mergeExtendedDescriptors(descriptors []domain.RateLimitDescriptor) []domain
 		out = append(out, d)
 	}
 	return out
-}
-
-// buildRequestQuotaDescriptors builds the full descriptor set across key, team,
-// team_member, project, user, org, model-scoped policies, and multi-window budgets.
-func (s *GatewayServer) buildRequestQuotaDescriptors(ctx context.Context, id *domain.IdentityContext, model string, now time.Time) ([]domain.RateLimitDescriptor, error) {
-	if id == nil {
-		return nil, nil
-	}
-	effID := applyEffectiveTempBudgets(id, now)
-	base := buildIdentityBaseDescriptors(effID)
-	ext, err := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
-	if err != nil {
-		return nil, err
-	}
-	if len(base) == 0 {
-		return ext, nil
-	}
-	if len(ext) == 0 {
-		return base, nil
-	}
-	all := make([]domain.RateLimitDescriptor, 0, len(base)+len(ext))
-	all = append(all, base...)
-	all = append(all, ext...)
-	return all, nil
 }
 
 func descriptorsHaveBudget(descriptors []domain.RateLimitDescriptor) bool {

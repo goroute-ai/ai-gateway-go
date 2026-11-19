@@ -439,7 +439,7 @@ func TestRouterLBWeightedShuffleAndGobreakerFailoverCooldown(t *testing.T) {
 	}
 
 	// Call 3: c1 breaker is open -> inst-1 is skipped completely (c1Calls stays 2).
-	res, chosen, err := detLB.Execute(context.Background(), group, evalFn)
+	_, chosen, err := detLB.Execute(context.Background(), group, evalFn)
 	if err != nil || chosen.Definition.ID != "inst-2" || c1Calls.Load() != 2 {
 		t.Fatalf("call 3 expected inst-1 skipped and inst-2 selected, c1Calls=%d err=%v", c1Calls.Load(), err)
 	}
@@ -447,7 +447,7 @@ func TestRouterLBWeightedShuffleAndGobreakerFailoverCooldown(t *testing.T) {
 	// Wait for cooldown and verify half-open recovery when c1 becomes healthy.
 	time.Sleep(80 * time.Millisecond)
 	c1ShouldFail.Store(false)
-	res, chosen, err = detLB.Execute(context.Background(), group, evalFn)
+	res, chosen, err := detLB.Execute(context.Background(), group, evalFn)
 	if err != nil || res.Decision != domain.GuardrailDecisionAllow || chosen.Definition.ID != "inst-1" {
 		t.Fatalf("expected inst-1 recovery after cooldown, got chosen=%v err=%v", chosen, err)
 	}

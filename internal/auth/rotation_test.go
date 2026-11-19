@@ -741,9 +741,6 @@ func TestKeyRotationManager_AutoRotatedWebhookAndSecretSink(t *testing.T) {
 	if _, leaked := webhookPayloads[0]["raw_key"]; leaked {
 		t.Fatalf("webhook payload must never expose raw_key")
 	}
-	if errors.Is(context.Canceled, nil) {
-		t.Fatal("unreachable")
-	}
 }
 
 func TestUpdateVirtualKey_And_SetSecretSink_GraceCacheConsistency(t *testing.T) {

@@ -35,6 +35,8 @@ type DiscoveryWorker struct {
 	stopCh      chan struct{}
 }
 
+// NewDiscoveryWorker creates a background worker that periodically discovers models and
+// pricing metadata from configured provider credentials.
 func NewDiscoveryWorker(repo storage.Repository, registry *adapter.Registry, vault *auth.Vault, redisFabric *storage.RedisFabric, interval time.Duration, autoApprove bool) *DiscoveryWorker {
 	if interval <= 0 {
 		interval = 6 * time.Hour
@@ -50,6 +52,7 @@ func NewDiscoveryWorker(repo storage.Repository, registry *adapter.Registry, vau
 	}
 }
 
+// Start launches the leader-elected periodic discovery ticker until ctx is canceled or Stop is called.
 func (w *DiscoveryWorker) Start(ctx context.Context) {
 	ticker := time.NewTicker(w.interval)
 	go func() {
@@ -69,6 +72,7 @@ func (w *DiscoveryWorker) Start(ctx context.Context) {
 	}()
 }
 
+// Stop terminates the background discovery loop.
 func (w *DiscoveryWorker) Stop() {
 	select {
 	case <-w.stopCh:

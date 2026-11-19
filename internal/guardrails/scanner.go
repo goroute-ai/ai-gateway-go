@@ -2,6 +2,7 @@ package guardrails
 
 import "context"
 
+// ScanDirection indicates whether a scanner is inspecting request input or model output.
 type ScanDirection string
 
 const (
@@ -9,6 +10,7 @@ const (
 	ScanOutput ScanDirection = "output"
 )
 
+// ScannerDecision represents the allow or block outcome returned by a Scanner.
 type ScannerDecision string
 
 const (
@@ -24,6 +26,7 @@ type ScanRequest struct {
 	Content   string
 }
 
+// ScanResult carries a Scanner's allow/block decision and any matched violation labels.
 type ScanResult struct {
 	Decision   ScannerDecision
 	Violations []string

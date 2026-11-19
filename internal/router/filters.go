@@ -317,7 +317,7 @@ func (p *FilterPipeline) FilterEligibleDeploymentsForGroup(
 				copy(stage2, candidates[:i])
 			}
 		}
-		if stage2 != nil && len(stage2) > 0 {
+		if len(stage2) > 0 {
 			candidates = stage2
 		}
 		// If len(stage2) == 0, retain candidates so transient probe glitches do not blackhole the group.
@@ -672,16 +672,6 @@ func hasParallelLimits(candidates []*domain.Deployment) bool {
 	return false
 }
 
-func filterByCapacity(lb *LoadBalancer, candidates []*domain.Deployment, estTokens int, strict bool, now time.Time) []*domain.Deployment {
-	res, _ := filterByCapacityWithSlots(lb, candidates, estTokens, 0, strict, nil, nil, now)
-	return res
-}
-
-func filterByCapacityWithSignals(lb *LoadBalancer, candidates []*domain.Deployment, estTokens int, strict bool, snap *SignalSnapshot, now time.Time) []*domain.Deployment {
-	res, _ := filterByCapacityWithSlots(lb, candidates, estTokens, 0, strict, snap, nil, now)
-	return res
-}
-
 func filterByCapacityWithSlots(
 	lb *LoadBalancer,
 	candidates []*domain.Deployment,
@@ -801,10 +791,6 @@ func isDeploymentCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, usedI
 		return true
 	}
 	return false
-}
-
-func isCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, estTokens int) bool {
-	return isDeploymentCapacitySaturated(d, usedRPM, usedTPM, 0, 0, 0, estTokens, 0)
 }
 
 func filterByPTUReservationsWithSignals(

@@ -19,6 +19,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
+// GrantTypeJWTBearer is the OAuth 2.0 JWT bearer assertion grant type (RFC 7523).
 const (
 	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 )

@@ -19,6 +19,7 @@ type Service struct {
 	rbac *auth.RBACEngine
 }
 
+// NewService creates a model management Service backed by repo.
 func NewService(repo storage.Repository) *Service {
 	return &Service{repo: repo}
 }

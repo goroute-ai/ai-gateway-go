@@ -70,13 +70,6 @@ func partitionByPriorityMulti(deployments []*domain.Deployment) [][]*domain.Depl
 	return tiers
 }
 
-func maxAttemptsForGroup(group *domain.ModelGroup) int {
-	if group == nil || group.MaxRetries < 0 {
-		return 1
-	}
-	return group.MaxRetries + 1
-}
-
 func recordTierStepdown(ctx context.Context, meta *ExecutionMeta, group *domain.ModelGroup, tierIdx int) {
 	if meta != nil {
 		meta.TierStepdowns++

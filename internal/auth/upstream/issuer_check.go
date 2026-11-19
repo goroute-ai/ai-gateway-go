@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// Sentinel errors returned during RFC 9207 issuer and RFC 8707 resource validation.
 var (
 	ErrIssuerMissing   = errors.New("rfc9207: missing 'iss' parameter in authorization/token response")
 	ErrIssuerMismatch  = errors.New("rfc9207: issuer mismatch between authorization server and response")

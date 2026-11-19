@@ -59,6 +59,8 @@ type SpendWorker struct {
 	backpressureCount  atomic.Int64
 }
 
+// NewSpendWorker creates an asynchronous SpendWorker that drains the durable spend outbox
+// into spend_logs and reconciles Redis budget counters.
 func NewSpendWorker(repo storage.Repository, limiter *ratelimit.Limiter, cfg config.FinOpsConfig) *SpendWorker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 250
@@ -120,6 +122,7 @@ func (sw *SpendWorker) OutboxMetrics() (pendingDepth, deadLetterTotal, backpress
 	return sw.pendingOutboxDepth.Load(), sw.deadLetterCount.Load(), sw.backpressureCount.Load()
 }
 
+// Start launches the background batch-flushing and budget-reset loop until ctx is canceled or Stop is called.
 func (sw *SpendWorker) Start(ctx context.Context) { sw.wg.Add(1); go sw.runBatchLoop(ctx) }
 
 // Record durably commits the event to the repository outbox before returning nil.
@@ -174,6 +177,7 @@ func (sw *SpendWorker) Record(ctx context.Context, ev domain.SpendEvent) error {
 	return nil
 }
 
+// FlushNow synchronously processes one batch of pending outbox spend events.
 func (sw *SpendWorker) FlushNow(ctx context.Context) error { return sw.process(ctx) }
 
 // PruneDeliveredOutbox deletes delivered outbox rows older than olderThan.
@@ -185,6 +189,7 @@ func (sw *SpendWorker) PruneDeliveredOutbox(ctx context.Context, olderThan time.
 	return maint.PruneDeliveredSpendEvents(ctx, olderThan, limit)
 }
 
+// Stop signals the worker loop to exit and waits for in-flight flushes and soft-budget webhooks until ctx expires.
 func (sw *SpendWorker) Stop(ctx context.Context) {
 	sw.stopOnce.Do(func() { close(sw.stopCh) })
 	done := make(chan struct{})

@@ -24,6 +24,7 @@ var providerNativeHeaders = []string{
 // CredentialSource identifies which HTTP request field supplied a gateway credential.
 type CredentialSource string
 
+// CredentialSource values identifying how a request credential was transported.
 const (
 	CredentialSourceNone          CredentialSource = ""
 	CredentialSourceCustomHeader  CredentialSource = "custom_header"

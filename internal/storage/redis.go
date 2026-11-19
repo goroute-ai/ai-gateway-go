@@ -10,6 +10,8 @@ import (
 	"github.com/sony/gobreaker/v2"
 )
 
+// InvalidationChannel is the Redis Pub/Sub channel used to broadcast auth,
+// policy, and deployment cache invalidation events across replicas.
 const InvalidationChannel = "gw:events:invalidation"
 
 // InvalidationEvent is broadcast over Redis Pub/Sub whenever a VirtualKey, Policy, or Deployment changes.

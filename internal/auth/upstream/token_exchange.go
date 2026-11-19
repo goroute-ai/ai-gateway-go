@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
+// OAuth 2.0 Token Exchange (RFC 8693) grant and token-type URNs.
 const (
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 	TokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"

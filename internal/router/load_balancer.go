@@ -102,6 +102,7 @@ type LoadBalancer struct {
 	latencyTolerancePct atomic.Uint64
 }
 
+// NewLoadBalancer creates a Stage 2 deployment LoadBalancer optionally backed by RedisFabric telemetry.
 func NewLoadBalancer(redisFabric ...*storage.RedisFabric) *LoadBalancer {
 	lb := &LoadBalancer{
 		metrics: make(map[string]*deploymentTelemetry),

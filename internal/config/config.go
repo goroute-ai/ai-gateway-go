@@ -99,6 +99,7 @@ type LogConfig struct {
 	AddSource bool   `yaml:"add_source"` // include file:line source location in log entries
 }
 
+// TracingConfig configures OpenTelemetry OTLP trace export.
 type TracingConfig struct {
 	Enabled      bool              `yaml:"enabled" json:"enabled"`
 	OTLPEndpoint string            `yaml:"otlp_endpoint" json:"otlp_endpoint"`
@@ -143,6 +144,7 @@ type ModelParams struct {
 	Headers             map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
+// ProvidersConfig configures upstream HTTP client timeouts, pooling, and custom OpenAI-compatible providers.
 type ProvidersConfig struct {
 	RequestTimeout         time.Duration          `yaml:"request_timeout" json:"request_timeout"`
 	ResponseHeaderTimeout  time.Duration          `yaml:"response_header_timeout" json:"response_header_timeout"`
@@ -152,6 +154,7 @@ type ProvidersConfig struct {
 	CustomOpenAICompatible []CustomProviderConfig `yaml:"custom_openai_compatible" json:"custom_openai_compatible"`
 }
 
+// CustomProviderConfig defines a declarative OpenAI-compatible upstream provider profile.
 type CustomProviderConfig struct {
 	ID                        string            `yaml:"id" json:"id"`
 	DisplayName               string            `yaml:"display_name" json:"display_name"`
@@ -233,6 +236,7 @@ type ToolPolicyConfig struct {
 	OutputPolicy string `yaml:"output_policy,omitempty" json:"output_policy,omitempty"`
 }
 
+// ServerConfig configures HTTP/gRPC listeners, timeouts, CORS, HSTS, and per-organization file upload limits.
 type ServerConfig struct {
 	Environment               string        `yaml:"environment"` // "development", "staging", "production"
 	Host                      string        `yaml:"host"`
@@ -249,6 +253,7 @@ type ServerConfig struct {
 	MaxConcurrentFileUploads  int           `yaml:"max_concurrent_file_uploads"`    // 0 = unlimited
 }
 
+// RDSIAMConfig configures AWS RDS IAM database authentication (ambient cloud IAM remains opt-in).
 type RDSIAMConfig struct {
 	Enabled         bool   `yaml:"enabled"`
 	Region          string `yaml:"region"`
@@ -259,6 +264,7 @@ type RDSIAMConfig struct {
 	WebIdentityFile string `yaml:"web_identity_token_file,omitempty"`
 }
 
+// StorageConfig configures the primary metadata repository (memory or postgres) and Redis state fabric.
 type StorageConfig struct {
 	Mode            string       `yaml:"mode"` // "memory" or "postgres"
 	PostgresDSN     string       `yaml:"postgres_dsn"`
@@ -362,6 +368,7 @@ type KeyRotationSinkConfig struct {
 	AWSSessionToken    string `yaml:"aws_session_token,omitempty"`     // Optional AWS STS session token
 }
 
+// AuthConfig configures virtual-key, JWT/OIDC, SSO, proxy auth, key rotation, and HIBP screening.
 type AuthConfig struct {
 	AllowAmbientCloudIAM         bool                  `yaml:"allow_ambient_cloud_iam,omitempty"`
 	MasterAdminKey               string                `yaml:"master_admin_key"`
@@ -396,6 +403,7 @@ type AuthConfig struct {
 	HIBPBaseURL                  string                `yaml:"hibp_base_url,omitempty"`
 }
 
+// RouterConfig configures intelligent model routing, retries, cooldowns, fallbacks, hedging, and scheduling.
 type RouterConfig struct {
 	DefaultFastAlias               string                  `yaml:"default_fast_alias" json:"default_fast_alias"`
 	DefaultReasoningAlias          string                  `yaml:"default_reasoning_alias" json:"default_reasoning_alias"`
@@ -487,6 +495,7 @@ type PriorityCapacityConfig struct {
 	DefaultBorrowMultiple float64       `yaml:"default_borrow_multiple,omitempty" json:"default_borrow_multiple,omitempty"`
 }
 
+// RateLimitConfig configures Redis-backed RPM/TPM/concurrency rate limiting and agent session defaults.
 type RateLimitConfig struct {
 	Enabled                            bool          `yaml:"enabled" json:"enabled"`
 	FallbackToLocalOnOutage            bool          `yaml:"fallback_to_local_on_outage" json:"fallback_to_local_on_outage"`
@@ -503,6 +512,7 @@ type RateLimitConfig struct {
 	DynamicOnUpstream429               bool          `yaml:"dynamic_on_upstream_429" json:"dynamic_on_upstream_429"`
 }
 
+// FinOpsConfig configures asynchronous spend-outbox batching and soft-budget webhook notifications.
 type FinOpsConfig struct {
 	ChannelBufferSize         int           `yaml:"channel_buffer_size"`
 	BatchSize                 int           `yaml:"batch_size"`
@@ -513,12 +523,14 @@ type FinOpsConfig struct {
 	BudgetExceededThrottlePct float64       `yaml:"budget_exceeded_throttle_pct,omitempty"`
 }
 
+// DiscoveryConfig configures background model lifecycle and pricing discovery polling.
 type DiscoveryConfig struct {
 	Enabled      bool          `yaml:"enabled"`
 	SyncInterval time.Duration `yaml:"sync_interval"`
 	AutoApprove  bool          `yaml:"auto_approve"`
 }
 
+// CacheConfig configures exact-match L1/L2 response caching defaults.
 type CacheConfig struct {
 	Enabled      bool          `yaml:"enabled"`
 	DefaultTTL   time.Duration `yaml:"default_ttl"`
@@ -677,6 +689,69 @@ func LoadWithDefaultEnvironment(path, defaultEnv string) (*Config, error) {
 	return loadWithDefaultEnv(path, defaultEnv)
 }
 
+func envStr(key string, dst *string) {
+	if v := os.Getenv(key); v != "" {
+		*dst = v
+	}
+}
+
+func envTrimStr(key string, dst *string) {
+	if v := os.Getenv(key); v != "" {
+		*dst = strings.TrimSpace(v)
+	}
+}
+
+func envInt(key string, dst *int) {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			*dst = n
+		}
+	}
+}
+
+func envInt64(key string, dst *int64) {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			*dst = n
+		}
+	}
+}
+
+func envFloat(key string, dst *float64) {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			*dst = f
+		}
+	}
+}
+
+func envBool(key string, dst *bool) {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*dst = b
+		}
+	}
+}
+
+func envDuration(key string, dst *time.Duration) {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			*dst = d
+		}
+	}
+}
+
+func splitTrimCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -692,335 +767,10 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 		cfg.Server.Environment = defaultEnv
 	}
 
-	if v := os.Getenv("GATEWAY_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			cfg.Server.Port = p
-		}
-	}
-	if v := os.Getenv("GATEWAY_GRPC_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			cfg.Server.GRPCPort = p
-		}
-	}
-	if v := os.Getenv("GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			cfg.Server.MaxFileStorageBytesPerOrg = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_MAX_CONCURRENT_FILE_UPLOADS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.MaxConcurrentFileUploads = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_LOG_LEVEL"); v != "" {
-		cfg.Logging.Level = v
-	}
-	if v := os.Getenv("GATEWAY_LOG_FORMAT"); v != "" {
-		cfg.Logging.Format = v
-	} else if os.Getenv("ENV") == "production" || os.Getenv("GATEWAY_ENV") == "production" {
-		cfg.Logging.Format = "json"
-	}
-	if v := os.Getenv("GATEWAY_LOG_ADD_SOURCE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Logging.AddSource = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_STORAGE_MODE"); v != "" {
-		cfg.Storage.Mode = v
-	} else if os.Getenv("GATEWAY_POSTGRES_DSN") != "" {
-		cfg.Storage.Mode = "postgres"
-	}
-	if v := os.Getenv("GATEWAY_POSTGRES_DSN"); v != "" {
-		cfg.Storage.PostgresDSN = v
-	}
-	if v := os.Getenv("GATEWAY_REDIS_ADDR"); v != "" {
-		cfg.Storage.RedisAddr = v
-	}
-	if v := os.Getenv("GATEWAY_REDIS_ADDRS"); v != "" {
-		parts := strings.Split(v, ",")
-		addrs := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if trimmed := strings.TrimSpace(p); trimmed != "" {
-				addrs = append(addrs, trimmed)
-			}
-		}
-		if len(addrs) > 0 {
-			cfg.Storage.RedisAddrs = addrs
-		}
-	}
-	if v := os.Getenv("GATEWAY_REDIS_MASTER_NAME"); v != "" {
-		cfg.Storage.RedisMasterName = v
-	}
-	if v := os.Getenv("GATEWAY_REDIS_PASS"); v != "" {
-		cfg.Storage.RedisPass = v
-	}
-	if v := os.Getenv("GATEWAY_MASTER_ADMIN_KEY"); v != "" {
-		cfg.Auth.MasterAdminKey = v
-	}
-	if v := os.Getenv("GATEWAY_MASTER_ENCRYPTION_KEY"); v != "" {
-		cfg.Auth.MasterEncryptionKey = v
-	}
-	if v := os.Getenv("GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS"); v != "" {
-		var prev []string
-		for _, part := range strings.Split(v, ",") {
-			if trimmed := strings.TrimSpace(part); trimmed != "" {
-				prev = append(prev, trimmed)
-			}
-		}
-		cfg.Auth.PreviousMasterEncryptionKeys = prev
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_DELIVERY_URL"); v != "" {
-		cfg.Auth.KeyRotationDeliveryURL = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"); v != "" {
-		cfg.Auth.KeyRotationDeliveryToken = v
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_DRIVER"); v != "" {
-		cfg.Auth.KeyRotationSink.Driver = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_ADDRESS"); v != "" {
-		cfg.Auth.KeyRotationSink.Address = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_MOUNT"); v != "" {
-		cfg.Auth.KeyRotationSink.Mount = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_PATH_PREFIX"); v != "" {
-		cfg.Auth.KeyRotationSink.PathPrefix = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_TOKEN"); v != "" {
-		cfg.Auth.KeyRotationSink.Token = v
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_NAMESPACE"); v != "" {
-		cfg.Auth.KeyRotationSink.Namespace = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_REGION"); v != "" {
-		cfg.Auth.KeyRotationSink.Region = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_ACCESS_KEY_ID"); v != "" {
-		cfg.Auth.KeyRotationSink.AWSAccessKeyID = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_SECRET_ACCESS_KEY"); v != "" {
-		cfg.Auth.KeyRotationSink.AWSSecretAccessKey = v
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_SESSION_TOKEN"); v != "" {
-		cfg.Auth.KeyRotationSink.AWSSessionToken = v
-	}
-	if v := os.Getenv("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.AllowMasterKeyDataPlane = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ENABLE_DATA_PLANE_JWT"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.EnableDataPlaneJWT = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_CUSTOM_API_KEY_HEADER"); v != "" {
-		cfg.Auth.CustomAPIKeyHeader = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_JWT_SECRET"); v != "" {
-		cfg.Auth.JWTSecret = v
-	}
-	if v := os.Getenv("GATEWAY_JWT_ISSUER"); v != "" {
-		cfg.Auth.JWTIssuer = v
-	}
-	if v := os.Getenv("GATEWAY_JWT_AUDIENCE"); v != "" {
-		cfg.Auth.JWTAudience = v
-	}
-	if v := os.Getenv("GATEWAY_OIDC_JWKS_URL"); v != "" {
-		cfg.Auth.OIDCJWKSURL = v
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_POLL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Auth.KeyRotationPollInterval = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_KEY_ROTATION_GRACE_PERIOD"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Auth.KeyRotationGracePeriod = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_UI_USERNAME"); v != "" {
-		cfg.Auth.UIUsername = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_UI_PASSWORD"); v != "" {
-		cfg.Auth.UIPassword = v
-	}
-	if v := os.Getenv("GATEWAY_SESSION_SECRET"); v != "" {
-		cfg.Auth.SessionSecret = v
-	}
-	if v := os.Getenv("GATEWAY_SESSION_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Auth.SessionTTL = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ENABLE_HIBP_CHECK"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.EnableHIBPCheck = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_HIBP_BASE_URL"); v != "" {
-		cfg.Auth.HIBPBaseURL = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_DEFAULT_COOLDOWN"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.DefaultCooldown = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_BASE_RETRY_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.BaseRetryDelay = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_MAX_RETRY_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.MaxRetryDelay = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_MAX_FALLBACK_DEPTH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Router.MaxFallbackDepth = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_ENABLE_MID_STREAM_CONTINUATION"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.EnableMidStreamContinuation = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_MAX_STREAM_CONTINUATIONS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Router.MaxStreamContinuations = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_HEALTH_STALENESS_THRESHOLD"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.HealthStalenessThreshold = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_STRICT_CAPACITY_FILTERING"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.StrictCapacityFiltering = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_SESSION_AFFINITY_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.SessionAffinityTTL = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_SESSION_AFFINITY_REPIN_ON_FAILOVER"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.SessionAffinityRepinOnFailover = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_PROMPT_CACHE_AFFINITY"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.PromptCacheAffinity = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_PRE_ROUTER_MODE"); v != "" {
-		cfg.Router.PreRouterMode = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_CACHE_AWARE_ROUTING"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.CacheAwareRouting = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_HEDGE_DELAY_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Router.HedgeDelayMs = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_MAX_HEDGE_CONCURRENCY"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Router.MaxHedgeConcurrency = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_LATENCY_TOLERANCE_PCT"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.Router.LatencyTolerancePct = f
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_MAX_HONORED_RETRY_AFTER"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Router.MaxHonoredRetryAfter = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_DISABLE_COOLDOWNS"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.DisableCooldowns = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_FALLBACK_ON_SATURATION"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.FallbackOnSaturation = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_DROP_UNSUPPORTED_PARAMS"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.DropUnsupportedParams = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_FALLBACK_ON_UNSUPPORTED_PARAMS"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.FallbackOnUnsupportedParams = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_ALLOW_STRATEGY_OVERRIDE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.AllowStrategyOverride = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_ROUTER_DEBUG_ROUTING_HEADERS"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Router.DebugRoutingHeaders = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_FINOPS_FLUSH_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.FinOps.FlushInterval = d
-		}
-	}
-	if v := os.Getenv("GATEWAY_FINOPS_SOFT_BUDGET_WEBHOOK_URL"); v != "" {
-		cfg.FinOps.SoftBudgetWebhookURL = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("GATEWAY_FINOPS_SOFT_BUDGET_COOLDOWN_SEC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.FinOps.SoftBudgetCooldownSec = n
-		}
-	}
-	if v := os.Getenv("GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.FinOps.BudgetExceededThrottlePct = f
-		}
-	}
-	if v := os.Getenv("GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_MCP_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.MCP.Enabled = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_MCP_ALLOW_STDIO"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.MCP.AllowStdioServers = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_A2A_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.A2A.Enabled = b
-		}
-	}
-	if v := os.Getenv("GATEWAY_A2A_SIGNING_KEY_ID"); v != "" {
-		cfg.A2A.SigningKeyID = v
-	}
+	cfg.applyServerAndStorageEnvOverrides()
+	cfg.applyAuthEnvOverrides()
+	cfg.applyRouterEnvOverrides()
+	cfg.applyFinOpsAndProtocolEnvOverrides()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -1028,8 +778,135 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks configuration invariants.
+func (c *Config) applyServerAndStorageEnvOverrides() {
+	envInt("GATEWAY_PORT", &c.Server.Port)
+	envInt("GATEWAY_GRPC_PORT", &c.Server.GRPCPort)
+	envInt64("GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG", &c.Server.MaxFileStorageBytesPerOrg)
+	envInt("GATEWAY_MAX_CONCURRENT_FILE_UPLOADS", &c.Server.MaxConcurrentFileUploads)
+
+	envStr("GATEWAY_LOG_LEVEL", &c.Logging.Level)
+	if v := os.Getenv("GATEWAY_LOG_FORMAT"); v != "" {
+		c.Logging.Format = v
+	} else if os.Getenv("ENV") == "production" || os.Getenv("GATEWAY_ENV") == "production" {
+		c.Logging.Format = "json"
+	}
+	envBool("GATEWAY_LOG_ADD_SOURCE", &c.Logging.AddSource)
+
+	if v := os.Getenv("GATEWAY_STORAGE_MODE"); v != "" {
+		c.Storage.Mode = v
+	} else if os.Getenv("GATEWAY_POSTGRES_DSN") != "" {
+		c.Storage.Mode = "postgres"
+	}
+	envStr("GATEWAY_POSTGRES_DSN", &c.Storage.PostgresDSN)
+	envStr("GATEWAY_REDIS_ADDR", &c.Storage.RedisAddr)
+	if v := os.Getenv("GATEWAY_REDIS_ADDRS"); v != "" {
+		if addrs := splitTrimCSV(v); len(addrs) > 0 {
+			c.Storage.RedisAddrs = addrs
+		}
+	}
+	envStr("GATEWAY_REDIS_MASTER_NAME", &c.Storage.RedisMasterName)
+	envStr("GATEWAY_REDIS_PASS", &c.Storage.RedisPass)
+}
+
+func (c *Config) applyAuthEnvOverrides() {
+	envStr("GATEWAY_MASTER_ADMIN_KEY", &c.Auth.MasterAdminKey)
+	envStr("GATEWAY_MASTER_ENCRYPTION_KEY", &c.Auth.MasterEncryptionKey)
+	if v := os.Getenv("GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS"); v != "" {
+		c.Auth.PreviousMasterEncryptionKeys = splitTrimCSV(v)
+	}
+	envTrimStr("GATEWAY_KEY_ROTATION_DELIVERY_URL", &c.Auth.KeyRotationDeliveryURL)
+	envStr("GATEWAY_KEY_ROTATION_DELIVERY_TOKEN", &c.Auth.KeyRotationDeliveryToken)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_DRIVER", &c.Auth.KeyRotationSink.Driver)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_ADDRESS", &c.Auth.KeyRotationSink.Address)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_MOUNT", &c.Auth.KeyRotationSink.Mount)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_PATH_PREFIX", &c.Auth.KeyRotationSink.PathPrefix)
+	envStr("GATEWAY_KEY_ROTATION_SINK_TOKEN", &c.Auth.KeyRotationSink.Token)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_NAMESPACE", &c.Auth.KeyRotationSink.Namespace)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_REGION", &c.Auth.KeyRotationSink.Region)
+	envTrimStr("GATEWAY_KEY_ROTATION_SINK_AWS_ACCESS_KEY_ID", &c.Auth.KeyRotationSink.AWSAccessKeyID)
+	envStr("GATEWAY_KEY_ROTATION_SINK_AWS_SECRET_ACCESS_KEY", &c.Auth.KeyRotationSink.AWSSecretAccessKey)
+	envStr("GATEWAY_KEY_ROTATION_SINK_AWS_SESSION_TOKEN", &c.Auth.KeyRotationSink.AWSSessionToken)
+	envBool("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE", &c.Auth.AllowMasterKeyDataPlane)
+	envBool("GATEWAY_ENABLE_DATA_PLANE_JWT", &c.Auth.EnableDataPlaneJWT)
+	envTrimStr("GATEWAY_CUSTOM_API_KEY_HEADER", &c.Auth.CustomAPIKeyHeader)
+	envStr("GATEWAY_JWT_SECRET", &c.Auth.JWTSecret)
+	envStr("GATEWAY_JWT_ISSUER", &c.Auth.JWTIssuer)
+	envStr("GATEWAY_JWT_AUDIENCE", &c.Auth.JWTAudience)
+	envStr("GATEWAY_OIDC_JWKS_URL", &c.Auth.OIDCJWKSURL)
+	envDuration("GATEWAY_KEY_ROTATION_POLL_INTERVAL", &c.Auth.KeyRotationPollInterval)
+	envDuration("GATEWAY_KEY_ROTATION_GRACE_PERIOD", &c.Auth.KeyRotationGracePeriod)
+	envTrimStr("GATEWAY_UI_USERNAME", &c.Auth.UIUsername)
+	envStr("GATEWAY_UI_PASSWORD", &c.Auth.UIPassword)
+	envStr("GATEWAY_SESSION_SECRET", &c.Auth.SessionSecret)
+	envDuration("GATEWAY_SESSION_TTL", &c.Auth.SessionTTL)
+	envBool("GATEWAY_ENABLE_HIBP_CHECK", &c.Auth.EnableHIBPCheck)
+	envTrimStr("GATEWAY_HIBP_BASE_URL", &c.Auth.HIBPBaseURL)
+}
+
+func (c *Config) applyRouterEnvOverrides() {
+	envDuration("GATEWAY_ROUTER_DEFAULT_COOLDOWN", &c.Router.DefaultCooldown)
+	envDuration("GATEWAY_ROUTER_BASE_RETRY_DELAY", &c.Router.BaseRetryDelay)
+	envDuration("GATEWAY_ROUTER_MAX_RETRY_DELAY", &c.Router.MaxRetryDelay)
+	envInt("GATEWAY_ROUTER_MAX_FALLBACK_DEPTH", &c.Router.MaxFallbackDepth)
+	envBool("GATEWAY_ROUTER_ENABLE_MID_STREAM_CONTINUATION", &c.Router.EnableMidStreamContinuation)
+	envInt("GATEWAY_ROUTER_MAX_STREAM_CONTINUATIONS", &c.Router.MaxStreamContinuations)
+	envDuration("GATEWAY_ROUTER_HEALTH_STALENESS_THRESHOLD", &c.Router.HealthStalenessThreshold)
+	envBool("GATEWAY_ROUTER_STRICT_CAPACITY_FILTERING", &c.Router.StrictCapacityFiltering)
+	envDuration("GATEWAY_ROUTER_SESSION_AFFINITY_TTL", &c.Router.SessionAffinityTTL)
+	envBool("GATEWAY_ROUTER_SESSION_AFFINITY_REPIN_ON_FAILOVER", &c.Router.SessionAffinityRepinOnFailover)
+	envBool("GATEWAY_ROUTER_PROMPT_CACHE_AFFINITY", &c.Router.PromptCacheAffinity)
+	envTrimStr("GATEWAY_ROUTER_PRE_ROUTER_MODE", &c.Router.PreRouterMode)
+	envBool("GATEWAY_ROUTER_CACHE_AWARE_ROUTING", &c.Router.CacheAwareRouting)
+	envInt("GATEWAY_ROUTER_HEDGE_DELAY_MS", &c.Router.HedgeDelayMs)
+	envInt("GATEWAY_ROUTER_MAX_HEDGE_CONCURRENCY", &c.Router.MaxHedgeConcurrency)
+	envFloat("GATEWAY_ROUTER_LATENCY_TOLERANCE_PCT", &c.Router.LatencyTolerancePct)
+	envDuration("GATEWAY_ROUTER_MAX_HONORED_RETRY_AFTER", &c.Router.MaxHonoredRetryAfter)
+	envBool("GATEWAY_ROUTER_DISABLE_COOLDOWNS", &c.Router.DisableCooldowns)
+	envBool("GATEWAY_ROUTER_FALLBACK_ON_SATURATION", &c.Router.FallbackOnSaturation)
+	envBool("GATEWAY_ROUTER_DROP_UNSUPPORTED_PARAMS", &c.Router.DropUnsupportedParams)
+	envBool("GATEWAY_ROUTER_FALLBACK_ON_UNSUPPORTED_PARAMS", &c.Router.FallbackOnUnsupportedParams)
+	envBool("GATEWAY_ROUTER_ALLOW_STRATEGY_OVERRIDE", &c.Router.AllowStrategyOverride)
+	envBool("GATEWAY_ROUTER_DEBUG_ROUTING_HEADERS", &c.Router.DebugRoutingHeaders)
+}
+
+func (c *Config) applyFinOpsAndProtocolEnvOverrides() {
+	envDuration("GATEWAY_FINOPS_FLUSH_INTERVAL", &c.FinOps.FlushInterval)
+	envTrimStr("GATEWAY_FINOPS_SOFT_BUDGET_WEBHOOK_URL", &c.FinOps.SoftBudgetWebhookURL)
+	envInt("GATEWAY_FINOPS_SOFT_BUDGET_COOLDOWN_SEC", &c.FinOps.SoftBudgetCooldownSec)
+	envFloat("GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT", &c.FinOps.BudgetExceededThrottlePct)
+	envBool("GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE", &c.Security.Network.OutboundSSRF.AllowPrivateNetworks)
+	envBool("GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP", &c.Security.Network.OutboundSSRF.AllowInsecureHTTP)
+	envBool("GATEWAY_MCP_ENABLED", &c.MCP.Enabled)
+	envBool("GATEWAY_MCP_ALLOW_STDIO", &c.MCP.AllowStdioServers)
+	envBool("GATEWAY_A2A_ENABLED", &c.A2A.Enabled)
+	envStr("GATEWAY_A2A_SIGNING_KEY_ID", &c.A2A.SigningKeyID)
+}
+
+// Validate normalizes defaults and checks all configuration invariants across
+// providers, routing, FinOps, server limits, authentication, network policy,
+// MCP/A2A bindings, and guardrails.
 func (c *Config) Validate() error {
+	c.applyProviderAndCacheDefaults()
+
+	validators := []func() error{
+		c.validateRouterAndModelList,
+		c.validateFinOpsAndTracing,
+		c.validateServer,
+		c.validateAuth,
+		c.validateNetworkSecurity,
+		c.validateMCPAndA2A,
+		c.validateCustomProviders,
+		c.validateGuardrails,
+	}
+	for _, fn := range validators {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) applyProviderAndCacheDefaults() {
 	if c.Providers.RequestTimeout <= 0 {
 		c.Providers.RequestTimeout = 2 * time.Minute
 	}
@@ -1051,6 +928,9 @@ func (c *Config) Validate() error {
 	if c.Cache.DefaultTTL <= 0 {
 		c.Cache.DefaultTTL = time.Hour
 	}
+}
+
+func (c *Config) validateRouterAndModelList() error {
 	if c.Router.MaxFallbackDepth < 0 {
 		return fmt.Errorf("invalid router.max_fallback_depth: %d", c.Router.MaxFallbackDepth)
 	}
@@ -1120,6 +1000,10 @@ func (c *Config) Validate() error {
 	if c.Router.Bandit.DefaultAlpha < 0 || c.Router.Bandit.DefaultBeta < 0 {
 		return fmt.Errorf("invalid router.bandit priors: alpha=%v beta=%v", c.Router.Bandit.DefaultAlpha, c.Router.Bandit.DefaultBeta)
 	}
+	return nil
+}
+
+func (c *Config) validateFinOpsAndTracing() error {
 	if rawWebhook := strings.TrimSpace(c.FinOps.SoftBudgetWebhookURL); rawWebhook != "" {
 		u, err := url.Parse(rawWebhook)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -1142,6 +1026,10 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
 		c.Tracing.ServiceName = "ai-gateway-go"
 	}
+	return nil
+}
+
+func (c *Config) validateServer() error {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server.port: %d", c.Server.Port)
 	}
@@ -1161,6 +1049,10 @@ func (c *Config) Validate() error {
 	if c.Server.MaxConcurrentFileUploads < 0 {
 		return fmt.Errorf("invalid server.max_concurrent_file_uploads: %d", c.Server.MaxConcurrentFileUploads)
 	}
+	return nil
+}
+
+func (c *Config) validateAuth() error {
 	if c.Auth.SessionTTL <= 0 {
 		c.Auth.SessionTTL = 24 * time.Hour
 	}
@@ -1187,7 +1079,30 @@ func (c *Config) Validate() error {
 	if err := validateAuthKeyRotation(c.Auth); err != nil {
 		return err
 	}
+	if err := c.validateProductionAuthSecrets(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Auth.JWTSecret) != "" || strings.TrimSpace(c.Auth.OIDCJWKSURL) != "" {
+		if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
+			return fmt.Errorf("auth.jwt_issuer is required when JWT or OIDC authentication is enabled")
+		}
+		if strings.TrimSpace(c.Auth.JWTAudience) == "" {
+			return fmt.Errorf("auth.jwt_audience is required when JWT or OIDC authentication is enabled")
+		}
+	}
+	if err := validateOIDCIssuers(c.Auth.OIDCIssuers); err != nil {
+		return err
+	}
+	if err := validateSSOProviders(c.Auth.SSOProviders); err != nil {
+		return err
+	}
+	if err := validateIntrospectionConfig(c.Auth.Introspection); err != nil {
+		return err
+	}
+	return validateProxyAuthConfig(c.Auth.ProxyAuth)
+}
 
+func (c *Config) validateProductionAuthSecrets() error {
 	const (
 		defaultMasterAdminKey      = "sk-gw-master-admin-default-key-change-me"
 		defaultMasterEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -1200,28 +1115,24 @@ func (c *Config) Validate() error {
 			env = candidate
 		}
 	}
-	isDevOrTest := env == "development" || env == "test"
-	if !isDevOrTest {
-		if c.Auth.MasterAdminKey == defaultMasterAdminKey {
-			return fmt.Errorf("security violation: auth.master_admin_key cannot be the default key in %q environment", env)
-		}
-		if c.Auth.MasterEncryptionKey == defaultMasterEncryptionKey {
-			return fmt.Errorf("security violation: auth.master_encryption_key cannot be the default key in %q environment", env)
-		}
-		if c.Auth.JWTSecret == defaultJWTSecret {
-			return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %q environment", env)
-		}
+	if env == "development" || env == "test" {
+		return nil
 	}
-	if strings.TrimSpace(c.Auth.JWTSecret) != "" || strings.TrimSpace(c.Auth.OIDCJWKSURL) != "" {
-		if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
-			return fmt.Errorf("auth.jwt_issuer is required when JWT or OIDC authentication is enabled")
-		}
-		if strings.TrimSpace(c.Auth.JWTAudience) == "" {
-			return fmt.Errorf("auth.jwt_audience is required when JWT or OIDC authentication is enabled")
-		}
+	if c.Auth.MasterAdminKey == defaultMasterAdminKey {
+		return fmt.Errorf("security violation: auth.master_admin_key cannot be the default key in %q environment", env)
 	}
-	seenIssuers := make(map[string]struct{}, len(c.Auth.OIDCIssuers))
-	for i, iss := range c.Auth.OIDCIssuers {
+	if c.Auth.MasterEncryptionKey == defaultMasterEncryptionKey {
+		return fmt.Errorf("security violation: auth.master_encryption_key cannot be the default key in %q environment", env)
+	}
+	if c.Auth.JWTSecret == defaultJWTSecret {
+		return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %q environment", env)
+	}
+	return nil
+}
+
+func validateOIDCIssuers(issuers []OIDCIssuerConfig) error {
+	seenIssuers := make(map[string]struct{}, len(issuers))
+	for i, iss := range issuers {
 		trimmedIss := strings.TrimSpace(iss.Issuer)
 		if trimmedIss == "" {
 			return fmt.Errorf("auth.oidc_issuers[%d].issuer is required", i)
@@ -1243,8 +1154,12 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	seenSSOProviders := make(map[string]struct{}, len(c.Auth.SSOProviders))
-	for i, sso := range c.Auth.SSOProviders {
+	return nil
+}
+
+func validateSSOProviders(providers []SSOProviderConfig) error {
+	seenSSOProviders := make(map[string]struct{}, len(providers))
+	for i, sso := range providers {
 		id := strings.ToLower(strings.TrimSpace(sso.ID))
 		if id == "" {
 			id = strings.ToLower(strings.TrimSpace(sso.Name))
@@ -1307,23 +1222,33 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if ep := strings.TrimSpace(c.Auth.Introspection.TokenInfoEndpoint); ep != "" {
-		u, err := url.Parse(ep)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("auth.introspection.token_info_endpoint must be a valid http or https URL")
-		}
-		switch strings.ToLower(strings.TrimSpace(c.Auth.Introspection.Mode)) {
-		case "", "auto", "introspect", "userinfo":
-		default:
-			return fmt.Errorf("invalid auth.introspection.mode %q", c.Auth.Introspection.Mode)
-		}
+	return nil
+}
+
+func validateIntrospectionConfig(cfg IntrospectionConfig) error {
+	ep := strings.TrimSpace(cfg.TokenInfoEndpoint)
+	if ep == "" {
+		return nil
 	}
-	for _, cidr := range c.Auth.ProxyAuth.TrustedProxyCIDRs {
+	u, err := url.Parse(ep)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("auth.introspection.token_info_endpoint must be a valid http or https URL")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
+	case "", "auto", "introspect", "userinfo":
+		return nil
+	default:
+		return fmt.Errorf("invalid auth.introspection.mode %q", cfg.Mode)
+	}
+}
+
+func validateProxyAuthConfig(cfg ProxyAuthConfig) error {
+	for _, cidr := range cfg.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 			return fmt.Errorf("invalid auth.proxy_auth.trusted_proxy_cidrs %q: %w", cidr, err)
 		}
 	}
-	for hdr, target := range c.Auth.ProxyAuth.HeaderMapping {
+	for hdr, target := range cfg.HeaderMapping {
 		if strings.TrimSpace(hdr) == "" {
 			return fmt.Errorf("auth.proxy_auth.header_mapping must not contain empty header names")
 		}
@@ -1333,8 +1258,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid auth.proxy_auth.header_mapping target %q for header %q", target, hdr)
 		}
 	}
+	return nil
+}
 
-	// Security SSRF validation
+func (c *Config) validateNetworkSecurity() error {
 	for _, cidr := range c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 			return fmt.Errorf("invalid security.network.outbound_ssrf.allowed_private_cidrs %q: %w", cidr, err)
@@ -1355,11 +1282,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid security.network.inbound_caller.trusted_proxy_cidrs %q: %w", cidr, err)
 		}
 	}
+	return nil
+}
 
-	// MCP validation
+func (c *Config) validateMCPAndA2A() error {
 	if c.MCP.Enabled {
 		if c.MCP.AllowStdioServers {
-			// Fail-closed in Release 1 until BL-02 verified OS sandboxing lands
+			// Fail-closed until verified OS-level sandboxing is implemented.
 			return fmt.Errorf("mcp.allow_stdio_servers is not permitted in Release 1: OS-level sandboxing (BL-02) is required before enabling subprocess execution")
 		}
 		if c.MCP.MaxPayloadBytes <= 0 {
@@ -1373,7 +1302,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// A2A validation
 	if c.A2A.Enabled {
 		if !c.A2A.EnableJSONRPC && !c.A2A.EnableHTTPJSON {
 			return fmt.Errorf("a2a must enable at least one transport binding (enable_jsonrpc or enable_http_json)")
@@ -1394,8 +1322,10 @@ func (c *Config) Validate() error {
 			c.A2A.StreamPublishInterval = 50 * time.Millisecond
 		}
 	}
+	return nil
+}
 
-	// Custom providers validation
+func (c *Config) validateCustomProviders() error {
 	for _, cp := range c.Providers.CustomOpenAICompatible {
 		id := strings.ToLower(strings.TrimSpace(cp.ID))
 		if id == "" {
@@ -1416,8 +1346,10 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
-	// Guardrails external scanner validation
+func (c *Config) validateGuardrails() error {
 	seenScanners := make(map[string]struct{}, len(c.Guardrails.Scanners))
 	for i, sc := range c.Guardrails.Scanners {
 		name := strings.TrimSpace(sc.Name)
@@ -1476,7 +1408,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("guardrails.tool_policies[%d] (%q): invalid output_policy %q", idx, toolName, tp.OutputPolicy)
 		}
 	}
-
 	return nil
 }
 

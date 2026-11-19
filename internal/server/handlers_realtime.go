@@ -20,6 +20,401 @@ import (
 	"nhooyr.io/websocket"
 )
 
+type realtimeClientEvent struct {
+	EventID string                                 `json:"event_id"`
+	Type    string                                 `json:"type"`
+	Session *domain.CanonicalRealtimeSessionConfig `json:"session,omitempty"`
+	Item    *struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"item,omitempty"`
+	Response *struct {
+		MaxOutputTokens   *int                      `json:"max_output_tokens,omitempty"`
+		MaxTokens         *int                      `json:"max_tokens,omitempty"`
+		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
+	} `json:"response,omitempty"`
+	Audio             string                    `json:"audio,omitempty"`
+	GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
+}
+
+type realtimeSession struct {
+	server     *GatewayServer
+	req        *http.Request
+	idCtx      *domain.IdentityContext
+	model      string
+	sessionID  string
+	sessionCtx context.Context
+	conn       *websocket.Conn
+
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	config  *domain.CanonicalRealtimeSessionConfig
+	history []domain.CanonicalMessage
+}
+
+func (rs *realtimeSession) sendEvent(ctx context.Context, ev map[string]any) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	rs.writeMu.Lock()
+	defer rs.writeMu.Unlock()
+	return rs.conn.Write(ctx, websocket.MessageText, b)
+}
+
+func (rs *realtimeSession) sendTypedError(errType, message string) {
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "error",
+		"error":    map[string]any{"type": errType, "message": message},
+	})
+}
+
+func (rs *realtimeSession) sessionPayload() map[string]any {
+	return map[string]any{
+		"id":                  rs.sessionID,
+		"object":              "realtime.session",
+		"model":               rs.model,
+		"modalities":          rs.config.Modalities,
+		"instructions":        rs.config.Instructions,
+		"voice":               rs.config.Voice,
+		"input_audio_format":  rs.config.InputAudioFormat,
+		"output_audio_format": rs.config.OutputAudioFormat,
+	}
+}
+
+func (rs *realtimeSession) handleSessionUpdate(ev *realtimeClientEvent) {
+	if ev.Session != nil {
+		for _, modality := range ev.Session.Modalities {
+			if modality != "text" {
+				rs.sendTypedError("unsupported_feature", "This gateway Realtime endpoint currently supports text modality only")
+				return
+			}
+		}
+	}
+
+	var hintErr *domain.GatewayError
+	rs.mu.Lock()
+	if ev.Session != nil && ev.Session.GoRouteExtensions != nil {
+		merged := mergeGoRouteExtensions(rs.config.GoRouteExtensions, ev.Session.GoRouteExtensions)
+		if gwErr := rs.server.applyRoutingHints(rs.req, rs.idCtx, &merged); gwErr != nil {
+			hintErr = gwErr
+		} else {
+			rs.config.GoRouteExtensions = merged
+		}
+	}
+	if hintErr == nil && ev.Session != nil {
+		if len(ev.Session.Modalities) > 0 {
+			textOnly := true
+			for _, modality := range ev.Session.Modalities {
+				if modality != "text" {
+					textOnly = false
+				}
+			}
+			if textOnly {
+				rs.config.Modalities = []string{"text"}
+			}
+		}
+		if ev.Session.Instructions != "" {
+			rs.config.Instructions = ev.Session.Instructions
+		}
+		if ev.Session.Voice != "" {
+			rs.config.Voice = ev.Session.Voice
+		}
+		if ev.Session.Temperature != nil {
+			rs.config.Temperature = ev.Session.Temperature
+		}
+	}
+	payload := rs.sessionPayload()
+	rs.mu.Unlock()
+
+	if hintErr != nil {
+		_ = rs.sendEvent(rs.req.Context(), realtimeGatewayErrorEvent(hintErr))
+		return
+	}
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "session.updated",
+		"session":  payload,
+	})
+}
+
+func (rs *realtimeSession) handleConversationItemCreate(ev *realtimeClientEvent) {
+	rs.mu.Lock()
+	if ev.Item != nil {
+		role := ev.Item.Role
+		if role == "" {
+			role = "user"
+		}
+		text := ""
+		for _, c := range ev.Item.Content {
+			text += c.Text
+		}
+		rs.history = append(rs.history, domain.CanonicalMessage{
+			Role:    role,
+			Content: text,
+		})
+	}
+	rs.mu.Unlock()
+
+	itemID := "item_" + uuid.NewString()
+	if ev.Item != nil && ev.Item.ID != "" {
+		itemID = ev.Item.ID
+	}
+
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "conversation.item.created",
+		"item": map[string]any{
+			"id":   itemID,
+			"type": "message",
+			"role": "user",
+		},
+	})
+}
+
+func (rs *realtimeSession) handleResponseCreate(ev *realtimeClientEvent) {
+	rs.mu.Lock()
+	reqMsgs := make([]domain.CanonicalMessage, 0, len(rs.history)+1)
+	if rs.config.Instructions != "" {
+		reqMsgs = append(reqMsgs, domain.CanonicalMessage{
+			Role:    "system",
+			Content: rs.config.Instructions,
+		})
+	}
+	reqMsgs = append(reqMsgs, rs.history...)
+	temp := rs.config.Temperature
+	sessionExt := rs.config.GoRouteExtensions.Clone()
+	rs.mu.Unlock()
+	if len(reqMsgs) == 0 {
+		rs.sendTypedError("invalid_request_error", "response.create requires text input")
+		return
+	}
+
+	var turnExt *domain.GoRouteExtensions
+	if ev.GoRouteExtensions != nil {
+		turnExt = ev.GoRouteExtensions
+	}
+	if ev.Response != nil && ev.Response.GoRouteExtensions != nil {
+		turnExt = mergeGoRouteExtensions(turnExt, ev.Response.GoRouteExtensions)
+	}
+	mergedExt := mergeGoRouteExtensions(sessionExt, turnExt)
+	turnReqID := rs.sessionID + "_turn_" + uuid.NewString()
+	chatReq := &domain.CanonicalChatRequest{
+		RequestID:         turnReqID,
+		Model:             rs.model,
+		Messages:          reqMsgs,
+		Temperature:       temp,
+		GoRouteExtensions: mergedExt,
+	}
+	maxOutput := 0
+	if ev.Response != nil {
+		if ev.Response.MaxOutputTokens != nil {
+			maxOutput = *ev.Response.MaxOutputTokens
+		} else if ev.Response.MaxTokens != nil {
+			maxOutput = *ev.Response.MaxTokens
+		}
+	}
+	if maxOutput < 0 {
+		rs.sendTypedError("invalid_request_error", "max_output_tokens cannot be negative")
+		return
+	}
+	if maxOutput > 0 {
+		chatReq.MaxTokens = &maxOutput
+	}
+
+	if gwErr := rs.server.applyChatRoutingHints(rs.req, rs.idCtx, chatReq); gwErr != nil {
+		rs.server.collector.Record(admissionFailureObservation(gwErr))
+		_ = rs.sendEvent(rs.req.Context(), realtimeGatewayErrorEvent(gwErr))
+		return
+	}
+	origTurnModel := chatReq.Model
+	prc, _, guardrailErr := rs.server.evaluateChatInputGuardrails(rs.sessionCtx, nil, rs.req, rs.idCtx, chatReq, "realtime")
+	if guardrailErr != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(guardrailErr, &gwErr) {
+			_ = rs.sendEvent(rs.req.Context(), realtimeGatewayErrorEvent(gwErr))
+		} else {
+			rs.sendTypedError("guardrail_error", "Request rejected by organization guardrail policy")
+		}
+		return
+	}
+
+	estTokens := ratelimit.EstimateRequestTokens(chatReq)
+	budgetInputTokens := estTokens
+	if rs.server.requestHasBudget(rs.sessionCtx, rs.idCtx, chatReq.Model) {
+		encoded, encodeErr := json.Marshal(chatReq)
+		if encodeErr != nil {
+			_ = rs.sendEvent(rs.req.Context(), map[string]any{
+				"event_id": "event_" + uuid.NewString(),
+				"type":     "error",
+				"error": map[string]any{
+					"type":    string(domain.ErrorTypeBudgetExceeded),
+					"code":    "budget_estimate_unavailable",
+					"message": "A safe upper-bound cost could not be calculated before dispatch",
+				},
+			})
+			return
+		}
+		if len(encoded) > budgetInputTokens {
+			budgetInputTokens = len(encoded)
+		}
+	}
+
+	respID := "resp_" + uuid.NewString()
+	itemMsgID := "msg_" + uuid.NewString()
+	onAdmitted := func() {
+		rs.emitResponseStarted(respID, itemMsgID)
+	}
+
+	turnIDCtx := *rs.idCtx
+	// The WebSocket session already holds the connection-level concurrency slot
+	// and executes turns sequentially, so per-turn quota must not double-count concurrency.
+	turnIDCtx.KeyMaxConcurrent = 0
+	turnIDCtx.TeamMaxConcurrent = 0
+	turnIDCtx.UserMaxConcurrent = 0
+	turnIDCtx.OrgMaxConcurrent = 0
+
+	turnCtx, _ := withRequestQuotaState(rs.sessionCtx, rs.req, rs.idCtx, rs.req.URL.Query().Get("user"), nil, chatReq.GoRouteExtensions)
+	resp, err := rs.server.executeRealtimeTurn(turnCtx, &turnIDCtx, rs.sessionID, origTurnModel, turnReqID, prc, chatReq, estTokens, budgetInputTokens, maxOutput, onAdmitted)
+	if err != nil {
+		rs.emitExecutionError(err)
+		return
+	}
+
+	if _, sanitizeErr := rs.server.evaluateChatOutputGuardrails(rs.req.Context(), nil, prc, resp, "realtime"); sanitizeErr != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(sanitizeErr, &gwErr) {
+			_ = rs.sendEvent(rs.req.Context(), realtimeGatewayErrorEvent(gwErr))
+		} else {
+			rs.sendTypedError("guardrail_error", "Response withheld by organization guardrail policy")
+		}
+		return
+	}
+	rs.server.GuardrailPipeline().EvaluateLoggingOnly(rs.req.Context(), prc, chatReq, resp)
+	replyContent := ""
+	if len(resp.Choices) > 0 {
+		replyContent = resp.Choices[0].Message.Content
+	}
+	rs.emitResponseCompleted(respID, itemMsgID, replyContent)
+
+	rs.mu.Lock()
+	rs.history = append(rs.history, domain.CanonicalMessage{
+		Role:    "assistant",
+		Content: replyContent,
+	})
+	rs.mu.Unlock()
+}
+
+func (rs *realtimeSession) emitResponseStarted(respID, itemMsgID string) {
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "response.created",
+		"response": map[string]any{
+			"id":     respID,
+			"object": "realtime.response",
+			"status": "in_progress",
+		},
+	})
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id":     "event_" + uuid.NewString(),
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":      itemMsgID,
+			"type":    "message",
+			"status":  "in_progress",
+			"role":    "assistant",
+			"content": []any{},
+		},
+	})
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id":      "event_" + uuid.NewString(),
+		"type":          "response.content_part.added",
+		"output_index":  0,
+		"content_index": 0,
+		"part": map[string]any{
+			"type": "text",
+			"text": "",
+		},
+	})
+}
+
+func (rs *realtimeSession) emitExecutionError(err error) {
+	errPayload := map[string]any{
+		"type":    "execution_error",
+		"message": err.Error(),
+	}
+	var gwErr *domain.GatewayError
+	if errors.As(err, &gwErr) {
+		if gwErr.Type != "" {
+			errPayload["type"] = string(gwErr.Type)
+		}
+		if gwErr.Code != "" {
+			errPayload["code"] = gwErr.Code
+		}
+		if gwErr.Message != "" {
+			errPayload["message"] = gwErr.Message
+		}
+	}
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "error",
+		"error":    errPayload,
+	})
+}
+
+func (rs *realtimeSession) emitResponseCompleted(respID, itemMsgID, replyContent string) {
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id":      "event_" + uuid.NewString(),
+		"type":          "response.text.delta",
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         replyContent,
+	})
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id":      "event_" + uuid.NewString(),
+		"type":          "response.text.done",
+		"output_index":  0,
+		"content_index": 0,
+		"text":          replyContent,
+	})
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id":     "event_" + uuid.NewString(),
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":      itemMsgID,
+			"type":    "message",
+			"status":  "completed",
+			"role":    "assistant",
+			"content": []map[string]any{{"type": "text", "text": replyContent}},
+		},
+	})
+	_ = rs.sendEvent(rs.req.Context(), map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "response.done",
+		"response": map[string]any{
+			"id":     respID,
+			"status": "completed",
+			"output": []map[string]any{
+				{
+					"id":      itemMsgID,
+					"type":    "message",
+					"status":  "completed",
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "text", "text": replyContent}},
+				},
+			},
+		},
+	})
+}
+
 // handleRealtimeWebSocket serves `GET /v1/realtime`, `GET /realtime`, and `GET /openai/v1/realtime`.
 // It implements OpenAI's Realtime WebSocket bidirectional session protocol.
 func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +479,6 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 	sessionID := "sess_" + uuid.NewString()
 	startTime := time.Now()
 
-	// Default session state
 	sessionConfig := &domain.CanonicalRealtimeSessionConfig{
 		Modalities:        []string{"text"},
 		Instructions:      "You are a helpful AI assistant.",
@@ -100,39 +494,26 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		sessionConfig.GoRouteExtensions.SessionID = sessionID
 	}
 
-	var sessionMu sync.Mutex
-	var writeMu sync.Mutex
-	history := make([]domain.CanonicalMessage, 0)
-
 	rtQCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, r.URL.Query().Get("user"), nil, sessionConfig.GoRouteExtensions)
 	sessionCtx, sessionCancel := context.WithCancel(rtQCtx)
 	defer sessionCancel()
 
-	// Helper to send JSON event to client
-	sendEvent := func(ctx context.Context, ev map[string]any) error {
-		b, err := json.Marshal(ev)
-		if err != nil {
-			return err
-		}
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return conn.Write(ctx, websocket.MessageText, b)
+	rs := &realtimeSession{
+		server:     s,
+		req:        r,
+		idCtx:      idCtx,
+		model:      model,
+		sessionID:  sessionID,
+		sessionCtx: sessionCtx,
+		conn:       conn,
+		config:     sessionConfig,
+		history:    make([]domain.CanonicalMessage, 0),
 	}
 
-	// 1. Send initial session.created event
-	_ = sendEvent(sessionCtx, map[string]any{
+	_ = rs.sendEvent(sessionCtx, map[string]any{
 		"event_id": "event_" + uuid.NewString(),
 		"type":     "session.created",
-		"session": map[string]any{
-			"id":                  sessionID,
-			"object":              "realtime.session",
-			"model":               model,
-			"modalities":          sessionConfig.Modalities,
-			"instructions":        sessionConfig.Instructions,
-			"voice":               sessionConfig.Voice,
-			"input_audio_format":  sessionConfig.InputAudioFormat,
-			"output_audio_format": sessionConfig.OutputAudioFormat,
-		},
+		"session":  rs.sessionPayload(),
 	})
 
 	// Read frames in a dedicated reader goroutine so client close/disconnect
@@ -157,399 +538,26 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		}
 	}()
 
-	// Message frame pump loop
 	for data := range msgCh {
 		if sessionCtx.Err() != nil {
 			break
 		}
-
-		var clientEv struct {
-			EventID string                                 `json:"event_id"`
-			Type    string                                 `json:"type"`
-			Session *domain.CanonicalRealtimeSessionConfig `json:"session,omitempty"`
-			Item    *struct {
-				ID      string `json:"id"`
-				Type    string `json:"type"`
-				Role    string `json:"role"`
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"item,omitempty"`
-			Response *struct {
-				MaxOutputTokens   *int                      `json:"max_output_tokens,omitempty"`
-				MaxTokens         *int                      `json:"max_tokens,omitempty"`
-				GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
-			} `json:"response,omitempty"`
-			Audio             string                    `json:"audio,omitempty"`
-			GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
-		}
-
+		var clientEv realtimeClientEvent
 		if err := json.Unmarshal(data, &clientEv); err != nil {
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "error",
-				"error": map[string]any{
-					"type":    "invalid_request_error",
-					"message": fmt.Sprintf("Failed to parse client event: %v", err),
-				},
-			})
+			rs.sendTypedError("invalid_request_error", fmt.Sprintf("Failed to parse client event: %v", err))
 			continue
 		}
-
 		switch clientEv.Type {
 		case "session.update":
-			unsupportedModality := false
-			if clientEv.Session != nil {
-				for _, modality := range clientEv.Session.Modalities {
-					if modality != "text" {
-						unsupportedModality = true
-						break
-					}
-				}
-			}
-			if unsupportedModality {
-				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "unsupported_feature", "message": "This gateway Realtime endpoint currently supports text modality only"}})
-				continue
-			}
-			var hintErr *domain.GatewayError
-			sessionMu.Lock()
-			if clientEv.Session != nil && clientEv.Session.GoRouteExtensions != nil {
-				merged := mergeGoRouteExtensions(sessionConfig.GoRouteExtensions, clientEv.Session.GoRouteExtensions)
-				if gwErr := s.applyRoutingHints(r, idCtx, &merged); gwErr != nil {
-					hintErr = gwErr
-				} else {
-					sessionConfig.GoRouteExtensions = merged
-				}
-			}
-			if hintErr == nil && clientEv.Session != nil {
-				if len(clientEv.Session.Modalities) > 0 {
-					textOnly := true
-					for _, modality := range clientEv.Session.Modalities {
-						if modality != "text" {
-							textOnly = false
-						}
-					}
-					if textOnly {
-						sessionConfig.Modalities = []string{"text"}
-					}
-				}
-				if clientEv.Session.Instructions != "" {
-					sessionConfig.Instructions = clientEv.Session.Instructions
-				}
-				if clientEv.Session.Voice != "" {
-					sessionConfig.Voice = clientEv.Session.Voice
-				}
-				if clientEv.Session.Temperature != nil {
-					sessionConfig.Temperature = clientEv.Session.Temperature
-				}
-			}
-			sessionMu.Unlock()
-			if hintErr != nil {
-				_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(hintErr))
-				continue
-			}
-
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "session.updated",
-				"session": map[string]any{
-					"id":                  sessionID,
-					"object":              "realtime.session",
-					"model":               model,
-					"modalities":          sessionConfig.Modalities,
-					"instructions":        sessionConfig.Instructions,
-					"voice":               sessionConfig.Voice,
-					"input_audio_format":  sessionConfig.InputAudioFormat,
-					"output_audio_format": sessionConfig.OutputAudioFormat,
-				},
-			})
-
-		case "input_audio_buffer.append":
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "error",
-				"error":    map[string]any{"type": "unsupported_feature", "message": "This gateway Realtime endpoint currently supports text input only"},
-			})
-
-		case "input_audio_buffer.commit":
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "error",
-				"error":    map[string]any{"type": "unsupported_feature", "message": "This gateway Realtime endpoint currently supports text input only"},
-			})
-
+			rs.handleSessionUpdate(&clientEv)
+		case "input_audio_buffer.append", "input_audio_buffer.commit":
+			rs.sendTypedError("unsupported_feature", "This gateway Realtime endpoint currently supports text input only")
 		case "conversation.item.create":
-			sessionMu.Lock()
-			if clientEv.Item != nil {
-				role := clientEv.Item.Role
-				if role == "" {
-					role = "user"
-				}
-				text := ""
-				for _, c := range clientEv.Item.Content {
-					text += c.Text
-				}
-				history = append(history, domain.CanonicalMessage{
-					Role:    role,
-					Content: text,
-				})
-			}
-			sessionMu.Unlock()
-
-			itemID := "item_" + uuid.NewString()
-			if clientEv.Item != nil && clientEv.Item.ID != "" {
-				itemID = clientEv.Item.ID
-			}
-
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "conversation.item.created",
-				"item": map[string]any{
-					"id":   itemID,
-					"type": "message",
-					"role": "user",
-				},
-			})
-
+			rs.handleConversationItemCreate(&clientEv)
 		case "response.create":
-			sessionMu.Lock()
-			reqMsgs := make([]domain.CanonicalMessage, 0, len(history)+1)
-			if sessionConfig.Instructions != "" {
-				reqMsgs = append(reqMsgs, domain.CanonicalMessage{
-					Role:    "system",
-					Content: sessionConfig.Instructions,
-				})
-			}
-			reqMsgs = append(reqMsgs, history...)
-			temp := sessionConfig.Temperature
-			sessionExt := sessionConfig.GoRouteExtensions.Clone()
-			sessionMu.Unlock()
-			if len(reqMsgs) == 0 {
-				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "invalid_request_error", "message": "response.create requires text input"}})
-				continue
-			}
-
-			var turnExt *domain.GoRouteExtensions
-			if clientEv.GoRouteExtensions != nil {
-				turnExt = clientEv.GoRouteExtensions
-			}
-			if clientEv.Response != nil && clientEv.Response.GoRouteExtensions != nil {
-				turnExt = mergeGoRouteExtensions(turnExt, clientEv.Response.GoRouteExtensions)
-			}
-			mergedExt := mergeGoRouteExtensions(sessionExt, turnExt)
-			turnReqID := sessionID + "_turn_" + uuid.NewString()
-			chatReq := &domain.CanonicalChatRequest{
-				RequestID:         turnReqID,
-				Model:             model,
-				Messages:          reqMsgs,
-				Temperature:       temp,
-				GoRouteExtensions: mergedExt,
-			}
-			maxOutput := 0
-			if clientEv.Response != nil {
-				if clientEv.Response.MaxOutputTokens != nil {
-					maxOutput = *clientEv.Response.MaxOutputTokens
-				} else if clientEv.Response.MaxTokens != nil {
-					maxOutput = *clientEv.Response.MaxTokens
-				}
-			}
-			if maxOutput < 0 {
-				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "invalid_request_error", "message": "max_output_tokens cannot be negative"}})
-				continue
-			}
-			if maxOutput > 0 {
-				chatReq.MaxTokens = &maxOutput
-			}
-
-			if gwErr := s.applyChatRoutingHints(r, idCtx, chatReq); gwErr != nil {
-				s.collector.Record(admissionFailureObservation(gwErr))
-				_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
-				continue
-			}
-			origTurnModel := chatReq.Model
-			prc, _, guardrailErr := s.evaluateChatInputGuardrails(sessionCtx, nil, r, idCtx, chatReq, "realtime")
-			if guardrailErr != nil {
-				var gwErr *domain.GatewayError
-				if errors.As(guardrailErr, &gwErr) {
-					_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
-				} else {
-					_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Request rejected by organization guardrail policy"}})
-				}
-				continue
-			}
-
-			estTokens := ratelimit.EstimateRequestTokens(chatReq)
-			budgetInputTokens := estTokens
-			if s.requestHasBudget(sessionCtx, idCtx, chatReq.Model) {
-				if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
-					_ = sendEvent(r.Context(), map[string]any{
-						"event_id": "event_" + uuid.NewString(),
-						"type":     "error",
-						"error": map[string]any{
-							"type":    string(domain.ErrorTypeBudgetExceeded),
-							"code":    "budget_estimate_unavailable",
-							"message": "A safe upper-bound cost could not be calculated before dispatch",
-						},
-					})
-					continue
-				} else if len(encoded) > budgetInputTokens {
-					budgetInputTokens = len(encoded)
-				}
-			}
-
-			respID := "resp_" + uuid.NewString()
-			itemMsgID := "msg_" + uuid.NewString()
-
-			onAdmitted := func() {
-				// response.created
-				_ = sendEvent(r.Context(), map[string]any{
-					"event_id": "event_" + uuid.NewString(),
-					"type":     "response.created",
-					"response": map[string]any{
-						"id":     respID,
-						"object": "realtime.response",
-						"status": "in_progress",
-					},
-				})
-
-				// response.output_item.added
-				_ = sendEvent(r.Context(), map[string]any{
-					"event_id":     "event_" + uuid.NewString(),
-					"type":         "response.output_item.added",
-					"output_index": 0,
-					"item": map[string]any{
-						"id":      itemMsgID,
-						"type":    "message",
-						"status":  "in_progress",
-						"role":    "assistant",
-						"content": []any{},
-					},
-				})
-
-				// response.content_part.added
-				_ = sendEvent(r.Context(), map[string]any{
-					"event_id":      "event_" + uuid.NewString(),
-					"type":          "response.content_part.added",
-					"output_index":  0,
-					"content_index": 0,
-					"part": map[string]any{
-						"type": "text",
-						"text": "",
-					},
-				})
-			}
-
-			turnIDCtx := *idCtx
-			// The WebSocket session already holds the connection-level concurrency slot
-			// and executes turns sequentially, so per-turn quota must not double-count concurrency.
-			turnIDCtx.KeyMaxConcurrent = 0
-			turnIDCtx.TeamMaxConcurrent = 0
-			turnIDCtx.UserMaxConcurrent = 0
-			turnIDCtx.OrgMaxConcurrent = 0
-
-			turnCtx, _ := withRequestQuotaState(sessionCtx, r, idCtx, r.URL.Query().Get("user"), nil, chatReq.GoRouteExtensions)
-			resp, err := s.executeRealtimeTurn(turnCtx, &turnIDCtx, sessionID, origTurnModel, turnReqID, prc, chatReq, estTokens, budgetInputTokens, maxOutput, onAdmitted)
-			if err != nil {
-				errPayload := map[string]any{
-					"type":    "execution_error",
-					"message": err.Error(),
-				}
-				var gwErr *domain.GatewayError
-				if errors.As(err, &gwErr) {
-					if gwErr.Type != "" {
-						errPayload["type"] = string(gwErr.Type)
-					}
-					if gwErr.Code != "" {
-						errPayload["code"] = gwErr.Code
-					}
-					if gwErr.Message != "" {
-						errPayload["message"] = gwErr.Message
-					}
-				}
-				_ = sendEvent(r.Context(), map[string]any{
-					"event_id": "event_" + uuid.NewString(),
-					"type":     "error",
-					"error":    errPayload,
-				})
-				continue
-			}
-
-			if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), nil, prc, resp, "realtime"); sanitizeErr != nil {
-				var gwErr *domain.GatewayError
-				if errors.As(sanitizeErr, &gwErr) {
-					_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
-				} else {
-					_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Response withheld by organization guardrail policy"}})
-				}
-				continue
-			}
-			s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
-			replyContent := ""
-			if len(resp.Choices) > 0 {
-				replyContent = resp.Choices[0].Message.Content
-			}
-
-			// response.text.delta
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id":      "event_" + uuid.NewString(),
-				"type":          "response.text.delta",
-				"output_index":  0,
-				"content_index": 0,
-				"delta":         replyContent,
-			})
-
-			// response.text.done
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id":      "event_" + uuid.NewString(),
-				"type":          "response.text.done",
-				"output_index":  0,
-				"content_index": 0,
-				"text":          replyContent,
-			})
-
-			// response.output_item.done
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id":     "event_" + uuid.NewString(),
-				"type":         "response.output_item.done",
-				"output_index": 0,
-				"item": map[string]any{
-					"id":      itemMsgID,
-					"type":    "message",
-					"status":  "completed",
-					"role":    "assistant",
-					"content": []map[string]any{{"type": "text", "text": replyContent}},
-				},
-			})
-
-			// response.done
-			_ = sendEvent(r.Context(), map[string]any{
-				"event_id": "event_" + uuid.NewString(),
-				"type":     "response.done",
-				"response": map[string]any{
-					"id":     respID,
-					"status": "completed",
-					"output": []map[string]any{
-						{
-							"id":      itemMsgID,
-							"type":    "message",
-							"status":  "completed",
-							"role":    "assistant",
-							"content": []map[string]any{{"type": "text", "text": replyContent}},
-						},
-					},
-				},
-			})
-
-			sessionMu.Lock()
-			history = append(history, domain.CanonicalMessage{
-				Role:    "assistant",
-				Content: replyContent,
-			})
-			sessionMu.Unlock()
-
+			rs.handleResponseCreate(&clientEv)
 		default:
-			_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "unsupported_event", "message": "Unsupported Realtime event type: " + clientEv.Type}})
+			rs.sendTypedError("unsupported_event", "Unsupported Realtime event type: "+clientEv.Type)
 		}
 	}
 

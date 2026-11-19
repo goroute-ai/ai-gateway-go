@@ -54,17 +54,30 @@ type Hub struct {
 	progressive   *ProgressiveDiscoveryManager
 }
 
-func (h *Hub) SetCache(c *MCPCache)                    { h.cache = c }
-func (h *Hub) SetMRTR(m *MRTRManager)                  { h.mrtr = m }
+// SetCache attaches the response cache used for cacheable MCP tool calls and listings.
+func (h *Hub) SetCache(c *MCPCache) { h.cache = c }
+
+// SetMRTR attaches the multi-region tool routing manager to the MCP Hub.
+func (h *Hub) SetMRTR(m *MRTRManager) { h.mrtr = m }
+
+// SetSubscriptions attaches the MCP resource subscription manager to the Hub.
 func (h *Hub) SetSubscriptions(s *SubscriptionManager) { h.subs = s }
-func (h *Hub) SetGuardrails(g *guardrails.Engine)      { h.guardrails = g }
-func (h *Hub) SetLimiter(l *ratelimit.Limiter)         { h.limiter = l }
+
+// SetGuardrails attaches the legacy guardrail Engine to the MCP Hub.
+func (h *Hub) SetGuardrails(g *guardrails.Engine) { h.guardrails = g }
+
+// SetLimiter attaches the rate and budget Limiter to the MCP Hub.
+func (h *Hub) SetLimiter(l *ratelimit.Limiter) { h.limiter = l }
+
+// SetGuardrailPipeline attaches the unified guardrail Pipeline and infers its Engine if unset.
 func (h *Hub) SetGuardrailPipeline(p *guardrails.Pipeline) {
 	h.pipeline = p
 	if h.guardrails == nil && p != nil && p.Engine() != nil {
 		h.guardrails = p.Engine()
 	}
 }
+
+// ApplyOptions applies functional HubOption values to an existing Hub.
 func (h *Hub) ApplyOptions(opts ...HubOption) {
 	for _, opt := range opts {
 		if opt != nil {
@@ -72,22 +85,44 @@ func (h *Hub) ApplyOptions(opts ...HubOption) {
 		}
 	}
 }
+
+// SetSpendRecorder attaches a SpendRecorder for durable MCP tool-call cost tracking.
 func (h *Hub) SetSpendRecorder(sr SpendRecorder) { h.spendRecorder = sr }
+
+// SetProgressiveDiscovery configures the progressive tool discovery manager and wires Hub RBAC.
 func (h *Hub) SetProgressiveDiscovery(p *ProgressiveDiscoveryManager) {
 	if p != nil && p.rbac == nil {
 		p.SetRBAC(h.rbac)
 	}
 	h.progressive = p
 }
-func (h *Hub) Cache() *MCPCache                                   { return h.cache }
-func (h *Hub) MRTR() *MRTRManager                                 { return h.mrtr }
-func (h *Hub) Subscriptions() *SubscriptionManager                { return h.subs }
-func (h *Hub) Guardrails() *guardrails.Engine                     { return h.guardrails }
-func (h *Hub) GuardrailPipeline() *guardrails.Pipeline            { return h.pipeline }
-func (h *Hub) Limiter() *ratelimit.Limiter                        { return h.limiter }
-func (h *Hub) SpendRecorder() SpendRecorder                       { return h.spendRecorder }
+
+// Cache returns the Hub's MCP tool metadata/result cache.
+func (h *Hub) Cache() *MCPCache { return h.cache }
+
+// MRTR returns the Hub's multi-region tool routing manager.
+func (h *Hub) MRTR() *MRTRManager { return h.mrtr }
+
+// Subscriptions returns the MCP resource subscription manager.
+func (h *Hub) Subscriptions() *SubscriptionManager { return h.subs }
+
+// Guardrails returns the attached legacy guardrail Engine, if any.
+func (h *Hub) Guardrails() *guardrails.Engine { return h.guardrails }
+
+// GuardrailPipeline returns the attached unified guardrail Pipeline, if any.
+func (h *Hub) GuardrailPipeline() *guardrails.Pipeline { return h.pipeline }
+
+// Limiter returns the attached rate and budget Limiter, if any.
+func (h *Hub) Limiter() *ratelimit.Limiter { return h.limiter }
+
+// SpendRecorder returns the attached MCP SpendRecorder, if any.
+func (h *Hub) SpendRecorder() SpendRecorder { return h.spendRecorder }
+
+// ProgressiveDiscovery returns the attached ProgressiveDiscoveryManager, if any.
 func (h *Hub) ProgressiveDiscovery() *ProgressiveDiscoveryManager { return h.progressive }
-func (h *Hub) Dispatcher() *TransportDispatcher                   { return h.dispatcher }
+
+// Dispatcher returns the underlying MCP TransportDispatcher.
+func (h *Hub) Dispatcher() *TransportDispatcher { return h.dispatcher }
 
 // NewHub constructs a new MCP Hub instance.
 func NewHub(
@@ -181,53 +216,8 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, errors.New("tool_name is required")
 	}
 
-	// 0. Meta-Tools Execution (search_tools, get_tool_schema)
-	if input.ToolName == "search_tools" && h.progressive != nil {
-		q, _ := input.Arguments["query"].(string)
-		lim := 10
-		if lFloat, ok := input.Arguments["limit"].(float64); ok && lFloat > 0 {
-			lim = int(lFloat)
-		}
-		summaries, err := h.progressive.SearchTools(ctx, idCtx, q, lim)
-		if err != nil {
-			return nil, err
-		}
-		resJSON, _ := json.Marshal(summaries)
-		return &CallToolResponse{
-			Content: []ToolContent{{Type: "text", Text: string(resJSON)}},
-			IsError: false,
-		}, nil
-	}
-	if input.ToolName == "get_tool_schema" && h.progressive != nil {
-		hdl, _ := input.Arguments["tool_handle"].(string)
-		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, hdl)
-		if err == nil && h.rbac != nil {
-			if rbacErr := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); rbacErr != nil {
-				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
-					"operation": "get_tool_schema",
-					"tool_name": rec.ToolName,
-					"reason":    rbacErr.Error(),
-				})
-				err = rbacErr
-			}
-		}
-		if err != nil {
-			return &CallToolResponse{
-				Content: []ToolContent{{Type: "text", Text: fmt.Sprintf(`{"error": %q}`, err.Error())}},
-				IsError: true,
-			}, nil
-		}
-		schemaJSON, _ := json.Marshal(map[string]any{
-			"name":        tool.Name,
-			"server_slug": rec.ServerSlug,
-			"description": tool.Description,
-			"inputSchema": tool.InputSchema,
-			"tool_handle": rec.Handle,
-		})
-		return &CallToolResponse{
-			Content: []ToolContent{{Type: "text", Text: string(schemaJSON)}},
-			IsError: false,
-		}, nil
+	if resp, handled, err := h.tryCallMetaTool(ctx, idCtx, input); handled || err != nil {
+		return resp, err
 	}
 
 	orgID := ""
@@ -235,124 +225,14 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		orgID = idCtx.OrgID
 	}
 
-	var targetServer *domain.MCPServer
-	var targetTool *domain.MCPTool
-
-	// 0b. Opaque Tool Handle Resolution (tool_hdl_...)
-	if strings.HasPrefix(input.ToolName, HandlePrefix) && h.progressive != nil {
-		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, input.ToolName)
-		if err != nil {
-			return nil, err
-		}
-		if rec.OrgID != orgID {
-			return nil, ErrHandleNotFound
-		}
-		if h.rbac != nil {
-			if err := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); err != nil {
-				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
-					"operation": "tools/call",
-					"tool_name": rec.ToolName,
-					"reason":    err.Error(),
-				})
-				return nil, err
-			}
-		}
-		input.ToolName = rec.ToolName
-		input.ServerSlug = rec.ServerSlug
-		targetTool = tool
+	targetServer, targetTool, resolvedToolName, err := h.resolveToolTarget(ctx, idCtx, orgID, input)
+	if err != nil {
+		return nil, err
 	}
+	input.ToolName = resolvedToolName
 
-	serverSlug := strings.TrimSpace(input.ServerSlug)
-	if serverSlug != "" {
-		server, err := h.repo.GetMCPServerBySlug(ctx, orgID, serverSlug)
-		if err != nil || !server.IsActive {
-			return nil, fmt.Errorf("mcp server %q not found or inactive", serverSlug)
-		}
-		if h.rbac != nil {
-			if err := h.rbac.AuthorizeMCPServer(idCtx, server.Slug); err != nil {
-				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", server.Slug, map[string]any{
-					"operation": "tools/call",
-					"tool_name": input.ToolName,
-					"reason":    err.Error(),
-				})
-				return nil, err
-			}
-		}
-		targetServer = server
-
-		tools, err := h.repo.ListMCPTools(ctx, server.ID)
-		if err == nil {
-			for _, t := range tools {
-				if t != nil && t.Name == input.ToolName && t.IsActive {
-					targetTool = t
-					break
-				}
-			}
-		}
-	} else {
-		// Unambiguous resolution across all authorized servers
-		servers, err := h.repo.ListMCPServers(ctx, orgID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list mcp servers: %w", err)
-		}
-
-		var matchServers []*domain.MCPServer
-		var matchTools []*domain.MCPTool
-
-		for _, s := range servers {
-			if !s.IsActive {
-				continue
-			}
-			if h.rbac != nil && h.rbac.AuthorizeMCPServer(idCtx, s.Slug) != nil {
-				continue
-			}
-			tools, err := h.repo.ListMCPTools(ctx, s.ID)
-			if err != nil {
-				continue
-			}
-			for _, t := range tools {
-				if t != nil && t.Name == input.ToolName && t.IsActive {
-					matchServers = append(matchServers, s)
-					matchTools = append(matchTools, t)
-					break
-				}
-			}
-		}
-
-		if len(matchServers) == 0 {
-			return nil, fmt.Errorf("tool %q not found or caller not authorized", input.ToolName)
-		}
-		if len(matchServers) > 1 {
-			var slugs []string
-			for _, ms := range matchServers {
-				slugs = append(slugs, ms.Slug)
-			}
-			return nil, &AmbiguousToolError{
-				ToolName:        input.ToolName,
-				MatchingServers: slugs,
-			}
-		}
-
-		targetServer = matchServers[0]
-		targetTool = matchTools[0]
-	}
-
-	// 1. Tool Pinning Check
-	if targetServer.PinnedToolHash != "" && (h.guardrails != nil || h.pipeline != nil) {
-		if targetTool == nil {
-			return nil, fmt.Errorf("tool pinning violation: tool %q not found in catalog", input.ToolName)
-		}
-		pinnedHash := targetTool.ToolDefHash
-		if pinnedHash == "" {
-			pinnedHash = targetServer.PinnedToolHash
-		}
-		pinEng := h.guardrails
-		if pinEng == nil && h.pipeline != nil {
-			pinEng = h.pipeline.Engine()
-		}
-		if err := pinEng.VerifyToolPinning(targetTool, pinnedHash); err != nil {
-			return nil, fmt.Errorf("tool pinning violation: %w", err)
-		}
+	if err := h.verifyToolPinning(targetServer, targetTool, input.ToolName); err != nil {
+		return nil, err
 	}
 
 	reqID := meta.RequestID
@@ -366,40 +246,11 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 	defer releaseMCPQuota(0, 0, 0)
 
-	var mcpPRC guardrails.PipelineRequestContext
-	var mcpCallCtx *guardrails.MCPCallContext
-	if h.pipeline != nil {
-		mcpPRC = buildMCPPipelineRequestContext(ctx, idCtx, reqID, meta.CallerMetadata, nil)
-		mcpCallCtx = &guardrails.MCPCallContext{
-			ServerID:   targetServer.ID,
-			ServerSlug: targetServer.Slug,
-			ServerURL:  targetServer.EndpointURL,
-			ToolName:   input.ToolName,
-			Arguments:  input.Arguments,
-		}
-		if targetTool != nil {
-			mcpCallCtx.ToolID = targetTool.ID
-			mcpCallCtx.ToolDefHash = targetTool.ToolDefHash
-		}
+	mcpPRC, mcpCallCtx := h.buildToolGuardrailContext(ctx, idCtx, targetServer, targetTool, reqID, input, meta.CallerMetadata)
+	if err := h.evaluatePreMCPGuardrails(ctx, orgID, input.ToolName, input.Arguments, mcpPRC, mcpCallCtx); err != nil {
+		return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
 	}
 
-	// 2. Call Guardrails Scan on arguments (Layer 0 Engine + Layer 1 pre_mcp_call Pipeline)
-	if h.pipeline != nil {
-		if _, err := h.pipeline.EvaluatePreMCPCall(ctx, mcpPRC, mcpCallCtx); err != nil {
-			return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
-		}
-		if h.pipeline.Engine() == nil && h.guardrails != nil {
-			if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, input.ToolName, input.Arguments); err != nil {
-				return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
-			}
-		}
-	} else if h.guardrails != nil {
-		if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, input.ToolName, input.Arguments); err != nil {
-			return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
-		}
-	}
-
-	// 3. Cache check
 	var cacheKey string
 	if h.cache != nil {
 		keyPrefix := ""
@@ -422,91 +273,24 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		}
 	}
 
-	// 4. Resolve BYOK user credential if available
-	var userCred *domain.MCPUserCredential
-	if idCtx != nil && idCtx.UserID != "" {
-		userCred, _ = h.repo.GetMCPUserCredential(ctx, targetServer.ID, idCtx.UserID)
-	}
-
-	// 5. Build transport headers & auth context
-	reqHeaders := make(http.Header)
-	if meta.CallerMetadata != nil {
-		for k, v := range meta.CallerMetadata {
-			reqHeaders.Set(k, v)
-		}
-	}
-
-	teamID := ""
-	userID := ""
-	vkID := ""
-	if idCtx != nil {
-		teamID = idCtx.TeamID
-		userID = idCtx.UserID
-		vkID = idCtx.VirtualKeyID
-	}
-
-	authCtx := &upstream.UpstreamAuthContext{
-		ServerID:          targetServer.ID,
-		ServerSlug:        targetServer.Slug,
-		TargetURL:         targetServer.EndpointURL,
-		CallingOrgID:      orgID,
-		CallingTeamID:     teamID,
-		CallingUserID:     userID,
-		CallingVirtualKey: vkID,
-		DelegatedToken:    extractDelegatedBearerFromHeaders(reqHeaders),
-	}
-
-	strat, extraHeaders := h.authResolver.ResolveStrategy(ctx, targetServer, userCred, reqHeaders)
-	authCtx.ExtraHeaders = extraHeaders
-
-	// 6. Upstream Dispatch (with optional concurrent during_mcp_call guardrails)
-	paramsMap := map[string]any{
-		"name": input.ToolName,
-	}
+	reqHeaders, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, targetServer, meta.CallerMetadata, nil)
+	paramsMap := map[string]any{"name": input.ToolName}
 	if input.Arguments != nil {
 		paramsMap["arguments"] = input.Arguments
 	} else {
 		paramsMap["arguments"] = map[string]any{}
 	}
 	paramsBytes, _ := json.Marshal(paramsMap)
-
-	jsonRPCReq := JSONRPCRequest{
+	reqBodyBytes, _ := json.Marshal(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      reqID,
 		Method:  "tools/call",
 		Params:  paramsBytes,
-	}
-	reqBodyBytes, _ := json.Marshal(jsonRPCReq)
+	})
 
-	dispatchCtx := ctx
-	var duringHandle *guardrails.DuringCallHandle
-	if h.pipeline != nil {
-		var duringErr error
-		dispatchCtx, duringHandle, duringErr = h.pipeline.StartDuringMCPCall(ctx, mcpPRC, mcpCallCtx)
-		if duringErr != nil {
-			return nil, fmt.Errorf("guardrail blocked tool call: %w", duringErr)
-		}
-		if duringHandle != nil {
-			defer duringHandle.Close()
-		}
-	}
-
-	resp, _, err := h.dispatcher.Dispatch(dispatchCtx, targetServer, strat, authCtx, reqBodyBytes, reqHeaders)
+	resp, _, err := h.dispatchWithDuringGuardrails(ctx, targetServer, strat, authCtx, reqBodyBytes, reqHeaders, true, mcpPRC, mcpCallCtx)
 	if err != nil {
-		if duringHandle != nil {
-			if bErr := duringHandle.Blocked(); bErr != nil {
-				return nil, fmt.Errorf("guardrail blocked tool call: %w", bErr)
-			}
-			if _, wErr := duringHandle.Wait(ctx); wErr != nil {
-				return nil, fmt.Errorf("guardrail blocked tool call: %w", wErr)
-			}
-		}
-		return nil, fmt.Errorf("upstream dispatch error: %w", err)
-	}
-	if duringHandle != nil {
-		if _, wErr := duringHandle.Wait(ctx); wErr != nil {
-			return nil, fmt.Errorf("guardrail blocked tool call: %w", wErr)
-		}
+		return nil, err
 	}
 	if resp == nil {
 		return nil, errors.New("upstream returned empty response")
@@ -515,47 +299,14 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, fmt.Errorf("upstream mcp error (%d): %s", resp.Error.Code, resp.Error.Message)
 	}
 
-	// 7. Output guardrail inspection and redaction on tool call result
-	if h.pipeline != nil && resp.Result != nil {
-		_, redactedResult, err := h.pipeline.EvaluatePostMCPCall(ctx, mcpPRC, mcpCallCtx, resp.Result)
-		if err != nil {
-			return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
-		}
-		resp.Result = redactedResult
-		if h.pipeline.Engine() == nil && h.guardrails != nil && resp.Result != nil {
-			_, redactedLegacy, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
-			if err != nil {
-				return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
-			}
-			resp.Result = redactedLegacy
-		}
-	} else if h.guardrails != nil && resp.Result != nil {
-		_, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
-		if err != nil {
-			return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
-		}
-		resp.Result = redactedResult
+	if err := h.evaluatePostMCPGuardrails(ctx, orgID, mcpPRC, mcpCallCtx, resp); err != nil {
+		return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
 	}
 
-	// 8. FinOps spend debit. Do not cache a success until accounting is durable.
-	if h.spendRecorder != nil && targetTool != nil && targetTool.CostPerCallMicros > 0 {
-		if err := h.spendRecorder.Record(ctx, domain.SpendEvent{
-			ID:             "spend_" + uuid.NewString(),
-			RequestID:      reqID,
-			Protocol:       "mcp",
-			ProtocolTarget: fmt.Sprintf("mcp:%s/%s", targetServer.Slug, targetTool.Name),
-			OrgID:          orgID,
-			TeamID:         teamID,
-			UserID:         userID,
-			VirtualKeyID:   vkID,
-			Endpoint:       "/mcp",
-			CostMicros:     targetTool.CostPerCallMicros,
-			CreatedAt:      time.Now().UTC(),
-		}); err != nil {
-			return nil, fmt.Errorf("persist MCP spend event: %w", err)
-		}
+	// Do not cache a success until FinOps accounting is durable.
+	if err := h.recordMCPToolSpend(ctx, idCtx, orgID, reqID, targetServer, targetTool); err != nil {
+		return nil, err
 	}
-	// 9. Cache storage if response is valid and cacheable.
 	if cacheKey != "" && h.cache != nil && ShouldCache("tools/call", resp) {
 		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
 	}
@@ -571,6 +322,385 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		"is_error":    callResp.IsError,
 	})
 	return callResp, nil
+}
+
+func (h *Hub) tryCallMetaTool(ctx context.Context, idCtx *domain.IdentityContext, input ToolCallInput) (*CallToolResponse, bool, error) {
+	if h.progressive == nil {
+		return nil, false, nil
+	}
+	switch input.ToolName {
+	case "search_tools":
+		q, _ := input.Arguments["query"].(string)
+		lim := 10
+		if lFloat, ok := input.Arguments["limit"].(float64); ok && lFloat > 0 {
+			lim = int(lFloat)
+		}
+		summaries, err := h.progressive.SearchTools(ctx, idCtx, q, lim)
+		if err != nil {
+			return nil, true, err
+		}
+		resJSON, _ := json.Marshal(summaries)
+		return &CallToolResponse{
+			Content: []ToolContent{{Type: "text", Text: string(resJSON)}},
+			IsError: false,
+		}, true, nil
+	case "get_tool_schema":
+		hdl, _ := input.Arguments["tool_handle"].(string)
+		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, hdl)
+		if err == nil && h.rbac != nil {
+			if rbacErr := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); rbacErr != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
+					"operation": "get_tool_schema",
+					"tool_name": rec.ToolName,
+					"reason":    rbacErr.Error(),
+				})
+				err = rbacErr
+			}
+		}
+		if err != nil {
+			return &CallToolResponse{
+				Content: []ToolContent{{Type: "text", Text: fmt.Sprintf(`{"error": %q}`, err.Error())}},
+				IsError: true,
+			}, true, nil
+		}
+		schemaJSON, _ := json.Marshal(map[string]any{
+			"name":        tool.Name,
+			"server_slug": rec.ServerSlug,
+			"description": tool.Description,
+			"inputSchema": tool.InputSchema,
+			"tool_handle": rec.Handle,
+		})
+		return &CallToolResponse{
+			Content: []ToolContent{{Type: "text", Text: string(schemaJSON)}},
+			IsError: false,
+		}, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+func (h *Hub) resolveToolTarget(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	orgID string,
+	input ToolCallInput,
+) (*domain.MCPServer, *domain.MCPTool, string, error) {
+	var targetTool *domain.MCPTool
+	toolName := input.ToolName
+	serverSlug := strings.TrimSpace(input.ServerSlug)
+
+	if strings.HasPrefix(toolName, HandlePrefix) && h.progressive != nil {
+		rec, tool, err := h.progressive.ResolveHandleForIdentity(ctx, idCtx, toolName)
+		if err != nil {
+			return nil, nil, toolName, err
+		}
+		if rec.OrgID != orgID {
+			return nil, nil, toolName, ErrHandleNotFound
+		}
+		if h.rbac != nil {
+			if err := h.rbac.AuthorizeMCPServer(idCtx, rec.ServerSlug); err != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", rec.ServerSlug, map[string]any{
+					"operation": "tools/call",
+					"tool_name": rec.ToolName,
+					"reason":    err.Error(),
+				})
+				return nil, nil, toolName, err
+			}
+		}
+		toolName = rec.ToolName
+		serverSlug = rec.ServerSlug
+		targetTool = tool
+	}
+
+	if serverSlug != "" {
+		server, err := h.repo.GetMCPServerBySlug(ctx, orgID, serverSlug)
+		if err != nil || !server.IsActive {
+			return nil, nil, toolName, fmt.Errorf("mcp server %q not found or inactive", serverSlug)
+		}
+		if h.rbac != nil {
+			if err := h.rbac.AuthorizeMCPServer(idCtx, server.Slug); err != nil {
+				h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", server.Slug, map[string]any{
+					"operation": "tools/call",
+					"tool_name": toolName,
+					"reason":    err.Error(),
+				})
+				return nil, nil, toolName, err
+			}
+		}
+		if tools, err := h.repo.ListMCPTools(ctx, server.ID); err == nil {
+			for _, t := range tools {
+				if t != nil && t.Name == toolName && t.IsActive {
+					targetTool = t
+					break
+				}
+			}
+		}
+		return server, targetTool, toolName, nil
+	}
+
+	servers, err := h.repo.ListMCPServers(ctx, orgID)
+	if err != nil {
+		return nil, nil, toolName, fmt.Errorf("failed to list mcp servers: %w", err)
+	}
+	var matchServers []*domain.MCPServer
+	var matchTools []*domain.MCPTool
+	for _, s := range servers {
+		if !s.IsActive {
+			continue
+		}
+		if h.rbac != nil && h.rbac.AuthorizeMCPServer(idCtx, s.Slug) != nil {
+			continue
+		}
+		tools, err := h.repo.ListMCPTools(ctx, s.ID)
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if t != nil && t.Name == toolName && t.IsActive {
+				matchServers = append(matchServers, s)
+				matchTools = append(matchTools, t)
+				break
+			}
+		}
+	}
+	if len(matchServers) == 0 {
+		return nil, nil, toolName, fmt.Errorf("tool %q not found or caller not authorized", toolName)
+	}
+	if len(matchServers) > 1 {
+		slugs := make([]string, 0, len(matchServers))
+		for _, ms := range matchServers {
+			slugs = append(slugs, ms.Slug)
+		}
+		return nil, nil, toolName, &AmbiguousToolError{
+			ToolName:        toolName,
+			MatchingServers: slugs,
+		}
+	}
+	return matchServers[0], matchTools[0], toolName, nil
+}
+
+func (h *Hub) verifyToolPinning(server *domain.MCPServer, tool *domain.MCPTool, toolName string) error {
+	if server.PinnedToolHash == "" || (h.guardrails == nil && h.pipeline == nil) {
+		return nil
+	}
+	if tool == nil {
+		return fmt.Errorf("tool pinning violation: tool %q not found in catalog", toolName)
+	}
+	pinnedHash := tool.ToolDefHash
+	if pinnedHash == "" {
+		pinnedHash = server.PinnedToolHash
+	}
+	pinEng := h.guardrails
+	if pinEng == nil && h.pipeline != nil {
+		pinEng = h.pipeline.Engine()
+	}
+	if err := pinEng.VerifyToolPinning(tool, pinnedHash); err != nil {
+		return fmt.Errorf("tool pinning violation: %w", err)
+	}
+	return nil
+}
+
+func (h *Hub) buildToolGuardrailContext(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	server *domain.MCPServer,
+	tool *domain.MCPTool,
+	reqID string,
+	input ToolCallInput,
+	callerMeta map[string]string,
+) (guardrails.PipelineRequestContext, *guardrails.MCPCallContext) {
+	if h.pipeline == nil {
+		return guardrails.PipelineRequestContext{}, nil
+	}
+	prc := buildMCPPipelineRequestContext(ctx, idCtx, reqID, callerMeta, nil)
+	callCtx := &guardrails.MCPCallContext{
+		ServerID:   server.ID,
+		ServerSlug: server.Slug,
+		ServerURL:  server.EndpointURL,
+		ToolName:   input.ToolName,
+		Arguments:  input.Arguments,
+	}
+	if tool != nil {
+		callCtx.ToolID = tool.ID
+		callCtx.ToolDefHash = tool.ToolDefHash
+	}
+	return prc, callCtx
+}
+
+func (h *Hub) evaluatePreMCPGuardrails(
+	ctx context.Context,
+	orgID, methodOrTool string,
+	args map[string]any,
+	prc guardrails.PipelineRequestContext,
+	callCtx *guardrails.MCPCallContext,
+) error {
+	if h.pipeline != nil {
+		if _, err := h.pipeline.EvaluatePreMCPCall(ctx, prc, callCtx); err != nil {
+			return err
+		}
+		if h.pipeline.Engine() == nil && h.guardrails != nil {
+			if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, methodOrTool, args); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if h.guardrails != nil {
+		if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, methodOrTool, args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Hub) evaluatePostMCPGuardrails(
+	ctx context.Context,
+	orgID string,
+	prc guardrails.PipelineRequestContext,
+	callCtx *guardrails.MCPCallContext,
+	resp *JSONRPCResponse,
+) error {
+	if resp == nil || resp.Result == nil {
+		return nil
+	}
+	if h.pipeline != nil && callCtx != nil {
+		_, redactedResult, err := h.pipeline.EvaluatePostMCPCall(ctx, prc, callCtx, resp.Result)
+		if err != nil {
+			return err
+		}
+		resp.Result = redactedResult
+		if h.pipeline.Engine() == nil && h.guardrails != nil && resp.Result != nil {
+			_, redactedLegacy, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
+			if err != nil {
+				return err
+			}
+			resp.Result = redactedLegacy
+		}
+		return nil
+	}
+	if h.guardrails != nil {
+		_, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
+		if err != nil {
+			return err
+		}
+		resp.Result = redactedResult
+	}
+	return nil
+}
+
+func (h *Hub) resolveUpstreamAuth(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	orgID string,
+	server *domain.MCPServer,
+	callerMeta map[string]string,
+	baseHeaders http.Header,
+) (http.Header, *upstream.UpstreamAuthContext, upstream.Strategy) {
+	reqHeaders := baseHeaders
+	if reqHeaders == nil {
+		reqHeaders = make(http.Header)
+		for k, v := range callerMeta {
+			reqHeaders.Set(k, v)
+		}
+	}
+
+	var userCred *domain.MCPUserCredential
+	teamID, userID, vkID := "", "", ""
+	if idCtx != nil {
+		teamID = idCtx.TeamID
+		userID = idCtx.UserID
+		vkID = idCtx.VirtualKeyID
+		if userID != "" {
+			userCred, _ = h.repo.GetMCPUserCredential(ctx, server.ID, userID)
+		}
+	}
+
+	authCtx := &upstream.UpstreamAuthContext{
+		ServerID:          server.ID,
+		ServerSlug:        server.Slug,
+		TargetURL:         server.EndpointURL,
+		CallingOrgID:      orgID,
+		CallingTeamID:     teamID,
+		CallingUserID:     userID,
+		CallingVirtualKey: vkID,
+		DelegatedToken:    extractDelegatedBearerFromHeaders(reqHeaders),
+	}
+	strat, extraHeaders := h.authResolver.ResolveStrategy(ctx, server, userCred, reqHeaders)
+	authCtx.ExtraHeaders = extraHeaders
+	return reqHeaders, authCtx, strat
+}
+
+func (h *Hub) dispatchWithDuringGuardrails(
+	ctx context.Context,
+	server *domain.MCPServer,
+	strat upstream.Strategy,
+	authCtx *upstream.UpstreamAuthContext,
+	reqBody []byte,
+	reqHeaders http.Header,
+	useGuardrails bool,
+	prc guardrails.PipelineRequestContext,
+	callCtx *guardrails.MCPCallContext,
+) (*JSONRPCResponse, http.Header, error) {
+	dispatchCtx := ctx
+	var duringHandle *guardrails.DuringCallHandle
+	if useGuardrails && h.pipeline != nil && callCtx != nil {
+		var duringErr error
+		dispatchCtx, duringHandle, duringErr = h.pipeline.StartDuringMCPCall(ctx, prc, callCtx)
+		if duringErr != nil {
+			return nil, nil, fmt.Errorf("guardrail blocked tool call: %w", duringErr)
+		}
+		if duringHandle != nil {
+			defer duringHandle.Close()
+		}
+	}
+
+	resp, respHeaders, err := h.dispatcher.Dispatch(dispatchCtx, server, strat, authCtx, reqBody, reqHeaders)
+	if duringHandle != nil {
+		if bErr := duringHandle.Blocked(); bErr != nil {
+			return nil, respHeaders, fmt.Errorf("guardrail blocked tool call: %w", bErr)
+		}
+		if _, wErr := duringHandle.Wait(ctx); wErr != nil {
+			return nil, respHeaders, fmt.Errorf("guardrail blocked tool call: %w", wErr)
+		}
+	}
+	if err != nil {
+		return nil, respHeaders, fmt.Errorf("upstream dispatch error: %w", err)
+	}
+	return resp, respHeaders, nil
+}
+
+func (h *Hub) recordMCPToolSpend(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	orgID, reqID string,
+	server *domain.MCPServer,
+	tool *domain.MCPTool,
+) error {
+	if h.spendRecorder == nil || tool == nil || tool.CostPerCallMicros <= 0 {
+		return nil
+	}
+	teamID, userID, vkID := "", "", ""
+	if idCtx != nil {
+		teamID = idCtx.TeamID
+		userID = idCtx.UserID
+		vkID = idCtx.VirtualKeyID
+	}
+	if err := h.spendRecorder.Record(ctx, domain.SpendEvent{
+		ID:             "spend_" + uuid.NewString(),
+		RequestID:      reqID,
+		Protocol:       "mcp",
+		ProtocolTarget: fmt.Sprintf("mcp:%s/%s", server.Slug, tool.Name),
+		OrgID:          orgID,
+		TeamID:         teamID,
+		UserID:         userID,
+		VirtualKeyID:   vkID,
+		Endpoint:       "/mcp",
+		CostMicros:     tool.CostPerCallMicros,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("persist MCP spend event: %w", err)
+	}
+	return nil
 }
 
 // DispatchVirtualHub routes calls to the multi-server virtual hub (`POST /mcp`).
@@ -650,7 +780,6 @@ func (h *Hub) DispatchScopedServer(
 		}, nil, nil
 	}
 
-	// RBAC Check
 	if h.rbac != nil {
 		if err := h.rbac.AuthorizeMCPServer(idCtx, serverSlug); err != nil {
 			h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_server", serverSlug, map[string]any{
@@ -667,7 +796,6 @@ func (h *Hub) DispatchScopedServer(
 		}
 	}
 
-	// Validate JSON-RPC request and mirrored headers
 	var jsonReq JSONRPCRequest
 	dec := json.NewDecoder(bytes.NewReader(reqBody))
 	dec.UseNumber()
@@ -689,60 +817,10 @@ func (h *Hub) DispatchScopedServer(
 		}, nil, nil
 	}
 
-	// If method is tools/call, route through unified CallTool
 	if jsonReq.Method == "tools/call" {
-		var toolCallParams struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if len(jsonReq.Params) > 0 {
-			_ = json.Unmarshal(jsonReq.Params, &toolCallParams)
-		}
-
-		callerMeta := make(map[string]string)
-		for k := range reqHeaders {
-			callerMeta[k] = reqHeaders.Get(k)
-		}
-
-		callResp, err := h.CallTool(ctx, idCtx, ToolCallInput{
-			ServerSlug: serverSlug,
-			ToolName:   toolCallParams.Name,
-			Arguments:  toolCallParams.Arguments,
-		}, CallMetadata{
-			ProtocolVersion: domain.MCPProtocolVersion2026,
-			RequestID:       fmt.Sprint(jsonReq.ID),
-			CallerMetadata:  callerMeta,
-		})
-
-		if err != nil {
-			return &JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      jsonReq.ID,
-				Error: &JSONRPCError{
-					Code:    CodeInvalidRequest,
-					Message: err.Error(),
-				},
-			}, nil, nil
-		}
-
-		resMap := map[string]any{
-			"content": callResp.Content,
-		}
-		if callResp.IsError {
-			resMap["isError"] = true
-		}
-		if len(callResp.Meta) > 0 {
-			resMap["_meta"] = callResp.Meta
-		}
-
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      jsonReq.ID,
-			Result:  resMap,
-		}, nil, nil
+		return h.dispatchScopedToolsCall(ctx, idCtx, serverSlug, &jsonReq, reqHeaders)
 	}
 
-	// Cache check for tools/list
 	var cacheKey string
 	if h.cache != nil && jsonReq.Method == "tools/list" {
 		keyPrefix := ""
@@ -751,28 +829,14 @@ func (h *Hub) DispatchScopedServer(
 		}
 		cacheKey = h.cache.ComputeCacheKey(orgID, keyPrefix, serverSlug, "tools/list", nil, server.ConfigVersion)
 		if cachedResp, ok := h.cache.Get(ctx, cacheKey); ok {
-			// Post-cache Tool Pinning check if server enforces pinned hash
-			if server.PinnedToolHash != "" && h.guardrails != nil {
-				tools, _ := h.repo.ListMCPTools(ctx, server.ID)
-				for _, t := range tools {
-					if err := h.guardrails.VerifyToolPinning(t, server.PinnedToolHash); err != nil {
-						return &JSONRPCResponse{
-							JSONRPC: "2.0",
-							ID:      jsonReq.ID,
-							Error: &JSONRPCError{
-								Code:    CodeInvalidRequest,
-								Message: fmt.Sprintf("Tool pinning violation: %v", err),
-							},
-						}, nil, nil
-					}
-				}
+			if errResp := h.verifyCachedListPinning(ctx, server, &jsonReq); errResp != nil {
+				return errResp, nil, nil
 			}
 			cachedResp.ID = jsonReq.ID
 			return cachedResp, nil, nil
 		}
 	}
 
-	// Guardrail input scan for resources/read and prompts/get
 	isGuardedMethod := jsonReq.Method == "resources/read" || jsonReq.Method == "prompts/get"
 	var scopedPRC guardrails.PipelineRequestContext
 	var scopedCallCtx *guardrails.MCPCallContext
@@ -790,169 +854,108 @@ func (h *Hub) DispatchScopedServer(
 				ToolName:   jsonReq.Method,
 				Arguments:  paramsMap,
 			}
-			if _, err := h.pipeline.EvaluatePreMCPCall(ctx, scopedPRC, scopedCallCtx); err != nil {
-				return &JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      jsonReq.ID,
-					Error: &JSONRPCError{
-						Code:    CodeInvalidRequest,
-						Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err),
-					},
-				}, nil, nil
-			}
-			if h.pipeline.Engine() == nil && h.guardrails != nil {
-				if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, jsonReq.Method, paramsMap); err != nil {
-					return &JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      jsonReq.ID,
-						Error: &JSONRPCError{
-							Code:    CodeInvalidRequest,
-							Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err),
-						},
-					}, nil, nil
-				}
-			}
-		} else if h.guardrails != nil {
-			if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, jsonReq.Method, paramsMap); err != nil {
-				return &JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      jsonReq.ID,
-					Error: &JSONRPCError{
-						Code:    CodeInvalidRequest,
-						Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err),
-					},
-				}, nil, nil
-			}
+		}
+		if err := h.evaluatePreMCPGuardrails(ctx, orgID, jsonReq.Method, paramsMap, scopedPRC, scopedCallCtx); err != nil {
+			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err)), nil, nil
 		}
 	}
 
-	// Resolve BYOK user credential if available
-	var userCred *domain.MCPUserCredential
-	if idCtx != nil && idCtx.UserID != "" {
-		userCred, _ = h.repo.GetMCPUserCredential(ctx, server.ID, idCtx.UserID)
-	}
-
-	teamID := ""
-	userID := ""
-	vkID := ""
-	if idCtx != nil {
-		teamID = idCtx.TeamID
-		userID = idCtx.UserID
-		vkID = idCtx.VirtualKeyID
-	}
-
-	authCtx := &upstream.UpstreamAuthContext{
-		ServerID:          server.ID,
-		ServerSlug:        server.Slug,
-		TargetURL:         server.EndpointURL,
-		CallingOrgID:      orgID,
-		CallingTeamID:     teamID,
-		CallingUserID:     userID,
-		CallingVirtualKey: vkID,
-		DelegatedToken:    extractDelegatedBearerFromHeaders(reqHeaders),
-	}
-
-	strat, extraHeaders := h.authResolver.ResolveStrategy(ctx, server, userCred, reqHeaders)
-	authCtx.ExtraHeaders = extraHeaders
-
-	dispatchCtx := ctx
-	var duringHandle *guardrails.DuringCallHandle
-	if isGuardedMethod && h.pipeline != nil && scopedCallCtx != nil {
-		var duringErr error
-		dispatchCtx, duringHandle, duringErr = h.pipeline.StartDuringMCPCall(ctx, scopedPRC, scopedCallCtx)
-		if duringErr != nil {
-			return &JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      jsonReq.ID,
-				Error: &JSONRPCError{
-					Code:    CodeInvalidRequest,
-					Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, duringErr),
-				},
-			}, nil, nil
+	_, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, server, nil, reqHeaders)
+	resp, respHeaders, err := h.dispatchWithDuringGuardrails(ctx, server, strat, authCtx, reqBody, reqHeaders, isGuardedMethod, scopedPRC, scopedCallCtx)
+	if err != nil {
+		if respHeaders != nil || strings.HasPrefix(err.Error(), "guardrail blocked tool call:") {
+			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail blocked %s: %s", jsonReq.Method, strings.TrimPrefix(err.Error(), "guardrail blocked tool call: "))), respHeaders, nil
 		}
-		if duringHandle != nil {
-			defer duringHandle.Close()
-		}
+		return nil, respHeaders, err
+	}
+	if resp == nil {
+		return nil, respHeaders, nil
 	}
 
-	resp, respHeaders, err := h.dispatcher.Dispatch(dispatchCtx, server, strat, authCtx, reqBody, reqHeaders)
-	if duringHandle != nil {
-		if bErr := duringHandle.Blocked(); bErr != nil {
-			return &JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      jsonReq.ID,
-				Error: &JSONRPCError{
-					Code:    CodeInvalidRequest,
-					Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, bErr),
-				},
-			}, respHeaders, nil
-		}
-		if _, wErr := duringHandle.Wait(ctx); wErr != nil {
-			return &JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      jsonReq.ID,
-				Error: &JSONRPCError{
-					Code:    CodeInvalidRequest,
-					Message: fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, wErr),
-				},
-			}, respHeaders, nil
-		}
-	}
-	if err != nil || resp == nil {
-		return resp, respHeaders, err
-	}
-
-	// Guardrail output inspection/redaction for resources/read and prompts/get
 	if isGuardedMethod && resp.Result != nil {
-		if h.pipeline != nil && scopedCallCtx != nil {
-			_, redactedResult, err := h.pipeline.EvaluatePostMCPCall(ctx, scopedPRC, scopedCallCtx, resp.Result)
-			if err != nil {
-				return &JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      jsonReq.ID,
-					Error: &JSONRPCError{
-						Code:    CodeInvalidRequest,
-						Message: fmt.Sprintf("guardrail result inspection failed: %v", err),
-					},
-				}, respHeaders, nil
-			}
-			resp.Result = redactedResult
-			if h.pipeline.Engine() == nil && h.guardrails != nil && resp.Result != nil {
-				_, redactedLegacy, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
-				if err != nil {
-					return &JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      jsonReq.ID,
-						Error: &JSONRPCError{
-							Code:    CodeInvalidRequest,
-							Message: fmt.Sprintf("guardrail result inspection failed: %v", err),
-						},
-					}, respHeaders, nil
-				}
-				resp.Result = redactedLegacy
-			}
-		} else if h.guardrails != nil {
-			_, redactedResult, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
-			if err != nil {
-				return &JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      jsonReq.ID,
-					Error: &JSONRPCError{
-						Code:    CodeInvalidRequest,
-						Message: fmt.Sprintf("guardrail result inspection failed: %v", err),
-					},
-				}, respHeaders, nil
-			}
-			resp.Result = redactedResult
+		if err := h.evaluatePostMCPGuardrails(ctx, orgID, scopedPRC, scopedCallCtx, resp); err != nil {
+			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail result inspection failed: %v", err)), respHeaders, nil
 		}
 	}
 
-	// Cache storage if response is valid and cacheable
 	if cacheKey != "" && h.cache != nil && ShouldCache(jsonReq.Method, resp) {
 		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
 	}
 
 	return resp, respHeaders, nil
+}
+
+func scopedJSONRPCError(id any, message string) *JSONRPCResponse {
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    CodeInvalidRequest,
+			Message: message,
+		},
+	}
+}
+
+func (h *Hub) dispatchScopedToolsCall(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	serverSlug string,
+	jsonReq *JSONRPCRequest,
+	reqHeaders http.Header,
+) (*JSONRPCResponse, http.Header, error) {
+	var toolCallParams struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if len(jsonReq.Params) > 0 {
+		_ = json.Unmarshal(jsonReq.Params, &toolCallParams)
+	}
+
+	callerMeta := make(map[string]string, len(reqHeaders))
+	for k := range reqHeaders {
+		callerMeta[k] = reqHeaders.Get(k)
+	}
+
+	callResp, err := h.CallTool(ctx, idCtx, ToolCallInput{
+		ServerSlug: serverSlug,
+		ToolName:   toolCallParams.Name,
+		Arguments:  toolCallParams.Arguments,
+	}, CallMetadata{
+		ProtocolVersion: domain.MCPProtocolVersion2026,
+		RequestID:       fmt.Sprint(jsonReq.ID),
+		CallerMetadata:  callerMeta,
+	})
+	if err != nil {
+		return scopedJSONRPCError(jsonReq.ID, err.Error()), nil, nil
+	}
+
+	resMap := map[string]any{
+		"content": callResp.Content,
+	}
+	if callResp.IsError {
+		resMap["isError"] = true
+	}
+	if len(callResp.Meta) > 0 {
+		resMap["_meta"] = callResp.Meta
+	}
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      jsonReq.ID,
+		Result:  resMap,
+	}, nil, nil
+}
+
+func (h *Hub) verifyCachedListPinning(ctx context.Context, server *domain.MCPServer, jsonReq *JSONRPCRequest) *JSONRPCResponse {
+	if server.PinnedToolHash == "" || h.guardrails == nil {
+		return nil
+	}
+	tools, _ := h.repo.ListMCPTools(ctx, server.ID)
+	for _, t := range tools {
+		if err := h.guardrails.VerifyToolPinning(t, server.PinnedToolHash); err != nil {
+			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("Tool pinning violation: %v", err))
+		}
+	}
+	return nil
 }
 
 // DispatchToolset routes calls to a curated toolset (`POST /mcp/toolsets/{toolsetSlug}`).

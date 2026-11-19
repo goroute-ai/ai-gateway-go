@@ -148,15 +148,13 @@ func (s *GatewayServer) handleMCPDispatch(
 }
 
 func writeJSONRPC(w http.ResponseWriter, status int, resp *mcp.JSONRPCResponse, extraHeaders http.Header) {
-	if extraHeaders != nil {
-		for k, v := range extraHeaders {
-			// Don't overwrite content-type or server headers
-			if stringsEqualFold(k, "Content-Type") || stringsEqualFold(k, "Content-Length") {
-				continue
-			}
-			for _, val := range v {
-				w.Header().Add(k, val)
-			}
+	for k, v := range extraHeaders {
+		// Don't overwrite content-type or server headers
+		if stringsEqualFold(k, "Content-Type") || stringsEqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, val := range v {
+			w.Header().Add(k, val)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

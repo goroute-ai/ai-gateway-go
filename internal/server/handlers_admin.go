@@ -17,7 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
+	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
@@ -428,59 +428,6 @@ func (s *GatewayServer) handleAdminGetGuardrailPolicy(w http.ResponseWriter, r *
 		pol = &domain.GuardrailPolicy{OrgID: orgID}
 	}
 	writeJSON(w, http.StatusOK, pol)
-}
-
-func (s *GatewayServer) handleAdminSimulateGuardrails(w http.ResponseWriter, r *http.Request) {
-	orgID := chi.URLParam(r, "orgID")
-	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
-		return
-	}
-	var req struct {
-		Prompt string                  `json:"prompt"`
-		Policy *domain.GuardrailPolicy `json:"policy,omitempty"`
-	}
-	if err := decodeAdminJSON(w, r, &req); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
-		return
-	}
-	if strings.TrimSpace(req.Prompt) == "" {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "prompt is required"})
-		return
-	}
-
-	pol := req.Policy
-	if pol == nil {
-		var err error
-		pol, err = s.repo.GetGuardrailPolicy(r.Context(), orgID)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
-		if pol == nil {
-			pol = &domain.GuardrailPolicy{OrgID: orgID}
-		}
-	} else if pol.OrgID == "" {
-		pol.OrgID = orgID
-	}
-
-	canReq := &domain.CanonicalChatRequest{
-		Messages: []domain.CanonicalMessage{
-			{Role: "user", Content: req.Prompt},
-		},
-	}
-
-	outcome, evalErr := s.guardrails.EvaluateInputWithPolicy(r.Context(), pol, canReq)
-	resp := map[string]any{
-		"allowed":         evalErr == nil,
-		"applied_action":  outcome.AppliedAction,
-		"violations":      outcome.Violations,
-		"redacted":        outcome.Redacted,
-		"redacted_prompt": canReq.Messages[0].Content,
-	}
-	if evalErr != nil {
-		resp["error_message"] = evalErr.Error()
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- Teams & Users ---

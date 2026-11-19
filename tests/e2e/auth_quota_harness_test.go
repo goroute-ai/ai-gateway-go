@@ -207,15 +207,6 @@ func (c *dualNodeTestCluster) setClock(ts time.Time) {
 	}
 }
 
-func (c *dualNodeTestCluster) now() time.Time {
-	c.clockMu.Lock()
-	defer c.clockMu.Unlock()
-	if c.curTime.IsZero() {
-		return time.Now().UTC()
-	}
-	return c.curTime
-}
-
 func (c *dualNodeTestCluster) createOrg(name string) domain.Organization {
 	c.t.Helper()
 	var org domain.Organization
@@ -1161,10 +1152,6 @@ func (m *mockDeterministicLLMUpstream) handle(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func makeSignedCookie(name, value string) *http.Cookie {
-	return &http.Cookie{Name: name, Value: value}
-}
-
 func findCookie(resp *http.Response, name string) *http.Cookie {
 	for _, ck := range resp.Cookies() {
 		if ck.Name == name {
@@ -1172,11 +1159,6 @@ func findCookie(resp *http.Response, name string) *http.Cookie {
 		}
 	}
 	return nil
-}
-
-func sha256HexString(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }
 
 func isHex5Upper(s string) bool {

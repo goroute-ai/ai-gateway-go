@@ -24,11 +24,13 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
+// Adapter implements adapter.ProviderAdapter for OpenAI endpoints.
 type Adapter struct {
 	client     *http.Client
 	ssrfPolicy *network.Policy
 }
 
+// NewAdapter creates an OpenAI Adapter using client, or a default pooled HTTP client when nil.
 func NewAdapter(client *http.Client) *Adapter {
 	if client == nil {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)

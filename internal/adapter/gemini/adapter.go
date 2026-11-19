@@ -22,11 +22,13 @@ const (
 	defaultVertexExpressURL = "https://aiplatform.googleapis.com"
 )
 
+// Adapter implements adapter.ProviderAdapter for Google Gemini (AI Studio and Vertex Express).
 type Adapter struct {
 	client     *http.Client
 	ssrfPolicy *network.Policy
 }
 
+// NewAdapter creates a Gemini Adapter using client, or a default pooled HTTP client when nil.
 func NewAdapter(client *http.Client) *Adapter {
 	if client == nil {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)

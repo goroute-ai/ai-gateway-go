@@ -18,6 +18,7 @@ import (
 
 const defaultBaseURL = "http://localhost:11434"
 
+// Adapter implements adapter.ProviderAdapter for local and remote Ollama servers.
 type Adapter struct {
 	client      *http.Client
 	ssrfPolicy  *network.Policy
@@ -25,6 +26,7 @@ type Adapter struct {
 	mediaPolicy *network.Policy
 }
 
+// NewAdapter creates an Ollama Adapter with SSRF-guarded remote media fetching enabled by default.
 func NewAdapter(client *http.Client) *Adapter {
 	if client == nil {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)

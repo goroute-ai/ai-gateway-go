@@ -37,10 +37,13 @@ type Config struct {
 
 // ContextHandler wraps an slog.Handler to automatically inject distributed trace IDs,
 // request IDs, and multi-tenant identity attributes from context.Context into every log record.
+// ContextHandler wraps an slog.Handler to automatically attach trace, request,
+// and tenant identity attributes extracted from context.Context.
 type ContextHandler struct {
 	slog.Handler
 }
 
+// Handle enriches r with trace, request, and identity context fields before delegating to the wrapped handler.
 func (h *ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if ctx != nil {
 		// 1. W3C Distributed Tracing Attributes
@@ -76,10 +79,12 @@ func (h *ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.Handler.Handle(ctx, r)
 }
 
+// WithAttrs returns a new ContextHandler wrapping the underlying handler with attrs.
 func (h *ContextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &ContextHandler{Handler: h.Handler.WithAttrs(attrs)}
 }
 
+// WithGroup returns a new ContextHandler wrapping the underlying handler scoped to name.
 func (h *ContextHandler) WithGroup(name string) slog.Handler {
 	return &ContextHandler{Handler: h.Handler.WithGroup(name)}
 }
@@ -166,35 +171,42 @@ func WithComponent(name string) *slog.Logger {
 	return L().With(slog.String("component", name))
 }
 
-// Top-level convenience logging helpers
+// Debug logs a debug-level message using the global logger.
 func Debug(msg string, args ...any) {
 	L().Debug(msg, args...)
 }
 
+// DebugContext logs a debug-level message enriched with attributes from ctx.
 func DebugContext(ctx context.Context, msg string, args ...any) {
 	L().DebugContext(ctx, msg, args...)
 }
 
+// Info logs an info-level message using the global logger.
 func Info(msg string, args ...any) {
 	L().Info(msg, args...)
 }
 
+// InfoContext logs an info-level message enriched with attributes from ctx.
 func InfoContext(ctx context.Context, msg string, args ...any) {
 	L().InfoContext(ctx, msg, args...)
 }
 
+// Warn logs a warning-level message using the global logger.
 func Warn(msg string, args ...any) {
 	L().Warn(msg, args...)
 }
 
+// WarnContext logs a warning-level message enriched with attributes from ctx.
 func WarnContext(ctx context.Context, msg string, args ...any) {
 	L().WarnContext(ctx, msg, args...)
 }
 
+// Error logs an error-level message using the global logger.
 func Error(msg string, args ...any) {
 	L().Error(msg, args...)
 }
 
+// ErrorContext logs an error-level message enriched with attributes from ctx.
 func ErrorContext(ctx context.Context, msg string, args ...any) {
 	L().ErrorContext(ctx, msg, args...)
 }

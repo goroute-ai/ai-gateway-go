@@ -192,23 +192,14 @@ func parseCustomProviderOperations(ops []string) *openaicompat.ProviderOperation
 }
 
 // New constructs a fully wired GatewayServer ready to serve requests.
+// New constructs and initializes a GatewayServer with all storage, security, routing, auth,
+// observability, MCP, and A2A subsystems wired according to cfg.
 func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.RedisFabric, httpClient *http.Client) (*GatewayServer, error) {
 	if cfg == nil {
 		cfg = config.Default()
 	}
 	if repo == nil {
 		repo = storage.NewMemoryRepository()
-	}
-
-	prevKEKs := make([]string, 0, len(cfg.Auth.PreviousMasterEncryptionKeys))
-	for _, pk := range cfg.Auth.PreviousMasterEncryptionKeys {
-		if resolved := strings.TrimSpace(config.ResolveEnvValue(pk)); resolved != "" {
-			prevKEKs = append(prevKEKs, resolved)
-		}
-	}
-	vault, err := auth.NewVaultWithPreviousKeys(config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey), prevKEKs)
-	if err != nil {
-		return nil, err
 	}
 
 	netPolicy, err := network.NewPolicy(cfg.Security.Network.OutboundSSRF)
@@ -219,7 +210,175 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	if err != nil {
 		return nil, err
 	}
+	cleanupOnErr := func(cause error) (*GatewayServer, error) {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(context.Background())
+		}
+		return nil, cause
+	}
 
+	adapterClient, mediaClient, mediaPolicy, outboundMetrics, err := buildOutboundClients(cfg, netPolicy, httpClient)
+	if err != nil {
+		return cleanupOnErr(err)
+	}
+	reg, err := buildAdapterRegistry(cfg, netPolicy, adapterClient, mediaClient, mediaPolicy)
+	if err != nil {
+		return cleanupOnErr(err)
+	}
+	authDeps, err := buildAuthSubsystem(cfg, repo, redisFabric, netPolicy)
+	if err != nil {
+		return cleanupOnErr(err)
+	}
+
+	limiter := buildRateLimiter(cfg, repo, redisFabric)
+	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
+	modelMgmtSvc := modelmgmt.NewServiceWithRBAC(repo, authDeps.rbac)
+	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, authDeps.vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
+
+	collector := observability.NewCollector()
+	budgetStats := &budgetLookupStats{}
+	registerCollectorMetricsProvider(collector, repo, respCache, outboundMetrics, budgetStats, authDeps.keyRotation)
+
+	var metricsExporter *observability.OTLPMetricsExporter
+	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
+		metricsExporter, err = observability.NewOTLPMetricsExporterFromTracingConfig(collector, cfg.Tracing, 0, netPolicy)
+		if err != nil {
+			return cleanupOnErr(err)
+		}
+	}
+
+	healthMon := health.NewMonitor(repo, reg, authDeps.vault, 60*time.Second, 5*time.Second)
+	validator := validation.NewValidator(repo)
+	validator.SetAllowDefaultFallbacks(len(cfg.Router.DefaultFallbacks) > 0)
+	validator.SetDropUnsupportedParams(cfg.Router.DropUnsupportedParams)
+	validator.SetFallbackOnUnsupportedParams(cfg.Router.FallbackOnUnsupportedParams)
+	guardrailsEng := guardrails.NewEngine(repo)
+
+	routingDeps := buildRoutingSubsystem(cfg, repo, redisFabric, reg, authDeps.vault, authDeps.rbac, limiter, collector, healthMon, respCache)
+
+	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
+	spendWorker.SetCollector(collector)
+	spendWorker.SetDeploymentSpendRecorder(routingDeps.depBudgets)
+	softBudgetNotifier := finops.NewSoftBudgetNotifier(repo, redisFabric, netPolicy, cfg.FinOps.SoftBudgetWebhookURL, cfg.FinOps.SoftBudgetCooldownSec)
+	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
+
+	protoDeps := buildMCPAndA2ASubsystem(cfg, repo, redisFabric, netPolicy, authDeps.vault, authDeps.rbac, limiter, guardrailsEng, spendWorker, routingDeps.relMgr)
+
+	var uploadSem chan struct{}
+	if cfg.Server.MaxConcurrentFileUploads > 0 {
+		uploadSem = make(chan struct{}, cfg.Server.MaxConcurrentFileUploads)
+	}
+
+	s := &GatewayServer{
+		cfg:                cfg,
+		netPolicy:          netPolicy,
+		repo:               repo,
+		redisFabric:        redisFabric,
+		reg:                reg,
+		vault:              authDeps.vault,
+		authSvc:            authDeps.authSvc,
+		sessionMgr:         authDeps.sessionMgr,
+		loginThrottle:      authDeps.loginThrottle,
+		breachScreener:     authDeps.breachScreener,
+		ssoMgr:             authDeps.ssoMgr,
+		ssoStateStore:      authDeps.ssoStateStore,
+		cliLoginStore:      authDeps.cliLoginStore,
+		authResolver:       authDeps.authResolver,
+		keyRotation:        authDeps.keyRotation,
+		keyExpiryAlerts:    authDeps.keyExpiryAlerts,
+		rbac:               authDeps.rbac,
+		limiter:            limiter,
+		respCache:          respCache,
+		modelMgmt:          modelMgmtSvc,
+		discovery:          discWorker,
+		intelligentRouter:  routingDeps.ir,
+		reliability:        routingDeps.relMgr,
+		affinityStore:      routingDeps.affinityStore,
+		depBudgets:         routingDeps.depBudgets,
+		priorityLimiter:    routingDeps.priorityLimiter,
+		semanticPreRouter:  routingDeps.semanticPreRouter,
+		spendWorker:        spendWorker,
+		softBudgetNotifier: softBudgetNotifier,
+		collector:          collector,
+		metricsExporter:    metricsExporter,
+		outboundMetrics:    outboundMetrics,
+		budgetStats:        budgetStats,
+		tracer:             tracer,
+		tracerShutdown:     tracerShutdown,
+		healthMon:          healthMon,
+		validator:          validator,
+		guardrails:         guardrailsEng,
+		mcpHub:             protoDeps.mcpHub,
+		a2aRouter:          protoDeps.a2aRouter,
+		a2aSigner:          protoDeps.a2aSigner,
+		a2aStreamSub:       protoDeps.a2aStreamSub,
+		a2aPublisher:       protoDeps.a2aPublisher,
+		a2aOutboxWorker:    protoDeps.a2aOutboxWorker,
+		a2aBridge:          protoDeps.a2aBridge,
+		orchestrator:       protoDeps.toolOrchestrator,
+		uploadSem:          uploadSem,
+		uploadInFlight:     make(map[string]int64),
+	}
+	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
+	routingDeps.relMgr.SetDeploymentSlotTTL(cfg.RateLimit.ConcurrencyTTLSec)
+	routingDeps.relMgr.SetFallbackQuotaChecker(s.checkFallbackModelQuota)
+	authDeps.authSvc.AddInvalidationHandler(func(ev storage.InvalidationEvent) {
+		s.invalidateLocalRoutingCaches(ev)
+	})
+	s.setupRoutes()
+	if err := s.bootstrap(context.Background()); err != nil {
+		return cleanupOnErr(err)
+	}
+	s.warmupSemanticPreRouter(context.Background())
+	if err := s.seedGuardrailsFromConfig(context.Background()); err != nil {
+		return cleanupOnErr(err)
+	}
+	pipeline := s.GuardrailPipeline()
+	protoDeps.mcpHub.SetGuardrailPipeline(pipeline)
+	protoDeps.a2aRouter.SetGuardrailPipeline(pipeline)
+	if tpRepo, ok := repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
+		protoDeps.toolOrchestrator.SetToolPolicyRepository(tpRepo)
+	}
+	protoDeps.toolOrchestrator.SetToolGuardrails(s.newOrchestratorToolGuardrailDriver())
+	return s, nil
+}
+
+type serverAuthDeps struct {
+	vault           *auth.Vault
+	authSvc         *auth.Service
+	sessionMgr      *auth.SessionManager
+	loginThrottle   *auth.LoginThrottle
+	breachScreener  auth.BreachScreener
+	ssoMgr          *auth.SSOProviderManager
+	ssoStateStore   *auth.SSOStateStore
+	cliLoginStore   *auth.CLILoginStore
+	authResolver    *auth.AuthResolver
+	rbac            *auth.RBACEngine
+	keyRotation     *auth.KeyRotationManager
+	keyExpiryAlerts *auth.KeyExpiryAlertManager
+}
+
+type serverRoutingDeps struct {
+	ir                *router.IntelligentRouter
+	relMgr            *router.ReliabilityManager
+	affinityStore     *router.AffinityStore
+	depBudgets        *router.DeploymentBudgetTracker
+	priorityLimiter   *router.DynamicPriorityLimiter
+	semanticPreRouter *router.SemanticPreRouter
+}
+
+type serverProtocolDeps struct {
+	mcpHub           *mcp.Hub
+	a2aRouter        *a2a.RouterService
+	a2aSigner        *a2a.GatewayCardSigner
+	a2aStreamSub     *a2a.StreamSubscriber
+	a2aPublisher     *a2a.StreamPublisher
+	a2aOutboxWorker  *a2a.OutboxWorker
+	a2aBridge        *a2a.OpenAIBridge
+	toolOrchestrator *orchestrator.ToolLoopOrchestrator
+}
+
+func buildOutboundClients(cfg *config.Config, netPolicy *network.Policy, httpClient *http.Client) (*http.Client, *http.Client, *network.Policy, *network.HTTPClientMetrics, error) {
 	outboundMetrics := network.NewHTTPClientMetrics()
 	adapterClient := httpClient
 	if adapterClient == nil {
@@ -245,10 +404,12 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	mediaPolicy, err := network.NewPolicy(mediaSSRF)
 	if err != nil {
-		return nil, fmt.Errorf("invalid outbound media security policy: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("invalid outbound media security policy: %w", err)
 	}
-	mediaClient := network.NewHTTPClient(mediaPolicy)
+	return adapterClient, network.NewHTTPClient(mediaPolicy), mediaPolicy, outboundMetrics, nil
+}
 
+func buildAdapterRegistry(cfg *config.Config, netPolicy *network.Policy, adapterClient, mediaClient *http.Client, mediaPolicy *network.Policy) (*adapter.Registry, error) {
 	openaiAdp := openai.NewAdapter(adapterClient)
 	openaiAdp.SetSSRFPolicy(netPolicy)
 	anthropicAdp := anthropic.NewAdapter(adapterClient)
@@ -289,6 +450,20 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 	}
 	reg.SetDynamicResolver(profileReg.DynamicResolver())
+	return reg, nil
+}
+
+func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric *storage.RedisFabric, netPolicy *network.Policy) (*serverAuthDeps, error) {
+	prevKEKs := make([]string, 0, len(cfg.Auth.PreviousMasterEncryptionKeys))
+	for _, pk := range cfg.Auth.PreviousMasterEncryptionKeys {
+		if resolved := strings.TrimSpace(config.ResolveEnvValue(pk)); resolved != "" {
+			prevKEKs = append(prevKEKs, resolved)
+		}
+	}
+	vault, err := auth.NewVaultWithPreviousKeys(config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey), prevKEKs)
+	if err != nil {
+		return nil, err
+	}
 
 	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
 	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
@@ -317,9 +492,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	ssoMgr, err := auth.NewSSOProviderManager(buildSSOProviderConfigs(cfg.Auth.SSOProviders), netPolicy)
 	if err != nil {
-		if tracerShutdown != nil {
-			_ = tracerShutdown(context.Background())
-		}
 		return nil, fmt.Errorf("invalid sso_providers config: %w", err)
 	}
 	ssoStateStore := auth.NewSSOStateStore(redisFabric)
@@ -351,9 +523,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 			HeaderMapping:     cfg.Auth.ProxyAuth.HeaderMapping,
 		})
 		if err != nil {
-			if tracerShutdown != nil {
-				_ = tracerShutdown(context.Background())
-			}
 			return nil, fmt.Errorf("invalid proxy auth config: %w", err)
 		}
 	}
@@ -379,18 +548,13 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
+
 	delivery, err := newKeyRotationDelivery(cfg.Auth, netPolicy)
 	if err != nil {
-		if tracerShutdown != nil {
-			_ = tracerShutdown(context.Background())
-		}
 		return nil, err
 	}
 	secretSink, err := newKeyRotationSecretSink(cfg.Auth, netPolicy)
 	if err != nil {
-		if tracerShutdown != nil {
-			_ = tracerShutdown(context.Background())
-		}
 		return nil, err
 	}
 	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
@@ -404,6 +568,24 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		PollInterval:  cfg.Auth.KeyExpiryAlertPollInterval,
 		NetworkPolicy: netPolicy,
 	})
+
+	return &serverAuthDeps{
+		vault:           vault,
+		authSvc:         authSvc,
+		sessionMgr:      sessionMgr,
+		loginThrottle:   loginThrottle,
+		breachScreener:  breachScreener,
+		ssoMgr:          ssoMgr,
+		ssoStateStore:   ssoStateStore,
+		cliLoginStore:   cliLoginStore,
+		authResolver:    authResolver,
+		rbac:            rbac,
+		keyRotation:     keyRotation,
+		keyExpiryAlerts: keyExpiryAlerts,
+	}, nil
+}
+
+func buildRateLimiter(cfg *config.Config, repo storage.Repository, redisFabric *storage.RedisFabric) *ratelimit.Limiter {
 	limiter := ratelimit.NewLimiter(redisFabric, cfg.RateLimit.WindowSeconds, cfg.RateLimit.ConcurrencyTTLSec)
 	limiter.SetEnabled(cfg.RateLimit.Enabled)
 	limiter.SetFallbackToLocalOnOutage(cfg.RateLimit.FallbackToLocalOnOutage)
@@ -415,12 +597,17 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 			return rHistRepo.ListRollingWindowHistory(ctx, orgID, d.ScopeType, d.ScopeID, now)
 		})
 	}
-	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
-	modelMgmtSvc := modelmgmt.NewServiceWithRBAC(repo, rbac)
-	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
+	return limiter
+}
 
-	collector := observability.NewCollector()
-	budgetStats := &budgetLookupStats{}
+func registerCollectorMetricsProvider(
+	collector *observability.Collector,
+	repo storage.Repository,
+	respCache *cache.ResponseCache,
+	outboundMetrics *network.HTTPClientMetrics,
+	budgetStats *budgetLookupStats,
+	keyRotation *auth.KeyRotationManager,
+) {
 	collector.SetAdditionalMetricsProvider(func() map[string]float64 {
 		l1Size, l1Capacity, l1Evictions := respCache.L1Stats()
 		cacheMetrics := respCache.Metrics()
@@ -479,23 +666,20 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return metrics
 	})
-	var metricsExporter *observability.OTLPMetricsExporter
-	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
-		metricsExporter, err = observability.NewOTLPMetricsExporterFromTracingConfig(collector, cfg.Tracing, 0, netPolicy)
-		if err != nil {
-			if tracerShutdown != nil {
-				_ = tracerShutdown(context.Background())
-			}
-			return nil, err
-		}
-	}
-	healthMon := health.NewMonitor(repo, reg, vault, 60*time.Second, 5*time.Second)
-	validator := validation.NewValidator(repo)
-	validator.SetAllowDefaultFallbacks(len(cfg.Router.DefaultFallbacks) > 0)
-	validator.SetDropUnsupportedParams(cfg.Router.DropUnsupportedParams)
-	validator.SetFallbackOnUnsupportedParams(cfg.Router.FallbackOnUnsupportedParams)
-	guardrailsEng := guardrails.NewEngine(repo)
+}
 
+func buildRoutingSubsystem(
+	cfg *config.Config,
+	repo storage.Repository,
+	redisFabric *storage.RedisFabric,
+	reg *adapter.Registry,
+	vault *auth.Vault,
+	rbac *auth.RBACEngine,
+	limiter *ratelimit.Limiter,
+	collector *observability.Collector,
+	healthMon *health.Monitor,
+	respCache *cache.ResponseCache,
+) *serverRoutingDeps {
 	ir := router.NewIntelligentRouter(repo, cfg.Router)
 	ir.SetProviderCallable(func(provider domain.ProviderType) bool {
 		_, err := reg.Get(provider)
@@ -618,12 +802,28 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		ir.SetQualityPreRouter(qual)
 	}
 
-	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
-	spendWorker.SetCollector(collector)
-	spendWorker.SetDeploymentSpendRecorder(depBudgets)
-	softBudgetNotifier := finops.NewSoftBudgetNotifier(repo, redisFabric, netPolicy, cfg.FinOps.SoftBudgetWebhookURL, cfg.FinOps.SoftBudgetCooldownSec)
-	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
+	return &serverRoutingDeps{
+		ir:                ir,
+		relMgr:            relMgr,
+		affinityStore:     affinityStore,
+		depBudgets:        depBudgets,
+		priorityLimiter:   priorityLimiter,
+		semanticPreRouter: semanticPreRouter,
+	}
+}
 
+func buildMCPAndA2ASubsystem(
+	cfg *config.Config,
+	repo storage.Repository,
+	redisFabric *storage.RedisFabric,
+	netPolicy *network.Policy,
+	vault *auth.Vault,
+	rbac *auth.RBACEngine,
+	limiter *ratelimit.Limiter,
+	guardrailsEng *guardrails.Engine,
+	spendWorker *finops.SpendWorker,
+	relMgr *router.ReliabilityManager,
+) *serverProtocolDeps {
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
 	mcpAuthResolver.SetTokenCache(upstream.NewDistributedTokenCache(redisFabric, upstream.DistributedTokenCacheConfig{
@@ -652,89 +852,16 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	a2aBridge := a2a.NewOpenAIBridge(a2aRouter, a2aStreamSub, repo, rbac)
 	toolOrchestrator := orchestrator.NewToolLoopOrchestrator(relMgr, mcpHub, orchestrator.DefaultBudgetPolicy())
 
-	var uploadSem chan struct{}
-	if cfg.Server.MaxConcurrentFileUploads > 0 {
-		uploadSem = make(chan struct{}, cfg.Server.MaxConcurrentFileUploads)
+	return &serverProtocolDeps{
+		mcpHub:           mcpHub,
+		a2aRouter:        a2aRouter,
+		a2aSigner:        a2aSigner,
+		a2aStreamSub:     a2aStreamSub,
+		a2aPublisher:     a2aPublisher,
+		a2aOutboxWorker:  a2aOutboxWorker,
+		a2aBridge:        a2aBridge,
+		toolOrchestrator: toolOrchestrator,
 	}
-
-	s := &GatewayServer{
-		cfg:                cfg,
-		netPolicy:          netPolicy,
-		repo:               repo,
-		redisFabric:        redisFabric,
-		reg:                reg,
-		vault:              vault,
-		authSvc:            authSvc,
-		sessionMgr:         sessionMgr,
-		loginThrottle:      loginThrottle,
-		breachScreener:     breachScreener,
-		ssoMgr:             ssoMgr,
-		ssoStateStore:      ssoStateStore,
-		cliLoginStore:      cliLoginStore,
-		authResolver:       authResolver,
-		keyRotation:        keyRotation,
-		keyExpiryAlerts:    keyExpiryAlerts,
-		rbac:               rbac,
-		limiter:            limiter,
-		respCache:          respCache,
-		modelMgmt:          modelMgmtSvc,
-		discovery:          discWorker,
-		intelligentRouter:  ir,
-		reliability:        relMgr,
-		affinityStore:      affinityStore,
-		depBudgets:         depBudgets,
-		priorityLimiter:    priorityLimiter,
-		semanticPreRouter:  semanticPreRouter,
-		spendWorker:        spendWorker,
-		softBudgetNotifier: softBudgetNotifier,
-		collector:          collector,
-		metricsExporter:    metricsExporter,
-		outboundMetrics:    outboundMetrics,
-		budgetStats:        budgetStats,
-		tracer:             tracer,
-		tracerShutdown:     tracerShutdown,
-		healthMon:          healthMon,
-		validator:          validator,
-		guardrails:         guardrailsEng,
-		mcpHub:             mcpHub,
-		a2aRouter:          a2aRouter,
-		a2aSigner:          a2aSigner,
-		a2aStreamSub:       a2aStreamSub,
-		a2aPublisher:       a2aPublisher,
-		a2aOutboxWorker:    a2aOutboxWorker,
-		a2aBridge:          a2aBridge,
-		orchestrator:       toolOrchestrator,
-		uploadSem:          uploadSem,
-		uploadInFlight:     make(map[string]int64),
-	}
-	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
-	relMgr.SetDeploymentSlotTTL(cfg.RateLimit.ConcurrencyTTLSec)
-	relMgr.SetFallbackQuotaChecker(s.checkFallbackModelQuota)
-	authSvc.AddInvalidationHandler(func(ev storage.InvalidationEvent) {
-		s.invalidateLocalRoutingCaches(ev)
-	})
-	s.setupRoutes()
-	if err := s.bootstrap(context.Background()); err != nil {
-		if s.tracerShutdown != nil {
-			_ = s.tracerShutdown(context.Background())
-		}
-		return nil, err
-	}
-	s.warmupSemanticPreRouter(context.Background())
-	if err := s.seedGuardrailsFromConfig(context.Background()); err != nil {
-		if s.tracerShutdown != nil {
-			_ = s.tracerShutdown(context.Background())
-		}
-		return nil, err
-	}
-	pipeline := s.GuardrailPipeline()
-	mcpHub.SetGuardrailPipeline(pipeline)
-	a2aRouter.SetGuardrailPipeline(pipeline)
-	if tpRepo, ok := repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
-		toolOrchestrator.SetToolPolicyRepository(tpRepo)
-	}
-	toolOrchestrator.SetToolGuardrails(s.newOrchestratorToolGuardrailDriver())
-	return s, nil
 }
 
 func (s *GatewayServer) setupRoutes() {
@@ -747,7 +874,21 @@ func (s *GatewayServer) setupRoutes() {
 	r.Use(SecurityHeadersMiddleware(s.cfg.Server.EnableHSTS))
 	r.Use(CORSMiddleware(s.cfg.Server.CORSAllowedOrigins, s.cfg.Server.CORSAllowCredentials))
 
-	// Health, Readiness & Prometheus Metrics endpoints
+	s.registerHealthAndMetricsRoutes(r)
+
+	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
+	ui.RegisterRoutes(r)
+
+	s.registerAuthRoutes(r)
+	s.registerDataPlaneRoutes(r)
+	s.registerMCPRoutes(r)
+	s.registerA2AAndSCIMRoutes(r)
+	s.registerAdminRoutes(r)
+
+	s.router = r
+}
+
+func (s *GatewayServer) registerHealthAndMetricsRoutes(r chi.Router) {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "ai-gateway-go"})
 	})
@@ -776,11 +917,9 @@ func (s *GatewayServer) setupRoutes() {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 	})
 	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
+}
 
-	// Embedded Operator Web UI & Streaming Chat Playground (/ui/*)
-	ui.RegisterRoutes(r)
-
-	// Control Plane Authentication (/auth/*)
+func (s *GatewayServer) registerAuthRoutes(r chi.Router) {
 	r.Route("/auth", func(authRouter chi.Router) {
 		authRouter.Post("/login", s.handleAuthLogin)
 		authRouter.Get("/sso/providers", s.handleAuthSSOProviders)
@@ -796,8 +935,12 @@ func (s *GatewayServer) setupRoutes() {
 			protected.Post("/cli/complete/{login_id}", s.handleAuthCLIComplete)
 		})
 	})
+}
 
-	// Data Plane (/v1/* — OpenAI-Compatible Unified Inference API)
+func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
+	// Versioned OpenAI-compatible Data Plane (/v1/*).
+	// Keep direct v1.<Method>(...) calls inside this r.Route("/v1", ...) block so
+	// cmd/specgen AST parity checks can inspect every /v1 route directly.
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
 		v1.Post("/chat/completions", s.handleChatCompletions)
@@ -852,38 +995,8 @@ func (s *GatewayServer) setupRoutes() {
 	// Unversioned and protocol-specific aliases for SDK compatibility
 	r.Group(func(unv chi.Router) {
 		unv.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
-		unv.Post("/chat/completions", s.handleChatCompletions)
-		unv.Post("/completions", s.handleLegacyCompletions)
-		unv.Post("/embeddings", s.handleEmbeddings)
-		unv.Get("/models", s.handleListModels)
-		unv.Post("/rerank", s.handleRerank)
+		s.registerCoreInferenceRoutes(unv)
 		unv.Post("/v2/rerank", s.handleRerank)
-		unv.Post("/moderations", s.handleModerations)
-		unv.Post("/messages", s.handleAnthropicMessages)
-		unv.Post("/tokenize", s.handleTokenize)
-		unv.Post("/audio/transcriptions", s.handleAudioTranscriptions)
-		unv.Post("/audio/translations", s.handleAudioTranslations)
-		unv.Post("/audio/speech", s.handleAudioSpeech)
-		unv.Post("/images/generations", s.handleImageGenerations)
-		unv.Post("/images/edits", s.handleImageEdits)
-		unv.Post("/images/variations", s.handleImageVariations)
-
-		// Files
-		unv.Post("/files", s.handleUploadFile)
-		unv.Get("/files", s.handleListFiles)
-		unv.Get("/files/{file_id}", s.handleGetFile)
-		unv.Get("/files/{file_id}/content", s.handleGetFileContent)
-		unv.Delete("/files/{file_id}", s.handleDeleteFile)
-
-		// Batches
-		unv.Post("/batches", s.handleCreateBatch)
-		unv.Get("/batches", s.handleListBatches)
-		unv.Get("/batches/{batch_id}", s.handleGetBatch)
-		unv.Post("/batches/{batch_id}/cancel", s.handleCancelBatch)
-
-		// Responses & Realtime
-		unv.Post("/responses", s.handleResponses)
-		unv.Get("/realtime", s.handleRealtimeWebSocket)
 	})
 
 	// OpenAI Direct Wire Spec (/openai/v1/*)
@@ -899,39 +1012,74 @@ func (s *GatewayServer) setupRoutes() {
 		ant.Post("/messages", s.handleAnthropicMessages)
 		ant.Post("/messages/count_tokens", s.handleAnthropicCountTokens)
 	})
+}
 
-	// MCP Data Plane (/mcp/* — Model Context Protocol Virtual Hub, Scoped Server & Curated Toolsets)
-	if s.cfg.MCP.Enabled {
-		if s.cfg.MCP.SubscriptionsListenActive {
-			r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Get("/mcp/subscriptions/listen", s.handleMCPSubscriptionsListen)
-		}
-		r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Post("/mcp", s.handleMCPVirtualHub)
-		r.Route("/mcp", func(mcpRouter chi.Router) {
-			mcpRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
-			mcpRouter.Post("/", s.handleMCPVirtualHub)
-			mcpRouter.Post("/{serverSlug}", s.handleMCPScopedServer)
-			mcpRouter.Post("/toolsets/{toolsetSlug}", s.handleMCPToolset)
-		})
+func (s *GatewayServer) registerCoreInferenceRoutes(grp chi.Router) {
+	grp.Post("/chat/completions", s.handleChatCompletions)
+	grp.Post("/completions", s.handleLegacyCompletions)
+	grp.Post("/embeddings", s.handleEmbeddings)
+	grp.Get("/models", s.handleListModels)
+	grp.Post("/rerank", s.handleRerank)
+	grp.Post("/moderations", s.handleModerations)
+	grp.Post("/messages", s.handleAnthropicMessages)
+	grp.Post("/tokenize", s.handleTokenize)
+	grp.Post("/audio/transcriptions", s.handleAudioTranscriptions)
+	grp.Post("/audio/translations", s.handleAudioTranslations)
+	grp.Post("/audio/speech", s.handleAudioSpeech)
+	grp.Post("/images/generations", s.handleImageGenerations)
+	grp.Post("/images/edits", s.handleImageEdits)
+	grp.Post("/images/variations", s.handleImageVariations)
 
-		// MCP REST Bridge (BL-03)
-		restBridge := mcp.NewRESTBridge(s.mcpHub)
-		r.Route("/mcp-rest", func(restRouter chi.Router) {
-			restRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
-			restRouter.Get("/tools/list", restBridge.HandleListTools)
-			restRouter.Post("/tools/call", restBridge.HandleCallTool)
-		})
+	// Files
+	grp.Post("/files", s.handleUploadFile)
+	grp.Get("/files", s.handleListFiles)
+	grp.Get("/files/{file_id}", s.handleGetFile)
+	grp.Get("/files/{file_id}/content", s.handleGetFileContent)
+	grp.Delete("/files/{file_id}", s.handleDeleteFile)
 
-		// Progressive Catalog Registry Feed (BL-04)
-		r.Route("/v1/goroute/mcp", func(regRouter chi.Router) {
-			regRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
-			regRouter.Get("/registry", s.handleMCPRegistryFeed)
-		})
+	// Batches
+	grp.Post("/batches", s.handleCreateBatch)
+	grp.Get("/batches", s.handleListBatches)
+	grp.Get("/batches/{batch_id}", s.handleGetBatch)
+	grp.Post("/batches/{batch_id}/cancel", s.handleCancelBatch)
+
+	// Responses API & Realtime WebSocket
+	grp.Post("/responses", s.handleResponses)
+	grp.Get("/realtime", s.handleRealtimeWebSocket)
+}
+
+func (s *GatewayServer) registerMCPRoutes(r chi.Router) {
+	if !s.cfg.MCP.Enabled {
+		return
 	}
+	if s.cfg.MCP.SubscriptionsListenActive {
+		r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Get("/mcp/subscriptions/listen", s.handleMCPSubscriptionsListen)
+	}
+	r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Post("/mcp", s.handleMCPVirtualHub)
+	r.Route("/mcp", func(mcpRouter chi.Router) {
+		mcpRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		mcpRouter.Post("/", s.handleMCPVirtualHub)
+		mcpRouter.Post("/{serverSlug}", s.handleMCPScopedServer)
+		mcpRouter.Post("/toolsets/{toolsetSlug}", s.handleMCPToolset)
+	})
 
+	restBridge := mcp.NewRESTBridge(s.mcpHub)
+	r.Route("/mcp-rest", func(restRouter chi.Router) {
+		restRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		restRouter.Get("/tools/list", restBridge.HandleListTools)
+		restRouter.Post("/tools/call", restBridge.HandleCallTool)
+	})
+
+	r.Route("/v1/goroute/mcp", func(regRouter chi.Router) {
+		regRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		regRouter.Get("/registry", s.handleMCPRegistryFeed)
+	})
+}
+
+func (s *GatewayServer) registerA2AAndSCIMRoutes(r chi.Router) {
 	// Well-known Agent Card discovery
 	r.Get("/.well-known/agent-card.json", s.handleA2AWellKnownCard)
 
-	// A2A Data Plane (/a2a/v1/* — Agent-to-Agent Protocol Service)
 	if s.cfg.A2A.Enabled {
 		r.Route("/a2a/v1/agents/{agentSlug}", func(a2aRouter chi.Router) {
 			a2aRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
@@ -961,8 +1109,9 @@ func (s *GatewayServer) setupRoutes() {
 		scim.Patch("/Groups/{id}", s.handleSCIMPatchGroup)
 		scim.Delete("/Groups/{id}", s.handleSCIMDeleteGroup)
 	})
+}
 
-	// Control Plane (/admin/v1/* — Enterprise Management, Governance, Discovery, Security & FinOps API)
+func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 	r.Route("/admin/v1", func(adm chi.Router) {
 		adm.Use(auth.AdminControlPlaneMiddleware(s.authSvc))
 
@@ -1119,8 +1268,6 @@ func (s *GatewayServer) setupRoutes() {
 		adm.Post("/a2a/agents/{id}/kill-switch", s.handleAdminSetA2AKillSwitch)
 		adm.Post("/a2a/push-configs", s.handleAdminSetA2APushConfig)
 	})
-
-	s.router = r
 }
 
 func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
@@ -1146,6 +1293,7 @@ func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// Handler returns the root HTTP router configured with security, auth, and API middleware.
 func (s *GatewayServer) Handler() http.Handler {
 	return s.router
 }
@@ -1162,18 +1310,22 @@ func (s *GatewayServer) persistSpendEvent(w http.ResponseWriter, r *http.Request
 	return true
 }
 
+// Limiter returns the server's rate and budget Limiter.
 func (s *GatewayServer) Limiter() *ratelimit.Limiter {
 	return s.limiter
 }
 
+// Collector returns the server's telemetry Collector.
 func (s *GatewayServer) Collector() *observability.Collector {
 	return s.collector
 }
 
+// MetricsExporter returns the configured OTLP metrics exporter, or nil when disabled.
 func (s *GatewayServer) MetricsExporter() *observability.OTLPMetricsExporter {
 	return s.metricsExporter
 }
 
+// HealthMonitor returns the background active health monitor.
 func (s *GatewayServer) HealthMonitor() *health.Monitor {
 	return s.healthMon
 }
@@ -1188,6 +1340,7 @@ func (s *GatewayServer) ConfigureGuardrailScanners(timeout time.Duration, failCl
 	}
 }
 
+// Reliability returns the Stage 2 ReliabilityManager.
 func (s *GatewayServer) Reliability() *router.ReliabilityManager {
 	return s.reliability
 }
@@ -1222,26 +1375,32 @@ func (s *GatewayServer) RegisterPreRouter(pr router.PreRouter) {
 	}
 }
 
+// MCPHub returns the server's Model Context Protocol Hub.
 func (s *GatewayServer) MCPHub() *mcp.Hub {
 	return s.mcpHub
 }
 
+// A2ARouter returns the Agent-to-Agent router service.
 func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 	return s.a2aRouter
 }
 
+// AuthService returns the virtual-key and identity authentication Service.
 func (s *GatewayServer) AuthService() *auth.Service {
 	return s.authSvc
 }
 
+// SessionManager returns the operator UI and CLI session manager.
 func (s *GatewayServer) SessionManager() *auth.SessionManager {
 	return s.sessionMgr
 }
 
+// LoginThrottle returns the operator login rate limiter/throttle.
 func (s *GatewayServer) LoginThrottle() *auth.LoginThrottle {
 	return s.loginThrottle
 }
 
+// SSOProviderManager returns the configured OIDC SSO provider manager, or nil when receiver is nil.
 func (s *GatewayServer) SSOProviderManager() *auth.SSOProviderManager {
 	if s == nil {
 		return nil
@@ -1249,6 +1408,7 @@ func (s *GatewayServer) SSOProviderManager() *auth.SSOProviderManager {
 	return s.ssoMgr
 }
 
+// SSOStateStore returns the transient OIDC PKCE/state store, or nil when receiver is nil.
 func (s *GatewayServer) SSOStateStore() *auth.SSOStateStore {
 	if s == nil {
 		return nil
@@ -1256,6 +1416,7 @@ func (s *GatewayServer) SSOStateStore() *auth.SSOStateStore {
 	return s.ssoStateStore
 }
 
+// CLILoginStore returns the CLI device/PKCE login session store, or nil when receiver is nil.
 func (s *GatewayServer) CLILoginStore() *auth.CLILoginStore {
 	if s == nil {
 		return nil
@@ -1263,10 +1424,12 @@ func (s *GatewayServer) CLILoginStore() *auth.CLILoginStore {
 	return s.cliLoginStore
 }
 
+// AuthResolver returns the federated JWT/introspection/proxy auth resolver.
 func (s *GatewayServer) AuthResolver() *auth.AuthResolver {
 	return s.authResolver
 }
 
+// KeyRotationManager returns the scheduled virtual-key rotation manager, or nil when receiver is nil.
 func (s *GatewayServer) KeyRotationManager() *auth.KeyRotationManager {
 	if s == nil {
 		return nil
@@ -1283,6 +1446,7 @@ func (s *GatewayServer) SetKeyRotationSecretSink(sink auth.KeySecretSink) {
 	s.keyRotation.SetSecretSink(sink)
 }
 
+// RBAC returns the operator and virtual-key RBAC engine.
 func (s *GatewayServer) RBAC() *auth.RBACEngine {
 	return s.rbac
 }
@@ -1454,21 +1618,36 @@ func isNonPublicIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || testNet1CIDR.Contains(ip)
 }
 
-// trustedRealIPMiddleware restricts chi's RealIP header parsing to requests originating
+// trustedRealIPMiddleware extracts forwarded client IP headers only for requests originating
 // from configured trusted proxy CIDRs so untrusted callers cannot spoof X-Forwarded-For.
 func trustedRealIPMiddleware(trustedProxyCIDRs []string) func(http.Handler) http.Handler {
 	trustedNets := parseCIDRList(trustedProxyCIDRs)
-	realIPHandler := middleware.RealIP
 	return func(next http.Handler) http.Handler {
-		wrappedNext := realIPHandler(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if len(trustedNets) > 0 && ipInNets(extractRemoteIP(r.RemoteAddr), trustedNets) {
-				wrappedNext.ServeHTTP(w, r)
-				return
+				if realIP := extractTrustedForwardedIP(r); realIP != "" {
+					r.RemoteAddr = realIP
+				}
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func extractTrustedForwardedIP(r *http.Request) string {
+	for _, header := range []string{"True-Client-IP", "X-Real-IP"} {
+		if candidate := strings.TrimSpace(r.Header.Get(header)); candidate != "" && net.ParseIP(candidate) != nil {
+			return candidate
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, part := range strings.Split(xff, ",") {
+			if candidate := strings.TrimSpace(part); candidate != "" && net.ParseIP(candidate) != nil {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 // inboundCallerMiddleware enforces config.Security.Network.InboundCaller policies.

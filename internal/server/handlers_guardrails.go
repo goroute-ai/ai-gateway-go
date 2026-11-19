@@ -1842,8 +1842,8 @@ func (s *GatewayServer) handleApplyGuardrails(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	direction := domain.GuardrailDirectionInput
-	hook := domain.GuardrailHookPreCall
+	var direction string
+	var hook domain.GuardrailHook
 	switch strings.ToLower(strings.TrimSpace(req.InputType)) {
 	case "", "request", "input":
 		direction = domain.GuardrailDirectionInput

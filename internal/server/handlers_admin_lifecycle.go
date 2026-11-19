@@ -862,6 +862,343 @@ func (s *GatewayServer) handleAdminDeleteUser(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": userID})
 }
 
+func assignNonNegativeInt(w http.ResponseWriter, val *int, errCode, errMsg string, dst *int) bool {
+	if val == nil {
+		return true
+	}
+	if *val < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       errCode,
+			Message:    errMsg,
+		})
+		return false
+	}
+	*dst = *val
+	return true
+}
+
+func assignNonNegativeInt64(w http.ResponseWriter, val *int64, errCode, errMsg string, dst *int64) bool {
+	if val == nil {
+		return true
+	}
+	if *val < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       errCode,
+			Message:    errMsg,
+		})
+		return false
+	}
+	*dst = *val
+	return true
+}
+
+type adminUpdateKeyRequest struct {
+	OrgID                     *string                   `json:"org_id,omitempty"`
+	Name                      *string                   `json:"name,omitempty"`
+	TeamID                    *string                   `json:"team_id,omitempty"`
+	ProjectID                 *string                   `json:"project_id,omitempty"`
+	UserID                    *string                   `json:"user_id,omitempty"`
+	Role                      *domain.Role              `json:"role,omitempty"`
+	KeyType                   *domain.KeyType           `json:"key_type,omitempty"`
+	AllowedModels             optionalStringSlice       `json:"allowed_models"`
+	AllowedEndpoints          optionalStringSlice       `json:"allowed_endpoints"`
+	AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
+	AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
+	AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
+	MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
+	SoftBudgetMicros          *int64                    `json:"soft_budget_micros,omitempty"`
+	ThrottleOnBudgetExceeded  *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
+	BudgetFallbacks           map[string][]string       `json:"budget_fallbacks,omitempty"`
+	BudgetResetPeriod         *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	RPMLimit                  *int                      `json:"rpm_limit,omitempty"`
+	TPMLimit                  *int                      `json:"tpm_limit,omitempty"`
+	MCPRPMLimit               *int                      `json:"mcp_rpm_limit,omitempty"`
+	MaxConcurrentRequests     *int                      `json:"max_concurrent_requests,omitempty"`
+	BatchEnqueuedTokenLimit   *int64                    `json:"batch_enqueued_token_limit,omitempty"`
+	MaxIterations             *int                      `json:"max_iterations,omitempty"`
+	MaxBudgetPerSessionMicros *int64                    `json:"max_budget_per_session_micros,omitempty"`
+	RotationIntervalSec       *int64                    `json:"rotation_interval_sec,omitempty"`
+	KeyRotationAt             *time.Time                `json:"key_rotation_at,omitempty"`
+	ExpiresAt                 *time.Time                `json:"expires_at,omitempty"`
+	CanImpersonate            *bool                     `json:"can_impersonate,omitempty"`
+	IsActive                  *bool                     `json:"is_active,omitempty"`
+	Tags                      optionalStringSlice       `json:"tags"`
+	MinPriorityRank           *int                      `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags        optionalStringSlice       `json:"allowed_routing_tags"`
+	Metadata                  map[string]string         `json:"metadata,omitempty"`
+}
+
+func (s *GatewayServer) applyVirtualKeyScopePatch(
+	ctx context.Context,
+	w http.ResponseWriter,
+	op *domain.OperatorContext,
+	existing *domain.VirtualKey,
+	req *adminUpdateKeyRequest,
+	updated *domain.VirtualKey,
+) bool {
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_key_name",
+				Message:    "Virtual key name cannot be empty",
+			})
+			return false
+		}
+		updated.Name = name
+	}
+	if req.TeamID != nil {
+		newTeamID := strings.TrimSpace(*req.TeamID)
+		if op.Role == domain.OperatorRoleTeamAdmin && newTeamID != op.TeamID {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "cross_team_access_denied",
+				Message:    "team_admin cannot reassign a virtual key outside their own team",
+			})
+			return false
+		}
+		updated.TeamID = newTeamID
+	}
+	if req.ProjectID != nil {
+		newProjectID := strings.TrimSpace(*req.ProjectID)
+		if newProjectID != "" {
+			pmRepo, ok := s.projectMembershipRepo()
+			if !ok {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusNotImplemented,
+					Type:       domain.ErrorTypeServer,
+					Code:       "projects_unsupported",
+					Message:    "Configured storage repository does not support projects",
+				})
+				return false
+			}
+			proj, pErr := pmRepo.GetProject(ctx, newProjectID)
+			if pErr != nil || proj == nil {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusNotFound,
+					Type:       domain.ErrorTypeNotFound,
+					Code:       "project_not_found",
+					Message:    "Project not found",
+				})
+				return false
+			}
+			if proj.OrgID != existing.OrgID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_org_access_denied",
+					Message:    "Project does not belong to the virtual key's organization",
+				})
+				return false
+			}
+			if op.Role == domain.OperatorRoleTeamAdmin && proj.TeamID != op.TeamID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "cross_team_access_denied",
+					Message:    "team_admin cannot bind a virtual key to a project outside their own team",
+				})
+				return false
+			}
+			if updated.TeamID == "" {
+				updated.TeamID = proj.TeamID
+			} else if proj.TeamID != updated.TeamID {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "project_team_mismatch",
+					Message:    "Project does not belong to the virtual key's team",
+				})
+				return false
+			}
+		}
+		updated.ProjectID = newProjectID
+	}
+	if req.UserID != nil {
+		newUserID := strings.TrimSpace(*req.UserID)
+		effectiveKeyType := auth.NormalizeKeyType(updated.KeyType)
+		if req.KeyType != nil {
+			effectiveKeyType = auth.NormalizeKeyType(*req.KeyType)
+		}
+		if effectiveKeyType == domain.KeyTypeServiceAccount && req.KeyType == nil && newUserID != "" {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_service_account_user",
+				Message:    "service_account virtual keys cannot be attributed to a user_id",
+			})
+			return false
+		}
+		if !s.validateTeamAdminKeyTargetUser(ctx, w, op, existing.OrgID, newUserID) {
+			return false
+		}
+		updated.UserID = newUserID
+	}
+	if req.Role != nil && *req.Role != "" {
+		if *req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "platform_admin_required",
+				Message:    "Only platform_admin can assign platform_admin role to virtual keys",
+			})
+			return false
+		}
+		if op.Role == domain.OperatorRoleTeamAdmin && isPrivilegedOrgOrPlatformRole(*req.Role) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot assign organization-wide or platform roles to virtual keys",
+			})
+			return false
+		}
+		updated.Role = *req.Role
+	}
+	return true
+}
+
+func (s *GatewayServer) applyVirtualKeyAccessAndLimitsPatch(
+	ctx context.Context,
+	w http.ResponseWriter,
+	op *domain.OperatorContext,
+	existing *domain.VirtualKey,
+	req *adminUpdateKeyRequest,
+	updated *domain.VirtualKey,
+) bool {
+	if req.AllowedModels.Set {
+		updated.AllowedModels = req.AllowedModels.Value
+	}
+	if req.AllowedEndpoints.Set {
+		if op.Role == domain.OperatorRoleTeamAdmin && hasDisallowedTeamAdminEndpoint(req.AllowedEndpoints.Value) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot configure wildcard, /admin, or /scim allowed_endpoints",
+			})
+			return false
+		}
+		updated.AllowedEndpoints = req.AllowedEndpoints.Value
+	}
+	if req.AllowedMCPServers.Set {
+		updated.AllowedMCPServers = req.AllowedMCPServers.Value
+	}
+	if req.AllowedA2AAgents.Set {
+		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value
+	}
+	if req.AllowedClientApps.Set {
+		updated.AllowedClientApps = req.AllowedClientApps.Value
+	}
+	if req.KeyType != nil {
+		if !auth.IsValidKeyType(*req.KeyType) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_key_type",
+				Message:    "Unsupported key_type preset",
+			})
+			return false
+		}
+		kt := auth.NormalizeKeyType(*req.KeyType)
+		updated.KeyType = kt
+		if !req.AllowedEndpoints.Set && kt != auth.NormalizeKeyType(existing.KeyType) {
+			if kt == domain.KeyTypeDefault {
+				updated.AllowedEndpoints = []string{"*"}
+			} else {
+				updated.AllowedEndpoints = nil
+			}
+		}
+		auth.ApplyKeyTypePreset(updated)
+	}
+	if req.MaxBudgetMicros != nil {
+		if !assignNonNegativeInt64(w, req.MaxBudgetMicros, "invalid_budget", "max_budget_micros cannot be negative", &updated.MaxBudgetMicros) {
+			return false
+		}
+		if !s.enforceSelfServeBudgetPolicy(ctx, w, op, existing.OrgID, updated.TeamID, existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
+			return false
+		}
+	}
+	if !applySoftBudgetPolicyPatch(w, req.SoftBudgetMicros, req.ThrottleOnBudgetExceeded, req.BudgetFallbacks, &updated.SoftBudgetMicros, &updated.ThrottleOnBudgetExceeded, &updated.BudgetFallbacks) {
+		return false
+	}
+	if req.BudgetResetPeriod != nil && *req.BudgetResetPeriod != "" {
+		updated.BudgetResetPeriod = *req.BudgetResetPeriod
+	}
+	if !assignNonNegativeInt(w, req.RPMLimit, "invalid_rpm_limit", "rpm_limit cannot be negative", &updated.RPMLimit) ||
+		!assignNonNegativeInt(w, req.TPMLimit, "invalid_tpm_limit", "tpm_limit cannot be negative", &updated.TPMLimit) ||
+		!assignNonNegativeInt(w, req.MaxConcurrentRequests, "invalid_concurrency_limit", "max_concurrent_requests cannot be negative", &updated.MaxConcurrentRequests) ||
+		!assignNonNegativeInt64(w, req.BatchEnqueuedTokenLimit, "invalid_batch_enqueued_token_limit", "batch_enqueued_token_limit cannot be negative", &updated.BatchEnqueuedTokenLimit) ||
+		!assignNonNegativeInt(w, req.MCPRPMLimit, "invalid_mcp_rpm_limit", "mcp_rpm_limit cannot be negative", &updated.MCPRPMLimit) ||
+		!assignNonNegativeInt(w, req.MaxIterations, "invalid_max_iterations", "max_iterations cannot be negative", &updated.MaxIterations) ||
+		!assignNonNegativeInt64(w, req.MaxBudgetPerSessionMicros, "invalid_session_budget", "max_budget_per_session_micros cannot be negative", &updated.MaxBudgetPerSessionMicros) ||
+		!assignNonNegativeInt(w, req.MinPriorityRank, "invalid_min_priority_rank", "min_priority_rank cannot be negative", &updated.MinPriorityRank) {
+		return false
+	}
+	if req.Tags.Set {
+		updated.Tags = req.Tags.Value
+	}
+	if req.AllowedRoutingTags.Set {
+		updated.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags.Value)
+	}
+	if !assignNonNegativeInt64(w, req.RotationIntervalSec, "invalid_rotation_interval", "rotation_interval_sec cannot be negative", &updated.RotationIntervalSec) {
+		return false
+	}
+	if req.RotationIntervalSec != nil {
+		if *req.RotationIntervalSec == 0 {
+			updated.KeyRotationAt = nil
+		} else if req.KeyRotationAt == nil && (updated.KeyRotationAt == nil || existing.RotationIntervalSec != *req.RotationIntervalSec) {
+			nextRot := time.Now().UTC().Add(time.Duration(*req.RotationIntervalSec) * time.Second)
+			updated.KeyRotationAt = &nextRot
+		}
+	}
+	if req.KeyRotationAt != nil {
+		rotAt := req.KeyRotationAt.UTC()
+		updated.KeyRotationAt = &rotAt
+	}
+	if req.ExpiresAt != nil {
+		updated.ExpiresAt = req.ExpiresAt
+	}
+	if req.CanImpersonate != nil {
+		if *req.CanImpersonate && op.Role == domain.OperatorRoleTeamAdmin {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "team_admin cannot enable can_impersonate on virtual keys",
+			})
+			return false
+		}
+		updated.CanImpersonate = *req.CanImpersonate
+	}
+	if req.IsActive != nil {
+		updated.IsActive = *req.IsActive
+		if !*req.IsActive {
+			if updated.RevokedAt == nil {
+				now := time.Now().UTC()
+				updated.RevokedAt = &now
+			}
+			if op != nil && op.ActorID != "" {
+				updated.RevokedBy = op.ActorID
+			}
+		} else {
+			updated.RevokedAt = nil
+			updated.RevokedBy = ""
+		}
+	}
+	if req.Metadata != nil {
+		updated.Metadata = req.Metadata
+	}
+	return true
+}
+
 func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Request) {
 	keyID := strings.TrimSpace(chi.URLParam(r, "keyID"))
 	if keyID == "" {
@@ -893,41 +1230,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var req struct {
-		OrgID                     *string                   `json:"org_id,omitempty"`
-		Name                      *string                   `json:"name,omitempty"`
-		TeamID                    *string                   `json:"team_id,omitempty"`
-		ProjectID                 *string                   `json:"project_id,omitempty"`
-		UserID                    *string                   `json:"user_id,omitempty"`
-		Role                      *domain.Role              `json:"role,omitempty"`
-		KeyType                   *domain.KeyType           `json:"key_type,omitempty"`
-		AllowedModels             optionalStringSlice       `json:"allowed_models"`
-		AllowedEndpoints          optionalStringSlice       `json:"allowed_endpoints"`
-		AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
-		AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
-		AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
-		MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
-		SoftBudgetMicros          *int64                    `json:"soft_budget_micros,omitempty"`
-		ThrottleOnBudgetExceeded  *bool                     `json:"throttle_on_budget_exceeded,omitempty"`
-		BudgetFallbacks           map[string][]string       `json:"budget_fallbacks,omitempty"`
-		BudgetResetPeriod         *domain.BudgetResetPeriod `json:"budget_reset_period,omitempty"`
-		RPMLimit                  *int                      `json:"rpm_limit,omitempty"`
-		TPMLimit                  *int                      `json:"tpm_limit,omitempty"`
-		MCPRPMLimit               *int                      `json:"mcp_rpm_limit,omitempty"`
-		MaxConcurrentRequests     *int                      `json:"max_concurrent_requests,omitempty"`
-		BatchEnqueuedTokenLimit   *int64                    `json:"batch_enqueued_token_limit,omitempty"`
-		MaxIterations             *int                      `json:"max_iterations,omitempty"`
-		MaxBudgetPerSessionMicros *int64                    `json:"max_budget_per_session_micros,omitempty"`
-		RotationIntervalSec       *int64                    `json:"rotation_interval_sec,omitempty"`
-		KeyRotationAt             *time.Time                `json:"key_rotation_at,omitempty"`
-		ExpiresAt                 *time.Time                `json:"expires_at,omitempty"`
-		CanImpersonate            *bool                     `json:"can_impersonate,omitempty"`
-		IsActive                  *bool                     `json:"is_active,omitempty"`
-		Tags                      optionalStringSlice       `json:"tags"`
-		MinPriorityRank           *int                      `json:"min_priority_rank,omitempty"`
-		AllowedRoutingTags        optionalStringSlice       `json:"allowed_routing_tags"`
-		Metadata                  map[string]string         `json:"metadata,omitempty"`
-	}
+	var req adminUpdateKeyRequest
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
@@ -941,352 +1244,12 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	}
 
 	updated := *existing
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_key_name",
-				Message:    "Virtual key name cannot be empty",
-			})
-			return
-		}
-		updated.Name = name
-	}
-	if req.TeamID != nil {
-		newTeamID := strings.TrimSpace(*req.TeamID)
-		if op.Role == domain.OperatorRoleTeamAdmin && newTeamID != op.TeamID {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "cross_team_access_denied",
-				Message:    "team_admin cannot reassign a virtual key outside their own team",
-			})
-			return
-		}
-		updated.TeamID = newTeamID
-	}
-	if req.ProjectID != nil {
-		newProjectID := strings.TrimSpace(*req.ProjectID)
-		if newProjectID != "" {
-			pmRepo, ok := s.projectMembershipRepo()
-			if !ok {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeServer,
-					Code:       "projects_unsupported",
-					Message:    "Configured storage repository does not support projects",
-				})
-				return
-			}
-			proj, pErr := pmRepo.GetProject(r.Context(), newProjectID)
-			if pErr != nil || proj == nil {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusNotFound,
-					Type:       domain.ErrorTypeNotFound,
-					Code:       "project_not_found",
-					Message:    "Project not found",
-				})
-				return
-			}
-			if proj.OrgID != existing.OrgID {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "cross_org_access_denied",
-					Message:    "Project does not belong to the virtual key's organization",
-				})
-				return
-			}
-			if op.Role == domain.OperatorRoleTeamAdmin && proj.TeamID != op.TeamID {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "cross_team_access_denied",
-					Message:    "team_admin cannot bind a virtual key to a project outside their own team",
-				})
-				return
-			}
-			if updated.TeamID == "" {
-				updated.TeamID = proj.TeamID
-			} else if proj.TeamID != updated.TeamID {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusBadRequest,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "project_team_mismatch",
-					Message:    "Project does not belong to the virtual key's team",
-				})
-				return
-			}
-		}
-		updated.ProjectID = newProjectID
-	}
-	if req.UserID != nil {
-		newUserID := strings.TrimSpace(*req.UserID)
-		effectiveKeyType := auth.NormalizeKeyType(updated.KeyType)
-		if req.KeyType != nil {
-			effectiveKeyType = auth.NormalizeKeyType(*req.KeyType)
-		}
-		if effectiveKeyType == domain.KeyTypeServiceAccount && req.KeyType == nil && newUserID != "" {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_service_account_user",
-				Message:    "service_account virtual keys cannot be attributed to a user_id",
-			})
-			return
-		}
-		if !s.validateTeamAdminKeyTargetUser(r.Context(), w, op, existing.OrgID, newUserID) {
-			return
-		}
-		updated.UserID = newUserID
-	}
-	if req.Role != nil && *req.Role != "" {
-		if *req.Role == domain.RolePlatformAdmin && op.Role != domain.OperatorRolePlatformAdmin {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "platform_admin_required",
-				Message:    "Only platform_admin can assign platform_admin role to virtual keys",
-			})
-			return
-		}
-		if op.Role == domain.OperatorRoleTeamAdmin && isPrivilegedOrgOrPlatformRole(*req.Role) {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "insufficient_permissions",
-				Message:    "team_admin cannot assign organization-wide or platform roles to virtual keys",
-			})
-			return
-		}
-		updated.Role = *req.Role
-	}
-	if req.AllowedModels.Set {
-		updated.AllowedModels = req.AllowedModels.Value
-	}
-	if req.AllowedEndpoints.Set {
-		if op.Role == domain.OperatorRoleTeamAdmin && hasDisallowedTeamAdminEndpoint(req.AllowedEndpoints.Value) {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "insufficient_permissions",
-				Message:    "team_admin cannot configure wildcard, /admin, or /scim allowed_endpoints",
-			})
-			return
-		}
-		updated.AllowedEndpoints = req.AllowedEndpoints.Value
-	}
-	if req.AllowedMCPServers.Set {
-		updated.AllowedMCPServers = req.AllowedMCPServers.Value
-	}
-	if req.AllowedA2AAgents.Set {
-		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value
-	}
-	if req.AllowedClientApps.Set {
-		updated.AllowedClientApps = req.AllowedClientApps.Value
-	}
-	if req.KeyType != nil {
-		if !auth.IsValidKeyType(*req.KeyType) {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_key_type",
-				Message:    "Unsupported key_type preset",
-			})
-			return
-		}
-		kt := auth.NormalizeKeyType(*req.KeyType)
-		updated.KeyType = kt
-		if !req.AllowedEndpoints.Set && kt != auth.NormalizeKeyType(existing.KeyType) {
-			if kt == domain.KeyTypeDefault {
-				updated.AllowedEndpoints = []string{"*"}
-			} else {
-				updated.AllowedEndpoints = nil
-			}
-		}
-		auth.ApplyKeyTypePreset(&updated)
-	}
-	if req.MaxBudgetMicros != nil {
-		if *req.MaxBudgetMicros < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_budget",
-				Message:    "max_budget_micros cannot be negative",
-			})
-			return
-		}
-		if !s.enforceSelfServeBudgetPolicy(r.Context(), w, op, existing.OrgID, updated.TeamID, existing.MaxBudgetMicros, *req.MaxBudgetMicros) {
-			return
-		}
-		updated.MaxBudgetMicros = *req.MaxBudgetMicros
-	}
-	if !applySoftBudgetPolicyPatch(w, req.SoftBudgetMicros, req.ThrottleOnBudgetExceeded, req.BudgetFallbacks, &updated.SoftBudgetMicros, &updated.ThrottleOnBudgetExceeded, &updated.BudgetFallbacks) {
+	if !s.applyVirtualKeyScopePatch(r.Context(), w, op, existing, &req, &updated) {
 		return
 	}
-	if req.BudgetResetPeriod != nil && *req.BudgetResetPeriod != "" {
-		updated.BudgetResetPeriod = *req.BudgetResetPeriod
+	if !s.applyVirtualKeyAccessAndLimitsPatch(r.Context(), w, op, existing, &req, &updated) {
+		return
 	}
-	if req.RPMLimit != nil {
-		if *req.RPMLimit < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_rpm_limit",
-				Message:    "rpm_limit cannot be negative",
-			})
-			return
-		}
-		updated.RPMLimit = *req.RPMLimit
-	}
-	if req.TPMLimit != nil {
-		if *req.TPMLimit < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_tpm_limit",
-				Message:    "tpm_limit cannot be negative",
-			})
-			return
-		}
-		updated.TPMLimit = *req.TPMLimit
-	}
-	if req.MaxConcurrentRequests != nil {
-		if *req.MaxConcurrentRequests < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_concurrency_limit",
-				Message:    "max_concurrent_requests cannot be negative",
-			})
-			return
-		}
-		updated.MaxConcurrentRequests = *req.MaxConcurrentRequests
-	}
-	if req.BatchEnqueuedTokenLimit != nil {
-		if *req.BatchEnqueuedTokenLimit < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_batch_enqueued_token_limit",
-				Message:    "batch_enqueued_token_limit cannot be negative",
-			})
-			return
-		}
-		updated.BatchEnqueuedTokenLimit = *req.BatchEnqueuedTokenLimit
-	}
-	if req.MCPRPMLimit != nil {
-		if *req.MCPRPMLimit < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_mcp_rpm_limit",
-				Message:    "mcp_rpm_limit cannot be negative",
-			})
-			return
-		}
-		updated.MCPRPMLimit = *req.MCPRPMLimit
-	}
-	if req.MaxIterations != nil {
-		if *req.MaxIterations < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_max_iterations",
-				Message:    "max_iterations cannot be negative",
-			})
-			return
-		}
-		updated.MaxIterations = *req.MaxIterations
-	}
-	if req.MaxBudgetPerSessionMicros != nil {
-		if *req.MaxBudgetPerSessionMicros < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_session_budget",
-				Message:    "max_budget_per_session_micros cannot be negative",
-			})
-			return
-		}
-		updated.MaxBudgetPerSessionMicros = *req.MaxBudgetPerSessionMicros
-	}
-	if req.Tags.Set {
-		updated.Tags = req.Tags.Value
-	}
-	if req.MinPriorityRank != nil {
-		if *req.MinPriorityRank < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_min_priority_rank",
-				Message:    "min_priority_rank cannot be negative",
-			})
-			return
-		}
-		updated.MinPriorityRank = *req.MinPriorityRank
-	}
-	if req.AllowedRoutingTags.Set {
-		updated.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags.Value)
-	}
-	if req.RotationIntervalSec != nil {
-		if *req.RotationIntervalSec < 0 {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusBadRequest,
-				Type:       domain.ErrorTypeInvalidRequest,
-				Code:       "invalid_rotation_interval",
-				Message:    "rotation_interval_sec cannot be negative",
-			})
-			return
-		}
-		updated.RotationIntervalSec = *req.RotationIntervalSec
-		if *req.RotationIntervalSec == 0 {
-			updated.KeyRotationAt = nil
-		} else if req.KeyRotationAt == nil && (updated.KeyRotationAt == nil || existing.RotationIntervalSec != *req.RotationIntervalSec) {
-			nextRot := time.Now().UTC().Add(time.Duration(*req.RotationIntervalSec) * time.Second)
-			updated.KeyRotationAt = &nextRot
-		}
-	}
-	if req.KeyRotationAt != nil {
-		rotAt := req.KeyRotationAt.UTC()
-		updated.KeyRotationAt = &rotAt
-	}
-	if req.ExpiresAt != nil {
-		updated.ExpiresAt = req.ExpiresAt
-	}
-	if req.CanImpersonate != nil {
-		if *req.CanImpersonate && op.Role == domain.OperatorRoleTeamAdmin {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "insufficient_permissions",
-				Message:    "team_admin cannot enable can_impersonate on virtual keys",
-			})
-			return
-		}
-		updated.CanImpersonate = *req.CanImpersonate
-	}
-	if req.IsActive != nil {
-		updated.IsActive = *req.IsActive
-		if !*req.IsActive {
-			if updated.RevokedAt == nil {
-				now := time.Now().UTC()
-				updated.RevokedAt = &now
-			}
-			if op != nil && op.ActorID != "" {
-				updated.RevokedBy = op.ActorID
-			}
-		} else {
-			updated.RevokedAt = nil
-			updated.RevokedBy = ""
-		}
-	}
-	if req.Metadata != nil {
-		updated.Metadata = req.Metadata
-	}
-
 	if !s.enforceGuaranteedThroughput(r.Context(), w, updated.OrgID, updated.TeamID, updated.ID, updated.RPMLimit, updated.TPMLimit) {
 		return
 	}

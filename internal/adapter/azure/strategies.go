@@ -15,6 +15,7 @@ import (
 // AzureEndpointMode specifies whether Azure uses the modern /openai/v1 format or legacy deployment paths.
 type AzureEndpointMode string
 
+// Supported Azure OpenAI endpoint URL modes.
 const (
 	AzureEndpointModeStandardV1       AzureEndpointMode = "v1"
 	AzureEndpointModeLegacyDeployment AzureEndpointMode = "legacy_deployment"

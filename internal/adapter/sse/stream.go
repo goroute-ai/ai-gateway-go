@@ -88,6 +88,7 @@ type Writer struct {
 	started bool
 }
 
+// NewWriter wraps w as an SSE Writer, returning an error if w does not implement http.Flusher.
 func NewWriter(w http.ResponseWriter) (*Writer, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

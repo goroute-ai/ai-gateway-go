@@ -17,6 +17,7 @@ import (
 // GuardrailDecision identifies the outcome returned by a custom SDK GuardrailScanner.
 type GuardrailDecision string
 
+// Custom SDK guardrail evaluation decisions.
 const (
 	GuardrailDecisionAllow  GuardrailDecision = "allow"
 	GuardrailDecisionBlock  GuardrailDecision = "block"
@@ -27,6 +28,7 @@ const (
 // GuardrailHook identifies the gateway lifecycle stage at which a guardrail scanner runs.
 type GuardrailHook string
 
+// Supported custom SDK guardrail lifecycle hooks.
 const (
 	GuardrailHookPreCall       GuardrailHook = "pre_call"
 	GuardrailHookDuringCall    GuardrailHook = "during_call"

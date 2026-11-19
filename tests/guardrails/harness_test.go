@@ -5,6 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -13,12 +20,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/stretchr/testify/require"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
-	"testing"
 )
 
 const testAdminKey = "sk-gw-guardrail-lab-admin-key"

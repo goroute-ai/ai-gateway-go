@@ -206,6 +206,8 @@ func TestEvaluateCustomAuth_AutoMode(t *testing.T) {
 			}, nil
 		})
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		//lint:ignore SA1012 intentionally verifying nil-context normalization
+		//nolint:staticcheck // SA1012: intentionally verifying nil-context normalization
 		decision, err := gateway.EvaluateCustomAuth(nil, req, gateway.CustomAuthModeAuto, auth)
 		if err != nil {
 			t.Fatalf("EvaluateCustomAuth failed: %v", err)

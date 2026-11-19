@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// Sentinel errors returned by upstream JWT authentication signing and audience validation.
 var (
 	ErrUntrustedAudience = errors.New("upstream jwt: target audience is not in trusted audiences list")
 	ErrMissingSigningKey = errors.New("upstream jwt: signing key is required")
@@ -127,6 +128,7 @@ func (s *JWTStrategy) Apply(ctx context.Context, req *http.Request, authCtx *Ups
 	return nil
 }
 
+// IsAudienceAllowed reports whether aud matches the strategy's TrustedAudiences allowlist.
 func (s *JWTStrategy) IsAudienceAllowed(aud string) bool {
 	if len(s.TrustedAudiences) == 0 {
 		return true

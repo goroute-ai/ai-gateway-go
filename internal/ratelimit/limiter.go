@@ -117,6 +117,8 @@ type Limiter struct {
 	localDescRolling      map[string]localRollingWindow
 }
 
+// NewLimiter creates a multi-dimensional rate and budget Limiter backed by redisFabric
+// (or process-local fail-closed fallback when redisFabric is nil) using windowSec and concTTLSec.
 func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Limiter {
 	if windowSec <= 0 {
 		windowSec = 60

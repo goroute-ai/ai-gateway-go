@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func resolveOTLPSamplerFromEnv() sdktrace.Sampler {
@@ -41,16 +42,20 @@ func resolveOTLPSamplerFromEnv() sdktrace.Sampler {
 	}
 }
 
+// NewOTLPTracer creates an OTLP HTTP tracer configured from cfg and validated against policy,
+// using the environment-configured OTEL_TRACES_SAMPLER.
 func NewOTLPTracer(ctx context.Context, cfg config.TracingConfig, policy *network.Policy) (trace.Tracer, func(context.Context) error, error) {
 	return NewOTLPTracerWithSampler(ctx, cfg, policy, resolveOTLPSamplerFromEnv())
 }
 
+// NewOTLPTracerWithSampler creates an OTLP HTTP tracer with an explicit trace sampler,
+// returning a no-op tracer when cfg.OTLPEndpoint is empty or enforcing SSRF validation via policy.
 func NewOTLPTracerWithSampler(ctx context.Context, cfg config.TracingConfig, policy *network.Policy, sampler sdktrace.Sampler) (trace.Tracer, func(context.Context) error, error) {
 	if sampler == nil {
 		sampler = resolveOTLPSamplerFromEnv()
 	}
 	if strings.TrimSpace(cfg.OTLPEndpoint) == "" {
-		return trace.NewNoopTracerProvider().Tracer("ai-gateway-go"), func(context.Context) error { return nil }, nil
+		return noop.NewTracerProvider().Tracer("ai-gateway-go"), func(context.Context) error { return nil }, nil
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(cfg.OTLPEndpoint))
 	if err != nil || endpoint.Host == "" {

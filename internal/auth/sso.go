@@ -1206,6 +1206,7 @@ func (s *SSOStateStore) Consume(ctx context.Context, state string) (*SSOAuthStat
 // CLILoginStatus represents the lifecycle state of a CLI browser/device SSO login request.
 type CLILoginStatus string
 
+// Supported CLI SSO login session lifecycle states.
 const (
 	CLILoginStatusPending   CLILoginStatus = "pending"
 	CLILoginStatusCompleted CLILoginStatus = "completed"

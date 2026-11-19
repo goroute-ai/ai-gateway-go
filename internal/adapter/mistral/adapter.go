@@ -20,11 +20,13 @@ import (
 
 const defaultBaseURL = "https://api.mistral.ai/v1"
 
+// Adapter implements adapter.ProviderAdapter for Mistral AI.
 type Adapter struct {
 	client     *http.Client
 	ssrfPolicy *network.Policy
 }
 
+// NewAdapter creates a Mistral Adapter using client, or a default pooled HTTP client when nil.
 func NewAdapter(client *http.Client) *Adapter {
 	if client == nil {
 		client = adapter.NewPooledHTTPClient(120 * time.Second)

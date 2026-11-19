@@ -3,6 +3,10 @@ package finops_test
 import (
 	"context"
 	"errors"
+	"net"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -10,9 +14,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
-	"net"
-	"testing"
-	"time"
 )
 
 type failingOutboxRepository struct {

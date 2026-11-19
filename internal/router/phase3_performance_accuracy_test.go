@@ -528,11 +528,11 @@ func TestPhase3_ZeroDelaySiblingFailoverAndMaxHonoredRetryAfter(t *testing.T) {
 	assert.GreaterOrEqual(t, excessive, time.Duration(0))
 
 	// Sanity check timeout error helper with net.Error.
-	assert.True(t, isTimeoutErr(net.Error(timeoutNetErr{})))
+	assert.True(t, isTimeoutErr(net.Error(timeoutNetError{})))
 }
 
-type timeoutNetErr struct{}
+type timeoutNetError struct{}
 
-func (timeoutNetErr) Error() string   { return "i/o timeout" }
-func (timeoutNetErr) Timeout() bool   { return true }
-func (timeoutNetErr) Temporary() bool { return true }
+func (timeoutNetError) Error() string   { return "i/o timeout" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return true }

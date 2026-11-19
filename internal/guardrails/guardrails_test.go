@@ -3,11 +3,12 @@ package guardrails
 import (
 	"context"
 	"errors"
-	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 type failingPolicyRepository struct {

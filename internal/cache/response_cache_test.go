@@ -110,9 +110,9 @@ func TestResponseCache_ComputeKeyIncludesAllCanonicalOutputFields(t *testing.T) 
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			copy := *base
-			mutate(&copy)
-			key := rc.ComputeKey("org-1", &copy)
+			cloned := *base
+			mutate(&cloned)
+			key := rc.ComputeKey("org-1", &cloned)
 			if name == "request_id_is_ignored" {
 				if key != baseKey {
 					t.Fatal("request ID should not fragment equivalent cache entries")

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
 
 // handleLegacyCompletions serves `POST /v1/completions` and `POST /completions`.
@@ -326,152 +328,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	}
 	if streamCacheKey != "" {
 		if cachedChunks, hit := s.respCache.GetStreamChunks(r.Context(), streamCacheKey); hit {
-			resolvedModel, provider, cachedGM := s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, req.Model, cachedChunks)
-			cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
-			w.Header().Set("X-Gateway-Cache", "HIT")
-			if provider != "" {
-				w.Header().Set("X-Gateway-Provider", string(provider))
-			}
-			if resolvedModel != "" {
-				w.Header().Set("X-Gateway-Model", resolvedModel)
-			}
-			w.Header().Set("X-Gateway-Cost-Micros", "0")
-			w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
-
-			replayStarted := time.Now()
-			var guardrailRedacted bool
-			var guardrailBlocked bool
-			var writeErr error
-			for i := range cachedChunks {
-				chunk := cloneSingleStreamChunk(cachedChunks[i])
-				if len(chunk.Choices) > 0 {
-					delta := &chunk.Choices[0].Delta
-					if delta.Content != "" {
-						processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
-						if procErr != nil {
-							if streamSession.Blocked() {
-								guardrailBlocked = true
-								if streamSession.Redacted() {
-									guardrailRedacted = true
-								}
-							} else {
-								writeErr = procErr
-							}
-							break
-						}
-						delta.Content = processed
-						if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && chunk.Choices[0].FinishReason == nil && chunk.Usage == nil {
-							continue
-						}
-					}
-				}
-				if writeErr = sseWriter.WriteChunk(&chunk); writeErr != nil {
-					break
-				}
-			}
-			if writeErr != nil {
-				releaseQuota(0)
-				s.collector.RecordStream(time.Since(replayStarted), 0, true)
-				if !sseWriter.Started() {
-					domain.WriteHTTPError(w, writeErr)
-				} else {
-					_ = sseWriter.WriteError(writeErr)
-				}
-				return
-			}
-			rem, flushErr := streamSession.Flush(r.Context(), nil)
-			if streamSession.Redacted() {
-				guardrailRedacted = true
-			}
-			if flushErr != nil || streamSession.Blocked() {
-				guardrailBlocked = true
-			}
-			if guardrailBlocked {
-				releaseQuota(0)
-				s.collector.RecordStream(time.Since(replayStarted), 0, true)
-				s.collector.Record(observability.RequestObservation{
-					Provider:          string(provider),
-					Model:             resolvedModel,
-					StatusCode:        http.StatusBadGateway,
-					GuardrailBlocked:  true,
-					GuardrailRedacted: guardrailRedacted,
-				})
-				errOut := flushErr
-				if errOut == nil {
-					errOut = guardrailStreamBlockedError()
-				}
-				_ = sseWriter.WriteError(errOut)
-				return
-			}
-			if rem != "" {
-				if flushWriteErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
-					ID:      "cmpl-" + reqID,
-					Object:  "text_completion",
-					Created: time.Now().Unix(),
-					Model:   resolvedModel,
-					Choices: []domain.CanonicalStreamChoice{{
-						Index: 0,
-						Delta: domain.CanonicalStreamDelta{Content: rem},
-					}},
-				}); flushWriteErr != nil {
-					releaseQuota(0)
-					_ = sseWriter.WriteError(flushWriteErr)
-					return
-				}
-			}
-			releaseQuota(0)
-			usageVal := extractStreamChunksUsage(cachedChunks, estTokens)
-			s.collector.RecordStream(time.Since(replayStarted), 0, false)
-			s.collector.Record(observability.RequestObservation{
-				Provider:          string(provider),
-				Model:             resolvedModel,
-				StatusCode:        http.StatusOK,
-				CacheHit:          true,
-				GuardrailRedacted: guardrailRedacted,
-			})
-			logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
-				Model:            resolvedModel,
-				Provider:         string(provider),
-				PromptTokens:     usageVal.PromptTokens,
-				CompletionTokens: usageVal.CompletionTokens,
-				CostMicros:       0,
-				CacheHit:         true,
-			})
-			var cacheProvenance string
-			if cachedGM != nil {
-				cacheProvenance = cachedGM.PricingProvenanceSource
-			}
-			if s.spendWorker != nil {
-				if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
-					RequestID:               reqID,
-					TraceID:                 traceID,
-					OrgID:                   idCtx.OrgID,
-					TeamID:                  idCtx.TeamID,
-					UserID:                  idCtx.UserID,
-					VirtualKeyID:            idCtx.VirtualKeyID,
-					Endpoint:                r.URL.Path,
-					RequestedModel:          req.Model,
-					ResolvedModel:           resolvedModel,
-					Provider:                provider,
-					PricingStatus:           cachePricingStatus,
-					PricingProvenanceSource: cacheProvenance,
-					Usage:                   usageVal,
-					CostMicros:              0,
-					StatusCode:              http.StatusOK,
-					CacheHit:                true,
-					IsStream:                true,
-					CreatedAt:               time.Now().UTC(),
-				})); err != nil {
-					_ = sseWriter.WriteError(&domain.GatewayError{
-						StatusCode: http.StatusServiceUnavailable,
-						Type:       domain.ErrorTypeServer,
-						Code:       "spend_persistence_unavailable",
-						Message:    "unable to persist request accounting",
-					})
-					return
-				}
-			}
-			_ = sseWriter.WriteDone()
+			s.replayCachedLegacyCompletionStream(w, r, idCtx, req, reqID, traceID, estTokens, releaseQuota, streamSession, sseWriter, cachedChunks)
 			return
 		}
 		w.Header().Set("X-Gateway-Cache", "MISS")
@@ -485,48 +342,12 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	ch, meta, err := s.reliability.ExecuteCompletionStreamWithCallback(upstreamCtx, idCtx, req, onSelected)
 	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	if err != nil {
-		releaseQuota(-1)
-		statusCode := http.StatusBadGateway
-		if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
-			statusCode = gwErr.StatusCode
-		}
-		var depID, depName string
-		var provider domain.ProviderType
-		var latMs, routeMicros int64
-		var retries int
-		var fb bool
-		if meta != nil {
-			latMs = meta.LatencyMs
-			routeMicros = meta.RoutingMicros
-			retries = meta.RetryCount
-			fb = meta.FallbackAttempted
-			if meta.WinningDeployment != nil {
-				depID = meta.WinningDeployment.ID
-				depName = meta.WinningDeployment.DeploymentName
-				if meta.WinningDeployment.GlobalModel != nil {
-					provider = meta.WinningDeployment.GlobalModel.Provider
-				}
-			}
-		}
-		s.collector.RecordStream(time.Since(streamStarted), 0, true)
-		s.collector.Record(observability.RequestObservation{
-			Provider:          string(provider),
-			DeploymentID:      depID,
-			DeploymentName:    depName,
-			Model:             req.Model,
-			StatusCode:        statusCode,
-			LatencyMs:         latMs,
-			RoutingMicros:     routeMicros,
-			FallbackAttempted: fb,
-			RetryCount:        retries,
-		})
-		domain.WriteHTTPError(w, err)
+		s.writeLegacyStreamExecError(w, req.Model, streamStarted, meta, err, sseWriter, releaseQuota)
 		return
 	}
 
 	var usage *domain.TokenUsage
-	var guardrailRedacted bool
-	var guardrailBlocked bool
+	var guardrailRedacted, guardrailBlocked bool
 	var writeErr error
 	var sanitizedChunks []domain.CanonicalStreamChunk
 	sawTerminalChunk := false
@@ -538,43 +359,26 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			u := *chunk.Usage
 			usage = &u
 		}
-		c := cloneSingleStreamChunk(chunk)
-		if len(c.Choices) > 0 {
-			delta := &c.Choices[0].Delta
-			if delta.Content != "" {
-				processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
-				if procErr != nil {
-					if streamSession.Blocked() {
-						guardrailBlocked = true
-						if streamSession.Redacted() {
-							guardrailRedacted = true
-						}
-					} else {
-						writeErr = procErr
-					}
-					break
-				}
-				delta.Content = processed
-				if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && c.Choices[0].FinishReason == nil && c.Usage == nil {
-					continue
-				}
-			}
+		emitted, blocked, redacted, cerr := writeFilteredLegacyStreamChunk(r.Context(), streamSession, sseWriter, chunk)
+		if redacted {
+			guardrailRedacted = true
 		}
-		if writeErr = sseWriter.WriteChunk(&c); writeErr != nil {
+		if blocked {
+			guardrailBlocked = true
 			break
 		}
-		if streamCacheKey != "" {
-			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, c)
+		if cerr != nil {
+			writeErr = cerr
+			break
+		}
+		if emitted != nil && streamCacheKey != "" {
+			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, *emitted)
 		}
 	}
 	if writeErr != nil {
 		releaseQuota(-1)
 		s.collector.RecordStream(time.Since(streamStarted), 0, true)
-		if !sseWriter.Started() {
-			domain.WriteHTTPError(w, writeErr)
-		} else {
-			_ = sseWriter.WriteError(writeErr)
-		}
+		writeLegacyStreamTransportError(w, sseWriter, writeErr)
 		return
 	}
 
@@ -586,52 +390,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		guardrailBlocked = true
 	}
 	if guardrailBlocked {
-		releaseQuota(-1)
-		var depID, depName string
-		var provider domain.ProviderType
-		resolvedModel := req.Model
-		var latMs, ttftMs, routeMicros int64
-		var retries int
-		var fb bool
-		if meta != nil {
-			latMs = meta.LatencyMs
-			ttftMs = meta.TTFTMs
-			routeMicros = meta.RoutingMicros
-			retries = meta.RetryCount
-			fb = meta.FallbackAttempted
-			if meta.WinningDeployment != nil {
-				depID = meta.WinningDeployment.ID
-				depName = meta.WinningDeployment.DeploymentName
-				if meta.WinningDeployment.GlobalModel != nil {
-					provider = meta.WinningDeployment.GlobalModel.Provider
-					resolvedModel = meta.WinningDeployment.GlobalModel.ModelName
-				}
-			}
-		}
-		var streamTTFT time.Duration
-		if ttftMs > 0 {
-			streamTTFT = time.Duration(ttftMs) * time.Millisecond
-		}
-		s.collector.RecordStream(time.Since(streamStarted), streamTTFT, true)
-		s.collector.Record(observability.RequestObservation{
-			Provider:          string(provider),
-			DeploymentID:      depID,
-			DeploymentName:    depName,
-			Model:             resolvedModel,
-			StatusCode:        http.StatusBadGateway,
-			LatencyMs:         latMs,
-			TTFTMs:            ttftMs,
-			RoutingMicros:     routeMicros,
-			FallbackAttempted: fb,
-			RetryCount:        retries,
-			GuardrailBlocked:  true,
-			GuardrailRedacted: guardrailRedacted,
-		})
-		errOut := flushErr
-		if errOut == nil {
-			errOut = guardrailStreamBlockedError()
-		}
-		_ = sseWriter.WriteError(errOut)
+		s.writeLegacyStreamGuardrailBlock(req.Model, streamStarted, meta, flushErr, guardrailRedacted, sseWriter, releaseQuota)
 		return
 	}
 	if rem != "" {
@@ -655,69 +414,147 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		}
 	}
 
-	var usageVal domain.TokenUsage
-	totalTok := 0
-	if usage != nil {
-		usageVal = *usage
-		totalTok = usage.TotalTokens
-	}
-	if totalTok == 0 {
-		usageVal.PromptTokens = estTokens
-		usageVal.TotalTokens = estTokens
-		totalTok = estTokens
-	}
+	s.finalizeLegacyStreamSuccess(
+		r, idCtx, req, reqID, traceID, estTokens,
+		streamStarted, meta, usage, guardrailRedacted,
+		streamCacheKey, sawTerminalChunk, sanitizedChunks,
+		sseWriter, releaseUsage,
+	)
+}
 
-	var gm *domain.GlobalModel
-	var depID, depName string
-	var provider domain.ProviderType
-	var pricingVer int
-	resolvedModel := req.Model
-	var latMs, ttftMs, routeMicros int64
-	var retries int
-	var fb bool
-	if meta != nil {
-		latMs = meta.LatencyMs
-		ttftMs = meta.TTFTMs
-		routeMicros = meta.RoutingMicros
-		retries = meta.RetryCount
-		fb = meta.FallbackAttempted
-		if meta.WinningDeployment != nil {
-			depID = meta.WinningDeployment.ID
-			depName = meta.WinningDeployment.DeploymentName
-			gm = meta.WinningDeployment.GlobalModel
-			if gm != nil {
-				provider = gm.Provider
-				resolvedModel = gm.ModelName
-				pricingVer = gm.PricingVersion
+func writeFilteredLegacyStreamChunk(
+	ctx context.Context,
+	streamSession *streamGuardrailSession,
+	sseWriter *sse.Writer,
+	raw domain.CanonicalStreamChunk,
+) (emitted *domain.CanonicalStreamChunk, guardrailBlocked, guardrailRedacted bool, writeErr error) {
+	c := cloneSingleStreamChunk(raw)
+	if len(c.Choices) > 0 {
+		delta := &c.Choices[0].Delta
+		if delta.Content != "" {
+			processed, procErr := streamSession.ProcessText(ctx, delta.Content)
+			if procErr != nil {
+				if streamSession.Blocked() {
+					return nil, true, streamSession.Redacted(), nil
+				}
+				return nil, false, false, procErr
+			}
+			delta.Content = processed
+			if delta.Content == "" && delta.ReasoningContent == "" && len(delta.ToolCalls) == 0 && c.Choices[0].FinishReason == nil && c.Usage == nil {
+				return nil, false, false, nil
 			}
 		}
 	}
-	if streamCacheKey != "" && !guardrailBlocked && sawTerminalChunk && len(sanitizedChunks) > 0 {
-		finalizeStreamChunksForCache(sanitizedChunks, resolvedModel, usageVal)
-		s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
+	if err := sseWriter.WriteChunk(&c); err != nil {
+		return nil, false, false, err
 	}
-	costMicros := finops.CalculateCostMicros(gm, usageVal)
-	releaseUsage(usageVal.PromptTokens, usageVal.CompletionTokens, costMicros)
+	return &c, false, false, nil
+}
 
-	var streamTTFT time.Duration
-	if ttftMs > 0 {
-		streamTTFT = time.Duration(ttftMs) * time.Millisecond
+func writeLegacyStreamTransportError(w http.ResponseWriter, sseWriter *sse.Writer, writeErr error) {
+	if !sseWriter.Started() {
+		domain.WriteHTTPError(w, writeErr)
+	} else {
+		_ = sseWriter.WriteError(writeErr)
 	}
-	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, false)
+}
+
+func (s *GatewayServer) replayCachedLegacyCompletionStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	req *domain.CanonicalCompletionRequest,
+	reqID string,
+	traceID string,
+	estTokens int,
+	releaseQuota func(int),
+	streamSession *streamGuardrailSession,
+	sseWriter *sse.Writer,
+	cachedChunks []domain.CanonicalStreamChunk,
+) {
+	resolvedModel, provider, cachedGM := s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, req.Model, cachedChunks)
+	cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
+	w.Header().Set("X-Gateway-Cache", "HIT")
+	if provider != "" {
+		w.Header().Set("X-Gateway-Provider", string(provider))
+	}
+	if resolvedModel != "" {
+		w.Header().Set("X-Gateway-Model", resolvedModel)
+	}
+	w.Header().Set("X-Gateway-Cost-Micros", "0")
+	w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
+
+	replayStarted := time.Now()
+	var guardrailRedacted, guardrailBlocked bool
+	var writeErr error
+	for i := range cachedChunks {
+		_, blocked, redacted, cerr := writeFilteredLegacyStreamChunk(r.Context(), streamSession, sseWriter, cachedChunks[i])
+		if redacted {
+			guardrailRedacted = true
+		}
+		if blocked {
+			guardrailBlocked = true
+			break
+		}
+		if cerr != nil {
+			writeErr = cerr
+			break
+		}
+	}
+	if writeErr != nil {
+		releaseQuota(0)
+		s.collector.RecordStream(time.Since(replayStarted), 0, true)
+		writeLegacyStreamTransportError(w, sseWriter, writeErr)
+		return
+	}
+	rem, flushErr := streamSession.Flush(r.Context(), nil)
+	if streamSession.Redacted() {
+		guardrailRedacted = true
+	}
+	if flushErr != nil || streamSession.Blocked() {
+		guardrailBlocked = true
+	}
+	if guardrailBlocked {
+		releaseQuota(0)
+		s.collector.RecordStream(time.Since(replayStarted), 0, true)
+		s.collector.Record(observability.RequestObservation{
+			Provider:          string(provider),
+			Model:             resolvedModel,
+			StatusCode:        http.StatusBadGateway,
+			GuardrailBlocked:  true,
+			GuardrailRedacted: guardrailRedacted,
+		})
+		errOut := flushErr
+		if errOut == nil {
+			errOut = guardrailStreamBlockedError()
+		}
+		_ = sseWriter.WriteError(errOut)
+		return
+	}
+	if rem != "" {
+		if flushWriteErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
+			ID:      "cmpl-" + reqID,
+			Object:  "text_completion",
+			Created: time.Now().Unix(),
+			Model:   resolvedModel,
+			Choices: []domain.CanonicalStreamChoice{{
+				Index: 0,
+				Delta: domain.CanonicalStreamDelta{Content: rem},
+			}},
+		}); flushWriteErr != nil {
+			releaseQuota(0)
+			_ = sseWriter.WriteError(flushWriteErr)
+			return
+		}
+	}
+	releaseQuota(0)
+	usageVal := extractStreamChunksUsage(cachedChunks, estTokens)
+	s.collector.RecordStream(time.Since(replayStarted), 0, false)
 	s.collector.Record(observability.RequestObservation{
 		Provider:          string(provider),
-		DeploymentID:      depID,
-		DeploymentName:    depName,
 		Model:             resolvedModel,
 		StatusCode:        http.StatusOK,
-		LatencyMs:         latMs,
-		TTFTMs:            ttftMs,
-		RoutingMicros:     routeMicros,
-		PromptTokens:      usageVal.PromptTokens,
-		CompletionTokens:  usageVal.CompletionTokens,
-		CostMicros:        costMicros,
-		FallbackAttempted: fb,
-		RetryCount:        retries,
+		CacheHit:          true,
 		GuardrailRedacted: guardrailRedacted,
 	})
 	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
@@ -725,13 +562,12 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		Provider:         string(provider),
 		PromptTokens:     usageVal.PromptTokens,
 		CompletionTokens: usageVal.CompletionTokens,
-		CostMicros:       costMicros,
-		CacheHit:         false,
+		CostMicros:       0,
+		CacheHit:         true,
 	})
-
-	var provenance string
-	if gm != nil {
-		provenance = gm.PricingProvenanceSource
+	var cacheProvenance string
+	if cachedGM != nil {
+		cacheProvenance = cachedGM.PricingProvenanceSource
 	}
 	if s.spendWorker != nil {
 		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
@@ -745,18 +581,226 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			RequestedModel:          req.Model,
 			ResolvedModel:           resolvedModel,
 			Provider:                provider,
-			DeploymentID:            depID,
-			PricingVersion:          pricingVer,
-			PricingStatus:           domain.ResolvePricingStatus(gm),
+			PricingStatus:           cachePricingStatus,
+			PricingProvenanceSource: cacheProvenance,
+			Usage:                   usageVal,
+			CostMicros:              0,
+			StatusCode:              http.StatusOK,
+			CacheHit:                true,
+			IsStream:                true,
+			CreatedAt:               time.Now().UTC(),
+		})); err != nil {
+			_ = sseWriter.WriteError(&domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "spend_persistence_unavailable",
+				Message:    "unable to persist request accounting",
+			})
+			return
+		}
+	}
+	_ = sseWriter.WriteDone()
+}
+
+type legacyStreamMetaSnapshot struct {
+	gm            *domain.GlobalModel
+	depID         string
+	depName       string
+	provider      domain.ProviderType
+	pricingVer    int
+	resolvedModel string
+	latMs         int64
+	ttftMs        int64
+	routeMicros   int64
+	retries       int
+	fb            bool
+}
+
+func extractLegacyStreamMeta(requestedModel string, meta *router.ExecutionMeta) legacyStreamMetaSnapshot {
+	snap := legacyStreamMetaSnapshot{resolvedModel: requestedModel}
+	if meta == nil {
+		return snap
+	}
+	snap.latMs = meta.LatencyMs
+	snap.ttftMs = meta.TTFTMs
+	snap.routeMicros = meta.RoutingMicros
+	snap.retries = meta.RetryCount
+	snap.fb = meta.FallbackAttempted
+	if meta.WinningDeployment != nil {
+		snap.depID = meta.WinningDeployment.ID
+		snap.depName = meta.WinningDeployment.DeploymentName
+		snap.gm = meta.WinningDeployment.GlobalModel
+		if snap.gm != nil {
+			snap.provider = snap.gm.Provider
+			snap.resolvedModel = snap.gm.ModelName
+			snap.pricingVer = snap.gm.PricingVersion
+		}
+	}
+	return snap
+}
+
+func (s *GatewayServer) writeLegacyStreamExecError(
+	w http.ResponseWriter,
+	requestedModel string,
+	streamStarted time.Time,
+	meta *router.ExecutionMeta,
+	err error,
+	_ *sse.Writer,
+	releaseQuota func(int),
+) {
+	releaseQuota(-1)
+	statusCode := http.StatusBadGateway
+	if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
+		statusCode = gwErr.StatusCode
+	}
+	snap := extractLegacyStreamMeta(requestedModel, meta)
+	s.collector.RecordStream(time.Since(streamStarted), 0, true)
+	s.collector.Record(observability.RequestObservation{
+		Provider:          string(snap.provider),
+		DeploymentID:      snap.depID,
+		DeploymentName:    snap.depName,
+		Model:             requestedModel,
+		StatusCode:        statusCode,
+		LatencyMs:         snap.latMs,
+		RoutingMicros:     snap.routeMicros,
+		FallbackAttempted: snap.fb,
+		RetryCount:        snap.retries,
+	})
+	domain.WriteHTTPError(w, err)
+}
+
+func (s *GatewayServer) writeLegacyStreamGuardrailBlock(
+	requestedModel string,
+	streamStarted time.Time,
+	meta *router.ExecutionMeta,
+	flushErr error,
+	guardrailRedacted bool,
+	sseWriter *sse.Writer,
+	releaseQuota func(int),
+) {
+	releaseQuota(-1)
+	snap := extractLegacyStreamMeta(requestedModel, meta)
+	var streamTTFT time.Duration
+	if snap.ttftMs > 0 {
+		streamTTFT = time.Duration(snap.ttftMs) * time.Millisecond
+	}
+	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, true)
+	s.collector.Record(observability.RequestObservation{
+		Provider:          string(snap.provider),
+		DeploymentID:      snap.depID,
+		DeploymentName:    snap.depName,
+		Model:             snap.resolvedModel,
+		StatusCode:        http.StatusBadGateway,
+		LatencyMs:         snap.latMs,
+		TTFTMs:            snap.ttftMs,
+		RoutingMicros:     snap.routeMicros,
+		FallbackAttempted: snap.fb,
+		RetryCount:        snap.retries,
+		GuardrailBlocked:  true,
+		GuardrailRedacted: guardrailRedacted,
+	})
+	errOut := flushErr
+	if errOut == nil {
+		errOut = guardrailStreamBlockedError()
+	}
+	_ = sseWriter.WriteError(errOut)
+}
+
+func (s *GatewayServer) finalizeLegacyStreamSuccess(
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	req *domain.CanonicalCompletionRequest,
+	reqID string,
+	traceID string,
+	estTokens int,
+	streamStarted time.Time,
+	meta *router.ExecutionMeta,
+	usage *domain.TokenUsage,
+	guardrailRedacted bool,
+	streamCacheKey string,
+	sawTerminalChunk bool,
+	sanitizedChunks []domain.CanonicalStreamChunk,
+	sseWriter *sse.Writer,
+	releaseUsage func(actualInput, actualOutput int, overrideCostMicros int64),
+) {
+	var usageVal domain.TokenUsage
+	totalTok := 0
+	if usage != nil {
+		usageVal = *usage
+		totalTok = usage.TotalTokens
+	}
+	if totalTok == 0 {
+		usageVal.PromptTokens = estTokens
+		usageVal.TotalTokens = estTokens
+		totalTok = estTokens
+	}
+
+	snap := extractLegacyStreamMeta(req.Model, meta)
+	if streamCacheKey != "" && sawTerminalChunk && len(sanitizedChunks) > 0 {
+		finalizeStreamChunksForCache(sanitizedChunks, snap.resolvedModel, usageVal)
+		s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, snap.resolvedModel, sanitizedChunks)
+	}
+	costMicros := finops.CalculateCostMicros(snap.gm, usageVal)
+	releaseUsage(usageVal.PromptTokens, usageVal.CompletionTokens, costMicros)
+
+	var streamTTFT time.Duration
+	if snap.ttftMs > 0 {
+		streamTTFT = time.Duration(snap.ttftMs) * time.Millisecond
+	}
+	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, false)
+	s.collector.Record(observability.RequestObservation{
+		Provider:          string(snap.provider),
+		DeploymentID:      snap.depID,
+		DeploymentName:    snap.depName,
+		Model:             snap.resolvedModel,
+		StatusCode:        http.StatusOK,
+		LatencyMs:         snap.latMs,
+		TTFTMs:            snap.ttftMs,
+		RoutingMicros:     snap.routeMicros,
+		PromptTokens:      usageVal.PromptTokens,
+		CompletionTokens:  usageVal.CompletionTokens,
+		CostMicros:        costMicros,
+		FallbackAttempted: snap.fb,
+		RetryCount:        snap.retries,
+		GuardrailRedacted: guardrailRedacted,
+	})
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:            snap.resolvedModel,
+		Provider:         string(snap.provider),
+		PromptTokens:     usageVal.PromptTokens,
+		CompletionTokens: usageVal.CompletionTokens,
+		CostMicros:       costMicros,
+		CacheHit:         false,
+	})
+
+	var provenance string
+	if snap.gm != nil {
+		provenance = snap.gm.PricingProvenanceSource
+	}
+	if s.spendWorker != nil {
+		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
+			RequestID:               reqID,
+			TraceID:                 traceID,
+			OrgID:                   idCtx.OrgID,
+			TeamID:                  idCtx.TeamID,
+			UserID:                  idCtx.UserID,
+			VirtualKeyID:            idCtx.VirtualKeyID,
+			Endpoint:                r.URL.Path,
+			RequestedModel:          req.Model,
+			ResolvedModel:           snap.resolvedModel,
+			Provider:                snap.provider,
+			DeploymentID:            snap.depID,
+			PricingVersion:          snap.pricingVer,
+			PricingStatus:           domain.ResolvePricingStatus(snap.gm),
 			PricingProvenanceSource: provenance,
 			Usage:                   usageVal,
 			CostMicros:              costMicros,
-			LatencyMs:               latMs,
-			TTFTMs:                  ttftMs,
+			LatencyMs:               snap.latMs,
+			TTFTMs:                  snap.ttftMs,
 			StatusCode:              http.StatusOK,
 			IsStream:                true,
-			FallbackAttempted:       fb,
-			RetryCount:              retries,
+			FallbackAttempted:       snap.fb,
+			RetryCount:              snap.retries,
 			CreatedAt:               time.Now().UTC(),
 		})); err != nil {
 			_ = sseWriter.WriteError(&domain.GatewayError{
@@ -773,14 +817,14 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	logger.InfoContext(r.Context(), "Completion stream completed",
 		slog.String("component", "inference"),
 		slog.String("request_id", reqID),
-		slog.String("provider", string(provider)),
+		slog.String("provider", string(snap.provider)),
 		slog.String("requested_model", req.Model),
-		slog.String("resolved_model", resolvedModel),
+		slog.String("resolved_model", snap.resolvedModel),
 		slog.Int("prompt_tokens", usageVal.PromptTokens),
 		slog.Int("completion_tokens", usageVal.CompletionTokens),
 		slog.Int("total_tokens", totalTok),
 		slog.Int64("cost_micros", costMicros),
-		slog.Int64("latency_ms", latMs),
+		slog.Int64("latency_ms", snap.latMs),
 		slog.Bool("stream", true),
 	)
 }

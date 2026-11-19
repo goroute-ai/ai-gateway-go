@@ -50,6 +50,7 @@ type Engine struct {
 	scannerFailClosed bool
 }
 
+// NewEngine creates a guardrail Engine with fail-closed scanner defaults.
 func NewEngine(repo storage.Repository) *Engine {
 	return &Engine{repo: repo, scannerTimeout: 2 * time.Second, scannerFailClosed: true}
 }
@@ -79,6 +80,7 @@ func (e *Engine) NewStreamRedactor(pol *domain.GuardrailPolicy) *StreamRedactor 
 	return NewStreamRedactorWithScanners(pol, e.scannerTimeout, e.scannerFailClosed, scanners...)
 }
 
+// Policy loads the active GuardrailPolicy for orgID, returning a fail-closed error on storage failure.
 func (e *Engine) Policy(ctx context.Context, orgID string) (*domain.GuardrailPolicy, error) {
 	if e == nil || e.repo == nil || orgID == "" {
 		return nil, policyUnavailableError()
@@ -593,6 +595,7 @@ func (e *Engine) SanitizeOutputStrict(ctx context.Context, orgID string, resp *d
 	return e.SanitizeOutput(ctx, orgID, resp)
 }
 
+// SanitizeTextOutput evaluates output guardrails against plain text and returns the sanitized string and redaction flag.
 func (e *Engine) SanitizeTextOutput(ctx context.Context, orgID, text string) (string, bool, error) {
 	pol, err := e.Policy(ctx, orgID)
 	if err != nil {
@@ -673,13 +676,6 @@ func redactValidCards(text string) (string, bool) {
 		return match
 	})
 	return updated, changed
-}
-
-func sanitizeText(text string) string {
-	updated := reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
-	updated = reSSN.ReplaceAllString(updated, "[REDACTED_SSN]")
-	updated, _ = redactValidCards(updated)
-	return reSecret.ReplaceAllString(updated, "[REDACTED_SECRET]")
 }
 
 func scannerErrorKind(err error) string {

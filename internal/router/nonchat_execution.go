@@ -376,24 +376,24 @@ func executeNonChat[T any](
 				}
 
 				hasUntriedSibling = len(filterOutDepIDs(filterUntried(tierDeployments, triedDepIDs), trippedDepIDs)) > 0
-				termErr, normErr, stopTier, abortGroup, tripped := rm.handleAttemptErrorWithPolicy(
+				out := rm.handleAttemptErrorWithPolicy(
 					ctx, dep, group, activeTotal, callErr, retryTracker, attempt, hasUntriedSibling,
 				)
-				lastErr = normErr
-				groupErr = normErr
-				appendFallbackError(meta, group.Alias, dep.ID, normErr)
-				if tripped {
+				lastErr = out.normalizedErr
+				groupErr = out.normalizedErr
+				appendFallbackError(meta, group.Alias, dep.ID, out.normalizedErr)
+				if out.tripped {
 					trippedDepIDs[dep.ID] = struct{}{}
 				}
-				if termErr != nil {
+				if out.terminalErr != nil {
 					rm.releaseUnusedProbes(ctx, deployments, []*domain.Deployment{dep})
-					return zero, meta, termErr
+					return zero, meta, out.terminalErr
 				}
-				if abortGroup {
+				if out.stopGroup {
 					stopGroup = true
 					break
 				}
-				if stopTier {
+				if out.stopTier {
 					break
 				}
 			}

@@ -662,7 +662,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 	if streamCacheHit {
 		quotaSettlement.actualTokensReconciled = true
 		releaseQuota(0, -2)
-		resolvedModel, provider, gm = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, chatReq.Model, cachedStreamChunks)
+		resolvedModel, provider, _ = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, chatReq.Model, cachedStreamChunks)
 		costMicros = 0
 		s.collector.Record(observability.RequestObservation{
 			Provider:          string(provider),
