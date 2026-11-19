@@ -456,3 +456,18 @@ func issuedKeyRaw(t *testing.T, gw *gateway.Client) string {
 	}
 	return vk.RawKey
 }
+
+func TestWithKeyRotationSecretSink(t *testing.T) {
+	sink := gateway.KeySecretSinkFunc(func(_ context.Context, _ gateway.KeyRotatedSecretEvent) error {
+		return nil
+	})
+	client, err := gateway.New(
+		gateway.WithSilentLogs(),
+		gateway.WithKeyRotationSecretSink(sink),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New(WithKeyRotationSecretSink): %v", err)
+	}
+	defer client.Close()
+	client.SetKeyRotationSecretSink(sink)
+}

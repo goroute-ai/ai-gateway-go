@@ -214,24 +214,12 @@ func matchesQuotaModelPattern(pattern, requestedModel string) bool {
 	if requestedModel == "" {
 		return false
 	}
-	matchTarget := func(target string) bool {
-		if pattern == target {
-			return true
-		}
-		if strings.HasSuffix(pattern, "*") {
-			prefix := strings.TrimSuffix(pattern, "*")
-			if prefix != "" && strings.HasPrefix(target, prefix) {
-				return true
-			}
-		}
-		return false
-	}
-	if matchTarget(requestedModel) {
+	if auth.MatchesModelPattern(pattern, requestedModel) {
 		return true
 	}
 	if !strings.Contains(pattern, "/") {
 		_, bareModel, _ := config.ParseProviderModel(requestedModel)
-		if bareModel != "" && matchTarget(bareModel) {
+		if bareModel != "" && auth.MatchesModelPattern(pattern, bareModel) {
 			return true
 		}
 	}
@@ -372,13 +360,21 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 		return mergeExtendedDescriptors(out), nil
 	}
 
-	// EndUser auto-create / lookup strictly scoped by (org_id, end_user_id).
+	// EndUser auto-create / lookup strictly scoped by (org_id, end_user_id) via L1 cache when available.
 	if state != nil && state.EndUserID != "" {
-		if euRepo, ok := s.repo.(storage.EndUserRepository); ok && euRepo != nil {
-			eu, err := euRepo.GetOrCreateEndUser(ctx, effID.OrgID, state.EndUserID)
-			if err != nil {
-				return nil, err
-			}
+		var (
+			eu  *domain.EndUser
+			err error
+		)
+		if s.rbac != nil {
+			eu, err = s.rbac.GetOrCreateCachedEndUser(ctx, effID.OrgID, state.EndUserID)
+		} else if euRepo, ok := s.repo.(storage.EndUserRepository); ok && euRepo != nil {
+			eu, err = euRepo.GetOrCreateEndUser(ctx, effID.OrgID, state.EndUserID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if eu != nil {
 			if !eu.IsActive {
 				return nil, &domain.GatewayError{
 					StatusCode: http.StatusForbidden,
@@ -401,41 +397,55 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 		}
 	}
 
-	// Active Tag quotas within org_id.
+	// Active Tag quotas within org_id via RBAC L1/L2 cache when available.
 	if state != nil && len(state.TagCandidates) > 0 {
-		if tagRepo, ok := s.repo.(storage.TagRepository); ok && tagRepo != nil {
-			tags, err := tagRepo.ListTags(ctx, storage.TagFilter{
+		var (
+			tags []*domain.Tag
+			err  error
+		)
+		if s.rbac != nil {
+			tags, err = s.rbac.GetCachedTags(ctx, effID.OrgID)
+		} else if tagRepo, ok := s.repo.(storage.TagRepository); ok && tagRepo != nil {
+			tags, err = tagRepo.ListTags(ctx, storage.TagFilter{
 				OrgID:      effID.OrgID,
 				ActiveOnly: true,
 			})
-			if err != nil {
-				return nil, err
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range tags {
+			if t == nil || !t.IsActive || t.OrgID != effID.OrgID {
+				continue
 			}
-			for _, t := range tags {
-				if t == nil || !t.IsActive || t.OrgID != effID.OrgID {
-					continue
+			if !slices.Contains(state.TagCandidates, t.Tag) {
+				continue
+			}
+			state.Tags = appendUniqueQuotaStr(state.Tags, t.Tag)
+			if len(t.AllowedModels) > 0 && !matchesQuotaModelList(t.AllowedModels, model) {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "tag_model_restricted",
+					Message:    fmt.Sprintf("Tag %q is not authorized to use model %q", t.Tag, model),
 				}
-				if !slices.Contains(state.TagCandidates, t.Tag) {
-					continue
-				}
-				state.Tags = appendUniqueQuotaStr(state.Tags, t.Tag)
-				if len(t.AllowedModels) > 0 && !matchesQuotaModelList(t.AllowedModels, model) {
-					return nil, &domain.GatewayError{
-						StatusCode: http.StatusForbidden,
-						Type:       domain.ErrorTypePermission,
-						Code:       "tag_model_restricted",
-						Message:    fmt.Sprintf("Tag %q is not authorized to use model %q", t.Tag, model),
-					}
-				}
-				if d := t.ToDescriptor(); d.HasLimits() {
-					out = append(out, d)
-				}
+			}
+			if d := t.ToDescriptor(); d.HasLimits() {
+				out = append(out, d)
 			}
 		}
 	}
 
-	// Active ModelAccessGroup quotas & spend attribution within org_id.
-	magEval, err := auth.EvaluateModelAccessGroups(ctx, s.repo, effID, model, effID.AccessGroups)
+	// Active ModelAccessGroup quotas & spend attribution within org_id via RBAC L1/L2 cache.
+	var (
+		magEval auth.ModelAccessGroupEvaluation
+		err     error
+	)
+	if s.rbac != nil {
+		magEval, err = s.rbac.EvaluateModelAccessGroupsWithCache(ctx, effID, model, effID.AccessGroups)
+	} else {
+		magEval, err = auth.EvaluateModelAccessGroups(ctx, s.repo, effID, model, effID.AccessGroups)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -453,60 +463,64 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 		}
 	}
 
-	if qRepo, ok := s.repo.(storage.QuotaPolicyRepository); ok && qRepo != nil {
-		policies, err := qRepo.ListQuotaPolicies(ctx, storage.QuotaPolicyFilter{
+	var policies []*domain.QuotaPolicy
+	if s.rbac != nil {
+		policies, err = s.rbac.GetCachedQuotaPolicies(ctx, effID.OrgID)
+	} else if qRepo, ok := s.repo.(storage.QuotaPolicyRepository); ok && qRepo != nil {
+		policies, err = qRepo.ListQuotaPolicies(ctx, storage.QuotaPolicyFilter{
 			OrgID:      effID.OrgID,
 			ActiveOnly: true,
 		})
-		if err != nil {
-			return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, qp := range policies {
+		if qp == nil || !qp.IsActive {
+			continue
 		}
-		for _, qp := range policies {
-			if qp == nil || !qp.IsActive {
-				continue
-			}
-			if !matchesQuotaModelPattern(qp.ModelPattern, model) {
-				continue
-			}
-			desc := qp.ToDescriptor()
-			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
-				continue
-			}
-			if desc.ScopeType == domain.QuotaScopeAgentSession && desc.WindowTTLSec <= 0 && s.cfg != nil && s.cfg.RateLimit.DefaultAgentSessionTTLSec > 0 {
-				desc.WindowTTLSec = s.cfg.RateLimit.DefaultAgentSessionTTLSec
-			}
-			if state != nil && qp.ID != "" {
-				state.MatchedQuotaPolicyIDs = appendUniqueQuotaStr(state.MatchedQuotaPolicyIDs, qp.ID)
-			}
-			if desc.HasLimits() {
-				out = append(out, desc)
-			}
+		if !matchesQuotaModelPattern(qp.ModelPattern, model) {
+			continue
+		}
+		desc := qp.ToDescriptor()
+		if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
+			continue
+		}
+		if desc.ScopeType == domain.QuotaScopeAgentSession && desc.WindowTTLSec <= 0 && s.cfg != nil && s.cfg.RateLimit.DefaultAgentSessionTTLSec > 0 {
+			desc.WindowTTLSec = s.cfg.RateLimit.DefaultAgentSessionTTLSec
+		}
+		if state != nil && qp.ID != "" {
+			state.MatchedQuotaPolicyIDs = appendUniqueQuotaStr(state.MatchedQuotaPolicyIDs, qp.ID)
+		}
+		if desc.HasLimits() {
+			out = append(out, desc)
 		}
 	}
 
+	var windows []*domain.BudgetWindowLimit
 	if bwRepo, ok := s.repo.(storage.BudgetWindowRepository); ok && bwRepo != nil {
 		_, hasRollingHistory := s.repo.(storage.RollingSpendHistoryRepository)
-		windows, err := bwRepo.ListBudgetWindowLimits(ctx, storage.BudgetWindowFilter{
+		windows, err = bwRepo.ListBudgetWindowLimits(ctx, storage.BudgetWindowFilter{
 			OrgID: effID.OrgID, SkipRollingSpend: hasRollingHistory,
 		})
-		if err != nil {
-			return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, bw := range windows {
+		if bw == nil || bw.MaxBudgetMicros <= 0 {
+			continue
 		}
-		for _, bw := range windows {
-			if bw == nil || bw.MaxBudgetMicros <= 0 {
-				continue
-			}
-			desc := bw.ToDescriptor()
-			if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
-				continue
-			}
-			if bw.WindowType != domain.BudgetWindowRolling24h && !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
-				// Periodic window has expired and is awaiting background reset.
-				desc.SpentFloorMicros = 0
-			}
-			if desc.HasLimits() {
-				out = append(out, desc)
-			}
+		desc := bw.ToDescriptor()
+		if !resolveScopeDescriptorID(effID, state, magEval.MatchingGroups, &desc) {
+			continue
+		}
+		if bw.WindowType != domain.BudgetWindowRolling24h && !bw.WindowResetAt.IsZero() && !now.Before(bw.WindowResetAt) {
+			// Periodic window has expired and is awaiting background reset.
+			desc.SpentFloorMicros = 0
+		}
+		if desc.HasLimits() {
+			out = append(out, desc)
 		}
 	}
 

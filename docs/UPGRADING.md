@@ -1,15 +1,15 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.21.2`**.
+This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.22.0`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
 
-## Upgrading from v1.21.0 / v1.21.1
+## Upgrading from v1.21.0 / v1.21.1 / v1.21.2
 
-`v1.21.2` is a drop-in distribution and release-automation upgrade over `v1.21.1` using the existing database schema through migration `0034` (no schema changes between `v1.21.1` and `v1.21.2`). When upgrading from `v1.21.0` or earlier, review the `v1.21.1` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
+`v1.22.0` is an additive governance, self-service key management, and observability upgrade over `v1.21.2` adding migration `0035_production_governance_hardening` (`teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns `last_rotated_at`, `rotation_count`, `revoked_at`, `revoked_by`, and `expiry_alert_sent_days`). Because `0035` adds nullable/defaulted columns idempotently (`ADD COLUMN IF NOT EXISTS`), run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. When upgrading from `v1.21.0` or earlier, also review the `v1.21.1`/`v1.21.0` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
 ## 1. Summary of Breaking & Behavior Changes (`v1.21.0`)
 

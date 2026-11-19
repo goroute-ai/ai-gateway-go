@@ -34,9 +34,9 @@ docs/
    *Implementation paths, tests, SQL migrations (`0001`–`0034`), change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`106` OpenAPI paths across `24` `/v1`, `72` `/admin/v1`, and `10` `/auth` routes):*
-   - Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI paths, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
-   - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground, SSO/password/key login, virtual key rotation & temp budgets, multi-window quotas, and management views.
+   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`118` OpenAPI paths across `28` `/v1`, `80` `/admin/v1`, and `10` `/auth` routes):*
+   - Unified Multi-Modal Data Plane (`28` `/v1` OpenAPI paths, self-service key APIs, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
+   - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground, SSO/password/key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and management views.
    - Model Context Protocol (MCP 2026-07-28 Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
    - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
@@ -70,7 +70,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 6. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v1.21.2`, migrations `0022`–`0034`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v1.22.0`, migrations `0022`–`0035`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 7. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 5-tier testing workflow covering unit/race checks, live PostgreSQL & Redis E2E suites, Playwright headless Chromium Web UI tests, and multi-replica HA container validation.*

@@ -1,8 +1,8 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.21.2`\
+> **Version**: `v1.22.0`\
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`106` OpenAPI paths: `24` `/v1`, `72` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`118` OpenAPI paths: `28` `/v1`, `80` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---
@@ -808,7 +808,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   ```
 
 ### 5.2 Teams, Memberships & Projects
-- `POST /admin/v1/teams`, `GET /admin/v1/teams?org_id={orgID}`, `PUT /admin/v1/teams/{teamID}`, `DELETE /admin/v1/teams/{teamID}`: Create, list, update, and delete teams (including per-team `max_budget_micros`, `allowed_models`, RPM/TPM limits, and `budget_reset_period`).
+- `POST /admin/v1/teams`, `GET /admin/v1/teams?org_id={orgID}`, `PUT /admin/v1/teams/{teamID}`, `DELETE /admin/v1/teams/{teamID}`: Create, list, update, and delete teams (including `team_member_permissions`, `default_member_allowed_models`, `enforce_guaranteed_throughput`, per-team `max_budget_micros`, `allowed_models`, RPM/TPM limits, and `budget_reset_period`).
   ```json
   {
     "org_id": "org_default",
@@ -817,8 +817,8 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
     "allowed_models": ["fast", "reasoning", "gemini-2.5-flash"]
   }
   ```
-- `POST /admin/v1/teams/{teamID}/members`, `GET /admin/v1/teams/{teamID}/members`, `DELETE /admin/v1/teams/{teamID}/members/{userID}`: Manage explicit multi-team user memberships and per-team budgets/roles (`team_memberships`).
-- `POST /admin/v1/projects`, `GET /admin/v1/projects?org_id={orgID}`, `PUT /admin/v1/projects/{projectID}`, `DELETE /admin/v1/projects/{projectID}`: Provision project-scoped containers inside organizations/teams for granular key and budget attribution.
+- `POST /admin/v1/teams/{teamID}/members`, `POST /admin/v1/teams/{teamID}/members/bulk`, `GET /admin/v1/teams/{teamID}/members`, `POST /admin/v1/teams/{teamID}/members/{userID}/reset-spend`, `DELETE /admin/v1/teams/{teamID}/members/{userID}`: Manage explicit multi-team user memberships (with transactional `remove_user_ids` support on `/members/bulk`), per-team budgets/roles (`team_memberships`), and spend resets.
+- `POST /admin/v1/projects`, `GET /admin/v1/projects?org_id={orgID}`, `PUT /admin/v1/projects/{projectID}`, `DELETE /admin/v1/projects/{projectID}`: Provision project-scoped containers inside organizations/teams (including `enforce_project_model_quota`, budgets, and allowlists) for granular key and budget attribution.
 
 ### 5.3 User Management & Federated Issuer Binding
 - `POST /admin/v1/users`, `GET /admin/v1/users?org_id={orgID}`, `PUT /admin/v1/users/{userID}`, `DELETE /admin/v1/users/{userID}`: Register, inspect, update, and remove organization users with enterprise RBAC roles (`platform_admin`, `org_admin`, `org_viewer`, `team_admin`, `developer`, `service_account`, `viewer`), per-user budgets/rate limits, and explicit OIDC identity binding `(org_id, oidc_issuer, oidc_subject)`.
@@ -833,8 +833,8 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   }
   ```
 
-### 5.4 Virtual Key Provisioning, Rotation, Temp Budgets & Access Rules
-- `POST /admin/v1/keys`: Issue a scoped Virtual API Key (`sk-gw-...`) with budget caps, RPM/TPM rate limits, expiration, soft budget alerts, budget fallback model, and model/MCP/A2A allowlists.
+### 5.4 Virtual Key Provisioning, Lifecycle, Temp Budgets, Self-Service & Access Rules
+- `POST /admin/v1/keys`: Issue a scoped Virtual API Key (`sk-gw-...`) with `key_type` presets (`default`, `llm_api`, `management`, `read_only`, `service_account`), budget caps, RPM/TPM/concurrency limits, expiration, soft budget alerts, budget fallback model, auto-rotation intervals, and model/MCP/A2A allowlists.
   ```json
   {
     "org_id": "org_default",
@@ -842,20 +842,21 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
     "name": "data-pipeline-key",
     "role": "service_account",
     "max_budget_micros": 50000000,
-    "rate_limit_rpm": 1000,
-    "rate_limit_tpm": 500000,
+    "rpm_limit": 1000,
+    "tpm_limit": 500000,
     "allowed_models": ["fast", "reasoning"],
     "allowed_mcp_servers": ["github-tools"],
     "allowed_a2a_agents": ["analyst-agent"]
   }
   ```
-- `GET /admin/v1/keys?org_id={orgID}`: List virtual keys for an organization (`team_admin` restricted to administered teams).
-- `PUT /admin/v1/keys/{keyID}`: Update mutable virtual key limits, models, and metadata.
-- `POST /admin/v1/keys/{keyID}/rotate`: Manually rotate a virtual key immediately or with a grace window (marks previous hash in `virtual_key_deprecated_hashes` and emits `X-Gateway-Key-Deprecated` / `X-Gateway-Key-Revoke-At` headers during grace).
+- `GET /admin/v1/keys?org_id={orgID}`, `GET /admin/v1/keys/{keyID}`, `PUT /admin/v1/keys/{keyID}`: List (`team_admin` restricted to administered teams), inspect, or update mutable virtual key limits, models, and metadata (invalidating both primary and active deprecated grace hashes across L1/L2 caches).
+- `POST /admin/v1/keys/{keyID}/rotate`: Manually rotate a virtual key immediately or with a dual-active grace window (`grace_period_seconds`, marking previous hash in `virtual_key_deprecated_hashes` and emitting `X-Gateway-Key-Deprecated` / `X-Gateway-Key-Revoke-At` headers during grace).
 - `POST /admin/v1/keys/{keyID}/temp-budget`: Grant an expiring temporary budget increase (`temp_budget_increase_micros` / `increase_micros` plus `temp_budget_expires_at` / `expires_at` / `ttl_seconds`) enforced immediately at quota admission.
-- `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached permissions from L1 memory and Redis via Pub/Sub.
+- `POST /admin/v1/keys/{keyID}/block`, `POST /admin/v1/keys/{keyID}/unblock`, `POST /admin/v1/keys/{keyID}/reset-spend`, `POST /admin/v1/keys/bulk-update`: Temporarily block/unblock keys, reset spend, or atomically update up to `250` keys per batch.
+- `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached primary & deprecated grace permissions from L1 memory and Redis via Pub/Sub.
 - `POST /admin/v1/jwt-mappings`, `GET /admin/v1/jwt-mappings`, `DELETE /admin/v1/jwt-mappings/{id}`: Configure explicit tenant-scoped JWT claim-to-Virtual-Key (`(org_id, issuer, claim_name, claim_value) -> virtual_key_id`) bindings.
 - `POST /admin/v1/access-group-rules`, `GET /admin/v1/access-group-rules`, `DELETE /admin/v1/access-group-rules/{id}`: Configure ABAC claim/attribute dynamic access rules (`allowed_models`, `access_group_id`, `operator`, `priority`).
+- **Data Plane Self-Inspection & Developer Self-Service**: `GET /v1/key/info` inspects the caller's active key identity, effective limits, and spend; `GET /v1/self/keys`, `POST /v1/self/keys`, `POST /v1/self/keys/{keyID}/rotate`, and `DELETE /v1/self/keys/{keyID}` allow scoped self-service governed by `team_member_permissions` and `self_serve_budget_policy`.
 
 ### 5.5 Upstream Provider Credentials Vault
 - `POST /admin/v1/credentials`: Securely stores provider credentials encrypted with AES-256-GCM.
@@ -973,16 +974,18 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   ```
   - `GET /admin/v1/organizations/{orgID}/guardrail-usage`: Returns daily guardrail metrics, top triggered guardrails, usage units, and integer micro-dollar (`cost_micros`) attribution rollups (optional filters: `start_date`, `end_date`, `guardrail_id`, `team_id`, `virtual_key_id`, `top_limit`).
 
-### 5.10 Quotas, Multi-Window Budgets, FinOps Ledgers, Config & Audit Logs
+### 5.10 Quotas, Multi-Window Budgets, PTU Sharing, Config, Security & Audit Ledgers
 - `PUT /admin/v1/quotas`, `GET /admin/v1/quotas`, `DELETE /admin/v1/quotas/{policyID}`: Configure multi-dimensional per-model and scope quota policies (`scope_type`: `org`, `team`, `user`, `virtual_key`, `end_user`, `tag`, `model_access_group`, `agent_session`; `model_pattern`, `rpm_limit`, `tpm_limit`, `itpm_limit`, `otpm_limit`, `tpd_limit`, `max_concurrent`, `max_budget_micros`, `max_iterations`).
 - `PUT /admin/v1/budget-windows`, `GET /admin/v1/budget-windows`: Configure multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) evaluated simultaneously during atomic descriptor admission (`rolling_24h` expires each settled spend charge independently 24 hours after its spend timestamp and recovers from PostgreSQL `spend_logs` on cold Redis state).
 - `POST|PUT /admin/v1/end-users`, `GET /admin/v1/end-users`, `GET /admin/v1/end-users/{id}`, `DELETE /admin/v1/end-users/{id}`: Manage persisted end-user budgets, RPM/TPM/TPD limits, and aliases.
 - `POST|PUT /admin/v1/tags`, `GET /admin/v1/tags`, `GET /admin/v1/tags/{id}`, `DELETE /admin/v1/tags/{id}`: Manage persisted tag budgets and rate-limit policies matched on `X-Gateway-Tags` / request tags.
 - `POST|PUT /admin/v1/model-access-groups`, `GET /admin/v1/model-access-groups`, `GET /admin/v1/model-access-groups/{id}`, `DELETE /admin/v1/model-access-groups/{id}`, plus `POST /admin/v1/model-access-groups/{id}/members`, `GET /admin/v1/model-access-groups/{id}/members`, `DELETE /admin/v1/model-access-groups/{id}/members/{memberID}`: Group model aliases and deployments into named quota/budget policies.
+- `POST /admin/v1/deployments/{depID}/ptu-shares`, `GET /admin/v1/deployments/{depID}/ptu-shares`, `DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID}`, `POST /admin/v1/priority-classes`: Configure PTU capacity shares and weighted priority classes.
 - `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars. `unpriced_requests` and `unpriced_tokens` identify usage whose price is unknown or unrecorded and is not represented by the cost total.
 - `GET /admin/v1/spend/logs?org_id={orgID}&limit={limit}&offset={offset}`: Paginated raw spend ledger records including prompt, completion, cached, reasoning tokens, and modality units.
-- `GET /admin/v1/audit/logs?org_id={orgID}&limit={limit}`: Immutable governance audit trail of administrative changes (key provisioning, policy updates, credential rotations).
+- `GET /admin/v1/audit/logs?org_id={orgID}&limit={limit}`: Immutable governance audit trail of administrative changes (recording redacted `before_value`/`after_value` JSON snapshots across control-plane mutations).
 - `GET /admin/v1/config`: Returns sanitized runtime configuration summary (secrets redacted) for the Operator Console.
+- `POST /admin/v1/security/rotate-kek`: Transactionally re-wraps encrypted DEKs (`provider_credentials`, `mcp_servers`, `a2a_agents`, `guardrail_definitions`) under a new Master KEK (`platform_admin` only) and emits `"vault_kek_rotated"` peer-pod restart alerts without broadcasting secret material over Redis.
 
 ### 5.11 Health Probing, Telemetry & Cache Invalidation
 - `GET /admin/v1/health/deployments`: Health state machine status (`CLOSED`, `HALF_OPEN`, `OPEN`), failure counts, and latency EWMA for all deployments.
@@ -1155,7 +1158,7 @@ The Operator UI (`LoginView`) supports three authentication mechanisms depending
 | Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 19-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP servers, toolsets, synchronized tools, and A2A agent management. |
-| Sidebar: Configuration | `ConfigView` | Read-only sanitized runtime configuration inspection (`/admin/v1/config`). |
+| Sidebar: Configuration | `ConfigView` | Read-only sanitized runtime configuration inspection (`/admin/v1/config`) and `platform_admin` Master KEK rotation (`POST /admin/v1/security/rotate-kek`). |
 
 
 ## 9. Provider & Modality Compatibility Matrix

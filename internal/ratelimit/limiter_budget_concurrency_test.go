@@ -186,8 +186,8 @@ func TestGlobalLimitsRollbackOrgAcquisitionOnFailure(t *testing.T) {
 	if v, _ := mr.Get("gw:budget:{org:org-b}:reservations:key:vk-b:sum"); v != "" && v != "0" {
 		t.Fatalf("expected org-b reservation sum rolled back to 0, got %q", v)
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-b}:conc:vk-b"); v != "" && v != "0" {
-		t.Fatalf("expected org-b conc rolled back to 0, got %q", v)
+	if members, _ := mr.ZMembers("gw:rl:{org:org-b}:zconc:vk-b"); len(members) != 0 {
+		t.Fatalf("expected org-b zconc rolled back to 0 members, got %v", members)
 	}
 }
 
@@ -234,11 +234,11 @@ func TestTeamAndOrgConcurrencyEnforcementReconcileAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first team/org conc acquire: %v", err)
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:team:team-conc-1"); v != "1" {
-		t.Fatalf("expected conc:team:team-conc-1=1, got %q", v)
+	if members, err := mr.ZMembers("gw:rl:{org:org-conc-1}:zconc:team:team-conc-1"); err != nil || len(members) != 1 {
+		t.Fatalf("expected zconc:team:team-conc-1 to have 1 slot, got %v err=%v", members, err)
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:org:org-conc-1"); v != "1" {
-		t.Fatalf("expected conc:org:org-conc-1=1, got %q", v)
+	if members, err := mr.ZMembers("gw:rl:{org:org-conc-1}:zconc:org:org-conc-1"); err != nil || len(members) != 1 {
+		t.Fatalf("expected zconc:org:org-conc-1 to have 1 slot, got %v err=%v", members, err)
 	}
 
 	// Second concurrent request on the same team hits TEAM_CONCURRENCY_EXCEEDED.
@@ -275,11 +275,11 @@ func TestTeamAndOrgConcurrencyEnforcementReconcileAndRollback(t *testing.T) {
 	// Releasing both decrements team and org concurrency back to 0.
 	rel1(10)
 	rel2(10)
-	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:team:team-conc-1"); v != "0" {
-		t.Fatalf("expected conc:team:team-conc-1=0 after release, got %q", v)
+	if members, _ := mr.ZMembers("gw:rl:{org:org-conc-1}:zconc:team:team-conc-1"); len(members) != 0 {
+		t.Fatalf("expected zconc:team:team-conc-1=0 after release, got %v", members)
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-conc-1}:conc:org:org-conc-1"); v != "0" {
-		t.Fatalf("expected conc:org:org-conc-1=0 after release, got %q", v)
+	if members, _ := mr.ZMembers("gw:rl:{org:org-conc-1}:zconc:org:org-conc-1"); len(members) != 0 {
+		t.Fatalf("expected zconc:org:org-conc-1=0 after release, got %v", members)
 	}
 
 	// Verify rollback_acquire.lua rolls back team_conc and org_conc when global limit fails.
@@ -300,11 +300,11 @@ func TestTeamAndOrgConcurrencyEnforcementReconcileAndRollback(t *testing.T) {
 	if _, err := limiter.Acquire(ctx, idRollback, 10); err == nil {
 		t.Fatal("expected global_concurrency_exceeded")
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-rb}:conc:team:team-rb"); v != "" && v != "0" {
-		t.Fatalf("expected rolled back team conc=0, got %q", v)
+	if members, _ := mr.ZMembers("gw:rl:{org:org-rb}:zconc:team:team-rb"); len(members) != 0 {
+		t.Fatalf("expected rolled back team zconc=0, got %v", members)
 	}
-	if v, _ := mr.Get("gw:rl:{org:org-rb}:conc:org:org-rb"); v != "" && v != "0" {
-		t.Fatalf("expected rolled back org conc=0, got %q", v)
+	if members, _ := mr.ZMembers("gw:rl:{org:org-rb}:zconc:org:org-rb"); len(members) != 0 {
+		t.Fatalf("expected rolled back org zconc=0, got %v", members)
 	}
 }
 

@@ -54,6 +54,32 @@ func isPrivilegedOrgOrPlatformRole(role domain.Role) bool {
 	}
 }
 
+func (s *GatewayServer) validateTeamAdminKeyTargetUser(ctx context.Context, w http.ResponseWriter, op *domain.OperatorContext, orgID, userID string) bool {
+	if op == nil || op.Role != domain.OperatorRoleTeamAdmin || strings.TrimSpace(userID) == "" {
+		return true
+	}
+	if !s.userBelongsToTeam(ctx, orgID, op.TeamID, userID) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_team_access_denied",
+			Message:    "team_admin can only bind virtual keys to users belonging to their own team",
+		})
+		return false
+	}
+	if targetUser, err := s.lookupUserByID(ctx, userID); err == nil && targetUser != nil &&
+		(targetUser.Role == domain.RolePlatformAdmin || targetUser.Role == domain.RoleOrgAdmin) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_role_access_denied",
+			Message:    "team_admin cannot bind virtual keys to organization or platform administrators",
+		})
+		return false
+	}
+	return true
+}
+
 func hasDisallowedTeamAdminEndpoint(endpoints []string) bool {
 	for _, ep := range endpoints {
 		trimmed := strings.TrimSpace(ep)
@@ -116,34 +142,7 @@ func resolveScopedTeamID(r *http.Request, explicitTeamID string) string {
 }
 
 func (s *GatewayServer) audit(ctx context.Context, orgID, action, resource, resourceID string, details map[string]any) {
-	if s == nil || s.repo == nil {
-		return
-	}
-	actorID := "master_admin"
-	var impersonatedBy string
-	if op := auth.OperatorFromContext(ctx); op != nil {
-		if op.ActorID != "" {
-			actorID = op.ActorID
-		}
-		impersonatedBy = op.ImpersonatedByActorID
-	}
-	if impersonatedBy != "" {
-		enriched := make(map[string]any, len(details)+2)
-		for k, v := range details {
-			enriched[k] = v
-		}
-		enriched["actor_id"] = actorID
-		enriched["impersonated_by"] = impersonatedBy
-		details = enriched
-	}
-	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
-		OrgID:      orgID,
-		ActorID:    actorID,
-		Action:     action,
-		Resource:   resource,
-		ResourceID: resourceID,
-		Details:    details,
-	})
+	s.auditWithDiff(ctx, orgID, action, resource, resourceID, details, nil, nil)
 }
 
 // --- Organizations, Layer 2 Subscriptions, Layer 3 Model Policies & Security Guardrails ---
@@ -172,6 +171,14 @@ func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_self_serve_budget_policy", Message: "self_serve_budget_policy must be disabled, lower_only, or ceiling"})
 		return
 	}
+	if org.LifecycleWebhookURL != "" {
+		cleanWebhook, wErr := s.validateLifecycleWebhookURL(org.LifecycleWebhookURL)
+		if wErr != nil {
+			domain.WriteHTTPError(w, wErr)
+			return
+		}
+		org.LifecycleWebhookURL = cleanWebhook
+	}
 	org.IsActive = true
 	if org.BudgetResetPeriod == "" {
 		org.BudgetResetPeriod = domain.BudgetResetMonthly
@@ -180,7 +187,7 @@ func (s *GatewayServer) handleAdminCreateOrg(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), org.ID, "organization.created", "organization", org.ID, map[string]any{"name": org.Name})
+	s.auditWithDiff(r.Context(), org.ID, "organization.created", "organization", org.ID, map[string]any{"name": org.Name}, nil, &org)
 	writeJSON(w, http.StatusCreated, org)
 }
 
@@ -220,6 +227,16 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 		return
 	}
 	sub.OrgID = orgID
+	var beforeSub *domain.OrgProviderSubscription
+	if subs, err := s.repo.GetOrgProviderSubscriptions(r.Context(), orgID); err == nil {
+		for _, item := range subs {
+			if item != nil && item.Provider == sub.Provider {
+				cp := *item
+				beforeSub = &cp
+				break
+			}
+		}
+	}
 	if err := s.repo.SetOrgProviderSubscription(r.Context(), &sub); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -227,11 +244,11 @@ func (s *GatewayServer) handleAdminSetOrgSubscription(w http.ResponseWriter, r *
 	if s.rbac != nil {
 		s.rbac.InvalidateOrgPolicies(r.Context(), orgID)
 	}
-	s.audit(r.Context(), orgID, "organization.subscription.updated", "org_provider_subscription", string(sub.Provider), map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "organization.subscription.updated", "org_provider_subscription", string(sub.Provider), map[string]any{
 		"provider":        sub.Provider,
 		"is_enabled":      sub.IsEnabled,
 		"auto_enable_new": sub.AutoEnableNew,
-	})
+	}, beforeSub, &sub)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -259,6 +276,16 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 		return
 	}
 	pol.OrgID = orgID
+	var beforePol *domain.OrgModelPolicy
+	if pols, err := s.repo.GetOrgModelPolicies(r.Context(), orgID); err == nil {
+		for _, item := range pols {
+			if item != nil && item.GlobalModelID == pol.GlobalModelID {
+				cp := *item
+				beforePol = &cp
+				break
+			}
+		}
+	}
 	if err := s.repo.SetOrgModelPolicy(r.Context(), &pol); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -266,10 +293,10 @@ func (s *GatewayServer) handleAdminSetOrgModelPolicy(w http.ResponseWriter, r *h
 	if s.rbac != nil {
 		s.rbac.InvalidateOrgPolicies(r.Context(), orgID)
 	}
-	s.audit(r.Context(), orgID, "organization.model_policy.updated", "org_model_policy", pol.GlobalModelID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "organization.model_policy.updated", "org_model_policy", pol.GlobalModelID, map[string]any{
 		"global_model_id": pol.GlobalModelID,
 		"is_enabled":      pol.IsEnabled,
-	})
+	}, beforePol, &pol)
 	writeJSON(w, http.StatusOK, pol)
 }
 
@@ -300,11 +327,12 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		return
 	}
 	pol.OrgID = orgID
+	beforePol, _ := s.repo.GetGuardrailPolicy(r.Context(), orgID)
 	if err := s.repo.SetGuardrailPolicy(r.Context(), &pol); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), orgID, "organization.guardrails.updated", "guardrail_policy", orgID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "organization.guardrails.updated", "guardrail_policy", orgID, map[string]any{
 		"enable_prompt_injection": pol.EnablePromptInjection,
 		"prompt_injection_action": pol.PromptInjectionAction,
 		"enable_pii_detection":    pol.EnablePIIDetection,
@@ -312,7 +340,7 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		"enable_secret_detection": pol.EnableSecretDetection,
 		"secret_action":           pol.SecretAction,
 		"redact_output_pii":       pol.RedactOutputPII,
-	})
+	}, beforePol, &pol)
 	writeJSON(w, http.StatusOK, pol)
 }
 
@@ -406,7 +434,7 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), team.OrgID, "team.created", "team", team.ID, map[string]any{"name": team.Name})
+	s.auditWithDiff(r.Context(), team.OrgID, "team.created", "team", team.ID, map[string]any{"name": team.Name}, nil, &team)
 	writeJSON(w, http.StatusCreated, team)
 }
 
@@ -479,7 +507,7 @@ func (s *GatewayServer) handleAdminCreateUser(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), user.OrgID, "user.created", "user", user.ID, map[string]any{"email": user.Email, "role": user.Role})
+	s.auditWithDiff(r.Context(), user.OrgID, "user.created", "user", user.ID, map[string]any{"email": user.Email, "role": user.Role}, nil, &user)
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -618,13 +646,7 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
-		if req.UserID != "" && !s.userBelongsToTeam(r.Context(), req.OrgID, op.TeamID, req.UserID) {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusForbidden,
-				Type:       domain.ErrorTypePermission,
-				Code:       "cross_team_access_denied",
-				Message:    "team_admin can only issue virtual keys for users belonging to their own team",
-			})
+		if !s.validateTeamAdminKeyTargetUser(r.Context(), w, op, req.OrgID, req.UserID) {
 			return
 		}
 		if req.MaxBudgetMicros > 0 {
@@ -645,18 +667,21 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
+	if !s.enforceGuaranteedThroughput(r.Context(), w, req.OrgID, req.TeamID, "", req.RPMLimit, req.TPMLimit) {
+		return
+	}
 	vk, err := s.authSvc.IssueVirtualKey(r.Context(), &req)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), vk.OrgID, "virtual_key.issued", "virtual_key", vk.ID, map[string]any{
+	s.auditWithDiff(r.Context(), vk.OrgID, "virtual_key.issued", "virtual_key", vk.ID, map[string]any{
 		"key_prefix":            vk.KeyPrefix,
 		"name":                  vk.Name,
 		"key_type":              vk.KeyType,
 		"can_impersonate":       vk.CanImpersonate,
 		"rotation_interval_sec": vk.RotationIntervalSec,
-	})
+	}, nil, vk)
 	writeJSON(w, http.StatusCreated, vk)
 }
 
@@ -664,6 +689,44 @@ func (s *GatewayServer) handleAdminListKeys(w http.ResponseWriter, r *http.Reque
 	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
 	teamID := resolveScopedTeamID(r, r.URL.Query().Get("team_id"))
 	if _, ok := s.authorizeTeamAdmin(w, r, orgID, teamID, false); !ok {
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	limit, okLim := parseNonNegativeIntQuery(r, "limit")
+	offset, okOff := parseNonNegativeIntQuery(r, "offset")
+	if !okLim || !okOff {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_pagination",
+			Message:    "limit and offset must be non-negative integers",
+		})
+		return
+	}
+	if govRepo, hasGov := s.keyGovernanceRepo(); hasGov {
+		keys, total, err := govRepo.ListVirtualKeysFiltered(r.Context(), storage.VirtualKeyFilter{
+			OrgID:     orgID,
+			Status:    status,
+			TeamID:    teamID,
+			UserID:    userID,
+			ProjectID: projectID,
+			Search:    search,
+			Limit:     limit,
+			Offset:    offset,
+		})
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data":   keys,
+			"total":  total,
+			"limit":  limit,
+			"offset": offset,
+		})
 		return
 	}
 	keys, err := s.repo.ListVirtualKeys(r.Context(), orgID)
@@ -680,7 +743,7 @@ func (s *GatewayServer) handleAdminListKeys(w http.ResponseWriter, r *http.Reque
 		}
 		keys = filtered
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": keys})
+	writeJSON(w, http.StatusOK, map[string]any{"data": keys, "total": len(keys)})
 }
 
 func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Request) {
@@ -693,18 +756,24 @@ func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Requ
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	if _, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true); !ok {
+	op, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true)
+	if !ok {
 		return
 	}
 	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
 		return
 	}
-	if err := s.authSvc.RevokeKey(r.Context(), keyID); err != nil {
+	actorID := "master_admin"
+	if op != nil && op.ActorID != "" {
+		actorID = op.ActorID
+	}
+	if err := s.authSvc.RevokeKeyWithActor(r.Context(), keyID, actorID); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), vk.OrgID, "virtual_key.revoked", "virtual_key", keyID, nil)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "id": keyID})
+	after, _ := s.repo.GetVirtualKeyByID(r.Context(), keyID)
+	s.auditWithDiff(r.Context(), vk.OrgID, "virtual_key.revoked", "virtual_key", keyID, map[string]any{"revoked_by": actorID}, vk, after)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "id": keyID, "revoked_by": actorID})
 }
 
 // --- Boundary 2 Provider Credentials Vault & Lifecycle ---
@@ -763,11 +832,11 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), cred.OrgID, "credential.created", "provider_credential", cred.ID, map[string]any{
+	s.auditWithDiff(r.Context(), cred.OrgID, "credential.created", "provider_credential", cred.ID, map[string]any{
 		"provider":    cred.Provider,
 		"name":        cred.Name,
 		"key_version": cred.KeyVersion,
-	})
+	}, nil, cred)
 	writeJSON(w, http.StatusCreated, cred)
 }
 
@@ -822,6 +891,7 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 			return
 		}
 	}
+	beforeCred := *cred
 	if err := s.vault.RotateCredential(cred, req.NewAPIKey); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
@@ -836,10 +906,10 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), cred.OrgID, "credential.rotated", "provider_credential", cred.ID, map[string]any{
+	s.auditWithDiff(r.Context(), cred.OrgID, "credential.rotated", "provider_credential", cred.ID, map[string]any{
 		"provider":    cred.Provider,
 		"key_version": cred.KeyVersion,
-	})
+	}, &beforeCred, cred)
 	writeJSON(w, http.StatusOK, cred)
 }
 
@@ -891,6 +961,7 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 	credCopy.BaseURL = cleanBaseURL
 	credCopy.DecryptedAPIKey = rawKey
 	start := time.Now()
+	beforeCred := *cred
 	models, discErr := adp.ListModels(r.Context(), &credCopy)
 	latencyMs := time.Since(start).Milliseconds()
 	now := time.Now().UTC()
@@ -909,13 +980,13 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 			errMsg = discErr.Error()
 		}
 	}
-	s.audit(r.Context(), cred.OrgID, "credential.validated", "provider_credential", cred.ID, map[string]any{
+	s.auditWithDiff(r.Context(), cred.OrgID, "credential.validated", "provider_credential", cred.ID, map[string]any{
 		"provider":          cred.Provider,
 		"valid":             valid,
 		"validation_status": validationStatus,
 		"discovered_models": len(models),
 		"latency_ms":        latencyMs,
-	})
+	}, &beforeCred, cred)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                cred.ID,
 		"provider":          cred.Provider,
@@ -1061,7 +1132,7 @@ func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), mg.OrgID, "model_group.created", "model_group", mg.ID, map[string]any{"alias": mg.Alias, "strategy": mg.RoutingStrategy})
+	s.auditWithDiff(r.Context(), mg.OrgID, "model_group.created", "model_group", mg.ID, map[string]any{"alias": mg.Alias, "strategy": mg.RoutingStrategy}, nil, &mg)
 	writeJSON(w, http.StatusCreated, mg)
 }
 
@@ -1148,12 +1219,12 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.audit(r.Context(), "", "deployment.created", "deployment", dep.ID, map[string]any{
+	s.auditWithDiff(r.Context(), "", "deployment.created", "deployment", dep.ID, map[string]any{
 		"model_group_id":  dep.ModelGroupID,
 		"global_model_id": dep.GlobalModelID,
 		"priority":        dep.Priority,
 		"weight":          dep.Weight,
-	})
+	}, nil, &dep)
 	writeJSON(w, http.StatusCreated, dep)
 }
 
@@ -1273,6 +1344,7 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 	if req.PricingEffectiveDate == "" {
 		req.PricingEffectiveDate = time.Now().UTC().Format(time.RFC3339)
 	}
+	beforeModel, _ := s.repo.GetGlobalModel(r.Context(), req.GlobalModelID)
 	gm, err := s.repo.UpdateModelPricing(
 		r.Context(), req.GlobalModelID, req.InputCostMicrosPer1M, req.OutputCostMicrosPer1M,
 		req.CachedInputCostMicrosPer1M, req.ReasoningCostMicrosPer1M, req.PricingStatus,
@@ -1283,13 +1355,13 @@ func (s *GatewayServer) handleAdminUpdateModelPricing(w http.ResponseWriter, r *
 		return
 	}
 	hist, _ := s.repo.ListModelPricingHistory(r.Context(), req.GlobalModelID)
-	s.audit(r.Context(), "", "catalogue.pricing.updated", "global_model", gm.ID, map[string]any{
+	s.auditWithDiff(r.Context(), "", "catalogue.pricing.updated", "global_model", gm.ID, map[string]any{
 		"model_name":               gm.ModelName,
 		"pricing_version":          gm.PricingVersion,
 		"input_cost_micros_per_1m": gm.InputCostMicrosPer1M,
 		"pricing_status":           gm.PricingStatus,
 		"provenance_source":        gm.PricingProvenanceSource,
-	})
+	}, beforeModel, gm)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model":   gm,
 		"history": hist,

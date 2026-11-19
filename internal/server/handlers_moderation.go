@@ -100,7 +100,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, model, estTokens, reqID, nil)
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)

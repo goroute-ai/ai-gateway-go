@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.21.2-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.2)
+[![Release](https://img.shields.io/badge/Release-v1.22.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.22.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-qaadir%2Fai--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/qaadir/ai-gateway)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
@@ -39,7 +39,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.2
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.22.0
 ```
 
 ```go
@@ -99,7 +99,7 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.2).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.22.0).*
 
 ### Path 3: Container Images (Docker Hub / GHCR), Docker Compose & Helm OCI
 
@@ -107,17 +107,17 @@ Run the published multi-arch (`linux/amd64`, `linux/arm64`) Distroless nonroot c
 
 ```bash
 # Docker Hub
-docker pull qaadir/ai-gateway:1.21.2
+docker pull qaadir/ai-gateway:1.22.0
 
-# GitHub Container Registry (supports both bare 1.21.2 and v1.21.2 tags)
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.21.2
+# GitHub Container Registry (supports both bare 1.22.0 and v1.22.0 tags)
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.22.0
 # Or track latest stable: docker pull qaadir/ai-gateway:latest
 ```
 
 Deploy directly to Kubernetes via OCI Helm Registry:
 
 ```bash
-helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.5.2
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.6.0
 ```
 
 Or spin up GoRoute (with embedded UI), PostgreSQL 16 (for migrations and spend logs), Redis 7 (for rate limiting and cache), and Prometheus:
@@ -404,9 +404,9 @@ Returns:
 
 ---
 
-### 6. Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI Paths)
+### 6. Unified Multi-Modal Data Plane (`28` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`24` paths), `/admin/v1` (`72` paths), and `/auth` (`10` paths) is enforced by `make specgen` (`106` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`28` paths), `/admin/v1` (`80` paths), and `/auth` (`10` paths) is enforced by `make specgen` (`118` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -529,7 +529,7 @@ GoRoute embeds a production React 18 + TypeScript + Tailwind single-page applica
 
 - **Zero Node.js Runtime Overhead**: Static bundles are compiled at build time and served directly from memory.
 - **Interactive Guardrail Studio & Simulator**: Configure baseline PII/secret/toxicity policies, manage named cloud/OSS/Starlark guardrails and tool trust policies, simulate requests via `/v1/guardrails/apply`, and track micro-dollar guardrail usage.
-- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 500 KB` uncompressed (`<= 150 KB` gzipped) via `web/scripts/check-budget.mjs`.
+- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 560 KB` uncompressed (`<= 150 KB` gzipped) via `web/scripts/check-budget.mjs`.
 
 ---
 
@@ -600,13 +600,13 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`106` OpenAPI paths). |
-| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, routing hooks), and env vars. |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0034`) and Redis cluster keyspace. |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`118` OpenAPI paths). |
+| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, `WithKeyRotationSecretSink`, routing hooks), and env vars. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0035`) and Redis cluster keyspace. |
 | **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for identity federation, quota descriptors, and routing engines. |
-| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0034`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
+| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0035`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
 | **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 5-tier verification workflow: race unit tests, live Postgres/Redis E2E, Playwright UI E2E, 2-replica HA chaos/k6 containers, and canaries. |
-| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `106` paths) and vendor protocol specifications. |
+| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `118` paths) and vendor protocol specifications. |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 
 ---

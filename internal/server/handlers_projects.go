@@ -198,11 +198,11 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		return
 	}
 
-	s.audit(r.Context(), proj.OrgID, "project.created", "project", proj.ID, map[string]any{
+	s.auditWithDiff(r.Context(), proj.OrgID, "project.created", "project", proj.ID, map[string]any{
 		"team_id":                     proj.TeamID,
 		"name":                        proj.Name,
 		"enforce_project_model_quota": proj.EnforceProjectModelQuota,
-	})
+	}, nil, proj)
 	writeJSON(w, http.StatusCreated, proj)
 }
 
@@ -426,12 +426,12 @@ func (s *GatewayServer) handleAdminUpdateProject(w http.ResponseWriter, r *http.
 			s.authSvc.InvalidateTeam(r.Context(), existing.TeamID)
 		}
 	}
-	s.audit(r.Context(), updated.OrgID, "project.updated", "project", updated.ID, map[string]any{
+	s.auditWithDiff(r.Context(), updated.OrgID, "project.updated", "project", updated.ID, map[string]any{
 		"team_id":                     updated.TeamID,
 		"name":                        updated.Name,
 		"enforce_project_model_quota": updated.EnforceProjectModelQuota,
 		"is_active":                   updated.IsActive,
-	})
+	}, existing, updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -496,10 +496,10 @@ func (s *GatewayServer) handleAdminDeleteProject(w http.ResponseWriter, r *http.
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), existing.TeamID)
 	}
-	s.audit(r.Context(), existing.OrgID, "project.deleted", "project", projectID, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "project.deleted", "project", projectID, map[string]any{
 		"team_id": existing.TeamID,
 		"name":    existing.Name,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": projectID})
 }
 
@@ -667,6 +667,7 @@ func (s *GatewayServer) handleAdminUpsertTeamMember(w http.ResponseWriter, r *ht
 		TPMLimit:        req.TPMLimit,
 		AllowedModels:   req.AllowedModels,
 	}
+	applyTeamMemberDefaults(team, m)
 	if err := pmRepo.UpsertTeamMembership(r.Context(), m); err != nil {
 		if errors.Is(err, storage.ErrConflict) {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -683,11 +684,11 @@ func (s *GatewayServer) handleAdminUpsertTeamMember(w http.ResponseWriter, r *ht
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), team.ID)
 	}
-	s.audit(r.Context(), team.OrgID, "team_membership.upserted", "team_membership", m.ID, map[string]any{
+	s.auditWithDiff(r.Context(), team.OrgID, "team_membership.upserted", "team_membership", m.ID, map[string]any{
 		"team_id": team.ID,
 		"user_id": userID,
 		"role":    m.Role,
-	})
+	}, nil, m)
 	writeJSON(w, http.StatusOK, m)
 }
 
@@ -792,6 +793,7 @@ func (s *GatewayServer) handleAdminDeleteTeamMember(w http.ResponseWriter, r *ht
 		return
 	}
 
+	existingMember, _ := pmRepo.GetTeamMembership(r.Context(), team.ID, userID)
 	if err := pmRepo.DeleteTeamMembership(r.Context(), team.ID, userID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -808,10 +810,10 @@ func (s *GatewayServer) handleAdminDeleteTeamMember(w http.ResponseWriter, r *ht
 	if s.authSvc != nil {
 		s.authSvc.InvalidateTeam(r.Context(), team.ID)
 	}
-	s.audit(r.Context(), team.OrgID, "team_membership.deleted", "team_membership", userID, map[string]any{
+	s.auditWithDiff(r.Context(), team.OrgID, "team_membership.deleted", "team_membership", userID, map[string]any{
 		"team_id": team.ID,
 		"user_id": userID,
-	})
+	}, existingMember, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "deleted",
 		"id":      userID,

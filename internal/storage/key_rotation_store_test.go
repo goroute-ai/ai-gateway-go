@@ -23,7 +23,7 @@ func TestScanVirtualKey_AndDeprecatedKeyFields(t *testing.T) {
 		int64(10_000_000), int64(2_000_000), &expAt, int64(5_000_000), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`),
 		int64(1000), "monthly", nil,
 		60, 10000, 15, 10, int64(50000), 8, int64(250_000), &expAt, true,
-		int64(86400), &rotAt, "staged-hash", "sk-gw-staged", "enc-raw", "enc-dek", &now, "llm_api", "proj-1", false, []string{"prod"}, []byte(`{"env":"prod"}`),
+		int64(86400), &rotAt, "staged-hash", "sk-gw-staged", "enc-raw", "enc-dek", &now, nil, 2, nil, "", []int32{7}, "llm_api", "proj-1", false, []string{"prod"}, []byte(`{"env":"prod"}`),
 	}
 
 	vk, err := scanVirtualKey(&fakeTeamScanner{values: baseValues})
@@ -70,7 +70,9 @@ func TestKeyRotationRepository_MemoryAndPostgresFallback(t *testing.T) {
 		new  func() interface {
 			Repository
 			KeyRotationRepository
+			DeprecatedKeyLookupRepository
 			DeprecatedKeyRevocationRepository
+			KeyGovernanceRepository
 		}
 	}{
 		{
@@ -78,7 +80,9 @@ func TestKeyRotationRepository_MemoryAndPostgresFallback(t *testing.T) {
 			new: func() interface {
 				Repository
 				KeyRotationRepository
+				DeprecatedKeyLookupRepository
 				DeprecatedKeyRevocationRepository
+				KeyGovernanceRepository
 			} {
 				return NewMemoryRepository()
 			},
@@ -88,7 +92,9 @@ func TestKeyRotationRepository_MemoryAndPostgresFallback(t *testing.T) {
 			new: func() interface {
 				Repository
 				KeyRotationRepository
+				DeprecatedKeyLookupRepository
 				DeprecatedKeyRevocationRepository
+				KeyGovernanceRepository
 			} {
 				return &PostgresRepository{mem: NewMemoryRepository()}
 			},
@@ -227,6 +233,12 @@ func TestKeyRotationRepository_MemoryAndPostgresFallback(t *testing.T) {
 				t.Fatalf("DeleteExpiredDeprecatedVirtualKeyHashes: deleted=%d err=%v", deleted, err)
 			}
 
+			// ListDeprecatedVirtualKeyHashesByKeyID finds active hash without removing it
+			listedHashes, err := repo.ListDeprecatedVirtualKeyHashesByKeyID(ctx, "vk-due-1")
+			if err != nil || len(listedHashes) != 1 || listedHashes[0] != activeHash {
+				t.Fatalf("ListDeprecatedVirtualKeyHashesByKeyID: got=%v err=%v", listedHashes, err)
+			}
+
 			// Active hash still present until deleted by key ID
 			if _, _, err := repo.GetActiveDeprecatedVirtualKey(ctx, activeHash, now); err != nil {
 				t.Fatalf("expected activeHash to survive expired purge: %v", err)
@@ -237,6 +249,22 @@ func TestKeyRotationRepository_MemoryAndPostgresFallback(t *testing.T) {
 			}
 			if _, _, err := repo.GetActiveDeprecatedVirtualKey(ctx, activeHash, now); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("expected ErrNotFound after DeleteDeprecatedVirtualKeyHashesByKeyID, got %v", err)
+			}
+
+			// BulkUpdateVirtualKeys with IsActive=false clears deprecated grace hashes atomically
+			bulkGraceHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			if err := repo.AddDeprecatedVirtualKeyHash(ctx, bulkGraceHash, "vk-due-2", now.Add(5*time.Minute)); err != nil {
+				t.Fatalf("AddDeprecatedVirtualKeyHash(bulk): %v", err)
+			}
+			disable := false
+			if _, err := repo.BulkUpdateVirtualKeys(ctx, "org-rot", []string{"vk-due-2"}, VirtualKeyBulkPatch{
+				IsActive:  &disable,
+				RevokedBy: "bulk-admin",
+			}); err != nil {
+				t.Fatalf("BulkUpdateVirtualKeys(disable): %v", err)
+			}
+			if remaining, err := repo.ListDeprecatedVirtualKeyHashesByKeyID(ctx, "vk-due-2"); err != nil || len(remaining) != 0 {
+				t.Fatalf("expected deprecated hashes cleared after bulk disable, got=%v err=%v", remaining, err)
 			}
 		})
 	}

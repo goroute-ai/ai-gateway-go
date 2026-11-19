@@ -820,7 +820,7 @@ func TestHybridAdmissionRollbackAndDescriptorLeaseRenewerAndHardCap(t *testing.T
 		KeyTPMLimit:     100,
 		ProjectTPMLimit: 10,
 	}
-	if _, _, err := s.acquireQuotaWithThrottle(ctx, idBlockedByDesc, "openai/gpt-4.1", 50, 50, 0, "req-hyb-fail"); err == nil {
+	if _, _, _, err := s.acquireQuotaWithThrottle(ctx, idBlockedByDesc, "openai/gpt-4.1", 50, 50, 0, "req-hyb-fail"); err == nil {
 		t.Fatal("expected descriptor project TPM limit rejection")
 	}
 
@@ -831,7 +831,7 @@ func TestHybridAdmissionRollbackAndDescriptorLeaseRenewerAndHardCap(t *testing.T
 		KeyRPMLimit:  1,
 		KeyTPMLimit:  100,
 	}
-	relClean, _, err := s.acquireQuotaWithThrottle(ctx, idClean, "openai/gpt-4.1", 50, 50, 0, "req-hyb-ok")
+	relClean, _, _, err := s.acquireQuotaWithThrottle(ctx, idClean, "openai/gpt-4.1", 50, 50, 0, "req-hyb-ok")
 	if err != nil {
 		t.Fatalf("expected zero partial RPM/TPM charge after failed descriptor step, got: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestHybridAdmissionRollbackAndDescriptorLeaseRenewerAndHardCap(t *testing.T
 		ProjectID:              "proj-lease-srv",
 		ProjectMaxBudgetMicros: 5_000_000,
 	}
-	relLease, _, err := s.acquireQuotaWithThrottle(ctx, idDescLease, "openai/gpt-4.1", 100, 100, 100, "req-desc-lease")
+	relLease, _, _, err := s.acquireQuotaWithThrottle(ctx, idDescLease, "openai/gpt-4.1", 100, 100, 100, "req-desc-lease")
 	if err != nil {
 		t.Fatalf("acquireQuotaWithThrottle(desc-lease): %v", err)
 	}
@@ -874,7 +874,7 @@ func TestHybridAdmissionRollbackAndDescriptorLeaseRenewerAndHardCap(t *testing.T
 		OrgSpentMicros:              100,
 		OrgThrottleOnBudgetExceeded: false,
 	}
-	if _, _, err := s.acquireQuotaWithThrottle(ctx, idHardCap, "openai/gpt-4.1", 100, 100, 100, "req-hard-cap"); err == nil {
+	if _, _, _, err := s.acquireQuotaWithThrottle(ctx, idHardCap, "openai/gpt-4.1", 100, 100, 100, "req-hard-cap"); err == nil {
 		t.Fatal("expected unthrottled Org hard cap to reject even when key soft-throttle is active")
 	}
 }

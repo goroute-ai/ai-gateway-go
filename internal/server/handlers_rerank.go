@@ -106,7 +106,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateRerankCostUpperBound(gm, len(req.Documents))
 	})
 	if err != nil {

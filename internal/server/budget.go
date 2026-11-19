@@ -450,8 +450,20 @@ func modalityRate(value any) (int64, bool) {
 }
 
 func (s *GatewayServer) acquireModalityBudget(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int, int64), error) {
-	release, _, err := s.acquireModalityQuotaWithThrottle(ctx, id, model, rateTokens, requestID, estimator)
+	release, _, _, err := s.acquireModalityQuotaWithThrottle(ctx, id, model, rateTokens, requestID, estimator)
 	return release, err
+}
+
+func (s *GatewayServer) acquireModalityBudgetWithHeaders(w http.ResponseWriter, ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int, int64), error) {
+	release, meta, throttled, err := s.acquireModalityQuotaWithThrottle(ctx, id, model, rateTokens, requestID, estimator)
+	if err != nil {
+		return nil, err
+	}
+	applyBudgetPolicyHeaders(w, model, budgetPolicyAcquisition{
+		RateLimitMeta: meta,
+		Throttled:     throttled,
+	})
+	return release, nil
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(int), error) {
@@ -465,7 +477,7 @@ func (s *GatewayServer) acquireRequestQuotaWithBound(ctx context.Context, id *do
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithCost(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualTokens int, overrideCostMicros int64), error) {
-	release, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	release, _, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +491,7 @@ func (s *GatewayServer) acquireRequestQuotaWithCost(ctx context.Context, id *dom
 }
 
 func (s *GatewayServer) acquireRequestQuotaWithUsage(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), error) {
-	release, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	release, _, _, err := s.acquireQuotaWithThrottle(ctx, id, model, rateTokens, budgetInputTokens, requestedOutput, requestID)
 	return release, err
 }
 

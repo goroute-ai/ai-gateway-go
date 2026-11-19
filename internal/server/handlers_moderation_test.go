@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -50,7 +51,11 @@ func TestModerationEndpoints(t *testing.T) {
 	}))
 	defer oaiSrv.Close()
 
-	gw, err := server.New(cfg, repo, nil, oaiSrv.Client())
+	mr := miniredis.RunT(t)
+	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
+	t.Cleanup(func() { _ = rf.Client().Close() })
+
+	gw, err := server.New(cfg, repo, rf, oaiSrv.Client())
 	require.NoError(t, err)
 	handler := gw.Handler()
 
@@ -60,8 +65,9 @@ func TestModerationEndpoints(t *testing.T) {
 	// Issue Virtual Key
 	var issuedKey domain.VirtualKey
 	keyBody, _ := json.Marshal(map[string]any{
-		"org_id": org.ID,
-		"name":   "modr-key",
+		"org_id":    org.ID,
+		"name":      "modr-key",
+		"rpm_limit": 20,
 	})
 	keyReq, _ := http.NewRequest(http.MethodPost, "/admin/v1/keys", bytes.NewReader(keyBody))
 	keyReq.Header.Set("Authorization", "Bearer admin_secret_key")
@@ -144,6 +150,8 @@ func TestModerationEndpoints(t *testing.T) {
 
 			require.Equal(t, http.StatusOK, rec.Code, "Response: %s", rec.Body.String())
 			assert.Equal(t, "openai", rec.Header().Get("X-Gateway-Provider"))
+			assert.Equal(t, "20", rec.Header().Get("X-RateLimit-Limit-Requests"))
+			assert.NotEmpty(t, rec.Header().Get("X-RateLimit-Remaining-Requests"))
 
 			var resp domain.CanonicalModerationResponse
 			err = json.Unmarshal(rec.Body.Bytes(), &resp)

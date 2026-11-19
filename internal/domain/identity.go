@@ -86,59 +86,69 @@ const (
 
 // Organization represents a top-level tenant in the AI Gateway.
 type Organization struct {
-	ID                        string                `json:"id"`
-	Name                      string                `json:"name"`
-	Slug                      string                `json:"slug"`
-	MaxBudgetMicros           int64                 `json:"max_budget_micros"` // 0 = unlimited
-	TempBudgetIncreaseMicros  int64                 `json:"temp_budget_increase_micros"`
-	TempBudgetExpiresAt       *time.Time            `json:"temp_budget_expires_at,omitempty"`
-	SelfServeBudgetPolicy     SelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
-	SoftBudgetMicros          int64                 `json:"soft_budget_micros"`
-	ThrottleOnBudgetExceeded  bool                  `json:"throttle_on_budget_exceeded"`
-	BudgetFallbacks           map[string][]string   `json:"budget_fallbacks,omitempty"`
-	SpentMicros               int64                 `json:"spent_micros"`
-	BudgetResetPeriod         BudgetResetPeriod     `json:"budget_reset_period"`
-	BudgetResetAt             *time.Time            `json:"budget_reset_at,omitempty"`
-	RPMLimit                  int                   `json:"rpm_limit"`                               // 0 = unlimited
-	TPMLimit                  int                   `json:"tpm_limit"`                               // 0 = unlimited
-	MaxConcurrentRequests     int                   `json:"max_concurrent_requests"`                 // 0 = unlimited
-	BatchEnqueuedTokenLimit   int64                 `json:"batch_enqueued_token_limit,omitempty"`    // 0 = unlimited
-	MaxIterations             int                   `json:"max_iterations,omitempty"`                // 0 = unlimited per session
-	MaxBudgetPerSessionMicros int64                 `json:"max_budget_per_session_micros,omitempty"` // 0 = unlimited per session
-	IsActive                  bool                  `json:"is_active"`
-	Metadata                  map[string]string     `json:"metadata,omitempty"`
-	CreatedAt                 time.Time             `json:"created_at"`
-	UpdatedAt                 time.Time             `json:"updated_at"`
+	ID                          string                `json:"id"`
+	Name                        string                `json:"name"`
+	Slug                        string                `json:"slug"`
+	MaxBudgetMicros             int64                 `json:"max_budget_micros"` // 0 = unlimited
+	TempBudgetIncreaseMicros    int64                 `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt         *time.Time            `json:"temp_budget_expires_at,omitempty"`
+	SelfServeBudgetPolicy       SelfServeBudgetPolicy `json:"self_serve_budget_policy,omitempty"`
+	SoftBudgetMicros            int64                 `json:"soft_budget_micros"`
+	ThrottleOnBudgetExceeded    bool                  `json:"throttle_on_budget_exceeded"`
+	BudgetFallbacks             map[string][]string   `json:"budget_fallbacks,omitempty"`
+	SpentMicros                 int64                 `json:"spent_micros"`
+	BudgetResetPeriod           BudgetResetPeriod     `json:"budget_reset_period"`
+	BudgetResetAt               *time.Time            `json:"budget_reset_at,omitempty"`
+	RPMLimit                    int                   `json:"rpm_limit"`                               // 0 = unlimited
+	TPMLimit                    int                   `json:"tpm_limit"`                               // 0 = unlimited
+	MaxConcurrentRequests       int                   `json:"max_concurrent_requests"`                 // 0 = unlimited
+	BatchEnqueuedTokenLimit     int64                 `json:"batch_enqueued_token_limit,omitempty"`    // 0 = unlimited
+	MaxIterations               int                   `json:"max_iterations,omitempty"`                // 0 = unlimited per session
+	MaxBudgetPerSessionMicros   int64                 `json:"max_budget_per_session_micros,omitempty"` // 0 = unlimited per session
+	EnforceGuaranteedThroughput bool                  `json:"enforce_guaranteed_throughput,omitempty"`
+	DeveloperSelfServeKeys      bool                  `json:"developer_self_serve_keys,omitempty"`
+	KeyExpiryAlertDays          []int                 `json:"key_expiry_alert_days,omitempty"`
+	LifecycleWebhookURL         string                `json:"lifecycle_webhook_url,omitempty"`
+	IsActive                    bool                  `json:"is_active"`
+	Metadata                    map[string]string     `json:"metadata,omitempty"`
+	CreatedAt                   time.Time             `json:"created_at"`
+	UpdatedAt                   time.Time             `json:"updated_at"`
 }
 
 // Team groups users and virtual keys under an Organization with dedicated budgets and model scopes.
 type Team struct {
-	ID                        string              `json:"id"`
-	OrgID                     string              `json:"org_id"`
-	Name                      string              `json:"name"`
-	MaxBudgetMicros           int64               `json:"max_budget_micros"`
-	TempBudgetIncreaseMicros  int64               `json:"temp_budget_increase_micros"`
-	TempBudgetExpiresAt       *time.Time          `json:"temp_budget_expires_at,omitempty"`
-	SoftBudgetMicros          int64               `json:"soft_budget_micros"`
-	ThrottleOnBudgetExceeded  bool                `json:"throttle_on_budget_exceeded"`
-	BudgetFallbacks           map[string][]string `json:"budget_fallbacks,omitempty"`
-	SpentMicros               int64               `json:"spent_micros"`
-	BudgetResetPeriod         BudgetResetPeriod   `json:"budget_reset_period"`
-	BudgetResetAt             *time.Time          `json:"budget_reset_at,omitempty"`
-	RPMLimit                  int                 `json:"rpm_limit"`
-	TPMLimit                  int                 `json:"tpm_limit"`
-	MCPRPMLimit               int                 `json:"mcp_rpm_limit,omitempty"`
-	MaxConcurrentRequests     int                 `json:"max_concurrent_requests"`
-	BatchEnqueuedTokenLimit   int64               `json:"batch_enqueued_token_limit,omitempty"`
-	MaxIterations             int                 `json:"max_iterations,omitempty"`
-	MaxBudgetPerSessionMicros int64               `json:"max_budget_per_session_micros,omitempty"`
-	AllowedModels             []string            `json:"allowed_models,omitempty"` // Empty = inherit Org enabled models
-	AllowedMCPServers         []string            `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents          []string            `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps         []string            `json:"allowed_client_apps"`      // nil = inherit, [] = DenyAll, [...] = allowlist
-	IsActive                  bool                `json:"is_active"`
-	CreatedAt                 time.Time           `json:"created_at"`
-	UpdatedAt                 time.Time           `json:"updated_at"`
+	ID                           string              `json:"id"`
+	OrgID                        string              `json:"org_id"`
+	Name                         string              `json:"name"`
+	MaxBudgetMicros              int64               `json:"max_budget_micros"`
+	TempBudgetIncreaseMicros     int64               `json:"temp_budget_increase_micros"`
+	TempBudgetExpiresAt          *time.Time          `json:"temp_budget_expires_at,omitempty"`
+	SoftBudgetMicros             int64               `json:"soft_budget_micros"`
+	ThrottleOnBudgetExceeded     bool                `json:"throttle_on_budget_exceeded"`
+	BudgetFallbacks              map[string][]string `json:"budget_fallbacks,omitempty"`
+	SpentMicros                  int64               `json:"spent_micros"`
+	BudgetResetPeriod            BudgetResetPeriod   `json:"budget_reset_period"`
+	BudgetResetAt                *time.Time          `json:"budget_reset_at,omitempty"`
+	RPMLimit                     int                 `json:"rpm_limit"`
+	TPMLimit                     int                 `json:"tpm_limit"`
+	MCPRPMLimit                  int                 `json:"mcp_rpm_limit,omitempty"`
+	MaxConcurrentRequests        int                 `json:"max_concurrent_requests"`
+	BatchEnqueuedTokenLimit      int64               `json:"batch_enqueued_token_limit,omitempty"`
+	MaxIterations                int                 `json:"max_iterations,omitempty"`
+	MaxBudgetPerSessionMicros    int64               `json:"max_budget_per_session_micros,omitempty"`
+	EnforceGuaranteedThroughput  bool                `json:"enforce_guaranteed_throughput,omitempty"`
+	DefaultMemberMaxBudgetMicros int64               `json:"default_member_max_budget_micros,omitempty"`
+	DefaultMemberRPMLimit        int                 `json:"default_member_rpm_limit,omitempty"`
+	DefaultMemberTPMLimit        int                 `json:"default_member_tpm_limit,omitempty"`
+	DefaultMemberAllowedModels   []string            `json:"default_member_allowed_models,omitempty"`
+	TeamMemberPermissions        []string            `json:"team_member_permissions,omitempty"`
+	AllowedModels                []string            `json:"allowed_models,omitempty"` // Empty = inherit Org enabled models
+	AllowedMCPServers            []string            `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents             []string            `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps            []string            `json:"allowed_client_apps"`      // nil = inherit, [] = DenyAll, [...] = allowlist
+	IsActive                     bool                `json:"is_active"`
+	CreatedAt                    time.Time           `json:"created_at"`
+	UpdatedAt                    time.Time           `json:"updated_at"`
 }
 
 // User represents a human identity belonging to an Organization and optionally a Team.
@@ -269,7 +279,12 @@ type VirtualKey struct {
 	StagedEncryptedRawKey     string              `json:"-"`
 	StagedKeyDEK              string              `json:"-"`
 	StagedCreatedAt           *time.Time          `json:"-"`
+	LastRotatedAt             *time.Time          `json:"last_rotated_at,omitempty"`
+	RotationCount             int                 `json:"rotation_count,omitempty"`
 	ExpiresAt                 *time.Time          `json:"expires_at,omitempty"`
+	ExpiryAlertSentDays       []int               `json:"expiry_alert_sent_days,omitempty"`
+	RevokedAt                 *time.Time          `json:"revoked_at,omitempty"`
+	RevokedBy                 string              `json:"revoked_by,omitempty"`
 	CanImpersonate            bool                `json:"can_impersonate"`
 	IsActive                  bool                `json:"is_active"`
 	Tags                      []string            `json:"tags,omitempty"`
@@ -436,14 +451,16 @@ func CloneBudgetFallbacks(src map[string][]string) map[string][]string {
 
 // AuditLog records administrative or security-critical mutations.
 type AuditLog struct {
-	ID         string         `json:"id"`
-	OrgID      string         `json:"org_id,omitempty"`
-	ActorID    string         `json:"actor_id"`
-	Action     string         `json:"action"`
-	Resource   string         `json:"resource"`
-	ResourceID string         `json:"resource_id"`
-	Details    map[string]any `json:"details,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
+	ID          string         `json:"id"`
+	OrgID       string         `json:"org_id,omitempty"`
+	ActorID     string         `json:"actor_id"`
+	Action      string         `json:"action"`
+	Resource    string         `json:"resource"`
+	ResourceID  string         `json:"resource_id"`
+	Details     map[string]any `json:"details,omitempty"`
+	BeforeValue map[string]any `json:"before_value,omitempty"`
+	AfterValue  map[string]any `json:"after_value,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 // CheckAllowlist3State evaluates 3-state allowlist semantics across VirtualKey and Team scopes:

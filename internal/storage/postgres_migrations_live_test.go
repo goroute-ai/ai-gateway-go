@@ -271,6 +271,10 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 	}{
 		{"model_groups", []string{"context_window_fallbacks", "content_policy_fallbacks", "fallback_targets", "retry_policy", "cooldown_policy"}},
 		{"model_deployments", []string{"tags", "max_budget_micros", "budget_reset_period"}},
+		{"organizations", []string{"enforce_guaranteed_throughput", "developer_self_serve_keys", "key_expiry_alert_days", "lifecycle_webhook_url"}},
+		{"teams", []string{"enforce_guaranteed_throughput", "default_member_max_budget_micros", "default_member_rpm_limit", "default_member_tpm_limit", "default_member_allowed_models", "team_member_permissions"}},
+		{"virtual_keys", []string{"last_rotated_at", "rotation_count", "revoked_at", "revoked_by", "expiry_alert_sent_days"}},
+		{"audit_logs", []string{"before_value", "after_value"}},
 	} {
 		for _, col := range tc.cols {
 			var exists bool
@@ -310,7 +314,7 @@ func TestPostgres_Migration0034_UpgradeAndRollbackConflictPreflight(t *testing.T
 	}
 	var pre0034 []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") && !strings.HasPrefix(e.Name(), "0034_") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") && e.Name() < "0034_" {
 			pre0034 = append(pre0034, filepath.Join(migrationsDir, e.Name()))
 		}
 	}
@@ -483,6 +487,14 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		{"spend_logs", "session_id"},
 		{"budget_window_limits", "rolling_hold_micros"},
 		{"budget_window_limits", "rolling_hold_expires_at"},
+		{"teams", "team_member_permissions"},
+		{"audit_logs", "before_value"},
+		{"audit_logs", "after_value"},
+		{"virtual_keys", "last_rotated_at"},
+		{"virtual_keys", "rotation_count"},
+		{"virtual_keys", "revoked_at"},
+		{"virtual_keys", "revoked_by"},
+		{"virtual_keys", "expiry_alert_sent_days"},
 	}
 	for _, tc := range expectedCols {
 		var exists bool
@@ -491,7 +503,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
 			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
-			t.Fatalf("expected column %s.%s after 0001..0034 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+			t.Fatalf("expected column %s.%s after 0001..0035 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
 		}
 	}
 
@@ -501,11 +513,11 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 			SELECT EXISTS (
 				SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1
 			)`, idx).Scan(&exists); err != nil || !exists {
-			t.Fatalf("expected index %s after 0001..0034 (exists=%v, err=%v)", idx, exists, err)
+			t.Fatalf("expected index %s after 0001..0035 (exists=%v, err=%v)", idx, exists, err)
 		}
 	}
 
-	// Exercise reverse down migrations from 0034 down through 0022.
+	// Exercise reverse down migrations from 0035 down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -513,13 +525,13 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 	var waveDowns []string
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" && name < "0035_" {
+		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" && name < "0036_" {
 			waveDowns = append(waveDowns, name)
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 13 {
-		t.Fatalf("expected 13 down migrations for 0022..0034, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 14 {
+		t.Fatalf("expected 14 down migrations for 0022..0035, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))

@@ -119,7 +119,7 @@ func (s *GatewayServer) handleAdminCreateAccessGroupRule(w http.ResponseWriter, 
 	if s.rbac != nil {
 		s.rbac.InvalidateAccessGroupRules(r.Context(), rule.OrgID)
 	}
-	s.audit(r.Context(), rule.OrgID, "access_group_rule.created", "access_group_rule", rule.ID, map[string]any{
+	s.auditWithDiff(r.Context(), rule.OrgID, "access_group_rule.created", "access_group_rule", rule.ID, map[string]any{
 		"name":            rule.Name,
 		"attribute":       rule.Attribute,
 		"operator":        rule.Operator,
@@ -127,7 +127,7 @@ func (s *GatewayServer) handleAdminCreateAccessGroupRule(w http.ResponseWriter, 
 		"allowed_models":  rule.AllowedModels,
 		"priority":        rule.Priority,
 		"is_active":       rule.IsActive,
-	})
+	}, nil, rule)
 	writeJSON(w, http.StatusCreated, rule)
 }
 
@@ -222,11 +222,11 @@ func (s *GatewayServer) handleAdminDeleteAccessGroupRule(w http.ResponseWriter, 
 	if s.rbac != nil {
 		s.rbac.InvalidateAccessGroupRules(r.Context(), existing.OrgID)
 	}
-	s.audit(r.Context(), existing.OrgID, "access_group_rule.deleted", "access_group_rule", id, map[string]any{
+	s.auditWithDiff(r.Context(), existing.OrgID, "access_group_rule.deleted", "access_group_rule", id, map[string]any{
 		"name":            existing.Name,
 		"attribute":       existing.Attribute,
 		"operator":        existing.Operator,
 		"access_group_id": existing.AccessGroupID,
-	})
+	}, existing, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }

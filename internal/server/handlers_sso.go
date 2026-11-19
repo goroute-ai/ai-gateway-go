@@ -530,6 +530,7 @@ func (s *GatewayServer) handleAuthPassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	beforeCred, _ := sessRepo.GetUserCredential(r.Context(), targetUser.ID)
 	if err := sessRepo.UpsertUserPassword(r.Context(), targetUser.ID, hashed, false); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -542,9 +543,24 @@ func (s *GatewayServer) handleAuthPassword(w http.ResponseWriter, r *http.Reques
 		auth.ClearSessionCookie(w)
 	}
 
-	s.audit(r.Context(), targetUser.OrgID, "auth.password.updated", "user_credential", targetUser.ID, map[string]any{
+	var beforeAudit map[string]any
+	if beforeCred != nil {
+		beforeAudit = map[string]any{
+			"password_configured":     beforeCred.PasswordHash != "",
+			"password_reset_required": beforeCred.PasswordResetRequired,
+			"failed_attempts":         beforeCred.FailedAttempts,
+			"locked":                  beforeCred.LockedUntil != nil && beforeCred.LockedUntil.After(time.Now().UTC()),
+		}
+	}
+	afterAudit := map[string]any{
+		"password_configured":     true,
+		"password_reset_required": false,
+		"failed_attempts":         0,
+		"locked":                  false,
+	}
+	s.auditWithDiff(r.Context(), targetUser.OrgID, "auth.password.updated", "user_credential", targetUser.ID, map[string]any{
 		"self_service": isSelf,
-	})
+	}, beforeAudit, afterAudit)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                  "password_updated",

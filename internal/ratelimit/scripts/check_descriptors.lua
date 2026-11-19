@@ -7,7 +7,7 @@
 --   KEYS[kbase + 3]:  itpm_key        (60s minute bucket)
 --   KEYS[kbase + 4]:  otpm_key        (60s minute bucket)
 --   KEYS[kbase + 5]:  tpd_key         (86,400s UTC day bucket)
---   KEYS[kbase + 6]:  conc_key        (TTL-guarded concurrency counter)
+--   KEYS[kbase + 6]:  zconc_key       (self-healing ZSET concurrency slots)
 --   KEYS[kbase + 7]:  iter_key        (session TTL-guarded iteration counter)
 --   KEYS[kbase + 8]:  spend_key       (accumulated spend in micro-dollars)
 --   KEYS[kbase + 9]:  res_zset_key    (reservation expiration sorted set)
@@ -50,7 +50,7 @@
 
 local count = tonumber(ARGV[1]) or 0
 if count <= 0 then
-    return {1, "OK"}
+    return {1, "OK", 0, 0, 0, 0, 0, 0}
 end
 
 local receipt_key = KEYS[count * 12 + 1]
@@ -115,8 +115,7 @@ local function incr_ttl(key, delta, ttl)
     return v
 end
 
--- Phase 1: Pure read-only validation across all descriptors.
--- Zero Redis writes occur until every descriptor passes every configured limit.
+-- Phase 1: Pure read-only admission checks (cleaning expired ZSET slots/reservations).
 local pending_add = {}
 local pending_res = {}
 local rolling_init_entries = {}
@@ -131,7 +130,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 3]
     local otpm_key = KEYS[kbase + 4]
     local tpd_key = KEYS[kbase + 5]
-    local conc_key = KEYS[kbase + 6]
+    local zconc_key = KEYS[kbase + 6]
     local iter_key = KEYS[kbase + 7]
     local spend_key = KEYS[kbase + 8]
     local res_zset = KEYS[kbase + 9]
@@ -211,11 +210,12 @@ for idx = 0, count - 1 do
     end
 
     if max_conc > 0 then
-        local cur = tonumber(redis.call("GET", conc_key) or "0") + (pending_add[conc_key] or 0)
+        redis.call("ZREMRANGEBYSCORE", zconc_key, "-inf", now)
+        local cur = tonumber(redis.call("ZCARD", zconc_key) or "0") + (pending_add[zconc_key] or 0)
         if (cur + 1) > max_conc then
             return {0, scope .. "_CONCURRENCY_EXCEEDED", cur, max_conc, 5}
         end
-        pending_add[conc_key] = (pending_add[conc_key] or 0) + 1
+        pending_add[zconc_key] = (pending_add[zconc_key] or 0) + 1
     end
 
     if max_iter > 0 then
@@ -304,7 +304,30 @@ for idx = 0, count - 1 do
     end
 end
 
--- Phase 2: All descriptors admitted; atomically apply all counter mutations and reservations.
+-- Phase 2: All descriptors admitted; atomically apply all counter mutations, ZSET slots, and reservations.
+local tight_lim_req, tight_rem_req = 0, 0
+local tight_lim_tok, tight_rem_tok = 0, 0
+local function track_req(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_req == 0 or rem < tight_rem_req then
+            tight_lim_req = limit
+            tight_rem_req = rem
+        end
+    end
+end
+local function track_tok(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_tok == 0 or rem < tight_rem_tok then
+            tight_lim_tok = limit
+            tight_rem_tok = rem
+        end
+    end
+end
+
 for idx = 0, count - 1 do
     local kbase = idx * 12
     local abase = 10 + idx * 13
@@ -314,7 +337,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 3]
     local otpm_key = KEYS[kbase + 4]
     local tpd_key = KEYS[kbase + 5]
-    local conc_key = KEYS[kbase + 6]
+    local zconc_key = KEYS[kbase + 6]
     local iter_key = KEYS[kbase + 7]
     local spend_key = KEYS[kbase + 8]
     local res_zset = KEYS[kbase + 9]
@@ -340,10 +363,10 @@ for idx = 0, count - 1 do
     local r24h_zset = KEYS[kbase + 12]
 
     if rpm_limit > 0 then
-        incr_ttl(rpm_key, 1, window_ttl)
+        track_req(rpm_limit, incr_ttl(rpm_key, 1, window_ttl))
     end
-    if tpm_limit > 0 and est_total > 0 then
-        incr_ttl(tpm_key, est_total, window_ttl)
+    if tpm_limit > 0 then
+        track_tok(tpm_limit, incr_ttl(tpm_key, est_total, window_ttl))
     end
     if itpm_limit > 0 and est_input > 0 then
         incr_ttl(itpm_key, est_input, window_ttl)
@@ -354,9 +377,9 @@ for idx = 0, count - 1 do
     if tpd_limit > 0 and est_total > 0 then
         incr_ttl(tpd_key, est_total, tpd_ttl)
     end
-    if max_conc > 0 then
-        redis.call("INCRBY", conc_key, 1)
-        redis.call("EXPIRE", conc_key, conc_ttl)
+    if max_conc > 0 and request_id ~= "" then
+        redis.call("ZADD", zconc_key, now + conc_ttl, request_id)
+        redis.call("EXPIRE", zconc_key, conc_ttl + 60)
     end
     if max_iter > 0 then
         incr_ttl(iter_key, 1, iter_ttl)
@@ -396,4 +419,4 @@ end
 if receipt_key and receipt_key ~= "" then
     redis.call("SET", receipt_key, "1", "EX", 5)
 end
-return {1, "OK"}
+return {1, "OK", tight_lim_req, tight_rem_req, retry_min, tight_lim_tok, tight_rem_tok, retry_min}

@@ -1,47 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  Settings,
-  Server,
-  Gauge,
-  Database,
-  ShieldCheck,
-  GitBranch,
-  Activity,
-  RefreshCw,
-  Lock,
-} from 'lucide-react';
+import { Settings, ShieldCheck, RefreshCw, Lock } from 'lucide-react';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import { Badge } from '../components/common/Badge';
 import type { GatewayConfig } from '../types';
 
-interface SectionDef {
-  id: string;
-  title: string;
-  subtitle: string;
-  icon: React.ReactNode;
-  data: Record<string, any> | any[] | undefined;
-}
-
-const SECTION_SPECS: [string, string, string, React.FC<{ className?: string }>][] = [
-  ['server', 'Server & Transport', 'HTTP/gRPC listeners, timeouts & CORS', Server],
-  ['logging', 'Logging', 'Log level, format & source location', Activity],
-  ['tracing', 'Tracing', 'OpenTelemetry OTLP exporter settings', Activity],
-  ['security', 'Network Security', 'Outbound SSRF & inbound caller policies', ShieldCheck],
-  ['storage', 'Storage & Redis', 'Persistence mode, PostgreSQL & Redis', Database],
-  ['auth', 'Authentication', 'Master keys, JWT/OIDC & identity caches', Lock],
-  ['router', 'Router & Reliability', 'Aliases, retries & circuit breakers', GitBranch],
-  ['rate_limit', 'Rate Limits', 'Global RPM/TPM caps & concurrency', Gauge],
-  ['finops', 'FinOps Accounting', 'Async spend batching & worker pool', Activity],
-  ['discovery', 'Model Discovery', 'Background provider sync & approval', RefreshCw],
-  ['cache', 'Response Cache', 'L1/L2 caching & TTL defaults', Database],
-  ['guardrails', 'Guardrails', 'Content filtering & external scanners', ShieldCheck],
-  ['mcp', 'MCP Protocol', 'Stdio allowlists, timeouts & sessions', Settings],
-  ['a2a', 'A2A Agents', 'JSON-RPC/HTTP protocols, JWKS & push', GitBranch],
-  ['providers', 'Providers', 'HTTP transport & custom OpenAI-compat', Server],
-  ['model_list', 'Static Model List', 'Configured static YAML/env deployments', Settings],
+const SECTIONS: [string, string][] = [
+  ['server', 'Server & Transport'], ['logging', 'Logging'], ['tracing', 'Tracing'],
+  ['security', 'Network Security'], ['storage', 'Storage & Redis'], ['auth', 'Authentication'],
+  ['router', 'Router & Reliability'], ['rate_limit', 'Rate Limits'], ['finops', 'FinOps Accounting'],
+  ['discovery', 'Model Discovery'], ['cache', 'Response Cache'], ['guardrails', 'Guardrails'],
+  ['mcp', 'MCP Protocol'], ['a2a', 'A2A Agents'], ['providers', 'Providers'], ['model_list', 'Static Models'],
 ];
 
 function formatKey(key: string): string {
@@ -117,49 +88,33 @@ const ConfigValue: React.FC<{ value: unknown }> = ({ value }) => {
   return <span className="text-brand-body font-mono">{String(value)}</span>;
 };
 
-const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
-  const isArr = Array.isArray(section.data);
+const ConfigSectionCard: React.FC<{ title: string; data: any }> = ({ title, data }) => {
+  const isArr = Array.isArray(data);
   const entries: [string, unknown][] = isArr
-    ? (section.data as any[]).map((m, i) => [m?.model_name ? String(m.model_name) : `#${i + 1}`, m])
-    : section.data
-      ? Object.entries(section.data)
+    ? data.map((m, i) => [m?.model_name ? String(m.model_name) : `#${i + 1}`, m])
+    : data
+      ? Object.entries(data)
       : [];
 
   return (
-    <div className="bg-surface-base border border-border rounded-xl p-5 space-y-4">
-      <div className="flex items-center justify-between border-b border-border pb-3">
-        <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-lg bg-accent-soft border border-accent-primary/25 text-accent-primary">
-            {section.icon}
-          </div>
-          <div>
-            <h3 className="text-xs font-bold text-brand-title tracking-tight">{section.title}</h3>
-            <p className="text-[11px] text-brand-muted">{section.subtitle}</p>
-          </div>
+    <div className="bg-surface-base border border-border rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between border-b border-border pb-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-accent-primary" />
+          <h3 className="text-xs font-bold text-brand-title">{title}</h3>
         </div>
         <Badge variant="neutral">{entries.length} {isArr ? 'items' : 'keys'}</Badge>
       </div>
-
       {entries.length === 0 ? (
-        <div className="text-xs text-brand-muted font-mono py-4 text-center">
-          No configuration fields reported for this section.
-        </div>
+        <div className="text-xs text-brand-muted font-mono py-3 text-center">No fields configured.</div>
       ) : (
         <div className="divide-y divide-border/50">
           {entries.map(([key, val]) => {
-            const isNestedObj =
-              val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0;
+            const nested = val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0;
             return (
-              <div
-                key={key}
-                className={`py-2 text-xs ${
-                  isNestedObj ? 'flex flex-col gap-1' : 'flex items-start justify-between gap-4'
-                }`}
-              >
+              <div key={key} className={`py-2 text-xs ${nested ? 'flex flex-col gap-1' : 'flex items-start justify-between gap-4'}`}>
                 <span className="text-brand-muted font-mono text-[11px] shrink-0">{formatKey(key)}</span>
-                <div className={isNestedObj ? 'w-full' : 'text-right'}>
-                  <ConfigValue value={val} />
-                </div>
+                <div className={nested ? 'w-full' : 'text-right'}><ConfigValue value={val} /></div>
               </div>
             );
           })}
@@ -169,64 +124,64 @@ const ConfigSectionCard: React.FC<{ section: SectionDef }> = ({ section }) => {
   );
 };
 
-export const ConfigView: React.FC = () => {
-  const { adminKey, isUnlocked } = useAuth();
+const btn = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-brand-title';
 
-  const {
-    data: config,
-    isLoading,
-    isFetching,
-    isError,
-    error,
-    refetch,
-  } = useQuery<GatewayConfig>({
+export const ConfigView: React.FC = () => {
+  const { adminKey, isUnlocked, operator } = useAuth();
+  const canRotateKEK = operator?.role === 'platform_admin';
+  const { data: config, isLoading, isFetching, isError, error, refetch } = useQuery<GatewayConfig>({
     queryKey: ['admin', 'config', adminKey],
     queryFn: () => adminApi.getConfig(adminKey),
     enabled: isUnlocked,
     staleTime: 30000,
   });
 
-  const sections: SectionDef[] = SECTION_SPECS.map(([id, title, subtitle, Icon]) => ({
-    id,
-    title,
-    subtitle,
-    icon: <Icon className="w-4 h-4" />,
-    data:
-      id === 'rate_limit'
-        ? config?.rate_limit ?? config?.rate_limits
-        : id === 'router'
-          ? config?.router ?? config?.routing
-          : config?.[id],
+  const [kekOpen, setKekOpen] = useState(false);
+  const [newKek, setNewKek] = useState('');
+  const [kekBusy, setKekBusy] = useState(false);
+  const [kekErr, setKekErr] = useState<unknown>(null);
+  const [kekMsg, setKekMsg] = useState<string | null>(null);
+  const submitKek = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setKekBusy(true); setKekErr(null);
+    try {
+      const r = await adminApi.rotateMasterKEK(adminKey, newKek.trim());
+      setNewKek(''); setKekOpen(false); setKekMsg(r.multi_pod_notice || 'Rotated.');
+    } catch (err) { setKekErr(err); } finally { setKekBusy(false); }
+  };
+
+  const sections = SECTIONS.map(([id, title]) => ({
+    id, title,
+    data: id === 'rate_limit' ? config?.rate_limit ?? config?.rate_limits : id === 'router' ? config?.router ?? config?.routing : config?.[id],
   }));
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="max-w-7xl mx-auto space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold text-brand-title flex items-center gap-2 tracking-tight">
-            <Settings className="w-5 h-5 text-accent-primary" />
-            Gateway Runtime Configuration
+          <h2 className="text-lg font-bold text-brand-title flex items-center gap-2">
+            <Settings className="w-5 h-5 text-accent-primary" />Gateway Configuration
           </h2>
-          <p className="text-xs text-brand-muted mt-1">
-            Sanitized read-only snapshot of active gateway configuration from <code className="font-mono text-accent-primary">/admin/v1/config</code>.
-          </p>
+          <p className="text-xs text-brand-muted">Snapshot from <code className="font-mono text-accent-primary">/admin/v1/config</code></p>
         </div>
-
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-brand-title hover:border-accent-primary/40 transition-colors disabled:opacity-50 self-start sm:self-auto"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin text-accent-primary' : ''}`} />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {canRotateKEK && (
+            <button onClick={() => setKekOpen((v) => !v)} className={btn}><Lock className="w-3.5 h-3.5" />Rotate KEK</button>
+          )}
+          <button onClick={() => refetch()} disabled={isFetching} className={btn}><RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />Refresh</button>
+        </div>
       </div>
 
-      <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg bg-surface-base border border-border text-xs text-brand-muted">
-        <Lock className="w-4 h-4 text-status-warning shrink-0" />
-        <span>
-          Read-only view. Master keys, JWT secrets, and database or Redis credentials are redacted server-side before leaving the control plane.
-        </span>
+      {canRotateKEK && kekOpen && (
+        <form onSubmit={submitKek} className="flex flex-col sm:flex-row gap-2 p-3 rounded-lg bg-surface-base border border-border text-xs">
+          <input type="password" minLength={32} required value={newKek} onChange={(e) => setNewKek(e.target.value)} placeholder="New master KEK (>=32 chars)" className="flex-1 px-2 py-1 rounded bg-surface-elevated border border-border font-mono text-brand-title" />
+          <button type="submit" disabled={kekBusy} className="px-3 py-1 rounded bg-accent-primary text-white font-semibold">{kekBusy ? 'Rotating...' : 'Confirm'}</button>
+        </form>
+      )}
+      {!!kekErr && <ErrorAlert error={kekErr} title="KEK rotation failed" />}
+      {kekMsg && <div className="p-2.5 rounded-lg bg-surface-base border border-status-success/40 text-xs text-status-success">{kekMsg}</div>}
+      <div className="flex items-center gap-2 p-3 rounded-lg bg-surface-base border border-border text-xs text-brand-muted">
+        <Lock className="w-4 h-4 text-status-warning shrink-0" />Read-only view. Secrets are redacted server-side.
       </div>
 
       {isError ? (
@@ -242,9 +197,7 @@ export const ConfigView: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {sections.map((section) => (
-            <ConfigSectionCard key={section.id} section={section} />
-          ))}
+          {sections.map((s) => <ConfigSectionCard key={s.id} title={s.title} data={s.data} />)}
         </div>
       )}
     </div>

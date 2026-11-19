@@ -88,7 +88,7 @@ func buildDescriptorKeySet(orgID string, d domain.RateLimitDescriptor, nowMin in
 		itpm:       fmt.Sprintf("gw:dq:%s:itpm:%s:%d", tag, entity, nowMin),
 		otpm:       fmt.Sprintf("gw:dq:%s:otpm:%s:%d", tag, entity, nowMin),
 		tpd:        fmt.Sprintf("gw:dq:%s:tpd:%s:%s", tag, entity, utcDay),
-		conc:       fmt.Sprintf("gw:dq:%s:conc:%s", tag, entity),
+		conc:       fmt.Sprintf("gw:dq:%s:zconc:%s", tag, entity),
 		iter:       fmt.Sprintf("gw:dq:%s:iter:%s", tag, entity),
 		spend:      fmt.Sprintf("gw:dq:%s:spend:%s", tag, entity),
 		resZSet:    resZ,
@@ -318,10 +318,7 @@ func descriptorIterTTL(d domain.RateLimitDescriptor) int {
 }
 
 func toDescriptorQuotaError(code string, current, limit, retryAfter int64) *domain.GatewayError {
-	gwErr := toQuotaError(code)
-	if retryAfter > 0 {
-		gwErr.RetryAfterSec = int(retryAfter)
-	}
+	gwErr := buildQuotaDenyError(code, current, limit, retryAfter, time.Now().UTC())
 	if code != "BUDGET_ESTIMATE_REQUIRED" && limit > 0 {
 		if strings.Contains(code, "BUDGET") {
 			gwErr.Message = fmt.Sprintf("Configured financial spend budget exceeded (%s: current=%d, limit=%d)", code, current, limit)
@@ -333,16 +330,7 @@ func toDescriptorQuotaError(code string, current, limit, retryAfter int64) *doma
 }
 
 // AcquireDescriptors atomically evaluates all configured quota descriptors for an
-// organization in a single all-or-nothing operation. If any descriptor exceeds a
-// configured limit, no counters or budget reservations are mutated across any
-// descriptor.
-//
-// The returned release function MUST be called once after request completion or
-// failure to reconcile input/output/total/daily token deltas, release concurrency,
-// and settle or refund budget reservations:
-//   - actualCostMicros >= 0: removes reservation and charges actualCostMicros to spend
-//   - actualCostMicros == -1: refunds reservation without charging spend
-//   - actualCostMicros == -2: leaves reservation intact for asynchronous outbox settlement
+// organization in a single all-or-nothing operation.
 func (l *Limiter) AcquireDescriptors(
 	ctx context.Context,
 	orgID string,
@@ -366,16 +354,45 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 	reserveMicros int64,
 	descriptors []domain.RateLimitDescriptor,
 ) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
+	rel, _, err := l.AcquireDescriptorsWithSettlementIDAndMeta(ctx, orgID, reqID, settlementID, estInput, estOutput, reserveMicros, descriptors)
+	return rel, err
+}
+
+// AcquireDescriptorsWithMeta behaves like AcquireDescriptors and also returns tightest-scope
+// rate-limit telemetry headers for emission on 2xx responses.
+func (l *Limiter) AcquireDescriptorsWithMeta(
+	ctx context.Context,
+	orgID string,
+	reqID string,
+	estInput int,
+	estOutput int,
+	reserveMicros int64,
+	descriptors []domain.RateLimitDescriptor,
+) (func(actualInput, actualOutput int, actualCostMicros int64), *domain.RateLimitHeaderMetadata, error) {
+	return l.AcquireDescriptorsWithSettlementIDAndMeta(ctx, orgID, reqID, "", estInput, estOutput, reserveMicros, descriptors)
+}
+
+// AcquireDescriptorsWithSettlementIDAndMeta combines shared settlement IDs with 2xx rate-limit header metadata.
+func (l *Limiter) AcquireDescriptorsWithSettlementIDAndMeta(
+	ctx context.Context,
+	orgID string,
+	reqID string,
+	settlementID string,
+	estInput int,
+	estOutput int,
+	reserveMicros int64,
+	descriptors []domain.RateLimitDescriptor,
+) (func(actualInput, actualOutput int, actualCostMicros int64), *domain.RateLimitHeaderMetadata, error) {
 	noop := func(int, int, int64) {}
 	if l == nil {
-		return noop, nil
+		return noop, nil, nil
 	}
 	enabled, fallbackLocal, _, _, _, _ := l.configSnapshot()
 	if !enabled {
-		return noop, nil
+		return noop, nil, nil
 	}
 	if reserveMicros < 0 {
-		return nil, fmt.Errorf("budget reservation requires a non-negative amount")
+		return nil, nil, fmt.Errorf("budget reservation requires a non-negative amount")
 	}
 	if estInput < 0 {
 		estInput = 0
@@ -386,10 +403,15 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 
 	active, err := normalizeDescriptors(orgID, descriptors)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(active) == 0 {
-		return noop, nil
+		return noop, nil, nil
+	}
+
+	slotID := reqID
+	if slotID == "" && reserveMicros == 0 {
+		slotID = uuid.NewString()
 	}
 
 	rollingID := "s:" + reqID
@@ -420,7 +442,7 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 
 		for attempt := 0; attempt < 2; attempt++ {
 			keys[len(keys)-1] = "gw:quota:" + orgHashTag(orgID) + ":admission:" + uuid.NewString()
-			argv := buildCheckDescriptorArgv(estInput, estOutput, reserveMicros, reqID, windowTTL, concTTL, now, active)
+			argv := buildCheckDescriptorArgv(estInput, estOutput, reserveMicros, slotID, windowTTL, concTTL, now, active)
 
 			res, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 				rCtx, cancel := l.withRedisTimeout(ctx)
@@ -439,7 +461,7 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 			if allowed == 0 {
 				if reason == "ROLLING_WINDOW_COLD" && attempt == 0 && len(rollingIndices) > 0 {
 					if loadErr := populateColdRollingDescriptors(ctx, loader, orgID, active, rollingIndices, now); loadErr != nil {
-						return nil, loadErr
+						return nil, nil, loadErr
 					}
 					continue
 				}
@@ -453,8 +475,9 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 				if len(slice) >= 5 {
 					retryAfter, _ = slice[4].(int64)
 				}
-				return nil, toDescriptorQuotaError(reason, current, limit, retryAfter)
+				return nil, nil, toDescriptorQuotaError(reason, current, limit, retryAfter)
 			}
+			meta := parseLuaAllowMeta(slice)
 
 			recKeys := descriptorReconcileKeys(orgID, active, now)
 			flags := make([]any, 0, len(active)*7)
@@ -491,7 +514,7 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 						totalDelta,
 						windowTTL,
 						defaultDescriptorTPDTTLSec,
-						reqID,
+						slotID,
 						actualCostMicros,
 						l.nowUTC().UnixMilli(),
 						rollingID,
@@ -504,16 +527,16 @@ func (l *Limiter) AcquireDescriptorsWithSettlementID(
 						return l.reconcileDescriptorsScr.Run(rCtx, rdb, recKeys, recArgv...).Result()
 					})
 				})
-			}, nil
+			}, meta, nil
 		}
 
 		if !fallbackLocal {
-			return nil, limiterUnavailableError()
+			return nil, nil, limiterUnavailableError()
 		}
 	}
 
 	if !fallbackLocal {
-		return nil, limiterUnavailableError()
+		return nil, nil, limiterUnavailableError()
 	}
 
 	return l.acquireDescriptorsLocal(ctx, orgID, reqID, rollingID, estInput, estOutput, reserveMicros, active, now)
@@ -602,7 +625,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	reserveMicros int64,
 	descriptors []domain.RateLimitDescriptor,
 	now time.Time,
-) (func(actualInput, actualOutput int, actualCostMicros int64), error) {
+) (func(actualInput, actualOutput int, actualCostMicros int64), *domain.RateLimitHeaderMetadata, error) {
 	tag := orgHashTag(orgID)
 	localKeys := make([]string, len(descriptors))
 	for i, d := range descriptors {
@@ -624,10 +647,9 @@ func (l *Limiter) acquireDescriptorsLocal(
 
 	if len(coldIndices) > 0 {
 		if err := populateColdRollingDescriptors(ctx, loader, orgID, descriptors, coldIndices, now); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-
 	l.localMu.Lock()
 	defer l.localMu.Unlock()
 
@@ -680,7 +702,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.RPMLimit > 0 {
 			cur := l.localDescRPM[lk] + pendingRPM[lk]
 			if cur+1 > d.RPMLimit {
-				return nil, toDescriptorQuotaError(scope+"_RPM_EXCEEDED", int64(cur), int64(d.RPMLimit), retryMin)
+				return nil, nil, toDescriptorQuotaError(scope+"_RPM_EXCEEDED", int64(cur), int64(d.RPMLimit), retryMin)
 			}
 			pendingRPM[lk]++
 		}
@@ -688,7 +710,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.TPMLimit > 0 {
 			cur := l.localDescTPM[lk] + pendingTPM[lk]
 			if cur+estTotal > d.TPMLimit || (estTotal == 0 && cur >= d.TPMLimit) {
-				return nil, toDescriptorQuotaError(scope+"_TPM_EXCEEDED", int64(cur), int64(d.TPMLimit), retryMin)
+				return nil, nil, toDescriptorQuotaError(scope+"_TPM_EXCEEDED", int64(cur), int64(d.TPMLimit), retryMin)
 			}
 			pendingTPM[lk] += estTotal
 		}
@@ -696,7 +718,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.ITPMLimit > 0 {
 			cur := l.localDescITPM[lk] + pendingITPM[lk]
 			if cur+estInput > d.ITPMLimit || (estInput == 0 && cur >= d.ITPMLimit) {
-				return nil, toDescriptorQuotaError(scope+"_ITPM_EXCEEDED", int64(cur), int64(d.ITPMLimit), retryMin)
+				return nil, nil, toDescriptorQuotaError(scope+"_ITPM_EXCEEDED", int64(cur), int64(d.ITPMLimit), retryMin)
 			}
 			pendingITPM[lk] += estInput
 		}
@@ -704,7 +726,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.OTPMLimit > 0 {
 			cur := l.localDescOTPM[lk] + pendingOTPM[lk]
 			if cur+estOutput > d.OTPMLimit || (estOutput == 0 && cur >= d.OTPMLimit) {
-				return nil, toDescriptorQuotaError(scope+"_OTPM_EXCEEDED", int64(cur), int64(d.OTPMLimit), retryMin)
+				return nil, nil, toDescriptorQuotaError(scope+"_OTPM_EXCEEDED", int64(cur), int64(d.OTPMLimit), retryMin)
 			}
 			pendingOTPM[lk] += estOutput
 		}
@@ -712,7 +734,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.TPDLimit > 0 {
 			cur := l.localDescTPD[lk] + pendingTPD[lk]
 			if cur+int64(estTotal) > d.TPDLimit || (estTotal == 0 && cur >= d.TPDLimit) {
-				return nil, toDescriptorQuotaError(scope+"_TPD_EXCEEDED", cur, d.TPDLimit, retryDay)
+				return nil, nil, toDescriptorQuotaError(scope+"_TPD_EXCEEDED", cur, d.TPDLimit, retryDay)
 			}
 			pendingTPD[lk] += int64(estTotal)
 		}
@@ -720,7 +742,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 		if d.MaxConcurrent > 0 {
 			cur := l.localDescConc[lk] + pendingConc[lk]
 			if cur+1 > d.MaxConcurrent {
-				return nil, toDescriptorQuotaError(scope+"_CONCURRENCY_EXCEEDED", int64(cur), int64(d.MaxConcurrent), 5)
+				return nil, nil, toDescriptorQuotaError(scope+"_CONCURRENCY_EXCEEDED", int64(cur), int64(d.MaxConcurrent), 5)
 			}
 			pendingConc[lk]++
 		}
@@ -736,7 +758,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 			}
 			cur += pendingIter[lk]
 			if cur+1 > d.MaxIterations {
-				return nil, toDescriptorQuotaError(scope+"_ITERATIONS_EXCEEDED", int64(cur), int64(d.MaxIterations), retryIter)
+				return nil, nil, toDescriptorQuotaError(scope+"_ITERATIONS_EXCEEDED", int64(cur), int64(d.MaxIterations), retryIter)
 			}
 			pendingIter[lk]++
 		}
@@ -748,7 +770,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 				entries := window.entries
 				if !window.initialized {
 					if !d.RollingHistoryLoaded {
-						return nil, quotaPolicyUnavailableError()
+						return nil, nil, quotaPolicyUnavailableError()
 					}
 					entries = mergeLocalRollingHistory(entries, d.RollingEntries, cutoffMs)
 				}
@@ -762,10 +784,10 @@ func (l *Limiter) acquireDescriptorsLocal(
 				}
 			}
 			if reserveMicros <= 0 || reqID == "" {
-				return nil, toDescriptorQuotaError("BUDGET_ESTIMATE_REQUIRED", curSpent, d.MaxBudgetMicros, 5)
+				return nil, nil, toDescriptorQuotaError("BUDGET_ESTIMATE_REQUIRED", curSpent, d.MaxBudgetMicros, 5)
 			}
 			if pendingRes[lk] {
-				return nil, toDescriptorQuotaError("BUDGET_RESERVATION_CONFLICT", curSpent, d.MaxBudgetMicros, 5)
+				return nil, nil, toDescriptorQuotaError("BUDGET_RESERVATION_CONFLICT", curSpent, d.MaxBudgetMicros, 5)
 			}
 			var activeReserved int64
 			if resMap := l.localDescReservations[lk]; resMap != nil {
@@ -774,27 +796,46 @@ func (l *Limiter) acquireDescriptorsLocal(
 						continue
 					}
 					if rid == reqID {
-						return nil, toDescriptorQuotaError("BUDGET_RESERVATION_CONFLICT", curSpent, d.MaxBudgetMicros, 5)
+						return nil, nil, toDescriptorQuotaError("BUDGET_RESERVATION_CONFLICT", curSpent, d.MaxBudgetMicros, 5)
 					}
 					activeReserved += entry.amount
 				}
 			}
 			if curSpent+activeReserved+reserveMicros > d.MaxBudgetMicros {
-				return nil, toDescriptorQuotaError(scope+"_BUDGET_EXCEEDED", curSpent+activeReserved, d.MaxBudgetMicros, 60)
+				return nil, nil, toDescriptorQuotaError(scope+"_BUDGET_EXCEEDED", curSpent+activeReserved, d.MaxBudgetMicros, 60)
 			}
 			pendingRes[lk] = true
 		}
 	}
 
 	// Phase 2: All descriptors admitted; apply mutations atomically under lock.
+	var meta domain.RateLimitHeaderMetadata
 	resExpiry := nowUTC.Add(defaultDescriptorReservationTTLSec * time.Second)
 	for i, d := range descriptors {
 		lk := localKeys[i]
 		if d.RPMLimit > 0 {
 			l.localDescRPM[lk]++
+			rem := d.RPMLimit - l.localDescRPM[lk]
+			if rem < 0 {
+				rem = 0
+			}
+			if meta.LimitRequests == 0 || rem < meta.RemainingRequests {
+				meta.LimitRequests = d.RPMLimit
+				meta.RemainingRequests = rem
+				meta.ResetRequestsSeconds = int(retryMin)
+			}
 		}
 		if d.TPMLimit > 0 && estTotal > 0 {
 			l.localDescTPM[lk] += estTotal
+			rem := d.TPMLimit - l.localDescTPM[lk]
+			if rem < 0 {
+				rem = 0
+			}
+			if meta.LimitTokens == 0 || rem < meta.RemainingTokens {
+				meta.LimitTokens = d.TPMLimit
+				meta.RemainingTokens = rem
+				meta.ResetTokensSeconds = int(retryMin)
+			}
 		}
 		if d.ITPMLimit > 0 && estInput > 0 {
 			l.localDescITPM[lk] += estInput
@@ -923,7 +964,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 				}
 			}
 		})
-	}, nil
+	}, &meta, nil
 }
 
 // ResetBudgetWindowSpend clears live Redis and local descriptor spend counters

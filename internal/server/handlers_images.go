@@ -142,7 +142,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, req.Quality, req.Size, req.N)
 	})
 	if err != nil {
@@ -332,7 +332,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
 	})
 	if err != nil {
@@ -468,7 +468,7 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
 	})
 	if err != nil {

@@ -1,8 +1,8 @@
 -- Atomic Single-Roundtrip Multi-Scope Rate Limiter & Budget Guard
--- KEYS[1]:  key_rpm,  KEYS[2]:  key_tpm,  KEYS[3]:  key_conc,  KEYS[4]:  key_spend
--- KEYS[5]:  team_rpm, KEYS[6]:  team_tpm, KEYS[7]:  team_conc, KEYS[8]:  team_spend
--- KEYS[9]:  user_rpm, KEYS[10]: user_tpm, KEYS[11]: user_conc, KEYS[12]: user_spend
--- KEYS[13]: org_rpm,  KEYS[14]: org_tpm,  KEYS[15]: org_conc,  KEYS[16]: org_spend
+-- KEYS[1]:  key_rpm,  KEYS[2]:  key_tpm,  KEYS[3]:  key_zconc,  KEYS[4]:  key_spend
+-- KEYS[5]:  team_rpm, KEYS[6]:  team_tpm, KEYS[7]:  team_zconc, KEYS[8]:  team_spend
+-- KEYS[9]:  user_rpm, KEYS[10]: user_tpm, KEYS[11]: user_zconc, KEYS[12]: user_spend
+-- KEYS[13]: org_rpm,  KEYS[14]: org_tpm,  KEYS[15]: org_zconc,  KEYS[16]: org_spend
 -- KEYS[17..19]: key_res_zset,  key_res_sum,  key_res_amounts
 -- KEYS[20..22]: team_res_zset, team_res_sum, team_res_amounts
 -- KEYS[23..25]: user_res_zset, user_res_sum, user_res_amounts
@@ -21,6 +21,8 @@ local reserve = tonumber(ARGV[24]) or 0
 local request_id = ARGV[25] or ""
 local reservation_ttl = tonumber(ARGV[26]) or 3600
 local now = tonumber(redis.call("TIME")[1])
+local retry_min = 60 - (now % 60)
+if retry_min <= 0 then retry_min = 60 end
 
 local function cleanup_expired(res_zset, res_sum, res_amounts)
     local expired = redis.call("ZRANGEBYSCORE", res_zset, "-inf", now)
@@ -51,15 +53,15 @@ local function check_budget(spend_key, res_zset, res_sum, res_amounts, max_b, db
     end
     if max_b > 0 then
         if reserve <= 0 or request_id == "" then
-            return {0, "BUDGET_ESTIMATE_REQUIRED", cur, max_b}
+            return {0, "BUDGET_ESTIMATE_REQUIRED", cur, max_b, 5}
         end
         cleanup_expired(res_zset, res_sum, res_amounts)
         if redis.call("HEXISTS", res_amounts, request_id) == 1 then
-            return {0, "BUDGET_RESERVATION_CONFLICT", cur, max_b}
+            return {0, "BUDGET_RESERVATION_CONFLICT", cur, max_b, 5}
         end
         local reserved = tonumber(redis.call("GET", res_sum) or "0")
         if cur + reserved + reserve > max_b then
-            return {0, code, cur, max_b}
+            return {0, code, cur + reserved, max_b, 60}
         end
     end
     return nil
@@ -69,7 +71,18 @@ local function check_quota(key, delta, limit, code)
     if limit > 0 then
         local cur = tonumber(redis.call("GET", key) or "0")
         if (cur + delta) > limit then
-            return {0, code, cur, limit}
+            return {0, code, cur, limit, retry_min}
+        end
+    end
+    return nil
+end
+
+local function check_conc(zkey, limit, code)
+    if limit > 0 then
+        redis.call("ZREMRANGEBYSCORE", zkey, "-inf", now)
+        local cur = tonumber(redis.call("ZCARD", zkey) or "0")
+        if (cur + 1) > limit then
+            return {0, code, cur, limit, 5}
         end
     end
     return nil
@@ -81,18 +94,18 @@ err = check_budget(KEYS[8],  KEYS[20], KEYS[21], KEYS[22], tonumber(ARGV[9]) or 
 err = check_budget(KEYS[12], KEYS[23], KEYS[24], KEYS[25], tonumber(ARGV[14]) or 0, tonumber(ARGV[15]) or 0, "USER_BUDGET_EXCEEDED"); if err then return err end
 err = check_budget(KEYS[16], KEYS[26], KEYS[27], KEYS[28], tonumber(ARGV[19]) or 0, tonumber(ARGV[20]) or 0, "ORG_BUDGET_EXCEEDED");  if err then return err end
 
-err = check_quota(KEYS[1],  1,          tonumber(ARGV[1]),  "KEY_RPM_EXCEEDED");          if err then return err end
-err = check_quota(KEYS[2],  est_tokens, tonumber(ARGV[2]),  "KEY_TPM_EXCEEDED");          if err then return err end
-err = check_quota(KEYS[3],  1,          tonumber(ARGV[3]),  "KEY_CONCURRENCY_EXCEEDED");  if err then return err end
-err = check_quota(KEYS[5],  1,          tonumber(ARGV[6]),  "TEAM_RPM_EXCEEDED");         if err then return err end
-err = check_quota(KEYS[6],  est_tokens, tonumber(ARGV[7]),  "TEAM_TPM_EXCEEDED");         if err then return err end
-err = check_quota(KEYS[7],  1,          tonumber(ARGV[8]),  "TEAM_CONCURRENCY_EXCEEDED"); if err then return err end
-err = check_quota(KEYS[9],  1,          tonumber(ARGV[11]), "USER_RPM_EXCEEDED");         if err then return err end
-err = check_quota(KEYS[10], est_tokens, tonumber(ARGV[12]), "USER_TPM_EXCEEDED");         if err then return err end
-err = check_quota(KEYS[11], 1,          tonumber(ARGV[13]), "USER_CONCURRENCY_EXCEEDED"); if err then return err end
-err = check_quota(KEYS[13], 1,          tonumber(ARGV[16]), "ORG_RPM_EXCEEDED");          if err then return err end
-err = check_quota(KEYS[14], est_tokens, tonumber(ARGV[17]), "ORG_TPM_EXCEEDED");          if err then return err end
-err = check_quota(KEYS[15], 1,          tonumber(ARGV[18]), "ORG_CONCURRENCY_EXCEEDED");  if err then return err end
+err = check_quota(KEYS[1],  1,          tonumber(ARGV[1])  or 0, "KEY_RPM_EXCEEDED");          if err then return err end
+err = check_quota(KEYS[2],  est_tokens, tonumber(ARGV[2])  or 0, "KEY_TPM_EXCEEDED");          if err then return err end
+err = check_conc (KEYS[3],              tonumber(ARGV[3])  or 0, "KEY_CONCURRENCY_EXCEEDED");  if err then return err end
+err = check_quota(KEYS[5],  1,          tonumber(ARGV[6])  or 0, "TEAM_RPM_EXCEEDED");         if err then return err end
+err = check_quota(KEYS[6],  est_tokens, tonumber(ARGV[7])  or 0, "TEAM_TPM_EXCEEDED");         if err then return err end
+err = check_conc (KEYS[7],              tonumber(ARGV[8])  or 0, "TEAM_CONCURRENCY_EXCEEDED"); if err then return err end
+err = check_quota(KEYS[9],  1,          tonumber(ARGV[11]) or 0, "USER_RPM_EXCEEDED");         if err then return err end
+err = check_quota(KEYS[10], est_tokens, tonumber(ARGV[12]) or 0, "USER_TPM_EXCEEDED");         if err then return err end
+err = check_conc (KEYS[11],             tonumber(ARGV[13]) or 0, "USER_CONCURRENCY_EXCEEDED"); if err then return err end
+err = check_quota(KEYS[13], 1,          tonumber(ARGV[16]) or 0, "ORG_RPM_EXCEEDED");          if err then return err end
+err = check_quota(KEYS[14], est_tokens, tonumber(ARGV[17]) or 0, "ORG_TPM_EXCEEDED");          if err then return err end
+err = check_conc (KEYS[15],             tonumber(ARGV[18]) or 0, "ORG_CONCURRENCY_EXCEEDED");  if err then return err end
 
 local function incr_ttl(key, delta, ttl)
     local v = redis.call("INCRBY", key, delta)
@@ -102,33 +115,66 @@ local function incr_ttl(key, delta, ttl)
     return v
 end
 
-local function incr_conc_ttl(key, delta, ttl)
-    local v = redis.call("INCRBY", key, delta)
-    redis.call("EXPIRE", key, ttl)
-    return v
+local function acquire_conc_slot(zkey, ttl)
+    if request_id == "" then
+        return
+    end
+    redis.call("ZADD", zkey, now + ttl, request_id)
+    redis.call("EXPIRE", zkey, ttl + 60)
 end
 
+local tight_lim_req, tight_rem_req = 0, 0
+local tight_lim_tok, tight_rem_tok = 0, 0
+local function track_req(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_req == 0 or rem < tight_rem_req then
+            tight_lim_req = limit
+            tight_rem_req = rem
+        end
+    end
+end
+local function track_tok(limit, val)
+    if limit > 0 then
+        local rem = limit - val
+        if rem < 0 then rem = 0 end
+        if tight_lim_tok == 0 or rem < tight_rem_tok then
+            tight_lim_tok = limit
+            tight_rem_tok = rem
+        end
+    end
+end
+
+local lim_k_rpm, lim_k_tpm, lim_k_conc = tonumber(ARGV[1]) or 0, tonumber(ARGV[2]) or 0, tonumber(ARGV[3]) or 0
 local new_rpm = incr_ttl(KEYS[1], 1, window_ttl)
 local new_tpm = incr_ttl(KEYS[2], est_tokens, window_ttl)
-incr_conc_ttl(KEYS[3], 1, conc_ttl)
+track_req(lim_k_rpm, new_rpm)
+track_tok(lim_k_tpm, new_tpm)
+if lim_k_conc > 0 then acquire_conc_slot(KEYS[3], conc_ttl) end
 
-if tonumber(ARGV[6]) > 0 then incr_ttl(KEYS[5], 1, window_ttl) end
-if tonumber(ARGV[7]) > 0 then incr_ttl(KEYS[6], est_tokens, window_ttl) end
-if tonumber(ARGV[8]) > 0 then incr_conc_ttl(KEYS[7], 1, conc_ttl) end
-if tonumber(ARGV[11]) > 0 then incr_ttl(KEYS[9], 1, window_ttl) end
-if tonumber(ARGV[12]) > 0 then incr_ttl(KEYS[10], est_tokens, window_ttl) end
-if tonumber(ARGV[13]) > 0 then incr_conc_ttl(KEYS[11], 1, conc_ttl) end
-if tonumber(ARGV[16]) > 0 then incr_ttl(KEYS[13], 1, window_ttl) end
-if tonumber(ARGV[17]) > 0 then incr_ttl(KEYS[14], est_tokens, window_ttl) end
-if tonumber(ARGV[18]) > 0 then incr_conc_ttl(KEYS[15], 1, conc_ttl) end
+local lim_t_rpm, lim_t_tpm, lim_t_conc = tonumber(ARGV[6]) or 0, tonumber(ARGV[7]) or 0, tonumber(ARGV[8]) or 0
+if lim_t_rpm > 0 then track_req(lim_t_rpm, incr_ttl(KEYS[5], 1, window_ttl)) end
+if lim_t_tpm > 0 then track_tok(lim_t_tpm, incr_ttl(KEYS[6], est_tokens, window_ttl)) end
+if lim_t_conc > 0 then acquire_conc_slot(KEYS[7], conc_ttl) end
+
+local lim_u_rpm, lim_u_tpm, lim_u_conc = tonumber(ARGV[11]) or 0, tonumber(ARGV[12]) or 0, tonumber(ARGV[13]) or 0
+if lim_u_rpm > 0 then track_req(lim_u_rpm, incr_ttl(KEYS[9], 1, window_ttl)) end
+if lim_u_tpm > 0 then track_tok(lim_u_tpm, incr_ttl(KEYS[10], est_tokens, window_ttl)) end
+if lim_u_conc > 0 then acquire_conc_slot(KEYS[11], conc_ttl) end
+
+local lim_o_rpm, lim_o_tpm, lim_o_conc = tonumber(ARGV[16]) or 0, tonumber(ARGV[17]) or 0, tonumber(ARGV[18]) or 0
+if lim_o_rpm > 0 then track_req(lim_o_rpm, incr_ttl(KEYS[13], 1, window_ttl)) end
+if lim_o_tpm > 0 then track_tok(lim_o_tpm, incr_ttl(KEYS[14], est_tokens, window_ttl)) end
+if lim_o_conc > 0 then acquire_conc_slot(KEYS[15], conc_ttl) end
 
 if reserve > 0 and request_id ~= "" then
     local expires = now + reservation_ttl
     local scopes = {
-        {tonumber(ARGV[4]),  KEYS[17], KEYS[18], KEYS[19]},
-        {tonumber(ARGV[9]),  KEYS[20], KEYS[21], KEYS[22]},
-        {tonumber(ARGV[14]), KEYS[23], KEYS[24], KEYS[25]},
-        {tonumber(ARGV[19]), KEYS[26], KEYS[27], KEYS[28]},
+        {tonumber(ARGV[4])  or 0, KEYS[17], KEYS[18], KEYS[19]},
+        {tonumber(ARGV[9])  or 0, KEYS[20], KEYS[21], KEYS[22]},
+        {tonumber(ARGV[14]) or 0, KEYS[23], KEYS[24], KEYS[25]},
+        {tonumber(ARGV[19]) or 0, KEYS[26], KEYS[27], KEYS[28]},
     }
     for _, sc in ipairs(scopes) do
         if sc[1] > 0 then
@@ -142,4 +188,4 @@ if reserve > 0 and request_id ~= "" then
     end
 end
 
-return {1, "OK", new_rpm, new_tpm}
+return {1, "OK", tight_lim_req, tight_rem_req, retry_min, tight_lim_tok, tight_rem_tok, retry_min}

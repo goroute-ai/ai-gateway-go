@@ -17,6 +17,13 @@ type KeyRotationRepository interface {
 	ListVirtualKeysDueForRotation(ctx context.Context, now time.Time, limit int) ([]*domain.VirtualKey, error)
 }
 
+// DeprecatedKeyLookupRepository is an optional Repository extension that lists active or stored
+// deprecated grace hashes belonging to a virtual key so cache invalidators can evict stale
+// L1/L2 entries without deleting valid grace-period hashes.
+type DeprecatedKeyLookupRepository interface {
+	ListDeprecatedVirtualKeyHashesByKeyID(ctx context.Context, virtualKeyID string) ([]string, error)
+}
+
 // DeprecatedKeyRevocationRepository is an optional Repository extension that deletes
 // all deprecated grace hashes belonging to a virtual key when the key is explicitly revoked,
 // returning the deleted key hashes so callers can evict them from L1/L2 caches immediately.
@@ -27,6 +34,8 @@ type DeprecatedKeyRevocationRepository interface {
 var (
 	_ KeyRotationRepository             = (*MemoryRepository)(nil)
 	_ KeyRotationRepository             = (*PostgresRepository)(nil)
+	_ DeprecatedKeyLookupRepository     = (*MemoryRepository)(nil)
+	_ DeprecatedKeyLookupRepository     = (*PostgresRepository)(nil)
 	_ DeprecatedKeyRevocationRepository = (*MemoryRepository)(nil)
 	_ DeprecatedKeyRevocationRepository = (*PostgresRepository)(nil)
 )

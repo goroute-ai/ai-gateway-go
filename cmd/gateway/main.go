@@ -24,9 +24,9 @@ import (
 )
 
 var (
-	version = "v1.21.2"
+	version = "v1.22.0"
 	commit  = "dev"
-	date    = "2026-11-16T00:00:00Z"
+	date    = "2026-11-19T00:00:00Z"
 )
 
 func main() {

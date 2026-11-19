@@ -128,7 +128,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
 	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
 	r = r.WithContext(quotaCtx)
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, model, estTokens, reqID, nil)
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -335,7 +335,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	r = r.WithContext(quotaCtx)
 	// TTS quota follows the target model's text token profile.
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
-	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
+	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateAudioTTSCostUpperBound(gm, len([]rune(raw.Input)))
 	})
 	if err != nil {

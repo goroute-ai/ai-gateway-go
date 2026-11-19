@@ -459,6 +459,7 @@ func TestProjectModelRBAC_AndEnforceProjectModelQuota_DataPlane(t *testing.T) {
 		RPMLimit:     20,
 		IsActive:     true,
 	}))
+	gw.RBAC().InvalidatePolicyScope(ctx, "rbac_quotas", "org_q")
 	rr = callChat(unboundedKey.RawKey, "gpt-4.1")
 	assert.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 

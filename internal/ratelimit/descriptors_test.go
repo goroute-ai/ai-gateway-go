@@ -277,7 +277,9 @@ func TestAcquireDescriptors_SeparateITPMOTPMTPDAndReconciliation(t *testing.T) {
 	assertRedisInt(t, mr, ks.otpm, "80")
 	assertRedisInt(t, mr, ks.tpm, "180")
 	assertRedisInt(t, mr, ks.tpd, "180")
-	assertRedisInt(t, mr, ks.conc, "1")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 1 {
+		t.Fatalf("redis zset %s members = %v, want 1", ks.conc, members)
+	}
 
 	// Reconcile with actualInput=140 (+40), actualOutput=30 (-50) -> totalDelta = -10.
 	rel1(140, 30, 0)
@@ -285,7 +287,9 @@ func TestAcquireDescriptors_SeparateITPMOTPMTPDAndReconciliation(t *testing.T) {
 	assertRedisInt(t, mr, ks.otpm, "30")
 	assertRedisInt(t, mr, ks.tpm, "170")
 	assertRedisInt(t, mr, ks.tpd, "170")
-	assertRedisInt(t, mr, ks.conc, "0")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 0 {
+		t.Fatalf("redis zset %s members = %v, want 0", ks.conc, members)
+	}
 
 	// Calling rel1 a second time must be a no-op (idempotent sync.Once).
 	rel1(140, 30, 0)
@@ -338,7 +342,9 @@ func TestAcquireDescriptors_SeparateITPMOTPMTPDAndReconciliation(t *testing.T) {
 	assertRedisInt(t, mr, ks.otpm, "30")
 	assertRedisInt(t, mr, ks.tpm, "170")
 	assertRedisInt(t, mr, ks.tpd, "170")
-	assertRedisInt(t, mr, ks.conc, "0")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 0 {
+		t.Fatalf("redis zset %s members = %v, want 0", ks.conc, members)
+	}
 }
 
 func TestAcquireDescriptors_MaxIterationsSessionTTL(t *testing.T) {
@@ -469,9 +475,13 @@ func TestAcquireDescriptors_BudgetReservationSettleRefundOutboxAndExpiry(t *test
 	if err != nil {
 		t.Fatalf("acquire req-b3-outbox failed: %v", err)
 	}
-	assertRedisInt(t, mr, ks.conc, "1")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 1 {
+		t.Fatalf("redis zset %s members = %v, want 1", ks.conc, members)
+	}
 	rel3(10, 10, -2)
-	assertRedisInt(t, mr, ks.conc, "0")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 0 {
+		t.Fatalf("redis zset %s members = %v, want 0", ks.conc, members)
+	}
 	assertRedisInt(t, mr, ks.resSum, "400")
 	assertRedisInt(t, mr, ks.spend, "550")
 
@@ -680,7 +690,9 @@ func TestAcquireDescriptors_RPMTPMConcurrencyAndNegativeClamp(t *testing.T) {
 	rel1(0, 0, 0)
 	ks := buildDescriptorKeySet(orgID, desc, fixedNow.Unix()/60, fixedNow.Format("20060102"))
 	assertRedisInt(t, mr, ks.tpm, "0")
-	assertRedisInt(t, mr, ks.conc, "0")
+	if members, _ := mr.ZMembers(ks.conc); len(members) != 0 {
+		t.Fatalf("redis zset %s members = %v, want 0", ks.conc, members)
+	}
 
 	// Request exceeding TPM (estTotal = 350 > 300) hits team_tpm_exceeded without incrementing RPM.
 	_, err = limiter.AcquireDescriptors(ctx, orgID, "req-dim-tpm", 200, 150, 0, []domain.RateLimitDescriptor{desc})

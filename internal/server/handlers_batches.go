@@ -115,15 +115,27 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 	}
 
 	var releaseBudget func(actualTokens int, overrideCostMicros int64)
+	var batchRLMeta *domain.RateLimitHeaderMetadata
 	if identityHasBudget(idCtx) && s.limiter != nil {
-		rawRelease, err := s.limiter.AcquireWithBudget(r.Context(), idCtx, 1, est.reservedCostMicros, batchID)
+		rawRelease, meta, err := s.limiter.AcquireWithBudgetAndMeta(r.Context(), idCtx, 1, est.reservedCostMicros, batchID)
 		if err != nil {
 			_ = s.limiter.ReleaseBatchEnqueuedTokens(context.Background(), idCtx, batchID)
 			domain.WriteHTTPError(w, err)
 			return
 		}
+		batchRLMeta = meta
 		releaseBudget = s.wrapBudgetRelease(context.Background(), idCtx, batchID, rawRelease)
+	} else if s.limiter != nil {
+		rawRel, meta, err := s.limiter.AcquireWithMeta(r.Context(), idCtx, 1)
+		if err != nil {
+			_ = s.limiter.ReleaseBatchEnqueuedTokens(context.Background(), idCtx, batchID)
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		batchRLMeta = meta
+		rawRel(1)
 	}
+	domain.WriteRateLimitHeaders(w, batchRLMeta)
 
 	rollbackBatchQuotas := func() {
 		if releaseBudget != nil {

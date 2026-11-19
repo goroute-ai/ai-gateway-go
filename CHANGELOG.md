@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.22.0] - 2026-11-19
+
+### Enterprise Key Governance, Self-Service Controls, Diff Audits, KEK Rotation & Response Rate-Limit Telemetry
+
+#### Added
+- **Self-Service Key Management & Team Member Permissions (`migrations/0035`, `internal/server/handlers_governance.go`)**: Added `GET /v1/key/info` self-inspection and developer self-service key APIs (`GET|POST /v1/self/keys`, `POST /v1/self/keys/{keyID}/rotate`, `DELETE /v1/self/keys/{keyID}`) governed by `teams.team_member_permissions` and `self_serve_budget_policy` (`disabled`, `lower_only`, `ceiling`).
+- **Key Lifecycle, Expiry Alerts & Secret Sinks (`migrations/0035`, `internal/auth/rotation.go`, `expiry_alerts.go`, `pkg/gateway/`)**: Added `KeyExpiryAlertManager` (`auth.key_expiry_alert_poll_interval`) with deduplicated `expiry_alert_sent_days` tracking, `KeySecretSink` / `WithKeyRotationSecretSink` / `GatewayServer.SetKeyRotationSecretSink`, and lifecycle metadata (`last_rotated_at`, `rotation_count`, `revoked_at`, `revoked_by`).
+- **Bulk Key & Team Membership Operations (`internal/server/`, `internal/storage/`)**: Added `GET /admin/v1/organizations/{orgID}`, `POST /admin/v1/keys/{keyID}/block`, `POST /admin/v1/keys/{keyID}/unblock`, `POST /admin/v1/keys/{keyID}/reset-spend`, `POST /admin/v1/keys/bulk-update`, transactional `BulkSyncTeamMemberships` (`/admin/v1/teams/{teamID}/members/bulk` with `remove_user_ids`), and `POST /admin/v1/teams/{teamID}/members/{userID}/reset-spend`.
+- **Transactional Master KEK Rotation (`internal/storage/`, `internal/server/`, `web/`)**: Added `POST /admin/v1/security/rotate-kek` (`platform_admin` only) performing atomic `FOR UPDATE` DEK re-wrapping across `provider_credentials`, `mcp_servers`, `a2a_agents`, and `guardrail_definitions`, emitting `"vault_kek_rotated"` Redis Pub/Sub notices, and wiring Master KEK rotation in `ConfigView`.
+- **Redacted `before_value`/`after_value` Audit Diffs (`migrations/0035`)**: Persisted redacted pre/post mutation snapshots on `audit_logs` across key, team, org, project, quota, policy, guardrail, credential, PTU, SCIM, and password mutations.
+- **2xx Rate-Limit Telemetry & Dynamic 429 Cooldowns (`internal/ratelimit/`, `internal/server/`)**: Added `X-RateLimit-*` header emission on `2xx` responses across all inference modalities and optional `rate_limit.dynamic_on_upstream_429` brief per-key cooldowns.
+
+#### Security & Fixes
+- **Deprecated Grace-Hash Cache Consistency**: Added `ListDeprecatedVirtualKeyHashesByKeyID` (`DeprecatedKeyLookupRepository`) and invalidated both primary and active deprecated grace hashes across L1, Redis L2, and Pub/Sub on `UpdateVirtualKey`, `RevokeKeyWithActor`, `InvalidateKeyID`, and `BulkUpdateVirtualKeys`.
+- **Role-Hierarchy Isolation**: Hardened `team_admin` key issuance/rebinding guards against `platform_admin`/`org_admin` targets and `service_account` keys (`cross_role_access_denied`), and restricted Master KEK rotation controls strictly to `platform_admin`.
+
+#### Changed
+- Expanded `docs/openapi/gateway.openapi.yaml` to `118` total paths (`28` `/v1`, `80` `/admin/v1`, `10` `/auth`) and updated the Operator Console (`OrganizationsView`, `KeysView`, `ConfigView`) within the `<= 560 KB` / `<= 150 KB` gzip bundle budget.
+
+---
+
 ## [1.21.2] - 2026-11-19
 
 ### Added

@@ -2,7 +2,9 @@ package auth_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -661,5 +663,177 @@ func TestKeyRotationManager_StagedReuseAcrossDeliveryRetriesAndNoDelivery(t *tes
 	idGrace, err := svc.AuthenticateVirtualKey(ctx, origRaw)
 	if err != nil || idGrace.DeprecatedKeyRevokeAt == nil || !idGrace.DeprecatedKeyRevokeAt.Equal(now.Add(15*time.Minute)) {
 		t.Fatalf("expected old key deprecated with grace period starting at ACK, got %+v err=%v", idGrace, err)
+	}
+}
+
+func TestKeyRotationManager_AutoRotatedWebhookAndSecretSink(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+
+	var mu sync.Mutex
+	var webhookPayloads []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		mu.Lock()
+		webhookPayloads = append(webhookPayloads, payload)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if err := repo.CreateOrganization(ctx, &domain.Organization{
+		ID:                  "org-rot-hook",
+		Name:                "Rot Hook Org",
+		IsActive:            true,
+		LifecycleWebhookURL: srv.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	svc := auth.NewService(repo, nil, "master-key-rot-webhook-0123456789", time.Minute, time.Minute)
+	svc.SetNowFunc(func() time.Time { return now })
+
+	past := now.Add(-time.Minute)
+	vk, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org-rot-hook",
+		Name:                "auto-rot-webhook-key",
+		RotationIntervalSec: 3600,
+		KeyRotationAt:       &past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var delivered []auth.KeyRotatedSecretEvent
+	mgr := auth.NewKeyRotationManager(svc, repo, nil, auth.KeyRotationConfig{
+		PollInterval: time.Minute,
+		GracePeriod:  30 * time.Minute,
+		HTTPClient:   srv.Client(),
+		SecretSink: auth.KeySecretSinkFunc(func(_ context.Context, ev auth.KeyRotatedSecretEvent) error {
+			delivered = append(delivered, ev)
+			return nil
+		}),
+		Now: func() time.Time { return now },
+	})
+
+	res, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.RotatedKeys != 1 || res.WebhooksSent != 1 || res.Errors != 0 {
+		t.Fatalf("unexpected sweep result: %+v", res)
+	}
+	if len(delivered) != 1 || delivered[0].VirtualKeyID != vk.ID || !strings.HasPrefix(delivered[0].RawKey, "sk-gw-") {
+		t.Fatalf("expected SecretSink to receive newly minted raw key, got %+v", delivered)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(webhookPayloads) != 1 {
+		t.Fatalf("expected 1 auto-rotation webhook payload, got %d", len(webhookPayloads))
+	}
+	if webhookPayloads[0]["event"] != "virtual_key.auto_rotated" {
+		t.Fatalf("unexpected event: %v", webhookPayloads[0]["event"])
+	}
+	if _, leaked := webhookPayloads[0]["raw_key"]; leaked {
+		t.Fatalf("webhook payload must never expose raw_key")
+	}
+	if errors.Is(context.Canceled, nil) {
+		t.Fatal("unreachable")
+	}
+}
+
+func TestUpdateVirtualKey_And_SetSecretSink_GraceCacheConsistency(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	mr := miniredis.RunT(t)
+	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
+
+	if err := repo.CreateOrganization(ctx, &domain.Organization{
+		ID:       "org-grace-upd",
+		Name:     "Grace Update Org",
+		Slug:     "grace-upd",
+		IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	svc := auth.NewService(repo, rf, "test-master-admin-key", time.Minute, 5*time.Minute)
+	svc.SetNowFunc(func() time.Time { return now })
+
+	issued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:         "org-grace-upd",
+		Name:          "grace-cache-key",
+		AllowedModels: []string{"gpt-4o"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRawKey := issued.RawKey
+
+	rotated, err := svc.RotateVirtualKeyWithGrace(ctx, issued.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm L1 + Redis L2 for the deprecated grace key
+	idOld, err := svc.AuthenticateVirtualKey(ctx, oldRawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateVirtualKey(old grace key): %v", err)
+	}
+	if !slices.Equal(idOld.KeyAllowedModels, []string{"gpt-4o"}) {
+		t.Fatalf("unexpected initial AllowedModels: %v", idOld.KeyAllowedModels)
+	}
+
+	// Non-deactivating UpdateVirtualKey must evict warm deprecated grace cache without deleting the grace window
+	updated := *rotated
+	updated.RawKey = ""
+	updated.AllowedModels = []string{"claude-sonnet-4"}
+	if err := svc.UpdateVirtualKey(ctx, &updated); err != nil {
+		t.Fatalf("UpdateVirtualKey(models): %v", err)
+	}
+	idAfterUpdate, err := svc.AuthenticateVirtualKey(ctx, oldRawKey)
+	if err != nil {
+		t.Fatalf("expected old grace key to stay active with refreshed policy: %v", err)
+	}
+	if !slices.Equal(idAfterUpdate.KeyAllowedModels, []string{"claude-sonnet-4"}) {
+		t.Fatalf("expected stale deprecated grace cache to refresh to [claude-sonnet-4], got %v", idAfterUpdate.KeyAllowedModels)
+	}
+
+	// SetSecretSink dynamically updates KeySecretSink and receives rotated raw key
+	var sinkEvents []auth.KeyRotatedSecretEvent
+	past := now.Add(-time.Minute)
+	updated.RotationIntervalSec = 3600
+	updated.KeyRotationAt = &past
+	if err := svc.UpdateVirtualKey(ctx, &updated); err != nil {
+		t.Fatal(err)
+	}
+	mgr := auth.NewKeyRotationManager(svc, repo, nil, auth.KeyRotationConfig{
+		PollInterval: time.Minute,
+		GracePeriod:  time.Hour,
+		Now:          func() time.Time { return now },
+	})
+	mgr.SetSecretSink(auth.KeySecretSinkFunc(func(_ context.Context, ev auth.KeyRotatedSecretEvent) error {
+		sinkEvents = append(sinkEvents, ev)
+		return nil
+	}))
+	res, err := mgr.RunOnce(ctx)
+	if err != nil || res.RotatedKeys != 1 || len(sinkEvents) != 1 || !strings.HasPrefix(sinkEvents[0].RawKey, "sk-gw-") {
+		t.Fatalf("expected SetSecretSink delivery after RunOnce, res=%+v events=%+v err=%v", res, sinkEvents, err)
+	}
+
+	// Deactivating via UpdateVirtualKey immediately clears & evicts both primary and deprecated grace hashes
+	disabled := *rotated
+	disabled.RawKey = ""
+	disabled.IsActive = false
+	if err := svc.UpdateVirtualKey(ctx, &disabled); err != nil {
+		t.Fatalf("UpdateVirtualKey(disable): %v", err)
+	}
+	if _, err := svc.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatalf("expected old grace key to fail immediately after UpdateVirtualKey(IsActive=false)")
 	}
 }

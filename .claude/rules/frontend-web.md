@@ -15,12 +15,12 @@ paths:
 
 - The React 18, TypeScript, and Vite application lives in `web/`; embedded assets are generated into `internal/ui/dist/` and served by `internal/ui/`.
 - Edit frontend source under `web/`. Do not hand-edit generated `internal/ui/dist/` assets.
-- After frontend changes, run `cd web && npm run typecheck` and `make ui-build` to build, enforce the `<= 500 KB` uncompressed / `<= 150 KB` gzip bundle budget, and synchronize embedded assets into `internal/ui/dist/`.
+- After frontend changes, run `cd web && npm run typecheck` and `make ui-build` to build, enforce the `<= 560 KB` uncompressed / `<= 150 KB` gzip bundle budget, and synchronize embedded assets into `internal/ui/dist/`.
 - Run `diff -rq web/dist internal/ui/dist`, `make ui-check-dist` (clean when committed), and `go test ./internal/ui/...` to verify asset parity and serving behavior.
 
 ## Auth, Views & UI Constraints
 
-- Keep total bundle sizes within the limits enforced by `web/scripts/check-budget.mjs` (`<= 500 KB` uncompressed, `<= 150 KB` gzipped, `<= 150 KB` per JS chunk).
+- Keep total bundle sizes within the limits enforced by `web/scripts/check-budget.mjs` (`<= 560 KB` uncompressed, `<= 150 KB` gzipped, `<= 150 KB` per JS chunk).
 - Reference static assets with absolute `/ui/` paths (`/ui/favicon.png`, `/ui/logo-dark.png`) so nested SPA routes load assets reliably.
 - Import only required icons and avoid adding large dependencies without a clear need.
 - Preserve Operator Console authentication flows (`LoginView`: Master Admin Key bearer token, `/auth/login` password login, and `/auth/sso/{provider}/login` OIDC PKCE) using `HttpOnly` signed `goroute_session` cookies and sending `X-CSRF-Token` on cookie-authenticated mutations.

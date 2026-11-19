@@ -1,4 +1,4 @@
--- Atomic Post-Request Descriptor Token Reconciliation, Concurrency Release, & Budget Settlement
+-- Atomic Post-Request Descriptor Token Reconciliation, Self-Healing ZSET Concurrency Release, & Budget Settlement
 -- Every key in KEYS MUST carry the same {org:<orgID>} Redis Cluster hash tag.
 --
 -- Per-descriptor KEYS (10 keys per descriptor idx = 0..count-1, kbase = idx * 10):
@@ -6,7 +6,7 @@
 --   KEYS[kbase + 2]: itpm_key
 --   KEYS[kbase + 3]: otpm_key
 --   KEYS[kbase + 4]: tpd_key
---   KEYS[kbase + 5]: conc_key
+--   KEYS[kbase + 5]: zconc_key
 --   KEYS[kbase + 6]: spend_key
 --   KEYS[kbase + 7]: res_zset_key
 --   KEYS[kbase + 8]: res_sum_key
@@ -61,6 +61,9 @@ local function adjust_counter(key, delta, ttl)
     if delta == 0 then
         return
     end
+    if delta < 0 and redis.call("EXISTS", key) == 0 then
+        return
+    end
     local v = redis.call("INCRBY", key, delta)
     if v < 0 then
         redis.call("SET", key, 0, "EX", ttl)
@@ -77,7 +80,7 @@ for idx = 0, count - 1 do
     local itpm_key = KEYS[kbase + 2]
     local otpm_key = KEYS[kbase + 3]
     local tpd_key = KEYS[kbase + 4]
-    local conc_key = KEYS[kbase + 5]
+    local zconc_key = KEYS[kbase + 5]
     local spend_key = KEYS[kbase + 6]
     local res_zset = KEYS[kbase + 7]
     local res_sum = KEYS[kbase + 8]
@@ -92,11 +95,8 @@ for idx = 0, count - 1 do
     local has_budget = tonumber(ARGV[abase + 6]) or 0
     local is_rolling = tonumber(ARGV[abase + 7]) or 0
 
-    if has_conc == 1 then
-        local c = tonumber(redis.call("GET", conc_key) or "0")
-        if c > 0 then
-            redis.call("DECR", conc_key)
-        end
+    if has_conc == 1 and zconc_key ~= "" and request_id ~= "" then
+        redis.call("ZREM", zconc_key, request_id)
     end
 
     if has_tpm == 1 and total_delta ~= 0 then

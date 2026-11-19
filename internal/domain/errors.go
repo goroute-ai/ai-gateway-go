@@ -20,17 +20,74 @@ const (
 	ErrorTypeServer         ErrorType = "server_error"
 )
 
+// RateLimitHeaderMetadata carries rate-limit telemetry emitted on inference and 429 error responses.
+type RateLimitHeaderMetadata struct {
+	LimitRequests        int    `json:"-"`
+	RemainingRequests    int    `json:"-"`
+	ResetRequestsSeconds int    `json:"-"`
+	LimitTokens          int    `json:"-"`
+	RemainingTokens      int    `json:"-"`
+	ResetTokensSeconds   int    `json:"-"`
+	Scope                string `json:"-"`
+	LimitType            string `json:"-"`
+	ResetAt              string `json:"-"`
+}
+
+// WriteRateLimitHeaders writes standard X-RateLimit-* headers onto w when meta is non-nil.
+func WriteRateLimitHeaders(w http.ResponseWriter, meta *RateLimitHeaderMetadata) {
+	if w == nil || meta == nil {
+		return
+	}
+	h := w.Header()
+	if meta.LimitRequests > 0 {
+		h.Set("X-RateLimit-Limit-Requests", fmt.Sprintf("%d", meta.LimitRequests))
+		rem := meta.RemainingRequests
+		if rem < 0 {
+			rem = 0
+		}
+		h.Set("X-RateLimit-Remaining-Requests", fmt.Sprintf("%d", rem))
+		resetSec := meta.ResetRequestsSeconds
+		if resetSec < 0 {
+			resetSec = 0
+		}
+		h.Set("X-RateLimit-Reset-Requests", fmt.Sprintf("%ds", resetSec))
+	}
+	if meta.LimitTokens > 0 {
+		h.Set("X-RateLimit-Limit-Tokens", fmt.Sprintf("%d", meta.LimitTokens))
+		rem := meta.RemainingTokens
+		if rem < 0 {
+			rem = 0
+		}
+		h.Set("X-RateLimit-Remaining-Tokens", fmt.Sprintf("%d", rem))
+		resetSec := meta.ResetTokensSeconds
+		if resetSec < 0 {
+			resetSec = 0
+		}
+		h.Set("X-RateLimit-Reset-Tokens", fmt.Sprintf("%ds", resetSec))
+	}
+	if meta.Scope != "" {
+		h.Set("X-RateLimit-Scope", meta.Scope)
+	}
+	if meta.LimitType != "" {
+		h.Set("X-RateLimit-Type", meta.LimitType)
+	}
+	if meta.ResetAt != "" {
+		h.Set("X-RateLimit-Reset-At", meta.ResetAt)
+	}
+}
+
 // GatewayError is the unified error type propagated across all gateway layers.
 type GatewayError struct {
-	StatusCode    int          `json:"-"`
-	Type          ErrorType    `json:"type"`
-	Code          string       `json:"code"`
-	Message       string       `json:"message"`
-	Param         string       `json:"param,omitempty"`
-	Provider      ProviderType `json:"provider,omitempty"`
-	RetryAfterSec int          `json:"-"`
-	Retryable     bool         `json:"-"`
-	AuthFailure   bool         `json:"-"`
+	StatusCode    int                      `json:"-"`
+	Type          ErrorType                `json:"type"`
+	Code          string                   `json:"code"`
+	Message       string                   `json:"message"`
+	Param         string                   `json:"param,omitempty"`
+	Provider      ProviderType             `json:"provider,omitempty"`
+	RetryAfterSec int                      `json:"-"`
+	RateLimitMeta *RateLimitHeaderMetadata `json:"-"`
+	Retryable     bool                     `json:"-"`
+	AuthFailure   bool                     `json:"-"`
 }
 
 func (e *GatewayError) Error() string {
@@ -93,6 +150,7 @@ func WriteHTTPError(w http.ResponseWriter, err error) {
 	if gwErr.RetryAfterSec > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", gwErr.RetryAfterSec))
 	}
+	WriteRateLimitHeaders(w, gwErr.RateLimitMeta)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(gwErr.StatusCode)
 	_ = json.NewEncoder(w).Encode(OpenAIErrorEnvelope{Error: gwErr})
@@ -104,6 +162,7 @@ func WriteAnthropicHTTPError(w http.ResponseWriter, err error) {
 	if gwErr.RetryAfterSec > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", gwErr.RetryAfterSec))
 	}
+	WriteRateLimitHeaders(w, gwErr.RateLimitMeta)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(gwErr.StatusCode)
 	_ = json.NewEncoder(w).Encode(AnthropicErrorEnvelope{

@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 )
 
 const defaultBudgetExceededThrottlePct = 0.10
@@ -20,6 +22,7 @@ type budgetPolicyAcquisition struct {
 	EffectiveModel  string
 	ReleaseQuota    func(actualTokens int, overrideCostMicros int64)
 	ReleaseUsage    func(actualInput, actualOutput int, overrideCostMicros int64)
+	RateLimitMeta   *domain.RateLimitHeaderMetadata
 	Throttled       bool
 	FallbackApplied bool
 }
@@ -48,6 +51,7 @@ func applyBudgetPolicyHeaders(w http.ResponseWriter, originalModel string, acq b
 	if w == nil {
 		return
 	}
+	domain.WriteRateLimitHeaders(w, acq.RateLimitMeta)
 	if acq.Throttled {
 		w.Header().Set("X-Gateway-Budget-Throttled", "true")
 	}
@@ -181,7 +185,27 @@ func (s *GatewayServer) checkModelDeploymentBudget(ctx context.Context, orgID, m
 	return nil
 }
 
-func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), error) {
+func (s *GatewayServer) checkDynamicUpstream429(ctx context.Context, id *domain.IdentityContext) error {
+	if s != nil && s.limiter != nil && s.cfg != nil && s.cfg.RateLimit.DynamicOnUpstream429 && id != nil && id.VirtualKeyID != "" {
+		if sec, throttled := s.limiter.CheckUpstream429Throttle(ctx, id.OrgID, id.VirtualKeyID); throttled {
+			return &domain.GatewayError{
+				StatusCode:    http.StatusTooManyRequests,
+				Type:          domain.ErrorTypeRateLimit,
+				Code:          "upstream_429_dynamic_throttle",
+				Message:       "Key temporarily throttled after upstream 429 rate-limit signals",
+				RetryAfterSec: sec,
+				RateLimitMeta: &domain.RateLimitHeaderMetadata{
+					Scope:     "key",
+					LimitType: "upstream_429",
+					ResetAt:   time.Now().UTC().Add(time.Duration(sec) * time.Second).Format(time.RFC3339),
+				},
+			}
+		}
+	}
+	return nil
+}
+
+func (s *GatewayServer) acquireQuotaWithoutThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), *domain.RateLimitHeaderMetadata, error) {
 	return s.acquireQuotaUsingEstimator(ctx, id, model, rateTokens, requestedOutput, requestID, s.textBudgetEstimator(model, budgetInputTokens, requestedOutput))
 }
 
@@ -193,15 +217,18 @@ func (s *GatewayServer) textBudgetEstimator(model string, budgetInputTokens, req
 	}
 }
 
-func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, requestedOutput int, requestID string, estimate requestBudgetEstimator) (func(int, int, int64), error) {
+func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, requestedOutput int, requestID string, estimate requestBudgetEstimator) (func(int, int, int64), *domain.RateLimitHeaderMetadata, error) {
 	if s == nil {
-		return func(int, int, int64) {}, nil
+		return func(int, int, int64) {}, nil, nil
+	}
+	if err := s.checkDynamicUpstream429(ctx, id); err != nil {
+		return nil, nil, err
 	}
 	now := s.nowUTC()
 	effID := applyEffectiveTempBudgets(id, now)
 	extDescriptors, descErr := s.buildExtendedQuotaDescriptors(ctx, effID, model, now)
 	if descErr != nil {
-		return nil, descriptorLookupError(descErr)
+		return nil, nil, descriptorLookupError(descErr)
 	}
 
 	legacyHasBudget := hasLegacyBudget(effID)
@@ -220,28 +247,31 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 		var err error
 		reserve, err = estimate(ctx, orgID)
 		if err != nil {
-			return nil, requestBudgetEstimateError(err)
+			return nil, nil, requestBudgetEstimateError(err)
 		}
 	}
 	if s.limiter == nil {
-		return func(int, int, int64) {}, nil
+		return func(int, int, int64) {}, nil, nil
 	}
 
 	var legacyRawRel func(actualTokens int, overrideCostMicros int64)
 	var legacyRollback func()
+	var meta *domain.RateLimitHeaderMetadata
 	if legacyHasBudget {
-		rel, rb, err := s.limiter.AcquireWithBudgetAndRollback(ctx, effID, rateTokens, reserve, requestID)
+		rel, rb, m, err := s.limiter.AcquireWithBudgetAndRollbackWithMeta(ctx, effID, rateTokens, reserve, requestID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		legacyRawRel = rel
 		legacyRollback = rb
+		meta = m
 	} else {
-		rel, rb, err := s.limiter.AcquireWithRollback(ctx, effID, rateTokens)
+		rel, rb, m, err := s.limiter.AcquireWithRollbackWithMeta(ctx, effID, rateTokens)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		legacyRollback = rb
+		meta = m
 		legacyRawRel = func(actualTokens int, _ int64) {
 			rel(actualTokens)
 		}
@@ -261,14 +291,16 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 		if effID != nil {
 			orgID = effID.OrgID
 		}
+		var descMeta *domain.RateLimitHeaderMetadata
 		var err error
-		descRel, err = s.reserveExtendedQuota(ctx, orgID, requestID, estInput, estOutput, reserve, extDescriptors)
+		descRel, descMeta, err = s.reserveExtendedQuotaWithMeta(ctx, orgID, requestID, estInput, estOutput, reserve, extDescriptors)
 		if err != nil {
 			if legacyRollback != nil {
 				legacyRollback()
 			}
-			return nil, err
+			return nil, nil, err
 		}
+		meta = ratelimit.MergeRateLimitMetadata(meta, descMeta)
 	}
 
 	stopRenewer := s.startReservationLeaseRenewerWithDescriptors(ctx, effID, extDescriptors, requestID)
@@ -320,14 +352,14 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 				s.incrementBudgetWindowSpendBestEffort(ctx, effID, overrideCostMicros)
 			}
 		})
-	}, nil
+	}, meta, nil
 }
 
-func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), bool, error) {
+func (s *GatewayServer) acquireQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, budgetInputTokens, requestedOutput int, requestID string) (func(actualInput, actualOutput int, overrideCostMicros int64), *domain.RateLimitHeaderMetadata, bool, error) {
 	return s.acquireQuotaWithThrottleUsingEstimator(ctx, id, model, rateTokens, requestedOutput, requestID, s.textBudgetEstimator(model, budgetInputTokens, requestedOutput))
 }
 
-func (s *GatewayServer) acquireQuotaWithThrottleUsingEstimator(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, requestedOutput int, requestID string, estimate requestBudgetEstimator) (func(int, int, int64), bool, error) {
+func (s *GatewayServer) acquireQuotaWithThrottleUsingEstimator(ctx context.Context, id *domain.IdentityContext, model string, rateTokens, requestedOutput int, requestID string, estimate requestBudgetEstimator) (func(int, int, int64), *domain.RateLimitHeaderMetadata, bool, error) {
 	pct := s.budgetExceededThrottlePct()
 	currID := applyEffectiveTempBudgets(id, s.nowUTC())
 	throttled := false
@@ -337,17 +369,17 @@ func (s *GatewayServer) acquireQuotaWithThrottleUsingEstimator(ctx context.Conte
 		if applied {
 			throttled = true
 		}
-		release, err := s.acquireQuotaUsingEstimator(ctx, effID, model, rateTokens, requestedOutput, requestID, estimate)
+		release, meta, err := s.acquireQuotaUsingEstimator(ctx, effID, model, rateTokens, requestedOutput, requestID, estimate)
 		if err == nil {
-			return release, throttled, nil
+			return release, meta, throttled, nil
 		}
 		nextID, canThrottle := markScopeBudgetExhausted(currID, err)
 		if !canThrottle {
-			return nil, throttled, err
+			return nil, nil, throttled, err
 		}
 		currID = nextID
 	}
-	return nil, throttled, &domain.GatewayError{
+	return nil, nil, throttled, &domain.GatewayError{
 		StatusCode: http.StatusTooManyRequests,
 		Type:       domain.ErrorTypeBudgetExceeded,
 		Code:       "budget_exceeded",
@@ -389,6 +421,13 @@ func requestBudgetEstimateError(err error) error {
 
 // reserveExtendedQuota shares an event ID between rolling spend settlement and the durable outbox.
 func (s *GatewayServer) reserveExtendedQuota(ctx context.Context, orgID, requestID string, input, output int, reserve int64, descriptors []domain.RateLimitDescriptor) (func(int, int, int64), error) {
+	rel, _, err := s.reserveExtendedQuotaWithMeta(ctx, orgID, requestID, input, output, reserve, descriptors)
+	return rel, err
+}
+
+// reserveExtendedQuotaWithMeta shares an event ID between rolling spend settlement and the durable outbox
+// while returning tightest-scope rate-limit header metadata.
+func (s *GatewayServer) reserveExtendedQuotaWithMeta(ctx context.Context, orgID, requestID string, input, output int, reserve int64, descriptors []domain.RateLimitDescriptor) (func(int, int, int64), *domain.RateLimitHeaderMetadata, error) {
 	state := requestQuotaStateFromContext(ctx)
 	var settlementID string
 	if state != nil {
@@ -399,23 +438,23 @@ func (s *GatewayServer) reserveExtendedQuota(ctx context.Context, orgID, request
 			}
 		}
 	}
-	release, err := s.limiter.AcquireDescriptorsWithSettlementID(ctx, orgID, requestID, settlementID, input, output, reserve, descriptors)
+	release, meta, err := s.limiter.AcquireDescriptorsWithSettlementIDAndMeta(ctx, orgID, requestID, settlementID, input, output, reserve, descriptors)
 	if err == nil && settlementID != "" {
 		state.SettlementID = settlementID
 		state.SettlementRequestID = requestID
 	}
 	if err != nil || settlementID == "" {
-		return release, err
+		return release, meta, err
 	}
 	return func(input, output int, cost int64) {
 		if cost >= 0 {
 			state.SettlementAt = s.nowUTC()
 		}
 		release(input, output, cost)
-	}, nil
+	}, meta, nil
 }
 
-func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int, int64), bool, error) {
+func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id *domain.IdentityContext, model string, rateTokens int, requestID string, estimator func(*domain.GlobalModel) (int64, bool)) (func(int, int64), *domain.RateLimitHeaderMetadata, bool, error) {
 	estimate := func(ctx context.Context, orgID string) (int64, error) {
 		if estimator == nil {
 			return 0, errors.New("no safe upper-bound estimator for this modality")
@@ -435,11 +474,11 @@ func (s *GatewayServer) acquireModalityQuotaWithThrottle(ctx context.Context, id
 		// the budget admission path. Reconciliation records the actual zero cost.
 		return max(1, reserve), nil
 	}
-	release, throttled, err := s.acquireQuotaWithThrottleUsingEstimator(ctx, id, model, rateTokens, 0, requestID, estimate)
+	release, meta, throttled, err := s.acquireQuotaWithThrottleUsingEstimator(ctx, id, model, rateTokens, 0, requestID, estimate)
 	if err != nil {
-		return nil, throttled, err
+		return nil, meta, throttled, err
 	}
-	return func(tokens int, cost int64) { release(tokens, 0, cost) }, throttled, nil
+	return func(tokens int, cost int64) { release(tokens, 0, cost) }, meta, throttled, nil
 }
 
 func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
@@ -458,12 +497,13 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 		}
 		depErr := s.checkModelDeploymentBudget(ctx, orgID, requestedModel)
 		if depErr == nil {
-			release, err := s.acquireQuotaWithoutThrottle(ctx, id, requestedModel, rateTokens, budgetInputTokens, requestedOutput, requestID)
+			release, meta, err := s.acquireQuotaWithoutThrottle(ctx, id, requestedModel, rateTokens, budgetInputTokens, requestedOutput, requestID)
 			if err == nil {
 				return budgetPolicyAcquisition{
 					EffectiveModel: requestedModel,
 					ReleaseQuota:   legacyReleaseFromUsage(release),
 					ReleaseUsage:   release,
+					RateLimitMeta:  meta,
 				}, nil
 			}
 			if !isBudgetRejectionError(err) {
@@ -472,6 +512,7 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 		}
 
 		var winningRelease func(int, int, int64)
+		var winningMeta *domain.RateLimitHeaderMetadata
 		if fbModel, ok := finops.ResolveBudgetFallbackModel(ctx, id, requestedModel, func(checkCtx context.Context, candidate string) error {
 			if s.rbac != nil {
 				if err := s.rbac.AuthorizeRequestedModel(id, candidate); err != nil {
@@ -481,23 +522,25 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 			if err := s.checkModelDeploymentBudget(checkCtx, orgID, candidate); err != nil {
 				return err
 			}
-			rel, err := s.acquireQuotaWithoutThrottle(checkCtx, id, candidate, rateTokens, budgetInputTokens, requestedOutput, requestID)
+			rel, m, err := s.acquireQuotaWithoutThrottle(checkCtx, id, candidate, rateTokens, budgetInputTokens, requestedOutput, requestID)
 			if err != nil {
 				return err
 			}
 			winningRelease = rel
+			winningMeta = m
 			return nil
 		}); ok {
 			return budgetPolicyAcquisition{
 				EffectiveModel:  fbModel,
 				ReleaseQuota:    legacyReleaseFromUsage(winningRelease),
 				ReleaseUsage:    winningRelease,
+				RateLimitMeta:   winningMeta,
 				FallbackApplied: true,
 			}, nil
 		}
 	}
 
-	release, throttled, err := s.acquireQuotaWithThrottle(ctx, id, requestedModel, rateTokens, budgetInputTokens, requestedOutput, requestID)
+	release, meta, throttled, err := s.acquireQuotaWithThrottle(ctx, id, requestedModel, rateTokens, budgetInputTokens, requestedOutput, requestID)
 	if err != nil {
 		return budgetPolicyAcquisition{}, err
 	}
@@ -505,6 +548,7 @@ func (s *GatewayServer) acquireQuotaWithBudgetPolicy(
 		EffectiveModel: requestedModel,
 		ReleaseQuota:   legacyReleaseFromUsage(release),
 		ReleaseUsage:   release,
+		RateLimitMeta:  meta,
 		Throttled:      throttled,
 	}, nil
 }

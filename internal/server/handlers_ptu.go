@@ -189,6 +189,16 @@ func (s *GatewayServer) handleAdminUpsertDeploymentPTUShare(w http.ResponseWrite
 		}
 	}
 
+	var beforeShare *domain.DeploymentPTUShare
+	if shares, err := ptuRepo.ListDeploymentPTUShares(r.Context(), depID); err == nil {
+		for _, item := range shares {
+			if item != nil && item.TeamID == teamID {
+				cp := *item
+				beforeShare = &cp
+				break
+			}
+		}
+	}
 	share := &domain.DeploymentPTUShare{
 		OrgID:        effectiveOrgID,
 		DeploymentID: depID,
@@ -201,12 +211,12 @@ func (s *GatewayServer) handleAdminUpsertDeploymentPTUShare(w http.ResponseWrite
 		return
 	}
 
-	s.audit(r.Context(), effectiveOrgID, "ptu_share.upserted", "deployment_ptu_share", share.ID, map[string]any{
+	s.auditWithDiff(r.Context(), effectiveOrgID, "ptu_share.upserted", "deployment_ptu_share", share.ID, map[string]any{
 		"deployment_id": depID,
 		"team_id":       teamID,
 		"reserved_rpm":  share.ReservedRPM,
 		"reserved_tpm":  share.ReservedTPM,
-	})
+	}, beforeShare, share)
 	writeJSON(w, http.StatusOK, share)
 }
 
@@ -318,6 +328,16 @@ func (s *GatewayServer) handleAdminDeleteDeploymentPTUShare(w http.ResponseWrite
 		return
 	}
 
+	var beforeShare *domain.DeploymentPTUShare
+	if shares, listErr := ptuRepo.ListDeploymentPTUShares(r.Context(), depID); listErr == nil {
+		for _, item := range shares {
+			if item != nil && item.TeamID == teamID {
+				cp := *item
+				beforeShare = &cp
+				break
+			}
+		}
+	}
 	if err := ptuRepo.DeleteDeploymentPTUShare(r.Context(), depID, teamID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -332,10 +352,10 @@ func (s *GatewayServer) handleAdminDeleteDeploymentPTUShare(w http.ResponseWrite
 		return
 	}
 
-	s.audit(r.Context(), targetOrgID, "ptu_share.deleted", "deployment_ptu_share", depID+":"+teamID, map[string]any{
+	s.auditWithDiff(r.Context(), targetOrgID, "ptu_share.deleted", "deployment_ptu_share", depID+":"+teamID, map[string]any{
 		"deployment_id": depID,
 		"team_id":       teamID,
-	})
+	}, beforeShare, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":        "deleted",
 		"deployment_id": depID,
@@ -414,17 +434,27 @@ func (s *GatewayServer) handleAdminUpsertPriorityClass(w http.ResponseWriter, r 
 		PriorityRank:      req.PriorityRank,
 		MaxBorrowMultiple: req.MaxBorrowMultiple,
 	}
+	var beforePC *domain.PriorityClass
+	if pcs, listErr := ptuRepo.ListPriorityClasses(r.Context(), orgID); listErr == nil {
+		for _, item := range pcs {
+			if item != nil && ((pc.ID != "" && item.ID == pc.ID) || strings.EqualFold(item.Name, pc.Name)) {
+				cp := *item
+				beforePC = &cp
+				break
+			}
+		}
+	}
 	if err := ptuRepo.UpsertPriorityClass(r.Context(), pc); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
 
-	s.audit(r.Context(), orgID, "priority_class.upserted", "priority_class", pc.ID, map[string]any{
+	s.auditWithDiff(r.Context(), orgID, "priority_class.upserted", "priority_class", pc.ID, map[string]any{
 		"name":                pc.Name,
 		"weight":              pc.Weight,
 		"priority_rank":       pc.PriorityRank,
 		"max_borrow_multiple": pc.MaxBorrowMultiple,
-	})
+	}, beforePC, pc)
 	writeJSON(w, http.StatusOK, pc)
 }
 
