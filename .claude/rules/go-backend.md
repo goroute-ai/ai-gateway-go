@@ -4,6 +4,9 @@ paths:
   - "internal/**/*.go"
   - "pkg/**/*.go"
   - "tests/**/*.go"
+  - "migrations/**/*.sql"
+  - "internal/ratelimit/scripts/*.lua"
+  - "configs/config.example.yaml"
   - "go.mod"
   - "go.sum"
 ---
@@ -11,15 +14,16 @@ paths:
 
 ## Architecture and routing
 
-- Keep dependencies directed inward toward `internal/domain`; put public SDK interfaces under `pkg/gateway` and private implementations under `internal/`.
+- Keep dependencies directed inward toward `internal/domain`; put public SDK interfaces under `pkg/gateway` (including `WithCustomAuthenticator` in `pkg/gateway/auth.go`) and private implementations under `internal/`.
 - Configure Chi routes in `internal/server/server.go`. Keep handlers small, validate inputs, preserve identity and organization scope, and return structured errors with `domain.WriteHTTPError`.
 - Inspect the repository and focused tests before changing behavior. Avoid synchronous database work, unbounded locks, and unnecessary allocations on inference hot paths.
 
 ## Network, identity, and secrets
 
 - Route provider and tool egress through `internal/security/network`; use `network.NewHTTPClient`, validate custom `BaseURL` inputs through `adapter.ValidateAndResolveBaseURL`, isolate user-supplied remote media fetches behind strict public-HTTPS `DefaultPublicMediaPolicy`, and preserve DNS/IP pinning, private-address checks, and redirect validation.
-- Preserve operator RBAC, federated `(org_id, oidc_issuer, oidc_subject)` JWT/OIDC binding (`migrations/0034`, including the transaction-locked duplicate-subject rollback preflight), single-transaction SCIM v2 group updates, virtual-key model authorization, tri-state allowlists (`null` Inherit vs `[]` Deny All across HTTP JSON, storage, and Redis L2 cache), and organization/team/project/user boundaries. Authorization failures must fail closed.
-- Keep provider credentials encrypted by the vault and restrict private-network preflight checks to `platform_admin`. Production config must reject default admin, encryption, and JWT secrets when `ENV` or `GATEWAY_ENV` is production.
+- Preserve operator RBAC, federated `(org_id, oidc_issuer, oidc_subject)` JWT/OIDC binding (`migrations/0034`, including the `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` duplicate-subject rollback preflight), single-transaction SCIM v2 group updates, virtual-key model authorization, tri-state allowlists (`null` Inherit vs `[]` Deny All across HTTP JSON, storage, and Redis L2 cache), and organization/team/project/user boundaries. Authorization failures must fail closed.
+- Preserve server-side k-anonymity HIBP password screening (`HIBPRangeClient` via `network.Policy`, sending only the 5-char SHA-1 prefix and failing open on upstream service errors while rejecting confirmed breaches) and staged encrypted key rotation delivery (`auth.key_rotation_delivery_url`) plus deprecation grace windows (`virtual_key_deprecated_hashes`).
+- Keep Cloud IAM resolution opt-in (`auth.allow_ambient_cloud_iam: false` default across Bedrock, Vertex, Azure, and `storage.rds_iam`), reuse `internal/auth/upstream.DistributedTokenCache`, keep provider credentials encrypted by the vault, and restrict private-network preflight checks to `platform_admin`. Production config must reject default admin, encryption, and JWT secrets when `ENV` or `GATEWAY_ENV` is production.
 - MCP stdio is disabled unless its release guard and OS sandbox requirements are satisfied; do not bypass that configuration validation.
 
 ## Accounting, storage, and shared state
@@ -34,4 +38,4 @@ paths:
 
 - Use table-driven tests and `httptest.Server` or repository mocks for upstream behavior. Run focused race tests for changed packages.
 - Update API/protocol contracts through `make specgen`; review generated output instead of hand-editing it.
-- Run E2E tests only with PostgreSQL and Redis available, and state which checks were run.
+- Run live E2E, Playwright UI E2E, and HA container suites via `make test-postgres`, `make test-e2e-strict`, `make test-ui-e2e`, and `make test-prod-containers` (see `docs/TESTING.md`) when PostgreSQL and Redis are available, and state which checks were run.

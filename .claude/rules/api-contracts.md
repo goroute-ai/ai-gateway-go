@@ -5,7 +5,10 @@ paths:
   - "internal/openapi/**/*.go"
   - "internal/server/server.go"
   - "internal/server/handlers*.go"
+  - "internal/server/security_headers.go"
+  - "internal/server/quota_descriptors.go"
   - "internal/adapter/**/*.go"
+  - "docs/API_REFERENCE.md"
 ---
 # API Contracts and Protocol Guidelines
 
@@ -24,5 +27,6 @@ paths:
 ## Wire behavior
 
 - Preserve provider-specific request and response behavior, including Anthropic Messages envelopes, SSE `event: error` framing, tool calls, and usage accounting.
-- Preserve standard gateway error envelopes, pre-first-chunk `X-Gateway-Provider` / `X-Gateway-Model` / `X-Gateway-*` response headers, and CORS `Access-Control-Expose-Headers`.
+- Preserve Operator cookie sessions (`OperatorSession` `goroute_session` cookie + `X-CSRF-Token` validation on cookie-authenticated mutations) and inbound impersonation/delegation headers (`X-Gateway-Impersonate-User`, `X-Gateway-Impersonate-Email`, `X-Gateway-Delegated-User-Id`, `X-Gateway-Delegated-Team-Id`).
+- Preserve standard gateway error envelopes, pre-first-chunk `X-Gateway-Provider` / `X-Gateway-Model` / `X-Gateway-*` response headers, key rotation deprecation headers (`X-Gateway-Key-Deprecated`, `X-Gateway-Key-Revoke-At`), soft/fallback budget headers (`X-Gateway-Budget-Throttled`, `X-Gateway-Budget-Fallback`, `X-Gateway-Original-Model`), and CORS `Access-Control-Expose-Headers`.
 - Keep tenant authorization and guardrail checks on all inference, MCP, and A2A entry points.
