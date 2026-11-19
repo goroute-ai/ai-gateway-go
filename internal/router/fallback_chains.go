@@ -17,11 +17,13 @@ import (
 type FailureCategory string
 
 const (
-	CategoryGeneral       FailureCategory = "general"
-	CategoryContextWindow FailureCategory = "context_window"
-	CategoryContentPolicy FailureCategory = "content_policy"
-	CategoryAuth          FailureCategory = "auth"
-	CategoryNonRetryable  FailureCategory = "non_retryable"
+	CategoryGeneral          FailureCategory = "general"
+	CategoryContextWindow    FailureCategory = "context_window"
+	CategoryContentPolicy    FailureCategory = "content_policy"
+	CategoryAuth             FailureCategory = "auth"
+	CategorySaturation       FailureCategory = "saturation"
+	CategoryUnsupportedParam FailureCategory = "unsupported_param"
+	CategoryNonRetryable     FailureCategory = "non_retryable"
 )
 
 // FallbackHop represents a resolved model group in a specialized fallback chain
@@ -35,6 +37,10 @@ type FallbackHop struct {
 // classifyFailureCategory categorizes an attempt error for specialized fallback routing.
 // Local guardrail blocks always classify as CategoryNonRetryable so fallback chains can never bypass them.
 func classifyFailureCategory(err error) FailureCategory {
+	return classifyFailureCategoryWithOptions(err, false)
+}
+
+func classifyFailureCategoryWithOptions(err error, fallbackOnUnsupportedParams bool) FailureCategory {
 	if err == nil {
 		return CategoryGeneral
 	}
@@ -70,11 +76,44 @@ func classifyFailureCategory(err error) FailureCategory {
 		return CategoryContentPolicy
 	}
 
+	if fallbackOnUnsupportedParams && hasGW && isUnsupportedParamError(gwErr, codeLower, msgLower, errLower) {
+		return CategoryUnsupportedParam
+	}
+
 	if hasGW && !gwErr.Retryable && isClientSchemaError(gwErr) {
 		return CategoryNonRetryable
 	}
 
 	return CategoryGeneral
+}
+
+func isUnsupportedParamError(gwErr *domain.GatewayError, codeLower, msgLower, errLower string) bool {
+	if gwErr == nil {
+		return false
+	}
+	if gwErr.StatusCode != 0 &&
+		gwErr.StatusCode != http.StatusBadRequest &&
+		gwErr.StatusCode != http.StatusUnprocessableEntity &&
+		gwErr.Type != domain.ErrorTypeInvalidRequest {
+		return false
+	}
+	combined := codeLower + " " + msgLower + " " + errLower
+	if strings.Contains(combined, "invalid json") ||
+		strings.Contains(combined, "unexpected end of json") ||
+		strings.Contains(combined, "cannot unmarshal") {
+		return false
+	}
+	return strings.Contains(combined, "unsupported_parameter") ||
+		strings.Contains(combined, "unsupported parameter") ||
+		strings.Contains(combined, "unsupported_value") ||
+		strings.Contains(combined, "unsupported value") ||
+		strings.Contains(combined, "unknown parameter") ||
+		strings.Contains(combined, "unrecognized request argument") ||
+		strings.Contains(combined, "extra inputs are not permitted") ||
+		strings.Contains(combined, "invalid_parameter") ||
+		strings.Contains(combined, "does not support") ||
+		strings.Contains(combined, "not supported by this model") ||
+		strings.Contains(combined, "not supported with this model")
 }
 
 func isLocalGuardrailError(gwErr *domain.GatewayError, hasGW bool, codeLower, errLower string) bool {
@@ -214,6 +253,10 @@ func selectFallbackTargets(
 	case CategoryContentPolicy:
 		if len(group.ContentPolicyFallbacks) > 0 {
 			return group.ContentPolicyFallbacks
+		}
+	case CategorySaturation:
+		if len(group.SaturationFallbacks) > 0 {
+			return group.SaturationFallbacks
 		}
 	}
 

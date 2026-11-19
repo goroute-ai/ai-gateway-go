@@ -517,7 +517,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from 0035 down through 0022.
+	// Exercise reverse down migrations from 0036 down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -525,13 +525,13 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 	var waveDowns []string
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" && name < "0036_" {
+		if !e.IsDir() && strings.HasSuffix(name, ".down.sql") && name >= "0022_" {
 			waveDowns = append(waveDowns, name)
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 14 {
-		t.Fatalf("expected 14 down migrations for 0022..0035, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 15 {
+		t.Fatalf("expected 15 down migrations for 0022..0036, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
@@ -614,5 +614,49 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 	liveVK, err := pgRepo.GetVirtualKeyByID(ctx, "vk_live_staged_1")
 	if err != nil || liveVK.StagedKeyDEK != "live-new-staged-dek" {
 		t.Fatalf("expected live staged_key_dek updated, got vk=%+v err=%v", liveVK, err)
+	}
+
+	// Verify 0036 production routing hardening columns & reversible rollback/reapply.
+	hardeningCols := []struct {
+		table string
+		col   string
+	}{
+		{"model_deployments", "max_parallel_requests"},
+		{"model_deployments", "itpm_capacity"},
+		{"model_deployments", "otpm_capacity"},
+		{"model_groups", "drop_unsupported_params"},
+		{"model_groups", "disable_cooldowns"},
+		{"model_groups", "saturation_fallbacks"},
+		{"quota_policies", "rpd_limit"},
+		{"virtual_keys", "min_priority_rank"},
+		{"virtual_keys", "allowed_routing_tags"},
+		{"teams", "min_priority_rank"},
+		{"teams", "allowed_routing_tags"},
+		{"guardrail_policies", "sensitive_route_target"},
+		{"guardrail_definitions", "sensitive_route_target"},
+	}
+	for _, tc := range hardeningCols {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected column %s.%s after 0036 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+		}
+	}
+
+	down0036, err := os.ReadFile(filepath.Join(migrationsDir, "0036_production_routing_hardening.down.sql"))
+	if err != nil {
+		t.Fatalf("read 0036 down migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(down0036)); err != nil {
+		t.Fatalf("exec 0036 down migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, "0036_production_routing_hardening.up.sql"); err != nil {
+		t.Fatalf("delete schema_migrations 0036: %v", err)
+	}
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir reapply 0036 failed: %v", err)
 	}
 }

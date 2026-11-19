@@ -21,8 +21,10 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
+	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
 
 const maxBatchJSONLRecordBytes = 4 << 20
@@ -190,10 +192,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 
 	// Launch background processor only after snapshotting the initial batch response
 	// so background field mutations cannot race with JSON serialization.
-	quotaHeaders := http.Header{
-		"X-Gateway-Tags":       r.Header.Values("X-Gateway-Tags"),
-		"X-Gateway-Session-Id": r.Header.Values("X-Gateway-Session-Id"),
-	}
+	quotaHeaders := cloneBatchRoutingHeaders(r.Header)
 	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile, releaseBudget, quotaHeaders)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -616,18 +615,45 @@ func (s *GatewayServer) processBatchAsync(
 			}
 			continue
 		}
-		if _, err := s.guardrails.EvaluateInput(ctx, idCtx.OrgID, &item.Body); err != nil {
+		itemReq := (&http.Request{Header: quotaHeaders.Clone()}).WithContext(ctx)
+		if gwErr := s.applyChatRoutingHints(itemReq, idCtx, &item.Body); gwErr != nil {
 			counts.Failed++
-			errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Request rejected by organization guardrail policy", "code": "guardrail_rejected"}}
-			eb, _ := json.Marshal(errItem)
-			if !appendOutput(eb) {
+			code := gwErr.Code
+			if code == "" {
+				code = "invalid_routing_hints"
+			}
+			if !appendOutput(marshalBatchErrorEntry(item.CustomID, gwErr.StatusCode, code, gwErr.Message)) {
+				break
+			}
+			continue
+		}
+		origItemModel := item.Body.Model
+		prc, _, guardrailErr := s.evaluateChatInputGuardrails(ctx, nil, itemReq, idCtx, &item.Body, "batch_item")
+		if guardrailErr != nil {
+			counts.Failed++
+			status, code, msg := http.StatusBadRequest, "guardrail_rejected", "Request rejected by organization guardrail policy"
+			var gwErr *domain.GatewayError
+			if errors.As(guardrailErr, &gwErr) {
+				if gwErr.StatusCode != 0 {
+					status = gwErr.StatusCode
+				}
+				if gwErr.Code != "" {
+					code = gwErr.Code
+				}
+				if gwErr.StatusCode < http.StatusInternalServerError && gwErr.Message != "" {
+					msg = gwErr.Message
+				}
+			}
+			if !appendOutput(marshalBatchErrorEntry(item.CustomID, status, code, msg)) {
 				break
 			}
 			continue
 		}
 
-		itemCtx, quotaState := withRequestQuotaState(ctx, &http.Request{Header: quotaHeaders}, idCtx, item.Body.User, item.Body.Metadata, item.Body.GoRouteExtensions)
+		itemCtx, quotaState := withRequestQuotaState(ctx, itemReq, idCtx, item.Body.User, item.Body.Metadata, item.Body.GoRouteExtensions)
 		itemRequestID := "batch_item_" + uuid.NewString()
+		item.Body.RequestID = itemRequestID
+		prc.RequestID = itemRequestID
 		releaseItemQuota, quotaErr := s.acquireBatchItemQuota(itemCtx, idCtx, &item.Body, itemRequestID)
 		if quotaErr != nil {
 			counts.Failed++
@@ -636,12 +662,7 @@ func (s *GatewayServer) processBatchAsync(
 			if errors.As(quotaErr, &gwErr) {
 				status, code = gwErr.StatusCode, gwErr.Code
 			}
-			entry, _ := json.Marshal(map[string]any{
-				"id": itemRequestID, "custom_id": item.CustomID,
-				"response": map[string]any{"status_code": status},
-				"error":    map[string]any{"code": code, "message": quotaErr.Error()},
-			})
-			if !appendOutput(entry) {
+			if !appendOutput(marshalBatchErrorEntryWithID(itemRequestID, item.CustomID, status, code, quotaErr.Error())) {
 				break
 			}
 			continue
@@ -649,21 +670,23 @@ func (s *GatewayServer) processBatchAsync(
 
 		spendRequestID := batch.ID + "_" + item.CustomID
 		quotaState.SettlementRequestID = spendRequestID
-		resp, meta, err := s.reliability.ExecuteChat(itemCtx, idCtx, &item.Body)
+		resp, meta, err := s.executeBatchItemChat(itemCtx, ctx, idCtx, prc, &item.Body)
 		if err != nil {
 			releaseItemQuota(-1, -1, -1)
 			counts.Failed++
-			errItem := map[string]any{
-				"id":        "batch_req_" + uuid.NewString(),
-				"custom_id": item.CustomID,
-				"response":  nil,
-				"error": map[string]any{
-					"message": err.Error(),
-					"code":    "batch_request_failed",
-				},
+			status := 0
+			code, msg := "batch_request_failed", err.Error()
+			var gwErr *domain.GatewayError
+			if errors.As(err, &gwErr) && gwErr.StatusCode != 0 {
+				status = gwErr.StatusCode
+				if gwErr.Code != "" {
+					code = gwErr.Code
+				}
+				if gwErr.Message != "" {
+					msg = gwErr.Message
+				}
 			}
-			eb, _ := json.Marshal(errItem)
-			if !appendOutput(eb) {
+			if !appendOutput(marshalBatchErrorEntry(item.CustomID, status, code, msg)) {
 				break
 			}
 		} else {
@@ -681,11 +704,17 @@ func (s *GatewayServer) processBatchAsync(
 			releaseItemQuota(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
 			totalActualTokens += resp.Usage.TotalTokens
 			totalCostMicros += costMicros
-			guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
-			_, sanitizeErr := s.guardrails.SanitizeOutputStrict(ctx, idCtx.OrgID, guardrailResp)
+			_, sanitizeErr := s.evaluateChatOutputGuardrails(itemCtx, nil, prc, resp, "batch_item")
+			if sanitizeErr == nil {
+				s.GuardrailPipeline().EvaluateLoggingOnly(itemCtx, prc, &item.Body, resp)
+			}
 			status := http.StatusOK
 			if sanitizeErr != nil {
 				status = http.StatusServiceUnavailable
+				var gwErr *domain.GatewayError
+				if errors.As(sanitizeErr, &gwErr) && gwErr.StatusCode != 0 {
+					status = gwErr.StatusCode
+				}
 			}
 			if s.spendWorker != nil {
 				spendPersistErr = s.spendWorker.Record(itemCtx, enrichSpendEventFromContext(itemCtx, domain.SpendEvent{
@@ -698,7 +727,7 @@ func (s *GatewayServer) processBatchAsync(
 					VirtualKeyID:   idCtx.VirtualKeyID,
 					Endpoint:       "/v1/batches",
 					Modality:       domain.ModalityBatch,
-					RequestedModel: item.Body.Model,
+					RequestedModel: origItemModel,
 					ResolvedModel:  resp.Model,
 					DeploymentID:   depID,
 					PricingVersion: pricingVer,
@@ -714,14 +743,21 @@ func (s *GatewayServer) processBatchAsync(
 			}
 			if sanitizeErr != nil {
 				counts.Failed++
-				errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Response withheld by organization guardrail policy", "code": "guardrail_policy_unavailable"}}
-				eb, _ := json.Marshal(errItem)
-				if !appendOutput(eb) {
+				code, msg := "guardrail_policy_unavailable", "Response withheld by organization guardrail policy"
+				var gwErr *domain.GatewayError
+				if errors.As(sanitizeErr, &gwErr) {
+					if gwErr.Code != "" {
+						code = gwErr.Code
+					}
+					if gwErr.StatusCode < http.StatusInternalServerError && gwErr.Message != "" {
+						msg = gwErr.Message
+					}
+				}
+				if !appendOutput(marshalBatchErrorEntry(item.CustomID, status, code, msg)) {
 					break
 				}
 				continue
 			}
-			resp.Choices = guardrailResp.Choices
 			counts.Completed++
 			succItem := map[string]any{
 				"id":        "batch_req_" + uuid.NewString(),
@@ -808,4 +844,72 @@ func (s *GatewayServer) processBatchAsync(
 		"completed", counts.Completed,
 		"failed", counts.Failed,
 	)
+}
+
+func (s *GatewayServer) executeBatchItemChat(
+	itemCtx context.Context,
+	baseCtx context.Context,
+	idCtx *domain.IdentityContext,
+	prc guardrails.PipelineRequestContext,
+	body *domain.CanonicalChatRequest,
+) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(itemCtx, prc, body)
+	if duringInitErr != nil {
+		return nil, nil, duringInitErr
+	}
+	if duringHandle != nil {
+		defer duringHandle.Close()
+	}
+	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, body)
+	if _, duringErr := duringHandle.Wait(baseCtx); duringErr != nil {
+		return nil, meta, duringErr
+	}
+	return resp, meta, err
+}
+
+func cloneBatchRoutingHeaders(src http.Header) http.Header {
+	out := make(http.Header)
+	if src == nil {
+		return out
+	}
+	allowed := map[string]bool{
+		"X-Gateway-Session-Id":              true,
+		"X-Gateway-Tags":                    true,
+		"X-Gateway-Allowed-Region":          true,
+		"X-Gateway-Preferred-Deployment-Id": true,
+		"X-Gateway-Priority":                true,
+		"X-Gateway-Hedge-After-Ms":          true,
+		"X-Gateway-Drop-Params":             true,
+		"X-Gateway-Routing-Strategy":        true,
+	}
+	for k, vals := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if allowed[ck] || strings.HasPrefix(strings.ToLower(k), "x-gateway-tag-") {
+			for _, v := range vals {
+				out.Add(k, v)
+			}
+		}
+	}
+	return out
+}
+
+func marshalBatchErrorEntry(customID string, status int, code, message string) []byte {
+	return marshalBatchErrorEntryWithID("batch_req_"+uuid.NewString(), customID, status, code, message)
+}
+
+func marshalBatchErrorEntryWithID(id, customID string, status int, code, message string) []byte {
+	var respObj any
+	if status > 0 {
+		respObj = map[string]any{"status_code": status}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"id":        id,
+		"custom_id": customID,
+		"response":  respObj,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	})
+	return b
 }

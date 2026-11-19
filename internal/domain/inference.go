@@ -200,6 +200,27 @@ type GoRouteExtensions struct {
 	PreferredDeploymentID string                     `json:"preferred_deployment_id,omitempty"`
 	Priority              int                        `json:"priority,omitempty"`
 	HedgeAfterMs          int                        `json:"hedge_after_ms,omitempty"`
+	RoutingStrategy       string                     `json:"routing_strategy,omitempty"`
+	DropUnsupportedParams *bool                      `json:"drop_unsupported_params,omitempty"`
+}
+
+// Clone returns a deep copy of e, or nil if e is nil.
+func (e *GoRouteExtensions) Clone() *GoRouteExtensions {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	if e.Tags != nil {
+		cp.Tags = append([]string(nil), e.Tags...)
+	}
+	if e.Guardrails != nil {
+		cp.Guardrails = append([]GuardrailRequestOverride(nil), e.Guardrails...)
+	}
+	if e.DropUnsupportedParams != nil {
+		v := *e.DropUnsupportedParams
+		cp.DropUnsupportedParams = &v
+	}
+	return &cp
 }
 
 type StreamOptions struct {
@@ -407,14 +428,15 @@ type TokenUsage struct {
 
 // CanonicalEmbeddingRequest represents a normalized `/v1/embeddings` request.
 type CanonicalEmbeddingRequest struct {
-	RequestID      string   `json:"request_id,omitempty"`
-	Model          string   `json:"model"`
-	ResolvedModel  string   `json:"resolved_model,omitempty"`
-	Input          []string `json:"input"`
-	EncodingFormat string   `json:"encoding_format,omitempty"` // "float", "base64"
-	Dimensions     *int     `json:"dimensions,omitempty"`
-	InputType      string   `json:"input_type,omitempty"` // Provider-specific embedding intent, e.g. search_query.
-	User           string   `json:"user,omitempty"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	Input             []string           `json:"input"`
+	EncodingFormat    string             `json:"encoding_format,omitempty"` // "float", "base64"
+	Dimensions        *int               `json:"dimensions,omitempty"`
+	InputType         string             `json:"input_type,omitempty"` // Provider-specific embedding intent, e.g. search_query.
+	User              string             `json:"user,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 // CanonicalEmbeddingResponse represents a normalized `/v1/embeddings` response.
@@ -518,15 +540,16 @@ func (d RerankDocument) MarshalJSON() ([]byte, error) {
 }
 
 type CanonicalRerankRequest struct {
-	RequestID       string           `json:"request_id,omitempty"`
-	Model           string           `json:"model"`
-	ResolvedModel   string           `json:"resolved_model,omitempty"`
-	Query           string           `json:"query"`
-	Documents       []RerankDocument `json:"documents"`
-	TopN            *int             `json:"top_n,omitempty"`
-	RankFields      []string         `json:"rank_fields,omitempty"`
-	ReturnDocuments bool             `json:"return_documents"`
-	MaxTokensPerDoc *int             `json:"max_tokens_per_doc,omitempty"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	Query             string             `json:"query"`
+	Documents         []RerankDocument   `json:"documents"`
+	TopN              *int               `json:"top_n,omitempty"`
+	RankFields        []string           `json:"rank_fields,omitempty"`
+	ReturnDocuments   bool               `json:"return_documents"`
+	MaxTokensPerDoc   *int               `json:"max_tokens_per_doc,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type RerankResultItem struct {
@@ -552,10 +575,11 @@ type CanonicalRerankResponse struct {
 // --- MODERATION ---
 
 type CanonicalModerationRequest struct {
-	RequestID     string   `json:"request_id,omitempty"`
-	Model         string   `json:"model"`
-	ResolvedModel string   `json:"resolved_model,omitempty"`
-	Input         []string `json:"input"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	Input             []string           `json:"input"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type ModerationResultItem struct {
@@ -626,21 +650,22 @@ type CanonicalCompletionResponse struct {
 // --- IMAGES ---
 
 type CanonicalImageRequest struct {
-	RequestID      string `json:"request_id,omitempty"`
-	Prompt         string `json:"prompt"`
-	Model          string `json:"model"`
-	ResolvedModel  string `json:"resolved_model,omitempty"`
-	N              int    `json:"n,omitempty"`
-	Quality        string `json:"quality,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // "url" or "b64_json"
-	Size           string `json:"size,omitempty"`            // "1024x1024", etc.
-	Style          string `json:"style,omitempty"`           // "vivid" or "natural"
-	User           string `json:"user,omitempty"`
-	Operation      string `json:"-"` // "edit" or "variation"; empty means generation
-	ImageData      []byte `json:"-"`
-	ImageFilename  string `json:"-"`
-	MaskData       []byte `json:"-"`
-	MaskFilename   string `json:"-"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Prompt            string             `json:"prompt"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	N                 int                `json:"n,omitempty"`
+	Quality           string             `json:"quality,omitempty"`
+	ResponseFormat    string             `json:"response_format,omitempty"` // "url" or "b64_json"
+	Size              string             `json:"size,omitempty"`            // "1024x1024", etc.
+	Style             string             `json:"style,omitempty"`           // "vivid" or "natural"
+	User              string             `json:"user,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
+	Operation         string             `json:"-"` // "edit" or "variation"; empty means generation
+	ImageData         []byte             `json:"-"`
+	ImageFilename     string             `json:"-"`
+	MaskData          []byte             `json:"-"`
+	MaskFilename      string             `json:"-"`
 }
 
 type ImageItem struct {
@@ -659,18 +684,19 @@ type CanonicalImageResponse struct {
 // --- AUDIO ---
 
 type CanonicalAudioTranscriptionRequest struct {
-	RequestID              string    `json:"request_id,omitempty"`
-	Model                  string    `json:"model"`
-	ResolvedModel          string    `json:"resolved_model,omitempty"`
-	FileName               string    `json:"file_name"`
-	SpoolFilePath          string    `json:"-"`
-	FileReader             io.Reader `json:"-"`
-	Language               string    `json:"language,omitempty"`
-	Prompt                 string    `json:"prompt,omitempty"`
-	ResponseFormat         string    `json:"response_format,omitempty"` // "json", "text", "verbose_json"
-	Temperature            *float64  `json:"temperature,omitempty"`
-	TimestampGranularities []string  `json:"timestamp_granularities,omitempty"`
-	IsTranslation          bool      `json:"is_translation,omitempty"`
+	RequestID              string             `json:"request_id,omitempty"`
+	Model                  string             `json:"model"`
+	ResolvedModel          string             `json:"resolved_model,omitempty"`
+	FileName               string             `json:"file_name"`
+	SpoolFilePath          string             `json:"-"`
+	FileReader             io.Reader          `json:"-"`
+	Language               string             `json:"language,omitempty"`
+	Prompt                 string             `json:"prompt,omitempty"`
+	ResponseFormat         string             `json:"response_format,omitempty"` // "json", "text", "verbose_json"
+	Temperature            *float64           `json:"temperature,omitempty"`
+	TimestampGranularities []string           `json:"timestamp_granularities,omitempty"`
+	IsTranslation          bool               `json:"is_translation,omitempty"`
+	GoRouteExtensions      *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type CanonicalAudioResponse struct {
@@ -683,13 +709,14 @@ type CanonicalAudioResponse struct {
 }
 
 type CanonicalAudioSpeechRequest struct {
-	RequestID      string  `json:"request_id,omitempty"`
-	Model          string  `json:"model"`
-	ResolvedModel  string  `json:"resolved_model,omitempty"`
-	Input          string  `json:"input"`
-	Voice          string  `json:"voice"`
-	ResponseFormat string  `json:"response_format,omitempty"` // "mp3", "opus", "aac", "flac", "wav"
-	Speed          float64 `json:"speed,omitempty"`
+	RequestID         string             `json:"request_id,omitempty"`
+	Model             string             `json:"model"`
+	ResolvedModel     string             `json:"resolved_model,omitempty"`
+	Input             string             `json:"input"`
+	Voice             string             `json:"voice"`
+	ResponseFormat    string             `json:"response_format,omitempty"` // "mp3", "opus", "aac", "flac", "wav"
+	Speed             float64            `json:"speed,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 // --- FILES & BATCHES ---
@@ -791,19 +818,21 @@ type CanonicalResponseOutput struct {
 // --- REALTIME WEBSOCKET API ---
 
 type CanonicalRealtimeSessionConfig struct {
-	Modalities        []string `json:"modalities,omitempty"` // ["text", "audio"]
-	Instructions      string   `json:"instructions,omitempty"`
-	Voice             string   `json:"voice,omitempty"`
-	InputAudioFormat  string   `json:"input_audio_format,omitempty"`  // "pcm16", "g711_ulaw", "g711_alaw"
-	OutputAudioFormat string   `json:"output_audio_format,omitempty"` // "pcm16", "g711_ulaw", "g711_alaw"
-	Temperature       *float64 `json:"temperature,omitempty"`
+	Modalities        []string           `json:"modalities,omitempty"` // ["text", "audio"]
+	Instructions      string             `json:"instructions,omitempty"`
+	Voice             string             `json:"voice,omitempty"`
+	InputAudioFormat  string             `json:"input_audio_format,omitempty"`  // "pcm16", "g711_ulaw", "g711_alaw"
+	OutputAudioFormat string             `json:"output_audio_format,omitempty"` // "pcm16", "g711_ulaw", "g711_alaw"
+	Temperature       *float64           `json:"temperature,omitempty"`
+	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
 type CanonicalRealtimeClientEvent struct {
-	EventID string                          `json:"event_id,omitempty"`
-	Type    string                          `json:"type"` // e.g. "session.update", "input_audio_buffer.append", "response.create"
-	Session *CanonicalRealtimeSessionConfig `json:"session,omitempty"`
-	Audio   string                          `json:"audio,omitempty"` // base64
+	EventID           string                          `json:"event_id,omitempty"`
+	Type              string                          `json:"type"` // e.g. "session.update", "input_audio_buffer.append", "response.create"
+	Session           *CanonicalRealtimeSessionConfig `json:"session,omitempty"`
+	Audio             string                          `json:"audio,omitempty"` // base64
+	GoRouteExtensions *GoRouteExtensions              `json:"goroute_extensions,omitempty"`
 }
 
 type CanonicalRealtimeServerEvent struct {

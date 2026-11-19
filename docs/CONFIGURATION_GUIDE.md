@@ -708,11 +708,20 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `router.scheduler.max_queue_depth` | — | `0` | Maximum queued requests before rejecting overflow with `503`. |
 | `router.scheduler.max_wait_time` | — | `0s` | Maximum queue wait timeout before failing a queued request. |
 | `router.scheduler.default_priority` | — | `0` | Default scheduling priority assigned when callers omit `X-Gateway-Priority`. |
+| `router.scheduler.max_parallel_wait_ms` | — | `0` | Bounded wait in milliseconds when all candidates hit `max_parallel_requests` before failing or failing over. |
 | `router.priority_capacity.*` | — | `false` | Dynamic PTU priority-capacity borrowing (`enabled`, `saturation_threshold`, `active_caller_ttl`, `window_duration`, `default_weight`, `default_borrow_multiple`). |
+| `router.latency_tolerance_pct` | — | `0` | Normalized tolerance fraction above the fastest deployment's EWMA latency included in `latency-based` selection. |
+| `router.max_honored_retry_after` | — | `60s` | Maximum upstream `Retry-After` duration honored before failing over or bounding sleep. |
+| `router.disable_cooldowns` | — | `false` | Disables circuit-breaker cooldown tripping globally across groups (per-group `disable_cooldowns` overrides to `true`). |
+| `router.fallback_on_saturation` | — | `false` | Enables fallback chain traversal (`saturation_fallbacks` or general fallbacks) on capacity/concurrency/priority saturation. |
+| `router.drop_unsupported_params` | — | `false` | Strips unsupported parameters (`tools`, `response_format`, `reasoning_effort`, O-series `temperature`/`top_p`, OpenAI-only extra params) and clamps `max_tokens` rather than rejecting requests. |
+| `router.fallback_on_unsupported_params` | — | `false` | Treats upstream unsupported-parameter responses as failover-eligible without tripping deployment cooldowns. |
+| `router.allow_strategy_override` | — | `false` | Allows callers to override `routing_strategy` per request via `X-Gateway-Routing-Strategy` or `goroute_extensions.routing_strategy`. |
+| `router.debug_routing_headers` | — | `false` | Emits redacted `X-Gateway-Fallback-Errors` diagnostic header when requests also send `X-Gateway-Debug-Routing: true`. |
 | `rate_limit.enabled` | — | `true` | Enables distributed sliding-window rate limiting via Redis Lua. |
 | `rate_limit.fallback_to_local_on_outage` | — | `false` | Opt-in in-memory fallback when Redis is unreachable (`false` fails closed with `503`). |
 | `rate_limit.window_seconds` | — | `60` | Fixed window duration in seconds for RPM/TPM calculation. |
-| `rate_limit.concurrency_ttl_sec` | — | `300` | Lease duration in seconds for concurrent in-flight request locks. |
+| `rate_limit.concurrency_ttl_sec` | — | `300` | Lease duration in seconds for concurrent in-flight request locks and distributed `max_parallel_requests` deployment slot leases (`SetDeploymentSlotTTL`). |
 | `rate_limit.default_estimated_tpm` | — | `128` | Pre-flight token heuristic estimate when prompt tokens are unmeasured. |
 | `rate_limit.redis_timeout` | — | `50ms` | Maximum timeout for Redis Lua rate-limit checks before failing closed. |
 | `rate_limit.global_rpm_limit` / `global_tpm_limit` / `global_max_concurrent` | — | `0` | Gateway-wide global rate/concurrency caps (`0` = unlimited). |
@@ -778,17 +787,23 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `model_list[].context_window_fallbacks` | — | `[]` | Ordered specialized fallback targets (`{target, overrides}`) triggered on `context_length_exceeded`. |
 | `model_list[].content_policy_fallbacks` | — | `[]` | Ordered specialized fallback targets triggered on content-policy/safety blocks. |
 | `model_list[].fallback_targets` | — | `[]` | Structured generic fallback targets with per-target request parameter `overrides`. |
+| `model_list[].saturation_fallbacks` | — | `[]` | Ordered specialized fallback targets triggered on saturation when `router.fallback_on_saturation` is true. |
+| `model_list[].drop_unsupported_params` | — | `false` | Group-level parameter stripping toggle overriding `router.drop_unsupported_params`. |
+| `model_list[].disable_cooldowns` | — | `false` | Group-level toggle suppressing circuit-breaker cooldown tripping. |
 | `model_list[].model_params.model` | — | — | Upstream provider/model identifier (e.g. `"gemini/gemini-2.5-flash"`). |
 | `model_list[].model_params.api_key` | — | — | Upstream provider API key (supports `os.environ/VAR`). |
 | `model_list[].model_params.api_base` | — | `""` | Custom upstream base URL override. |
 | `model_list[].model_params.region` | — | `""` | Cloud region for deployment affinity/region filtering (e.g. Bedrock/Vertex/regional clusters). |
 | `model_list[].model_params.priority` | — | `0` | Numeric priority tier (`0` is highest priority; lower tiers are exhausted before higher ones). |
-| `model_list[].model_params.tags` | — | `[]` | Deployment tags matched by request `&`/`!` tag filter expressions. |
+| `model_list[].model_params.tags` | — | `[]` | Deployment tags matched by request `&`/`!` tag filter expressions and enforced against team/key `allowed_routing_tags`. |
 | `model_list[].model_params.max_budget_micros` | — | `0` | Per-deployment spend cap in integer micro-dollars (`0` = unlimited). |
 | `model_list[].model_params.budget_reset_period` | — | `"monthly"` | Deployment spend reset cadence (`"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"never"`). |
 | `model_list[].model_params.weight` | — | `100` | Integer weight for weighted load balancing. |
 | `model_list[].model_params.rpm` | — | `0` | Per-deployment Requests Per Minute capacity limit. |
 | `model_list[].model_params.tpm` | — | `0` | Per-deployment Tokens Per Minute capacity limit. |
+| `model_list[].model_params.itpm` | — | `0` | Per-deployment Input Tokens Per Minute capacity limit (persisted as `itpm_capacity` in Admin API / OpenAPI / database). |
+| `model_list[].model_params.otpm` | — | `0` | Per-deployment Output Tokens Per Minute capacity limit (persisted as `otpm_capacity` in Admin API / OpenAPI / database). |
+| `model_list[].model_params.max_parallel_requests` | — | `0` | Distributed per-deployment concurrent in-flight request limit (`0` = unlimited). |
 | `model_list[].model_params.azure_deployment_name` | — | `""` | Deployment name for Azure OpenAI endpoints. |
 | `model_list[].model_params.api_version` | — | `""` | API version query parameter for Azure OpenAI endpoints. |
 | `model_list[].model_params.headers` | — | `{}` | Custom HTTP headers forwarded to the upstream model provider. |

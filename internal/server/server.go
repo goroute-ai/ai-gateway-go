@@ -100,6 +100,8 @@ type GatewayServer struct {
 	uploadSem          chan struct{}
 	uploadInFlightMu   sync.Mutex
 	uploadInFlight     map[string]int64
+	routeAuditMu       sync.Mutex
+	routeAuditWindows  map[string]*routeAuditWindow
 	nowMu              sync.RWMutex
 	nowFunc            func() time.Time
 }
@@ -115,6 +117,28 @@ func (s *GatewayServer) nowUTC() time.Time {
 		return fn().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (s *GatewayServer) invalidateLocalRoutingCaches(ev storage.InvalidationEvent) {
+	if s == nil {
+		return
+	}
+	if s.intelligentRouter != nil {
+		s.intelligentRouter.InvalidateCache(ev)
+	}
+	if s.priorityLimiter != nil {
+		s.priorityLimiter.InvalidateCache(ev)
+	}
+}
+
+func (s *GatewayServer) invalidateRoutingCaches(ctx context.Context, ev storage.InvalidationEvent) {
+	s.invalidateLocalRoutingCaches(ev)
+	if s != nil && s.redisFabric != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		s.redisFabric.PublishInvalidation(ctx, ev)
+	}
 }
 
 // SetNowFunc overrides the wall-clock source used for quota admission and rolling windows.
@@ -468,6 +492,8 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	healthMon := health.NewMonitor(repo, reg, vault, 60*time.Second, 5*time.Second)
 	validator := validation.NewValidator(repo)
 	validator.SetAllowDefaultFallbacks(len(cfg.Router.DefaultFallbacks) > 0)
+	validator.SetDropUnsupportedParams(cfg.Router.DropUnsupportedParams)
+	validator.SetFallbackOnUnsupportedParams(cfg.Router.FallbackOnUnsupportedParams)
 	guardrailsEng := guardrails.NewEngine(repo)
 
 	ir := router.NewIntelligentRouter(repo, cfg.Router)
@@ -576,7 +602,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 				}
 			}
 			if affinityStore != nil && cfg.Router.PromptCacheAffinity {
-				if groups, err := repo.ListModelGroups(ctx, orgID); err == nil {
+				if groups, err := ir.ListActiveModelGroupsCached(ctx, orgID); err == nil {
 					for _, g := range groups {
 						if g == nil || !g.IsActive {
 							continue
@@ -682,7 +708,11 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		uploadInFlight:     make(map[string]int64),
 	}
 	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
+	relMgr.SetDeploymentSlotTTL(cfg.RateLimit.ConcurrencyTTLSec)
 	relMgr.SetFallbackQuotaChecker(s.checkFallbackModelQuota)
+	authSvc.AddInvalidationHandler(func(ev storage.InvalidationEvent) {
+		s.invalidateLocalRoutingCaches(ev)
+	})
 	s.setupRoutes()
 	if err := s.bootstrap(context.Background()); err != nil {
 		if s.tracerShutdown != nil {
@@ -699,6 +729,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 	pipeline := s.GuardrailPipeline()
 	mcpHub.SetGuardrailPipeline(pipeline)
+	a2aRouter.SetGuardrailPipeline(pipeline)
 	if tpRepo, ok := repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
 		toolOrchestrator.SetToolPolicyRepository(tpRepo)
 	}
@@ -1014,8 +1045,14 @@ func (s *GatewayServer) setupRoutes() {
 		// Model Groups & Deployments
 		adm.Post("/model-groups", s.handleAdminCreateModelGroup)
 		adm.Get("/model-groups", s.handleAdminListModelGroups)
+		adm.Get("/model-groups/{groupID}", s.handleAdminGetModelGroup)
+		adm.Put("/model-groups/{groupID}", s.handleAdminUpdateModelGroup)
+		adm.Delete("/model-groups/{groupID}", s.handleAdminDeleteModelGroup)
 		adm.Post("/deployments", s.handleAdminCreateDeployment)
 		adm.Get("/deployments", s.handleAdminListDeployments)
+		adm.Get("/deployments/{depID}", s.handleAdminGetDeployment)
+		adm.Patch("/deployments/{depID}", s.handleAdminPatchDeployment)
+		adm.Delete("/deployments/{depID}", s.handleAdminDeleteDeployment)
 		adm.Post("/deployments/{depID}/ptu-shares", s.handleAdminUpsertDeploymentPTUShare)
 		adm.Get("/deployments/{depID}/ptu-shares", s.handleAdminListDeploymentPTUShares)
 		adm.Delete("/deployments/{depID}/ptu-shares/{teamID}", s.handleAdminDeleteDeploymentPTUShare)

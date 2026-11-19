@@ -316,9 +316,14 @@ type Repository interface {
 	GetModelGroupByAlias(ctx context.Context, orgID, alias string) (*domain.ModelGroup, error)
 	GetModelGroupByID(ctx context.Context, id string) (*domain.ModelGroup, error)
 	ListModelGroups(ctx context.Context, orgID string) ([]*domain.ModelGroup, error)
+	UpdateModelGroup(ctx context.Context, mg *domain.ModelGroup) error
+	DeleteModelGroup(ctx context.Context, id string) error
 	CreateDeployment(ctx context.Context, dep *domain.Deployment) error
+	GetDeployment(ctx context.Context, id string) (*domain.Deployment, error)
 	ListDeploymentsByGroup(ctx context.Context, groupID string) ([]*domain.Deployment, error)
 	ListAllDeployments(ctx context.Context) ([]*domain.Deployment, error)
+	UpdateDeployment(ctx context.Context, dep *domain.Deployment) error
+	DeleteDeployment(ctx context.Context, id string) error
 	UpdateDeploymentStatus(ctx context.Context, depID string, status domain.DeploymentStatus) error
 
 	// Security Guardrail Policies & Registry
@@ -395,4 +400,10 @@ type Repository interface {
 	GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error)
 	ListBatches(ctx context.Context, orgID string, limit int) ([]*domain.CanonicalBatch, error)
 	UpdateBatchStatus(ctx context.Context, batchID string, status string, outputFileID string, counts domain.BatchCounts, completedAt *time.Time) error
+}
+
+// RoutingRevisionProvider is optionally implemented by in-memory repositories to let
+// routing L1 caches detect direct mutations immediately without polling or stale windows.
+type RoutingRevisionProvider interface {
+	RoutingRevision() uint64
 }

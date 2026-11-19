@@ -230,17 +230,33 @@ func (s *GatewayServer) enforceGuaranteedThroughput(
 	return true
 }
 
-// checkFallbackModelQuota verifies per-model quota descriptors on cross-provider fallback hops
-// without double-counting top-level key/team/org limits already acquired on initial entry.
+// checkFallbackModelQuota verifies per-model quota descriptors and remaining scope budget
+// affordability on cross-provider fallback hops without double-counting top-level RPM/TPM
+// or primary budget reservations already acquired on initial entry.
 func (s *GatewayServer) checkFallbackModelQuota(ctx context.Context, idCtx *domain.IdentityContext, fallbackAlias string, estTokens int) error {
-	if s == nil || s.limiter == nil || idCtx == nil || strings.TrimSpace(fallbackAlias) == "" {
+	if s == nil || idCtx == nil || strings.TrimSpace(fallbackAlias) == "" {
 		return nil
 	}
-	descs, err := s.buildExtendedQuotaDescriptors(ctx, idCtx, fallbackAlias, time.Now().UTC())
-	if err != nil || len(descs) == 0 {
-		return err
+	now := s.nowUTC()
+	effID := applyEffectiveTempBudgets(idCtx, now)
+	var reqID string
+	var maxOutput int
+	if qState := requestQuotaStateFromContext(ctx); qState != nil {
+		reqID = qState.SettlementRequestID
+		maxOutput = qState.MaxOutputTokens
 	}
-	modelDescs := make([]domain.RateLimitDescriptor, 0, len(descs))
+
+	var descs []domain.RateLimitDescriptor
+	if s.limiter != nil {
+		var err error
+		descs, err = s.buildExtendedQuotaDescriptors(ctx, effID, fallbackAlias, now)
+		if err != nil {
+			return err
+		}
+	}
+
+	var nonModelBudgetDescs []domain.RateLimitDescriptor
+	var modelDescs []domain.RateLimitDescriptor
 	for _, d := range descs {
 		switch d.ScopeType {
 		case domain.QuotaScopeModelPerKey,
@@ -250,12 +266,56 @@ func (s *GatewayServer) checkFallbackModelQuota(ctx context.Context, idCtx *doma
 			domain.QuotaScopeModelPerOrg,
 			domain.QuotaScopeModelPerEndUser:
 			modelDescs = append(modelDescs, d)
+		default:
+			if d.MaxBudgetMicros > 0 {
+				nonModelBudgetDescs = append(nonModelBudgetDescs, d)
+			}
 		}
 	}
-	if len(modelDescs) == 0 {
+
+	// Enforce remaining scope budget affordability whenever caller has any configured budget.
+	var fallbackCost int64
+	if hasLegacyBudget(effID) || len(nonModelBudgetDescs) > 0 || descriptorsHaveBudget(modelDescs) {
+		cost, estErr := s.tokenBudgetUpperBound(ctx, effID.OrgID, fallbackAlias, estTokens, maxOutput)
+		if estErr != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeBudgetExceeded,
+				Code:       "budget_estimate_unavailable",
+				Message:    fmt.Sprintf("A safe upper-bound cost could not be calculated for fallback model %q", fallbackAlias),
+			}
+		}
+		fallbackCost = cost
+		if s.limiter != nil {
+			if hasLegacyBudget(effID) {
+				if err := s.limiter.CheckBudgetReserve(ctx, effID, fallbackCost, reqID); err != nil {
+					return &domain.GatewayError{
+						StatusCode:    http.StatusTooManyRequests,
+						Type:          domain.ErrorTypeBudgetExceeded,
+						Code:          "fallback_budget_exceeded",
+						Message:       fmt.Sprintf("Remaining budget cannot cover fallback model %q: %s", fallbackAlias, err.Error()),
+						RetryAfterSec: 60,
+					}
+				}
+			}
+			if len(nonModelBudgetDescs) > 0 {
+				if err := s.limiter.CheckDescriptorBudgetReserve(ctx, effID.OrgID, nonModelBudgetDescs, fallbackCost, reqID); err != nil {
+					return &domain.GatewayError{
+						StatusCode:    http.StatusTooManyRequests,
+						Type:          domain.ErrorTypeBudgetExceeded,
+						Code:          "fallback_budget_exceeded",
+						Message:       fmt.Sprintf("Remaining scope budget cannot cover fallback model %q: %s", fallbackAlias, err.Error()),
+						RetryAfterSec: 60,
+					}
+				}
+			}
+		}
+	}
+
+	if s.limiter == nil || len(modelDescs) == 0 {
 		return nil
 	}
-	rel, _, err := s.limiter.AcquireDescriptorsWithMeta(ctx, idCtx.OrgID, uuid.NewString(), estTokens, 0, 0, modelDescs)
+	rel, _, err := s.limiter.AcquireDescriptorsWithMeta(ctx, effID.OrgID, uuid.NewString(), estTokens, 0, fallbackCost, modelDescs)
 	if err != nil {
 		return err
 	}

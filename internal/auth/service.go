@@ -1038,6 +1038,8 @@ func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.
 		KeyBatchEnqueuedTokenLimit:   vk.BatchEnqueuedTokenLimit,
 		KeyMaxIterations:             vk.MaxIterations,
 		KeyMaxBudgetPerSessionMicros: vk.MaxBudgetPerSessionMicros,
+		KeyMinPriorityRank:           vk.MinPriorityRank,
+		KeyAllowedRoutingTags:        slices.Clone(vk.AllowedRoutingTags),
 		KeyTags:                      slices.Clone(vk.Tags),
 		KeyMetadata:                  maps.Clone(vk.Metadata),
 		KeyMaxBudgetMicros:           vk.MaxBudgetMicros,
@@ -1142,6 +1144,8 @@ func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.
 		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
 		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
 		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamMinPriorityRank = team.MinPriorityRank
+		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit
@@ -1279,6 +1283,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		KeyBatchEnqueuedTokenLimit:   vk.BatchEnqueuedTokenLimit,
 		KeyMaxIterations:             vk.MaxIterations,
 		KeyMaxBudgetPerSessionMicros: vk.MaxBudgetPerSessionMicros,
+		KeyMinPriorityRank:           vk.MinPriorityRank,
+		KeyAllowedRoutingTags:        slices.Clone(vk.AllowedRoutingTags),
 		KeyTags:                      slices.Clone(vk.Tags),
 		KeyMetadata:                  maps.Clone(vk.Metadata),
 		KeyMaxBudgetMicros:           vk.MaxBudgetMicros,
@@ -1398,6 +1404,8 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
 		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
 		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamMinPriorityRank = team.MinPriorityRank
+		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit

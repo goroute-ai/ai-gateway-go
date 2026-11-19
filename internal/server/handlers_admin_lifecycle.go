@@ -245,6 +245,8 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 		AllowedMCPServers            optionalStringSlice       `json:"allowed_mcp_servers"`
 		AllowedA2AAgents             optionalStringSlice       `json:"allowed_a2a_agents"`
 		AllowedClientApps            optionalStringSlice       `json:"allowed_client_apps"`
+		MinPriorityRank              *int                      `json:"min_priority_rank,omitempty"`
+		AllowedRoutingTags           optionalStringSlice       `json:"allowed_routing_tags"`
 		EnforceGuaranteedThroughput  *bool                     `json:"enforce_guaranteed_throughput,omitempty"`
 		DefaultMemberMaxBudgetMicros *int64                    `json:"default_member_max_budget_micros,omitempty"`
 		DefaultMemberRPMLimit        *int                      `json:"default_member_rpm_limit,omitempty"`
@@ -405,6 +407,21 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	if req.AllowedClientApps.Set {
 		updated.AllowedClientApps = req.AllowedClientApps.Value
 	}
+	if req.MinPriorityRank != nil {
+		if *req.MinPriorityRank < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_min_priority_rank",
+				Message:    "min_priority_rank cannot be negative",
+			})
+			return
+		}
+		updated.MinPriorityRank = *req.MinPriorityRank
+	}
+	if req.AllowedRoutingTags.Set {
+		updated.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags.Value)
+	}
 	if req.EnforceGuaranteedThroughput != nil {
 		updated.EnforceGuaranteedThroughput = *req.EnforceGuaranteedThroughput
 	}
@@ -449,6 +466,7 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	s.auditWithDiff(r.Context(), updated.OrgID, "team.updated", "team", updated.ID, map[string]any{
 		"name":              updated.Name,
 		"max_budget_micros": updated.MaxBudgetMicros,
+		"min_priority_rank": updated.MinPriorityRank,
 		"is_active":         updated.IsActive,
 	}, existing, &updated)
 	writeJSON(w, http.StatusOK, updated)
@@ -906,6 +924,8 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		CanImpersonate            *bool                     `json:"can_impersonate,omitempty"`
 		IsActive                  *bool                     `json:"is_active,omitempty"`
 		Tags                      optionalStringSlice       `json:"tags"`
+		MinPriorityRank           *int                      `json:"min_priority_rank,omitempty"`
+		AllowedRoutingTags        optionalStringSlice       `json:"allowed_routing_tags"`
 		Metadata                  map[string]string         `json:"metadata,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
@@ -1196,6 +1216,21 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	if req.Tags.Set {
 		updated.Tags = req.Tags.Value
 	}
+	if req.MinPriorityRank != nil {
+		if *req.MinPriorityRank < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_min_priority_rank",
+				Message:    "min_priority_rank cannot be negative",
+			})
+			return
+		}
+		updated.MinPriorityRank = *req.MinPriorityRank
+	}
+	if req.AllowedRoutingTags.Set {
+		updated.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags.Value)
+	}
 	if req.RotationIntervalSec != nil {
 		if *req.RotationIntervalSec < 0 {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -1284,6 +1319,7 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 		"rpm_limit":             saved.RPMLimit,
 		"tpm_limit":             saved.TPMLimit,
 		"can_impersonate":       saved.CanImpersonate,
+		"min_priority_rank":     saved.MinPriorityRank,
 		"is_active":             saved.IsActive,
 	}, existing, saved)
 	writeJSON(w, http.StatusOK, saved)

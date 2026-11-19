@@ -109,6 +109,7 @@ type Limiter struct {
 	localDescITPM         map[string]int
 	localDescOTPM         map[string]int
 	localDescTPD          map[string]int64
+	localDescRPD          map[string]int64
 	localDescConc         map[string]int
 	localDescIter         map[string]localIterCounter
 	localDescSpent        map[string]int64
@@ -155,6 +156,7 @@ func NewLimiter(redisFabric *storage.RedisFabric, windowSec, concTTLSec int) *Li
 		localDescITPM:           make(map[string]int),
 		localDescOTPM:           make(map[string]int),
 		localDescTPD:            make(map[string]int64),
+		localDescRPD:            make(map[string]int64),
 		localDescConc:           make(map[string]int),
 		localDescIter:           make(map[string]localIterCounter),
 		localDescSpent:          make(map[string]int64),
@@ -318,7 +320,27 @@ func (l *Limiter) AcquireSessionWithMeta(ctx context.Context, idCtx *domain.Iden
 	return func() { release(1) }, meta, nil
 }
 
+// CheckBudgetReserve verifies whether idCtx has sufficient remaining Key/Team/User/Org
+// budget headroom to afford reserveMicros (replacing any active reservation already held by requestID).
+func (l *Limiter) CheckBudgetReserve(ctx context.Context, idCtx *domain.IdentityContext, reserveMicros int64, requestID string) error {
+	if l == nil || idCtx == nil || reserveMicros <= 0 {
+		return nil
+	}
+	enabled, fallbackLocal, _, _, _, _ := l.configSnapshot()
+	if !enabled {
+		return nil
+	}
+	if !hasBudget(idCtx) {
+		return nil
+	}
+	return l.checkBudgetHeadroomWithReserve(ctx, idCtx, fallbackLocal, reserveMicros, requestID)
+}
+
 func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.IdentityContext, fallbackLocal bool) error {
+	return l.checkBudgetHeadroomWithReserve(ctx, idCtx, fallbackLocal, 0, "")
+}
+
+func (l *Limiter) checkBudgetHeadroomWithReserve(ctx context.Context, idCtx *domain.IdentityContext, fallbackLocal bool, reserveMicros int64, requestID string) error {
 	if l.redis != nil && l.redis.Client() != nil {
 		keys := spendKeys(idCtx.VirtualKeyID, idCtx.TeamID, idCtx.UserID, idCtx.OrgID)
 		argv := []any{
@@ -326,6 +348,7 @@ func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.Identit
 			idCtx.TeamMaxBudgetMicros, idCtx.TeamSpentMicros,
 			idCtx.UserMaxBudgetMicros, idCtx.UserSpentMicros,
 			idCtx.OrgMaxBudgetMicros, idCtx.OrgSpentMicros,
+			reserveMicros, requestID,
 		}
 		res, err := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			rCtx, cancel := l.withRedisTimeout(ctx)
@@ -370,10 +393,17 @@ func (l *Limiter) checkBudgetHeadroom(ctx context.Context, idCtx *domain.Identit
 		}
 		if sc.maxB > 0 {
 			var reserved int64
-			for _, amt := range l.localReservations[sc.key] {
+			for reqKey, amt := range l.localReservations[sc.key] {
+				if requestID != "" && reqKey == requestID {
+					continue
+				}
 				reserved += amt
 			}
-			if l.localSpent[sc.key]+reserved >= sc.maxB {
+			if reserveMicros > 0 {
+				if l.localSpent[sc.key]+reserved+reserveMicros > sc.maxB {
+					return toQuotaError(sc.errCode)
+				}
+			} else if l.localSpent[sc.key]+reserved >= sc.maxB {
 				return toQuotaError(sc.errCode)
 			}
 		}
@@ -1316,7 +1346,7 @@ func buildQuotaDenyError(code string, current, limit, retryAfter int64, now time
 		rem = 0
 	}
 	switch limitType {
-	case "rpm":
+	case "rpm", "rpd":
 		meta.LimitRequests = int(limit)
 		meta.RemainingRequests = rem
 		meta.ResetRequestsSeconds = resetSec
@@ -1336,6 +1366,7 @@ func parseScopeAndLimitType(code string) (string, string) {
 		typ    string
 	}{
 		{"_RPM_EXCEEDED", "rpm"},
+		{"_RPD_EXCEEDED", "rpd"},
 		{"_TPM_EXCEEDED", "tpm"},
 		{"_ITPM_EXCEEDED", "itpm"},
 		{"_OTPM_EXCEEDED", "otpm"},

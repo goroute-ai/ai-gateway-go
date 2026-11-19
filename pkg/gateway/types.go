@@ -36,6 +36,8 @@ type RoutingHints struct {
 	PreferredDeploymentID string   `json:"preferred_deployment_id,omitempty"`
 	Priority              int      `json:"priority,omitempty"`
 	HedgeAfterMs          int      `json:"hedge_after_ms,omitempty"`
+	RoutingStrategy       string   `json:"routing_strategy,omitempty"`
+	DropUnsupportedParams *bool    `json:"drop_unsupported_params,omitempty"`
 }
 
 // ChatRequest specifies input parameters for a multi-turn or customized chat completion.
@@ -54,30 +56,34 @@ type ChatRequest struct {
 
 // VirtualKeyRequest specifies parameters for issuing a new Gateway Virtual API Key.
 type VirtualKeyRequest struct {
-	Name            string   `json:"name"`
-	OrgID           string   `json:"org_id,omitempty"`
-	TeamID          string   `json:"team_id,omitempty"`
-	UserID          string   `json:"user_id,omitempty"`
-	Role            string   `json:"role,omitempty"` // "org_admin", "team_admin", "developer", "service_account"
-	MaxBudgetMicros int64    `json:"max_budget_micros,omitempty"`
-	RPMLimit        int      `json:"rpm_limit,omitempty"`
-	TPMLimit        int      `json:"tpm_limit,omitempty"`
-	AllowedModels   []string `json:"allowed_models,omitempty"`
+	Name               string   `json:"name"`
+	OrgID              string   `json:"org_id,omitempty"`
+	TeamID             string   `json:"team_id,omitempty"`
+	UserID             string   `json:"user_id,omitempty"`
+	Role               string   `json:"role,omitempty"` // "org_admin", "team_admin", "developer", "service_account"
+	MaxBudgetMicros    int64    `json:"max_budget_micros,omitempty"`
+	RPMLimit           int      `json:"rpm_limit,omitempty"`
+	TPMLimit           int      `json:"tpm_limit,omitempty"`
+	AllowedModels      []string `json:"allowed_models,omitempty"`
+	MinPriorityRank    int      `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags []string `json:"allowed_routing_tags,omitempty"`
 }
 
 // VirtualKeyInfo holds information about an issued virtual API key.
 type VirtualKeyInfo struct {
-	ID              string   `json:"id"`
-	Key             string   `json:"key,omitempty"` // Raw token (RawKey), only visible upon creation
-	KeyPrefix       string   `json:"key_prefix"`
-	Name            string   `json:"name"`
-	Role            string   `json:"role"`
-	OrgID           string   `json:"org_id"`
-	MaxBudgetMicros int64    `json:"max_budget_micros"`
-	RPMLimit        int      `json:"rpm_limit"`
-	TPMLimit        int      `json:"tpm_limit"`
-	AllowedModels   []string `json:"allowed_models"`
-	IsActive        bool     `json:"is_active"`
+	ID                 string   `json:"id"`
+	Key                string   `json:"key,omitempty"` // Raw token (RawKey), only visible upon creation
+	KeyPrefix          string   `json:"key_prefix"`
+	Name               string   `json:"name"`
+	Role               string   `json:"role"`
+	OrgID              string   `json:"org_id"`
+	MaxBudgetMicros    int64    `json:"max_budget_micros"`
+	RPMLimit           int      `json:"rpm_limit"`
+	TPMLimit           int      `json:"tpm_limit"`
+	AllowedModels      []string `json:"allowed_models"`
+	MinPriorityRank    int      `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags []string `json:"allowed_routing_tags,omitempty"`
+	IsActive           bool     `json:"is_active"`
 }
 
 // MCPServerConfig specifies registration parameters for a Model Context Protocol tool server.
@@ -250,6 +256,8 @@ type TeamConfig struct {
 	AllowedMCPServers     []string   `json:"allowed_mcp_servers,omitempty"`
 	AllowedA2AAgents      []string   `json:"allowed_a2a_agents,omitempty"`
 	AllowedClientApps     []string   `json:"allowed_client_apps,omitempty"`
+	MinPriorityRank       int        `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags    []string   `json:"allowed_routing_tags,omitempty"`
 	IsActive              bool       `json:"is_active"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
@@ -268,6 +276,8 @@ type TeamUpdateRequest struct {
 	AllowedMCPServers     *[]string `json:"allowed_mcp_servers,omitempty"`
 	AllowedA2AAgents      *[]string `json:"allowed_a2a_agents,omitempty"`
 	AllowedClientApps     *[]string `json:"allowed_client_apps,omitempty"`
+	MinPriorityRank       *int      `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags    *[]string `json:"allowed_routing_tags,omitempty"`
 	IsActive              *bool     `json:"is_active,omitempty"`
 }
 
@@ -330,6 +340,8 @@ type VirtualKeyConfig struct {
 	RPMLimit              int               `json:"rpm_limit"`
 	TPMLimit              int               `json:"tpm_limit"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests"`
+	MinPriorityRank       int               `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags    []string          `json:"allowed_routing_tags,omitempty"`
 	ExpiresAt             *time.Time        `json:"expires_at,omitempty"`
 	IsActive              bool              `json:"is_active"`
 	Metadata              map[string]string `json:"metadata,omitempty"`
@@ -354,6 +366,8 @@ type VirtualKeyUpdateRequest struct {
 	RPMLimit              *int               `json:"rpm_limit,omitempty"`
 	TPMLimit              *int               `json:"tpm_limit,omitempty"`
 	MaxConcurrentRequests *int               `json:"max_concurrent_requests,omitempty"`
+	MinPriorityRank       *int               `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags    *[]string          `json:"allowed_routing_tags,omitempty"`
 	IsActive              *bool              `json:"is_active,omitempty"`
 	Metadata              *map[string]string `json:"metadata,omitempty"`
 }
@@ -365,27 +379,29 @@ type VirtualKeyRotateResponse struct {
 
 // RealtimeSessionConfig configures a `/v1/realtime` WebSocket session.
 type RealtimeSessionConfig struct {
-	ID                string   `json:"id,omitempty"`
-	Object            string   `json:"object,omitempty"`
-	Model             string   `json:"model,omitempty"`
-	Modalities        []string `json:"modalities,omitempty"`
-	Instructions      string   `json:"instructions,omitempty"`
-	Voice             string   `json:"voice,omitempty"`
-	InputAudioFormat  string   `json:"input_audio_format,omitempty"`
-	OutputAudioFormat string   `json:"output_audio_format,omitempty"`
-	Temperature       *float64 `json:"temperature,omitempty"`
+	ID                string        `json:"id,omitempty"`
+	Object            string        `json:"object,omitempty"`
+	Model             string        `json:"model,omitempty"`
+	Modalities        []string      `json:"modalities,omitempty"`
+	Instructions      string        `json:"instructions,omitempty"`
+	Voice             string        `json:"voice,omitempty"`
+	InputAudioFormat  string        `json:"input_audio_format,omitempty"`
+	OutputAudioFormat string        `json:"output_audio_format,omitempty"`
+	Temperature       *float64      `json:"temperature,omitempty"`
+	RoutingHints      *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // RealtimeEvent represents a bidirectional JSON event exchanged over `/v1/realtime`.
 type RealtimeEvent struct {
-	EventID  string                 `json:"event_id,omitempty"`
-	Type     string                 `json:"type"`
-	Session  *RealtimeSessionConfig `json:"session,omitempty"`
-	Item     map[string]any         `json:"item,omitempty"`
-	Response map[string]any         `json:"response,omitempty"`
-	Delta    string                 `json:"delta,omitempty"`
-	Audio    string                 `json:"audio,omitempty"`
-	Error    map[string]any         `json:"error,omitempty"`
+	EventID      string                 `json:"event_id,omitempty"`
+	Type         string                 `json:"type"`
+	Session      *RealtimeSessionConfig `json:"session,omitempty"`
+	Item         map[string]any         `json:"item,omitempty"`
+	Response     map[string]any         `json:"response,omitempty"`
+	Delta        string                 `json:"delta,omitempty"`
+	Audio        string                 `json:"audio,omitempty"`
+	Error        map[string]any         `json:"error,omitempty"`
+	RoutingHints *RoutingHints          `json:"goroute_extensions,omitempty"`
 }
 
 // UsageInfo reports token accounting returned by gateway inference endpoints.
@@ -400,12 +416,13 @@ type UsageInfo struct {
 
 // EmbeddingRequest configures a vector embedding request to `POST /v1/embeddings`.
 type EmbeddingRequest struct {
-	Model          string   `json:"model"`
-	Input          []string `json:"input"`
-	EncodingFormat string   `json:"encoding_format,omitempty"`
-	Dimensions     *int     `json:"dimensions,omitempty"`
-	InputType      string   `json:"input_type,omitempty"`
-	User           string   `json:"user,omitempty"`
+	Model          string        `json:"model"`
+	Input          []string      `json:"input"`
+	EncodingFormat string        `json:"encoding_format,omitempty"`
+	Dimensions     *int          `json:"dimensions,omitempty"`
+	InputType      string        `json:"input_type,omitempty"`
+	User           string        `json:"user,omitempty"`
+	RoutingHints   *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // EmbeddingData represents one embedding vector in an EmbeddingResponse.
@@ -427,13 +444,14 @@ type EmbeddingResponse struct {
 // RerankRequest configures a document reranking request to `POST /v1/rerank`.
 // Elements of Documents may be strings or map[string]any objects.
 type RerankRequest struct {
-	Model           string   `json:"model"`
-	Query           string   `json:"query"`
-	Documents       []any    `json:"documents"`
-	TopN            *int     `json:"top_n,omitempty"`
-	RankFields      []string `json:"rank_fields,omitempty"`
-	ReturnDocuments bool     `json:"return_documents,omitempty"`
-	MaxTokensPerDoc *int     `json:"max_tokens_per_doc,omitempty"`
+	Model           string        `json:"model"`
+	Query           string        `json:"query"`
+	Documents       []any         `json:"documents"`
+	TopN            *int          `json:"top_n,omitempty"`
+	RankFields      []string      `json:"rank_fields,omitempty"`
+	ReturnDocuments bool          `json:"return_documents,omitempty"`
+	MaxTokensPerDoc *int          `json:"max_tokens_per_doc,omitempty"`
+	RoutingHints    *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // RerankResult represents a single ranked document in a RerankResponse.
@@ -461,8 +479,9 @@ type RerankResponse struct {
 
 // ModerationRequest configures a content moderation check via `POST /v1/moderations`.
 type ModerationRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Model        string        `json:"model"`
+	Input        []string      `json:"input"`
+	RoutingHints *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // ModerationResult holds classification flags and scores for one input item.
@@ -494,6 +513,7 @@ type ResponseRequest struct {
 	Reasoning       map[string]any `json:"reasoning,omitempty"`
 	Text            map[string]any `json:"text,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
+	RoutingHints    *RoutingHints  `json:"goroute_extensions,omitempty"`
 }
 
 // ResponseContentPart represents a text output block in a ResponseOutputItem.
@@ -527,23 +547,25 @@ type ResponseOutput struct {
 
 // ImageGenerationRequest configures a request to `POST /v1/images/generations`.
 type ImageGenerationRequest struct {
-	Prompt         string `json:"prompt"`
-	Model          string `json:"model"`
-	N              int    `json:"n,omitempty"`
-	Quality        string `json:"quality,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"`
-	Size           string `json:"size,omitempty"`
-	Style          string `json:"style,omitempty"`
-	User           string `json:"user,omitempty"`
+	Prompt         string        `json:"prompt"`
+	Model          string        `json:"model"`
+	N              int           `json:"n,omitempty"`
+	Quality        string        `json:"quality,omitempty"`
+	ResponseFormat string        `json:"response_format,omitempty"`
+	Size           string        `json:"size,omitempty"`
+	Style          string        `json:"style,omitempty"`
+	User           string        `json:"user,omitempty"`
+	RoutingHints   *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // SpeechRequest configures a text-to-speech synthesis request to `POST /v1/audio/speech`.
 type SpeechRequest struct {
-	Model          string  `json:"model"`
-	Input          string  `json:"input"`
-	Voice          string  `json:"voice"`
-	ResponseFormat string  `json:"response_format,omitempty"`
-	Speed          float64 `json:"speed,omitempty"`
+	Model          string        `json:"model"`
+	Input          string        `json:"input"`
+	Voice          string        `json:"voice"`
+	ResponseFormat string        `json:"response_format,omitempty"`
+	Speed          float64       `json:"speed,omitempty"`
+	RoutingHints   *RoutingHints `json:"goroute_extensions,omitempty"`
 }
 
 // AudioTranscriptionResult holds the decoded output of `POST /v1/audio/transcriptions` or `/v1/audio/translations`.
@@ -569,4 +591,86 @@ type SpendSummaryResponse struct {
 	SpendByTeam       map[string]int64 `json:"spend_by_team"`
 	SpendByUser       map[string]int64 `json:"spend_by_user"`
 	SpendByVirtualKey map[string]int64 `json:"spend_by_virtual_key"`
+}
+
+// ModelGroupConfig represents a routing model group returned by `/admin/v1/model-groups`.
+type ModelGroupConfig struct {
+	ID                     string           `json:"id"`
+	OrgID                  string           `json:"org_id"`
+	Alias                  string           `json:"alias"`
+	Description            string           `json:"description,omitempty"`
+	RoutingStrategy        string           `json:"routing_strategy"`
+	FallbackGroupIDs       []string         `json:"fallback_group_ids,omitempty"`
+	ContextWindowFallbacks []FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	ContentPolicyFallbacks []FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	FallbackTargets        []FallbackTarget `json:"fallback_targets,omitempty"`
+	SaturationFallbacks    []FallbackTarget `json:"saturation_fallbacks,omitempty"`
+	DropUnsupportedParams  bool             `json:"drop_unsupported_params,omitempty"`
+	DisableCooldowns       bool             `json:"disable_cooldowns,omitempty"`
+	MaxRetries             int              `json:"max_retries"`
+	CooldownSeconds        int              `json:"cooldown_seconds"`
+	FailureThreshold       int              `json:"failure_threshold"`
+	IsActive               bool             `json:"is_active"`
+	CreatedAt              time.Time        `json:"created_at"`
+	UpdatedAt              time.Time        `json:"updated_at"`
+}
+
+// ModelGroupUpdateRequest specifies partial or full updates for `PUT /admin/v1/model-groups/{groupID}`.
+type ModelGroupUpdateRequest struct {
+	Alias                  *string           `json:"alias,omitempty"`
+	Description            *string           `json:"description,omitempty"`
+	RoutingStrategy        *string           `json:"routing_strategy,omitempty"`
+	FallbackGroupIDs       *[]string         `json:"fallback_group_ids,omitempty"`
+	ContextWindowFallbacks *[]FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	ContentPolicyFallbacks *[]FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	FallbackTargets        *[]FallbackTarget `json:"fallback_targets,omitempty"`
+	SaturationFallbacks    *[]FallbackTarget `json:"saturation_fallbacks,omitempty"`
+	DropUnsupportedParams  *bool             `json:"drop_unsupported_params,omitempty"`
+	DisableCooldowns       *bool             `json:"disable_cooldowns,omitempty"`
+	MaxRetries             *int              `json:"max_retries,omitempty"`
+	CooldownSeconds        *int              `json:"cooldown_seconds,omitempty"`
+	FailureThreshold       *int              `json:"failure_threshold,omitempty"`
+	IsActive               *bool             `json:"is_active,omitempty"`
+}
+
+// DeploymentConfig represents a physical model deployment returned by `/admin/v1/deployments`.
+type DeploymentConfig struct {
+	ID                  string    `json:"id"`
+	ModelGroupID        string    `json:"model_group_id"`
+	GlobalModelID       string    `json:"global_model_id"`
+	CredentialID        string    `json:"credential_id"`
+	DeploymentName      string    `json:"deployment_name"`
+	Region              string    `json:"region"`
+	Weight              int       `json:"weight"`
+	RPMCapacity         int       `json:"rpm_capacity"`
+	TPMCapacity         int       `json:"tpm_capacity"`
+	ITPMCapacity        int       `json:"itpm_capacity,omitempty"`
+	OTPMCapacity        int       `json:"otpm_capacity,omitempty"`
+	MaxParallelRequests int       `json:"max_parallel_requests,omitempty"`
+	TimeoutMs           int       `json:"timeout_ms"`
+	Priority            int       `json:"priority"`
+	Tags                []string  `json:"tags,omitempty"`
+	MaxBudgetMicros     int64     `json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod   string    `json:"budget_reset_period,omitempty"`
+	Status              string    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// DeploymentPatchRequest specifies partial mutable updates for `PATCH /admin/v1/deployments/{depID}`.
+type DeploymentPatchRequest struct {
+	DeploymentName      *string   `json:"deployment_name,omitempty"`
+	Region              *string   `json:"region,omitempty"`
+	Weight              *int      `json:"weight,omitempty"`
+	RPMCapacity         *int      `json:"rpm_capacity,omitempty"`
+	TPMCapacity         *int      `json:"tpm_capacity,omitempty"`
+	ITPMCapacity        *int      `json:"itpm_capacity,omitempty"`
+	OTPMCapacity        *int      `json:"otpm_capacity,omitempty"`
+	MaxParallelRequests *int      `json:"max_parallel_requests,omitempty"`
+	TimeoutMs           *int      `json:"timeout_ms,omitempty"`
+	Priority            *int      `json:"priority,omitempty"`
+	Tags                *[]string `json:"tags,omitempty"`
+	MaxBudgetMicros     *int64    `json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod   *string   `json:"budget_reset_period,omitempty"`
+	Status              *string   `json:"status,omitempty"`
 }

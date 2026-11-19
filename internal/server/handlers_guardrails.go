@@ -584,72 +584,75 @@ func cloneAnyMap(src map[string]any) map[string]any {
 // --- DTOs & Secret Redaction ---
 
 type guardrailDefinitionDTO struct {
-	ID                string                    `json:"id"`
-	OrgID             string                    `json:"org_id"`
-	Name              string                    `json:"name"`
-	Provider          string                    `json:"provider"`
-	EventHooks        []domain.GuardrailHook    `json:"event_hooks,omitempty"`
-	StreamScope       domain.StreamScope        `json:"stream_scope,omitempty"`
-	StreamScopeByHook domain.StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
-	ModeRule          *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
-	DefaultOn         bool                      `json:"default_on"`
-	EnabledRoles      []string                  `json:"enabled_roles,omitempty"`
-	TimeoutMs         int                       `json:"timeout_ms,omitempty"`
-	FailOpen          bool                      `json:"fail_open"`
-	Precedence        int                       `json:"precedence"`
-	Config            map[string]any            `json:"config,omitempty"`
-	HasSecrets        bool                      `json:"has_secrets"`
-	Status            domain.GuardrailStatus    `json:"status"`
-	GuardrailInfo     map[string]any            `json:"guardrail_info,omitempty"`
-	Weight            int                       `json:"weight"`
-	CreatedAt         time.Time                 `json:"created_at"`
-	UpdatedAt         time.Time                 `json:"updated_at"`
+	ID                   string                    `json:"id"`
+	OrgID                string                    `json:"org_id"`
+	Name                 string                    `json:"name"`
+	Provider             string                    `json:"provider"`
+	EventHooks           []domain.GuardrailHook    `json:"event_hooks,omitempty"`
+	StreamScope          domain.StreamScope        `json:"stream_scope,omitempty"`
+	StreamScopeByHook    domain.StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
+	ModeRule             *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
+	DefaultOn            bool                      `json:"default_on"`
+	EnabledRoles         []string                  `json:"enabled_roles,omitempty"`
+	TimeoutMs            int                       `json:"timeout_ms,omitempty"`
+	FailOpen             bool                      `json:"fail_open"`
+	Precedence           int                       `json:"precedence"`
+	Config               map[string]any            `json:"config,omitempty"`
+	HasSecrets           bool                      `json:"has_secrets"`
+	Status               domain.GuardrailStatus    `json:"status"`
+	GuardrailInfo        map[string]any            `json:"guardrail_info,omitempty"`
+	Weight               int                       `json:"weight"`
+	SensitiveRouteTarget string                    `json:"sensitive_route_target,omitempty"`
+	CreatedAt            time.Time                 `json:"created_at"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
 }
 
 func toGuardrailDefinitionDTO(def *domain.GuardrailDefinition) guardrailDefinitionDTO {
 	return guardrailDefinitionDTO{
-		ID:                def.ID,
-		OrgID:             def.OrgID,
-		Name:              def.Name,
-		Provider:          def.Provider,
-		EventHooks:        def.EventHooks,
-		StreamScope:       def.StreamScope,
-		StreamScopeByHook: def.StreamScopeByHook,
-		ModeRule:          def.ModeRule,
-		DefaultOn:         def.DefaultOn,
-		EnabledRoles:      def.EnabledRoles,
-		TimeoutMs:         def.TimeoutMs,
-		FailOpen:          def.FailOpen,
-		Precedence:        def.Precedence,
-		Config:            def.Config,
-		HasSecrets:        strings.TrimSpace(def.EncryptedSecrets) != "",
-		Status:            def.Status,
-		GuardrailInfo:     def.GuardrailInfo,
-		Weight:            def.Weight,
-		CreatedAt:         def.CreatedAt,
-		UpdatedAt:         def.UpdatedAt,
+		ID:                   def.ID,
+		OrgID:                def.OrgID,
+		Name:                 def.Name,
+		Provider:             def.Provider,
+		EventHooks:           def.EventHooks,
+		StreamScope:          def.StreamScope,
+		StreamScopeByHook:    def.StreamScopeByHook,
+		ModeRule:             def.ModeRule,
+		DefaultOn:            def.DefaultOn,
+		EnabledRoles:         def.EnabledRoles,
+		TimeoutMs:            def.TimeoutMs,
+		FailOpen:             def.FailOpen,
+		Precedence:           def.Precedence,
+		Config:               def.Config,
+		HasSecrets:           strings.TrimSpace(def.EncryptedSecrets) != "",
+		Status:               def.Status,
+		GuardrailInfo:        def.GuardrailInfo,
+		Weight:               def.Weight,
+		SensitiveRouteTarget: def.SensitiveRouteTarget,
+		CreatedAt:            def.CreatedAt,
+		UpdatedAt:            def.UpdatedAt,
 	}
 }
 
 type guardrailDefinitionWriteRequest struct {
-	ID                string                    `json:"id,omitempty"`
-	Name              string                    `json:"name"`
-	Provider          string                    `json:"provider"`
-	EventHooks        []domain.GuardrailHook    `json:"event_hooks,omitempty"`
-	StreamScope       domain.StreamScope        `json:"stream_scope,omitempty"`
-	StreamScopeByHook domain.StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
-	ModeRule          *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
-	DefaultOn         bool                      `json:"default_on"`
-	EnabledRoles      []string                  `json:"enabled_roles,omitempty"`
-	TimeoutMs         int                       `json:"timeout_ms,omitempty"`
-	FailOpen          bool                      `json:"fail_open"`
-	Precedence        int                       `json:"precedence"`
-	Config            map[string]any            `json:"config,omitempty"`
-	Secrets           map[string]any            `json:"secrets,omitempty"`
-	ClearSecrets      bool                      `json:"clear_secrets,omitempty"`
-	Status            domain.GuardrailStatus    `json:"status,omitempty"`
-	GuardrailInfo     map[string]any            `json:"guardrail_info,omitempty"`
-	Weight            int                       `json:"weight,omitempty"`
+	ID                   string                    `json:"id,omitempty"`
+	Name                 string                    `json:"name"`
+	Provider             string                    `json:"provider"`
+	EventHooks           []domain.GuardrailHook    `json:"event_hooks,omitempty"`
+	StreamScope          domain.StreamScope        `json:"stream_scope,omitempty"`
+	StreamScopeByHook    domain.StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
+	ModeRule             *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
+	DefaultOn            bool                      `json:"default_on"`
+	EnabledRoles         []string                  `json:"enabled_roles,omitempty"`
+	TimeoutMs            int                       `json:"timeout_ms,omitempty"`
+	FailOpen             bool                      `json:"fail_open"`
+	Precedence           int                       `json:"precedence"`
+	Config               map[string]any            `json:"config,omitempty"`
+	Secrets              map[string]any            `json:"secrets,omitempty"`
+	ClearSecrets         bool                      `json:"clear_secrets,omitempty"`
+	Status               domain.GuardrailStatus    `json:"status,omitempty"`
+	GuardrailInfo        map[string]any            `json:"guardrail_info,omitempty"`
+	Weight               int                       `json:"weight,omitempty"`
+	SensitiveRouteTarget string                    `json:"sensitive_route_target,omitempty"`
 }
 
 // --- Control Plane Admin Handlers ---
@@ -707,27 +710,28 @@ func (s *GatewayServer) handleAdminCreateGuardrailDefinition(w http.ResponseWrit
 	}
 	now := time.Now().UTC()
 	def := &domain.GuardrailDefinition{
-		ID:                defID,
-		OrgID:             orgID,
-		Name:              strings.TrimSpace(req.Name),
-		Provider:          strings.TrimSpace(req.Provider),
-		EventHooks:        req.EventHooks,
-		StreamScope:       req.StreamScope,
-		StreamScopeByHook: req.StreamScopeByHook,
-		ModeRule:          req.ModeRule,
-		DefaultOn:         req.DefaultOn,
-		EnabledRoles:      req.EnabledRoles,
-		TimeoutMs:         req.TimeoutMs,
-		FailOpen:          req.FailOpen,
-		Precedence:        req.Precedence,
-		Config:            req.Config,
-		EncryptedSecrets:  encSecrets,
-		EncryptedDEK:      encDEK,
-		Status:            status,
-		GuardrailInfo:     req.GuardrailInfo,
-		Weight:            weight,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                   defID,
+		OrgID:                orgID,
+		Name:                 strings.TrimSpace(req.Name),
+		Provider:             strings.TrimSpace(req.Provider),
+		EventHooks:           req.EventHooks,
+		StreamScope:          req.StreamScope,
+		StreamScopeByHook:    req.StreamScopeByHook,
+		ModeRule:             req.ModeRule,
+		DefaultOn:            req.DefaultOn,
+		EnabledRoles:         req.EnabledRoles,
+		TimeoutMs:            req.TimeoutMs,
+		FailOpen:             req.FailOpen,
+		Precedence:           req.Precedence,
+		Config:               req.Config,
+		EncryptedSecrets:     encSecrets,
+		EncryptedDEK:         encDEK,
+		Status:               status,
+		GuardrailInfo:        req.GuardrailInfo,
+		Weight:               weight,
+		SensitiveRouteTarget: strings.TrimSpace(req.SensitiveRouteTarget),
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if err := s.repo.CreateGuardrailDefinition(r.Context(), def); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -832,27 +836,28 @@ func (s *GatewayServer) handleAdminUpdateGuardrailDefinition(w http.ResponseWrit
 	}
 
 	updated := &domain.GuardrailDefinition{
-		ID:                existing.ID,
-		OrgID:             existing.OrgID,
-		Name:              strings.TrimSpace(req.Name),
-		Provider:          strings.TrimSpace(req.Provider),
-		EventHooks:        req.EventHooks,
-		StreamScope:       req.StreamScope,
-		StreamScopeByHook: req.StreamScopeByHook,
-		ModeRule:          req.ModeRule,
-		DefaultOn:         req.DefaultOn,
-		EnabledRoles:      req.EnabledRoles,
-		TimeoutMs:         req.TimeoutMs,
-		FailOpen:          req.FailOpen,
-		Precedence:        req.Precedence,
-		Config:            req.Config,
-		EncryptedSecrets:  encSecrets,
-		EncryptedDEK:      encDEK,
-		Status:            status,
-		GuardrailInfo:     req.GuardrailInfo,
-		Weight:            weight,
-		CreatedAt:         existing.CreatedAt,
-		UpdatedAt:         time.Now().UTC(),
+		ID:                   existing.ID,
+		OrgID:                existing.OrgID,
+		Name:                 strings.TrimSpace(req.Name),
+		Provider:             strings.TrimSpace(req.Provider),
+		EventHooks:           req.EventHooks,
+		StreamScope:          req.StreamScope,
+		StreamScopeByHook:    req.StreamScopeByHook,
+		ModeRule:             req.ModeRule,
+		DefaultOn:            req.DefaultOn,
+		EnabledRoles:         req.EnabledRoles,
+		TimeoutMs:            req.TimeoutMs,
+		FailOpen:             req.FailOpen,
+		Precedence:           req.Precedence,
+		Config:               req.Config,
+		EncryptedSecrets:     encSecrets,
+		EncryptedDEK:         encDEK,
+		Status:               status,
+		GuardrailInfo:        req.GuardrailInfo,
+		Weight:               weight,
+		SensitiveRouteTarget: strings.TrimSpace(req.SensitiveRouteTarget),
+		CreatedAt:            existing.CreatedAt,
+		UpdatedAt:            time.Now().UTC(),
 	}
 	if err := s.repo.UpdateGuardrailDefinition(r.Context(), updated); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -878,23 +883,24 @@ func (s *GatewayServer) handleAdminPatchGuardrailDefinition(w http.ResponseWrite
 	}
 
 	var req struct {
-		Name              *string                   `json:"name,omitempty"`
-		Provider          *string                   `json:"provider,omitempty"`
-		EventHooks        *[]domain.GuardrailHook   `json:"event_hooks,omitempty"`
-		StreamScope       *domain.StreamScope       `json:"stream_scope,omitempty"`
-		StreamScopeByHook *domain.StreamScopeByHook `json:"stream_scope_by_hook,omitempty"`
-		ModeRule          *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
-		DefaultOn         *bool                     `json:"default_on,omitempty"`
-		EnabledRoles      *[]string                 `json:"enabled_roles,omitempty"`
-		TimeoutMs         *int                      `json:"timeout_ms,omitempty"`
-		FailOpen          *bool                     `json:"fail_open,omitempty"`
-		Precedence        *int                      `json:"precedence,omitempty"`
-		Config            map[string]any            `json:"config,omitempty"`
-		Secrets           map[string]any            `json:"secrets,omitempty"`
-		ClearSecrets      bool                      `json:"clear_secrets,omitempty"`
-		Status            *domain.GuardrailStatus   `json:"status,omitempty"`
-		GuardrailInfo     map[string]any            `json:"guardrail_info,omitempty"`
-		Weight            *int                      `json:"weight,omitempty"`
+		Name                 *string                   `json:"name,omitempty"`
+		Provider             *string                   `json:"provider,omitempty"`
+		EventHooks           *[]domain.GuardrailHook   `json:"event_hooks,omitempty"`
+		StreamScope          *domain.StreamScope       `json:"stream_scope,omitempty"`
+		StreamScopeByHook    *domain.StreamScopeByHook `json:"stream_scope_by_hook,omitempty"`
+		ModeRule             *domain.GuardrailModeRule `json:"mode_rule,omitempty"`
+		DefaultOn            *bool                     `json:"default_on,omitempty"`
+		EnabledRoles         *[]string                 `json:"enabled_roles,omitempty"`
+		TimeoutMs            *int                      `json:"timeout_ms,omitempty"`
+		FailOpen             *bool                     `json:"fail_open,omitempty"`
+		Precedence           *int                      `json:"precedence,omitempty"`
+		Config               map[string]any            `json:"config,omitempty"`
+		Secrets              map[string]any            `json:"secrets,omitempty"`
+		ClearSecrets         bool                      `json:"clear_secrets,omitempty"`
+		Status               *domain.GuardrailStatus   `json:"status,omitempty"`
+		GuardrailInfo        map[string]any            `json:"guardrail_info,omitempty"`
+		Weight               *int                      `json:"weight,omitempty"`
+		SensitiveRouteTarget *string                   `json:"sensitive_route_target,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -965,6 +971,9 @@ func (s *GatewayServer) handleAdminPatchGuardrailDefinition(w http.ResponseWrite
 	}
 	if req.Weight != nil && *req.Weight > 0 {
 		cp.Weight = *req.Weight
+	}
+	if req.SensitiveRouteTarget != nil {
+		cp.SensitiveRouteTarget = strings.TrimSpace(*req.SensitiveRouteTarget)
 	}
 	if req.Status != nil {
 		if !req.Status.IsValid() {

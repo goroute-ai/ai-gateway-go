@@ -65,6 +65,7 @@ type QuotaPolicy struct {
 	ScopeID           string            `json:"scope_id"`
 	ModelPattern      string            `json:"model_pattern"`
 	RPMLimit          int               `json:"rpm_limit"`
+	RPDLimit          int64             `json:"rpd_limit,omitempty"`
 	TPMLimit          int               `json:"tpm_limit"`
 	ITPMLimit         int               `json:"itpm_limit"`
 	OTPMLimit         int               `json:"otpm_limit"`
@@ -105,6 +106,7 @@ func (p *QuotaPolicy) ToDescriptor() RateLimitDescriptor {
 		ScopeID:          p.ScopeID,
 		ModelPattern:     p.ModelPattern,
 		RPMLimit:         p.RPMLimit,
+		RPDLimit:         p.RPDLimit,
 		TPMLimit:         p.TPMLimit,
 		ITPMLimit:        p.ITPMLimit,
 		OTPMLimit:        p.OTPMLimit,
@@ -134,6 +136,7 @@ type RateLimitDescriptor struct {
 	ModelPattern         string              `json:"model_pattern,omitempty"`
 	WindowType           BudgetWindowType    `json:"window_type,omitempty"`
 	RPMLimit             int                 `json:"rpm_limit,omitempty"`
+	RPDLimit             int64               `json:"rpd_limit,omitempty"`
 	TPMLimit             int                 `json:"tpm_limit,omitempty"`
 	ITPMLimit            int                 `json:"itpm_limit,omitempty"`
 	OTPMLimit            int                 `json:"otpm_limit,omitempty"`
@@ -150,6 +153,7 @@ type RateLimitDescriptor struct {
 // HasLimits reports whether the descriptor configures at least one positive quota dimension.
 func (d RateLimitDescriptor) HasLimits() bool {
 	return d.RPMLimit > 0 ||
+		d.RPDLimit > 0 ||
 		d.TPMLimit > 0 ||
 		d.ITPMLimit > 0 ||
 		d.OTPMLimit > 0 ||

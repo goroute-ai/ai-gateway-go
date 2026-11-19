@@ -146,6 +146,8 @@ type Team struct {
 	AllowedMCPServers            []string            `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
 	AllowedA2AAgents             []string            `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
 	AllowedClientApps            []string            `json:"allowed_client_apps"`      // nil = inherit, [] = DenyAll, [...] = allowlist
+	MinPriorityRank              int                 `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags           []string            `json:"allowed_routing_tags,omitempty"`
 	IsActive                     bool                `json:"is_active"`
 	CreatedAt                    time.Time           `json:"created_at"`
 	UpdatedAt                    time.Time           `json:"updated_at"`
@@ -287,6 +289,8 @@ type VirtualKey struct {
 	RevokedBy                 string              `json:"revoked_by,omitempty"`
 	CanImpersonate            bool                `json:"can_impersonate"`
 	IsActive                  bool                `json:"is_active"`
+	MinPriorityRank           int                 `json:"min_priority_rank,omitempty"`
+	AllowedRoutingTags        []string            `json:"allowed_routing_tags,omitempty"`
 	Tags                      []string            `json:"tags,omitempty"`
 	Metadata                  map[string]string   `json:"metadata,omitempty"`
 	CreatedAt                 time.Time           `json:"created_at"`
@@ -379,6 +383,10 @@ type IdentityContext struct {
 	KeyBatchEnqueuedTokenLimit    int64               `json:"key_batch_enqueued_token_limit"`
 	KeyMaxIterations              int                 `json:"key_max_iterations,omitempty"`
 	KeyMaxBudgetPerSessionMicros  int64               `json:"key_max_budget_per_session_micros,omitempty"`
+	KeyMinPriorityRank            int                 `json:"key_min_priority_rank,omitempty"`
+	KeyAllowedRoutingTags         []string            `json:"key_allowed_routing_tags,omitempty"`
+	TeamMinPriorityRank           int                 `json:"team_min_priority_rank,omitempty"`
+	TeamAllowedRoutingTags        []string            `json:"team_allowed_routing_tags,omitempty"`
 	KeyTags                       []string            `json:"key_tags,omitempty"`
 	KeyMetadata                   map[string]string   `json:"key_metadata,omitempty"`
 	KeyMaxBudgetMicros            int64               `json:"key_max_budget_micros"`

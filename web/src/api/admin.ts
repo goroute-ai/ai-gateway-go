@@ -185,12 +185,24 @@ export const adminApi = {
   // Model Groups & Deployments
   listModelGroups: (key: string, orgId?: string) =>
     apiFetch<{ data: ModelGroup[] }>(`/admin/v1/model-groups${qs({ org_id: orgId })}`, {}, key),
+  getModelGroup: (key: string, groupId: string) =>
+    apiFetch<ModelGroup>(`/admin/v1/model-groups/${enc(groupId)}`, {}, key),
   createModelGroup: (key: string, data: Partial<ModelGroup>) =>
     apiFetch<ModelGroup>('/admin/v1/model-groups', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateModelGroup: (key: string, groupId: string, data: Partial<ModelGroup>) =>
+    apiFetch<ModelGroup>(`/admin/v1/model-groups/${enc(groupId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteModelGroup: (key: string, groupId: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/model-groups/${enc(groupId)}`, { method: 'DELETE' }, key),
   listDeployments: (key: string, groupId?: string) =>
     apiFetch<{ data: Deployment[] }>(`/admin/v1/deployments${qs({ model_group_id: groupId })}`, {}, key),
+  getDeployment: (key: string, depId: string) =>
+    apiFetch<Deployment>(`/admin/v1/deployments/${enc(depId)}`, {}, key),
   createDeployment: (key: string, data: Partial<Deployment>) =>
     apiFetch<Deployment>('/admin/v1/deployments', { method: 'POST', body: JSON.stringify(data) }, key),
+  patchDeployment: (key: string, depId: string, data: Partial<Deployment>) =>
+    apiFetch<Deployment>(`/admin/v1/deployments/${enc(depId)}`, { method: 'PATCH', body: JSON.stringify(data) }, key),
+  deleteDeployment: (key: string, depId: string) =>
+    apiFetch<{ status: string; id: string }>(`/admin/v1/deployments/${enc(depId)}`, { method: 'DELETE' }, key),
 
   // Global Catalogue & Pricing
   listCatalogue: (key: string) =>

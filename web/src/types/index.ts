@@ -120,6 +120,8 @@ export interface Team {
   allowed_mcp_servers?: string[] | null;
   allowed_a2a_agents?: string[] | null;
   allowed_client_apps?: string[] | null;
+  min_priority_rank?: number;
+  allowed_routing_tags?: string[];
   is_active: boolean;
   created_at?: string;
 }
@@ -186,6 +188,8 @@ export interface VirtualKey {
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  min_priority_rank?: number;
+  allowed_routing_tags?: string[];
   batch_enqueued_token_limit?: number;
   rotation_interval_sec?: number;
   key_rotation_at?: string;
@@ -307,6 +311,9 @@ export interface ModelGroup {
   context_window_fallbacks?: FallbackTarget[];
   content_policy_fallbacks?: FallbackTarget[];
   fallback_targets?: FallbackTarget[];
+  saturation_fallbacks?: FallbackTarget[];
+  drop_unsupported_params?: boolean;
+  disable_cooldowns?: boolean;
   retry_policy?: RetryPolicy;
   cooldown_policy?: CooldownPolicy;
   max_retries?: number;
@@ -345,6 +352,9 @@ export interface Deployment {
   budget_reset_period?: BudgetResetPeriod | string;
   rpm_capacity?: number;
   tpm_capacity?: number;
+  itpm_capacity?: number;
+  otpm_capacity?: number;
+  max_parallel_requests?: number;
   timeout_ms?: number;
   status: string;
   created_at?: string;
@@ -450,23 +460,26 @@ export interface AuditLog {
   created_at: string;
 }
 
+export type GuardrailPolicyAction = 'block' | 'redact' | 'audit' | 'route';
+
 export interface GuardrailPolicy {
   org_id: string;
   mode?: 'enforce' | 'logging_only';
   scan_all_roles?: boolean;
   enable_prompt_injection: boolean;
-  prompt_injection_action: 'block' | 'redact' | 'audit';
+  prompt_injection_action: GuardrailPolicyAction;
   enable_pii_detection: boolean;
-  pii_action: 'block' | 'redact' | 'audit';
+  pii_action: GuardrailPolicyAction;
   enable_secret_detection: boolean;
-  secret_action: 'block' | 'redact' | 'audit';
+  secret_action: GuardrailPolicyAction;
   redact_output_pii: boolean;
   blocked_keywords?: string[];
   enable_toxicity_filter?: boolean;
-  toxicity_action?: 'block' | 'redact' | 'audit';
+  toxicity_action?: GuardrailPolicyAction;
   toxicity_threshold?: string;
   enabled_content_categories?: string[];
   content_exceptions?: string[];
+  sensitive_route_target?: string;
   updated_at?: string;
 }
 
@@ -529,6 +542,7 @@ export interface GuardrailDefinition {
   status: GuardrailStatus;
   guardrail_info?: Record<string, any>;
   weight: number;
+  sensitive_route_target?: string;
   created_at: string;
   updated_at: string;
 }
@@ -552,6 +566,7 @@ export interface GuardrailDefinitionWriteRequest {
   status?: GuardrailStatus;
   guardrail_info?: Record<string, any>;
   weight?: number;
+  sensitive_route_target?: string;
 }
 
 export interface GuardrailBinding {
@@ -845,6 +860,7 @@ export interface QuotaPolicy {
   itpm_limit: number;
   otpm_limit: number;
   tpd_limit: number;
+  rpd_limit?: number;
   max_concurrent: number;
   max_budget_micros: number;
   spent_micros: number;

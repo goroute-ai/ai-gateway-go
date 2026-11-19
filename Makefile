@@ -168,7 +168,7 @@ ui-build:
 
 ui-check-dist:
 	@echo "==> Verifying internal/ui/dist synchronization..."
-	@git diff --quiet internal/ui/dist || (echo "❌ internal/ui/dist is out of sync with web/. Run 'make ui-build' to synchronize." && exit 1)
+	@diff -rq web/dist internal/ui/dist >/dev/null || (echo "❌ internal/ui/dist is out of sync with web/dist. Run 'make ui-build' to synchronize." && exit 1)
 	@echo "==> internal/ui/dist is in sync."
 
 ui-dev:

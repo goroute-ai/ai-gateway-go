@@ -131,7 +131,12 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt)
+	if gwErr := s.applyRoutingHints(r, idCtx, &req.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	guardedPrompt, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &req.Model, req.GoRouteExtensions, "image_generation", req.Prompt)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
@@ -140,7 +145,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 
 	// Include the prompt size as well as each generated image's work allowance.
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, req.User, nil, req.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, req.Quality, req.Size, req.N)
@@ -154,6 +159,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
@@ -197,6 +203,7 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string
@@ -295,7 +302,13 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, prompt)
+	var editExt *domain.GoRouteExtensions
+	if gwErr := s.applyRoutingHints(r, idCtx, &editExt); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	guardedPrompt, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &model, editExt, "image_edit", prompt)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
@@ -318,19 +331,20 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	}
 
 	req := domain.CanonicalImageRequest{
-		RequestID:     reqID,
-		Model:         model,
-		Prompt:        prompt,
-		N:             n,
-		Size:          size,
-		Operation:     "edit",
-		ImageData:     imageData,
-		ImageFilename: imageName,
-		MaskData:      maskData,
-		MaskFilename:  maskName,
+		RequestID:         reqID,
+		Model:             model,
+		Prompt:            prompt,
+		N:                 n,
+		Size:              size,
+		GoRouteExtensions: editExt,
+		Operation:         "edit",
+		ImageData:         imageData,
+		ImageFilename:     imageName,
+		MaskData:          maskData,
+		MaskFilename:      maskName,
 	}
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, req.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
@@ -344,6 +358,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -396,6 +411,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 	if outputErr != nil {
 		domain.WriteHTTPError(w, outputErr)
@@ -440,6 +456,16 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	var varExt *domain.GoRouteExtensions
+	if gwErr := s.applyRoutingHints(r, idCtx, &varExt); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	if _, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &model, varExt, "image_variation"); guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
 	n := 1
 	if nStr := r.FormValue("n"); nStr != "" {
 		parsed, parseErr := strconv.Atoi(nStr)
@@ -456,17 +482,18 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	}
 
 	req := domain.CanonicalImageRequest{
-		RequestID:     reqID,
-		Model:         model,
-		Prompt:        "Image variation",
-		N:             n,
-		Size:          size,
-		Operation:     "variation",
-		ImageData:     imageData,
-		ImageFilename: imageName,
+		RequestID:         reqID,
+		Model:             model,
+		Prompt:            "Image variation",
+		N:                 n,
+		Size:              size,
+		GoRouteExtensions: varExt,
+		Operation:         "variation",
+		ImageData:         imageData,
+		ImageFilename:     imageName,
 	}
 	estTokens := ratelimit.EstimateImageGenerationTokens(req.Model, req.Prompt, req.N)
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, req.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateImageCostUpperBound(gm, "standard", req.Size, req.N)
@@ -480,6 +507,7 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 	resp, meta, err := s.reliability.ExecuteImage(r.Context(), idCtx, &req)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -532,6 +560,7 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 	if outputErr != nil {
 		domain.WriteHTTPError(w, outputErr)

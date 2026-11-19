@@ -53,6 +53,13 @@ ai-gateway -config /etc/goroute/config.yaml -migrate-only
 | `0032_ptu_team_shares` | Creates `deployment_ptu_shares` and `priority_classes` for PTU reservation/borrowing and priority-weighted capacity control. |
 | `0033_operator_sessions_and_passwords` | Creates `user_credentials` (`scrypt` hash, lockout tracking) and `operator_sessions` (`csrf_token`, expiration, revocation). |
 | `0034_auth_quota_reconciliation` | Adds `users.oidc_issuer` (`idx_users_org_issuer_subject`), `virtual_keys` staged rotation columns, `spend_logs` attribution columns (`project_id`, `model_access_group_ids`, `matched_quota_policy_ids`), and `budget_window_limits.rolling_hold_micros` / `rolling_hold_expires_at` with 24h backfill. |
+| `0035_production_governance_hardening` | Adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns (`last_rotated_at`, `rotation_count`, `revoked_at`, `revoked_by`, `expiry_alert_sent_days`). |
+| `0036_production_routing_hardening` | Adds `model_deployments.{max_parallel_requests,itpm_capacity,otpm_capacity}`, `model_groups.{drop_unsupported_params,disable_cooldowns,saturation_fallbacks}`, `quota_policies.rpd_limit`, `virtual_keys.{min_priority_rank,allowed_routing_tags}`, `teams.{min_priority_rank,allowed_routing_tags}`, `guardrail_policies.sensitive_route_target`, and `guardrail_definitions.sensitive_route_target`. |
+
+All columns added in `0036_production_routing_hardening` are nullable or defaulted idempotently (`ADD COLUMN IF NOT EXISTS`) with safe zero/false defaults:
+- `allow_strategy_override: false` and `debug_routing_headers: false` ensure untrusted request strategy overrides and diagnostic fallback error headers remain off unless explicitly opted in.
+- `min_priority_rank` defaults to `0` and `allowed_routing_tags` defaults to `{}` (unrestricted until configured).
+- Guardrail `route` actions validate that `sensitive_route_target` is non-empty when configured.
 
 ---
 

@@ -106,27 +106,28 @@ type GuardrailRequestOverride struct {
 // GuardrailDefinition defines a named, tenant-scoped guardrail instance in the registry.
 // Multiple definitions within the same organization may share a Name to enable weighted load balancing.
 type GuardrailDefinition struct {
-	ID                string             `json:"id"`
-	OrgID             string             `json:"org_id"`
-	Name              string             `json:"name"`
-	Provider          string             `json:"provider"`
-	EventHooks        []GuardrailHook    `json:"event_hooks,omitempty"`
-	StreamScope       StreamScope        `json:"stream_scope,omitempty"`
-	StreamScopeByHook StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
-	ModeRule          *GuardrailModeRule `json:"mode_rule,omitempty"`
-	DefaultOn         bool               `json:"default_on"`
-	EnabledRoles      []string           `json:"enabled_roles,omitempty"`
-	TimeoutMs         int                `json:"timeout_ms,omitempty"`
-	FailOpen          bool               `json:"fail_open"`
-	Precedence        int                `json:"precedence"`
-	Config            map[string]any     `json:"config,omitempty"`
-	EncryptedSecrets  string             `json:"-"` // AES-256-GCM Vault encrypted JSON/secret payload
-	EncryptedDEK      string             `json:"-"` // AES-256-GCM Vault encrypted DEK
-	Status            GuardrailStatus    `json:"status"`
-	GuardrailInfo     map[string]any     `json:"guardrail_info,omitempty"`
-	Weight            int                `json:"weight"`
-	CreatedAt         time.Time          `json:"created_at"`
-	UpdatedAt         time.Time          `json:"updated_at"`
+	ID                   string             `json:"id"`
+	OrgID                string             `json:"org_id"`
+	Name                 string             `json:"name"`
+	Provider             string             `json:"provider"`
+	EventHooks           []GuardrailHook    `json:"event_hooks,omitempty"`
+	StreamScope          StreamScope        `json:"stream_scope,omitempty"`
+	StreamScopeByHook    StreamScopeByHook  `json:"stream_scope_by_hook,omitempty"`
+	ModeRule             *GuardrailModeRule `json:"mode_rule,omitempty"`
+	DefaultOn            bool               `json:"default_on"`
+	EnabledRoles         []string           `json:"enabled_roles,omitempty"`
+	TimeoutMs            int                `json:"timeout_ms,omitempty"`
+	FailOpen             bool               `json:"fail_open"`
+	Precedence           int                `json:"precedence"`
+	Config               map[string]any     `json:"config,omitempty"`
+	EncryptedSecrets     string             `json:"-"` // AES-256-GCM Vault encrypted JSON/secret payload
+	EncryptedDEK         string             `json:"-"` // AES-256-GCM Vault encrypted DEK
+	Status               GuardrailStatus    `json:"status"`
+	SensitiveRouteTarget string             `json:"sensitive_route_target,omitempty"`
+	GuardrailInfo        map[string]any     `json:"guardrail_info,omitempty"`
+	Weight               int                `json:"weight"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
 }
 
 // EffectiveStreamScope returns the StreamScope for hook, checking StreamScopeByHook first,
@@ -208,6 +209,7 @@ type GuardrailEvalResult struct {
 	ModifiedToolCalls []CanonicalToolCall  `json:"modified_tool_calls,omitempty"`
 	Violations        []GuardrailViolation `json:"violations,omitempty"`
 	AppliedGuardrails []string             `json:"applied_guardrails,omitempty"`
+	RouteTarget       string               `json:"route_target,omitempty"`
 	UsageUnits        int64                `json:"usage_units,omitempty"`
 	ErrorMessage      string               `json:"error_message,omitempty"`
 }

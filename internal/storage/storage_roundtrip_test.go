@@ -282,4 +282,51 @@ func TestMemoryRepository_ModelGroupAndDeploymentRoutingRoundTrip(t *testing.T) 
 	if !foundDefault {
 		t.Fatalf("dep-rt-default not found in ListAllDeployments")
 	}
+
+	// Verify UpdateModelGroup, GetDeployment, UpdateDeployment, DeleteDeployment, DeleteModelGroup (cascade).
+	mg.DropUnsupportedParams = true
+	mg.DisableCooldowns = true
+	mg.SaturationFallbacks = []domain.FallbackTarget{{GroupAliasOrID: "fallback-pool"}}
+	if err := repo.UpdateModelGroup(ctx, mg); err != nil {
+		t.Fatalf("UpdateModelGroup failed: %v", err)
+	}
+	gotUpdatedMG, err := repo.GetModelGroupByID(ctx, mg.ID)
+	if err != nil {
+		t.Fatalf("GetModelGroupByID after update failed: %v", err)
+	}
+	if !gotUpdatedMG.DropUnsupportedParams || !gotUpdatedMG.DisableCooldowns || len(gotUpdatedMG.SaturationFallbacks) != 1 || gotUpdatedMG.SaturationFallbacks[0].GroupAliasOrID != "fallback-pool" {
+		t.Fatalf("unexpected updated ModelGroup fields: %+v", gotUpdatedMG)
+	}
+
+	gotDep, err := repo.GetDeployment(ctx, dep.ID)
+	if err != nil {
+		t.Fatalf("GetDeployment failed: %v", err)
+	}
+	gotDep.ITPMCapacity = 50000
+	gotDep.OTPMCapacity = 10000
+	gotDep.MaxParallelRequests = 12
+	gotDep.Status = domain.DeploymentStatusDisabled
+	if err := repo.UpdateDeployment(ctx, gotDep); err != nil {
+		t.Fatalf("UpdateDeployment failed: %v", err)
+	}
+	gotUpdatedDep, err := repo.GetDeployment(ctx, dep.ID)
+	if err != nil {
+		t.Fatalf("GetDeployment after update failed: %v", err)
+	}
+	if gotUpdatedDep.ITPMCapacity != 50000 || gotUpdatedDep.OTPMCapacity != 10000 || gotUpdatedDep.MaxParallelRequests != 12 || gotUpdatedDep.Status != domain.DeploymentStatusDisabled {
+		t.Fatalf("unexpected updated Deployment fields: %+v", gotUpdatedDep)
+	}
+
+	if err := repo.DeleteDeployment(ctx, depDefault.ID); err != nil {
+		t.Fatalf("DeleteDeployment failed: %v", err)
+	}
+	if _, err := repo.GetDeployment(ctx, depDefault.ID); err == nil {
+		t.Fatalf("expected error getting deleted deployment")
+	}
+	if err := repo.DeleteModelGroup(ctx, mg.ID); err != nil {
+		t.Fatalf("DeleteModelGroup failed: %v", err)
+	}
+	if _, err := repo.GetDeployment(ctx, dep.ID); err == nil {
+		t.Fatalf("expected cascade deletion of deployment when model group deleted")
+	}
 }

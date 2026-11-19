@@ -75,6 +75,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 				10, 1000, 0, 5, int64(25000), 0, int64(0),
 				false, int64(0), 0, 0, []string{}, []string{},
 				[]string{"gpt-4.1"}, nil, nil, nil,
+				0, []string{},
 				true, now, now,
 			},
 		}
@@ -101,6 +102,7 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 				0, 0, 0, 0, int64(0), 0, int64(0),
 				false, int64(0), 0, 0, []string{}, []string{},
 				[]string{}, []string{}, []string{}, []string{},
+				0, []string{},
 				true, now, now,
 			},
 		}
@@ -126,12 +128,16 @@ func TestScanTeam_ThreeStateAllowlists(t *testing.T) {
 				20, 2000, 30, 12, int64(0), 5, int64(10000),
 				true, int64(500000), 10, 500, []string{"gpt-4.1-mini"}, []string{"keys:create"},
 				[]string{"gpt-4.1"}, []string{"mcp-1"}, []string{"agent-1", "agent-2"}, []string{"cursor"},
+				4, []string{"tier:ml", "gpu*"},
 				true, now, now,
 			},
 		}
 		team, err := scanTeam(scanner)
 		if err != nil {
 			t.Fatalf("scanTeam failed: %v", err)
+		}
+		if team.MinPriorityRank != 4 || len(team.AllowedRoutingTags) != 2 || team.AllowedRoutingTags[1] != "gpu*" {
+			t.Fatalf("unexpected routing priority/tags: rank=%d tags=%#v", team.MinPriorityRank, team.AllowedRoutingTags)
 		}
 		if team.SoftBudgetMicros != 3500 || !team.ThrottleOnBudgetExceeded || len(team.BudgetFallbacks["gpt-4.1"]) != 1 || team.BudgetFallbacks["gpt-4.1"][0] != "gpt-4.1-mini" {
 			t.Fatalf("unexpected soft budget fields: %+v", team)

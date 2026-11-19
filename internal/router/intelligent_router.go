@@ -5,8 +5,10 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -28,6 +30,14 @@ type RouteDecision struct {
 	ModelGroup       *domain.ModelGroup
 }
 
+const defaultRoutingL1CacheTTL = 10 * time.Second
+
+type cachedOrgModelGroups struct {
+	groups    []*domain.ModelGroup
+	rev       uint64
+	expiresAt time.Time
+}
+
 // IntelligentRouter implements Stage 1 of the Two-Stage Routing Engine:
 // resolving smart aliases (`auto`, `router/*`, `fast`, `reasoning`, `coding`) and explicit model names
 // into concrete ModelGroups without calling an external LLM on the hot path.
@@ -36,11 +46,12 @@ type IntelligentRouter struct {
 	cfg              config.RouterConfig
 	providerCallable func(domain.ProviderType) bool
 
-	mu         sync.RWMutex
-	preRouters *PreRouterRegistry
-	bandit     *BanditPreRouter
-	semantic   *SemanticPreRouter
-	quality    *QualityPreRouter
+	mu             sync.RWMutex
+	preRouters     *PreRouterRegistry
+	bandit         *BanditPreRouter
+	semantic       *SemanticPreRouter
+	quality        *QualityPreRouter
+	orgGroupsCache map[string]cachedOrgModelGroups
 }
 
 func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *IntelligentRouter {
@@ -178,6 +189,69 @@ func (ir *IntelligentRouter) Bandit() *BanditPreRouter {
 func (ir *IntelligentRouter) SetProviderCallable(check func(domain.ProviderType) bool) {
 	if check != nil {
 		ir.providerCallable = check
+	}
+}
+
+// ListActiveModelGroupsCached returns active model groups for orgID using short-TTL L1 caching
+// invalidated on RoutingRevision bumps and explicit InvalidateCache events.
+func (ir *IntelligentRouter) ListActiveModelGroupsCached(ctx context.Context, orgID string) ([]*domain.ModelGroup, error) {
+	if ir == nil || ir.repo == nil {
+		return nil, nil
+	}
+	now := time.Now()
+	var curRev uint64
+	if rp, ok := ir.repo.(storage.RoutingRevisionProvider); ok {
+		curRev = rp.RoutingRevision()
+	}
+
+	ir.mu.RLock()
+	if ir.orgGroupsCache != nil {
+		if ent, ok := ir.orgGroupsCache[orgID]; ok && now.Before(ent.expiresAt) && (curRev == 0 || ent.rev == curRev) {
+			ir.mu.RUnlock()
+			return ent.groups, nil
+		}
+	}
+	ir.mu.RUnlock()
+
+	groups, err := ir.repo.ListModelGroups(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]*domain.ModelGroup, 0, len(groups))
+	for _, g := range groups {
+		if g != nil && g.IsActive {
+			active = append(active, g)
+		}
+	}
+
+	ir.mu.Lock()
+	if ir.orgGroupsCache == nil {
+		ir.orgGroupsCache = make(map[string]cachedOrgModelGroups)
+	}
+	ir.orgGroupsCache[orgID] = cachedOrgModelGroups{
+		groups:    active,
+		rev:       curRev,
+		expiresAt: now.Add(defaultRoutingL1CacheTTL),
+	}
+	ir.mu.Unlock()
+	return active, nil
+}
+
+// InvalidateCache clears cached model groups/deployments across IntelligentRouter and QualityPreRouter.
+func (ir *IntelligentRouter) InvalidateCache(ev storage.InvalidationEvent) {
+	if ir == nil {
+		return
+	}
+	ir.mu.Lock()
+	if ev.OrgID != "" && ir.orgGroupsCache != nil {
+		delete(ir.orgGroupsCache, ev.OrgID)
+	} else {
+		ir.orgGroupsCache = nil
+	}
+	qual := ir.quality
+	ir.mu.Unlock()
+	if qual != nil {
+		qual.InvalidateCache(ev)
 	}
 }
 
@@ -422,7 +496,20 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 		return nil
 	}
 
-	// 5. Model Lookup & Dynamic Catalogue Import
+	// 5. Wildcard `<provider>/*` resolution + Model Lookup & Dynamic Catalogue Import
+	if bareModel == "*" {
+		chosen := ir.pickWildcardProviderModel(ctx, prov, pols)
+		if chosen == nil {
+			return nil
+		}
+		bareModel = chosen.ModelName
+		globalModelID = chosen.ID
+		aliasKey = chosen.ID
+		if mg, err := ir.repo.GetModelGroupByAlias(ctx, orgID, globalModelID); err == nil && mg != nil {
+			return mg
+		}
+	}
+
 	gm, err := ir.repo.GetGlobalModel(ctx, globalModelID)
 	if err != nil || gm == nil {
 		var toImport *domain.GlobalModel
@@ -450,7 +537,7 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 		return nil
 	}
 
-	// 5. Auto-provision ModelGroup & Deployment for this tenant
+	// 6. Auto-provision ModelGroup & Deployment for this tenant
 	mg := &domain.ModelGroup{
 		OrgID:            orgID,
 		Alias:            aliasKey,
@@ -475,6 +562,75 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 		Status:         domain.DeploymentStatusActive,
 	})
 	return mg
+}
+
+func (ir *IntelligentRouter) pickWildcardProviderModel(
+	ctx context.Context,
+	prov domain.ProviderType,
+	pols []*domain.OrgModelPolicy,
+) *domain.GlobalModel {
+	disabled := make(map[string]bool)
+	enabledSet := make(map[string]bool)
+	for _, p := range pols {
+		if p == nil {
+			continue
+		}
+		if !p.IsEnabled {
+			disabled[p.GlobalModelID] = true
+		} else {
+			enabledSet[p.GlobalModelID] = true
+		}
+	}
+
+	seen := make(map[string]*domain.GlobalModel)
+	addCandidate := func(gm *domain.GlobalModel) {
+		if gm == nil || gm.Provider != prov || gm.ModelName == "" || gm.ModelName == "*" {
+			return
+		}
+		if disabled[gm.ID] {
+			return
+		}
+		if gm.LifecycleStatus != "" && gm.LifecycleStatus != domain.ModelStatusActive && gm.LifecycleStatus != domain.ModelStatusPreview {
+			return
+		}
+		if !gm.SupportsInference && (len(gm.SupportedOperations) == 0 || !gm.SupportsOperation(domain.OperationChat)) {
+			return
+		}
+		if len(gm.SupportedOperations) > 0 && !gm.SupportsOperation(domain.OperationChat) {
+			return
+		}
+		if _, exists := seen[gm.ID]; !exists {
+			seen[gm.ID] = gm
+		}
+	}
+
+	if ir.repo != nil {
+		if repoModels, err := ir.repo.ListGlobalModels(ctx); err == nil {
+			for _, gm := range repoModels {
+				addCandidate(gm)
+			}
+		}
+	}
+	for _, gm := range catalog.All() {
+		addCandidate(gm)
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+
+	candidates := make([]*domain.GlobalModel, 0, len(seen))
+	for _, gm := range seen {
+		candidates = append(candidates, gm)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		// Prefer explicitly policy-approved models first, then deterministic ID ordering.
+		eI, eJ := enabledSet[candidates[i].ID], enabledSet[candidates[j].ID]
+		if eI != eJ {
+			return eI
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	return candidates[0]
 }
 
 // classifyPrompt executes Tier 1 (Deterministic Rules) and Tier 2 (Complexity Scorer) in < 0.2ms.

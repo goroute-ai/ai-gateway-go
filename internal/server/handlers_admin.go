@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -327,6 +328,11 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		return
 	}
 	pol.OrgID = orgID
+	pol.SensitiveRouteTarget = strings.TrimSpace(pol.SensitiveRouteTarget)
+	if err := validateGuardrailPolicy(&pol); err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
 	beforePol, _ := s.repo.GetGuardrailPolicy(r.Context(), orgID)
 	if err := s.repo.SetGuardrailPolicy(r.Context(), &pol); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -340,8 +346,72 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		"enable_secret_detection": pol.EnableSecretDetection,
 		"secret_action":           pol.SecretAction,
 		"redact_output_pii":       pol.RedactOutputPII,
+		"sensitive_route_target":  pol.SensitiveRouteTarget,
 	}, beforePol, &pol)
 	writeJSON(w, http.StatusOK, pol)
+}
+
+func validateGuardrailPolicy(pol *domain.GuardrailPolicy) *domain.GatewayError {
+	if pol == nil {
+		return nil
+	}
+	for _, field := range []struct {
+		name       string
+		action     domain.GuardrailAction
+		allowRoute bool
+	}{
+		{name: "prompt_injection_action", action: pol.PromptInjectionAction},
+		{name: "pii_action", action: pol.PIIAction, allowRoute: true},
+		{name: "secret_action", action: pol.SecretAction, allowRoute: true},
+		{name: "toxicity_action", action: pol.ToxicityAction},
+	} {
+		if field.action == "" {
+			continue
+		}
+		switch field.action {
+		case domain.GuardrailActionBlock, domain.GuardrailActionRedact, domain.GuardrailActionAudit:
+		case domain.GuardrailActionRoute:
+			if !field.allowRoute {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_guardrail_action",
+					Message:    fmt.Sprintf("%s does not support action %q", field.name, field.action),
+				}
+			}
+		default:
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_guardrail_action",
+				Message:    fmt.Sprintf("unsupported %s %q", field.name, field.action),
+			}
+		}
+	}
+	if (pol.PIIAction == domain.GuardrailActionRoute || pol.SecretAction == domain.GuardrailActionRoute) &&
+		strings.TrimSpace(pol.SensitiveRouteTarget) == "" {
+		return &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "guardrail_route_target_missing",
+			Message:    "sensitive_route_target is required when pii_action or secret_action is set to route",
+		}
+	}
+	return nil
+}
+
+func normalizeRoutingTags(tags []string) []string {
+	if tags == nil {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (s *GatewayServer) handleAdminGetGuardrailPolicy(w http.ResponseWriter, r *http.Request) {
@@ -429,12 +499,20 @@ func (s *GatewayServer) handleAdminCreateTeam(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
+	if team.MinPriorityRank < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_min_priority_rank", Message: "min_priority_rank cannot be negative"})
+		return
+	}
+	team.AllowedRoutingTags = normalizeRoutingTags(team.AllowedRoutingTags)
 	team.IsActive = true
 	if err := s.repo.CreateTeam(r.Context(), &team); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.auditWithDiff(r.Context(), team.OrgID, "team.created", "team", team.ID, map[string]any{"name": team.Name}, nil, &team)
+	s.auditWithDiff(r.Context(), team.OrgID, "team.created", "team", team.ID, map[string]any{
+		"name":              team.Name,
+		"min_priority_rank": team.MinPriorityRank,
+	}, nil, &team)
 	writeJSON(w, http.StatusCreated, team)
 }
 
@@ -667,6 +745,11 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_soft_budget", Message: "soft_budget_micros cannot be negative"})
 		return
 	}
+	if req.MinPriorityRank < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_min_priority_rank", Message: "min_priority_rank cannot be negative"})
+		return
+	}
+	req.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags)
 	if !s.enforceGuaranteedThroughput(r.Context(), w, req.OrgID, req.TeamID, "", req.RPMLimit, req.TPMLimit) {
 		return
 	}
@@ -681,6 +764,7 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 		"key_type":              vk.KeyType,
 		"can_impersonate":       vk.CanImpersonate,
 		"rotation_interval_sec": vk.RotationIntervalSec,
+		"min_priority_rank":     vk.MinPriorityRank,
 	}, nil, vk)
 	writeJSON(w, http.StatusCreated, vk)
 }
@@ -1093,6 +1177,113 @@ func validateFallbackTargets(field string, targets []domain.FallbackTarget) erro
 	return nil
 }
 
+func validateModelGroupFields(mg *domain.ModelGroup) error {
+	if mg == nil {
+		return fmt.Errorf("model group payload is required")
+	}
+	if mg.RoutingStrategy != "" {
+		normalized := domain.NormalizeRoutingStrategy(mg.RoutingStrategy)
+		if !domain.IsValidRoutingStrategy(normalized) {
+			return fmt.Errorf("unsupported routing_strategy %q", mg.RoutingStrategy)
+		}
+		mg.RoutingStrategy = normalized
+	}
+	for _, pair := range []struct {
+		name    string
+		targets []domain.FallbackTarget
+	}{
+		{"context_window_fallbacks", mg.ContextWindowFallbacks},
+		{"content_policy_fallbacks", mg.ContentPolicyFallbacks},
+		{"fallback_targets", mg.FallbackTargets},
+		{"saturation_fallbacks", mg.SaturationFallbacks},
+	} {
+		if err := validateFallbackTargets(pair.name, pair.targets); err != nil {
+			return err
+		}
+	}
+	if mg.CooldownPolicy != nil && (mg.CooldownPolicy.FailureRateThreshold < 0 || mg.CooldownPolicy.FailureRateThreshold > 1) {
+		return fmt.Errorf("cooldown_policy.failure_rate_threshold must be between 0 and 1")
+	}
+	if mg.MaxRetries < 0 || mg.CooldownSeconds < 0 || mg.FailureThreshold < 0 {
+		return fmt.Errorf("max_retries, cooldown_seconds, and failure_threshold cannot be negative")
+	}
+	return nil
+}
+
+func validateDeploymentFields(dep *domain.Deployment) error {
+	if dep == nil {
+		return fmt.Errorf("deployment payload is required")
+	}
+	if dep.Weight < 0 {
+		return fmt.Errorf("weight cannot be negative")
+	}
+	if dep.RPMCapacity < 0 || dep.TPMCapacity < 0 || dep.ITPMCapacity < 0 || dep.OTPMCapacity < 0 || dep.MaxParallelRequests < 0 {
+		return fmt.Errorf("deployment capacity limits cannot be negative")
+	}
+	if dep.TimeoutMs < 0 || dep.Priority < 0 {
+		return fmt.Errorf("timeout_ms and priority cannot be negative")
+	}
+	if dep.MaxBudgetMicros < 0 {
+		return fmt.Errorf("max_budget_micros cannot be negative")
+	}
+	if dep.BudgetResetPeriod != "" {
+		switch domain.BudgetResetPeriod(dep.BudgetResetPeriod) {
+		case domain.BudgetResetDaily, domain.BudgetResetMonthly, domain.BudgetResetNever:
+		default:
+			return fmt.Errorf("budget_reset_period must be daily, monthly, or never")
+		}
+	}
+	if dep.Status != "" {
+		switch dep.Status {
+		case domain.DeploymentStatusActive, domain.DeploymentStatusCooldown, domain.DeploymentStatusDisabled:
+		default:
+			return fmt.Errorf("status must be active, cooldown, or disabled")
+		}
+	}
+	if len(dep.Tags) > 0 {
+		cleanTags := make([]string, 0, len(dep.Tags))
+		for _, t := range dep.Tags {
+			if trimmed := strings.TrimSpace(t); trimmed != "" {
+				cleanTags = append(cleanTags, trimmed)
+			}
+		}
+		dep.Tags = cleanTags
+	}
+	return nil
+}
+
+func (s *GatewayServer) resolveDeploymentOrgID(ctx context.Context, modelGroupID string) string {
+	if strings.TrimSpace(modelGroupID) == "" {
+		return ""
+	}
+	if mg, err := s.repo.GetModelGroupByID(ctx, modelGroupID); err == nil && mg != nil {
+		return mg.OrgID
+	}
+	return ""
+}
+
+func writeStorageLookupError(w http.ResponseWriter, err error, code, notFoundMsg string) {
+	if errors.Is(err, storage.ErrNotFound) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       code,
+			Message:    notFoundMsg,
+		})
+		return
+	}
+	if errors.Is(err, storage.ErrConflict) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusConflict,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "conflict",
+			Message:    err.Error(),
+		})
+		return
+	}
+	domain.WriteHTTPError(w, err)
+}
+
 func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		domain.ModelGroup
@@ -1106,21 +1297,8 @@ func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *ht
 	if len(mg.FallbackGroupIDs) == 0 && len(req.LegacyFallbackGroups) > 0 {
 		mg.FallbackGroupIDs = req.LegacyFallbackGroups
 	}
-	for _, pair := range []struct {
-		name    string
-		targets []domain.FallbackTarget
-	}{
-		{"context_window_fallbacks", mg.ContextWindowFallbacks},
-		{"content_policy_fallbacks", mg.ContentPolicyFallbacks},
-		{"fallback_targets", mg.FallbackTargets},
-	} {
-		if err := validateFallbackTargets(pair.name, pair.targets); err != nil {
-			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
-			return
-		}
-	}
-	if mg.CooldownPolicy != nil && (mg.CooldownPolicy.FailureRateThreshold < 0 || mg.CooldownPolicy.FailureRateThreshold > 1) {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "cooldown_policy.failure_rate_threshold must be between 0 and 1"})
+	if err := validateModelGroupFields(&mg); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
 	mg.OrgID = resolveScopedOrgID(r, mg.OrgID)
@@ -1129,9 +1307,10 @@ func (s *GatewayServer) handleAdminCreateModelGroup(w http.ResponseWriter, r *ht
 	}
 	mg.IsActive = true
 	if err := s.repo.CreateModelGroup(r.Context(), &mg); err != nil {
-		domain.WriteHTTPError(w, err)
+		writeStorageLookupError(w, err, "model_group_not_found", "Model group not found")
 		return
 	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "model_group", EntityID: mg.ID, OrgID: mg.OrgID})
 	s.auditWithDiff(r.Context(), mg.OrgID, "model_group.created", "model_group", mg.ID, map[string]any{"alias": mg.Alias, "strategy": mg.RoutingStrategy}, nil, &mg)
 	writeJSON(w, http.StatusCreated, mg)
 }
@@ -1149,32 +1328,160 @@ func (s *GatewayServer) handleAdminListModelGroups(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{"data": groups})
 }
 
+func (s *GatewayServer) handleAdminGetModelGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(chi.URLParam(r, "groupID"))
+	mg, err := s.repo.GetModelGroupByID(r.Context(), groupID)
+	if err != nil || mg == nil {
+		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), false); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "model_group_not_found", Message: "Model group not found"})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, mg.OrgID, false); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, mg)
+}
+
+func (s *GatewayServer) handleAdminUpdateModelGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(chi.URLParam(r, "groupID"))
+	existing, err := s.repo.GetModelGroupByID(r.Context(), groupID)
+	if err != nil || existing == nil {
+		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "model_group_not_found", Message: "Model group not found"})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+		return
+	}
+	var req struct {
+		Alias                  *string                  `json:"alias,omitempty"`
+		Description            *string                  `json:"description,omitempty"`
+		RoutingStrategy        *string                  `json:"routing_strategy,omitempty"`
+		FallbackGroupIDs       *[]string                `json:"fallback_group_ids,omitempty"`
+		LegacyFallbackGroups   *[]string                `json:"fallback_groups,omitempty"`
+		ContextWindowFallbacks *[]domain.FallbackTarget `json:"context_window_fallbacks,omitempty"`
+		ContentPolicyFallbacks *[]domain.FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+		FallbackTargets        *[]domain.FallbackTarget `json:"fallback_targets,omitempty"`
+		SaturationFallbacks    *[]domain.FallbackTarget `json:"saturation_fallbacks,omitempty"`
+		DropUnsupportedParams  *bool                    `json:"drop_unsupported_params,omitempty"`
+		DisableCooldowns       *bool                    `json:"disable_cooldowns,omitempty"`
+		RetryPolicy            *domain.RetryPolicy      `json:"retry_policy,omitempty"`
+		CooldownPolicy         *domain.CooldownPolicy   `json:"cooldown_policy,omitempty"`
+		MaxRetries             *int                     `json:"max_retries,omitempty"`
+		CooldownSeconds        *int                     `json:"cooldown_seconds,omitempty"`
+		FailureThreshold       *int                     `json:"failure_threshold,omitempty"`
+		IsActive               *bool                    `json:"is_active,omitempty"`
+	}
+	if err := decodeAdminJSON(w, r, &req); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	updated := *existing
+	if req.Alias != nil {
+		alias := strings.TrimSpace(*req.Alias)
+		if alias == "" {
+			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Message: "alias cannot be empty"})
+			return
+		}
+		updated.Alias = alias
+	}
+	if req.Description != nil {
+		updated.Description = strings.TrimSpace(*req.Description)
+	}
+	if req.RoutingStrategy != nil {
+		updated.RoutingStrategy = domain.RoutingStrategy(strings.TrimSpace(*req.RoutingStrategy))
+	}
+	if req.FallbackGroupIDs != nil {
+		updated.FallbackGroupIDs = slices.Clone(*req.FallbackGroupIDs)
+	} else if req.LegacyFallbackGroups != nil {
+		updated.FallbackGroupIDs = slices.Clone(*req.LegacyFallbackGroups)
+	}
+	if req.ContextWindowFallbacks != nil {
+		updated.ContextWindowFallbacks = slices.Clone(*req.ContextWindowFallbacks)
+	}
+	if req.ContentPolicyFallbacks != nil {
+		updated.ContentPolicyFallbacks = slices.Clone(*req.ContentPolicyFallbacks)
+	}
+	if req.FallbackTargets != nil {
+		updated.FallbackTargets = slices.Clone(*req.FallbackTargets)
+	}
+	if req.SaturationFallbacks != nil {
+		updated.SaturationFallbacks = slices.Clone(*req.SaturationFallbacks)
+	}
+	if req.DropUnsupportedParams != nil {
+		updated.DropUnsupportedParams = *req.DropUnsupportedParams
+	}
+	if req.DisableCooldowns != nil {
+		updated.DisableCooldowns = *req.DisableCooldowns
+	}
+	if req.RetryPolicy != nil {
+		rp := *req.RetryPolicy
+		updated.RetryPolicy = &rp
+	}
+	if req.CooldownPolicy != nil {
+		cp := *req.CooldownPolicy
+		updated.CooldownPolicy = &cp
+	}
+	if req.MaxRetries != nil {
+		updated.MaxRetries = *req.MaxRetries
+	}
+	if req.CooldownSeconds != nil {
+		updated.CooldownSeconds = *req.CooldownSeconds
+	}
+	if req.FailureThreshold != nil {
+		updated.FailureThreshold = *req.FailureThreshold
+	}
+	if req.IsActive != nil {
+		updated.IsActive = *req.IsActive
+	}
+	if err := validateModelGroupFields(&updated); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	if err := s.repo.UpdateModelGroup(r.Context(), &updated); err != nil {
+		writeStorageLookupError(w, err, "model_group_not_found", "Model group not found")
+		return
+	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "model_group", EntityID: updated.ID, OrgID: updated.OrgID})
+	s.auditWithDiff(r.Context(), updated.OrgID, "model_group.updated", "model_group", updated.ID, map[string]any{"alias": updated.Alias, "strategy": updated.RoutingStrategy, "is_active": updated.IsActive}, existing, &updated)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *GatewayServer) handleAdminDeleteModelGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(chi.URLParam(r, "groupID"))
+	existing, err := s.repo.GetModelGroupByID(r.Context(), groupID)
+	if err != nil || existing == nil {
+		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "model_group_not_found", Message: "Model group not found"})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+		return
+	}
+	if err := s.repo.DeleteModelGroup(r.Context(), groupID); err != nil {
+		writeStorageLookupError(w, err, "model_group_not_found", "Model group not found")
+		return
+	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "model_group", EntityID: groupID, OrgID: existing.OrgID})
+	s.auditWithDiff(r.Context(), existing.OrgID, "model_group.deleted", "model_group", groupID, map[string]any{"alias": existing.Alias}, existing, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": groupID})
+}
+
 func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var dep domain.Deployment
 	if err := decodeAdminJSON(w, r, &dep); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
 	}
-	if dep.MaxBudgetMicros < 0 {
-		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "max_budget_micros cannot be negative"})
+	if err := validateDeploymentFields(&dep); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
-	}
-	if dep.BudgetResetPeriod != "" {
-		switch domain.BudgetResetPeriod(dep.BudgetResetPeriod) {
-		case domain.BudgetResetDaily, domain.BudgetResetMonthly, domain.BudgetResetNever:
-		default:
-			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "budget_reset_period must be daily, monthly, or never"})
-			return
-		}
-	}
-	if len(dep.Tags) > 0 {
-		cleanTags := make([]string, 0, len(dep.Tags))
-		for _, t := range dep.Tags {
-			if trimmed := strings.TrimSpace(t); trimmed != "" {
-				cleanTags = append(cleanTags, trimmed)
-			}
-		}
-		dep.Tags = cleanTags
 	}
 	targetOrgID := ""
 	if dep.ModelGroupID != "" {
@@ -1192,6 +1499,71 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 	}
 	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
 		return
+	}
+	gm, gmErr := s.repo.GetGlobalModel(r.Context(), dep.GlobalModelID)
+	strictPostgres := s.cfg != nil && strings.EqualFold(s.cfg.Storage.Mode, "postgres")
+	if pg, ok := s.repo.(*storage.PostgresRepository); ok && pg.HasPostgresPool() {
+		strictPostgres = true
+	}
+	if strictPostgres && (gmErr != nil || gm == nil) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "global_model_not_found",
+			Message:    fmt.Sprintf("Global model %q not found in catalogue", dep.GlobalModelID),
+		})
+		return
+	}
+	if dep.CredentialID == "" {
+		var providerHint domain.ProviderType
+		if gm != nil {
+			providerHint = gm.Provider
+		} else if parsedProv, _, _ := config.ParseProviderModel(dep.GlobalModelID); parsedProv != "" {
+			providerHint = parsedProv
+		}
+		if providerHint != "" && targetOrgID != "" {
+			creds, listErr := s.repo.ListProviderCredentials(r.Context(), targetOrgID)
+			if listErr != nil {
+				domain.WriteHTTPError(w, listErr)
+				return
+			}
+			var matches []*domain.ProviderCredential
+			for _, c := range creds {
+				if c != nil && c.IsActive && c.Provider == providerHint {
+					matches = append(matches, c)
+				}
+			}
+			switch len(matches) {
+			case 1:
+				dep.CredentialID = matches[0].ID
+			case 0:
+				if strictPostgres {
+					domain.WriteHTTPError(w, &domain.GatewayError{
+						StatusCode: http.StatusBadRequest,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "provider_credential_required",
+						Message:    fmt.Sprintf("No active provider credential configured for %q in target organization; create one or specify credential_id", providerHint),
+					})
+					return
+				}
+			default:
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "ambiguous_provider_credential",
+					Message:    fmt.Sprintf("Multiple active credentials exist for provider %q; specify credential_id explicitly", providerHint),
+				})
+				return
+			}
+		} else if strictPostgres {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "provider_credential_required",
+				Message:    "credential_id is required when provider cannot be resolved unambiguously",
+			})
+			return
+		}
 	}
 	if dep.CredentialID != "" {
 		cred, err := s.repo.GetProviderCredential(r.Context(), dep.CredentialID)
@@ -1219,9 +1591,11 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	s.auditWithDiff(r.Context(), "", "deployment.created", "deployment", dep.ID, map[string]any{
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "deployment", EntityID: dep.ID, OrgID: targetOrgID})
+	s.auditWithDiff(r.Context(), targetOrgID, "deployment.created", "deployment", dep.ID, map[string]any{
 		"model_group_id":  dep.ModelGroupID,
 		"global_model_id": dep.GlobalModelID,
+		"credential_id":   dep.CredentialID,
 		"priority":        dep.Priority,
 		"weight":          dep.Weight,
 	}, nil, &dep)
@@ -1230,12 +1604,7 @@ func (s *GatewayServer) handleAdminCreateDeployment(w http.ResponseWriter, r *ht
 
 func (s *GatewayServer) handleAdminListDeployments(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("model_group_id")
-	targetOrgID := ""
-	if groupID != "" {
-		if mg, err := s.repo.GetModelGroupByID(r.Context(), groupID); err == nil && mg != nil {
-			targetOrgID = mg.OrgID
-		}
-	}
+	targetOrgID := s.resolveDeploymentOrgID(r.Context(), groupID)
 	if _, ok := s.authorizeAdmin(w, r, targetOrgID, false); !ok {
 		return
 	}
@@ -1251,6 +1620,144 @@ func (s *GatewayServer) handleAdminListDeployments(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": deps})
+}
+
+func (s *GatewayServer) handleAdminGetDeployment(w http.ResponseWriter, r *http.Request) {
+	depID := strings.TrimSpace(chi.URLParam(r, "depID"))
+	dep, err := s.repo.GetDeployment(r.Context(), depID)
+	if err != nil || dep == nil {
+		if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "deployment_not_found", Message: "Deployment not found"})
+		return
+	}
+	targetOrgID := s.resolveDeploymentOrgID(r.Context(), dep.ModelGroupID)
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, false); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, dep)
+}
+
+func (s *GatewayServer) handleAdminPatchDeployment(w http.ResponseWriter, r *http.Request) {
+	depID := strings.TrimSpace(chi.URLParam(r, "depID"))
+	existing, err := s.repo.GetDeployment(r.Context(), depID)
+	if err != nil || existing == nil {
+		if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "deployment_not_found", Message: "Deployment not found"})
+		return
+	}
+	targetOrgID := s.resolveDeploymentOrgID(r.Context(), existing.ModelGroupID)
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
+		return
+	}
+	var req struct {
+		DeploymentName      *string   `json:"deployment_name,omitempty"`
+		Region              *string   `json:"region,omitempty"`
+		Weight              *int      `json:"weight,omitempty"`
+		RPMCapacity         *int      `json:"rpm_capacity,omitempty"`
+		TPMCapacity         *int      `json:"tpm_capacity,omitempty"`
+		ITPMCapacity        *int      `json:"itpm_capacity,omitempty"`
+		OTPMCapacity        *int      `json:"otpm_capacity,omitempty"`
+		MaxParallelRequests *int      `json:"max_parallel_requests,omitempty"`
+		TimeoutMs           *int      `json:"timeout_ms,omitempty"`
+		Priority            *int      `json:"priority,omitempty"`
+		Status              *string   `json:"status,omitempty"`
+		Tags                *[]string `json:"tags,omitempty"`
+		MaxBudgetMicros     *int64    `json:"max_budget_micros,omitempty"`
+		BudgetResetPeriod   *string   `json:"budget_reset_period,omitempty"`
+	}
+	if err := decodeAdminJSON(w, r, &req); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	updated := *existing
+	if req.DeploymentName != nil {
+		updated.DeploymentName = strings.TrimSpace(*req.DeploymentName)
+	}
+	if req.Region != nil {
+		updated.Region = strings.TrimSpace(*req.Region)
+	}
+	if req.Weight != nil {
+		updated.Weight = *req.Weight
+	}
+	if req.RPMCapacity != nil {
+		updated.RPMCapacity = *req.RPMCapacity
+	}
+	if req.TPMCapacity != nil {
+		updated.TPMCapacity = *req.TPMCapacity
+	}
+	if req.ITPMCapacity != nil {
+		updated.ITPMCapacity = *req.ITPMCapacity
+	}
+	if req.OTPMCapacity != nil {
+		updated.OTPMCapacity = *req.OTPMCapacity
+	}
+	if req.MaxParallelRequests != nil {
+		updated.MaxParallelRequests = *req.MaxParallelRequests
+	}
+	if req.TimeoutMs != nil {
+		updated.TimeoutMs = *req.TimeoutMs
+	}
+	if req.Priority != nil {
+		updated.Priority = *req.Priority
+	}
+	if req.Status != nil {
+		updated.Status = domain.DeploymentStatus(strings.ToLower(strings.TrimSpace(*req.Status)))
+	}
+	if req.Tags != nil {
+		updated.Tags = slices.Clone(*req.Tags)
+	}
+	if req.MaxBudgetMicros != nil {
+		updated.MaxBudgetMicros = *req.MaxBudgetMicros
+	}
+	if req.BudgetResetPeriod != nil {
+		updated.BudgetResetPeriod = strings.TrimSpace(*req.BudgetResetPeriod)
+	}
+	if err := validateDeploymentFields(&updated); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
+		return
+	}
+	if err := s.repo.UpdateDeployment(r.Context(), &updated); err != nil {
+		writeStorageLookupError(w, err, "deployment_not_found", "Deployment not found")
+		return
+	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "deployment", EntityID: updated.ID, OrgID: targetOrgID})
+	s.auditWithDiff(r.Context(), targetOrgID, "deployment.updated", "deployment", updated.ID, map[string]any{
+		"status":                updated.Status,
+		"weight":                updated.Weight,
+		"priority":              updated.Priority,
+		"max_parallel_requests": updated.MaxParallelRequests,
+	}, existing, &updated)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *GatewayServer) handleAdminDeleteDeployment(w http.ResponseWriter, r *http.Request) {
+	depID := strings.TrimSpace(chi.URLParam(r, "depID"))
+	existing, err := s.repo.GetDeployment(r.Context(), depID)
+	if err != nil || existing == nil {
+		if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "deployment_not_found", Message: "Deployment not found"})
+		return
+	}
+	targetOrgID := s.resolveDeploymentOrgID(r.Context(), existing.ModelGroupID)
+	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
+		return
+	}
+	if err := s.repo.DeleteDeployment(r.Context(), depID); err != nil {
+		writeStorageLookupError(w, err, "deployment_not_found", "Deployment not found")
+		return
+	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "deployment", EntityID: depID, OrgID: targetOrgID})
+	s.auditWithDiff(r.Context(), targetOrgID, "deployment.deleted", "deployment", depID, map[string]any{
+		"model_group_id":  existing.ModelGroupID,
+		"global_model_id": existing.GlobalModelID,
+	}, existing, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": depID})
 }
 
 // --- Layer 1 Global Catalogue, Automated Discovery & Versioned Pricing ---
@@ -1432,6 +1939,11 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 		})
 		return
 	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{
+		EntityType: "all",
+		EntityID:   req.Model,
+		OrgID:      req.OrgID,
+	})
 	s.audit(r.Context(), req.OrgID, "cache.invalidated", "response_cache", "global", map[string]any{
 		"org_id":            req.OrgID,
 		"model":             req.Model,
@@ -1648,9 +2160,12 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 	modelList := make([]map[string]any, 0, len(cfg.ModelList))
 	for _, m := range cfg.ModelList {
 		modelList = append(modelList, map[string]any{
-			"model_name":       m.ModelName,
-			"routing_strategy": m.RoutingStrategy,
-			"fallbacks":        m.Fallbacks,
+			"model_name":              m.ModelName,
+			"routing_strategy":        m.RoutingStrategy,
+			"fallbacks":               m.Fallbacks,
+			"saturation_fallbacks":    m.SaturationFallbacks,
+			"drop_unsupported_params": m.DropUnsupportedParams,
+			"disable_cooldowns":       m.DisableCooldowns,
 			"model_params": map[string]any{
 				"model":                 m.ModelParams.Model,
 				"api_key":               redactSecret(m.ModelParams.APIKey),
@@ -1659,6 +2174,13 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"weight":                m.ModelParams.Weight,
 				"rpm":                   m.ModelParams.RPM,
 				"tpm":                   m.ModelParams.TPM,
+				"itpm":                  m.ModelParams.ITPM,
+				"otpm":                  m.ModelParams.OTPM,
+				"max_parallel_requests": m.ModelParams.MaxParallelRequests,
+				"priority":              m.ModelParams.Priority,
+				"tags":                  m.ModelParams.Tags,
+				"max_budget_micros":     m.ModelParams.MaxBudgetMicros,
+				"budget_reset_period":   m.ModelParams.BudgetResetPeriod,
 				"azure_deployment_name": m.ModelParams.AzureDeploymentName,
 				"api_version":           m.ModelParams.APIVersion,
 				"headers":               redactHeaders(m.ModelParams.Headers),
@@ -1784,17 +2306,73 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"sso_providers":                  ssoProviders,
 		},
 		"router": map[string]any{
-			"default_fast_alias":      cfg.Router.DefaultFastAlias,
-			"default_reasoning_alias": cfg.Router.DefaultReasoningAlias,
-			"default_coding_alias":    cfg.Router.DefaultCodingAlias,
-			"complexity_threshold":    cfg.Router.ComplexityThreshold,
-			"long_context_tokens":     cfg.Router.LongContextTokens,
-			"default_max_retries":     cfg.Router.DefaultMaxRetries,
-			"base_retry_delay":        cfg.Router.BaseRetryDelay.String(),
-			"max_retry_delay":         cfg.Router.MaxRetryDelay.String(),
-			"default_cooldown":        cfg.Router.DefaultCooldown.String(),
-			"failure_window":          cfg.Router.FailureWindow.String(),
-			"failure_threshold":       cfg.Router.FailureThreshold,
+			"default_fast_alias":                 cfg.Router.DefaultFastAlias,
+			"default_reasoning_alias":            cfg.Router.DefaultReasoningAlias,
+			"default_coding_alias":               cfg.Router.DefaultCodingAlias,
+			"complexity_threshold":               cfg.Router.ComplexityThreshold,
+			"long_context_tokens":                cfg.Router.LongContextTokens,
+			"default_max_retries":                cfg.Router.DefaultMaxRetries,
+			"base_retry_delay":                   cfg.Router.BaseRetryDelay.String(),
+			"max_retry_delay":                    cfg.Router.MaxRetryDelay.String(),
+			"default_cooldown":                   cfg.Router.DefaultCooldown.String(),
+			"failure_window":                     cfg.Router.FailureWindow.String(),
+			"failure_threshold":                  cfg.Router.FailureThreshold,
+			"max_fallback_depth":                 cfg.Router.MaxFallbackDepth,
+			"retry_policy":                       cfg.Router.RetryPolicy,
+			"cooldown_policy":                    cfg.Router.CooldownPolicy,
+			"enable_mid_stream_continuation":     cfg.Router.EnableMidStreamContinuation,
+			"max_stream_continuations":           cfg.Router.MaxStreamContinuations,
+			"health_staleness_threshold":         cfg.Router.HealthStalenessThreshold.String(),
+			"strict_capacity_filtering":          cfg.Router.StrictCapacityFiltering,
+			"provider_budgets":                   cfg.Router.ProviderBudgets,
+			"session_affinity_ttl":               cfg.Router.SessionAffinityTTL.String(),
+			"session_affinity_repin_on_failover": cfg.Router.SessionAffinityRepinOnFailover,
+			"prompt_cache_affinity":              cfg.Router.PromptCacheAffinity,
+			"pre_router_mode":                    cfg.Router.PreRouterMode,
+			"semantic_router": map[string]any{
+				"enabled":              cfg.Router.SemanticRouter.Enabled,
+				"embedding_model":      cfg.Router.SemanticRouter.EmbeddingModel,
+				"similarity_threshold": cfg.Router.SemanticRouter.SimilarityThreshold,
+				"timeout":              cfg.Router.SemanticRouter.Timeout.String(),
+				"routes":               cfg.Router.SemanticRouter.Routes,
+			},
+			"cache_aware_routing": cfg.Router.CacheAwareRouting,
+			"bandit": map[string]any{
+				"enabled":          cfg.Router.Bandit.Enabled,
+				"default_alpha":    cfg.Router.Bandit.DefaultAlpha,
+				"default_beta":     cfg.Router.Bandit.DefaultBeta,
+				"exploration_rate": cfg.Router.Bandit.ExplorationRate,
+				"decay_half_life":  cfg.Router.Bandit.DecayHalfLife.String(),
+				"latency_weight":   cfg.Router.Bandit.LatencyWeight,
+				"cost_weight":      cfg.Router.Bandit.CostWeight,
+				"sync_interval":    cfg.Router.Bandit.SyncInterval.String(),
+				"candidate_models": cfg.Router.Bandit.CandidateModels,
+			},
+			"hedge_delay_ms":                 cfg.Router.HedgeDelayMs,
+			"max_hedge_concurrency":          cfg.Router.MaxHedgeConcurrency,
+			"latency_tolerance_pct":          cfg.Router.LatencyTolerancePct,
+			"max_honored_retry_after":        cfg.Router.MaxHonoredRetryAfter.String(),
+			"disable_cooldowns":              cfg.Router.DisableCooldowns,
+			"fallback_on_saturation":         cfg.Router.FallbackOnSaturation,
+			"drop_unsupported_params":        cfg.Router.DropUnsupportedParams,
+			"fallback_on_unsupported_params": cfg.Router.FallbackOnUnsupportedParams,
+			"allow_strategy_override":        cfg.Router.AllowStrategyOverride,
+			"debug_routing_headers":          cfg.Router.DebugRoutingHeaders,
+			"scheduler": map[string]any{
+				"enabled":              cfg.Router.Scheduler.Enabled,
+				"max_queue_depth":      cfg.Router.Scheduler.MaxQueueDepth,
+				"max_wait_time":        cfg.Router.Scheduler.MaxWaitTime.String(),
+				"default_priority":     cfg.Router.Scheduler.DefaultPriority,
+				"max_parallel_wait_ms": cfg.Router.Scheduler.MaxParallelWaitMs,
+			},
+			"priority_capacity": map[string]any{
+				"enabled":                 cfg.Router.PriorityCapacity.Enabled,
+				"saturation_threshold":    cfg.Router.PriorityCapacity.SaturationThreshold,
+				"active_caller_ttl":       cfg.Router.PriorityCapacity.ActiveCallerTTL.String(),
+				"window_duration":         cfg.Router.PriorityCapacity.WindowDuration.String(),
+				"default_weight":          cfg.Router.PriorityCapacity.DefaultWeight,
+				"default_borrow_multiple": cfg.Router.PriorityCapacity.DefaultBorrowMultiple,
+			},
 		},
 		"rate_limit": map[string]any{
 			"enabled":                     cfg.RateLimit.Enabled,

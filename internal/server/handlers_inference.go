@@ -283,7 +283,11 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
-	s.applyChatRoutingHints(r, &chatReq)
+	if gwErr := s.applyChatRoutingHints(r, idCtx, &chatReq); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
 
 	// 1. RBAC Model Allowlist Check (Key & Team level)
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
@@ -662,18 +666,10 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 		onSelected := func(dep *domain.Deployment) {
 			quotaSettlement.selectedDep = dep
-			if !sseWriter.Started() && dep != nil && dep.GlobalModel != nil {
-				if dep.GlobalModel.Provider != "" {
-					w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
-				}
-				if dep.GlobalModel.ModelName != "" {
-					w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
-				}
-				status := domain.ResolvePricingStatus(dep.GlobalModel)
-				w.Header().Set("X-Gateway-Pricing-Status", string(status))
-			}
+			setPreStreamSelectedHeaders(w, dep, sseWriter.Started())
 		}
 
+		upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, sseWriter.Started)
 		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 			usage, meta, err = s.orchestrator.ExecuteStreamLoop(upstreamCtx, idCtx, &chatReq, writeChunk, onSelected)
@@ -704,7 +700,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 		}
 		s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
-		setRoutingTelemetryHeaders(w, meta)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		if err != nil {
 			statusCode := http.StatusBadGateway
 			if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
@@ -940,6 +936,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			RetryCount:        retries,
 			GuardrailRedacted: guardrailRedacted,
 		})
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -1016,7 +1013,7 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Version", strconv.Itoa(pricingVer))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
-	setRoutingTelemetryHeaders(w, meta)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 	var provenance string
 	if gm != nil {
@@ -1124,7 +1121,12 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedInputs, guardrailErr := s.guardrailTextValuesWithExtensions(r.Context(), idCtx.OrgID, raw.Model, raw.GoRouteExtensions, inputs...)
+	if gwErr := s.applyRoutingHints(r, idCtx, &raw.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	guardedInputs, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &raw.Model, raw.GoRouteExtensions, "embeddings", inputs...)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
@@ -1166,13 +1168,14 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
 	embReq := &domain.CanonicalEmbeddingRequest{
-		RequestID:      reqID,
-		Model:          raw.Model,
-		Input:          inputs,
-		EncodingFormat: raw.EncodingFormat,
-		Dimensions:     raw.Dimensions,
-		InputType:      raw.InputType,
-		User:           raw.User,
+		RequestID:         reqID,
+		Model:             raw.Model,
+		Input:             inputs,
+		EncodingFormat:    raw.EncodingFormat,
+		Dimensions:        raw.Dimensions,
+		InputType:         raw.InputType,
+		User:              raw.User,
+		GoRouteExtensions: raw.GoRouteExtensions,
 	}
 
 	cacheHeader := r.Header.Get("X-Gateway-Cache-Control")
@@ -1214,6 +1217,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
 	if err != nil {
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -1267,6 +1271,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string
@@ -1520,23 +1525,42 @@ func appendUniqueRoutingTag(tags []string, tag string) []string {
 	return append(tags, tag)
 }
 
-func (s *GatewayServer) applyChatRoutingHints(r *http.Request, chatReq *domain.CanonicalChatRequest) {
-	defaultPriority := 0
-	if s != nil && s.cfg != nil && s.cfg.Router.Scheduler.Enabled {
-		defaultPriority = s.cfg.Router.Scheduler.DefaultPriority
+func (s *GatewayServer) applyChatRoutingHints(r *http.Request, idCtx *domain.IdentityContext, chatReq *domain.CanonicalChatRequest) *domain.GatewayError {
+	if chatReq == nil {
+		return nil
 	}
-	applyRoutingHintHeaders(r, chatReq, defaultPriority)
+	return s.applyRoutingHints(r, idCtx, &chatReq.GoRouteExtensions)
+}
+
+func (s *GatewayServer) applyRoutingHints(r *http.Request, idCtx *domain.IdentityContext, extPtr **domain.GoRouteExtensions) *domain.GatewayError {
+	defaultPriority := 0
+	allowStrategyOverride := false
+	if s != nil && s.cfg != nil {
+		if s.cfg.Router.Scheduler.Enabled {
+			defaultPriority = s.cfg.Router.Scheduler.DefaultPriority
+		}
+		allowStrategyOverride = s.cfg.Router.AllowStrategyOverride
+	}
+	applyRoutingHintHeadersToExtensions(r, extPtr, defaultPriority)
+	return enforceRoutingHintPoliciesOnExtensions(idCtx, extPtr, allowStrategyOverride)
 }
 
 func applyRoutingHintHeaders(r *http.Request, chatReq *domain.CanonicalChatRequest, defaultPriority int) {
-	if r == nil || chatReq == nil {
+	if chatReq == nil {
+		return
+	}
+	applyRoutingHintHeadersToExtensions(r, &chatReq.GoRouteExtensions, defaultPriority)
+}
+
+func applyRoutingHintHeadersToExtensions(r *http.Request, extPtr **domain.GoRouteExtensions, defaultPriority int) {
+	if r == nil || extPtr == nil {
 		return
 	}
 	ensureExt := func() *domain.GoRouteExtensions {
-		if chatReq.GoRouteExtensions == nil {
-			chatReq.GoRouteExtensions = &domain.GoRouteExtensions{}
+		if *extPtr == nil {
+			*extPtr = &domain.GoRouteExtensions{}
 		}
-		return chatReq.GoRouteExtensions
+		return *extPtr
 	}
 
 	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Allowed-Region")); v != "" {
@@ -1564,7 +1588,7 @@ func applyRoutingHintHeaders(r *http.Request, chatReq *domain.CanonicalChatReque
 				ext.Priority = p
 			}
 		}
-	} else if defaultPriority > 0 && (chatReq.GoRouteExtensions == nil || chatReq.GoRouteExtensions.Priority == 0) {
+	} else if defaultPriority > 0 && (*extPtr == nil || (*extPtr).Priority == 0) {
 		ext := ensureExt()
 		ext.Priority = defaultPriority
 	}
@@ -1574,6 +1598,20 @@ func applyRoutingHintHeaders(r *http.Request, chatReq *domain.CanonicalChatReque
 			if ext.HedgeAfterMs == 0 {
 				ext.HedgeAfterMs = ms
 			}
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Drop-Params")); v != "" {
+		if drop, err := strconv.ParseBool(v); err == nil {
+			ext := ensureExt()
+			if ext.DropUnsupportedParams == nil {
+				ext.DropUnsupportedParams = &drop
+			}
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Routing-Strategy")); v != "" {
+		ext := ensureExt()
+		if strings.TrimSpace(ext.RoutingStrategy) == "" {
+			ext.RoutingStrategy = v
 		}
 	}
 
@@ -1615,14 +1653,136 @@ func applyRoutingHintHeaders(r *http.Request, chatReq *domain.CanonicalChatReque
 	}
 }
 
+func enforceRoutingHintPolicies(idCtx *domain.IdentityContext, chatReq *domain.CanonicalChatRequest, allowStrategyOverride bool) *domain.GatewayError {
+	if chatReq == nil {
+		return nil
+	}
+	return enforceRoutingHintPoliciesOnExtensions(idCtx, &chatReq.GoRouteExtensions, allowStrategyOverride)
+}
+
+func enforceRoutingHintPoliciesOnExtensions(idCtx *domain.IdentityContext, extPtr **domain.GoRouteExtensions, allowStrategyOverride bool) *domain.GatewayError {
+	if extPtr == nil {
+		return nil
+	}
+	ext := *extPtr
+	minRank := effectiveMinPriorityRank(idCtx)
+	if ext != nil && ext.Priority < 0 {
+		ext.Priority = 0
+	}
+	if minRank > 0 {
+		if ext == nil {
+			ext = &domain.GoRouteExtensions{}
+			*extPtr = ext
+		}
+		if ext.Priority < minRank {
+			ext.Priority = minRank
+		}
+	}
+
+	if idCtx != nil && ext != nil && len(ext.Tags) > 0 {
+		for _, raw := range ext.Tags {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				continue
+			}
+			base := trimmed
+			if strings.HasPrefix(base, "&") || strings.HasPrefix(base, "!") {
+				base = strings.TrimSpace(base[1:])
+			}
+			if base == "" {
+				continue
+			}
+			if len(idCtx.KeyAllowedRoutingTags) > 0 && !routingTagMatchesAllowlist(base, idCtx.KeyAllowedRoutingTags) {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "routing_tag_not_allowed",
+					Message:    fmt.Sprintf("Routing tag %q is not permitted by virtual key allowed_routing_tags policy", trimmed),
+				}
+			}
+			if len(idCtx.TeamAllowedRoutingTags) > 0 && !routingTagMatchesAllowlist(base, idCtx.TeamAllowedRoutingTags) {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "routing_tag_not_allowed",
+					Message:    fmt.Sprintf("Routing tag %q is not permitted by team allowed_routing_tags policy", trimmed),
+				}
+			}
+		}
+	}
+
+	if ext != nil && strings.TrimSpace(ext.RoutingStrategy) != "" {
+		if !allowStrategyOverride {
+			ext.RoutingStrategy = ""
+		} else {
+			rawStrat := strings.TrimSpace(ext.RoutingStrategy)
+			normalized := domain.NormalizeRoutingStrategy(domain.RoutingStrategy(rawStrat))
+			if !domain.IsValidRoutingStrategy(normalized) {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_routing_strategy",
+					Message:    fmt.Sprintf("Unsupported routing_strategy override %q", ext.RoutingStrategy),
+				}
+			}
+			ext.RoutingStrategy = string(normalized)
+		}
+	}
+	return nil
+}
+
+func effectiveMinPriorityRank(idCtx *domain.IdentityContext) int {
+	if idCtx == nil {
+		return 0
+	}
+	floor := idCtx.KeyMinPriorityRank
+	if idCtx.TeamMinPriorityRank > floor {
+		floor = idCtx.TeamMinPriorityRank
+	}
+	if floor < 0 {
+		return 0
+	}
+	return floor
+}
+
+func routingTagMatchesAllowlist(base string, allowlist []string) bool {
+	for _, pat := range allowlist {
+		pat = strings.TrimSpace(pat)
+		if pat == "" {
+			continue
+		}
+		if pat == "*" {
+			return true
+		}
+		if strings.HasSuffix(pat, "*") {
+			prefix := pat[:len(pat)-1]
+			if len(base) >= len(prefix) && strings.EqualFold(base[:len(prefix)], prefix) {
+				return true
+			}
+			continue
+		}
+		if !strings.Contains(base, "*") && strings.EqualFold(base, pat) {
+			return true
+		}
+	}
+	return false
+}
+
 func setRoutingTelemetryHeaders(w http.ResponseWriter, meta *router.ExecutionMeta) {
 	if w == nil || meta == nil {
 		return
 	}
 	w.Header().Set("X-Gateway-Latency-Ms", strconv.FormatInt(meta.LatencyMs, 10))
 	w.Header().Set("X-Gateway-Routing-Micros", strconv.FormatInt(meta.RoutingMicros, 10))
+	w.Header().Set("X-Gateway-Retry-Count", strconv.Itoa(meta.RetryCount))
 	w.Header().Set("X-Gateway-Fallback-Attempted", strconv.FormatBool(meta.FallbackAttempted))
 	w.Header().Set("X-Gateway-Tier-Stepdowns", strconv.Itoa(meta.TierStepdowns))
+	if meta.WinningDeployment != nil && meta.WinningDeployment.ID != "" {
+		w.Header().Set("X-Gateway-Deployment-Id", meta.WinningDeployment.ID)
+	}
+	if len(meta.DroppedParams) > 0 {
+		w.Header().Set("X-Gateway-Dropped-Params", strings.Join(meta.DroppedParams, ","))
+	}
 	routeReason := strings.TrimSpace(meta.FallbackReason)
 	if routeReason == "" && meta.RouteDecision != nil {
 		routeReason = strings.TrimSpace(meta.RouteDecision.Reason)
@@ -1633,4 +1793,56 @@ func setRoutingTelemetryHeaders(w http.ResponseWriter, meta *router.ExecutionMet
 	if meta.StreamContinued {
 		w.Header().Set("X-Gateway-Stream-Continued", "true")
 	}
+}
+
+func (s *GatewayServer) setDebugRoutingHeaders(w http.ResponseWriter, r *http.Request, meta *router.ExecutionMeta) {
+	if s == nil || s.cfg == nil || !s.cfg.Router.DebugRoutingHeaders || w == nil || r == nil || meta == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Gateway-Debug-Routing")), "true") {
+		return
+	}
+	if len(meta.FallbackErrors) > 0 {
+		w.Header().Set("X-Gateway-Fallback-Errors", strings.Join(meta.FallbackErrors, "; "))
+	}
+}
+
+func (s *GatewayServer) emitRoutingTelemetryAndDebugHeaders(w http.ResponseWriter, r *http.Request, meta *router.ExecutionMeta) {
+	setRoutingTelemetryHeaders(w, meta)
+	s.setDebugRoutingHeaders(w, r, meta)
+}
+
+func setPreStreamSelectedHeaders(w http.ResponseWriter, dep *domain.Deployment, sseStarted bool) {
+	if w == nil || sseStarted || dep == nil {
+		return
+	}
+	if dep.ID != "" {
+		w.Header().Set("X-Gateway-Deployment-Id", dep.ID)
+	}
+	if dep.GlobalModel != nil {
+		if dep.GlobalModel.Provider != "" {
+			w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
+		}
+		if dep.GlobalModel.ModelName != "" {
+			w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
+		}
+		status := domain.ResolvePricingStatus(dep.GlobalModel)
+		w.Header().Set("X-Gateway-Pricing-Status", string(status))
+	}
+}
+
+func attachStreamDroppedParamsObserver(ctx context.Context, w http.ResponseWriter, sseStarted func() bool) context.Context {
+	if w == nil {
+		return ctx
+	}
+	return router.WithDroppedParamsObserver(ctx, func(params []string) {
+		if sseStarted != nil && sseStarted() {
+			return
+		}
+		if len(params) > 0 {
+			w.Header().Set("X-Gateway-Dropped-Params", strings.Join(params, ","))
+		} else {
+			w.Header().Del("X-Gateway-Dropped-Params")
+		}
+	})
 }

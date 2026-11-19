@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -19,6 +21,24 @@ import (
 // when a hit is found.
 type CacheHitCheckFn func(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (targetAlias string, hit bool)
 
+type cachedQualityGroups struct {
+	groups    []*domain.ModelGroup
+	rev       uint64
+	expiresAt time.Time
+}
+
+type cachedQualityDeps struct {
+	deps      []*domain.Deployment
+	rev       uint64
+	expiresAt time.Time
+}
+
+type cachedQualityModel struct {
+	model     *domain.GlobalModel
+	rev       uint64
+	expiresAt time.Time
+}
+
 // QualityPreRouter maps request complexity and explicit/keyword signals to a
 // minimum model quality tier (1=economy, 2=standard, 3=frontier, 4=reasoning)
 // and selects the cheapest eligible active ModelGroup/Deployment meeting that tier.
@@ -26,6 +46,31 @@ type QualityPreRouter struct {
 	repo       storage.Repository
 	cfg        config.RouterConfig
 	cacheCheck CacheHitCheckFn
+
+	cacheMu     sync.RWMutex
+	groupsCache map[string]cachedQualityGroups
+	depsCache   map[string]cachedQualityDeps
+	modelsCache map[string]cachedQualityModel
+}
+
+// InvalidateCache clears cached group, deployment, and catalog lookups in response to mutations.
+func (q *QualityPreRouter) InvalidateCache(ev storage.InvalidationEvent) {
+	if q == nil {
+		return
+	}
+	q.cacheMu.Lock()
+	defer q.cacheMu.Unlock()
+	if ev.OrgID != "" && q.groupsCache != nil {
+		delete(q.groupsCache, ev.OrgID)
+	} else if ev.EntityType == "" || ev.EntityType == "model_group" || ev.EntityType == "all" {
+		q.groupsCache = nil
+	}
+	if ev.EntityID != "" && q.depsCache != nil {
+		delete(q.depsCache, ev.EntityID)
+	} else {
+		q.depsCache = nil
+	}
+	q.modelsCache = nil
 }
 
 // NewQualityPreRouter constructs a QualityPreRouter backed by repo and RouterConfig.
@@ -69,7 +114,7 @@ func (q *QualityPreRouter) Route(ctx context.Context, orgID string, req *domain.
 		return q.cfg.DefaultFastAlias, "quality:no_repo_fallback", score, nil
 	}
 
-	groups, err := q.repo.ListModelGroups(ctx, orgID)
+	groups, err := q.listModelGroupsCached(ctx, orgID)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("quality pre-router list model groups: %w", err)
 	}
@@ -98,7 +143,7 @@ func (q *QualityPreRouter) Route(ctx context.Context, orgID string, req *domain.
 			hasDefaultFast = true
 		}
 
-		deps, depErr := q.repo.ListDeploymentsByGroup(ctx, g.ID)
+		deps, depErr := q.listDeploymentsCached(ctx, g.ID)
 		if depErr != nil || len(deps) == 0 {
 			continue
 		}
@@ -195,6 +240,71 @@ func DetermineRequiredQualityTier(cfg config.RouterConfig, req *domain.Canonical
 	return catalog.QualityTierEconomy, score, "short_simple_economy"
 }
 
+func (q *QualityPreRouter) repoRevision() uint64 {
+	if rp, ok := q.repo.(storage.RoutingRevisionProvider); ok {
+		return rp.RoutingRevision()
+	}
+	return 0
+}
+
+func (q *QualityPreRouter) listModelGroupsCached(ctx context.Context, orgID string) ([]*domain.ModelGroup, error) {
+	now := time.Now()
+	rev := q.repoRevision()
+	q.cacheMu.RLock()
+	if q.groupsCache != nil {
+		if ent, ok := q.groupsCache[orgID]; ok && now.Before(ent.expiresAt) && (rev == 0 || ent.rev == rev) {
+			q.cacheMu.RUnlock()
+			return ent.groups, nil
+		}
+	}
+	q.cacheMu.RUnlock()
+
+	groups, err := q.repo.ListModelGroups(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	q.cacheMu.Lock()
+	if q.groupsCache == nil {
+		q.groupsCache = make(map[string]cachedQualityGroups)
+	}
+	q.groupsCache[orgID] = cachedQualityGroups{
+		groups:    groups,
+		rev:       rev,
+		expiresAt: now.Add(defaultRoutingL1CacheTTL),
+	}
+	q.cacheMu.Unlock()
+	return groups, nil
+}
+
+func (q *QualityPreRouter) listDeploymentsCached(ctx context.Context, groupID string) ([]*domain.Deployment, error) {
+	now := time.Now()
+	rev := q.repoRevision()
+	q.cacheMu.RLock()
+	if q.depsCache != nil {
+		if ent, ok := q.depsCache[groupID]; ok && now.Before(ent.expiresAt) && (rev == 0 || ent.rev == rev) {
+			q.cacheMu.RUnlock()
+			return ent.deps, nil
+		}
+	}
+	q.cacheMu.RUnlock()
+
+	deps, err := q.repo.ListDeploymentsByGroup(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	q.cacheMu.Lock()
+	if q.depsCache == nil {
+		q.depsCache = make(map[string]cachedQualityDeps)
+	}
+	q.depsCache[groupID] = cachedQualityDeps{
+		deps:      deps,
+		rev:       rev,
+		expiresAt: now.Add(defaultRoutingL1CacheTTL),
+	}
+	q.cacheMu.Unlock()
+	return deps, nil
+}
+
 func (q *QualityPreRouter) resolveGlobalModel(ctx context.Context, dep *domain.Deployment) *domain.GlobalModel {
 	if dep == nil {
 		return nil
@@ -206,7 +316,27 @@ func (q *QualityPreRouter) resolveGlobalModel(ctx context.Context, dep *domain.D
 		return nil
 	}
 	if q.repo != nil {
+		now := time.Now()
+		rev := q.repoRevision()
+		q.cacheMu.RLock()
+		if q.modelsCache != nil {
+			if ent, ok := q.modelsCache[dep.GlobalModelID]; ok && now.Before(ent.expiresAt) && (rev == 0 || ent.rev == rev) {
+				q.cacheMu.RUnlock()
+				return ent.model
+			}
+		}
+		q.cacheMu.RUnlock()
 		if gm, err := q.repo.GetGlobalModel(ctx, dep.GlobalModelID); err == nil && gm != nil {
+			q.cacheMu.Lock()
+			if q.modelsCache == nil {
+				q.modelsCache = make(map[string]cachedQualityModel)
+			}
+			q.modelsCache[dep.GlobalModelID] = cachedQualityModel{
+				model:     gm,
+				rev:       rev,
+				expiresAt: now.Add(defaultRoutingL1CacheTTL),
+			}
+			q.cacheMu.Unlock()
 			return gm
 		}
 	}

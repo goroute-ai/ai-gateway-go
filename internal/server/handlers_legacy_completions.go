@@ -72,7 +72,12 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedPrompts, err := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Prompt.Strings...)
+	if gwErr := s.applyRoutingHints(r, idCtx, &req.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	guardedPrompts, err := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &req.Model, req.GoRouteExtensions, "completion", req.Prompt.Strings...)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -176,6 +181,7 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -232,7 +238,7 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Gateway-Model", resp.Model)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
-	setRoutingTelemetryHeaders(w, meta)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string
@@ -472,8 +478,12 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	}
 
 	streamStarted := time.Now()
-	ch, meta, err := s.reliability.ExecuteCompletionStream(r.Context(), idCtx, req)
-	setRoutingTelemetryHeaders(w, meta)
+	onSelected := func(dep *domain.Deployment) {
+		setPreStreamSelectedHeaders(w, dep, sseWriter.Started())
+	}
+	upstreamCtx := attachStreamDroppedParamsObserver(r.Context(), w, sseWriter.Started)
+	ch, meta, err := s.reliability.ExecuteCompletionStreamWithCallback(upstreamCtx, idCtx, req, onSelected)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	if err != nil {
 		releaseQuota(-1)
 		statusCode := http.StatusBadGateway

@@ -233,6 +233,11 @@ type PostgresRepository struct {
 	missingGuardrailQueries  atomic.Uint64
 }
 
+// HasPostgresPool reports whether the repository is backed by a live PostgreSQL connection pool.
+func (p *PostgresRepository) HasPostgresPool() bool {
+	return p != nil && p.pool != nil
+}
+
 type postgresLookupCall struct {
 	done  chan struct{}
 	value any
@@ -847,7 +852,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-const teamSelectCols = `id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, COALESCE(default_member_allowed_models, '{}'), COALESCE(team_member_permissions, '{}'), allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active, created_at, updated_at`
+const teamSelectCols = `id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, COALESCE(default_member_allowed_models, '{}'), COALESCE(team_member_permissions, '{}'), allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), is_active, created_at, updated_at`
 
 func scanTeam(row rowScanner) (*domain.Team, error) {
 	var t domain.Team
@@ -858,6 +863,7 @@ func scanTeam(row rowScanner) (*domain.Team, error) {
 		&t.RPMLimit, &t.TPMLimit, &t.MCPRPMLimit, &t.MaxConcurrentRequests, &t.BatchEnqueuedTokenLimit, &t.MaxIterations, &t.MaxBudgetPerSessionMicros,
 		&t.EnforceGuaranteedThroughput, &t.DefaultMemberMaxBudgetMicros, &t.DefaultMemberRPMLimit, &t.DefaultMemberTPMLimit, &t.DefaultMemberAllowedModels, &t.TeamMemberPermissions,
 		&t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.MinPriorityRank, &t.AllowedRoutingTags,
 		&t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -884,6 +890,10 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	if teamMemberPermissions == nil {
 		teamMemberPermissions = []string{}
 	}
+	allowedRoutingTags := team.AllowedRoutingTags
+	if allowedRoutingTags == nil {
+		allowedRoutingTags = []string{}
+	}
 	if p.pool == nil {
 		return p.mem.CreateTeam(ctx, team)
 	}
@@ -892,13 +902,13 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 			id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros,
 			enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, default_member_allowed_models, team_member_permissions,
-			allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`
+			allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, min_priority_rank, allowed_routing_tags, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`
 	if _, err := p.pool.Exec(ctx, q,
 		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.TempBudgetIncreaseMicros, team.TempBudgetExpiresAt, team.SoftBudgetMicros, team.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(team.BudgetFallbacks), team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
 		team.RPMLimit, team.TPMLimit, team.MCPRPMLimit, team.MaxConcurrentRequests, team.BatchEnqueuedTokenLimit, team.MaxIterations, team.MaxBudgetPerSessionMicros,
 		team.EnforceGuaranteedThroughput, team.DefaultMemberMaxBudgetMicros, team.DefaultMemberRPMLimit, team.DefaultMemberTPMLimit, defaultMemberAllowedModels, teamMemberPermissions,
-		allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+		allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
 	); err != nil {
 		return err
 	}
@@ -922,6 +932,10 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 	if teamMemberPermissions == nil {
 		teamMemberPermissions = []string{}
 	}
+	allowedRoutingTags := team.AllowedRoutingTags
+	if allowedRoutingTags == nil {
+		allowedRoutingTags = []string{}
+	}
 	const q = `
 		UPDATE teams SET
 			name = $2, max_budget_micros = $3, temp_budget_increase_micros = $4, temp_budget_expires_at = $5,
@@ -930,7 +944,7 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 			rpm_limit = $12, tpm_limit = $13, mcp_rpm_limit = $14, max_concurrent_requests = $15, batch_enqueued_token_limit = $16,
 			max_iterations = $17, max_budget_per_session_micros = $18,
 			enforce_guaranteed_throughput = $19, default_member_max_budget_micros = $20, default_member_rpm_limit = $21, default_member_tpm_limit = $22, default_member_allowed_models = $23, team_member_permissions = $24,
-			allowed_models = $25, allowed_mcp_servers = $26, allowed_a2a_agents = $27, allowed_client_apps = $28, is_active = $29,
+			allowed_models = $25, allowed_mcp_servers = $26, allowed_a2a_agents = $27, allowed_client_apps = $28, min_priority_rank = $29, allowed_routing_tags = $30, is_active = $31,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -941,7 +955,7 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 			team.RPMLimit, team.TPMLimit, team.MCPRPMLimit, team.MaxConcurrentRequests, team.BatchEnqueuedTokenLimit,
 			team.MaxIterations, team.MaxBudgetPerSessionMicros,
 			team.EnforceGuaranteedThroughput, team.DefaultMemberMaxBudgetMicros, team.DefaultMemberRPMLimit, team.DefaultMemberTPMLimit, defaultMemberAllowedModels, teamMemberPermissions,
-			allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.IsActive,
+			allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
 		)
 		if err != nil {
 			return err
@@ -2074,14 +2088,14 @@ func (p *PostgresRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, c
 	return m, nil
 }
 
-const quotaPolicySelectCols = `id, org_id, scope_type, scope_id, model_pattern, rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit, max_concurrent, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, max_iterations, window_ttl_sec, is_active, created_at, updated_at`
+const quotaPolicySelectCols = `id, org_id, scope_type, scope_id, model_pattern, rpm_limit, rpd_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit, max_concurrent, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, max_iterations, window_ttl_sec, is_active, created_at, updated_at`
 
 func scanQuotaPolicy(row rowScanner) (*domain.QuotaPolicy, error) {
 	var qp domain.QuotaPolicy
 	var scopeType, period string
 	if err := row.Scan(
 		&qp.ID, &qp.OrgID, &scopeType, &qp.ScopeID, &qp.ModelPattern,
-		&qp.RPMLimit, &qp.TPMLimit, &qp.ITPMLimit, &qp.OTPMLimit, &qp.TPDLimit,
+		&qp.RPMLimit, &qp.RPDLimit, &qp.TPMLimit, &qp.ITPMLimit, &qp.OTPMLimit, &qp.TPDLimit,
 		&qp.MaxConcurrent, &qp.MaxBudgetMicros, &qp.SpentMicros,
 		&period, &qp.BudgetResetAt, &qp.MaxIterations, &qp.WindowTTLSec,
 		&qp.IsActive, &qp.CreatedAt, &qp.UpdatedAt,
@@ -2125,19 +2139,20 @@ func (p *PostgresRepository) UpsertQuotaPolicy(ctx context.Context, policy *doma
 	const q = `
 		INSERT INTO quota_policies (
 			id, org_id, scope_type, scope_id, model_pattern,
-			rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit,
+			rpm_limit, rpd_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit,
 			max_concurrent, max_budget_micros, spent_micros,
 			budget_reset_period, budget_reset_at, max_iterations,
 			window_ttl_sec, is_active
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10,
-			$11, $12, $13,
-			$14, $15, $16,
-			$17, $18
+			$6, $7, $8, $9, $10, $11,
+			$12, $13, $14,
+			$15, $16, $17,
+			$18, $19
 		)
 		ON CONFLICT (org_id, scope_type, scope_id, model_pattern) DO UPDATE SET
 			rpm_limit = EXCLUDED.rpm_limit,
+			rpd_limit = EXCLUDED.rpd_limit,
 			tpm_limit = EXCLUDED.tpm_limit,
 			itpm_limit = EXCLUDED.itpm_limit,
 			otpm_limit = EXCLUDED.otpm_limit,
@@ -2155,7 +2170,7 @@ func (p *PostgresRepository) UpsertQuotaPolicy(ctx context.Context, policy *doma
 
 	if err := p.pool.QueryRow(ctx, q,
 		policy.ID, policy.OrgID, string(policy.ScopeType), policy.ScopeID, policy.ModelPattern,
-		policy.RPMLimit, policy.TPMLimit, policy.ITPMLimit, policy.OTPMLimit, policy.TPDLimit,
+		policy.RPMLimit, policy.RPDLimit, policy.TPMLimit, policy.ITPMLimit, policy.OTPMLimit, policy.TPDLimit,
 		policy.MaxConcurrent, policy.MaxBudgetMicros, policy.SpentMicros,
 		string(policy.BudgetResetPeriod), policy.BudgetResetAt, policy.MaxIterations,
 		policy.WindowTTLSec, policy.IsActive,
@@ -3025,9 +3040,9 @@ func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id strin
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(staged_key_hash, ''), COALESCE(staged_key_prefix, ''), COALESCE(staged_encrypted_raw_key, ''), COALESCE(staged_key_dek, ''), staged_created_at, last_rotated_at, rotation_count, revoked_at, COALESCE(revoked_by, ''), COALESCE(expiry_alert_sent_days, '{}'), COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(staged_key_hash, ''), COALESCE(staged_key_prefix, ''), COALESCE(staged_encrypted_raw_key, ''), COALESCE(staged_key_dek, ''), staged_created_at, last_rotated_at, rotation_count, revoked_at, COALESCE(revoked_by, ''), COALESCE(expiry_alert_sent_days, '{}'), COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
 
-const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(vk.staged_key_hash, ''), COALESCE(vk.staged_key_prefix, ''), COALESCE(vk.staged_encrypted_raw_key, ''), COALESCE(vk.staged_key_dek, ''), vk.staged_created_at, vk.last_rotated_at, vk.rotation_count, vk.revoked_at, COALESCE(vk.revoked_by, ''), COALESCE(vk.expiry_alert_sent_days, '{}'), COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(vk.staged_key_hash, ''), COALESCE(vk.staged_key_prefix, ''), COALESCE(vk.staged_encrypted_raw_key, ''), COALESCE(vk.staged_key_dek, ''), vk.staged_created_at, vk.last_rotated_at, vk.rotation_count, vk.revoked_at, COALESCE(vk.revoked_by, ''), COALESCE(vk.expiry_alert_sent_days, '{}'), COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, vk.min_priority_rank, COALESCE(vk.allowed_routing_tags, '{}'), COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
@@ -3042,7 +3057,7 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
 		&k.LastRotatedAt, &k.RotationCount, &k.RevokedAt, &k.RevokedBy, &sentDays,
-		&keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
+		&keyType, &k.ProjectID, &k.CanImpersonate, &k.MinPriorityRank, &k.AllowedRoutingTags, &k.Tags, &rawMeta,
 	); err != nil {
 		return nil, err
 	}
@@ -3072,7 +3087,7 @@ func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, er
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
 		&k.LastRotatedAt, &k.RotationCount, &k.RevokedAt, &k.RevokedBy, &sentDays,
-		&keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &rawMeta,
+		&keyType, &k.ProjectID, &k.CanImpersonate, &k.MinPriorityRank, &k.AllowedRoutingTags, &k.Tags, &rawMeta,
 		&revokeAt,
 	); err != nil {
 		return nil, time.Time{}, err
@@ -3103,6 +3118,10 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 	if tags == nil {
 		tags = []string{}
 	}
+	routingTags := vk.AllowedRoutingTags
+	if routingTags == nil {
+		routingTags = []string{}
+	}
 	if vk.Role == "" {
 		vk.Role = domain.RoleServiceAccount
 	}
@@ -3121,8 +3140,8 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 			rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active,
 			rotation_interval_sec, key_rotation_at,
 			staged_key_hash, staged_key_prefix, staged_encrypted_raw_key, staged_key_dek, staged_created_at,
-			key_type, project_id, can_impersonate, tags, metadata
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NULLIF($34,''),NULLIF($35,''),NULLIF($36,''),NULLIF($37,''),$38,$39,NULLIF($40,''),$41,$42,$43)`
+			key_type, project_id, can_impersonate, min_priority_rank, allowed_routing_tags, tags, metadata
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NULLIF($34,''),NULLIF($35,''),NULLIF($36,''),NULLIF($37,''),$38,$39,NULLIF($40,''),$41,$42,$43,$44,$45)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
@@ -3131,7 +3150,7 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 		vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
 		vk.RotationIntervalSec, vk.KeyRotationAt,
 		vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt,
-		string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
+		string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, vk.MinPriorityRank, routingTags, tags, marshalStringMapJSON(vk.Metadata),
 	); err != nil {
 		return err
 	}
@@ -3151,6 +3170,10 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 	tags := vk.Tags
 	if tags == nil {
 		tags = []string{}
+	}
+	routingTags := vk.AllowedRoutingTags
+	if routingTags == nil {
+		routingTags = []string{}
 	}
 	if vk.Role == "" {
 		vk.Role = domain.RoleServiceAccount
@@ -3197,8 +3220,10 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			key_type = COALESCE(NULLIF($38, ''), key_type),
 			project_id = NULLIF($39, ''),
 			can_impersonate = $40,
-			tags = $41,
-			metadata = $42,
+			min_priority_rank = $41,
+			allowed_routing_tags = $42,
+			tags = $43,
+			metadata = $44,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -3208,7 +3233,7 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.TempBudgetIncreaseMicros, vk.TempBudgetExpiresAt, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
-			vk.RotationIntervalSec, vk.KeyRotationAt, vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
+			vk.RotationIntervalSec, vk.KeyRotationAt, vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, vk.MinPriorityRank, routingTags, tags, marshalStringMapJSON(vk.Metadata),
 		)
 		if err != nil {
 			return err
@@ -3388,6 +3413,7 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 			COALESCE(t.default_member_rpm_limit, 0), COALESCE(t.default_member_tpm_limit, 0),
 			COALESCE(t.default_member_allowed_models, '{}'), COALESCE(t.team_member_permissions, '{}'),
 			COALESCE(t.allowed_models, '{}'), t.allowed_mcp_servers, t.allowed_a2a_agents, t.allowed_client_apps,
+			COALESCE(t.min_priority_rank, 0), COALESCE(t.allowed_routing_tags, '{}'),
 			COALESCE(t.is_active, FALSE),
 			(pr.id IS NOT NULL) AS has_project,
 			COALESCE(pr.id, ''), COALESCE(pr.org_id, ''), COALESCE(pr.team_id, ''), COALESCE(pr.name, ''), COALESCE(pr.description, ''),
@@ -3452,7 +3478,7 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
 		&k.LastRotatedAt, &k.RotationCount, &k.RevokedAt, &k.RevokedBy, &vkSentDays,
-		&keyType, &k.ProjectID, &k.CanImpersonate, &k.Tags, &vkMeta,
+		&keyType, &k.ProjectID, &k.CanImpersonate, &k.MinPriorityRank, &k.AllowedRoutingTags, &k.Tags, &vkMeta,
 		&deprecated, &revokeAt,
 		&hasOrg,
 		&o.ID, &o.Name, &o.Slug, &o.MaxBudgetMicros, &o.TempBudgetIncreaseMicros, &o.TempBudgetExpiresAt, &oSelfServe,
@@ -3465,7 +3491,8 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 		&t.RPMLimit, &t.TPMLimit, &t.MCPRPMLimit, &t.MaxConcurrentRequests, &t.BatchEnqueuedTokenLimit, &t.MaxIterations, &t.MaxBudgetPerSessionMicros,
 		&t.EnforceGuaranteedThroughput, &t.DefaultMemberMaxBudgetMicros, &t.DefaultMemberRPMLimit, &t.DefaultMemberTPMLimit,
 		&t.DefaultMemberAllowedModels, &t.TeamMemberPermissions,
-		&t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps, &t.IsActive,
+		&t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.MinPriorityRank, &t.AllowedRoutingTags, &t.IsActive,
 		&hasProj,
 		&pr.ID, &pr.OrgID, &pr.TeamID, &pr.Name, &pr.Description, &pr.MaxBudgetMicros, &pr.SpentMicros, &pr.RPMLimit, &pr.TPMLimit,
 		&pr.AllowedModels, &pr.EnforceProjectModelQuota, &pr.IsActive,
@@ -4080,16 +4107,16 @@ func isJSONObjectNonEmpty(raw []byte) bool {
 	return trimmed != "" && trimmed != "{}" && trimmed != "null"
 }
 
-const modelGroupSelectCols = `id, org_id, alias, description, routing_strategy, fallback_group_ids, COALESCE(context_window_fallbacks, '[]'::jsonb), COALESCE(content_policy_fallbacks, '[]'::jsonb), COALESCE(fallback_targets, '[]'::jsonb), COALESCE(retry_policy, '{}'::jsonb), COALESCE(cooldown_policy, '{}'::jsonb), max_retries, cooldown_seconds, failure_threshold, is_active`
+const modelGroupSelectCols = `id, org_id, alias, description, routing_strategy, fallback_group_ids, COALESCE(context_window_fallbacks, '[]'::jsonb), COALESCE(content_policy_fallbacks, '[]'::jsonb), COALESCE(fallback_targets, '[]'::jsonb), COALESCE(saturation_fallbacks, '[]'::jsonb), drop_unsupported_params, disable_cooldowns, COALESCE(retry_policy, '{}'::jsonb), COALESCE(cooldown_policy, '{}'::jsonb), max_retries, cooldown_seconds, failure_threshold, is_active`
 
 func scanModelGroup(row rowScanner) (*domain.ModelGroup, error) {
 	var g domain.ModelGroup
 	var strat string
 	var fbs []string
-	var rawCtxFbs, rawContentFbs, rawTargets, rawRetry, rawCooldown []byte
+	var rawCtxFbs, rawContentFbs, rawTargets, rawSatFbs, rawRetry, rawCooldown []byte
 	if err := row.Scan(
 		&g.ID, &g.OrgID, &g.Alias, &g.Description, &strat, &fbs,
-		&rawCtxFbs, &rawContentFbs, &rawTargets, &rawRetry, &rawCooldown,
+		&rawCtxFbs, &rawContentFbs, &rawTargets, &rawSatFbs, &g.DropUnsupportedParams, &g.DisableCooldowns, &rawRetry, &rawCooldown,
 		&g.MaxRetries, &g.CooldownSeconds, &g.FailureThreshold, &g.IsActive,
 	); err != nil {
 		return nil, err
@@ -4107,6 +4134,9 @@ func scanModelGroup(row rowScanner) (*domain.ModelGroup, error) {
 	}
 	if len(rawTargets) > 0 {
 		_ = json.Unmarshal(rawTargets, &g.FallbackTargets)
+	}
+	if len(rawSatFbs) > 0 {
+		_ = json.Unmarshal(rawSatFbs, &g.SaturationFallbacks)
 	}
 	if isJSONObjectNonEmpty(rawRetry) {
 		var rp domain.RetryPolicy
@@ -4146,6 +4176,10 @@ func (p *PostgresRepository) CreateModelGroup(ctx context.Context, mg *domain.Mo
 	if err != nil {
 		return fmt.Errorf("marshal fallback_targets: %w", err)
 	}
+	satFbsJSON, err := marshalJSONOrDefault(mg.SaturationFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal saturation_fallbacks: %w", err)
+	}
 	retryJSON, err := marshalJSONOrDefault(mg.RetryPolicy, "{}")
 	if err != nil {
 		return fmt.Errorf("marshal retry_policy: %w", err)
@@ -4158,22 +4192,28 @@ func (p *PostgresRepository) CreateModelGroup(ctx context.Context, mg *domain.Mo
 		INSERT INTO model_groups (
 			id, org_id, alias, description, routing_strategy, fallback_group_ids,
 			context_window_fallbacks, content_policy_fallbacks, fallback_targets,
+			saturation_fallbacks, drop_unsupported_params, disable_cooldowns,
 			retry_policy, cooldown_policy, max_retries, cooldown_seconds, failure_threshold, is_active
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (org_id, alias) DO UPDATE SET
 			routing_strategy = EXCLUDED.routing_strategy,
 			fallback_group_ids = EXCLUDED.fallback_group_ids,
 			context_window_fallbacks = EXCLUDED.context_window_fallbacks,
 			content_policy_fallbacks = EXCLUDED.content_policy_fallbacks,
 			fallback_targets = EXCLUDED.fallback_targets,
+			saturation_fallbacks = EXCLUDED.saturation_fallbacks,
+			drop_unsupported_params = EXCLUDED.drop_unsupported_params,
+			disable_cooldowns = EXCLUDED.disable_cooldowns,
 			retry_policy = EXCLUDED.retry_policy,
 			cooldown_policy = EXCLUDED.cooldown_policy,
 			updated_at = NOW()
 		RETURNING id`
 	if err := p.pool.QueryRow(ctx, q,
 		mg.ID, mg.OrgID, mg.Alias, mg.Description, string(mg.RoutingStrategy), fbs,
-		ctxFbsJSON, contentFbsJSON, targetsJSON, retryJSON, cooldownJSON,
+		ctxFbsJSON, contentFbsJSON, targetsJSON,
+		satFbsJSON, mg.DropUnsupportedParams, mg.DisableCooldowns,
+		retryJSON, cooldownJSON,
 		mg.MaxRetries, mg.CooldownSeconds, mg.FailureThreshold, mg.IsActive,
 	).Scan(&mg.ID); err != nil {
 		return err
@@ -4232,7 +4272,101 @@ func (p *PostgresRepository) ListModelGroups(ctx context.Context, orgID string) 
 	return out, nil
 }
 
-const deploymentSelectCols = `id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status, COALESCE(tags, '{}'), max_budget_micros, COALESCE(budget_reset_period, 'monthly')`
+func (p *PostgresRepository) UpdateModelGroup(ctx context.Context, mg *domain.ModelGroup) error {
+	if mg == nil || strings.TrimSpace(mg.ID) == "" {
+		return fmt.Errorf("model group id is required")
+	}
+	if p.pool == nil {
+		return p.mem.UpdateModelGroup(ctx, mg)
+	}
+	fbs := mg.FallbackGroupIDs
+	if fbs == nil {
+		fbs = []string{}
+	}
+	ctxFbsJSON, err := marshalJSONOrDefault(mg.ContextWindowFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal context_window_fallbacks: %w", err)
+	}
+	contentFbsJSON, err := marshalJSONOrDefault(mg.ContentPolicyFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal content_policy_fallbacks: %w", err)
+	}
+	targetsJSON, err := marshalJSONOrDefault(mg.FallbackTargets, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal fallback_targets: %w", err)
+	}
+	satFbsJSON, err := marshalJSONOrDefault(mg.SaturationFallbacks, "[]")
+	if err != nil {
+		return fmt.Errorf("marshal saturation_fallbacks: %w", err)
+	}
+	retryJSON, err := marshalJSONOrDefault(mg.RetryPolicy, "{}")
+	if err != nil {
+		return fmt.Errorf("marshal retry_policy: %w", err)
+	}
+	cooldownJSON, err := marshalJSONOrDefault(mg.CooldownPolicy, "{}")
+	if err != nil {
+		return fmt.Errorf("marshal cooldown_policy: %w", err)
+	}
+	if mg.RoutingStrategy == "" {
+		mg.RoutingStrategy = domain.StrategyWeightedShuffle
+	}
+	const q = `
+		UPDATE model_groups SET
+			alias = $2,
+			description = $3,
+			routing_strategy = $4,
+			fallback_group_ids = $5,
+			context_window_fallbacks = $6,
+			content_policy_fallbacks = $7,
+			fallback_targets = $8,
+			saturation_fallbacks = $9,
+			drop_unsupported_params = $10,
+			disable_cooldowns = $11,
+			retry_policy = $12,
+			cooldown_policy = $13,
+			max_retries = $14,
+			cooldown_seconds = $15,
+			failure_threshold = $16,
+			is_active = $17,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		mg.ID, mg.Alias, mg.Description, string(mg.RoutingStrategy), fbs,
+		ctxFbsJSON, contentFbsJSON, targetsJSON, satFbsJSON, mg.DropUnsupportedParams, mg.DisableCooldowns,
+		retryJSON, cooldownJSON, mg.MaxRetries, mg.CooldownSeconds, mg.FailureThreshold, mg.IsActive,
+	).Scan(&mg.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("model group %q %w", mg.ID, ErrNotFound)
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("model group alias %q already exists in organization: %w", mg.Alias, ErrConflict)
+		}
+		return err
+	}
+	if err := p.mem.UpdateModelGroup(ctx, mg); err != nil && errors.Is(err, ErrNotFound) {
+		_ = p.mem.CreateModelGroup(ctx, mg)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) DeleteModelGroup(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteModelGroup(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM model_groups WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("model group %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteModelGroup(ctx, id)
+	return nil
+}
+
+const deploymentSelectCols = `id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, itpm_capacity, otpm_capacity, max_parallel_requests, timeout_ms, priority, status, COALESCE(tags, '{}'), max_budget_micros, COALESCE(budget_reset_period, 'monthly')`
 
 func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.Deployment) error {
 	if dep.ID == "" {
@@ -4256,9 +4390,9 @@ func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.D
 		tags = []string{}
 	}
 	const q = `
-		INSERT INTO model_deployments (id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, timeout_ms, priority, status, tags, max_budget_micros, budget_reset_period)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
-	if _, err := p.pool.Exec(ctx, q, dep.ID, dep.ModelGroupID, dep.GlobalModelID, dep.CredentialID, dep.DeploymentName, dep.Region, dep.Weight, dep.RPMCapacity, dep.TPMCapacity, dep.TimeoutMs, dep.Priority, string(dep.Status), tags, dep.MaxBudgetMicros, resetPeriod); err != nil {
+		INSERT INTO model_deployments (id, model_group_id, global_model_id, credential_id, deployment_name, region, weight, rpm_capacity, tpm_capacity, itpm_capacity, otpm_capacity, max_parallel_requests, timeout_ms, priority, status, tags, max_budget_micros, budget_reset_period)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
+	if _, err := p.pool.Exec(ctx, q, dep.ID, dep.ModelGroupID, dep.GlobalModelID, dep.CredentialID, dep.DeploymentName, dep.Region, dep.Weight, dep.RPMCapacity, dep.TPMCapacity, dep.ITPMCapacity, dep.OTPMCapacity, dep.MaxParallelRequests, dep.TimeoutMs, dep.Priority, string(dep.Status), tags, dep.MaxBudgetMicros, resetPeriod); err != nil {
 		return err
 	}
 	if dep.GlobalModel == nil && dep.GlobalModelID != "" {
@@ -4268,6 +4402,98 @@ func (p *PostgresRepository) CreateDeployment(ctx context.Context, dep *domain.D
 		dep.Credential, _ = p.GetProviderCredential(ctx, dep.CredentialID)
 	}
 	return p.mem.CreateDeployment(ctx, dep)
+}
+
+func (p *PostgresRepository) GetDeployment(ctx context.Context, id string) (*domain.Deployment, error) {
+	if p.pool == nil {
+		return p.mem.GetDeployment(ctx, id)
+	}
+	const q = `SELECT ` + deploymentSelectCols + ` FROM model_deployments WHERE id = $1`
+	deps, err := p.loadAndHydrateDeployments(ctx, q, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(deps) == 0 {
+		return nil, fmt.Errorf("deployment %q %w", id, ErrNotFound)
+	}
+	return deps[0], nil
+}
+
+func (p *PostgresRepository) UpdateDeployment(ctx context.Context, dep *domain.Deployment) error {
+	if dep == nil || strings.TrimSpace(dep.ID) == "" {
+		return fmt.Errorf("deployment id is required")
+	}
+	if dep.Status == "" {
+		dep.Status = domain.DeploymentStatusActive
+	}
+	if dep.Weight <= 0 {
+		dep.Weight = 100
+	}
+	if p.pool == nil {
+		return p.mem.UpdateDeployment(ctx, dep)
+	}
+	resetPeriod := dep.BudgetResetPeriod
+	if resetPeriod == "" {
+		resetPeriod = string(domain.BudgetResetMonthly)
+	}
+	tags := dep.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	const q = `
+		UPDATE model_deployments SET
+			deployment_name = $2,
+			region = $3,
+			weight = $4,
+			rpm_capacity = $5,
+			tpm_capacity = $6,
+			itpm_capacity = $7,
+			otpm_capacity = $8,
+			max_parallel_requests = $9,
+			timeout_ms = $10,
+			priority = $11,
+			status = $12,
+			tags = $13,
+			max_budget_micros = $14,
+			budget_reset_period = $15,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at`
+	if err := p.pool.QueryRow(ctx, q,
+		dep.ID, dep.DeploymentName, dep.Region, dep.Weight,
+		dep.RPMCapacity, dep.TPMCapacity, dep.ITPMCapacity, dep.OTPMCapacity, dep.MaxParallelRequests,
+		dep.TimeoutMs, dep.Priority, string(dep.Status), tags, dep.MaxBudgetMicros, resetPeriod,
+	).Scan(&dep.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("deployment %q %w", dep.ID, ErrNotFound)
+		}
+		return err
+	}
+	if dep.GlobalModel == nil && dep.GlobalModelID != "" {
+		dep.GlobalModel, _ = p.GetGlobalModel(ctx, dep.GlobalModelID)
+	}
+	if dep.Credential == nil && dep.CredentialID != "" {
+		dep.Credential, _ = p.GetProviderCredential(ctx, dep.CredentialID)
+	}
+	if err := p.mem.UpdateDeployment(ctx, dep); err != nil && errors.Is(err, ErrNotFound) {
+		_ = p.mem.CreateDeployment(ctx, dep)
+	}
+	return nil
+}
+
+func (p *PostgresRepository) DeleteDeployment(ctx context.Context, id string) error {
+	if p.pool == nil {
+		return p.mem.DeleteDeployment(ctx, id)
+	}
+	tag, err := p.pool.Exec(ctx, `DELETE FROM model_deployments WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("deployment %q %w", id, ErrNotFound)
+	}
+	_ = p.mem.DeleteDeployment(ctx, id)
+	return nil
 }
 
 func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q string, args ...any) ([]*domain.Deployment, error) {
@@ -4282,7 +4508,7 @@ func (p *PostgresRepository) loadAndHydrateDeployments(ctx context.Context, q st
 	for rows.Next() {
 		var d domain.Deployment
 		var status string
-		if err := rows.Scan(&d.ID, &d.ModelGroupID, &d.GlobalModelID, &d.CredentialID, &d.DeploymentName, &d.Region, &d.Weight, &d.RPMCapacity, &d.TPMCapacity, &d.TimeoutMs, &d.Priority, &status, &d.Tags, &d.MaxBudgetMicros, &d.BudgetResetPeriod); err != nil {
+		if err := rows.Scan(&d.ID, &d.ModelGroupID, &d.GlobalModelID, &d.CredentialID, &d.DeploymentName, &d.Region, &d.Weight, &d.RPMCapacity, &d.TPMCapacity, &d.ITPMCapacity, &d.OTPMCapacity, &d.MaxParallelRequests, &d.TimeoutMs, &d.Priority, &status, &d.Tags, &d.MaxBudgetMicros, &d.BudgetResetPeriod); err != nil {
 			continue
 		}
 		if d.Tags == nil {
@@ -4365,8 +4591,8 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 			enable_pii_detection, pii_action, enable_secret_detection,
 			secret_action, blocked_keywords, redact_output_pii,
 			enable_toxicity_filter, toxicity_action, toxicity_threshold,
-			enabled_content_categories, content_exceptions, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+			enabled_content_categories, content_exceptions, sensitive_route_target, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
 		ON CONFLICT (org_id) DO UPDATE SET
 			mode = EXCLUDED.mode,
 			scan_all_roles = EXCLUDED.scan_all_roles,
@@ -4383,6 +4609,7 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 			toxicity_threshold = EXCLUDED.toxicity_threshold,
 			enabled_content_categories = EXCLUDED.enabled_content_categories,
 			content_exceptions = EXCLUDED.content_exceptions,
+			sensitive_route_target = EXCLUDED.sensitive_route_target,
 			updated_at = NOW()`
 	mode := pol.EffectiveMode()
 	act := pol.PromptInjectionAction
@@ -4422,7 +4649,7 @@ func (p *PostgresRepository) SetGuardrailPolicy(ctx context.Context, pol *domain
 		pol.EnablePIIDetection, string(piiAct), pol.EnableSecretDetection,
 		string(secAct), blockedKeywords, pol.RedactOutputPII,
 		pol.EnableToxicityFilter, string(toxAct), toxThreshold,
-		enabledContentCategories, contentExceptions,
+		enabledContentCategories, contentExceptions, strings.TrimSpace(pol.SensitiveRouteTarget),
 	)
 	return err
 }
@@ -4433,13 +4660,13 @@ func (p *PostgresRepository) GetGuardrailPolicy(ctx context.Context, orgID strin
 	}
 	value, err := p.coalesceLookup(ctx, "guardrail:"+orgID, func(lookupCtx context.Context) (any, error) {
 		p.guardrailQueries.Add(1)
-		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii, enable_toxicity_filter, toxicity_action, toxicity_threshold, enabled_content_categories, content_exceptions FROM guardrail_policies WHERE org_id = $1`
+		const q = `SELECT org_id, mode, scan_all_roles, enable_prompt_injection, prompt_injection_action, enable_pii_detection, pii_action, enable_secret_detection, secret_action, blocked_keywords, redact_output_pii, enable_toxicity_filter, toxicity_action, toxicity_threshold, enabled_content_categories, content_exceptions, COALESCE(sensitive_route_target, '') FROM guardrail_policies WHERE org_id = $1`
 		var pol domain.GuardrailPolicy
 		var modeStr, injAct, piiAct, secAct, toxAct string
 		if scanErr := p.pool.QueryRow(lookupCtx, q, orgID).Scan(
 			&pol.OrgID, &modeStr, &pol.ScanAllRoles, &pol.EnablePromptInjection, &injAct, &pol.EnablePIIDetection, &piiAct,
 			&pol.EnableSecretDetection, &secAct, &pol.BlockedKeywords, &pol.RedactOutputPII,
-			&pol.EnableToxicityFilter, &toxAct, &pol.ToxicityThreshold, &pol.EnabledContentCategories, &pol.ContentExceptions,
+			&pol.EnableToxicityFilter, &toxAct, &pol.ToxicityThreshold, &pol.EnabledContentCategories, &pol.ContentExceptions, &pol.SensitiveRouteTarget,
 		); scanErr != nil {
 			if errors.Is(scanErr, pgx.ErrNoRows) {
 				p.missingGuardrailQueries.Add(1)
@@ -6394,7 +6621,7 @@ func marshalGuardrailDefinitionPayloads(def *domain.GuardrailDefinition) (hooksJ
 	return hooksJSON, streamScopeJSON, modeRuleJSON, rolesJSON, configJSON, infoJSON, nil
 }
 
-const guardrailDefinitionSelectCols = `id, org_id, name, provider, hooks, stream_scope, mode_rule, default_on, enabled_roles, timeout_ms, fail_open, precedence, config, encrypted_secrets, encrypted_dek, status, guardrail_info, weight, created_at, updated_at`
+const guardrailDefinitionSelectCols = `id, org_id, name, provider, hooks, stream_scope, mode_rule, default_on, enabled_roles, timeout_ms, fail_open, precedence, config, encrypted_secrets, encrypted_dek, status, COALESCE(sensitive_route_target, ''), guardrail_info, weight, created_at, updated_at`
 
 func scanGuardrailDefinition(row rowScanner) (*domain.GuardrailDefinition, error) {
 	var def domain.GuardrailDefinition
@@ -6404,7 +6631,7 @@ func scanGuardrailDefinition(row rowScanner) (*domain.GuardrailDefinition, error
 		&def.ID, &def.OrgID, &def.Name, &def.Provider,
 		&hooksJSON, &streamScopeJSON, &modeRuleJSON,
 		&def.DefaultOn, &rolesJSON, &def.TimeoutMs, &def.FailOpen, &def.Precedence,
-		&configJSON, &def.EncryptedSecrets, &def.EncryptedDEK, &statusStr, &infoJSON, &def.Weight,
+		&configJSON, &def.EncryptedSecrets, &def.EncryptedDEK, &statusStr, &def.SensitiveRouteTarget, &infoJSON, &def.Weight,
 		&def.CreatedAt, &def.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -6523,14 +6750,14 @@ func (p *PostgresRepository) CreateGuardrailDefinition(ctx context.Context, def 
 		INSERT INTO guardrail_definitions (
 			id, org_id, name, provider, hooks, stream_scope, mode_rule,
 			default_on, enabled_roles, timeout_ms, fail_open, precedence,
-			config, encrypted_secrets, encrypted_dek, status, guardrail_info, weight
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			config, encrypted_secrets, encrypted_dek, status, sensitive_route_target, guardrail_info, weight
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING created_at, updated_at`
 	if err := p.pool.QueryRow(ctx, q,
 		def.ID, def.OrgID, def.Name, def.Provider,
 		hooksJSON, streamScopeJSON, modeRuleJSON,
 		def.DefaultOn, rolesJSON, def.TimeoutMs, def.FailOpen, def.Precedence,
-		configJSON, def.EncryptedSecrets, def.EncryptedDEK, string(def.Status), infoJSON, def.Weight,
+		configJSON, def.EncryptedSecrets, def.EncryptedDEK, string(def.Status), strings.TrimSpace(def.SensitiveRouteTarget), infoJSON, def.Weight,
 	).Scan(&def.CreatedAt, &def.UpdatedAt); err != nil {
 		return err
 	}
@@ -6616,8 +6843,9 @@ func (p *PostgresRepository) UpdateGuardrailDefinition(ctx context.Context, def 
 			encrypted_secrets = CASE WHEN $14 <> '' OR $15 <> '' THEN $14 ELSE encrypted_secrets END,
 			encrypted_dek = CASE WHEN $14 <> '' OR $15 <> '' THEN $15 ELSE encrypted_dek END,
 			status = $16,
-			guardrail_info = $17,
-			weight = $18,
+			sensitive_route_target = $17,
+			guardrail_info = $18,
+			weight = $19,
 			updated_at = NOW()
 		WHERE id = $1 AND org_id = $2
 		RETURNING created_at, updated_at, encrypted_secrets, encrypted_dek`
@@ -6626,7 +6854,7 @@ func (p *PostgresRepository) UpdateGuardrailDefinition(ctx context.Context, def 
 		def.ID, def.OrgID, def.Name, def.Provider,
 		hooksJSON, streamScopeJSON, modeRuleJSON,
 		def.DefaultOn, rolesJSON, def.TimeoutMs, def.FailOpen, def.Precedence,
-		configJSON, def.EncryptedSecrets, def.EncryptedDEK, string(def.Status), infoJSON, def.Weight,
+		configJSON, def.EncryptedSecrets, def.EncryptedDEK, string(def.Status), strings.TrimSpace(def.SensitiveRouteTarget), infoJSON, def.Weight,
 	).Scan(&def.CreatedAt, &def.UpdatedAt, &encSecrets, &encDEK); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("guardrail definition %q %w", def.ID, ErrNotFound)

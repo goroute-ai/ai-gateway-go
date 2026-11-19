@@ -1,14 +1,19 @@
 -- Check remaining budget availability without creating a reservation.
--- KEYS[1]:  key_spend,  KEYS[2..4]:   key_res_zset,  key_res_sum,  key_res_amounts
--- KEYS[5]:  team_spend, KEYS[6..8]:   team_res_zset, team_res_sum, team_res_amounts
--- KEYS[9]:  user_spend, KEYS[10..12]: user_res_zset, user_res_sum, user_res_amounts
--- KEYS[13]: org_spend,  KEYS[14..16]: org_res_zset,  org_res_sum,  org_res_amounts
+-- KEYS[1..4]:   key_spend, team_spend, user_spend, org_spend
+-- KEYS[5..7]:   key_res_zset,  key_res_sum,  key_res_amounts
+-- KEYS[8..10]:  team_res_zset, team_res_sum, team_res_amounts
+-- KEYS[11..13]: user_res_zset, user_res_sum, user_res_amounts
+-- KEYS[14..16]: org_res_zset,  org_res_sum,  org_res_amounts
 -- ARGV[1..2]: max_key_budget,  key_spent_floor
 -- ARGV[3..4]: max_team_budget, team_spent_floor
 -- ARGV[5..6]: max_user_budget, user_spent_floor
 -- ARGV[7..8]: max_org_budget,  org_spent_floor
+-- ARGV[9]:    optional reserve_micros (when > 0, checks cur + other_reserved + reserve_micros <= max_budget)
+-- ARGV[10]:   optional request_id (to exclude this request's own primary reservation when probing fallback hops)
 
 local now = tonumber(redis.call("TIME")[1])
+local reserve_micros = tonumber(ARGV[9]) or 0
+local request_id = ARGV[10] or ""
 
 local function cleanup_expired(res_zset, res_sum, res_amounts)
     local expired = redis.call("ZRANGEBYSCORE", res_zset, "-inf", now)
@@ -32,10 +37,10 @@ local function cleanup_expired(res_zset, res_sum, res_amounts)
 end
 
 local scopes = {
-    {KEYS[1],  KEYS[2],  KEYS[3],  KEYS[4],  tonumber(ARGV[1]) or 0, tonumber(ARGV[2]) or 0, "KEY_BUDGET_EXCEEDED"},
-    {KEYS[5],  KEYS[6],  KEYS[7],  KEYS[8],  tonumber(ARGV[3]) or 0, tonumber(ARGV[4]) or 0, "TEAM_BUDGET_EXCEEDED"},
-    {KEYS[9],  KEYS[10], KEYS[11], KEYS[12], tonumber(ARGV[5]) or 0, tonumber(ARGV[6]) or 0, "USER_BUDGET_EXCEEDED"},
-    {KEYS[13], KEYS[14], KEYS[15], KEYS[16], tonumber(ARGV[7]) or 0, tonumber(ARGV[8]) or 0, "ORG_BUDGET_EXCEEDED"},
+    {KEYS[1], KEYS[5],  KEYS[6],  KEYS[7],  tonumber(ARGV[1]) or 0, tonumber(ARGV[2]) or 0, "KEY_BUDGET_EXCEEDED"},
+    {KEYS[2], KEYS[8],  KEYS[9],  KEYS[10], tonumber(ARGV[3]) or 0, tonumber(ARGV[4]) or 0, "TEAM_BUDGET_EXCEEDED"},
+    {KEYS[3], KEYS[11], KEYS[12], KEYS[13], tonumber(ARGV[5]) or 0, tonumber(ARGV[6]) or 0, "USER_BUDGET_EXCEEDED"},
+    {KEYS[4], KEYS[14], KEYS[15], KEYS[16], tonumber(ARGV[7]) or 0, tonumber(ARGV[8]) or 0, "ORG_BUDGET_EXCEEDED"},
 }
 
 for _, sc in ipairs(scopes) do
@@ -48,7 +53,19 @@ for _, sc in ipairs(scopes) do
         end
         cleanup_expired(res_zset, res_sum, res_amounts)
         local reserved = tonumber(redis.call("GET", res_sum) or "0")
-        if cur + reserved >= max_b then
+        if reserve_micros > 0 then
+            local req_res = 0
+            if request_id ~= "" then
+                req_res = tonumber(redis.call("HGET", res_amounts, request_id) or "0")
+            end
+            local other_reserved = reserved - req_res
+            if other_reserved < 0 then
+                other_reserved = 0
+            end
+            if (cur + other_reserved + reserve_micros) > max_b then
+                return {0, code, cur, max_b}
+            end
+        elseif cur + reserved >= max_b then
             return {0, code, cur, max_b}
         end
     end

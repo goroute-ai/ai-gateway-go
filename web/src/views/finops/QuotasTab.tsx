@@ -68,7 +68,7 @@ export const QuotasTab: React.FC = () => {
       id: p?.id || '', scope_type: p?.scope_type || 'model_per_key', scope_id: p?.scope_id || '', model_pattern: p?.model_pattern || '*',
       rpm: p?.rpm_limit ? String(p.rpm_limit) : '', tpm: p?.tpm_limit ? String(p.tpm_limit) : '',
       itpm: p?.itpm_limit ? String(p.itpm_limit) : '', otpm: p?.otpm_limit ? String(p.otpm_limit) : '',
-      tpd: p?.tpd_limit ? String(p.tpd_limit) : '', conc: p?.max_concurrent ? String(p.max_concurrent) : '',
+      tpd: p?.tpd_limit ? String(p.tpd_limit) : '', rpd: p?.rpd_limit ? String(p.rpd_limit) : '', conc: p?.max_concurrent ? String(p.max_concurrent) : '',
       budget: microsToUsdInput(p?.max_budget_micros), reset: p?.budget_reset_period || 'monthly',
       iter: p?.max_iterations ? String(p.max_iterations) : '', ttl: p?.window_ttl_sec ? String(p.window_ttl_sec) : '', active: p ? p.is_active : true,
     });
@@ -108,7 +108,7 @@ export const QuotasTab: React.FC = () => {
         {deleteQuotaMut.isError && <ErrorAlert error={deleteQuotaMut.error} title="Failed to delete quota" />}
         <div className="overflow-x-auto">
           <table className={tbl}>
-            <thead className={thead}><tr>{['Scope', 'Model', 'RPM / TPM', 'ITPM / OTPM / TPD', 'Budget', 'Status', 'Actions'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+            <thead className={thead}><tr>{['Scope', 'Model', 'RPM / TPM / RPD', 'ITPM / OTPM / TPD', 'Budget', 'Status', 'Actions'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
             <tbody className="divide-y divide-border-subtle">
               {quotasQ.isLoading ? <tr><td colSpan={7} className="px-3 py-5 text-center text-brand-muted">Loading...</td></tr>
                 : quotas.length === 0 ? <tr><td colSpan={7} className="px-3 py-5 text-center text-brand-muted">No quota policies.</td></tr>
@@ -116,7 +116,7 @@ export const QuotasTab: React.FC = () => {
                   <tr key={q.id}>
                     <td className={th}><Badge variant="info" size="sm">{q.scope_type}</Badge><div className="text-brand-title">{q.scope_id}</div></td>
                     <td className={`${th} text-accent-primary`}>{q.model_pattern || '*'}</td>
-                    <td className={th}>RPM:{q.rpm_limit || '∞'} TPM:{q.tpm_limit || '∞'}</td>
+                    <td className={th}>RPM:{q.rpm_limit || '∞'} TPM:{q.tpm_limit || '∞'} RPD:{q.rpd_limit || '∞'}</td>
                     <td className={th}>I:{q.itpm_limit || '∞'} O:{q.otpm_limit || '∞'} D:{q.tpd_limit || '∞'}</td>
                     <td className={th}>{q.max_budget_micros > 0 ? `${formatUSD(q.spent_micros)}/${formatUSD(q.max_budget_micros)}` : '∞'}</td>
                     <td className={th}><Badge variant={q.is_active ? 'success' : 'danger'} size="sm">{q.is_active ? 'Active' : 'Off'}</Badge></td>
@@ -187,7 +187,7 @@ export const QuotasTab: React.FC = () => {
         onSubmit={() => upsertQuotaMut.mutate({
           ...(qf.id ? { id: qf.id } : {}), org_id: activeOrgId, scope_type: qf.scope_type, scope_id: (qf.scope_id || '').trim(),
           model_pattern: (qf.model_pattern || '').trim() || '*', rpm_limit: num(qf.rpm), tpm_limit: num(qf.tpm),
-          itpm_limit: num(qf.itpm), otpm_limit: num(qf.otpm), tpd_limit: num(qf.tpd), max_concurrent: num(qf.conc),
+          itpm_limit: num(qf.itpm), otpm_limit: num(qf.otpm), tpd_limit: num(qf.tpd), rpd_limit: num(qf.rpd), max_concurrent: num(qf.conc),
           max_budget_micros: usdToMicros(qf.budget || '') ?? 0, budget_reset_period: qf.reset as BudgetResetPeriod,
           max_iterations: num(qf.iter), window_ttl_sec: num(qf.ttl), is_active: !!qf.active,
         })}
@@ -199,8 +199,8 @@ export const QuotasTab: React.FC = () => {
           <Field label="Scope ID *"><input required value={qf.scope_id || ''} onChange={(e) => setQ('scope_id', e.target.value)} placeholder={activeOrgId} className={MONO_INPUT_CLS} /></Field>
           <Field label="Model Pattern"><input value={qf.model_pattern || ''} onChange={(e) => setQ('model_pattern', e.target.value)} placeholder="*" className={MONO_INPUT_CLS} /></Field>
         </div>
-        <div className="grid grid-cols-5 gap-2">
-          {[['RPM', 'rpm'], ['TPM', 'tpm'], ['ITPM', 'itpm'], ['OTPM', 'otpm'], ['TPD', 'tpd']].map(([l, k]) => (
+        <div className="grid grid-cols-3 gap-2">
+          {[['RPM', 'rpm'], ['TPM', 'tpm'], ['RPD', 'rpd'], ['ITPM', 'itpm'], ['OTPM', 'otpm'], ['TPD', 'tpd']].map(([l, k]) => (
             <Field key={k} label={l}><input type="number" min="0" value={qf[k] || ''} onChange={(e) => setQ(k, e.target.value)} className={MONO_INPUT_CLS} /></Field>
           ))}
         </div>

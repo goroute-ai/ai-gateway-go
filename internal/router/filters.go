@@ -109,6 +109,7 @@ type FilterPipeline struct {
 	cfg             config.RouterConfig
 	budgetCheck     BudgetCheckFn
 	priorityLimiter *DynamicPriorityLimiter
+	slotLimiter     *DeploymentSlotLimiter
 	tagMatchAll     bool
 	plugins         []RoutingPlugin
 	now             func() time.Time
@@ -142,6 +143,13 @@ func (p *FilterPipeline) SetBudgetCheck(fn BudgetCheckFn) {
 func (p *FilterPipeline) SetPriorityLimiter(l *DynamicPriorityLimiter) {
 	if p != nil {
 		p.priorityLimiter = l
+	}
+}
+
+// SetSlotLimiter configures an optional DeploymentSlotLimiter for MaxParallelRequests filtering.
+func (p *FilterPipeline) SetSlotLimiter(l *DeploymentSlotLimiter) {
+	if p != nil {
+		p.slotLimiter = l
 	}
 }
 
@@ -188,8 +196,54 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 	candidates []*domain.Deployment,
 	estimatedTokens int,
 ) ([]*domain.Deployment, error) {
+	return p.FilterEligibleDeploymentsWithSignals(ctx, orgID, groupAlias, req, candidates, estimatedTokens, nil)
+}
+
+// FilterEligibleDeploymentsWithSignals runs all eligibility filter stages while reusing
+// an optional pre-fetched SignalSnapshot so Stage 6 does not issue a second Redis HGetAll pipeline.
+func (p *FilterPipeline) FilterEligibleDeploymentsWithSignals(
+	ctx context.Context,
+	orgID string,
+	groupAlias string,
+	req *domain.CanonicalChatRequest,
+	candidates []*domain.Deployment,
+	estimatedTokens int,
+	snap *SignalSnapshot,
+) ([]*domain.Deployment, error) {
+	eligible, _, err := p.FilterEligibleDeploymentsDetailed(ctx, orgID, groupAlias, req, candidates, estimatedTokens, snap)
+	return eligible, err
+}
+
+// FilterEligibleDeploymentsDetailed runs all eligibility filter stages while reusing
+// an optional pre-fetched SignalSnapshot and reports whether Stage 6 capacity/concurrency/PTU
+// saturation emptied the candidate set.
+func (p *FilterPipeline) FilterEligibleDeploymentsDetailed(
+	ctx context.Context,
+	orgID string,
+	groupAlias string,
+	req *domain.CanonicalChatRequest,
+	candidates []*domain.Deployment,
+	estimatedTokens int,
+	snap *SignalSnapshot,
+) ([]*domain.Deployment, bool, error) {
+	return p.FilterEligibleDeploymentsForGroup(ctx, orgID, groupAlias, false, req, candidates, estimatedTokens, snap)
+}
+
+// FilterEligibleDeploymentsForGroup runs all eligibility filter stages while honoring
+// group/request DropUnsupportedParams preference (preferring fully capable deployments before
+// falling back to partial-capability deployments).
+func (p *FilterPipeline) FilterEligibleDeploymentsForGroup(
+	ctx context.Context,
+	orgID string,
+	groupAlias string,
+	groupDropParams bool,
+	req *domain.CanonicalChatRequest,
+	candidates []*domain.Deployment,
+	estimatedTokens int,
+	snap *SignalSnapshot,
+) ([]*domain.Deployment, bool, error) {
 	if len(candidates) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if estimatedTokens < 0 {
 		estimatedTokens = 0
@@ -201,6 +255,7 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 		cfg             config.RouterConfig
 		budgetCheck     BudgetCheckFn
 		priorityLimiter *DynamicPriorityLimiter
+		slotLimiter     *DeploymentSlotLimiter
 		tagMatchAll     bool
 		plugins         []RoutingPlugin
 		nowFn           = time.Now
@@ -211,6 +266,7 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 		cfg = p.cfg
 		budgetCheck = p.budgetCheck
 		priorityLimiter = p.priorityLimiter
+		slotLimiter = p.slotLimiter
 		tagMatchAll = p.tagMatchAll
 		plugins = p.plugins
 		if p.now != nil {
@@ -243,7 +299,7 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 		candidates = stage1
 	}
 	if len(candidates) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	// Stage 2: Active health + staleness gate with all-unhealthy safety net.
@@ -268,18 +324,28 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 	}
 
 	// Stage 3: Chat capability & context window filter.
+	// When DropUnsupportedParams is effective (request > group > router config),
+	// prefer natively fully-capable deployments first and only fall back to
+	// partial-capability deployments when no fully-capable deployment fits.
 	needsStream, needsTools, needsVision, needsJSONSchema, needsReasoning := extractChatCapabilityNeeds(req)
 	checkCaps := needsStream || needsTools || needsVision || needsJSONSchema || needsReasoning
 	if checkCaps || estimatedTokens > 0 {
+		dropEnabled := cfg.DropUnsupportedParams || groupDropParams
+		if req != nil && req.GoRouteExtensions != nil && req.GoRouteExtensions.DropUnsupportedParams != nil {
+			dropEnabled = *req.GoRouteExtensions.DropUnsupportedParams
+		}
+
 		var stage3 []*domain.Deployment
+		var stage3Partial []*domain.Deployment
 		capEligible := 0
 		ctxPruned := 0
 		maxSeenWindow := 0
 
 		for i, d := range candidates {
 			gm := d.GlobalModel
-			capOK := !checkCaps || modelSupportsChatRequirements(gm, needsStream, needsTools, needsVision, needsJSONSchema, needsReasoning)
-			if capOK {
+			nonDropCapOK := modelSupportsChatRequirements(gm, needsStream, false, needsVision, false, false)
+			fullCapOK := !checkCaps || (nonDropCapOK && modelSupportsChatRequirements(gm, false, needsTools, false, needsJSONSchema, needsReasoning))
+			if fullCapOK || (dropEnabled && nonDropCapOK) {
 				capEligible++
 			}
 			ctxOK := estimatedTokens == 0 || gm.MaxInputTokens <= 0 || estimatedTokens <= gm.MaxInputTokens
@@ -289,11 +355,14 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 					maxSeenWindow = gm.MaxInputTokens
 				}
 			}
-			if capOK && ctxOK {
+			if fullCapOK && ctxOK {
 				if stage3 != nil {
 					stage3 = append(stage3, d)
 				}
 				continue
+			}
+			if dropEnabled && nonDropCapOK && ctxOK {
+				stage3Partial = append(stage3Partial, d)
 			}
 			if stage3 == nil {
 				stage3 = make([]*domain.Deployment, i, len(candidates)-1)
@@ -302,12 +371,17 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 		}
 		if stage3 != nil {
 			if len(stage3) == 0 {
-				if capEligible == len(candidates) && ctxPruned == len(candidates) {
-					return nil, newContextWindowExhaustedError(estimatedTokens, maxSeenWindow)
+				if dropEnabled && len(stage3Partial) > 0 {
+					candidates = stage3Partial
+				} else {
+					if capEligible == len(candidates) && ctxPruned == len(candidates) {
+						return nil, false, newContextWindowExhaustedError(estimatedTokens, maxSeenWindow)
+					}
+					return nil, false, nil
 				}
-				return nil, nil
+			} else {
+				candidates = stage3
 			}
-			candidates = stage3
 		}
 	}
 
@@ -336,7 +410,7 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 			candidates = stage4
 		}
 		if len(candidates) == 0 {
-			return nil, nil
+			return nil, false, nil
 		}
 	}
 
@@ -363,21 +437,30 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 			candidates = stage5
 		}
 		if len(candidates) == 0 {
-			return nil, nil
+			return nil, false, nil
 		}
 	}
 
-	// Stage 6: Live RPM/TPM saturation gate across all routing strategies.
-	if lb != nil && hasCapacityLimits(candidates) {
-		candidates = filterByCapacity(lb, candidates, estimatedTokens, cfg.StrictCapacityFiltering, nowFn())
+	// Stage 6: Live RPM/TPM/ITPM/OTPM/MaxParallelRequests & PTU saturation gate across all routing strategies.
+	if (lb != nil && hasCapacityLimits(candidates)) || (slotLimiter != nil && hasParallelLimits(candidates)) {
+		var estOut int
+		if req != nil && req.MaxTokens != nil && *req.MaxTokens > 0 {
+			estOut = *req.MaxTokens
+		}
+		var slotCounts map[string]int
+		if slotLimiter != nil {
+			slotCounts = slotLimiter.ActiveCounts(ctx, candidates)
+		}
+		var sat bool
+		candidates, sat = filterByCapacityWithSlots(lb, candidates, estimatedTokens, estOut, cfg.StrictCapacityFiltering, snap, slotCounts, nowFn())
 		if len(candidates) == 0 {
-			return nil, nil
+			return nil, sat, nil
 		}
 	}
 	if priorityLimiter != nil && priorityLimiter.getPTURepo() != nil {
-		candidates = filterByPTUReservations(ctx, lb, priorityLimiter, candidates, estimatedTokens, nowFn())
+		candidates = filterByPTUReservationsWithSignals(ctx, lb, priorityLimiter, candidates, estimatedTokens, snap, nowFn())
 		if len(candidates) == 0 {
-			return nil, nil
+			return nil, true, nil
 		}
 	}
 
@@ -400,7 +483,7 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 			candidates = stage7
 		}
 		if len(candidates) == 0 {
-			return nil, nil
+			return nil, false, nil
 		}
 	}
 
@@ -419,17 +502,17 @@ func (p *FilterPipeline) FilterEligibleDeployments(
 			}
 			next, err := plugin.Filter(ctx, rc)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			rc.Candidates = next
 			candidates = next
 			if len(candidates) == 0 {
-				return nil, nil
+				return nil, false, nil
 			}
 		}
 	}
 
-	return candidates, nil
+	return candidates, false, nil
 }
 
 func isBaseEligibleDeployment(d *domain.Deployment, nowUTC time.Time) bool {
@@ -573,7 +656,16 @@ func matchSingleTag(depTags []string, pattern string) bool {
 
 func hasCapacityLimits(candidates []*domain.Deployment) bool {
 	for _, d := range candidates {
-		if d.RPMCapacity > 0 || d.TPMCapacity > 0 {
+		if d != nil && (d.RPMCapacity > 0 || d.TPMCapacity > 0 || d.ITPMCapacity > 0 || d.OTPMCapacity > 0 || d.MaxParallelRequests > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasParallelLimits(candidates []*domain.Deployment) bool {
+	for _, d := range candidates {
+		if d != nil && d.MaxParallelRequests > 0 {
 			return true
 		}
 	}
@@ -581,8 +673,29 @@ func hasCapacityLimits(candidates []*domain.Deployment) bool {
 }
 
 func filterByCapacity(lb *LoadBalancer, candidates []*domain.Deployment, estTokens int, strict bool, now time.Time) []*domain.Deployment {
+	res, _ := filterByCapacityWithSlots(lb, candidates, estTokens, 0, strict, nil, nil, now)
+	return res
+}
+
+func filterByCapacityWithSignals(lb *LoadBalancer, candidates []*domain.Deployment, estTokens int, strict bool, snap *SignalSnapshot, now time.Time) []*domain.Deployment {
+	res, _ := filterByCapacityWithSlots(lb, candidates, estTokens, 0, strict, snap, nil, now)
+	return res
+}
+
+func filterByCapacityWithSlots(
+	lb *LoadBalancer,
+	candidates []*domain.Deployment,
+	estInput int,
+	estOutput int,
+	strict bool,
+	snap *SignalSnapshot,
+	slotCounts map[string]int,
+	now time.Time,
+) ([]*domain.Deployment, bool) {
 	var signals map[string]deploymentTelemetry
-	if lb.redis != nil && lb.redis.Client() != nil {
+	if snap != nil && snap.signals != nil {
+		signals = snap.signals
+	} else if lb != nil && lb.redis != nil && lb.redis.Client() != nil {
 		shared, err := lb.readSharedSignals(candidates)
 		if err != nil {
 			lb.setSharedDegraded(true, "capacity_filter")
@@ -592,15 +705,25 @@ func filterByCapacity(lb *LoadBalancer, candidates []*domain.Deployment, estToke
 		}
 	}
 
-	if signals == nil {
+	if signals == nil && lb != nil {
 		lb.mu.RLock()
 		defer lb.mu.RUnlock()
 	}
 
 	var filtered []*domain.Deployment
+	anyParallelSat := false
 	for i, d := range candidates {
-		usedRPM, usedTPM := deploymentWindowUsage(lb, signals, d.ID, now)
-		if !isCapacitySaturated(d, usedRPM, usedTPM, estTokens) {
+		usedRPM, usedTPM, usedITPM, usedOTPM, inFlight := deploymentWindowCapacityMetrics(lb, signals, d.ID, now)
+		activeSlots := inFlight
+		if slotCounts != nil {
+			if cnt, ok := slotCounts[d.ID]; ok {
+				activeSlots = cnt
+			}
+		}
+		if parallelSaturated(d, activeSlots) {
+			anyParallelSat = true
+		}
+		if !isDeploymentCapacitySaturated(d, usedRPM, usedTPM, usedITPM, usedOTPM, activeSlots, estInput, estOutput) {
 			if filtered != nil {
 				filtered = append(filtered, d)
 			}
@@ -613,52 +736,84 @@ func filterByCapacity(lb *LoadBalancer, candidates []*domain.Deployment, estToke
 	}
 
 	if filtered == nil {
-		return candidates
+		return candidates, false
 	}
-	if len(filtered) == 0 && !strict {
-		// Non-strict safety fallback: avoid blackholing the group when all deployments appear saturated.
-		return candidates
+	if len(filtered) == 0 {
+		if strict || anyParallelSat {
+			return nil, true
+		}
+		// Non-strict safety fallback for soft RPM/TPM counters: avoid blackholing the group.
+		return candidates, true
 	}
-	return filtered
+	return filtered, false
 }
 
 func deploymentWindowUsage(lb *LoadBalancer, signals map[string]deploymentTelemetry, depID string, now time.Time) (int, int) {
+	rpm, tpm, _, _, _ := deploymentWindowCapacityMetrics(lb, signals, depID, now)
+	return rpm, tpm
+}
+
+func deploymentWindowCapacityMetrics(lb *LoadBalancer, signals map[string]deploymentTelemetry, depID string, now time.Time) (int, int, int, int, int) {
 	if signals != nil {
 		sig, ok := signals[depID]
 		if !ok {
-			return 0, 0
+			return 0, 0, 0, 0, 0
 		}
 		if sig.windowStart.IsZero() || now.Sub(sig.windowStart) < time.Minute {
-			return sig.usedRPM, sig.usedTPM
+			return sig.usedRPM, sig.usedTPM, sig.usedITPM, sig.usedOTPM, sig.inFlight
 		}
-		return 0, 0
+		return 0, 0, 0, 0, sig.inFlight
+	}
+	if lb == nil {
+		return 0, 0, 0, 0, 0
 	}
 	m, ok := lb.metrics[depID]
 	if !ok || m == nil {
-		return 0, 0
+		return 0, 0, 0, 0, 0
 	}
 	if m.windowStart.IsZero() || now.Sub(m.windowStart) < time.Minute {
-		return m.usedRPM, m.usedTPM
+		return m.usedRPM, m.usedTPM, m.usedITPM, m.usedOTPM, m.inFlight
 	}
-	return 0, 0
+	return 0, 0, 0, 0, m.inFlight
 }
 
-func isCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, estTokens int) bool {
+func parallelSaturated(d *domain.Deployment, activeSlots int) bool {
+	return d != nil && d.MaxParallelRequests > 0 && activeSlots >= d.MaxParallelRequests
+}
+
+func isDeploymentCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, usedITPM, usedOTPM, activeSlots, estInput, estOutput int) bool {
+	if d == nil {
+		return false
+	}
+	if parallelSaturated(d, activeSlots) {
+		return true
+	}
 	if d.RPMCapacity > 0 && usedRPM >= d.RPMCapacity {
 		return true
 	}
-	if d.TPMCapacity > 0 && usedTPM+estTokens > d.TPMCapacity {
+	if d.TPMCapacity > 0 && usedTPM+estInput+estOutput > d.TPMCapacity {
+		return true
+	}
+	if d.ITPMCapacity > 0 && usedITPM+estInput > d.ITPMCapacity {
+		return true
+	}
+	if d.OTPMCapacity > 0 && (usedOTPM+estOutput > d.OTPMCapacity || (estOutput == 0 && usedOTPM >= d.OTPMCapacity)) {
 		return true
 	}
 	return false
 }
 
-func filterByPTUReservations(
+func isCapacitySaturated(d *domain.Deployment, usedRPM, usedTPM, estTokens int) bool {
+	return isDeploymentCapacitySaturated(d, usedRPM, usedTPM, 0, 0, 0, estTokens, 0)
+}
+
+func filterByPTUReservationsWithSignals(
 	ctx context.Context,
 	lb *LoadBalancer,
 	limiter *DynamicPriorityLimiter,
 	candidates []*domain.Deployment,
 	estTokens int,
+	snap *SignalSnapshot,
 	now time.Time,
 ) []*domain.Deployment {
 	if limiter == nil || len(candidates) == 0 {
@@ -675,7 +830,12 @@ func filterByPTUReservations(
 			} else if d.TPMCapacity > 0 && alloc.AvailableTPMForTeam <= 0 {
 				exclude = true
 			} else if lb != nil && (d.RPMCapacity > 0 || d.TPMCapacity > 0) {
-				usedRPM, usedTPM := lb.DeploymentWindowUsage(d.ID, now)
+				var usedRPM, usedTPM int
+				if snap != nil && snap.signals != nil {
+					usedRPM, usedTPM = deploymentWindowUsage(lb, snap.signals, d.ID, now)
+				} else {
+					usedRPM, usedTPM = lb.DeploymentWindowUsage(d.ID, now)
+				}
 				if d.RPMCapacity > 0 && usedRPM >= alloc.AvailableRPMForTeam {
 					exclude = true
 				} else if d.TPMCapacity > 0 && usedTPM+estTokens > alloc.AvailableTPMForTeam {

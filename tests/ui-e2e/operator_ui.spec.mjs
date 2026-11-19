@@ -269,17 +269,21 @@ async function run() {
     await createTeamModal
       .locator('input[placeholder*="Member Perms"]')
       .fill('keys:create, keys:rotate');
+    await createTeamModal.locator('input[placeholder="Min Priority Rank"]').fill('2');
+    await createTeamModal.locator('input[placeholder="Allowed Routing Tags"]').fill('tier:fast, eu');
     await createTeamModal.getByRole('button', { name: 'Create', exact: true }).click();
 
     const teamRow = page.locator('tbody tr', { hasText: 'UI E2E Engineering' }).first();
     await teamRow.waitFor({ state: 'visible' });
 
-    // Verify team_member_permissions persisted when opening Edit Team modal
+    // Verify team_member_permissions and routing policies persisted when opening Edit Team modal
     await teamRow.locator('button[title="Edit"]').click();
     const editTeamModal = modalByTitle(page, 'Edit Team');
     await editTeamModal.waitFor({ state: 'visible' });
     const permsVal = await editTeamModal.locator('input[placeholder*="Member Perms"]').inputValue();
     assert.equal(permsVal, 'keys:create, keys:rotate', `expected persisted team_member_permissions, got: ${permsVal}`);
+    assert.equal(await editTeamModal.locator('input[placeholder="Min Priority Rank"]').inputValue(), '2');
+    assert.equal(await editTeamModal.locator('input[placeholder="Allowed Routing Tags"]').inputValue(), 'tier:fast, eu');
     await editTeamModal.getByRole('button', { name: 'Cancel' }).click();
 
     // Sync team member add & remove via Members modal
@@ -308,6 +312,7 @@ async function run() {
     await fieldControl(quotaModal, 'Scope Type').selectOption('model_per_key');
     await fieldControl(quotaModal, 'Scope ID *').fill(createdKeyId);
     await fieldControl(quotaModal, 'Model Pattern').fill('gpt-4o*');
+    await fieldControl(quotaModal, 'RPD').fill('250');
     await fieldControl(quotaModal, 'ITPM').fill('1200');
     await fieldControl(quotaModal, 'OTPM').fill('600');
     await fieldControl(quotaModal, 'TPD').fill('50000');
@@ -315,6 +320,7 @@ async function run() {
 
     const quotaRow = page.locator('tbody tr', { hasText: createdKeyId }).filter({ hasText: 'gpt-4o*' }).first();
     await quotaRow.waitFor({ state: 'visible' });
+    await quotaRow.getByText(/RPD:250/).waitFor({ state: 'visible' });
     await quotaRow.getByText('I:1200 O:600 D:50000').waitFor({ state: 'visible' });
 
     await page.getByRole('button', { name: 'Upsert Window' }).click();
@@ -350,6 +356,86 @@ async function run() {
     await page.locator('tbody tr', { hasText: createdKeyId }).filter({ hasText: 'gpt-4o*' }).first().waitFor({ state: 'visible' });
     await page.locator('tbody tr', { hasText: createdKeyId }).filter({ hasText: 'rolling_24h' }).first().waitFor({ state: 'visible' });
     await page.locator('tbody tr', { hasText: 'ui-e2e-llm-key' }).first().getByText(/\+\$10\.00 until/i).waitFor({ state: 'visible' });
+
+    // Check 5a: ModelsView Model Group Edit/Delete & Deployment Edit/Drain/Delete
+    await adminAPI('/admin/v1/catalogue/import?provider=openai', 'POST');
+    const catList = await adminAPI('/admin/v1/catalogue');
+    const sampleModelId = catList.json?.data?.find((m) => m.provider === 'openai')?.id || 'openai/gpt-4o-mini';
+    const credRes = await adminAPI('/admin/v1/credentials', 'POST', {
+      org_id: orgId,
+      provider: 'openai',
+      name: `ui-e2e-openai-${suffix}`,
+      api_key: 'sk-ui-e2e-mock-key-1234',
+    });
+    assert.equal(credRes.status, 201, `expected 201 creating credential: ${credRes.text}`);
+
+    await page.locator('aside button', { hasText: 'Models & Routing' }).click();
+    await page.locator('button', { hasText: /^Routing Topologies/ }).click();
+
+    await page.getByRole('button', { name: 'New Model Group' }).click();
+    const createGroupModal = modalByTitle(page, 'Create Model Group Alias');
+    await createGroupModal.waitFor({ state: 'visible' });
+    await fieldControl(createGroupModal, 'Alias Name *').fill('ui-e2e-route-group');
+    await createGroupModal.getByLabel('Drop Unsupported Params').check();
+    await createGroupModal.getByRole('button', { name: 'Create Model Group' }).click();
+
+    const groupCard = page.locator('div.rounded-xl', { hasText: 'ui-e2e-route-group' }).first();
+    await groupCard.waitFor({ state: 'visible' });
+    await groupCard.getByText('drop-params', { exact: true }).waitFor({ state: 'visible' });
+
+    await groupCard.locator('button[title="Edit Model Group"]').click();
+    const editGroupModal = modalByTitle(page, 'Edit Model Group Alias');
+    await editGroupModal.waitFor({ state: 'visible' });
+    await editGroupModal.getByLabel('Disable Cooldowns').check();
+    await editGroupModal.getByRole('button', { name: 'Save Changes' }).click();
+    await groupCard.getByText('no-cooldown', { exact: true }).waitFor({ state: 'visible' });
+
+    await groupCard.getByRole('button', { name: 'Add Deployment' }).click();
+    const addDepModal = modalByTitle(page, 'Add Deployment to Model Group');
+    await addDepModal.waitFor({ state: 'visible' });
+    await fieldControl(addDepModal, 'Global Model ID *').fill(sampleModelId);
+    // Test default "Auto-resolve org credential" when exactly one matching OpenAI credential exists.
+    assert.equal(await fieldControl(addDepModal, 'Provider Credential (optional)').inputValue(), '');
+    await fieldControl(addDepModal, 'Max Parallel').fill('4');
+    await addDepModal.getByRole('button', { name: 'Add Deployment' }).click();
+
+    await groupCard.getByText('Par:4', { exact: true }).waitFor({ state: 'visible' });
+    await groupCard.locator('button[title="Drain Deployment"]').click();
+    await groupCard.getByText('disabled', { exact: true }).waitFor({ state: 'visible' });
+
+    await groupCard.locator('button[title="Edit Deployment"]').click();
+    const editDepModal = modalByTitle(page, 'Edit Deployment');
+    await editDepModal.waitFor({ state: 'visible' });
+    assert.equal(await fieldControl(editDepModal, 'Status').inputValue(), 'disabled');
+    await fieldControl(editDepModal, 'Priority Tier').fill('2');
+    await editDepModal.getByRole('button', { name: 'Save Deployment' }).click();
+    await groupCard.getByText('P:2', { exact: true }).waitFor({ state: 'visible' });
+
+    page.once('dialog', (d) => d.accept());
+    await groupCard.locator('button[title="Delete Deployment"]').click();
+    await groupCard.getByText(/No child deployments attached/i).waitFor({ state: 'visible' });
+
+    page.once('dialog', (d) => d.accept());
+    await groupCard.locator('button[title="Delete Model Group"]').click();
+    await groupCard.waitFor({ state: 'hidden' });
+
+    // Check 5a-bis: Named Guardrail Registry sensitive_route_target persistence
+    await page.locator('aside button', { hasText: 'Guardrails' }).click();
+    await page.getByRole('button', { name: 'Named Guardrails & Registry' }).click();
+    await page.getByRole('button', { name: 'New Guardrail' }).click();
+    const defModal = modalByTitle(page, 'Create Named Guardrail');
+    await defModal.waitFor({ state: 'visible' });
+    await defModal.locator('input[placeholder="e.g. prod-pii-presidio"]').fill(`ui-e2e-route-guard-${suffix}`);
+    await defModal.locator('input[placeholder="e.g. private-local"]').fill('private-local');
+    await defModal.getByRole('button', { name: 'Create Guardrail' }).click();
+    const defCard = page.locator('div.rounded-lg', { hasText: `ui-e2e-route-guard-${suffix}` }).first();
+    await defCard.waitFor({ state: 'visible' });
+    await defCard.getByText('route:private-local', { exact: true }).waitFor({ state: 'visible' });
+    await defCard.getByRole('button', { name: 'Edit' }).click();
+    const editDefModal = modalByTitle(page, /Edit Guardrail:/);
+    await editDefModal.waitFor({ state: 'visible' });
+    assert.equal(await editDefModal.locator('input[placeholder="e.g. private-local"]').inputValue(), 'private-local');
+    await editDefModal.getByRole('button', { name: 'Cancel' }).click();
 
     // Check 5b: ConfigView Rotate KEK visibility & execution for platform_admin
     await page.locator('aside button', { hasText: 'Gateway Config' }).click();

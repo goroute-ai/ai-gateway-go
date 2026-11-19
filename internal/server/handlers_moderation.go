@@ -34,8 +34,9 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	}
 
 	var raw struct {
-		Model string `json:"model"`
-		Input any    `json:"input"`
+		Model             string                    `json:"model"`
+		Input             any                       `json:"input"`
+		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -89,7 +90,12 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	if rejectBudgetedUnsupported(w, idCtx, s.budgetStats) {
 		return
 	}
-	guardedInputs, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, inputs...)
+	if gwErr := s.applyRoutingHints(r, idCtx, &raw.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	guardedInputs, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &model, raw.GoRouteExtensions, "moderation", inputs...)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
@@ -98,7 +104,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	// Estimate the actual text volume, not only the number of input elements.
 	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, raw.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
@@ -108,14 +114,16 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	}
 
 	modReq := &domain.CanonicalModerationRequest{
-		RequestID: reqID,
-		Model:     model,
-		Input:     inputs,
+		RequestID:         reqID,
+		Model:             model,
+		Input:             inputs,
+		GoRouteExtensions: raw.GoRouteExtensions,
 	}
 
 	resp, meta, err := s.reliability.ExecuteModeration(r.Context(), idCtx, modReq)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
@@ -153,6 +161,7 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string

@@ -1,7 +1,7 @@
 -- Atomic 2-Phase All-or-Nothing Multi-Descriptor Rate Limiter & Budget Guard
 -- Every key in KEYS MUST carry the same {org:<orgID>} Redis Cluster hash tag.
 --
--- Per-descriptor KEYS (12 keys per descriptor idx = 0..count-1, kbase = idx * 12):
+-- Per-descriptor KEYS (13 keys per descriptor idx = 0..count-1, kbase = idx * 13):
 --   KEYS[kbase + 1]:  rpm_key         (60s minute bucket)
 --   KEYS[kbase + 2]:  tpm_key         (60s minute bucket)
 --   KEYS[kbase + 3]:  itpm_key        (60s minute bucket)
@@ -14,8 +14,9 @@
 --   KEYS[kbase + 10]: res_sum_key     (O(1) active reserved micro-dollars sum)
 --   KEYS[kbase + 11]: res_amounts_key (request_id -> reserved micro-dollars hash)
 --   KEYS[kbase + 12]: r24h_zset_key   (trailing 24h timestamped spend sorted set)
+--   KEYS[kbase + 13]: rpd_key         (86,400s UTC day request count bucket)
 --
--- KEYS[count * 12 + 1]: unique admission receipt for Redis command retries.
+-- KEYS[count * 13 + 1]: unique admission receipt for Redis command retries.
 --
 -- Fixed header ARGV[1..10]:
 --   ARGV[1]: count (number of descriptors)
@@ -29,7 +30,7 @@
 --   ARGV[9]: reservation_ttl_sec (TTL for budget reservation lease)
 --   ARGV[10]: rolling_now_ms (optional unix millisecond timestamp for trailing 24h windows)
 --
--- Per-descriptor ARGV (13 args per descriptor idx = 0..count-1, abase = 10 + idx * 13):
+-- Per-descriptor ARGV (14 args per descriptor idx = 0..count-1, abase = 10 + idx * 14):
 --   ARGV[abase + 1]:  scope_upper (e.g. "KEY", "TEAM", "AGENT_SESSION", "MODEL_PER_KEY")
 --   ARGV[abase + 2]:  rpm_limit
 --   ARGV[abase + 3]:  tpm_limit
@@ -43,8 +44,9 @@
 --   ARGV[abase + 11]: spent_floor_micros
 --   ARGV[abase + 12]: is_rolling_24h (1 or 0)
 --   ARGV[abase + 13]: has_rolling_init (1 or 0)
+--   ARGV[abase + 14]: rpd_limit
 --
--- Trailing cold-init payload after fixed table (starting at 10 + count * 13 + 1):
+-- Trailing cold-init payload after fixed table (starting at 10 + count * 14 + 1):
 --   For each descriptor in order with has_rolling_init == 1:
 --     entry_count, followed by entry_count triples of (entry_id, ts_ms, amount_micros)
 
@@ -53,7 +55,7 @@ if count <= 0 then
     return {1, "OK", 0, 0, 0, 0, 0, 0}
 end
 
-local receipt_key = KEYS[count * 12 + 1]
+local receipt_key = KEYS[count * 13 + 1]
 if receipt_key and receipt_key ~= "" and redis.call("EXISTS", receipt_key) == 1 then
     return {1, "OK"}
 end
@@ -119,11 +121,11 @@ end
 local pending_add = {}
 local pending_res = {}
 local rolling_init_entries = {}
-local init_ptr = 10 + count * 13 + 1
+local init_ptr = 10 + count * 14 + 1
 
 for idx = 0, count - 1 do
-    local kbase = idx * 12
-    local abase = 10 + idx * 13
+    local kbase = idx * 13
+    local abase = 10 + idx * 14
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -137,6 +139,7 @@ for idx = 0, count - 1 do
     local res_sum = KEYS[kbase + 10]
     local res_amounts = KEYS[kbase + 11]
     local r24h_zset = KEYS[kbase + 12]
+    local rpd_key = KEYS[kbase + 13]
 
     local scope = ARGV[abase + 1] or "DESCRIPTOR"
     local rpm_limit = tonumber(ARGV[abase + 2]) or 0
@@ -151,6 +154,7 @@ for idx = 0, count - 1 do
     local spent_floor = tonumber(ARGV[abase + 11]) or 0
     local is_rolling = tonumber(ARGV[abase + 12]) or 0
     local has_rolling_init = tonumber(ARGV[abase + 13]) or 0
+    local rpd_limit = tonumber(ARGV[abase + 14]) or 0
 
     if has_rolling_init == 1 then
         local n = tonumber(ARGV[init_ptr]) or 0
@@ -207,6 +211,14 @@ for idx = 0, count - 1 do
             return {0, scope .. "_TPD_EXCEEDED", cur, tpd_limit, retry_day}
         end
         pending_add[tpd_key] = (pending_add[tpd_key] or 0) + est_total
+    end
+
+    if rpd_limit > 0 then
+        local cur = tonumber(redis.call("GET", rpd_key) or "0") + (pending_add[rpd_key] or 0)
+        if (cur + 1) > rpd_limit then
+            return {0, scope .. "_RPD_EXCEEDED", cur, rpd_limit, retry_day}
+        end
+        pending_add[rpd_key] = (pending_add[rpd_key] or 0) + 1
     end
 
     if max_conc > 0 then
@@ -329,8 +341,8 @@ local function track_tok(limit, val)
 end
 
 for idx = 0, count - 1 do
-    local kbase = idx * 12
-    local abase = 10 + idx * 13
+    local kbase = idx * 13
+    local abase = 10 + idx * 14
 
     local rpm_key = KEYS[kbase + 1]
     local tpm_key = KEYS[kbase + 2]
@@ -344,6 +356,7 @@ for idx = 0, count - 1 do
     local res_sum = KEYS[kbase + 10]
     local res_amounts = KEYS[kbase + 11]
     local r24h_zset = KEYS[kbase + 12]
+    local rpd_key = KEYS[kbase + 13]
 
     local scope = ARGV[abase + 1]
     local rpm_limit = tonumber(ARGV[abase + 2]) or 0
@@ -357,10 +370,7 @@ for idx = 0, count - 1 do
     local max_budget = tonumber(ARGV[abase + 10]) or 0
     local spent_floor = tonumber(ARGV[abase + 11]) or 0
     local is_rolling = tonumber(ARGV[abase + 12]) or 0
-    local res_zset = KEYS[kbase + 9]
-    local res_sum = KEYS[kbase + 10]
-    local res_amounts = KEYS[kbase + 11]
-    local r24h_zset = KEYS[kbase + 12]
+    local rpd_limit = tonumber(ARGV[abase + 14]) or 0
 
     if rpm_limit > 0 then
         track_req(rpm_limit, incr_ttl(rpm_key, 1, window_ttl))
@@ -376,6 +386,9 @@ for idx = 0, count - 1 do
     end
     if tpd_limit > 0 and est_total > 0 then
         incr_ttl(tpd_key, est_total, tpd_ttl)
+    end
+    if rpd_limit > 0 then
+        incr_ttl(rpd_key, 1, tpd_ttl)
     end
     if max_conc > 0 and request_id ~= "" then
         redis.call("ZADD", zconc_key, now + conc_ttl, request_id)

@@ -513,6 +513,18 @@ type localWindowCounter struct {
 	tpm    int
 }
 
+type cachedPTUShares struct {
+	shares    []*domain.DeploymentPTUShare
+	rev       uint64
+	expiresAt time.Time
+}
+
+type cachedPriorityClasses struct {
+	classes   map[string]*domain.PriorityClass
+	rev       uint64
+	expiresAt time.Time
+}
+
 // DynamicPriorityLimiter implements saturation-aware dynamic priority capacity sharing
 // across active callers and enforces dedicated PTU team shares on deployments.
 type DynamicPriorityLimiter struct {
@@ -525,6 +537,10 @@ type DynamicPriorityLimiter struct {
 	localMu            sync.Mutex
 	localPriorityUsage map[string]*localWindowCounter
 	localPTUUsage      map[string]*localWindowCounter
+
+	metaMu             sync.RWMutex
+	ptuShareCache      map[string]cachedPTUShares
+	priorityClassCache map[string]cachedPriorityClasses
 }
 
 // NewDynamicPriorityLimiter creates a DynamicPriorityLimiter with optional Redis and PTU repository backing.
@@ -588,6 +604,41 @@ func (d *DynamicPriorityLimiter) SetPTUShareRepository(repo storage.PTUShareRepo
 	d.localMu.Lock()
 	d.ptuRepo = repo
 	d.localMu.Unlock()
+	d.InvalidateCache(storage.InvalidationEvent{EntityType: "all"})
+}
+
+// InvalidateCache clears L1-cached PTU shares and priority class definitions.
+func (d *DynamicPriorityLimiter) InvalidateCache(ev storage.InvalidationEvent) {
+	if d == nil {
+		return
+	}
+	d.metaMu.Lock()
+	defer d.metaMu.Unlock()
+	switch strings.ToLower(strings.TrimSpace(ev.EntityType)) {
+	case "ptu_share", "deployment":
+		if ev.EntityID != "" && d.ptuShareCache != nil {
+			delete(d.ptuShareCache, ev.EntityID)
+		} else {
+			d.ptuShareCache = nil
+		}
+	case "priority_class":
+		if ev.OrgID != "" && d.priorityClassCache != nil {
+			delete(d.priorityClassCache, ev.OrgID)
+		} else {
+			d.priorityClassCache = nil
+		}
+	default:
+		if ev.EntityID != "" && d.ptuShareCache != nil {
+			delete(d.ptuShareCache, ev.EntityID)
+		} else {
+			d.ptuShareCache = nil
+		}
+		if ev.OrgID != "" && d.priorityClassCache != nil {
+			delete(d.priorityClassCache, ev.OrgID)
+		} else {
+			d.priorityClassCache = nil
+		}
+	}
 }
 
 func (d *DynamicPriorityLimiter) getPTURepo() storage.PTUShareRepository {
@@ -653,20 +704,83 @@ func (d *DynamicPriorityLimiter) ResolvePriorityClassName(ctx context.Context, i
 
 func (d *DynamicPriorityLimiter) loadKnownClasses(ctx context.Context, orgID string) map[string]*domain.PriorityClass {
 	repo := d.getPTURepo()
-	if repo == nil || strings.TrimSpace(orgID) == "" {
+	orgID = strings.TrimSpace(orgID)
+	if repo == nil || orgID == "" {
 		return nil
 	}
-	list, err := repo.ListPriorityClasses(ctx, orgID)
-	if err != nil || len(list) == 0 {
-		return nil
+	now := d.currentNow()
+	var rev uint64
+	if rp, ok := repo.(storage.RoutingRevisionProvider); ok {
+		rev = rp.RoutingRevision()
 	}
-	out := make(map[string]*domain.PriorityClass, len(list))
-	for _, pc := range list {
-		if pc != nil {
-			out[normalizeClassName(pc.Name)] = pc
+	d.metaMu.RLock()
+	if d.priorityClassCache != nil {
+		if ent, ok := d.priorityClassCache[orgID]; ok && now.Before(ent.expiresAt) && (rev == 0 || ent.rev == rev) {
+			d.metaMu.RUnlock()
+			return ent.classes
 		}
 	}
+	d.metaMu.RUnlock()
+
+	list, err := repo.ListPriorityClasses(ctx, orgID)
+	if err != nil {
+		return nil
+	}
+	var out map[string]*domain.PriorityClass
+	if len(list) > 0 {
+		out = make(map[string]*domain.PriorityClass, len(list))
+		for _, pc := range list {
+			if pc != nil {
+				out[normalizeClassName(pc.Name)] = pc
+			}
+		}
+	}
+	d.metaMu.Lock()
+	if d.priorityClassCache == nil {
+		d.priorityClassCache = make(map[string]cachedPriorityClasses)
+	}
+	d.priorityClassCache[orgID] = cachedPriorityClasses{
+		classes:   out,
+		rev:       rev,
+		expiresAt: now.Add(defaultRoutingL1CacheTTL),
+	}
+	d.metaMu.Unlock()
 	return out
+}
+
+func (d *DynamicPriorityLimiter) listDeploymentPTUSharesCached(ctx context.Context, repo storage.PTUShareRepository, depID string) ([]*domain.DeploymentPTUShare, error) {
+	if repo == nil || depID == "" {
+		return nil, nil
+	}
+	now := d.currentNow()
+	var rev uint64
+	if rp, ok := repo.(storage.RoutingRevisionProvider); ok {
+		rev = rp.RoutingRevision()
+	}
+	d.metaMu.RLock()
+	if d.ptuShareCache != nil {
+		if ent, ok := d.ptuShareCache[depID]; ok && now.Before(ent.expiresAt) && (rev == 0 || ent.rev == rev) {
+			d.metaMu.RUnlock()
+			return ent.shares, nil
+		}
+	}
+	d.metaMu.RUnlock()
+
+	shares, err := repo.ListDeploymentPTUShares(ctx, depID)
+	if err != nil {
+		return nil, err
+	}
+	d.metaMu.Lock()
+	if d.ptuShareCache == nil {
+		d.ptuShareCache = make(map[string]cachedPTUShares)
+	}
+	d.ptuShareCache[depID] = cachedPTUShares{
+		shares:    shares,
+		rev:       rev,
+		expiresAt: now.Add(defaultRoutingL1CacheTTL),
+	}
+	d.metaMu.Unlock()
+	return shares, nil
 }
 
 // EvaluateAllowance computes the caller's Generous or Strict capacity allowance
@@ -888,7 +1002,7 @@ func (d *DynamicPriorityLimiter) EvaluateDeploymentPTU(ctx context.Context, dep 
 	if repo == nil || strings.TrimSpace(dep.ID) == "" {
 		return alloc, nil
 	}
-	shares, err := repo.ListDeploymentPTUShares(ctx, dep.ID)
+	shares, err := d.listDeploymentPTUSharesCached(ctx, repo, strings.TrimSpace(dep.ID))
 	if err != nil || len(shares) == 0 {
 		return alloc, err
 	}
@@ -940,7 +1054,7 @@ func (d *DynamicPriorityLimiter) AcquirePTUShare(ctx context.Context, orgID, dep
 		return &PTUShareCheckResult{Allowed: true}, nil
 	}
 
-	shares, err := repo.ListDeploymentPTUShares(ctx, depID)
+	shares, err := d.listDeploymentPTUSharesCached(ctx, repo, depID)
 	if err != nil {
 		return nil, err
 	}

@@ -75,6 +75,7 @@ type PipelineOutcome struct {
 	LegacyOutcome *CheckOutcome
 	Redacted      bool
 	AppliedAction domain.GuardrailAction
+	RouteTarget   string
 	Violations    []string
 }
 
@@ -219,6 +220,11 @@ func (p *Pipeline) EvaluatePreCall(ctx context.Context, prc PipelineRequestConte
 		}
 
 		loggingOnly := isCandidateLoggingOnly(cand, res)
+		if !loggingOnly && res != nil && strings.TrimSpace(res.RouteTarget) == "" &&
+			cand != nil && cand.Definition != nil && strings.TrimSpace(cand.Definition.SensitiveRouteTarget) != "" &&
+			res.Decision != domain.GuardrailDecisionAllow && res.Decision != domain.GuardrailDecisionBlock {
+			res.RouteTarget = strings.TrimSpace(cand.Definition.SensitiveRouteTarget)
+		}
 		outcome.mergeDriverResult(rg.Name, res, loggingOnly)
 		if loggingOnly {
 			continue
@@ -1176,6 +1182,9 @@ func (o *PipelineOutcome) mergeLegacyOutcome(legacy *CheckOutcome) {
 	if legacy.AppliedAction != "" {
 		o.AppliedAction = legacy.AppliedAction
 	}
+	if strings.TrimSpace(legacy.RouteTarget) != "" {
+		o.RouteTarget = strings.TrimSpace(legacy.RouteTarget)
+	}
 	o.Violations = append(o.Violations, legacy.Violations...)
 }
 
@@ -1229,6 +1238,13 @@ func (o *PipelineOutcome) mergeDriverResult(guardrailName string, res *domain.Gu
 	}
 	if len(res.ModifiedToolCalls) > 0 {
 		o.Result.ModifiedToolCalls = cloneToolCalls(res.ModifiedToolCalls)
+	}
+	if target := strings.TrimSpace(res.RouteTarget); target != "" && res.Decision != domain.GuardrailDecisionBlock {
+		o.RouteTarget = target
+		o.Result.RouteTarget = target
+		if o.AppliedAction == "" {
+			o.AppliedAction = domain.GuardrailActionRoute
+		}
 	}
 }
 
@@ -1419,6 +1435,11 @@ func (p *Pipeline) EvaluateResolvedInput(
 			p.auditHook(ctx, hook, prc, res)
 		}
 		loggingOnly := isCandidateLoggingOnly(cand, res)
+		if !loggingOnly && res != nil && hook == domain.GuardrailHookPreCall && strings.TrimSpace(res.RouteTarget) == "" &&
+			cand != nil && cand.Definition != nil && strings.TrimSpace(cand.Definition.SensitiveRouteTarget) != "" &&
+			res.Decision != domain.GuardrailDecisionAllow && res.Decision != domain.GuardrailDecisionBlock {
+			res.RouteTarget = strings.TrimSpace(cand.Definition.SensitiveRouteTarget)
+		}
 		outcome.mergeDriverResult(rg.Name, res, loggingOnly)
 		if loggingOnly || res == nil {
 			continue

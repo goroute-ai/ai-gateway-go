@@ -14,6 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/finops"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"nhooyr.io/websocket"
@@ -40,6 +41,13 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 
 	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
 		domain.WriteHTTPError(w, err)
+		return
+	}
+
+	var baseSessionExt *domain.GoRouteExtensions
+	if gwErr := s.applyRoutingHints(r, idCtx, &baseSessionExt); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 
@@ -83,13 +91,20 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		Voice:             "alloy",
 		InputAudioFormat:  "pcm16",
 		OutputAudioFormat: "pcm16",
+		GoRouteExtensions: baseSessionExt.Clone(),
+	}
+	if sessionConfig.GoRouteExtensions == nil {
+		sessionConfig.GoRouteExtensions = &domain.GoRouteExtensions{}
+	}
+	if strings.TrimSpace(sessionConfig.GoRouteExtensions.SessionID) == "" {
+		sessionConfig.GoRouteExtensions.SessionID = sessionID
 	}
 
 	var sessionMu sync.Mutex
 	var writeMu sync.Mutex
 	history := make([]domain.CanonicalMessage, 0)
 
-	rtQCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, r.URL.Query().Get("user"), nil, nil)
+	rtQCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, r.URL.Query().Get("user"), nil, sessionConfig.GoRouteExtensions)
 	sessionCtx, sessionCancel := context.WithCancel(rtQCtx)
 	defer sessionCancel()
 
@@ -162,10 +177,12 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				} `json:"content"`
 			} `json:"item,omitempty"`
 			Response *struct {
-				MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
-				MaxTokens       *int `json:"max_tokens,omitempty"`
+				MaxOutputTokens   *int                      `json:"max_output_tokens,omitempty"`
+				MaxTokens         *int                      `json:"max_tokens,omitempty"`
+				GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 			} `json:"response,omitempty"`
-			Audio string `json:"audio,omitempty"`
+			Audio             string                    `json:"audio,omitempty"`
+			GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 		}
 
 		if err := json.Unmarshal(data, &clientEv); err != nil {
@@ -195,8 +212,17 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "unsupported_feature", "message": "This gateway Realtime endpoint currently supports text modality only"}})
 				continue
 			}
+			var hintErr *domain.GatewayError
 			sessionMu.Lock()
-			if clientEv.Session != nil {
+			if clientEv.Session != nil && clientEv.Session.GoRouteExtensions != nil {
+				merged := mergeGoRouteExtensions(sessionConfig.GoRouteExtensions, clientEv.Session.GoRouteExtensions)
+				if gwErr := s.applyRoutingHints(r, idCtx, &merged); gwErr != nil {
+					hintErr = gwErr
+				} else {
+					sessionConfig.GoRouteExtensions = merged
+				}
+			}
+			if hintErr == nil && clientEv.Session != nil {
 				if len(clientEv.Session.Modalities) > 0 {
 					textOnly := true
 					for _, modality := range clientEv.Session.Modalities {
@@ -219,6 +245,10 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				}
 			}
 			sessionMu.Unlock()
+			if hintErr != nil {
+				_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(hintErr))
+				continue
+			}
 
 			_ = sendEvent(r.Context(), map[string]any{
 				"event_id": "event_" + uuid.NewString(),
@@ -293,16 +323,28 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 			}
 			reqMsgs = append(reqMsgs, history...)
 			temp := sessionConfig.Temperature
+			sessionExt := sessionConfig.GoRouteExtensions.Clone()
 			sessionMu.Unlock()
 			if len(reqMsgs) == 0 {
 				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "invalid_request_error", "message": "response.create requires text input"}})
 				continue
 			}
 
+			var turnExt *domain.GoRouteExtensions
+			if clientEv.GoRouteExtensions != nil {
+				turnExt = clientEv.GoRouteExtensions
+			}
+			if clientEv.Response != nil && clientEv.Response.GoRouteExtensions != nil {
+				turnExt = mergeGoRouteExtensions(turnExt, clientEv.Response.GoRouteExtensions)
+			}
+			mergedExt := mergeGoRouteExtensions(sessionExt, turnExt)
+			turnReqID := sessionID + "_turn_" + uuid.NewString()
 			chatReq := &domain.CanonicalChatRequest{
-				Model:       model,
-				Messages:    reqMsgs,
-				Temperature: temp,
+				RequestID:         turnReqID,
+				Model:             model,
+				Messages:          reqMsgs,
+				Temperature:       temp,
+				GoRouteExtensions: mergedExt,
 			}
 			maxOutput := 0
 			if clientEv.Response != nil {
@@ -320,14 +362,26 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				chatReq.MaxTokens = &maxOutput
 			}
 
-			if _, guardrailErr := s.guardrails.EvaluateInput(r.Context(), idCtx.OrgID, chatReq); guardrailErr != nil {
-				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Request rejected by organization guardrail policy"}})
+			if gwErr := s.applyChatRoutingHints(r, idCtx, chatReq); gwErr != nil {
+				s.collector.Record(admissionFailureObservation(gwErr))
+				_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
+				continue
+			}
+			origTurnModel := chatReq.Model
+			prc, _, guardrailErr := s.evaluateChatInputGuardrails(sessionCtx, nil, r, idCtx, chatReq, "realtime")
+			if guardrailErr != nil {
+				var gwErr *domain.GatewayError
+				if errors.As(guardrailErr, &gwErr) {
+					_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
+				} else {
+					_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Request rejected by organization guardrail policy"}})
+				}
 				continue
 			}
 
 			estTokens := ratelimit.EstimateRequestTokens(chatReq)
 			budgetInputTokens := estTokens
-			if s.requestHasBudget(sessionCtx, idCtx, model) {
+			if s.requestHasBudget(sessionCtx, idCtx, chatReq.Model) {
 				if encoded, encodeErr := json.Marshal(chatReq); encodeErr != nil {
 					_ = sendEvent(r.Context(), map[string]any{
 						"event_id": "event_" + uuid.NewString(),
@@ -394,7 +448,8 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 			turnIDCtx.UserMaxConcurrent = 0
 			turnIDCtx.OrgMaxConcurrent = 0
 
-			resp, err := s.executeRealtimeTurn(sessionCtx, &turnIDCtx, sessionID, model, chatReq, estTokens, budgetInputTokens, maxOutput, onAdmitted)
+			turnCtx, _ := withRequestQuotaState(sessionCtx, r, idCtx, r.URL.Query().Get("user"), nil, chatReq.GoRouteExtensions)
+			resp, err := s.executeRealtimeTurn(turnCtx, &turnIDCtx, sessionID, origTurnModel, turnReqID, prc, chatReq, estTokens, budgetInputTokens, maxOutput, onAdmitted)
 			if err != nil {
 				errPayload := map[string]any{
 					"type":    "execution_error",
@@ -420,14 +475,19 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 				continue
 			}
 
+			if _, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), nil, prc, resp, "realtime"); sanitizeErr != nil {
+				var gwErr *domain.GatewayError
+				if errors.As(sanitizeErr, &gwErr) {
+					_ = sendEvent(r.Context(), realtimeGatewayErrorEvent(gwErr))
+				} else {
+					_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Response withheld by organization guardrail policy"}})
+				}
+				continue
+			}
+			s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
 			replyContent := ""
 			if len(resp.Choices) > 0 {
 				replyContent = resp.Choices[0].Message.Content
-			}
-			replyContent, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, replyContent)
-			if err != nil {
-				_ = sendEvent(r.Context(), map[string]any{"event_id": "event_" + uuid.NewString(), "type": "error", "error": map[string]any{"type": "guardrail_error", "message": "Response withheld by organization guardrail policy"}})
-				continue
 			}
 
 			// response.text.delta
@@ -505,7 +565,9 @@ func (s *GatewayServer) executeRealtimeTurn(
 	ctx context.Context,
 	idCtx *domain.IdentityContext,
 	sessionID string,
-	model string,
+	requestedModel string,
+	turnReqID string,
+	prc guardrails.PipelineRequestContext,
 	chatReq *domain.CanonicalChatRequest,
 	estTokens int,
 	budgetInputTokens int,
@@ -517,11 +579,17 @@ func (s *GatewayServer) executeRealtimeTurn(
 		turnState.Tags = append([]string(nil), state.Tags...)
 		ctx = context.WithValue(ctx, requestQuotaStateContextKey{}, &turnState)
 	}
-	turnReqID := sessionID + "_turn_" + uuid.NewString()
+	if strings.TrimSpace(turnReqID) == "" {
+		turnReqID = sessionID + "_turn_" + uuid.NewString()
+	}
+	effectiveModel := requestedModel
+	if chatReq != nil && strings.TrimSpace(chatReq.Model) != "" {
+		effectiveModel = chatReq.Model
+	}
 	var releaseTurnQuota func(actualInput, actualOutput int, overrideCostMicros int64)
 	if s.limiter != nil {
 		var quotaErr error
-		releaseTurnQuota, quotaErr = s.acquireRequestQuotaWithUsage(ctx, idCtx, model, estTokens, budgetInputTokens, maxOutput, turnReqID)
+		releaseTurnQuota, quotaErr = s.acquireRequestQuotaWithUsage(ctx, idCtx, effectiveModel, estTokens, budgetInputTokens, maxOutput, turnReqID)
 		if quotaErr != nil {
 			return nil, quotaErr
 		}
@@ -532,21 +600,35 @@ func (s *GatewayServer) executeRealtimeTurn(
 		reqID:          turnReqID,
 		endpoint:       "/v1/realtime",
 		modality:       domain.ModalityRealtime,
-		requestedModel: model,
+		requestedModel: requestedModel,
 		estTokens:      estTokens,
 		reqCtx:         ctx,
 		releaseUsage:   releaseTurnQuota,
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
+	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(ctx, prc, chatReq)
+	if duringInitErr != nil {
+		return nil, duringInitErr
+	}
+	if duringHandle != nil {
+		defer duringHandle.Close()
+	}
+
 	if onAdmitted != nil {
 		onAdmitted()
 	}
 
-	ctx = quotaSettlement.trackDispatch(ctx)
-	resp, meta, err := s.reliability.ExecuteChat(ctx, idCtx, chatReq)
+	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
+	if _, duringErr := duringHandle.Wait(ctx); duringErr != nil {
+		if quotaSettlement.dispatchErr == nil {
+			quotaSettlement.dispatchErr = duringErr
+		}
+		return nil, duringErr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +637,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 	var depID string
 	var provider domain.ProviderType
 	var pricingVer int
-	resolvedModel := model
+	resolvedModel := effectiveModel
 	if meta != nil && meta.WinningDeployment != nil {
 		depID = meta.WinningDeployment.ID
 		gm = meta.WinningDeployment.GlobalModel
@@ -602,7 +684,7 @@ func (s *GatewayServer) executeRealtimeTurn(
 			VirtualKeyID:            idCtx.VirtualKeyID,
 			Endpoint:                "/v1/realtime",
 			Modality:                domain.ModalityRealtime,
-			RequestedModel:          model,
+			RequestedModel:          requestedModel,
 			ResolvedModel:           resolvedModel,
 			Provider:                provider,
 			DeploymentID:            depID,
@@ -629,4 +711,78 @@ func (s *GatewayServer) executeRealtimeTurn(
 	}
 
 	return resp, nil
+}
+
+func mergeGoRouteExtensions(base, override *domain.GoRouteExtensions) *domain.GoRouteExtensions {
+	out := base.Clone()
+	if override == nil {
+		return out
+	}
+	if out == nil {
+		return override.Clone()
+	}
+	if override.TaskID != "" {
+		out.TaskID = override.TaskID
+	}
+	if override.ContextID != "" {
+		out.ContextID = override.ContextID
+	}
+	if len(override.Guardrails) > 0 {
+		out.Guardrails = append(out.Guardrails, override.Guardrails...)
+	}
+	if len(override.Tags) > 0 {
+		for _, tag := range override.Tags {
+			out.Tags = appendUniqueRoutingTag(out.Tags, tag)
+		}
+	}
+	if override.AllowedRegion != "" {
+		out.AllowedRegion = override.AllowedRegion
+	}
+	if override.SessionID != "" {
+		out.SessionID = override.SessionID
+	}
+	if override.PreferredDeploymentID != "" {
+		out.PreferredDeploymentID = override.PreferredDeploymentID
+	}
+	if override.Priority != 0 {
+		out.Priority = override.Priority
+	}
+	if override.HedgeAfterMs > 0 {
+		out.HedgeAfterMs = override.HedgeAfterMs
+	}
+	if override.RoutingStrategy != "" {
+		out.RoutingStrategy = override.RoutingStrategy
+	}
+	if override.DropUnsupportedParams != nil {
+		v := *override.DropUnsupportedParams
+		out.DropUnsupportedParams = &v
+	}
+	return out
+}
+
+func realtimeGatewayErrorEvent(gwErr *domain.GatewayError) map[string]any {
+	errType := "invalid_request_error"
+	code := ""
+	msg := "Request failed"
+	if gwErr != nil {
+		if gwErr.Type != "" {
+			errType = string(gwErr.Type)
+		}
+		code = gwErr.Code
+		if gwErr.Message != "" {
+			msg = gwErr.Message
+		}
+	}
+	errBody := map[string]any{
+		"type":    errType,
+		"message": msg,
+	}
+	if code != "" {
+		errBody["code"] = code
+	}
+	return map[string]any{
+		"event_id": "event_" + uuid.NewString(),
+		"type":     "error",
+		"error":    errBody,
+	}
 }

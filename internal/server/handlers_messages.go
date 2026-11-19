@@ -118,7 +118,11 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	if payload.MaxTokens > 0 {
 		chatReq.MaxTokens = &payload.MaxTokens
 	}
-	s.applyChatRoutingHints(r, &chatReq)
+	if gwErr := s.applyChatRoutingHints(r, idCtx, &chatReq); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteAnthropicHTTPError(w, gwErr)
+		return
+	}
 
 	// Translate System
 	if payload.System != nil {
@@ -175,6 +179,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 			budgetInputTokens = len(encoded)
 		}
 	}
+	origRequestedModel := chatReq.Model
 	acq, err := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, chatReq.Model, estTokens, budgetInputTokens, payload.MaxTokens, reqID)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
@@ -184,7 +189,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	if acq.FallbackApplied && acq.EffectiveModel != "" {
 		chatReq.Model = acq.EffectiveModel
 	}
-	applyBudgetPolicyHeaders(w, payload.Model, acq)
+	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
 	releaseQuota := acq.ReleaseQuota
 	releaseUsage := acq.ReleaseUsage
 
@@ -199,7 +204,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		traceID:        traceID,
 		endpoint:       r.URL.Path,
 		modality:       domain.ModalityChat,
-		requestedModel: payload.Model,
+		requestedModel: origRequestedModel,
 		estTokens:      estTokens,
 		isStream:       false,
 		reqCtx:         r.Context(),
@@ -269,6 +274,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteAnthropicHTTPError(w, err)
 		return
 	}
@@ -328,7 +334,7 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Gateway-Model", resp.Model)
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
-	setRoutingTelemetryHeaders(w, meta)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	// Convert CanonicalChatResponse to Anthropic JSON response
@@ -547,19 +553,12 @@ func (s *GatewayServer) streamAnthropicMessages(
 		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
 		usage = &u
 	} else {
+		upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
 		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 			winningDep = dep
 			quotaSettlement.selectedDep = dep
-			if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
-				if dep.GlobalModel.Provider != "" {
-					w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
-				}
-				if dep.GlobalModel.ModelName != "" {
-					w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
-				}
-				w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(dep.GlobalModel)))
-			}
+			setPreStreamSelectedHeaders(w, dep, streamSession.SSEStarted())
 		})
 	}
 	if !streamSession.SSEStarted() {
@@ -581,7 +580,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 	}
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
-	setRoutingTelemetryHeaders(w, meta)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 
 	if err != nil {
 		isBlocked := streamSession.Blocked()

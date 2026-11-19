@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ import (
 // seeded with the default Global Model Catalogue, suitable for standalone execution and fast integration testing.
 type MemoryRepository struct {
 	mu                             sync.RWMutex
+	routingRev                     atomic.Uint64
 	globalModels                   map[string]*domain.GlobalModel
 	globalModelsByName             map[string]map[domain.ProviderType]map[string]struct{}
 	globalModelRevision            uint64
@@ -83,6 +85,14 @@ type MemoryRepository struct {
 	batches          map[string]*domain.CanonicalBatch
 	userCredentials  map[string]*domain.UserCredential
 	operatorSessions map[string]*domain.OperatorSession
+}
+
+// RoutingRevision returns the monotonically increasing routing topology revision for MemoryRepository.
+func (r *MemoryRepository) RoutingRevision() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.routingRev.Load()
 }
 
 type deprecatedKeyHashEntry struct {
@@ -319,6 +329,7 @@ func (r *MemoryRepository) UpsertGlobalModel(ctx context.Context, m *domain.Glob
 	r.globalModels[cp.ID] = cp
 	r.addGlobalModelNameIndex(cp)
 	r.globalModelRevision++
+	r.routingRev.Add(1)
 	if len(r.pricingHistory[cp.ID]) == 0 {
 		r.pricingHistory[cp.ID] = []*domain.ModelPricingHistory{
 			{
@@ -747,6 +758,7 @@ func (r *MemoryRepository) SetOrgProviderSubscription(ctx context.Context, sub *
 	}
 	cp := *sub
 	r.orgSubs[sub.OrgID][sub.Provider] = &cp
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -773,6 +785,7 @@ func (r *MemoryRepository) SetOrgModelPolicy(ctx context.Context, pol *domain.Or
 	}
 	cp := *pol
 	r.orgPolicies[pol.OrgID][pol.GlobalModelID] = &cp
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -803,6 +816,7 @@ func cloneTeam(team *domain.Team) *domain.Team {
 	cp.AllowedClientApps = slices.Clone(team.AllowedClientApps)
 	cp.DefaultMemberAllowedModels = slices.Clone(team.DefaultMemberAllowedModels)
 	cp.TeamMemberPermissions = slices.Clone(team.TeamMemberPermissions)
+	cp.AllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 	return &cp
 }
 
@@ -1714,6 +1728,7 @@ func (r *MemoryRepository) UpsertDeploymentPTUShare(_ context.Context, share *do
 		share.CreatedAt = existing.CreatedAt
 		share.UpdatedAt = now
 		r.ptuShares[existing.ID] = share.Clone()
+		r.routingRev.Add(1)
 		return nil
 	}
 
@@ -1724,6 +1739,7 @@ func (r *MemoryRepository) UpsertDeploymentPTUShare(_ context.Context, share *do
 	}
 	r.ptuShares[share.ID] = share.Clone()
 	r.ptuSharesByTuple[tupleKey] = share.ID
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -1756,6 +1772,7 @@ func (r *MemoryRepository) DeleteDeploymentPTUShare(_ context.Context, deploymen
 	}
 	delete(r.ptuSharesByTuple, tupleKey)
 	delete(r.ptuShares, id)
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -1788,6 +1805,7 @@ func (r *MemoryRepository) UpsertPriorityClass(_ context.Context, pc *domain.Pri
 		pc.ID = existing.ID
 		pc.CreatedAt = existing.CreatedAt
 		r.priorityClasses[existing.ID] = pc.Clone()
+		r.routingRev.Add(1)
 		return nil
 	}
 
@@ -1798,6 +1816,7 @@ func (r *MemoryRepository) UpsertPriorityClass(_ context.Context, pc *domain.Pri
 	}
 	r.priorityClasses[pc.ID] = pc.Clone()
 	r.priorityClassesByTuple[tupleKey] = pc.ID
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -2235,6 +2254,7 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
 	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
+	cp.AllowedRoutingTags = slices.Clone(vk.AllowedRoutingTags)
 	cp.Tags = slices.Clone(vk.Tags)
 	cp.ExpiryAlertSentDays = slices.Clone(vk.ExpiryAlertSentDays)
 	cp.BudgetResetAt = cloneTimePtr(vk.BudgetResetAt)
@@ -2816,6 +2836,7 @@ func (r *MemoryRepository) CreateProviderCredential(ctx context.Context, cred *d
 	cp := *cred
 	cp.DecryptedAPIKey = "" // Never store plaintext key in repository
 	r.credentials[cp.ID] = &cp
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -2832,6 +2853,7 @@ func (r *MemoryRepository) UpdateProviderCredential(ctx context.Context, cred *d
 	cp := *cred
 	cp.DecryptedAPIKey = ""
 	r.credentials[cp.ID] = &cp
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -2884,6 +2906,7 @@ func cloneModelGroup(mg *domain.ModelGroup) *domain.ModelGroup {
 	cp.ContextWindowFallbacks = cloneFallbackTargets(mg.ContextWindowFallbacks)
 	cp.ContentPolicyFallbacks = cloneFallbackTargets(mg.ContentPolicyFallbacks)
 	cp.FallbackTargets = cloneFallbackTargets(mg.FallbackTargets)
+	cp.SaturationFallbacks = cloneFallbackTargets(mg.SaturationFallbacks)
 	if mg.RetryPolicy != nil {
 		rp := *mg.RetryPolicy
 		cp.RetryPolicy = &rp
@@ -2923,6 +2946,7 @@ func (r *MemoryRepository) CreateModelGroup(ctx context.Context, mg *domain.Mode
 	mg.UpdatedAt = now
 	cp := cloneModelGroup(mg)
 	r.groupsByID[cp.ID] = cp
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -2959,6 +2983,52 @@ func (r *MemoryRepository) ListModelGroups(ctx context.Context, orgID string) ([
 	return out, nil
 }
 
+func (r *MemoryRepository) UpdateModelGroup(ctx context.Context, mg *domain.ModelGroup) error {
+	if mg == nil || strings.TrimSpace(mg.ID) == "" {
+		return fmt.Errorf("model group id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.groupsByID[mg.ID]
+	if !ok {
+		return fmt.Errorf("model group %q %w", mg.ID, ErrNotFound)
+	}
+	if mg.OrgID == "" {
+		mg.OrgID = existing.OrgID
+	}
+	for id, other := range r.groupsByID {
+		if id != mg.ID && other.OrgID == mg.OrgID && other.Alias == mg.Alias {
+			return fmt.Errorf("model group alias %q already exists in organization: %w", mg.Alias, ErrConflict)
+		}
+	}
+	if mg.RoutingStrategy == "" {
+		mg.RoutingStrategy = domain.StrategyWeightedShuffle
+	}
+	if mg.CreatedAt.IsZero() {
+		mg.CreatedAt = existing.CreatedAt
+	}
+	mg.UpdatedAt = time.Now().UTC()
+	r.groupsByID[mg.ID] = cloneModelGroup(mg)
+	r.routingRev.Add(1)
+	return nil
+}
+
+func (r *MemoryRepository) DeleteModelGroup(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.groupsByID[id]; !ok {
+		return fmt.Errorf("model group %q %w", id, ErrNotFound)
+	}
+	delete(r.groupsByID, id)
+	for depID, dep := range r.deployments {
+		if dep != nil && dep.ModelGroupID == id {
+			delete(r.deployments, depID)
+		}
+	}
+	r.routingRev.Add(1)
+	return nil
+}
+
 func (r *MemoryRepository) CreateDeployment(ctx context.Context, dep *domain.Deployment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2976,6 +3046,81 @@ func (r *MemoryRepository) CreateDeployment(ctx context.Context, dep *domain.Dep
 	dep.UpdatedAt = now
 	cp := cloneDeployment(dep)
 	r.deployments[cp.ID] = cp
+	r.routingRev.Add(1)
+	return nil
+}
+
+func (r *MemoryRepository) GetDeployment(ctx context.Context, id string) (*domain.Deployment, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	d, ok := r.deployments[id]
+	if !ok {
+		return nil, fmt.Errorf("deployment %q %w", id, ErrNotFound)
+	}
+	cp := cloneDeployment(d)
+	if gm, ok := r.globalModels[cp.GlobalModelID]; ok {
+		cp.GlobalModel = cloneGlobalModel(gm)
+	}
+	if cred, ok := r.credentials[cp.CredentialID]; ok {
+		credCopy := *cred
+		cp.Credential = &credCopy
+	}
+	return cp, nil
+}
+
+func (r *MemoryRepository) UpdateDeployment(ctx context.Context, dep *domain.Deployment) error {
+	if dep == nil || strings.TrimSpace(dep.ID) == "" {
+		return fmt.Errorf("deployment id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.deployments[dep.ID]
+	if !ok {
+		return fmt.Errorf("deployment %q %w", dep.ID, ErrNotFound)
+	}
+	if dep.ModelGroupID == "" {
+		dep.ModelGroupID = existing.ModelGroupID
+	}
+	if dep.GlobalModelID == "" {
+		dep.GlobalModelID = existing.GlobalModelID
+	}
+	if dep.CredentialID == "" {
+		dep.CredentialID = existing.CredentialID
+	}
+	if dep.Status == "" {
+		dep.Status = existing.Status
+	}
+	if dep.Weight <= 0 {
+		dep.Weight = 100
+	}
+	if dep.CreatedAt.IsZero() {
+		dep.CreatedAt = existing.CreatedAt
+	}
+	dep.UpdatedAt = time.Now().UTC()
+	cp := cloneDeployment(dep)
+	if gm, ok := r.globalModels[cp.GlobalModelID]; ok {
+		cp.GlobalModel = cloneGlobalModel(gm)
+		dep.GlobalModel = cloneGlobalModel(gm)
+	}
+	if cred, ok := r.credentials[cp.CredentialID]; ok {
+		credCopy := *cred
+		cp.Credential = &credCopy
+		credCopy2 := *cred
+		dep.Credential = &credCopy2
+	}
+	r.deployments[dep.ID] = cp
+	r.routingRev.Add(1)
+	return nil
+}
+
+func (r *MemoryRepository) DeleteDeployment(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.deployments[id]; !ok {
+		return fmt.Errorf("deployment %q %w", id, ErrNotFound)
+	}
+	delete(r.deployments, id)
+	r.routingRev.Add(1)
 	return nil
 }
 
@@ -3049,6 +3194,7 @@ func (r *MemoryRepository) UpdateDeploymentStatus(ctx context.Context, depID str
 	}
 	dep.Status = status
 	dep.UpdatedAt = time.Now().UTC()
+	r.routingRev.Add(1)
 	return nil
 }
 

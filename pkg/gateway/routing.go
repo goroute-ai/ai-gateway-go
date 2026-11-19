@@ -82,6 +82,15 @@ type RouterOptions struct {
 	CacheAwareRouting              bool
 	HedgeDelayMs                   int
 	MaxHedgeConcurrency            int
+	LatencyTolerancePct            float64
+	MaxHonoredRetryAfter           time.Duration
+	DisableCooldowns               bool
+	FallbackOnSaturation           bool
+	DropUnsupportedParams          bool
+	FallbackOnUnsupportedParams    bool
+	AllowStrategyOverride          bool
+	DebugRoutingHeaders            bool
+	MaxParallelWaitMs              int
 }
 
 type routingPluginEntry struct {
@@ -220,6 +229,33 @@ func WithRouterConfig(rc RouterOptions) Option {
 			if rc.MaxHedgeConcurrency > 0 {
 				r.MaxHedgeConcurrency = rc.MaxHedgeConcurrency
 			}
+			if rc.LatencyTolerancePct > 0 {
+				r.LatencyTolerancePct = rc.LatencyTolerancePct
+			}
+			if rc.MaxHonoredRetryAfter > 0 {
+				r.MaxHonoredRetryAfter = rc.MaxHonoredRetryAfter
+			}
+			if rc.DisableCooldowns {
+				r.DisableCooldowns = true
+			}
+			if rc.FallbackOnSaturation {
+				r.FallbackOnSaturation = true
+			}
+			if rc.DropUnsupportedParams {
+				r.DropUnsupportedParams = true
+			}
+			if rc.FallbackOnUnsupportedParams {
+				r.FallbackOnUnsupportedParams = true
+			}
+			if rc.AllowStrategyOverride {
+				r.AllowStrategyOverride = true
+			}
+			if rc.DebugRoutingHeaders {
+				r.DebugRoutingHeaders = true
+			}
+			if rc.MaxParallelWaitMs > 0 {
+				r.Scheduler.MaxParallelWaitMs = rc.MaxParallelWaitMs
+			}
 		})
 	}
 }
@@ -309,6 +345,13 @@ func WithRoutingHints(hints RoutingHints) RequestOption {
 		}
 		if hints.HedgeAfterMs > 0 {
 			r.GoRouteExtensions.HedgeAfterMs = hints.HedgeAfterMs
+		}
+		if v := strings.TrimSpace(hints.RoutingStrategy); v != "" {
+			r.GoRouteExtensions.RoutingStrategy = v
+		}
+		if hints.DropUnsupportedParams != nil {
+			drop := *hints.DropUnsupportedParams
+			r.GoRouteExtensions.DropUnsupportedParams = &drop
 		}
 	}
 }
@@ -533,7 +576,14 @@ func toSDKChatRequest(req *domain.CanonicalChatRequest) ChatRequest {
 			ext.SessionID != "" ||
 			ext.PreferredDeploymentID != "" ||
 			ext.Priority != 0 ||
-			ext.HedgeAfterMs > 0 {
+			ext.HedgeAfterMs > 0 ||
+			ext.RoutingStrategy != "" ||
+			ext.DropUnsupportedParams != nil {
+			var dropPtr *bool
+			if ext.DropUnsupportedParams != nil {
+				drop := *ext.DropUnsupportedParams
+				dropPtr = &drop
+			}
 			out.RoutingHints = &RoutingHints{
 				AllowedRegion:         ext.AllowedRegion,
 				Tags:                  slices.Clone(ext.Tags),
@@ -541,6 +591,8 @@ func toSDKChatRequest(req *domain.CanonicalChatRequest) ChatRequest {
 				PreferredDeploymentID: ext.PreferredDeploymentID,
 				Priority:              ext.Priority,
 				HedgeAfterMs:          ext.HedgeAfterMs,
+				RoutingStrategy:       ext.RoutingStrategy,
+				DropUnsupportedParams: dropPtr,
 			}
 		}
 	}
@@ -551,6 +603,11 @@ func toDomainGoRouteExtensions(hints *RoutingHints) *domain.GoRouteExtensions {
 	if hints == nil {
 		return nil
 	}
+	var dropPtr *bool
+	if hints.DropUnsupportedParams != nil {
+		drop := *hints.DropUnsupportedParams
+		dropPtr = &drop
+	}
 	return &domain.GoRouteExtensions{
 		AllowedRegion:         strings.TrimSpace(hints.AllowedRegion),
 		Tags:                  slices.Clone(hints.Tags),
@@ -558,6 +615,8 @@ func toDomainGoRouteExtensions(hints *RoutingHints) *domain.GoRouteExtensions {
 		PreferredDeploymentID: strings.TrimSpace(hints.PreferredDeploymentID),
 		Priority:              hints.Priority,
 		HedgeAfterMs:          hints.HedgeAfterMs,
+		RoutingStrategy:       strings.TrimSpace(hints.RoutingStrategy),
+		DropUnsupportedParams: dropPtr,
 	}
 }
 
@@ -599,6 +658,20 @@ func populateChatResultFromHeaders(res *ChatResult, hdr http.Header) {
 	}
 	if v := strings.TrimSpace(hdr.Get("X-Gateway-Routing-Micros")); v != "" {
 		res.RoutingMicros = parseHeaderInt64(v)
+	}
+	if v := strings.TrimSpace(hdr.Get("X-Gateway-Retry-Count")); v != "" {
+		res.RetryCount = parseHeaderNonNegInt(v)
+	}
+	if v := strings.TrimSpace(hdr.Get("X-Gateway-Dropped-Params")); v != "" {
+		var dropped []string
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				dropped = append(dropped, p)
+			}
+		}
+		if len(dropped) > 0 {
+			res.DroppedParams = dropped
+		}
 	}
 	if v := strings.TrimSpace(hdr.Get("X-Gateway-Deployment-Id")); v != "" {
 		res.WinningDeployment = v

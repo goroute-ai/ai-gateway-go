@@ -406,6 +406,10 @@ components:
           type: integer
         hedge_after_ms:
           type: integer
+        routing_strategy:
+          type: string
+        drop_unsupported_params:
+          type: boolean
     GuardrailRequestOverride:
       type: object
       required:
@@ -417,7 +421,7 @@ components:
           type: boolean
         action:
           type: string
-          enum: [block, redact, audit]
+          enum: [block, redact, audit, route]
         config:
           type: object
           additionalProperties: true
@@ -471,6 +475,8 @@ components:
           type: integer
         return_documents:
           type: boolean
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     RerankResponse:
       type: object
       required:
@@ -501,6 +507,8 @@ components:
             - type: array
               items:
                 type: string
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     ModerationResponse:
       type: object
       required:
@@ -543,6 +551,8 @@ components:
           type: number
         stream:
           type: boolean
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     LegacyCompletionResponse:
       type: object
       required:
@@ -613,6 +623,8 @@ components:
           enum: [mp3, opus, aac, flac, wav]
         speed:
           type: number
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     ImageGenerationRequest:
       type: object
       required:
@@ -632,6 +644,8 @@ components:
         response_format:
           type: string
           enum: [url, b64_json]
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     ImageGenerationResponse:
       type: object
       required:
@@ -752,6 +766,54 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
+    AnthropicMessagesRequest:
+      type: object
+      required:
+        - model
+        - max_tokens
+        - messages
+      properties:
+        model:
+          type: string
+        max_tokens:
+          type: integer
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        system:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        stream:
+          type: boolean
+        temperature:
+          type: number
+        top_p:
+          type: number
+        stop_sequences:
+          type: array
+          items:
+            type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        user:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        goroute_extensions:
+          $ref: '#/components/schemas/GoRouteExtensions'
     ResponsesMessageInputItem:
       type: object
       required: [role]
@@ -979,6 +1041,12 @@ components:
           type: integer
         tpm_capacity:
           type: integer
+        itpm_capacity:
+          type: integer
+        otpm_capacity:
+          type: integer
+        max_parallel_requests:
+          type: integer
         timeout_ms:
           type: integer
         priority:
@@ -1001,6 +1069,51 @@ components:
         updated_at:
           type: string
           format: date-time
+    AdminDeploymentPatchRequest:
+      type: object
+      properties:
+        deployment_name:
+          type: string
+        region:
+          type: string
+        weight:
+          type: integer
+          minimum: 0
+        rpm_capacity:
+          type: integer
+          minimum: 0
+        tpm_capacity:
+          type: integer
+          minimum: 0
+        itpm_capacity:
+          type: integer
+          minimum: 0
+        otpm_capacity:
+          type: integer
+          minimum: 0
+        max_parallel_requests:
+          type: integer
+          minimum: 0
+        timeout_ms:
+          type: integer
+          minimum: 0
+        priority:
+          type: integer
+          minimum: 0
+        tags:
+          type: array
+          items:
+            type: string
+        max_budget_micros:
+          type: integer
+          format: int64
+          minimum: 0
+        budget_reset_period:
+          type: string
+          enum: [daily, monthly, never]
+        status:
+          type: string
+          enum: [active, cooldown, disabled]
     GuardrailSimulateRequest:
       type: object
       properties:
@@ -1056,17 +1169,17 @@ components:
           type: boolean
         prompt_injection_action:
           type: string
-          enum: [block, redact, audit]
+          enum: [block, redact, audit, route]
         enable_pii_detection:
           type: boolean
         pii_action:
           type: string
-          enum: [block, redact, audit]
+          enum: [block, redact, audit, route]
         enable_secret_detection:
           type: boolean
         secret_action:
           type: string
-          enum: [block, redact, audit]
+          enum: [block, redact, audit, route]
         blocked_keywords:
           type: array
           items:
@@ -1077,7 +1190,7 @@ components:
           type: boolean
         toxicity_action:
           type: string
-          enum: [block, redact, audit]
+          enum: [block, redact, audit, route]
         toxicity_threshold:
           type: string
           enum: [low, medium, high]
@@ -1089,6 +1202,8 @@ components:
           type: array
           items:
             type: string
+        sensitive_route_target:
+          type: string
         updated_at:
           type: string
           format: date-time
@@ -1259,6 +1374,12 @@ components:
           type: array
           items:
             type: string
+        min_priority_rank:
+          type: integer
+        allowed_routing_tags:
+          type: array
+          items:
+            type: string
         is_active:
           type: boolean
         created_at:
@@ -1357,6 +1478,12 @@ components:
           type: integer
         max_concurrent_requests:
           type: integer
+        min_priority_rank:
+          type: integer
+        allowed_routing_tags:
+          type: array
+          items:
+            type: string
         rotation_interval_sec:
           type: integer
           format: int64
@@ -1972,6 +2099,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FallbackTarget'
+        saturation_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        drop_unsupported_params:
+          type: boolean
+        disable_cooldowns:
+          type: boolean
         retry_policy:
           $ref: '#/components/schemas/RetryPolicy'
         cooldown_policy:
@@ -1990,6 +2125,58 @@ components:
         updated_at:
           type: string
           format: date-time
+    AdminModelGroupUpdateRequest:
+      type: object
+      properties:
+        alias:
+          type: string
+        description:
+          type: string
+        routing_strategy:
+          type: string
+        fallback_groups:
+          type: array
+          items:
+            type: string
+        fallback_group_ids:
+          type: array
+          items:
+            type: string
+        context_window_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        content_policy_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        fallback_targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        saturation_fallbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/FallbackTarget'
+        drop_unsupported_params:
+          type: boolean
+        disable_cooldowns:
+          type: boolean
+        retry_policy:
+          $ref: '#/components/schemas/RetryPolicy'
+        cooldown_policy:
+          $ref: '#/components/schemas/CooldownPolicy'
+        max_retries:
+          type: integer
+          minimum: 0
+        cooldown_seconds:
+          type: integer
+          minimum: 0
+        failure_threshold:
+          type: integer
+          minimum: 0
+        is_active:
+          type: boolean
     AdminCatalogueModel:
       type: object
       additionalProperties: true
@@ -2303,6 +2490,8 @@ components:
         status:
           type: string
           enum: [active, pending_review, rejected]
+        sensitive_route_target:
+          type: string
         guardrail_info:
           type: object
           additionalProperties: true
@@ -2362,6 +2551,8 @@ components:
         status:
           type: string
           enum: [active, pending_review, rejected]
+        sensitive_route_target:
+          type: string
         guardrail_info:
           type: object
           additionalProperties: true
@@ -2410,6 +2601,8 @@ components:
         status:
           type: string
           enum: [active, pending_review, rejected]
+        sensitive_route_target:
+          type: string
         guardrail_info:
           type: object
           additionalProperties: true
@@ -2685,6 +2878,9 @@ components:
         otpm_limit:
           type: integer
         tpd_limit:
+          type: integer
+          format: int64
+        rpd_limit:
           type: integer
           format: int64
         max_concurrent:
@@ -3092,6 +3288,9 @@ components:
         tpd_limit:
           type: integer
           format: int64
+        rpd_limit:
+          type: integer
+          format: int64
         max_concurrent:
           type: integer
         max_budget_micros:
@@ -3495,7 +3694,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/AnthropicMessagesRequest'
       responses:
         '200':
           description: Anthropic message response or event-stream
@@ -3882,6 +4081,74 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AdminDeployment'
+  /admin/v1/deployments/{depID}:
+    get:
+      operationId: getDeployment
+      summary: Retrieve a deployment by ID
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deployment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeployment'
+        '404':
+          description: Deployment not found
+    patch:
+      operationId: patchDeployment
+      summary: Update deployment capacities, priority, weight, tags, or operational status (e.g. drain)
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDeploymentPatchRequest'
+      responses:
+        '200':
+          description: Updated deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeployment'
+        '400':
+          description: Invalid deployment patch payload
+        '404':
+          description: Deployment not found
+    delete:
+      operationId: deleteDeployment
+      summary: Delete a deployment
+      parameters:
+        - name: depID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deployment deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+        '404':
+          description: Deployment not found
   /admin/v1/deployments/{depID}/ptu-shares:
     post:
       operationId: upsertDeploymentPTUShare
@@ -4877,6 +5144,76 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AdminModelGroup'
+  /admin/v1/model-groups/{groupID}:
+    get:
+      operationId: getModelGroup
+      summary: Retrieve a model group by ID
+      parameters:
+        - name: groupID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model group details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelGroup'
+        '404':
+          description: Model group not found
+    put:
+      operationId: updateModelGroup
+      summary: Update a model group's routing strategy, fallback chains, or resilience toggles
+      parameters:
+        - name: groupID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelGroupUpdateRequest'
+      responses:
+        '200':
+          description: Updated model group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelGroup'
+        '400':
+          description: Invalid model group update payload
+        '404':
+          description: Model group not found
+        '409':
+          description: Model group alias conflict
+    delete:
+      operationId: deleteModelGroup
+      summary: Delete a model group
+      parameters:
+        - name: groupID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model group deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+        '404':
+          description: Model group not found
   /admin/v1/catalogue:
     get:
       operationId: listCatalogue

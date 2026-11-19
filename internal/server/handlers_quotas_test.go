@@ -254,6 +254,12 @@ func TestAdminQuotaAndBudgetWindowEndpoints_CRUDAndRBAC(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 
+	// Negative rpd_limit must be rejected with 400.
+	recBadRPD := doAdminJSONRequest(t, env.handler, http.MethodPut, "/admin/v1/quotas", env.orgAAdmin.RawKey, map[string]any{
+		"scope_type": "model_per_key", "scope_id": env.teamA1Adm.ID, "model_pattern": "gpt-4.1", "rpd_limit": -1,
+	})
+	assert.Equal(t, http.StatusBadRequest, recBadRPD.Code)
+
 	// org_admin upserts a quota policy.
 	rec = doAdminJSONRequest(t, env.handler, http.MethodPut, "/admin/v1/quotas", env.orgAAdmin.RawKey, map[string]any{
 		"scope_type":    "model_per_key",
@@ -263,6 +269,7 @@ func TestAdminQuotaAndBudgetWindowEndpoints_CRUDAndRBAC(t *testing.T) {
 		"otpm_limit":    300,
 		"tpd_limit":     5000,
 		"rpm_limit":     10,
+		"rpd_limit":     25,
 	})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var pol domain.QuotaPolicy
@@ -272,6 +279,7 @@ func TestAdminQuotaAndBudgetWindowEndpoints_CRUDAndRBAC(t *testing.T) {
 	assert.Equal(t, 500, pol.ITPMLimit)
 	assert.Equal(t, 300, pol.OTPMLimit)
 	assert.Equal(t, int64(5000), pol.TPDLimit)
+	assert.Equal(t, int64(25), pol.RPDLimit)
 	assert.True(t, pol.IsActive)
 
 	// org_b admin cannot read, overwrite, or delete org_a's policies.

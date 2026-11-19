@@ -165,7 +165,7 @@ func normalizeQuotaPolicy(policy *domain.QuotaPolicy, now time.Time) error {
 	if policy.ModelPattern == "" {
 		policy.ModelPattern = "*"
 	}
-	if policy.RPMLimit < 0 || policy.TPMLimit < 0 || policy.ITPMLimit < 0 || policy.OTPMLimit < 0 ||
+	if policy.RPMLimit < 0 || policy.RPDLimit < 0 || policy.TPMLimit < 0 || policy.ITPMLimit < 0 || policy.OTPMLimit < 0 ||
 		policy.TPDLimit < 0 || policy.MaxConcurrent < 0 || policy.MaxBudgetMicros < 0 ||
 		policy.SpentMicros < 0 || policy.MaxIterations < 0 || policy.WindowTTLSec < 0 {
 		return fmt.Errorf("quota policy limits and counters must be non-negative")

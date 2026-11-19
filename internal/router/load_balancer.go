@@ -21,6 +21,8 @@ type deploymentTelemetry struct {
 	ewmaTTFTMs         float64
 	usedRPM            int
 	usedTPM            int
+	usedITPM           int
+	usedOTPM           int
 	windowStart        time.Time
 	reservations       []time.Time
 	sharedReservations []time.Time
@@ -77,6 +79,8 @@ func (m *deploymentTelemetry) checkWindow(now time.Time) {
 	if now.Sub(m.windowStart) >= time.Minute {
 		m.usedRPM = 0
 		m.usedTPM = 0
+		m.usedITPM = 0
+		m.usedOTPM = 0
 		m.windowStart = now
 	}
 }
@@ -85,43 +89,78 @@ func (m *deploymentTelemetry) checkWindow(now time.Time) {
 // selecting the optimal healthy Deployment inside a ModelGroup using one of 5 production strategies:
 // 1. weighted-shuffle
 // 2. least-busy
-// 3. latency-based (EWMA TTFT)
+// 3. latency-based (EWMA TTFT / normalized latency + tolerance band)
 // 4. usage-based-headroom
 // 5. lowest-cost
 type LoadBalancer struct {
-	mu             sync.RWMutex
-	metrics        map[string]*deploymentTelemetry
-	rrCounters     sync.Map // map[string]*atomic.Uint64 keyed by ModelGroupID
-	redis          *storage.RedisFabric
-	sharedDegraded atomic.Bool
-	sharedChecked  atomic.Bool
+	mu                  sync.RWMutex
+	metrics             map[string]*deploymentTelemetry
+	rrCounters          sync.Map // map[string]*atomic.Uint64 keyed by ModelGroupID
+	redis               *storage.RedisFabric
+	sharedDegraded      atomic.Bool
+	sharedChecked       atomic.Bool
+	latencyTolerancePct atomic.Uint64
 }
 
 func NewLoadBalancer(redisFabric ...*storage.RedisFabric) *LoadBalancer {
 	lb := &LoadBalancer{
 		metrics: make(map[string]*deploymentTelemetry),
 	}
+	lb.SetLatencyTolerancePct(0.10)
 	if len(redisFabric) > 0 {
 		lb.redis = redisFabric[0]
 	}
 	return lb
 }
 
+// SetLatencyTolerancePct sets the fractional band above minimum latency within which
+// latency-based selection randomizes candidates to prevent thundering-herd oscillation.
+func (lb *LoadBalancer) SetLatencyTolerancePct(pct float64) {
+	if lb == nil {
+		return
+	}
+	if pct < 0 {
+		pct = 0
+	} else if pct > 1 {
+		pct = 1
+	}
+	lb.latencyTolerancePct.Store(math.Float64bits(pct))
+}
+
+// LatencyTolerancePct returns the configured latency tolerance band in [0, 1].
+func (lb *LoadBalancer) LatencyTolerancePct() float64 {
+	if lb == nil {
+		return 0
+	}
+	return math.Float64frombits(lb.latencyTolerancePct.Load())
+}
+
 // Select chooses one deployment from the candidate list of healthy deployments according to strategy.
 func (lb *LoadBalancer) Select(strategy domain.RoutingStrategy, candidates []*domain.Deployment) *domain.Deployment {
+	return lb.SelectWithSignals(strategy, candidates, nil)
+}
+
+// SelectWithSignals selects one deployment using a pre-fetched SignalSnapshot when available
+// so Stage 2 executes without duplicate Redis signal reads.
+func (lb *LoadBalancer) SelectWithSignals(strategy domain.RoutingStrategy, candidates []*domain.Deployment, snap *SignalSnapshot) *domain.Deployment {
 	if len(candidates) == 0 {
 		return nil
 	}
 	if len(candidates) == 1 {
 		return candidates[0]
 	}
-	if lb.redis != nil && isAdaptiveStrategy(strategy) {
-		shared, err := lb.readSharedSignals(candidates)
-		if err != nil {
-			lb.setSharedDegraded(true, string(strategy))
-		} else {
-			lb.setSharedDegraded(false, string(strategy))
-			return lb.selectUsingSignals(strategy, candidates, shared)
+	if isAdaptiveStrategy(strategy) {
+		if snap != nil && snap.fromRedis && snap.signals != nil {
+			return lb.selectUsingSignals(strategy, candidates, snap.signals)
+		}
+		if snap == nil && lb.redis != nil {
+			shared, err := lb.readSharedSignals(candidates)
+			if err != nil {
+				lb.setSharedDegraded(true, string(strategy))
+			} else {
+				lb.setSharedDegraded(false, string(strategy))
+				return lb.selectUsingSignals(strategy, candidates, shared)
+			}
 		}
 	}
 
@@ -193,19 +232,28 @@ func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, cand
 		}
 		return best
 	case domain.StrategyLatencyBased:
-		var ties []*domain.Deployment
 		minLatency := math.MaxFloat64
 		for _, d := range candidates {
 			lat := effectiveLatencySignal(signals[d.ID])
 			if lat < minLatency {
 				minLatency = lat
-				ties = ties[:0]
-				ties = append(ties, d)
-			} else if lat == minLatency {
-				ties = append(ties, d)
 			}
 		}
-		return pickRandomTie(ties)
+		threshold := minLatency
+		if tol := lb.LatencyTolerancePct(); tol > 0 && minLatency > 0 {
+			threshold = minLatency * (1.0 + tol)
+		}
+		var chosen *domain.Deployment
+		eligible := 0
+		for _, d := range candidates {
+			if effectiveLatencySignal(signals[d.ID]) <= threshold {
+				if eligible == 0 || rand.IntN(eligible+1) == 0 {
+					chosen = d
+				}
+				eligible++
+			}
+		}
+		return chosen
 	case domain.StrategyUsageBasedHeadroom:
 		var ties []*domain.Deployment
 		maxHeadroom := -math.MaxFloat64
@@ -236,22 +284,49 @@ func (lb *LoadBalancer) selectUsingSignals(strategy domain.RoutingStrategy, cand
 }
 
 func (lb *LoadBalancer) selectWeightedRandom(candidates []*domain.Deployment) *domain.Deployment {
+	hasExplicit := false
+	hasRPM := false
+	hasTPM := false
+	for _, d := range candidates {
+		if d.Weight > 0 {
+			hasExplicit = true
+		}
+		if d.RPMCapacity > 0 {
+			hasRPM = true
+		}
+		if d.TPMCapacity > 0 {
+			hasTPM = true
+		}
+	}
+	if !hasExplicit && !hasRPM && !hasTPM {
+		return candidates[rand.IntN(len(candidates))]
+	}
+	candidateWeight := func(d *domain.Deployment) int {
+		if hasExplicit {
+			if d.Weight > 0 {
+				return d.Weight
+			}
+			return 100
+		}
+		if hasRPM {
+			if d.RPMCapacity > 0 {
+				return d.RPMCapacity
+			}
+			return 1
+		}
+		if d.TPMCapacity > 0 {
+			return d.TPMCapacity
+		}
+		return 1
+	}
 	totalWeight := 0
 	for _, d := range candidates {
-		w := d.Weight
-		if w <= 0 {
-			w = 100
-		}
-		totalWeight += w
+		totalWeight += candidateWeight(d)
 	}
 	r := rand.IntN(totalWeight)
 	acc := 0
 	for _, d := range candidates {
-		w := d.Weight
-		if w <= 0 {
-			w = 100
-		}
-		acc += w
+		acc += candidateWeight(d)
 		if r < acc {
 			return d
 		}
@@ -300,7 +375,6 @@ func (lb *LoadBalancer) selectLowestLatency(candidates []*domain.Deployment) *do
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	var ties []*domain.Deployment
 	minLatency := math.MaxFloat64
 	for _, d := range candidates {
 		lat := 250.0 // Default baseline 250ms for unexplored deployments
@@ -309,13 +383,27 @@ func (lb *LoadBalancer) selectLowestLatency(candidates []*domain.Deployment) *do
 		}
 		if lat < minLatency {
 			minLatency = lat
-			ties = ties[:0]
-			ties = append(ties, d)
-		} else if lat == minLatency {
-			ties = append(ties, d)
 		}
 	}
-	return pickRandomTie(ties)
+	threshold := minLatency
+	if tol := lb.LatencyTolerancePct(); tol > 0 && minLatency > 0 {
+		threshold = minLatency * (1.0 + tol)
+	}
+	var chosen *domain.Deployment
+	eligible := 0
+	for _, d := range candidates {
+		lat := 250.0
+		if m, ok := lb.metrics[d.ID]; ok {
+			lat = effectiveLatencySignal(*m)
+		}
+		if lat <= threshold {
+			if eligible == 0 || rand.IntN(eligible+1) == 0 {
+				chosen = d
+			}
+			eligible++
+		}
+	}
+	return chosen
 }
 
 func (lb *LoadBalancer) selectHighestHeadroom(candidates []*domain.Deployment) *domain.Deployment {
@@ -373,6 +461,19 @@ func (lb *LoadBalancer) selectLowestCost(candidates []*domain.Deployment) *domai
 
 // OnRequestStart increments in-flight counters for a deployment.
 func (lb *LoadBalancer) OnRequestStart(depID string) {
+	lb.OnRequestStartWithTokens(depID, 0, 0)
+}
+
+// OnRequestStartWithTokens increments in-flight/RPM counters and pre-reserves
+// estimated input/output tokens so concurrent bursts do not overshoot TPM/ITPM/OTPM caps.
+func (lb *LoadBalancer) OnRequestStartWithTokens(depID string, estInput, estOutput int) {
+	if estInput < 0 {
+		estInput = 0
+	}
+	if estOutput < 0 {
+		estOutput = 0
+	}
+	estTotal := estInput + estOutput
 	now := time.Now()
 	lb.mu.Lock()
 	m := lb.getOrCreate(depID)
@@ -380,12 +481,15 @@ func (lb *LoadBalancer) OnRequestStart(depID string) {
 	m.consumeReservation(now)
 	m.inFlight++
 	m.usedRPM++
+	m.usedTPM += estTotal
+	m.usedITPM += estInput
+	m.usedOTPM += estOutput
 	lb.mu.Unlock()
 	if lb.redis != nil && lb.redis.Client() != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), routingSignalTTLSeconds).Result()
+			return startRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), routingSignalTTLSeconds, estInput, estOutput).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")
 		}
@@ -394,29 +498,132 @@ func (lb *LoadBalancer) OnRequestStart(depID string) {
 
 // OnRequestEnd decrements in-flight counters and updates EWMA total latency and token usage.
 func (lb *LoadBalancer) OnRequestEnd(depID string, latencyMs int64, totalTokens int) {
-	lb.recordRequestEnd(depID, latencyMs, 0, totalTokens)
+	lb.recordRequestEndWithUsage(depID, latencyMs, 0, 0, 0, totalTokens, 0, false)
 }
 
 // OnStreamRequestEnd decrements in-flight counters and updates EWMA total latency, TTFT, and token usage.
 func (lb *LoadBalancer) OnStreamRequestEnd(depID string, latencyMs, ttftMs int64, totalTokens int) {
-	lb.recordRequestEnd(depID, latencyMs, ttftMs, totalTokens)
+	lb.recordRequestEndWithUsage(depID, latencyMs, ttftMs, 0, 0, totalTokens, 0, false)
 }
 
-func (lb *LoadBalancer) recordRequestEnd(depID string, latencyMs, ttftMs int64, totalTokens int) {
+// OnRequestEndWithUsage reconciles pre-reserved tokens against actual input/output usage and
+// records token-normalized latency (ms per 100 output tokens for non-TTFT calls with completion tokens).
+func (lb *LoadBalancer) OnRequestEndWithUsage(depID string, latencyMs, ttftMs int64, estInput, estOutput, actualInput, actualOutput int) {
+	lb.recordRequestEndWithUsage(depID, latencyMs, ttftMs, estInput, estOutput, actualInput, actualOutput, true)
+}
+
+// OnRequestFailure decrements in-flight counters, refunds pre-reserved tokens, and penalizes EWMA latency.
+func (lb *LoadBalancer) OnRequestFailure(depID string, latencyMs int64, isTimeout bool, estInput, estOutput int) {
+	if estInput < 0 {
+		estInput = 0
+	}
+	if estOutput < 0 {
+		estOutput = 0
+	}
+	penalty := float64(latencyMs)
+	if isTimeout {
+		if penalty < 5000 {
+			penalty = 5000
+		} else {
+			penalty *= 1.5
+		}
+	} else if penalty < 1000 {
+		penalty = 1000
+	}
+
+	deltaIn := -estInput
+	deltaOut := -estOutput
+	deltaTotal := deltaIn + deltaOut
+
 	now := time.Now()
 	lb.mu.Lock()
 	m := lb.getOrCreate(depID)
+	sameWindow := !m.windowStart.IsZero() && now.Sub(m.windowStart) < time.Minute
 	m.checkWindow(now)
 	if m.inFlight > 0 {
 		m.inFlight--
 	}
-	m.usedTPM += totalTokens
+	if sameWindow {
+		m.usedTPM = max(0, m.usedTPM+deltaTotal)
+		m.usedITPM = max(0, m.usedITPM+deltaIn)
+		m.usedOTPM = max(0, m.usedOTPM+deltaOut)
+	}
 	const alpha = 0.3
-	if latencyMs > 0 {
+	if m.ewmaLatencyMs == 0 {
+		m.ewmaLatencyMs = penalty
+	} else {
+		m.ewmaLatencyMs = alpha*penalty + (1-alpha)*m.ewmaLatencyMs
+	}
+	if isTimeout && m.ewmaTTFTMs > 0 {
+		m.ewmaTTFTMs = alpha*penalty + (1-alpha)*m.ewmaTTFTMs
+	}
+	lb.mu.Unlock()
+
+	if lb.redis != nil && lb.redis.Client() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		ttftArg := 0
+		if isTimeout {
+			ttftArg = -1
+		}
+		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), deltaTotal, penalty, ttftArg, routingSignalTTLSeconds, deltaIn, deltaOut).Result()
+		}); err != nil {
+			lb.setSharedDegraded(true, "signal_update")
+		}
+	}
+}
+
+func (lb *LoadBalancer) recordRequestEndWithUsage(
+	depID string,
+	latencyMs, ttftMs int64,
+	estInput, estOutput, actualInput, actualOutput int,
+	normalizeByOutput bool,
+) {
+	if estInput < 0 {
+		estInput = 0
+	}
+	if estOutput < 0 {
+		estOutput = 0
+	}
+	if actualInput < 0 {
+		actualInput = 0
+	}
+	if actualOutput < 0 {
+		actualOutput = 0
+	}
+	deltaIn := actualInput - estInput
+	deltaOut := actualOutput - estOutput
+	deltaTotal := deltaIn + deltaOut
+
+	latMetric := float64(latencyMs)
+	if normalizeByOutput && ttftMs <= 0 && latencyMs > 0 && actualOutput > 0 {
+		latMetric = (float64(latencyMs) * 100.0) / float64(actualOutput)
+	}
+
+	now := time.Now()
+	lb.mu.Lock()
+	m := lb.getOrCreate(depID)
+	sameWindow := !m.windowStart.IsZero() && now.Sub(m.windowStart) < time.Minute
+	m.checkWindow(now)
+	if m.inFlight > 0 {
+		m.inFlight--
+	}
+	if sameWindow || deltaTotal > 0 {
+		m.usedTPM = max(0, m.usedTPM+deltaTotal)
+	}
+	if sameWindow || deltaIn > 0 {
+		m.usedITPM = max(0, m.usedITPM+deltaIn)
+	}
+	if sameWindow || deltaOut > 0 {
+		m.usedOTPM = max(0, m.usedOTPM+deltaOut)
+	}
+	const alpha = 0.3
+	if latMetric > 0 {
 		if m.ewmaLatencyMs == 0 {
-			m.ewmaLatencyMs = float64(latencyMs)
+			m.ewmaLatencyMs = latMetric
 		} else {
-			m.ewmaLatencyMs = alpha*float64(latencyMs) + (1-alpha)*m.ewmaLatencyMs
+			m.ewmaLatencyMs = alpha*latMetric + (1-alpha)*m.ewmaLatencyMs
 		}
 	}
 	if ttftMs > 0 {
@@ -431,7 +638,7 @@ func (lb *LoadBalancer) recordRequestEnd(depID string, latencyMs, ttftMs int64, 
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		if _, err := lb.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), totalTokens, latencyMs, ttftMs, routingSignalTTLSeconds).Result()
+			return endRoutingSignalScript.Run(ctx, rdb, []string{routingSignalKey(depID)}, now.Unix(), deltaTotal, latMetric, ttftMs, routingSignalTTLSeconds, deltaIn, deltaOut).Result()
 		}); err != nil {
 			lb.setSharedDegraded(true, "signal_update")
 		}
@@ -473,11 +680,19 @@ func (lb *LoadBalancer) DeploymentWindowUsage(depID string, now time.Time) (used
 // AggregateWindowUsage sums current 1-minute (usedRPM, usedTPM) and configured
 // (capRPM, capTPM) across candidates.
 func (lb *LoadBalancer) AggregateWindowUsage(candidates []*domain.Deployment, now time.Time) (usedRPM, usedTPM, capRPM, capTPM int) {
+	return lb.AggregateWindowUsageWithSignals(candidates, nil, now)
+}
+
+// AggregateWindowUsageWithSignals sums current 1-minute (usedRPM, usedTPM) and configured
+// (capRPM, capTPM) across candidates, reusing snap when non-nil to avoid redundant Redis reads.
+func (lb *LoadBalancer) AggregateWindowUsageWithSignals(candidates []*domain.Deployment, snap *SignalSnapshot, now time.Time) (usedRPM, usedTPM, capRPM, capTPM int) {
 	if len(candidates) == 0 {
 		return 0, 0, 0, 0
 	}
 	var signals map[string]deploymentTelemetry
-	if lb != nil && lb.redis != nil && lb.redis.Client() != nil {
+	if snap != nil && snap.signals != nil {
+		signals = snap.signals
+	} else if lb != nil && lb.redis != nil && lb.redis.Client() != nil {
 		shared, err := lb.readSharedSignals(candidates)
 		if err != nil {
 			lb.setSharedDegraded(true, "capacity_read")

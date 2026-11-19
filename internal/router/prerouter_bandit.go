@@ -193,6 +193,15 @@ func WithBanditAliasCosts(costs map[string]float64) BanditOption {
 	}
 }
 
+// WithBanditLatencyWeight overrides the latency penalty weight subtracted from normalized arm scores.
+func WithBanditLatencyWeight(w float64) BanditOption {
+	return func(b *BanditPreRouter) {
+		if w >= 0 {
+			b.latencyWeight = w
+		}
+	}
+}
+
 // WithBanditMaxLatencyMs sets the latency threshold above which a completion counts as excessive latency.
 func WithBanditMaxLatencyMs(maxLatencyMs int64) BanditOption {
 	return func(b *BanditPreRouter) {
@@ -252,6 +261,7 @@ type BanditPreRouter struct {
 	defaultAlpha      float64
 	defaultBeta       float64
 	costWeight        float64
+	latencyWeight     float64
 	syncInterval      time.Duration
 	flushInterval     time.Duration
 	batchSize         int
@@ -261,9 +271,10 @@ type BanditPreRouter struct {
 	redis *storage.RedisFabric
 	repo  storage.Repository
 
-	mu         sync.RWMutex
-	snapshot   map[banditArmKey]BanditPrior
-	aliasCosts map[string]float64
+	mu             sync.RWMutex
+	snapshot       map[banditArmKey]BanditPrior
+	aliasCosts     map[string]float64
+	aliasLatencies map[string]float64
 
 	seenBuckets sync.Map // map[banditBucketKey]struct{}
 
@@ -312,6 +323,10 @@ func NewBanditPreRouter(cfg config.RouterConfig, redisFabric *storage.RedisFabri
 	if costWeight < 0 {
 		costWeight = 0
 	}
+	latencyWeight := bCfg.LatencyWeight
+	if latencyWeight < 0 {
+		latencyWeight = 0
+	}
 
 	candidates := dedupeNonEmptyStrings(bCfg.CandidateModels)
 	if len(candidates) == 0 {
@@ -329,6 +344,7 @@ func NewBanditPreRouter(cfg config.RouterConfig, redisFabric *storage.RedisFabri
 		defaultAlpha:      defaultAlpha,
 		defaultBeta:       defaultBeta,
 		costWeight:        costWeight,
+		latencyWeight:     latencyWeight,
 		syncInterval:      syncInterval,
 		flushInterval:     defaultBanditFlushInterval,
 		batchSize:         defaultBanditBatchSize,
@@ -337,6 +353,7 @@ func NewBanditPreRouter(cfg config.RouterConfig, redisFabric *storage.RedisFabri
 		redis:             redisFabric,
 		snapshot:          make(map[banditArmKey]BanditPrior),
 		aliasCosts:        make(map[string]float64),
+		aliasLatencies:    make(map[string]float64),
 		rngPool: sync.Pool{
 			New: func() any {
 				return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
@@ -402,7 +419,7 @@ func (b *BanditPreRouter) Route(ctx context.Context, orgID string, req *domain.C
 		return b.candidates[0], fmt.Sprintf("bandit:%s:single_candidate", bucket), 1.0, nil
 	}
 
-	priors, normCosts := b.readArmInputs(normOrg, bucket, time.Now())
+	priors, normCosts, normLatencies := b.readArmInputs(normOrg, bucket, time.Now())
 
 	bestIdx := 0
 	bestScore := math.Inf(-1)
@@ -416,7 +433,7 @@ func (b *BanditPreRouter) Route(ctx context.Context, orgID string, req *domain.C
 		}
 		for i := range b.candidates {
 			sampledProb := sampleBeta(priors[i].Alpha, priors[i].Beta, rng)
-			armScore := sampledProb - b.costWeight*normCosts[i]
+			armScore := sampledProb - b.costWeight*normCosts[i] - b.latencyWeight*normLatencies[i]
 			if armScore > bestScore {
 				bestScore = armScore
 				bestIdx = i
@@ -431,12 +448,16 @@ func (b *BanditPreRouter) Route(ctx context.Context, orgID string, req *domain.C
 	return b.candidates[bestIdx], fmt.Sprintf("bandit:%s:thompson", bucket), bestScore, nil
 }
 
-func (b *BanditPreRouter) readArmInputs(orgID string, bucket TaskBucket, now time.Time) ([]BanditPrior, []float64) {
+func (b *BanditPreRouter) readArmInputs(orgID string, bucket TaskBucket, now time.Time) ([]BanditPrior, []float64, []float64) {
 	priors := make([]BanditPrior, len(b.candidates))
 	costs := make([]float64, len(b.candidates))
 	hasCost := make([]bool, len(b.candidates))
+	latencies := make([]float64, len(b.candidates))
+	hasLat := make([]bool, len(b.candidates))
 	minCost := math.Inf(1)
 	maxCost := -1.0
+	minLat := math.Inf(1)
+	maxLat := -1.0
 
 	b.mu.RLock()
 	for i, alias := range b.candidates {
@@ -456,6 +477,16 @@ func (b *BanditPreRouter) readArmInputs(orgID string, bucket TaskBucket, now tim
 				maxCost = c
 			}
 		}
+		if l, ok := b.aliasLatencies[alias]; ok && l > 0 {
+			latencies[i] = l
+			hasLat[i] = true
+			if l < minLat {
+				minLat = l
+			}
+			if l > maxLat {
+				maxLat = l
+			}
+		}
 	}
 	b.mu.RUnlock()
 
@@ -470,7 +501,19 @@ func (b *BanditPreRouter) readArmInputs(orgID string, bucket TaskBucket, now tim
 			}
 		}
 	}
-	return priors, normCosts
+
+	normLatencies := make([]float64, len(b.candidates))
+	if maxLat > minLat {
+		span := maxLat - minLat
+		for i := range latencies {
+			if hasLat[i] {
+				normLatencies[i] = (latencies[i] - minLat) / span
+			} else {
+				normLatencies[i] = 0.5
+			}
+		}
+	}
+	return priors, normCosts, normLatencies
 }
 
 func (b *BanditPreRouter) applyDecay(p BanditPrior, now time.Time) BanditPrior {
@@ -598,6 +641,17 @@ func (b *BanditPreRouter) RecordOutcome(orgID string, bucket TaskBucket, alias s
 		bucket = TaskBucketSimpleQA
 	}
 	b.trackBucket(normOrg, bucket)
+
+	if latencyMs > 0 {
+		lat := float64(latencyMs)
+		b.mu.Lock()
+		if cur, ok := b.aliasLatencies[alias]; !ok || cur <= 0 {
+			b.aliasLatencies[alias] = lat
+		} else {
+			b.aliasLatencies[alias] = 0.3*lat + 0.7*cur
+		}
+		b.mu.Unlock()
+	}
 
 	ev := banditOutcomeEvent{
 		orgID:  normOrg,

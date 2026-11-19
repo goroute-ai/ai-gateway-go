@@ -249,6 +249,14 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 		if err != nil {
 			return nil, nil, requestBudgetEstimateError(err)
 		}
+		if qState := requestQuotaStateFromContext(ctx); qState != nil {
+			qState.SettlementRequestID = requestID
+			qState.MaxOutputTokens = requestedOutput
+			qState.PrimaryReserveMicros = reserve
+		}
+	} else if qState := requestQuotaStateFromContext(ctx); qState != nil {
+		qState.SettlementRequestID = requestID
+		qState.MaxOutputTokens = requestedOutput
 	}
 	if s.limiter == nil {
 		return func(int, int, int64) {}, nil, nil

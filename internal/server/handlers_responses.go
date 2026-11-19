@@ -113,7 +113,11 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		}
 		chatReq.ExtraParams["previous_response_id"] = prevRespID
 	}
-	s.applyChatRoutingHints(r, chatReq)
+	if gwErr := s.applyChatRoutingHints(r, idCtx, chatReq); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
 	prc, _, err := s.evaluateChatInputGuardrails(r.Context(), w, r, idCtx, chatReq, "responses")
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -137,7 +141,8 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	chatReq.Metadata = respMetadata
 	qCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, req.User, respMetadata, chatReq.GoRouteExtensions)
 	r = r.WithContext(qCtx)
-	acq, quotaErr := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, req.Model, estInputTokens, estInputTokens, maxOut, respReqID)
+	origRequestedModel := chatReq.Model
+	acq, quotaErr := s.acquireQuotaWithBudgetPolicy(r.Context(), idCtx, chatReq.Model, estInputTokens, estInputTokens, maxOut, respReqID)
 	if quotaErr != nil {
 		s.collector.Record(admissionFailureObservation(quotaErr))
 		domain.WriteHTTPError(w, quotaErr)
@@ -146,7 +151,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 	if acq.FallbackApplied && acq.EffectiveModel != "" {
 		chatReq.Model = acq.EffectiveModel
 	}
-	applyBudgetPolicyHeaders(w, req.Model, acq)
+	applyBudgetPolicyHeaders(w, origRequestedModel, acq)
 	releaseQuota := acq.ReleaseQuota
 	releaseUsage := acq.ReleaseUsage
 	quotaSettlement := &postDispatchSettlement{
@@ -155,7 +160,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		traceID:        observability.TraceFromContext(r.Context()).TraceID,
 		endpoint:       "/v1/responses",
 		modality:       domain.ModalityResponse,
-		requestedModel: req.Model,
+		requestedModel: origRequestedModel,
 		estTokens:      estInputTokens,
 		isStream:       req.Stream,
 		reqCtx:         r.Context(),
@@ -224,6 +229,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err != nil {
+			s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 			domain.WriteHTTPError(w, err)
 			return
 		}
@@ -299,7 +305,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		}
 		w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 		w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(gm)))
-		setRoutingTelemetryHeaders(w, meta)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
 		return
@@ -537,15 +543,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 
 	onSelected := func(dep *domain.Deployment) {
 		quotaSettlement.selectedDep = dep
-		if !streamSession.SSEStarted() && dep != nil && dep.GlobalModel != nil {
-			if dep.GlobalModel.Provider != "" {
-				w.Header().Set("X-Gateway-Provider", string(dep.GlobalModel.Provider))
-			}
-			if dep.GlobalModel.ModelName != "" {
-				w.Header().Set("X-Gateway-Model", dep.GlobalModel.ModelName)
-			}
-			w.Header().Set("X-Gateway-Pricing-Status", string(domain.ResolvePricingStatus(dep.GlobalModel)))
-		}
+		setPreStreamSelectedHeaders(w, dep, streamSession.SSEStarted())
 	}
 
 	streamStarted := time.Now()
@@ -561,6 +559,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		u := extractStreamChunksUsage(cachedStreamChunks, estInputTokens)
 		usage = &u
 	} else {
+		upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
 		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, onSelected)
 	}
@@ -583,7 +582,7 @@ func (s *GatewayServer) handleResponses(w http.ResponseWriter, r *http.Request) 
 		streamTTFT = time.Duration(meta.TTFTMs) * time.Millisecond
 	}
 	s.collector.RecordStream(time.Since(streamStarted), streamTTFT, err != nil)
-	setRoutingTelemetryHeaders(w, meta)
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	if err != nil {
 		isBlocked := streamSession.Blocked()
 		errCode := "stream_error"

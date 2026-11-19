@@ -27,6 +27,8 @@ type requestQuotaState struct {
 	SettlementID          string
 	SettlementRequestID   string
 	SettlementAt          time.Time
+	MaxOutputTokens       int
+	PrimaryReserveMicros  int64
 }
 
 func appendUniqueQuotaStr(dst []string, vals ...string) []string {

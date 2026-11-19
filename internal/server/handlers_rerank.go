@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,32 +80,42 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedQuery, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Query)
+	if gwErr := s.applyRoutingHints(r, idCtx, &req.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	var texts []string
+	var setters []func(string)
+	appendTextField := func(val string, set func(string)) {
+		if val == "" {
+			return
+		}
+		texts = append(texts, val)
+		setters = append(setters, set)
+	}
+	appendTextField(req.Query, func(v string) { req.Query = v })
+	for i := range req.Documents {
+		idx := i
+		appendTextField(req.Documents[idx].Text, func(v string) { req.Documents[idx].Text = v })
+		if req.Documents[idx].Raw != nil {
+			collectRerankValueStrings(req.Documents[idx].Raw, &texts, &setters)
+		}
+	}
+	guardedTexts, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &req.Model, req.GoRouteExtensions, "rerank", texts...)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
 	}
-	req.Query = guardedQuery[0]
-	for i := range req.Documents {
-		guardedText, err := s.guardrailTextValues(r.Context(), idCtx.OrgID, req.Documents[i].Text)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
-		req.Documents[i].Text = guardedText[0]
-		if req.Documents[i].Raw != nil {
-			updated, err := s.guardrailInputValue(r.Context(), idCtx.OrgID, req.Documents[i].Raw)
-			if err != nil {
-				domain.WriteHTTPError(w, err)
-				return
-			}
-			req.Documents[i].Raw = updated.(map[string]any)
+	for i, set := range setters {
+		if i < len(guardedTexts) {
+			set(guardedTexts[i])
 		}
 	}
 
 	// Account for query and document lengths, including structured documents.
 	quotaTokens := ratelimit.EstimateRerankTokens(req.Model, req.Query, req.Documents)
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, req.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, req.Model, quotaTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
 		return finops.EstimateRerankCostUpperBound(gm, len(req.Documents))
@@ -118,6 +129,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 	resp, meta, err := s.reliability.ExecuteRerank(r.Context(), idCtx, &req)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
@@ -172,6 +184,7 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.Header().Set("Content-Type", "application/json")
 
 	var provenance string
@@ -218,4 +231,51 @@ func (s *GatewayServer) handleRerank(w http.ResponseWriter, r *http.Request) {
 		slog.Int64("cost_micros", costMicros),
 		slog.Int64("latency_ms", meta.LatencyMs),
 	)
+}
+
+func collectRerankValueStrings(raw any, texts *[]string, setters *[]func(string)) {
+	switch v := raw.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			key := k
+			switch child := v[key].(type) {
+			case string:
+				if child == "" {
+					continue
+				}
+				*texts = append(*texts, child)
+				*setters = append(*setters, func(next string) { v[key] = next })
+			default:
+				collectRerankValueStrings(child, texts, setters)
+			}
+		}
+	case []any:
+		for i := range v {
+			idx := i
+			switch child := v[idx].(type) {
+			case string:
+				if child == "" {
+					continue
+				}
+				*texts = append(*texts, child)
+				*setters = append(*setters, func(next string) { v[idx] = next })
+			default:
+				collectRerankValueStrings(child, texts, setters)
+			}
+		}
+	case []string:
+		for i := range v {
+			idx := i
+			if v[idx] == "" {
+				continue
+			}
+			*texts = append(*texts, v[idx])
+			*setters = append(*setters, func(next string) { v[idx] = next })
+		}
+	}
 }

@@ -125,8 +125,22 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 
 	// Audio tokenization varies by provider. Use the upload size and optional
 	// prompt for a conservative preflight estimate rather than a fixed allowance.
-	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	var sttExt *domain.GoRouteExtensions
+	if gwErr := s.applyRoutingHints(r, idCtx, &sttExt); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	sttPrompt := r.FormValue("prompt")
+	guardedPrompt, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &model, sttExt, "audio_transcription", sttPrompt)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	sttPrompt = guardedPrompt[0]
+
+	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, sttPrompt)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, sttExt)
 	r = r.WithContext(quotaCtx)
 	releaseQuota, err := s.acquireModalityBudgetWithHeaders(w, r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
@@ -136,26 +150,21 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	}
 
 	sttReq := domain.CanonicalAudioTranscriptionRequest{
-		RequestID:      reqID,
-		Model:          model,
-		FileName:       header.Filename,
-		SpoolFilePath:  spoolPath,
-		Language:       r.FormValue("language"),
-		Prompt:         r.FormValue("prompt"),
-		ResponseFormat: r.FormValue("response_format"),
+		RequestID:         reqID,
+		Model:             model,
+		FileName:          header.Filename,
+		SpoolFilePath:     spoolPath,
+		Language:          r.FormValue("language"),
+		Prompt:            sttPrompt,
+		ResponseFormat:    r.FormValue("response_format"),
+		GoRouteExtensions: sttExt,
 	}
 	sttReq.IsTranslation = isTranslation
-	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, sttReq.Prompt)
-	if guardrailErr != nil {
-		releaseQuota(-1, -1)
-		domain.WriteHTTPError(w, guardrailErr)
-		return
-	}
-	sttReq.Prompt = guardedPrompt[0]
 
 	resp, meta, err := s.reliability.ExecuteAudioTranscription(r.Context(), idCtx, &sttReq)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
@@ -220,6 +229,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Gateway-Provider", string(meta.WinningDeployment.GlobalModel.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 
 	var provenance string
 	if gm != nil {
@@ -323,15 +333,20 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	if gwErr := s.applyRoutingHints(r, idCtx, &raw.GoRouteExtensions); gwErr != nil {
+		s.collector.Record(admissionFailureObservation(gwErr))
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
 
-	guardedInput, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, raw.Input)
+	guardedInput, guardrailErr := s.evaluateNonChatTextGuardrails(r.Context(), w, r, idCtx, &raw.Model, raw.GoRouteExtensions, "audio_speech", raw.Input)
 	if guardrailErr != nil {
 		domain.WriteHTTPError(w, guardrailErr)
 		return
 	}
 	raw.Input = guardedInput[0]
 
-	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, raw.GoRouteExtensions)
 	r = r.WithContext(quotaCtx)
 	// TTS quota follows the target model's text token profile.
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
@@ -347,6 +362,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	stream, contentType, meta, err := s.reliability.ExecuteAudioSpeech(r.Context(), idCtx, &raw)
 	if err != nil {
 		releaseQuota(-1, -1)
+		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
@@ -403,6 +419,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Gateway-Provider", string(provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
 	w.Header().Set("X-Gateway-Pricing-Status", string(pricingStatus))
+	s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)

@@ -45,6 +45,7 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 		ScopeID                   string                   `json:"scope_id"`
 		ModelPattern              string                   `json:"model_pattern,omitempty"`
 		RPMLimit                  int                      `json:"rpm_limit,omitempty"`
+		RPDLimit                  int64                    `json:"rpd_limit,omitempty"`
 		TPMLimit                  int                      `json:"tpm_limit,omitempty"`
 		ITPMLimit                 int                      `json:"itpm_limit,omitempty"`
 		OTPMLimit                 int                      `json:"otpm_limit,omitempty"`
@@ -92,6 +93,15 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 	if maxBudget == 0 && req.MaxBudgetPerSessionMicros != 0 {
 		maxBudget = req.MaxBudgetPerSessionMicros
 	}
+	if req.RPDLimit < 0 {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_quota_policy",
+			Message:    "rpd_limit must be non-negative",
+		})
+		return
+	}
 	policy := &domain.QuotaPolicy{
 		ID:                strings.TrimSpace(req.ID),
 		OrgID:             req.OrgID,
@@ -99,6 +109,7 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 		ScopeID:           req.ScopeID,
 		ModelPattern:      req.ModelPattern,
 		RPMLimit:          req.RPMLimit,
+		RPDLimit:          req.RPDLimit,
 		TPMLimit:          req.TPMLimit,
 		ITPMLimit:         req.ITPMLimit,
 		OTPMLimit:         req.OTPMLimit,

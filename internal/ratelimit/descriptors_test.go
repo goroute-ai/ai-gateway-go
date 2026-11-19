@@ -75,7 +75,7 @@ func TestDescriptorKeysAlignToSameRedisClusterSlot(t *testing.T) {
 			}
 
 			checkKeys := descriptorCheckKeys(tc.orgID, descs, now)
-			if want := len(descs) * 12; len(checkKeys) != want {
+			if want := len(descs) * 13; len(checkKeys) != want {
 				t.Fatalf("descriptorCheckKeys len = %d, want %d", len(checkKeys), want)
 			}
 			for i, k := range checkKeys {

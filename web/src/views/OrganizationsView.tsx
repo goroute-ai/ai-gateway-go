@@ -161,7 +161,7 @@ export const OrganizationsView: React.FC = () => {
         </div>
         <div className="flex gap-2">
           {tab === 'orgs' && <button onClick={() => openM('org', { editOrgId: '', orgName: '', orgId: '', orgBudget: '', softBudget: '', throttle: false, fallbacks: '', selfServe: 'disabled', orgRpm: '', orgTpm: '', orgGuarantee: false, devSelfKeys: false, webhookUrl: '', expiryDays: '7, 1' })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
-          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', softBudget: '', throttle: false, fallbacks: '', teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
+          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', softBudget: '', throttle: false, fallbacks: '', teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', teamMinPrio: '', teamAllowedTags: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
           {tab === 'users' && <button onClick={() => openM('user', { editUserId: '', email: '', userName: '', userId: '', userTeamId: '', userBudget: '', softBudget: '', throttle: false, fallbacks: '', role: 'developer', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
           {tab === 'policies' && <>
             <button onClick={() => setModal('sub')} className="px-3 py-1.5 rounded-md border border-accent-primary/30 text-accent-primary text-xs font-semibold">+ Provider Sub</button>
@@ -218,7 +218,7 @@ export const OrganizationsView: React.FC = () => {
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
                     <button onClick={() => openM('members', { membersTeamId: t.id, membersTeamName: t.name, addUserIds: '', rmUserIds: '' })} className="px-1.5 py-0.5 text-[10px] font-mono text-accent-primary hover:underline" title="Sync members">Members</button>
-                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), softBudget: microsToUsdInput(t.soft_budget_micros), throttle: !!t.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(t.budget_fallbacks), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), softBudget: microsToUsdInput(t.soft_budget_micros), throttle: !!t.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(t.budget_fallbacks), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), teamMinPrio: t.min_priority_rank ? String(t.min_priority_rank) : '', teamAllowedTags: (t.allowed_routing_tags || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) delMut.mutate({ kind: 'teams', id: t.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
@@ -320,6 +320,8 @@ export const OrganizationsView: React.FC = () => {
             default_member_max_budget_micros: defMemM ?? 0,
             default_member_rpm_limit: f.defMemRpm ? parseInt(f.defMemRpm, 10) : 0,
             team_member_permissions: (f.teamPerms || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            min_priority_rank: f.teamMinPrio ? Math.max(0, parseInt(f.teamMinPrio, 10) || 0) : 0,
+            allowed_routing_tags: (f.teamAllowedTags || '').split(',').map((s: string) => s.trim()).filter(Boolean),
             ...budgetPatch('teamBudget', true),
             is_active: !!f.active,
           };
@@ -335,6 +337,10 @@ export const OrganizationsView: React.FC = () => {
           {txt('defMemRpm', 'Member RPM', 'number')}
         </div>
         {txt('teamPerms', 'Member Perms (keys:create,keys:rotate,keys:revoke)')}
+        <div className={g2}>
+          {txt('teamMinPrio', 'Min Priority Rank', 'number')}
+          {txt('teamAllowedTags', 'Allowed Routing Tags')}
+        </div>
         {chk('teamGuarantee', 'Guaranteed Throughput')}
         <SoftPolicyFields f={f} set={set} />
         {f.editTeamId && chk('active', 'Active')}

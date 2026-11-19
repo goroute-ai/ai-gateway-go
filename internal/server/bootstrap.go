@@ -180,6 +180,9 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 				ContextWindowFallbacks: entry.ContextWindowFallbacks,
 				ContentPolicyFallbacks: entry.ContentPolicyFallbacks,
 				FallbackTargets:        entry.FallbackTargets,
+				SaturationFallbacks:    entry.SaturationFallbacks,
+				DropUnsupportedParams:  entry.DropUnsupportedParams,
+				DisableCooldowns:       entry.DisableCooldowns,
 				MaxRetries:             s.cfg.Router.DefaultMaxRetries,
 				CooldownSeconds:        int(s.cfg.Router.DefaultCooldown.Seconds()),
 				FailureThreshold:       s.cfg.Router.FailureThreshold,
@@ -188,7 +191,7 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 			if err := s.repo.CreateModelGroup(ctx, mg); err != nil {
 				return err
 			}
-		} else if len(entry.Fallbacks) > 0 || len(entry.ContextWindowFallbacks) > 0 || len(entry.ContentPolicyFallbacks) > 0 || len(entry.FallbackTargets) > 0 {
+		} else if len(entry.Fallbacks) > 0 || len(entry.ContextWindowFallbacks) > 0 || len(entry.ContentPolicyFallbacks) > 0 || len(entry.FallbackTargets) > 0 || len(entry.SaturationFallbacks) > 0 || entry.DropUnsupportedParams || entry.DisableCooldowns {
 			if len(entry.Fallbacks) > 0 {
 				mg.FallbackGroupIDs = entry.Fallbacks
 			}
@@ -200,6 +203,15 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 			}
 			if len(entry.FallbackTargets) > 0 {
 				mg.FallbackTargets = entry.FallbackTargets
+			}
+			if len(entry.SaturationFallbacks) > 0 {
+				mg.SaturationFallbacks = entry.SaturationFallbacks
+			}
+			if entry.DropUnsupportedParams {
+				mg.DropUnsupportedParams = true
+			}
+			if entry.DisableCooldowns {
+				mg.DisableCooldowns = true
 			}
 			_ = s.repo.CreateModelGroup(ctx, mg)
 		}
@@ -223,19 +235,22 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 			weight = 100
 		}
 		dep := &domain.Deployment{
-			ModelGroupID:      mg.ID,
-			GlobalModelID:     globalModelID,
-			CredentialID:      cred.ID,
-			DeploymentName:    depName,
-			Region:            entry.ModelParams.Region,
-			Weight:            weight,
-			RPMCapacity:       entry.ModelParams.RPM,
-			TPMCapacity:       entry.ModelParams.TPM,
-			Priority:          entry.ModelParams.Priority,
-			Tags:              entry.ModelParams.Tags,
-			MaxBudgetMicros:   entry.ModelParams.MaxBudgetMicros,
-			BudgetResetPeriod: entry.ModelParams.BudgetResetPeriod,
-			Status:            domain.DeploymentStatusActive,
+			ModelGroupID:        mg.ID,
+			GlobalModelID:       globalModelID,
+			CredentialID:        cred.ID,
+			DeploymentName:      depName,
+			Region:              entry.ModelParams.Region,
+			Weight:              weight,
+			RPMCapacity:         entry.ModelParams.RPM,
+			TPMCapacity:         entry.ModelParams.TPM,
+			ITPMCapacity:        entry.ModelParams.ITPM,
+			OTPMCapacity:        entry.ModelParams.OTPM,
+			MaxParallelRequests: entry.ModelParams.MaxParallelRequests,
+			Priority:            entry.ModelParams.Priority,
+			Tags:                entry.ModelParams.Tags,
+			MaxBudgetMicros:     entry.ModelParams.MaxBudgetMicros,
+			BudgetResetPeriod:   entry.ModelParams.BudgetResetPeriod,
+			Status:              domain.DeploymentStatusActive,
 		}
 		if err := s.repo.CreateDeployment(ctx, dep); err != nil {
 			return err

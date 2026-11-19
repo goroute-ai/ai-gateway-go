@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"weak"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
@@ -181,9 +182,79 @@ func (s *GatewayServer) evaluateChatInputGuardrails(
 	if drivers.IsInternalGuardrailOrigin(ctx) {
 		return prc, false, nil
 	}
+	return s.evaluatePreCallWithRoute(ctx, w, r, idCtx, req, prc, resource)
+}
+
+func (s *GatewayServer) evaluatePreCallWithRoute(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	req *domain.CanonicalChatRequest,
+	prc guardrails.PipelineRequestContext,
+	resource string,
+) (guardrails.PipelineRequestContext, bool, error) {
+	var sessionID string
+	if req != nil && req.GoRouteExtensions != nil {
+		sessionID = strings.TrimSpace(req.GoRouteExtensions.SessionID)
+	}
+	aff := s.affinityStore
+	if aff == nil && s.reliability != nil {
+		aff = s.reliability.AffinityStore()
+	}
+	var pinnedRoute string
+	if sessionID != "" && aff != nil && prc.OrgID != "" {
+		pinnedRoute = aff.GetSensitiveRoute(ctx, prc.OrgID, sessionID)
+	}
 	pipeline := s.GuardrailPipeline()
 	out, err := pipeline.EvaluatePreCall(ctx, prc, req)
 	redacted := false
+	if out != nil {
+		redacted = out.Redacted
+	}
+	routeTarget := ""
+	if out != nil {
+		routeTarget = strings.TrimSpace(out.RouteTarget)
+	}
+	if routeTarget == "" {
+		routeTarget = strings.TrimSpace(pinnedRoute)
+	}
+	if err == nil && routeTarget != "" {
+		if idCtx != nil && s.rbac != nil {
+			if rbacErr := s.rbac.AuthorizeRequestedModel(idCtx, routeTarget); rbacErr != nil {
+				status := http.StatusForbidden
+				if ge, ok := rbacErr.(*domain.GatewayError); ok && ge.StatusCode != 0 {
+					status = ge.StatusCode
+				}
+				if s.collector != nil {
+					s.collector.Record(observability.RequestObservation{
+						StatusCode:       status,
+						GuardrailBlocked: true,
+					})
+				}
+				return prc, redacted, rbacErr
+			}
+		}
+		if req != nil {
+			req.Model = routeTarget
+		}
+		prc.Model = routeTarget
+		if w != nil {
+			w.Header().Set("X-Gateway-Guardrail-Action", string(domain.GuardrailActionRoute))
+			w.Header().Set("X-Gateway-Sensitive-Route", routeTarget)
+		}
+		sessionPinned := false
+		if sessionID != "" && aff != nil && prc.OrgID != "" {
+			aff.SetSensitiveRoute(ctx, prc.OrgID, sessionID, routeTarget)
+			sessionPinned = true
+		}
+		var violations []string
+		if out != nil {
+			violations = out.Violations
+		}
+		s.emitThrottledGuardrailRouteAudit(ctx, prc, resource, routeTarget, sessionPinned, violations)
+		return prc, redacted, nil
+	}
 	if out != nil && (len(out.Violations) > 0 || out.Redacted || err != nil) {
 		redacted = out.Redacted
 		action := out.AppliedAction
@@ -223,6 +294,68 @@ func (s *GatewayServer) evaluateChatInputGuardrails(
 		return prc, redacted, err
 	}
 	return prc, redacted, nil
+}
+
+const guardrailRouteAuditWindow = 60 * time.Second
+
+type routeAuditWindow struct {
+	windowStart time.Time
+	suppressed  int
+}
+
+func (s *GatewayServer) emitThrottledGuardrailRouteAudit(
+	ctx context.Context,
+	prc guardrails.PipelineRequestContext,
+	resource string,
+	targetModel string,
+	sessionPinned bool,
+	violations []string,
+) {
+	if s == nil || s.repo == nil || prc.OrgID == "" {
+		return
+	}
+	now := s.nowUTC()
+	key := prc.OrgID + ":" + prc.VirtualKeyID + ":" + targetModel
+
+	s.routeAuditMu.Lock()
+	if s.routeAuditWindows == nil {
+		s.routeAuditWindows = make(map[string]*routeAuditWindow)
+	}
+	win := s.routeAuditWindows[key]
+	if win != nil && now.Sub(win.windowStart) < guardrailRouteAuditWindow {
+		win.suppressed++
+		s.routeAuditMu.Unlock()
+		return
+	}
+	suppressedCount := 0
+	if win != nil {
+		suppressedCount = win.suppressed
+	}
+	if len(s.routeAuditWindows) > 1000 {
+		for k, w := range s.routeAuditWindows {
+			if now.Sub(w.windowStart) >= guardrailRouteAuditWindow {
+				delete(s.routeAuditWindows, k)
+			}
+		}
+	}
+	s.routeAuditWindows[key] = &routeAuditWindow{windowStart: now}
+	s.routeAuditMu.Unlock()
+
+	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
+		OrgID:      prc.OrgID,
+		ActorID:    prc.VirtualKeyID,
+		Action:     "guardrail.routed",
+		Resource:   resource,
+		ResourceID: prc.RequestID,
+		Details: map[string]any{
+			"action":           domain.GuardrailActionRoute,
+			"target_model":     targetModel,
+			"session_pinned":   sessionPinned,
+			"violations":       violations,
+			"suppressed_count": suppressedCount,
+			"trace_id":         prc.TraceID,
+		},
+	})
 }
 
 func (s *GatewayServer) evaluateChatOutputGuardrails(
@@ -909,9 +1042,30 @@ func (s *GatewayServer) guardrailTextValuesWithExtensions(
 	ext *domain.GoRouteExtensions,
 	values ...string,
 ) ([]string, error) {
-	if len(values) == 0 {
-		return nil, nil
+	m := model
+	idCtx := auth.IdentityFromContext(ctx)
+	if idCtx == nil {
+		idCtx = &domain.IdentityContext{OrgID: orgID}
+	} else if idCtx.OrgID == "" && orgID != "" {
+		cp := *idCtx
+		cp.OrgID = orgID
+		idCtx = &cp
 	}
+	return s.evaluateNonChatTextGuardrails(ctx, nil, nil, idCtx, &m, ext, "non_chat", values...)
+}
+
+// evaluateNonChatTextGuardrails evaluates pre-call guardrails for non-chat text inputs,
+// enforcing sensitive route rewrites (RBAC, model rewrite, session pinning, headers, and audit).
+func (s *GatewayServer) evaluateNonChatTextGuardrails(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	model *string,
+	ext *domain.GoRouteExtensions,
+	resource string,
+	values ...string,
+) ([]string, error) {
 	out := append([]string(nil), values...)
 	if drivers.IsInternalGuardrailOrigin(ctx) {
 		return out, nil
@@ -924,26 +1078,30 @@ func (s *GatewayServer) guardrailTextValuesWithExtensions(
 			indices = append(indices, i)
 		}
 	}
-	if len(msgs) == 0 {
+	hasSession := ext != nil && strings.TrimSpace(ext.SessionID) != ""
+	if len(msgs) == 0 && !hasSession {
 		return out, nil
 	}
-	idCtx := auth.IdentityFromContext(ctx)
-	if idCtx == nil {
-		idCtx = &domain.IdentityContext{OrgID: orgID}
-	} else if idCtx.OrgID == "" && orgID != "" {
-		cp := *idCtx
-		cp.OrgID = orgID
-		idCtx = &cp
+	targetModel := ""
+	if model != nil {
+		targetModel = *model
+	}
+	reqID := ""
+	if r != nil {
+		reqID = gatewayRequestID(r)
 	}
 	probe := &domain.CanonicalChatRequest{
-		Model:             model,
+		RequestID:         reqID,
+		Model:             targetModel,
 		Messages:          msgs,
 		GoRouteExtensions: ext,
 	}
-	prc := buildGuardrailRequestContext(nil, idCtx, probe)
-	pipeline := s.GuardrailPipeline()
-	if _, err := pipeline.EvaluatePreCall(ctx, prc, probe); err != nil {
+	prc := buildGuardrailRequestContext(r, idCtx, probe)
+	if _, _, err := s.evaluatePreCallWithRoute(ctx, w, r, idCtx, probe, prc, resource); err != nil {
 		return nil, err
+	}
+	if model != nil && strings.TrimSpace(probe.Model) != "" {
+		*model = probe.Model
 	}
 	for msgIdx, origIdx := range indices {
 		if msgIdx < len(probe.Messages) {
@@ -954,11 +1112,32 @@ func (s *GatewayServer) guardrailTextValuesWithExtensions(
 }
 
 func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, raw any) (any, error) {
+	idCtx := auth.IdentityFromContext(ctx)
+	if idCtx == nil {
+		idCtx = &domain.IdentityContext{OrgID: orgID}
+	} else if idCtx.OrgID == "" && orgID != "" {
+		cp := *idCtx
+		cp.OrgID = orgID
+		idCtx = &cp
+	}
+	return s.guardrailInputValueWithRoute(ctx, nil, nil, idCtx, nil, nil, "non_chat", raw)
+}
+
+func (s *GatewayServer) guardrailInputValueWithRoute(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	model *string,
+	ext *domain.GoRouteExtensions,
+	resource string,
+	raw any,
+) (any, error) {
 	switch v := raw.(type) {
 	case nil:
 		return nil, nil
 	case string:
-		vals, err := s.guardrailTextValues(ctx, orgID, v)
+		vals, err := s.evaluateNonChatTextGuardrails(ctx, w, r, idCtx, model, ext, resource, v)
 		if err != nil {
 			return nil, err
 		}
@@ -967,11 +1146,11 @@ func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, r
 		}
 		return vals[0], nil
 	case []string:
-		return s.guardrailTextValues(ctx, orgID, v...)
+		return s.evaluateNonChatTextGuardrails(ctx, w, r, idCtx, model, ext, resource, v...)
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
-			next, err := s.guardrailInputValue(ctx, orgID, item)
+			next, err := s.guardrailInputValueWithRoute(ctx, w, r, idCtx, model, ext, resource, item)
 			if err != nil {
 				return nil, err
 			}
@@ -981,7 +1160,7 @@ func (s *GatewayServer) guardrailInputValue(ctx context.Context, orgID string, r
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for k, item := range v {
-			next, err := s.guardrailInputValue(ctx, orgID, item)
+			next, err := s.guardrailInputValueWithRoute(ctx, w, r, idCtx, model, ext, resource, item)
 			if err != nil {
 				return nil, err
 			}

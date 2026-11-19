@@ -4,6 +4,7 @@ import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
+import { MONO_INPUT_CLS } from '../components/common/Modal';
 import { GuardrailPolicy, GuardrailViolation } from '../types';
 import {
   ShieldCheck,
@@ -46,9 +47,9 @@ const GuardrailRuleCard: React.FC<{
   desc: string;
   enabled: boolean;
   onToggle: (v: boolean) => void;
-  action: 'block' | 'redact' | 'audit';
-  onAction: (a: 'block' | 'redact' | 'audit') => void;
-  actions: readonly ('block' | 'redact' | 'audit')[];
+  action: 'block' | 'redact' | 'audit' | 'route';
+  onAction: (a: 'block' | 'redact' | 'audit' | 'route') => void;
+  actions: readonly ('block' | 'redact' | 'audit' | 'route')[];
   activeCls: string;
   extra?: React.ReactNode;
 }> = ({ icon, title, desc, enabled, onToggle, action, onAction, actions, activeCls, extra }) => (
@@ -98,6 +99,7 @@ const normalizePolicy = (p: GuardrailPolicy): GuardrailPolicy => ({
   toxicity_threshold: p.toxicity_threshold || 'medium',
   enabled_content_categories: p.enabled_content_categories || [],
   content_exceptions: p.content_exceptions || [],
+  sensitive_route_target: p.sensitive_route_target || '',
   blocked_keywords: p.blocked_keywords || [],
 });
 
@@ -410,7 +412,7 @@ export const GuardrailsView: React.FC = () => {
                   onToggle={(v) => setPolicyForm({ ...policyForm, enable_prompt_injection: v })}
                   action={policyForm.prompt_injection_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, prompt_injection_action: a })}
-                  actions={['block', 'redact', 'audit']}
+                  actions={['block', 'redact', 'audit', 'route']}
                   activeCls="status-warning border font-bold"
                 />
                 <GuardrailRuleCard
@@ -421,7 +423,7 @@ export const GuardrailsView: React.FC = () => {
                   onToggle={(v) => setPolicyForm({ ...policyForm, enable_pii_detection: v })}
                   action={policyForm.pii_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, pii_action: a })}
-                  actions={['redact', 'block', 'audit']}
+                  actions={['redact', 'block', 'audit', 'route']}
                   activeCls="bg-accent-soft text-accent-primary border border-accent-primary/40 font-bold"
                   extra={
                     <div className="flex items-center gap-2 pt-1">
@@ -438,7 +440,7 @@ export const GuardrailsView: React.FC = () => {
                   onToggle={(v) => setPolicyForm({ ...policyForm, enable_secret_detection: v })}
                   action={policyForm.secret_action}
                   onAction={(a) => setPolicyForm({ ...policyForm, secret_action: a })}
-                  actions={['block', 'redact', 'audit']}
+                  actions={['block', 'redact', 'audit', 'route']}
                   activeCls="status-success border font-bold"
                 />
                 <GuardrailRuleCard
@@ -449,7 +451,7 @@ export const GuardrailsView: React.FC = () => {
                   onToggle={(v) => setPolicyForm({ ...policyForm, enable_toxicity_filter: v })}
                   action={policyForm.toxicity_action || 'block'}
                   onAction={(a) => setPolicyForm({ ...policyForm, toxicity_action: a })}
-                  actions={['block', 'redact', 'audit']}
+                  actions={['block', 'redact', 'audit', 'route']}
                   activeCls="status-danger border font-bold"
                   extra={
                     <div className="space-y-2.5 pt-2">
@@ -520,6 +522,21 @@ export const GuardrailsView: React.FC = () => {
                     onChange={(next) => setPolicyForm({ ...policyForm, blocked_keywords: next })}
                     placeholder="Add keyword (e.g. project_apollo)..."
                     emptyText="No blocked keywords configured. Add keywords or phrases below."
+                  />
+                </div>
+
+                {/* Rule 6: Sensitive Route Target */}
+                <div className="p-3.5 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-2">
+                  <div className="text-xs font-semibold text-brand-title">Sensitive Route Target</div>
+                  <p className="text-[11px] text-brand-muted">
+                    Model group alias used when any rule action above is set to <span className="font-mono">route</span>.
+                  </p>
+                  <input
+                    type="text"
+                    value={policyForm.sensitive_route_target || ''}
+                    onChange={(e) => setPolicyForm({ ...policyForm, sensitive_route_target: e.target.value })}
+                    placeholder="e.g. sovereign-private"
+                    className={MONO_INPUT_CLS}
                   />
                 </div>
               </div>

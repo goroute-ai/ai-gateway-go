@@ -90,11 +90,12 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     rotationIntervalSec: '0', keyRotationAt: '', expiresAt: '',
     maxBudgetUSD: '', softBudgetUSD: '', throttleOnBudget: false, budgetFallbacksText: '',
     budgetResetPeriod: 'monthly' as BudgetResetPeriod, rpmLimit: '', tpmLimit: '', maxConcurrent: '',
+    minPriorityRank: '', allowedRoutingTags: '',
     allowedModels: '', allowedEndpoints: '', mcpAllow: INHERIT, a2aAllow: INHERIT, clientAppAllow: INHERIT,
   };
   const [kf, setKf] = useState(INIT_KF);
   const setK = <K extends keyof typeof INIT_KF>(k: K, v: (typeof INIT_KF)[K]) => setKf((p) => ({ ...p, [k]: v }));
-  const inp = (l: string, k: 'name' | 'expiresAt' | 'keyRotationAt' | 'allowedModels' | 'allowedEndpoints' | 'maxBudgetUSD' | 'softBudgetUSD' | 'rpmLimit' | 'tpmLimit' | 'maxConcurrent', t = 'text', ph?: string, mono = true) => (
+  const inp = (l: string, k: 'name' | 'expiresAt' | 'keyRotationAt' | 'allowedModels' | 'allowedEndpoints' | 'maxBudgetUSD' | 'softBudgetUSD' | 'rpmLimit' | 'tpmLimit' | 'maxConcurrent' | 'minPriorityRank' | 'allowedRoutingTags', t = 'text', ph?: string, mono = true) => (
     <Field key={k} label={l}><input type={t} min={t === 'number' ? '0' : undefined} step={ph?.includes('.') ? '0.01' : undefined} value={kf[k]} onChange={(e) => setK(k, e.target.value)} placeholder={ph} className={mono ? MONO_INPUT_CLS : INPUT_CLS} /></Field>
   );
 
@@ -207,6 +208,8 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       rpmLimit: k.rpm_limit ? String(k.rpm_limit) : '',
       tpmLimit: k.tpm_limit ? String(k.tpm_limit) : '',
       maxConcurrent: k.max_concurrent_requests ? String(k.max_concurrent_requests) : '',
+      minPriorityRank: k.min_priority_rank ? String(k.min_priority_rank) : '',
+      allowedRoutingTags: (k.allowed_routing_tags || []).join(', '),
       allowedModels: (k.allowed_models || []).join(', '),
       allowedEndpoints: (k.allowed_endpoints || []).join(', '),
       mcpAllow: initAllow(k.allowed_mcp_servers),
@@ -231,6 +234,8 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       rpm_limit: kf.rpmLimit ? parseInt(kf.rpmLimit, 10) : 0,
       tpm_limit: kf.tpmLimit ? parseInt(kf.tpmLimit, 10) : 0,
       max_concurrent_requests: kf.maxConcurrent ? parseInt(kf.maxConcurrent, 10) : 0,
+      min_priority_rank: kf.minPriorityRank ? Math.max(0, parseInt(kf.minPriorityRank, 10) || 0) : 0,
+      allowed_routing_tags: kf.allowedRoutingTags.trim() ? parseCSV(kf.allowedRoutingTags) : [],
       allowed_models: kf.allowedModels.trim() ? parseCSV(kf.allowedModels) : [],
     };
     if (kf.keyRotationAt) { const d = new Date(kf.keyRotationAt); if (!isNaN(d.getTime())) payload.key_rotation_at = d.toISOString(); }
@@ -431,6 +436,9 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {inp('Models', 'allowedModels', 'text', 'fast, openai/gpt-4o')}{inp('Endpoints', 'allowedEndpoints', 'text', '/v1/*')}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {inp('Min Priority Rank', 'minPriorityRank', 'number', '0')}{inp('Allowed Routing Tags', 'allowedRoutingTags', 'text', 'tier:*, eu')}
         </div>
         {([['MCP', 'mcpAllow', 'mcp_github'], ['A2A', 'a2aAllow', 'agent_1'], ['Apps', 'clientAppAllow', 'cursor']] as const).map(([l, k, ph]) => (
           <AllowlistField key={l} label={l} state={kf[k]} onChange={(v) => setK(k, v)} placeholder={ph} />

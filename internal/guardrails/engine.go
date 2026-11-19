@@ -33,11 +33,12 @@ var (
 	}
 )
 
-// CheckOutcome reports whether guardrails modified (redacted) or audited the request.
+// CheckOutcome reports whether guardrails modified (redacted), re-routed, or audited the request.
 type CheckOutcome struct {
 	Redacted      bool
 	Violations    []string
 	AppliedAction domain.GuardrailAction
+	RouteTarget   string
 	RiskScore     float64
 }
 
@@ -237,6 +238,18 @@ func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, fiel
 				*field = reSecret.ReplaceAllString(*field, "[REDACTED_SECRET]")
 				outcome.Redacted = true
 			}
+			if action == domain.GuardrailActionRoute {
+				target := strings.TrimSpace(pol.SensitiveRouteTarget)
+				if target == "" {
+					return &domain.GatewayError{
+						StatusCode: http.StatusBadRequest,
+						Type:       domain.ErrorTypeInvalidRequest,
+						Code:       "guardrail_route_target_missing",
+						Message:    "Security guardrail configured for sensitive routing has no sensitive_route_target configured",
+					}
+				}
+				outcome.RouteTarget = target
+			}
 		}
 	}
 
@@ -268,6 +281,18 @@ func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, fiel
 						*field = next
 					}
 					outcome.Redacted = true
+				}
+				if action == domain.GuardrailActionRoute {
+					target := strings.TrimSpace(pol.SensitiveRouteTarget)
+					if target == "" {
+						return &domain.GatewayError{
+							StatusCode: http.StatusBadRequest,
+							Type:       domain.ErrorTypeInvalidRequest,
+							Code:       "guardrail_route_target_missing",
+							Message:    "Security guardrail configured for sensitive routing has no sensitive_route_target configured",
+						}
+					}
+					outcome.RouteTarget = target
 				}
 			}
 		}

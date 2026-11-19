@@ -78,6 +78,7 @@ type GuardrailScanResult struct {
 	ModifiedToolCalls []GuardrailToolCall `json:"modified_tool_calls,omitempty"`
 	Violations        []string            `json:"violations,omitempty"`
 	Reason            string              `json:"reason,omitempty"`
+	RouteTarget       string              `json:"route_target,omitempty"`
 	UsageUnits        int64               `json:"usage_units,omitempty"`
 }
 
@@ -95,11 +96,12 @@ func (f GuardrailScannerFunc) Scan(ctx context.Context, req GuardrailScanRequest
 }
 
 type sdkGuardrailConfig struct {
-	timeout    time.Duration
-	failOpen   bool
-	hooks      []GuardrailHook
-	defaultOn  bool
-	precedence int
+	timeout              time.Duration
+	failOpen             bool
+	hooks                []GuardrailHook
+	defaultOn            bool
+	precedence           int
+	sensitiveRouteTarget string
 }
 
 // GuardrailOption customizes how an SDK-registered GuardrailScanner executes in the pipeline.
@@ -144,6 +146,13 @@ func WithGuardrailDefaultOn(defaultOn bool) GuardrailOption {
 func WithGuardrailPrecedence(precedence int) GuardrailOption {
 	return func(c *sdkGuardrailConfig) {
 		c.precedence = precedence
+	}
+}
+
+// WithGuardrailSensitiveRouteTarget sets the fallback/sovereign model group target when a guardrail routes sensitive requests.
+func WithGuardrailSensitiveRouteTarget(target string) GuardrailOption {
+	return func(c *sdkGuardrailConfig) {
+		c.sensitiveRouteTarget = strings.TrimSpace(target)
 	}
 }
 
@@ -248,16 +257,17 @@ func registerSDKGuardrailScanner(
 	})
 
 	def := &domain.GuardrailDefinition{
-		ID:         defID,
-		OrgID:      orgID,
-		Name:       cleanName,
-		Provider:   provider,
-		EventHooks: domHooks,
-		DefaultOn:  gcfg.defaultOn,
-		TimeoutMs:  timeoutMs,
-		FailOpen:   gcfg.failOpen,
-		Precedence: gcfg.precedence,
-		Status:     domain.GuardrailStatusActive,
+		ID:                   defID,
+		OrgID:                orgID,
+		Name:                 cleanName,
+		Provider:             provider,
+		EventHooks:           domHooks,
+		DefaultOn:            gcfg.defaultOn,
+		TimeoutMs:            timeoutMs,
+		FailOpen:             gcfg.failOpen,
+		Precedence:           gcfg.precedence,
+		SensitiveRouteTarget: gcfg.sensitiveRouteTarget,
+		Status:               domain.GuardrailStatusActive,
 	}
 	if _, err := repo.GetGuardrailDefinition(ctx, defID); err == nil {
 		return repo.UpdateGuardrailDefinition(ctx, def)
@@ -329,6 +339,7 @@ func fromSDKGuardrailResult(name, defID string, res GuardrailScanResult) (*domai
 		Decision:          decision,
 		ModifiedTexts:     slices.Clone(res.ModifiedTexts),
 		AppliedGuardrails: []string{name},
+		RouteTarget:       strings.TrimSpace(res.RouteTarget),
 		UsageUnits:        res.UsageUnits,
 		ErrorMessage:      res.Reason,
 	}

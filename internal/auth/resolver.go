@@ -989,6 +989,8 @@ func (r *AuthResolver) projectUserIdentity(
 		if team.AllowedClientApps != nil {
 			idCtx.TeamAllowedClientApps = append([]string(nil), team.AllowedClientApps...)
 		}
+		idCtx.TeamMinPriorityRank = team.MinPriorityRank
+		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit
 		idCtx.TeamTPMLimit = team.TPMLimit
 		idCtx.TeamMCPRPMLimit = team.MCPRPMLimit

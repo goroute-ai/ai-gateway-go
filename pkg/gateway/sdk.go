@@ -42,6 +42,9 @@ type ModelEntry struct {
 	ContextWindowFallbacks []string         // Optional: ordered fallback group aliases when input exceeds context window
 	ContentPolicyFallbacks []string         // Optional: ordered fallback group aliases on content policy / safety refusals
 	FallbackTargets        []FallbackTarget // Optional: structured fallback targets with parameter overrides
+	SaturationFallbacks    []FallbackTarget // Optional: ordered fallback group targets when primary is saturated
+	DropUnsupportedParams  bool             // Optional: drop unsupported parameters when routing to less-capable models
+	DisableCooldowns       bool             // Optional: disable circuit breaker cooldown tripping for this group
 	Region                 string           // Optional: deployment region (e.g. "us-east-1", "eu-west-1")
 	Priority               int              // Optional: priority tier (0 is highest priority; higher values are lower priority tiers)
 	Tags                   []string         // Optional: deployment tags for tag-based request filtering
@@ -50,6 +53,9 @@ type ModelEntry struct {
 	Weight                 int
 	RPM                    int
 	TPM                    int
+	ITPM                   int
+	OTPM                   int
+	MaxParallelRequests    int
 	SimulateStatus         int // Optional fault-injection HTTP status (e.g. 503) for local failover/circuit-breaker testing
 }
 
@@ -64,6 +70,8 @@ type ChatResult struct {
 	RequestID         string                       `json:"request_id"`
 	CostMicros        int64                        `json:"cost_micros"`
 	RoutingMicros     int64                        `json:"routing_micros"`
+	RetryCount        int                          `json:"retry_count,omitempty"`
+	DroppedParams     []string                     `json:"dropped_params,omitempty"`
 	CacheStatus       string                       `json:"cache_status,omitempty"`
 	RouteReason       string                       `json:"route_reason,omitempty"`
 	FallbackAttempted bool                         `json:"fallback_attempted,omitempty"`
@@ -342,18 +350,24 @@ func New(opts ...Option) (*Client, error) {
 			ContextWindowFallbacks: toDomainFallbackTargets(e.ContextWindowFallbacks),
 			ContentPolicyFallbacks: toDomainFallbackTargets(e.ContentPolicyFallbacks),
 			FallbackTargets:        convertFallbackTargets(e.FallbackTargets),
+			SaturationFallbacks:    convertFallbackTargets(e.SaturationFallbacks),
+			DropUnsupportedParams:  e.DropUnsupportedParams,
+			DisableCooldowns:       e.DisableCooldowns,
 			ModelParams: config.ModelParams{
-				Model:             e.Model,
-				APIKey:            apiKey,
-				APIBase:           apiBase,
-				Region:            e.Region,
-				Weight:            e.Weight,
-				RPM:               e.RPM,
-				TPM:               e.TPM,
-				Priority:          e.Priority,
-				Tags:              slices.Clone(e.Tags),
-				MaxBudgetMicros:   e.MaxBudgetMicros,
-				BudgetResetPeriod: e.BudgetResetPeriod,
+				Model:               e.Model,
+				APIKey:              apiKey,
+				APIBase:             apiBase,
+				Region:              e.Region,
+				Weight:              e.Weight,
+				RPM:                 e.RPM,
+				TPM:                 e.TPM,
+				ITPM:                e.ITPM,
+				OTPM:                e.OTPM,
+				MaxParallelRequests: e.MaxParallelRequests,
+				Priority:            e.Priority,
+				Tags:                slices.Clone(e.Tags),
+				MaxBudgetMicros:     e.MaxBudgetMicros,
+				BudgetResetPeriod:   e.BudgetResetPeriod,
 			},
 		})
 	}
@@ -884,32 +898,36 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 // CreateVirtualKey issues a new scoped Virtual API Key using pure public SDK types.
 func (c *Client) CreateVirtualKey(ctx context.Context, req VirtualKeyRequest) (*VirtualKeyInfo, error) {
 	vkReq := domain.VirtualKey{
-		Name:            req.Name,
-		OrgID:           req.OrgID,
-		TeamID:          req.TeamID,
-		UserID:          req.UserID,
-		Role:            domain.Role(req.Role),
-		MaxBudgetMicros: req.MaxBudgetMicros,
-		RPMLimit:        req.RPMLimit,
-		TPMLimit:        req.TPMLimit,
-		AllowedModels:   req.AllowedModels,
+		Name:               req.Name,
+		OrgID:              req.OrgID,
+		TeamID:             req.TeamID,
+		UserID:             req.UserID,
+		Role:               domain.Role(req.Role),
+		MaxBudgetMicros:    req.MaxBudgetMicros,
+		RPMLimit:           req.RPMLimit,
+		TPMLimit:           req.TPMLimit,
+		AllowedModels:      req.AllowedModels,
+		MinPriorityRank:    req.MinPriorityRank,
+		AllowedRoutingTags: slices.Clone(req.AllowedRoutingTags),
 	}
 	vk, err := c.IssueVirtualKey(ctx, vkReq)
 	if err != nil {
 		return nil, err
 	}
 	return &VirtualKeyInfo{
-		ID:              vk.ID,
-		Key:             vk.RawKey,
-		KeyPrefix:       vk.KeyPrefix,
-		Name:            vk.Name,
-		Role:            string(vk.Role),
-		OrgID:           vk.OrgID,
-		MaxBudgetMicros: vk.MaxBudgetMicros,
-		RPMLimit:        vk.RPMLimit,
-		TPMLimit:        vk.TPMLimit,
-		AllowedModels:   vk.AllowedModels,
-		IsActive:        vk.IsActive,
+		ID:                 vk.ID,
+		Key:                vk.RawKey,
+		KeyPrefix:          vk.KeyPrefix,
+		Name:               vk.Name,
+		Role:               string(vk.Role),
+		OrgID:              vk.OrgID,
+		MaxBudgetMicros:    vk.MaxBudgetMicros,
+		RPMLimit:           vk.RPMLimit,
+		TPMLimit:           vk.TPMLimit,
+		AllowedModels:      vk.AllowedModels,
+		MinPriorityRank:    vk.MinPriorityRank,
+		AllowedRoutingTags: slices.Clone(vk.AllowedRoutingTags),
+		IsActive:           vk.IsActive,
 	}, nil
 }
 
@@ -2163,6 +2181,68 @@ func (c *Client) UpdateVirtualKey(ctx context.Context, keyID string, req Virtual
 	return doJSON[VirtualKeyConfig](c, ctx, http.MethodPut, "/admin/v1/keys/"+url.PathEscape(keyID), c.adminKey(), req)
 }
 
+// ListModelGroups retrieves configured model groups via `GET /admin/v1/model-groups`.
+func (c *Client) ListModelGroups(ctx context.Context, orgID string) ([]ModelGroupConfig, error) {
+	path := "/admin/v1/model-groups"
+	if strings.TrimSpace(orgID) != "" {
+		path += "?org_id=" + url.QueryEscape(strings.TrimSpace(orgID))
+	}
+	res, err := doJSON[struct {
+		Data []ModelGroupConfig `json:"data"`
+	}](c, ctx, http.MethodGet, path, c.adminKey(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// GetModelGroup retrieves a model group configuration via `GET /admin/v1/model-groups/{groupID}`.
+func (c *Client) GetModelGroup(ctx context.Context, groupID string) (*ModelGroupConfig, error) {
+	return doJSON[ModelGroupConfig](c, ctx, http.MethodGet, "/admin/v1/model-groups/"+url.PathEscape(groupID), c.adminKey(), nil)
+}
+
+// UpdateModelGroup updates a model group via `PUT /admin/v1/model-groups/{groupID}`.
+func (c *Client) UpdateModelGroup(ctx context.Context, groupID string, req ModelGroupUpdateRequest) (*ModelGroupConfig, error) {
+	return doJSON[ModelGroupConfig](c, ctx, http.MethodPut, "/admin/v1/model-groups/"+url.PathEscape(groupID), c.adminKey(), req)
+}
+
+// DeleteModelGroup deletes a model group via `DELETE /admin/v1/model-groups/{groupID}`.
+func (c *Client) DeleteModelGroup(ctx context.Context, groupID string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/admin/v1/model-groups/"+url.PathEscape(groupID), c.adminKey(), "", nil)
+	return err
+}
+
+// ListDeployments retrieves deployments (optionally filtered by model_group_id) via `GET /admin/v1/deployments`.
+func (c *Client) ListDeployments(ctx context.Context, modelGroupID string) ([]DeploymentConfig, error) {
+	path := "/admin/v1/deployments"
+	if strings.TrimSpace(modelGroupID) != "" {
+		path += "?model_group_id=" + url.QueryEscape(strings.TrimSpace(modelGroupID))
+	}
+	res, err := doJSON[struct {
+		Data []DeploymentConfig `json:"data"`
+	}](c, ctx, http.MethodGet, path, c.adminKey(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// GetDeployment retrieves a deployment via `GET /admin/v1/deployments/{depID}`.
+func (c *Client) GetDeployment(ctx context.Context, depID string) (*DeploymentConfig, error) {
+	return doJSON[DeploymentConfig](c, ctx, http.MethodGet, "/admin/v1/deployments/"+url.PathEscape(depID), c.adminKey(), nil)
+}
+
+// PatchDeployment applies partial updates (such as draining status or capacities) via `PATCH /admin/v1/deployments/{depID}`.
+func (c *Client) PatchDeployment(ctx context.Context, depID string, req DeploymentPatchRequest) (*DeploymentConfig, error) {
+	return doJSON[DeploymentConfig](c, ctx, http.MethodPatch, "/admin/v1/deployments/"+url.PathEscape(depID), c.adminKey(), req)
+}
+
+// DeleteDeployment deletes a deployment via `DELETE /admin/v1/deployments/{depID}`.
+func (c *Client) DeleteDeployment(ctx context.Context, depID string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/admin/v1/deployments/"+url.PathEscape(depID), c.adminKey(), "", nil)
+	return err
+}
+
 // RotateVirtualKey rotates a virtual API key via `POST /admin/v1/keys/{keyID}/rotate`, returning the one-time RawKey.
 func (c *Client) RotateVirtualKey(ctx context.Context, keyID string) (*VirtualKeyRotateResponse, error) {
 	return doJSON[VirtualKeyRotateResponse](c, ctx, http.MethodPost, "/admin/v1/keys/"+url.PathEscape(keyID)+"/rotate", c.adminKey(), nil)
@@ -2184,6 +2264,12 @@ type RealtimeSession struct {
 
 // ConnectRealtime opens a bidirectional WebSocket session to `/v1/realtime`.
 func (c *Client) ConnectRealtime(ctx context.Context, model string) (*RealtimeSession, error) {
+	return c.ConnectRealtimeWithHints(ctx, model, nil)
+}
+
+// ConnectRealtimeWithHints opens a bidirectional WebSocket session to `/v1/realtime`
+// with initial upgrade-time routing hints attached via `X-Gateway-*` headers.
+func (c *Client) ConnectRealtimeWithHints(ctx context.Context, model string, hints *RoutingHints) (*RealtimeSession, error) {
 	wsURL := c.baseURL
 	switch {
 	case strings.HasPrefix(wsURL, "https://"):
@@ -2202,6 +2288,7 @@ func (c *Client) ConnectRealtime(ctx context.Context, model string) (*RealtimeSe
 	if c.apiKey != "" {
 		headers.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	applyRoutingHintsHeaders(headers, hints)
 
 	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 		HTTPClient:   c.httpClient,
@@ -2212,6 +2299,36 @@ func (c *Client) ConnectRealtime(ctx context.Context, model string) (*RealtimeSe
 		return nil, fmt.Errorf("dial realtime websocket: %w", err)
 	}
 	return &RealtimeSession{conn: conn}, nil
+}
+
+func applyRoutingHintsHeaders(headers http.Header, hints *RoutingHints) {
+	if headers == nil || hints == nil {
+		return
+	}
+	if v := strings.TrimSpace(hints.AllowedRegion); v != "" {
+		headers.Set("X-Gateway-Allowed-Region", v)
+	}
+	if len(hints.Tags) > 0 {
+		headers.Set("X-Gateway-Tags", strings.Join(hints.Tags, ","))
+	}
+	if v := strings.TrimSpace(hints.SessionID); v != "" {
+		headers.Set("X-Gateway-Session-Id", v)
+	}
+	if v := strings.TrimSpace(hints.PreferredDeploymentID); v != "" {
+		headers.Set("X-Gateway-Preferred-Deployment-Id", v)
+	}
+	if hints.Priority != 0 {
+		headers.Set("X-Gateway-Priority", strconv.Itoa(hints.Priority))
+	}
+	if hints.HedgeAfterMs > 0 {
+		headers.Set("X-Gateway-Hedge-After-Ms", strconv.Itoa(hints.HedgeAfterMs))
+	}
+	if v := strings.TrimSpace(hints.RoutingStrategy); v != "" {
+		headers.Set("X-Gateway-Routing-Strategy", v)
+	}
+	if hints.DropUnsupportedParams != nil {
+		headers.Set("X-Gateway-Drop-Params", strconv.FormatBool(*hints.DropUnsupportedParams))
+	}
 }
 
 // SendEvent sends a JSON RealtimeEvent over the open WebSocket session.

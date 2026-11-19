@@ -210,6 +210,7 @@ func (s *GatewayServer) handleAdminUpsertDeploymentPTUShare(w http.ResponseWrite
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "ptu_share", EntityID: depID, OrgID: effectiveOrgID})
 
 	s.auditWithDiff(r.Context(), effectiveOrgID, "ptu_share.upserted", "deployment_ptu_share", share.ID, map[string]any{
 		"deployment_id": depID,
@@ -351,6 +352,7 @@ func (s *GatewayServer) handleAdminDeleteDeploymentPTUShare(w http.ResponseWrite
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "ptu_share", EntityID: depID, OrgID: targetOrgID})
 
 	s.auditWithDiff(r.Context(), targetOrgID, "ptu_share.deleted", "deployment_ptu_share", depID+":"+teamID, map[string]any{
 		"deployment_id": depID,
@@ -448,6 +450,7 @@ func (s *GatewayServer) handleAdminUpsertPriorityClass(w http.ResponseWriter, r 
 		domain.WriteHTTPError(w, err)
 		return
 	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{EntityType: "priority_class", EntityID: pc.ID, OrgID: orgID})
 
 	s.auditWithDiff(r.Context(), orgID, "priority_class.upserted", "priority_class", pc.ID, map[string]any{
 		"name":                pc.Name,

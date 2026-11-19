@@ -23,12 +23,15 @@ func TestScanVirtualKey_AndDeprecatedKeyFields(t *testing.T) {
 		int64(10_000_000), int64(2_000_000), &expAt, int64(5_000_000), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`),
 		int64(1000), "monthly", nil,
 		60, 10000, 15, 10, int64(50000), 8, int64(250_000), &expAt, true,
-		int64(86400), &rotAt, "staged-hash", "sk-gw-staged", "enc-raw", "enc-dek", &now, nil, 2, nil, "", []int32{7}, "llm_api", "proj-1", false, []string{"prod"}, []byte(`{"env":"prod"}`),
+		int64(86400), &rotAt, "staged-hash", "sk-gw-staged", "enc-raw", "enc-dek", &now, nil, 2, nil, "", []int32{7}, "llm_api", "proj-1", false, 3, []string{"gpu", "region:us*"}, []string{"prod"}, []byte(`{"env":"prod"}`),
 	}
 
 	vk, err := scanVirtualKey(&fakeTeamScanner{values: baseValues})
 	if err != nil {
 		t.Fatalf("scanVirtualKey: %v", err)
+	}
+	if vk.MinPriorityRank != 3 || len(vk.AllowedRoutingTags) != 2 || vk.AllowedRoutingTags[0] != "gpu" {
+		t.Fatalf("unexpected priority/routing tag fields: rank=%d tags=%v", vk.MinPriorityRank, vk.AllowedRoutingTags)
 	}
 	if vk.ProjectID != "proj-1" {
 		t.Fatalf("ProjectID = %q, want %q", vk.ProjectID, "proj-1")

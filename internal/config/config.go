@@ -117,6 +117,9 @@ type ModelListEntry struct {
 	ContextWindowFallbacks []domain.FallbackTarget `yaml:"context_window_fallbacks,omitempty" json:"context_window_fallbacks,omitempty"`
 	ContentPolicyFallbacks []domain.FallbackTarget `yaml:"content_policy_fallbacks,omitempty" json:"content_policy_fallbacks,omitempty"`
 	FallbackTargets        []domain.FallbackTarget `yaml:"fallback_targets,omitempty" json:"fallback_targets,omitempty"`
+	SaturationFallbacks    []domain.FallbackTarget `yaml:"saturation_fallbacks,omitempty" json:"saturation_fallbacks,omitempty"`
+	DropUnsupportedParams  bool                    `yaml:"drop_unsupported_params,omitempty" json:"drop_unsupported_params,omitempty"`
+	DisableCooldowns       bool                    `yaml:"disable_cooldowns,omitempty" json:"disable_cooldowns,omitempty"`
 }
 
 // ModelParams holds upstream provider and model routing parameters for a deployment entry.
@@ -128,6 +131,9 @@ type ModelParams struct {
 	Weight              int               `yaml:"weight,omitempty" json:"weight,omitempty"`
 	RPM                 int               `yaml:"rpm,omitempty" json:"rpm,omitempty"`
 	TPM                 int               `yaml:"tpm,omitempty" json:"tpm,omitempty"`
+	ITPM                int               `yaml:"itpm,omitempty" json:"itpm,omitempty"`
+	OTPM                int               `yaml:"otpm,omitempty" json:"otpm,omitempty"`
+	MaxParallelRequests int               `yaml:"max_parallel_requests,omitempty" json:"max_parallel_requests,omitempty"`
 	Priority            int               `yaml:"priority,omitempty" json:"priority,omitempty"`
 	Tags                []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	MaxBudgetMicros     int64             `yaml:"max_budget_micros,omitempty" json:"max_budget_micros,omitempty"`
@@ -422,6 +428,14 @@ type RouterConfig struct {
 	MaxHedgeConcurrency            int                     `yaml:"max_hedge_concurrency" json:"max_hedge_concurrency"`
 	Scheduler                      SchedulerConfig         `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
 	PriorityCapacity               PriorityCapacityConfig  `yaml:"priority_capacity,omitempty" json:"priority_capacity,omitempty"`
+	LatencyTolerancePct            float64                 `yaml:"latency_tolerance_pct,omitempty" json:"latency_tolerance_pct,omitempty"`
+	MaxHonoredRetryAfter           time.Duration           `yaml:"max_honored_retry_after,omitempty" json:"max_honored_retry_after,omitempty"`
+	DisableCooldowns               bool                    `yaml:"disable_cooldowns,omitempty" json:"disable_cooldowns,omitempty"`
+	FallbackOnSaturation           bool                    `yaml:"fallback_on_saturation,omitempty" json:"fallback_on_saturation,omitempty"`
+	DropUnsupportedParams          bool                    `yaml:"drop_unsupported_params,omitempty" json:"drop_unsupported_params,omitempty"`
+	FallbackOnUnsupportedParams    bool                    `yaml:"fallback_on_unsupported_params,omitempty" json:"fallback_on_unsupported_params,omitempty"`
+	AllowStrategyOverride          bool                    `yaml:"allow_strategy_override,omitempty" json:"allow_strategy_override,omitempty"`
+	DebugRoutingHeaders            bool                    `yaml:"debug_routing_headers,omitempty" json:"debug_routing_headers,omitempty"`
 }
 
 // SemanticRouterConfig configures embedding-based semantic pre-routing.
@@ -456,10 +470,11 @@ type BanditConfig struct {
 
 // SchedulerConfig configures bounded priority-queue request scheduling.
 type SchedulerConfig struct {
-	Enabled         bool          `yaml:"enabled" json:"enabled"`
-	MaxQueueDepth   int           `yaml:"max_queue_depth,omitempty" json:"max_queue_depth,omitempty"`
-	MaxWaitTime     time.Duration `yaml:"max_wait_time,omitempty" json:"max_wait_time,omitempty"`
-	DefaultPriority int           `yaml:"default_priority,omitempty" json:"default_priority,omitempty"`
+	Enabled           bool          `yaml:"enabled" json:"enabled"`
+	MaxQueueDepth     int           `yaml:"max_queue_depth,omitempty" json:"max_queue_depth,omitempty"`
+	MaxWaitTime       time.Duration `yaml:"max_wait_time,omitempty" json:"max_wait_time,omitempty"`
+	DefaultPriority   int           `yaml:"default_priority,omitempty" json:"default_priority,omitempty"`
+	MaxParallelWaitMs int           `yaml:"max_parallel_wait_ms,omitempty" json:"max_parallel_wait_ms,omitempty"`
 }
 
 // PriorityCapacityConfig configures saturation-aware dynamic priority capacity sharing.
@@ -569,6 +584,8 @@ func Default() *Config {
 			SessionAffinityTTL:             30 * time.Minute,
 			SessionAffinityRepinOnFailover: true,
 			MaxHedgeConcurrency:            2,
+			LatencyTolerancePct:            0.10,
+			MaxHonoredRetryAfter:           60 * time.Second,
 			PriorityCapacity: PriorityCapacityConfig{
 				SaturationThreshold:   0.80,
 				ActiveCallerTTL:       60 * time.Second,
@@ -918,6 +935,46 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 			cfg.Router.MaxHedgeConcurrency = n
 		}
 	}
+	if v := os.Getenv("GATEWAY_ROUTER_LATENCY_TOLERANCE_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Router.LatencyTolerancePct = f
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_MAX_HONORED_RETRY_AFTER"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Router.MaxHonoredRetryAfter = d
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_DISABLE_COOLDOWNS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.DisableCooldowns = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_FALLBACK_ON_SATURATION"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.FallbackOnSaturation = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_DROP_UNSUPPORTED_PARAMS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.DropUnsupportedParams = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_FALLBACK_ON_UNSUPPORTED_PARAMS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.FallbackOnUnsupportedParams = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_ALLOW_STRATEGY_OVERRIDE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.AllowStrategyOverride = b
+		}
+	}
+	if v := os.Getenv("GATEWAY_ROUTER_DEBUG_ROUTING_HEADERS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Router.DebugRoutingHeaders = b
+		}
+	}
 	if v := os.Getenv("GATEWAY_FINOPS_FLUSH_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.FinOps.FlushInterval = d
@@ -1034,6 +1091,28 @@ func (c *Config) Validate() error {
 	}
 	if c.Router.Scheduler.MaxWaitTime < 0 {
 		return fmt.Errorf("invalid router.scheduler.max_wait_time: %s", c.Router.Scheduler.MaxWaitTime)
+	}
+	if c.Router.Scheduler.MaxParallelWaitMs < 0 {
+		return fmt.Errorf("invalid router.scheduler.max_parallel_wait_ms: %d", c.Router.Scheduler.MaxParallelWaitMs)
+	}
+	if c.Router.LatencyTolerancePct < 0 || c.Router.LatencyTolerancePct > 1 {
+		return fmt.Errorf("invalid router.latency_tolerance_pct: %v (must be in [0, 1])", c.Router.LatencyTolerancePct)
+	}
+	if c.Router.MaxHonoredRetryAfter < 0 {
+		return fmt.Errorf("invalid router.max_honored_retry_after: %s", c.Router.MaxHonoredRetryAfter)
+	}
+	if c.Router.MaxHonoredRetryAfter == 0 {
+		c.Router.MaxHonoredRetryAfter = 60 * time.Second
+	}
+	for i, entry := range c.ModelList {
+		if entry.ModelParams.ITPM < 0 || entry.ModelParams.OTPM < 0 || entry.ModelParams.MaxParallelRequests < 0 {
+			return fmt.Errorf("invalid model_list[%d] (%q): itpm, otpm, and max_parallel_requests must be non-negative", i, entry.ModelName)
+		}
+		for j, fb := range entry.SaturationFallbacks {
+			if strings.TrimSpace(fb.GroupAliasOrID) == "" {
+				return fmt.Errorf("invalid model_list[%d] (%q).saturation_fallbacks[%d]: target cannot be empty", i, entry.ModelName, j)
+			}
+		}
 	}
 	if c.Router.SemanticRouter.SimilarityThreshold < 0 || c.Router.SemanticRouter.SimilarityThreshold > 1 {
 		return fmt.Errorf("invalid router.semantic_router.similarity_threshold: %v", c.Router.SemanticRouter.SimilarityThreshold)

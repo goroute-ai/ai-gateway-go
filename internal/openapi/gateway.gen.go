@@ -221,6 +221,48 @@ func (e AdminDeploymentStatus) Valid() bool {
 	}
 }
 
+// Defines values for AdminDeploymentPatchRequestBudgetResetPeriod.
+const (
+	AdminDeploymentPatchRequestBudgetResetPeriodDaily   AdminDeploymentPatchRequestBudgetResetPeriod = "daily"
+	AdminDeploymentPatchRequestBudgetResetPeriodMonthly AdminDeploymentPatchRequestBudgetResetPeriod = "monthly"
+	AdminDeploymentPatchRequestBudgetResetPeriodNever   AdminDeploymentPatchRequestBudgetResetPeriod = "never"
+)
+
+// Valid indicates whether the value is a known member of the AdminDeploymentPatchRequestBudgetResetPeriod enum.
+func (e AdminDeploymentPatchRequestBudgetResetPeriod) Valid() bool {
+	switch e {
+	case AdminDeploymentPatchRequestBudgetResetPeriodDaily:
+		return true
+	case AdminDeploymentPatchRequestBudgetResetPeriodMonthly:
+		return true
+	case AdminDeploymentPatchRequestBudgetResetPeriodNever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminDeploymentPatchRequestStatus.
+const (
+	AdminDeploymentPatchRequestStatusActive   AdminDeploymentPatchRequestStatus = "active"
+	AdminDeploymentPatchRequestStatusCooldown AdminDeploymentPatchRequestStatus = "cooldown"
+	AdminDeploymentPatchRequestStatusDisabled AdminDeploymentPatchRequestStatus = "disabled"
+)
+
+// Valid indicates whether the value is a known member of the AdminDeploymentPatchRequestStatus enum.
+func (e AdminDeploymentPatchRequestStatus) Valid() bool {
+	switch e {
+	case AdminDeploymentPatchRequestStatusActive:
+		return true
+	case AdminDeploymentPatchRequestStatusCooldown:
+		return true
+	case AdminDeploymentPatchRequestStatusDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminEndUserBudgetResetPeriod.
 const (
 	AdminEndUserBudgetResetPeriodDaily   AdminEndUserBudgetResetPeriod = "daily"
@@ -1081,6 +1123,7 @@ const (
 	GuardrailPolicyPiiActionAudit  GuardrailPolicyPiiAction = "audit"
 	GuardrailPolicyPiiActionBlock  GuardrailPolicyPiiAction = "block"
 	GuardrailPolicyPiiActionRedact GuardrailPolicyPiiAction = "redact"
+	GuardrailPolicyPiiActionRoute  GuardrailPolicyPiiAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyPiiAction enum.
@@ -1092,6 +1135,8 @@ func (e GuardrailPolicyPiiAction) Valid() bool {
 		return true
 	case GuardrailPolicyPiiActionRedact:
 		return true
+	case GuardrailPolicyPiiActionRoute:
+		return true
 	default:
 		return false
 	}
@@ -1102,6 +1147,7 @@ const (
 	GuardrailPolicyPromptInjectionActionAudit  GuardrailPolicyPromptInjectionAction = "audit"
 	GuardrailPolicyPromptInjectionActionBlock  GuardrailPolicyPromptInjectionAction = "block"
 	GuardrailPolicyPromptInjectionActionRedact GuardrailPolicyPromptInjectionAction = "redact"
+	GuardrailPolicyPromptInjectionActionRoute  GuardrailPolicyPromptInjectionAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyPromptInjectionAction enum.
@@ -1113,6 +1159,8 @@ func (e GuardrailPolicyPromptInjectionAction) Valid() bool {
 		return true
 	case GuardrailPolicyPromptInjectionActionRedact:
 		return true
+	case GuardrailPolicyPromptInjectionActionRoute:
+		return true
 	default:
 		return false
 	}
@@ -1123,6 +1171,7 @@ const (
 	GuardrailPolicySecretActionAudit  GuardrailPolicySecretAction = "audit"
 	GuardrailPolicySecretActionBlock  GuardrailPolicySecretAction = "block"
 	GuardrailPolicySecretActionRedact GuardrailPolicySecretAction = "redact"
+	GuardrailPolicySecretActionRoute  GuardrailPolicySecretAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicySecretAction enum.
@@ -1134,6 +1183,8 @@ func (e GuardrailPolicySecretAction) Valid() bool {
 		return true
 	case GuardrailPolicySecretActionRedact:
 		return true
+	case GuardrailPolicySecretActionRoute:
+		return true
 	default:
 		return false
 	}
@@ -1144,6 +1195,7 @@ const (
 	GuardrailPolicyToxicityActionAudit  GuardrailPolicyToxicityAction = "audit"
 	GuardrailPolicyToxicityActionBlock  GuardrailPolicyToxicityAction = "block"
 	GuardrailPolicyToxicityActionRedact GuardrailPolicyToxicityAction = "redact"
+	GuardrailPolicyToxicityActionRoute  GuardrailPolicyToxicityAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyToxicityAction enum.
@@ -1154,6 +1206,8 @@ func (e GuardrailPolicyToxicityAction) Valid() bool {
 	case GuardrailPolicyToxicityActionBlock:
 		return true
 	case GuardrailPolicyToxicityActionRedact:
+		return true
+	case GuardrailPolicyToxicityActionRoute:
 		return true
 	default:
 		return false
@@ -1186,6 +1240,7 @@ const (
 	GuardrailRequestOverrideActionAudit  GuardrailRequestOverrideAction = "audit"
 	GuardrailRequestOverrideActionBlock  GuardrailRequestOverrideAction = "block"
 	GuardrailRequestOverrideActionRedact GuardrailRequestOverrideAction = "redact"
+	GuardrailRequestOverrideActionRoute  GuardrailRequestOverrideAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailRequestOverrideAction enum.
@@ -1196,6 +1251,8 @@ func (e GuardrailRequestOverrideAction) Valid() bool {
 	case GuardrailRequestOverrideActionBlock:
 		return true
 	case GuardrailRequestOverrideActionRedact:
+		return true
+	case GuardrailRequestOverrideActionRoute:
 		return true
 	default:
 		return false
@@ -1696,23 +1753,26 @@ type AdminDeleteStatusResponse struct {
 
 // AdminDeployment defines model for AdminDeployment.
 type AdminDeployment struct {
-	BudgetResetPeriod *string               `json:"budget_reset_period,omitempty"`
-	CreatedAt         time.Time             `json:"created_at"`
-	CredentialId      *string               `json:"credential_id,omitempty"`
-	DeploymentName    *string               `json:"deployment_name,omitempty"`
-	GlobalModelId     string                `json:"global_model_id"`
-	Id                string                `json:"id"`
-	MaxBudgetMicros   *int64                `json:"max_budget_micros,omitempty"`
-	ModelGroupId      string                `json:"model_group_id"`
-	Priority          int                   `json:"priority"`
-	Region            *string               `json:"region,omitempty"`
-	RpmCapacity       *int                  `json:"rpm_capacity,omitempty"`
-	Status            AdminDeploymentStatus `json:"status"`
-	Tags              *[]string             `json:"tags,omitempty"`
-	TimeoutMs         *int                  `json:"timeout_ms,omitempty"`
-	TpmCapacity       *int                  `json:"tpm_capacity,omitempty"`
-	UpdatedAt         time.Time             `json:"updated_at"`
-	Weight            *int                  `json:"weight,omitempty"`
+	BudgetResetPeriod   *string               `json:"budget_reset_period,omitempty"`
+	CreatedAt           time.Time             `json:"created_at"`
+	CredentialId        *string               `json:"credential_id,omitempty"`
+	DeploymentName      *string               `json:"deployment_name,omitempty"`
+	GlobalModelId       string                `json:"global_model_id"`
+	Id                  string                `json:"id"`
+	ItpmCapacity        *int                  `json:"itpm_capacity,omitempty"`
+	MaxBudgetMicros     *int64                `json:"max_budget_micros,omitempty"`
+	MaxParallelRequests *int                  `json:"max_parallel_requests,omitempty"`
+	ModelGroupId        string                `json:"model_group_id"`
+	OtpmCapacity        *int                  `json:"otpm_capacity,omitempty"`
+	Priority            int                   `json:"priority"`
+	Region              *string               `json:"region,omitempty"`
+	RpmCapacity         *int                  `json:"rpm_capacity,omitempty"`
+	Status              AdminDeploymentStatus `json:"status"`
+	Tags                *[]string             `json:"tags,omitempty"`
+	TimeoutMs           *int                  `json:"timeout_ms,omitempty"`
+	TpmCapacity         *int                  `json:"tpm_capacity,omitempty"`
+	UpdatedAt           time.Time             `json:"updated_at"`
+	Weight              *int                  `json:"weight,omitempty"`
 }
 
 // AdminDeploymentStatus defines model for AdminDeployment.Status.
@@ -1737,6 +1797,30 @@ type AdminDeploymentPTUShareUpsertRequest struct {
 	ReservedTpm *int    `json:"reserved_tpm,omitempty"`
 	TeamId      string  `json:"team_id"`
 }
+
+// AdminDeploymentPatchRequest defines model for AdminDeploymentPatchRequest.
+type AdminDeploymentPatchRequest struct {
+	BudgetResetPeriod   *AdminDeploymentPatchRequestBudgetResetPeriod `json:"budget_reset_period,omitempty"`
+	DeploymentName      *string                                       `json:"deployment_name,omitempty"`
+	ItpmCapacity        *int                                          `json:"itpm_capacity,omitempty"`
+	MaxBudgetMicros     *int64                                        `json:"max_budget_micros,omitempty"`
+	MaxParallelRequests *int                                          `json:"max_parallel_requests,omitempty"`
+	OtpmCapacity        *int                                          `json:"otpm_capacity,omitempty"`
+	Priority            *int                                          `json:"priority,omitempty"`
+	Region              *string                                       `json:"region,omitempty"`
+	RpmCapacity         *int                                          `json:"rpm_capacity,omitempty"`
+	Status              *AdminDeploymentPatchRequestStatus            `json:"status,omitempty"`
+	Tags                *[]string                                     `json:"tags,omitempty"`
+	TimeoutMs           *int                                          `json:"timeout_ms,omitempty"`
+	TpmCapacity         *int                                          `json:"tpm_capacity,omitempty"`
+	Weight              *int                                          `json:"weight,omitempty"`
+}
+
+// AdminDeploymentPatchRequestBudgetResetPeriod defines model for AdminDeploymentPatchRequest.BudgetResetPeriod.
+type AdminDeploymentPatchRequestBudgetResetPeriod string
+
+// AdminDeploymentPatchRequestStatus defines model for AdminDeploymentPatchRequest.Status.
+type AdminDeploymentPatchRequestStatus string
 
 // AdminEndUser defines model for AdminEndUser.
 type AdminEndUser struct {
@@ -1925,6 +2009,8 @@ type AdminModelGroup struct {
 	CooldownSeconds        *int              `json:"cooldown_seconds,omitempty"`
 	CreatedAt              *time.Time        `json:"created_at,omitempty"`
 	Description            *string           `json:"description,omitempty"`
+	DisableCooldowns       *bool             `json:"disable_cooldowns,omitempty"`
+	DropUnsupportedParams  *bool             `json:"drop_unsupported_params,omitempty"`
 	FailureThreshold       *int              `json:"failure_threshold,omitempty"`
 	FallbackGroupIds       *[]string         `json:"fallback_group_ids,omitempty"`
 	FallbackGroups         *[]string         `json:"fallback_groups,omitempty"`
@@ -1936,7 +2022,29 @@ type AdminModelGroup struct {
 	OrgId                  *string           `json:"org_id,omitempty"`
 	RetryPolicy            *RetryPolicy      `json:"retry_policy,omitempty"`
 	RoutingStrategy        *string           `json:"routing_strategy,omitempty"`
+	SaturationFallbacks    *[]FallbackTarget `json:"saturation_fallbacks,omitempty"`
 	UpdatedAt              *time.Time        `json:"updated_at,omitempty"`
+}
+
+// AdminModelGroupUpdateRequest defines model for AdminModelGroupUpdateRequest.
+type AdminModelGroupUpdateRequest struct {
+	Alias                  *string           `json:"alias,omitempty"`
+	ContentPolicyFallbacks *[]FallbackTarget `json:"content_policy_fallbacks,omitempty"`
+	ContextWindowFallbacks *[]FallbackTarget `json:"context_window_fallbacks,omitempty"`
+	CooldownPolicy         *CooldownPolicy   `json:"cooldown_policy,omitempty"`
+	CooldownSeconds        *int              `json:"cooldown_seconds,omitempty"`
+	Description            *string           `json:"description,omitempty"`
+	DisableCooldowns       *bool             `json:"disable_cooldowns,omitempty"`
+	DropUnsupportedParams  *bool             `json:"drop_unsupported_params,omitempty"`
+	FailureThreshold       *int              `json:"failure_threshold,omitempty"`
+	FallbackGroupIds       *[]string         `json:"fallback_group_ids,omitempty"`
+	FallbackGroups         *[]string         `json:"fallback_groups,omitempty"`
+	FallbackTargets        *[]FallbackTarget `json:"fallback_targets,omitempty"`
+	IsActive               *bool             `json:"is_active,omitempty"`
+	MaxRetries             *int              `json:"max_retries,omitempty"`
+	RetryPolicy            *RetryPolicy      `json:"retry_policy,omitempty"`
+	RoutingStrategy        *string           `json:"routing_strategy,omitempty"`
+	SaturationFallbacks    *[]FallbackTarget `json:"saturation_fallbacks,omitempty"`
 }
 
 // AdminModelPricingHistory defines model for AdminModelPricingHistory.
@@ -2064,6 +2172,7 @@ type AdminQuotaPolicy struct {
 	ModelPattern      string                             `json:"model_pattern"`
 	OrgId             string                             `json:"org_id"`
 	OtpmLimit         *int                               `json:"otpm_limit,omitempty"`
+	RpdLimit          *int64                             `json:"rpd_limit,omitempty"`
 	RpmLimit          *int                               `json:"rpm_limit,omitempty"`
 	ScopeId           string                             `json:"scope_id"`
 	ScopeType         AdminQuotaPolicyScopeType          `json:"scope_type"`
@@ -2093,6 +2202,7 @@ type AdminQuotaPolicyUpsertRequest struct {
 	ModelPattern      *string                                         `json:"model_pattern,omitempty"`
 	OrgId             *string                                         `json:"org_id,omitempty"`
 	OtpmLimit         *int                                            `json:"otpm_limit,omitempty"`
+	RpdLimit          *int64                                          `json:"rpd_limit,omitempty"`
 	RpmLimit          *int                                            `json:"rpm_limit,omitempty"`
 	ScopeId           string                                          `json:"scope_id"`
 	ScopeType         AdminQuotaPolicyUpsertRequestScopeType          `json:"scope_type"`
@@ -2165,6 +2275,7 @@ type AdminTeam struct {
 	AllowedClientApps            *[]string            `json:"allowed_client_apps,omitempty"`
 	AllowedMcpServers            *[]string            `json:"allowed_mcp_servers,omitempty"`
 	AllowedModels                *[]string            `json:"allowed_models,omitempty"`
+	AllowedRoutingTags           *[]string            `json:"allowed_routing_tags,omitempty"`
 	BudgetFallbacks              *map[string][]string `json:"budget_fallbacks,omitempty"`
 	BudgetResetAt                *time.Time           `json:"budget_reset_at,omitempty"`
 	BudgetResetPeriod            *string              `json:"budget_reset_period,omitempty"`
@@ -2178,6 +2289,7 @@ type AdminTeam struct {
 	IsActive                     bool                 `json:"is_active"`
 	MaxBudgetMicros              *int64               `json:"max_budget_micros,omitempty"`
 	MaxConcurrentRequests        *int                 `json:"max_concurrent_requests,omitempty"`
+	MinPriorityRank              *int                 `json:"min_priority_rank,omitempty"`
 	Name                         string               `json:"name"`
 	OrgId                        string               `json:"org_id"`
 	RpmLimit                     *int                 `json:"rpm_limit,omitempty"`
@@ -2271,14 +2383,15 @@ type AdminUserRole string
 
 // AdminVirtualKey defines model for AdminVirtualKey.
 type AdminVirtualKey struct {
-	AllowedA2aAgents  *[]string            `json:"allowed_a2a_agents,omitempty"`
-	AllowedClientApps *[]string            `json:"allowed_client_apps,omitempty"`
-	AllowedEndpoints  *[]string            `json:"allowed_endpoints,omitempty"`
-	AllowedMcpServers *[]string            `json:"allowed_mcp_servers,omitempty"`
-	AllowedModels     *[]string            `json:"allowed_models,omitempty"`
-	BudgetFallbacks   *map[string][]string `json:"budget_fallbacks,omitempty"`
-	BudgetResetAt     *time.Time           `json:"budget_reset_at,omitempty"`
-	BudgetResetPeriod *string              `json:"budget_reset_period,omitempty"`
+	AllowedA2aAgents   *[]string            `json:"allowed_a2a_agents,omitempty"`
+	AllowedClientApps  *[]string            `json:"allowed_client_apps,omitempty"`
+	AllowedEndpoints   *[]string            `json:"allowed_endpoints,omitempty"`
+	AllowedMcpServers  *[]string            `json:"allowed_mcp_servers,omitempty"`
+	AllowedModels      *[]string            `json:"allowed_models,omitempty"`
+	AllowedRoutingTags *[]string            `json:"allowed_routing_tags,omitempty"`
+	BudgetFallbacks    *map[string][]string `json:"budget_fallbacks,omitempty"`
+	BudgetResetAt      *time.Time           `json:"budget_reset_at,omitempty"`
+	BudgetResetPeriod  *string              `json:"budget_reset_period,omitempty"`
 
 	// CanImpersonate Whether this key is authorized to impersonate operators on /admin/v1/* routes
 	CanImpersonate      *bool      `json:"can_impersonate,omitempty"`
@@ -2298,6 +2411,7 @@ type AdminVirtualKey struct {
 	MaxBudgetMicros       *int64                  `json:"max_budget_micros,omitempty"`
 	MaxConcurrentRequests *int                    `json:"max_concurrent_requests,omitempty"`
 	Metadata              *map[string]string      `json:"metadata,omitempty"`
+	MinPriorityRank       *int                    `json:"min_priority_rank,omitempty"`
 	Name                  string                  `json:"name"`
 	OrgId                 string                  `json:"org_id"`
 	ProjectId             *string                 `json:"project_id,omitempty"`
@@ -2347,13 +2461,41 @@ type Annotation struct {
 	} `json:"url_citation,omitempty"`
 }
 
+// AnthropicMessagesRequest defines model for AnthropicMessagesRequest.
+type AnthropicMessagesRequest struct {
+	GorouteExtensions *GoRouteExtensions               `json:"goroute_extensions,omitempty"`
+	MaxTokens         int                              `json:"max_tokens"`
+	Messages          []map[string]interface{}         `json:"messages"`
+	Metadata          *map[string]string               `json:"metadata,omitempty"`
+	Model             string                           `json:"model"`
+	StopSequences     *[]string                        `json:"stop_sequences,omitempty"`
+	Stream            *bool                            `json:"stream,omitempty"`
+	System            *AnthropicMessagesRequest_System `json:"system,omitempty"`
+	Temperature       *float32                         `json:"temperature,omitempty"`
+	Tools             *[]map[string]interface{}        `json:"tools,omitempty"`
+	TopP              *float32                         `json:"top_p,omitempty"`
+	User              *string                          `json:"user,omitempty"`
+}
+
+// AnthropicMessagesRequestSystem0 defines model for AnthropicMessagesRequest.System.0.
+type AnthropicMessagesRequestSystem0 = string
+
+// AnthropicMessagesRequestSystem1 defines model for AnthropicMessagesRequest.System.1.
+type AnthropicMessagesRequestSystem1 = []map[string]interface{}
+
+// AnthropicMessagesRequest_System defines model for AnthropicMessagesRequest.System.
+type AnthropicMessagesRequest_System struct {
+	union json.RawMessage
+}
+
 // AudioSpeechRequest defines model for AudioSpeechRequest.
 type AudioSpeechRequest struct {
-	Input          string                            `json:"input"`
-	Model          string                            `json:"model"`
-	ResponseFormat *AudioSpeechRequestResponseFormat `json:"response_format,omitempty"`
-	Speed          *float32                          `json:"speed,omitempty"`
-	Voice          string                            `json:"voice"`
+	GorouteExtensions *GoRouteExtensions                `json:"goroute_extensions,omitempty"`
+	Input             string                            `json:"input"`
+	Model             string                            `json:"model"`
+	ResponseFormat    *AudioSpeechRequestResponseFormat `json:"response_format,omitempty"`
+	Speed             *float32                          `json:"speed,omitempty"`
+	Voice             string                            `json:"voice"`
 }
 
 // AudioSpeechRequestResponseFormat defines model for AudioSpeechRequest.ResponseFormat.
@@ -2594,10 +2736,12 @@ type FileObject struct {
 type GoRouteExtensions struct {
 	AllowedRegion         *string                     `json:"allowed_region,omitempty"`
 	ContextId             *string                     `json:"context_id,omitempty"`
+	DropUnsupportedParams *bool                       `json:"drop_unsupported_params,omitempty"`
 	Guardrails            *[]GuardrailRequestOverride `json:"guardrails,omitempty"`
 	HedgeAfterMs          *int                        `json:"hedge_after_ms,omitempty"`
 	PreferredDeploymentId *string                     `json:"preferred_deployment_id,omitempty"`
 	Priority              *int                        `json:"priority,omitempty"`
+	RoutingStrategy       *string                     `json:"routing_strategy,omitempty"`
 	SessionId             *string                     `json:"session_id,omitempty"`
 	Tags                  *[]string                   `json:"tags,omitempty"`
 	TaskId                *string                     `json:"task_id,omitempty"`
@@ -2670,26 +2814,27 @@ type GuardrailBindingCreateRequest struct {
 
 // GuardrailDefinition defines model for GuardrailDefinition.
 type GuardrailDefinition struct {
-	Config            *map[string]interface{}    `json:"config,omitempty"`
-	CreatedAt         *time.Time                 `json:"created_at,omitempty"`
-	DefaultOn         *bool                      `json:"default_on,omitempty"`
-	EnabledRoles      *[]string                  `json:"enabled_roles,omitempty"`
-	EventHooks        *[]string                  `json:"event_hooks,omitempty"`
-	FailOpen          *bool                      `json:"fail_open,omitempty"`
-	GuardrailInfo     *map[string]interface{}    `json:"guardrail_info,omitempty"`
-	HasSecrets        *bool                      `json:"has_secrets,omitempty"`
-	Id                *string                    `json:"id,omitempty"`
-	ModeRule          *map[string]interface{}    `json:"mode_rule,omitempty"`
-	Name              *string                    `json:"name,omitempty"`
-	OrgId             *string                    `json:"org_id,omitempty"`
-	Precedence        *int                       `json:"precedence,omitempty"`
-	Provider          *string                    `json:"provider,omitempty"`
-	Status            *GuardrailDefinitionStatus `json:"status,omitempty"`
-	StreamScope       *string                    `json:"stream_scope,omitempty"`
-	StreamScopeByHook *map[string]string         `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs         *int                       `json:"timeout_ms,omitempty"`
-	UpdatedAt         *time.Time                 `json:"updated_at,omitempty"`
-	Weight            *int                       `json:"weight,omitempty"`
+	Config               *map[string]interface{}    `json:"config,omitempty"`
+	CreatedAt            *time.Time                 `json:"created_at,omitempty"`
+	DefaultOn            *bool                      `json:"default_on,omitempty"`
+	EnabledRoles         *[]string                  `json:"enabled_roles,omitempty"`
+	EventHooks           *[]string                  `json:"event_hooks,omitempty"`
+	FailOpen             *bool                      `json:"fail_open,omitempty"`
+	GuardrailInfo        *map[string]interface{}    `json:"guardrail_info,omitempty"`
+	HasSecrets           *bool                      `json:"has_secrets,omitempty"`
+	Id                   *string                    `json:"id,omitempty"`
+	ModeRule             *map[string]interface{}    `json:"mode_rule,omitempty"`
+	Name                 *string                    `json:"name,omitempty"`
+	OrgId                *string                    `json:"org_id,omitempty"`
+	Precedence           *int                       `json:"precedence,omitempty"`
+	Provider             *string                    `json:"provider,omitempty"`
+	SensitiveRouteTarget *string                    `json:"sensitive_route_target,omitempty"`
+	Status               *GuardrailDefinitionStatus `json:"status,omitempty"`
+	StreamScope          *string                    `json:"stream_scope,omitempty"`
+	StreamScopeByHook    *map[string]string         `json:"stream_scope_by_hook,omitempty"`
+	TimeoutMs            *int                       `json:"timeout_ms,omitempty"`
+	UpdatedAt            *time.Time                 `json:"updated_at,omitempty"`
+	Weight               *int                       `json:"weight,omitempty"`
 }
 
 // GuardrailDefinitionStatus defines model for GuardrailDefinition.Status.
@@ -2697,23 +2842,24 @@ type GuardrailDefinitionStatus string
 
 // GuardrailDefinitionPatchRequest defines model for GuardrailDefinitionPatchRequest.
 type GuardrailDefinitionPatchRequest struct {
-	ClearSecrets      *bool                                  `json:"clear_secrets,omitempty"`
-	Config            *map[string]interface{}                `json:"config,omitempty"`
-	DefaultOn         *bool                                  `json:"default_on,omitempty"`
-	EnabledRoles      *[]string                              `json:"enabled_roles,omitempty"`
-	EventHooks        *[]string                              `json:"event_hooks,omitempty"`
-	FailOpen          *bool                                  `json:"fail_open,omitempty"`
-	GuardrailInfo     *map[string]interface{}                `json:"guardrail_info,omitempty"`
-	ModeRule          *map[string]interface{}                `json:"mode_rule,omitempty"`
-	Name              *string                                `json:"name,omitempty"`
-	Precedence        *int                                   `json:"precedence,omitempty"`
-	Provider          *string                                `json:"provider,omitempty"`
-	Secrets           *map[string]interface{}                `json:"secrets,omitempty"`
-	Status            *GuardrailDefinitionPatchRequestStatus `json:"status,omitempty"`
-	StreamScope       *string                                `json:"stream_scope,omitempty"`
-	StreamScopeByHook *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs         *int                                   `json:"timeout_ms,omitempty"`
-	Weight            *int                                   `json:"weight,omitempty"`
+	ClearSecrets         *bool                                  `json:"clear_secrets,omitempty"`
+	Config               *map[string]interface{}                `json:"config,omitempty"`
+	DefaultOn            *bool                                  `json:"default_on,omitempty"`
+	EnabledRoles         *[]string                              `json:"enabled_roles,omitempty"`
+	EventHooks           *[]string                              `json:"event_hooks,omitempty"`
+	FailOpen             *bool                                  `json:"fail_open,omitempty"`
+	GuardrailInfo        *map[string]interface{}                `json:"guardrail_info,omitempty"`
+	ModeRule             *map[string]interface{}                `json:"mode_rule,omitempty"`
+	Name                 *string                                `json:"name,omitempty"`
+	Precedence           *int                                   `json:"precedence,omitempty"`
+	Provider             *string                                `json:"provider,omitempty"`
+	Secrets              *map[string]interface{}                `json:"secrets,omitempty"`
+	SensitiveRouteTarget *string                                `json:"sensitive_route_target,omitempty"`
+	Status               *GuardrailDefinitionPatchRequestStatus `json:"status,omitempty"`
+	StreamScope          *string                                `json:"stream_scope,omitempty"`
+	StreamScopeByHook    *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
+	TimeoutMs            *int                                   `json:"timeout_ms,omitempty"`
+	Weight               *int                                   `json:"weight,omitempty"`
 }
 
 // GuardrailDefinitionPatchRequestStatus defines model for GuardrailDefinitionPatchRequest.Status.
@@ -2721,24 +2867,25 @@ type GuardrailDefinitionPatchRequestStatus string
 
 // GuardrailDefinitionWriteRequest defines model for GuardrailDefinitionWriteRequest.
 type GuardrailDefinitionWriteRequest struct {
-	ClearSecrets      *bool                                  `json:"clear_secrets,omitempty"`
-	Config            *map[string]interface{}                `json:"config,omitempty"`
-	DefaultOn         *bool                                  `json:"default_on,omitempty"`
-	EnabledRoles      *[]string                              `json:"enabled_roles,omitempty"`
-	EventHooks        *[]string                              `json:"event_hooks,omitempty"`
-	FailOpen          *bool                                  `json:"fail_open,omitempty"`
-	GuardrailInfo     *map[string]interface{}                `json:"guardrail_info,omitempty"`
-	Id                *string                                `json:"id,omitempty"`
-	ModeRule          *map[string]interface{}                `json:"mode_rule,omitempty"`
-	Name              string                                 `json:"name"`
-	Precedence        *int                                   `json:"precedence,omitempty"`
-	Provider          string                                 `json:"provider"`
-	Secrets           *map[string]interface{}                `json:"secrets,omitempty"`
-	Status            *GuardrailDefinitionWriteRequestStatus `json:"status,omitempty"`
-	StreamScope       *string                                `json:"stream_scope,omitempty"`
-	StreamScopeByHook *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs         *int                                   `json:"timeout_ms,omitempty"`
-	Weight            *int                                   `json:"weight,omitempty"`
+	ClearSecrets         *bool                                  `json:"clear_secrets,omitempty"`
+	Config               *map[string]interface{}                `json:"config,omitempty"`
+	DefaultOn            *bool                                  `json:"default_on,omitempty"`
+	EnabledRoles         *[]string                              `json:"enabled_roles,omitempty"`
+	EventHooks           *[]string                              `json:"event_hooks,omitempty"`
+	FailOpen             *bool                                  `json:"fail_open,omitempty"`
+	GuardrailInfo        *map[string]interface{}                `json:"guardrail_info,omitempty"`
+	Id                   *string                                `json:"id,omitempty"`
+	ModeRule             *map[string]interface{}                `json:"mode_rule,omitempty"`
+	Name                 string                                 `json:"name"`
+	Precedence           *int                                   `json:"precedence,omitempty"`
+	Provider             string                                 `json:"provider"`
+	Secrets              *map[string]interface{}                `json:"secrets,omitempty"`
+	SensitiveRouteTarget *string                                `json:"sensitive_route_target,omitempty"`
+	Status               *GuardrailDefinitionWriteRequestStatus `json:"status,omitempty"`
+	StreamScope          *string                                `json:"stream_scope,omitempty"`
+	StreamScopeByHook    *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
+	TimeoutMs            *int                                   `json:"timeout_ms,omitempty"`
+	Weight               *int                                   `json:"weight,omitempty"`
 }
 
 // GuardrailDefinitionWriteRequestStatus defines model for GuardrailDefinitionWriteRequest.Status.
@@ -2760,6 +2907,7 @@ type GuardrailPolicy struct {
 	RedactOutputPii          *bool                                 `json:"redact_output_pii,omitempty"`
 	ScanAllRoles             *bool                                 `json:"scan_all_roles,omitempty"`
 	SecretAction             *GuardrailPolicySecretAction          `json:"secret_action,omitempty"`
+	SensitiveRouteTarget     *string                               `json:"sensitive_route_target,omitempty"`
 	ToxicityAction           *GuardrailPolicyToxicityAction        `json:"toxicity_action,omitempty"`
 	ToxicityThreshold        *GuardrailPolicyToxicityThreshold     `json:"toxicity_threshold,omitempty"`
 	UpdatedAt                *time.Time                            `json:"updated_at,omitempty"`
@@ -2910,12 +3058,13 @@ type GuardrailViolation struct {
 
 // ImageGenerationRequest defines model for ImageGenerationRequest.
 type ImageGenerationRequest struct {
-	Model          *string                               `json:"model,omitempty"`
-	N              *int                                  `json:"n,omitempty"`
-	Prompt         string                                `json:"prompt"`
-	Quality        *ImageGenerationRequestQuality        `json:"quality,omitempty"`
-	ResponseFormat *ImageGenerationRequestResponseFormat `json:"response_format,omitempty"`
-	Size           *string                               `json:"size,omitempty"`
+	GorouteExtensions *GoRouteExtensions                    `json:"goroute_extensions,omitempty"`
+	Model             *string                               `json:"model,omitempty"`
+	N                 *int                                  `json:"n,omitempty"`
+	Prompt            string                                `json:"prompt"`
+	Quality           *ImageGenerationRequestQuality        `json:"quality,omitempty"`
+	ResponseFormat    *ImageGenerationRequestResponseFormat `json:"response_format,omitempty"`
+	Size              *string                               `json:"size,omitempty"`
 }
 
 // ImageGenerationRequestQuality defines model for ImageGenerationRequest.Quality.
@@ -2946,11 +3095,12 @@ type KEKRotationSummary struct {
 
 // LegacyCompletionRequest defines model for LegacyCompletionRequest.
 type LegacyCompletionRequest struct {
-	MaxTokens   *int                           `json:"max_tokens,omitempty"`
-	Model       string                         `json:"model"`
-	Prompt      LegacyCompletionRequest_Prompt `json:"prompt"`
-	Stream      *bool                          `json:"stream,omitempty"`
-	Temperature *float32                       `json:"temperature,omitempty"`
+	GorouteExtensions *GoRouteExtensions             `json:"goroute_extensions,omitempty"`
+	MaxTokens         *int                           `json:"max_tokens,omitempty"`
+	Model             string                         `json:"model"`
+	Prompt            LegacyCompletionRequest_Prompt `json:"prompt"`
+	Stream            *bool                          `json:"stream,omitempty"`
+	Temperature       *float32                       `json:"temperature,omitempty"`
 }
 
 // LegacyCompletionRequestPrompt0 defines model for LegacyCompletionRequest.Prompt.0.
@@ -2978,8 +3128,9 @@ type LegacyCompletionResponse struct {
 
 // ModerationRequest defines model for ModerationRequest.
 type ModerationRequest struct {
-	Input ModerationRequest_Input `json:"input"`
-	Model *string                 `json:"model,omitempty"`
+	GorouteExtensions *GoRouteExtensions      `json:"goroute_extensions,omitempty"`
+	Input             ModerationRequest_Input `json:"input"`
+	Model             *string                 `json:"model,omitempty"`
 }
 
 // ModerationRequestInput0 defines model for ModerationRequest.Input.0.
@@ -3074,11 +3225,12 @@ type OrgProviderSubscription struct {
 
 // RerankRequest defines model for RerankRequest.
 type RerankRequest struct {
-	Documents       []RerankRequest_Documents_Item `json:"documents"`
-	Model           string                         `json:"model"`
-	Query           string                         `json:"query"`
-	ReturnDocuments *bool                          `json:"return_documents,omitempty"`
-	TopN            *int                           `json:"top_n,omitempty"`
+	Documents         []RerankRequest_Documents_Item `json:"documents"`
+	GorouteExtensions *GoRouteExtensions             `json:"goroute_extensions,omitempty"`
+	Model             string                         `json:"model"`
+	Query             string                         `json:"query"`
+	ReturnDocuments   *bool                          `json:"return_documents,omitempty"`
+	TopN              *int                           `json:"top_n,omitempty"`
 }
 
 // RerankRequestDocuments0 defines model for RerankRequest.Documents.0.
@@ -3103,6 +3255,8 @@ type RerankResponse struct {
 
 // ResponsesAPIRequest defines model for ResponsesAPIRequest.
 type ResponsesAPIRequest struct {
+	GorouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
+
 	// Input Input text or an ordered sequence of messages and function-call items.
 	Input           ResponsesAPIRequest_Input `json:"input"`
 	Instructions    *string                   `json:"instructions,omitempty"`
@@ -3627,9 +3781,6 @@ type CreateAudioTranslationMultipartBody struct {
 	Model *string             `json:"model,omitempty"`
 }
 
-// CreateAnthropicMessageJSONBody defines parameters for CreateAnthropicMessage.
-type CreateAnthropicMessageJSONBody = map[string]interface{}
-
 // CountAnthropicMessageTokensJSONBody defines parameters for CountAnthropicMessageTokens.
 type CountAnthropicMessageTokensJSONBody = map[string]interface{}
 
@@ -3665,6 +3816,9 @@ type RotateCredentialJSONRequestBody = AdminCredentialRotateRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = AdminDeployment
+
+// PatchDeploymentJSONRequestBody defines body for PatchDeployment for application/json ContentType.
+type PatchDeploymentJSONRequestBody = AdminDeploymentPatchRequest
 
 // UpsertDeploymentPTUShareJSONRequestBody defines body for UpsertDeploymentPTUShare for application/json ContentType.
 type UpsertDeploymentPTUShareJSONRequestBody = AdminDeploymentPTUShareUpsertRequest
@@ -3728,6 +3882,9 @@ type AddModelAccessGroupMemberJSONRequestBody = AdminModelAccessGroupMemberCreat
 
 // CreateModelGroupJSONRequestBody defines body for CreateModelGroup for application/json ContentType.
 type CreateModelGroupJSONRequestBody = AdminModelGroup
+
+// UpdateModelGroupJSONRequestBody defines body for UpdateModelGroup for application/json ContentType.
+type UpdateModelGroupJSONRequestBody = AdminModelGroupUpdateRequest
 
 // CreateOrganizationJSONRequestBody defines body for CreateOrganization for application/json ContentType.
 type CreateOrganizationJSONRequestBody = AdminOrganization
@@ -3823,7 +3980,7 @@ type ApplyGuardrailsJSONRequestBody = GuardrailApplyRequest
 type CreateImageGenerationJSONRequestBody = ImageGenerationRequest
 
 // CreateAnthropicMessageJSONRequestBody defines body for CreateAnthropicMessage for application/json ContentType.
-type CreateAnthropicMessageJSONRequestBody = CreateAnthropicMessageJSONBody
+type CreateAnthropicMessageJSONRequestBody = AnthropicMessagesRequest
 
 // CountAnthropicMessageTokensJSONRequestBody defines body for CountAnthropicMessageTokens for application/json ContentType.
 type CountAnthropicMessageTokensJSONRequestBody = CountAnthropicMessageTokensJSONBody
@@ -3842,6 +3999,68 @@ type CreateSelfServiceKeyJSONRequestBody = AdminVirtualKey
 
 // CountTokensJSONRequestBody defines body for CountTokens for application/json ContentType.
 type CountTokensJSONRequestBody = TokenizeRequest
+
+// AsAnthropicMessagesRequestSystem0 returns the union data inside the AnthropicMessagesRequest_System as a AnthropicMessagesRequestSystem0
+func (t AnthropicMessagesRequest_System) AsAnthropicMessagesRequestSystem0() (AnthropicMessagesRequestSystem0, error) {
+	var body AnthropicMessagesRequestSystem0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnthropicMessagesRequestSystem0 overwrites any union data inside the AnthropicMessagesRequest_System as the provided AnthropicMessagesRequestSystem0
+func (t *AnthropicMessagesRequest_System) FromAnthropicMessagesRequestSystem0(v AnthropicMessagesRequestSystem0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnthropicMessagesRequestSystem0 performs a merge with any union data inside the AnthropicMessagesRequest_System, using the provided AnthropicMessagesRequestSystem0
+func (t *AnthropicMessagesRequest_System) MergeAnthropicMessagesRequestSystem0(v AnthropicMessagesRequestSystem0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAnthropicMessagesRequestSystem1 returns the union data inside the AnthropicMessagesRequest_System as a AnthropicMessagesRequestSystem1
+func (t AnthropicMessagesRequest_System) AsAnthropicMessagesRequestSystem1() (AnthropicMessagesRequestSystem1, error) {
+	var body AnthropicMessagesRequestSystem1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnthropicMessagesRequestSystem1 overwrites any union data inside the AnthropicMessagesRequest_System as the provided AnthropicMessagesRequestSystem1
+func (t *AnthropicMessagesRequest_System) FromAnthropicMessagesRequestSystem1(v AnthropicMessagesRequestSystem1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnthropicMessagesRequestSystem1 performs a merge with any union data inside the AnthropicMessagesRequest_System, using the provided AnthropicMessagesRequestSystem1
+func (t *AnthropicMessagesRequest_System) MergeAnthropicMessagesRequestSystem1(v AnthropicMessagesRequestSystem1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t AnthropicMessagesRequest_System) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *AnthropicMessagesRequest_System) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // AsChatMessageContent0 returns the union data inside the ChatMessage_Content as a ChatMessageContent0
 func (t ChatMessage_Content) AsChatMessageContent0() (ChatMessageContent0, error) {
@@ -4566,6 +4785,15 @@ type ServerInterface interface {
 	// CreateDeployment Create a model deployment within a model group
 	// (POST /admin/v1/deployments)
 	CreateDeployment(w http.ResponseWriter, r *http.Request)
+	// DeleteDeployment Delete a deployment
+	// (DELETE /admin/v1/deployments/{depID})
+	DeleteDeployment(w http.ResponseWriter, r *http.Request, depID string)
+	// GetDeployment Retrieve a deployment by ID
+	// (GET /admin/v1/deployments/{depID})
+	GetDeployment(w http.ResponseWriter, r *http.Request, depID string)
+	// PatchDeployment Update deployment capacities, priority, weight, tags, or operational status (e.g. drain)
+	// (PATCH /admin/v1/deployments/{depID})
+	PatchDeployment(w http.ResponseWriter, r *http.Request, depID string)
 	// ListDeploymentPTUShares List team PTU capacity shares allocated on a deployment
 	// (GET /admin/v1/deployments/{depID}/ptu-shares)
 	ListDeploymentPTUShares(w http.ResponseWriter, r *http.Request, depID string, params ListDeploymentPTUSharesParams)
@@ -4713,6 +4941,15 @@ type ServerInterface interface {
 	// CreateModelGroup Create a model group
 	// (POST /admin/v1/model-groups)
 	CreateModelGroup(w http.ResponseWriter, r *http.Request)
+	// DeleteModelGroup Delete a model group
+	// (DELETE /admin/v1/model-groups/{groupID})
+	DeleteModelGroup(w http.ResponseWriter, r *http.Request, groupID string)
+	// GetModelGroup Retrieve a model group by ID
+	// (GET /admin/v1/model-groups/{groupID})
+	GetModelGroup(w http.ResponseWriter, r *http.Request, groupID string)
+	// UpdateModelGroup Update a model group's routing strategy, fallback chains, or resilience toggles
+	// (PUT /admin/v1/model-groups/{groupID})
+	UpdateModelGroup(w http.ResponseWriter, r *http.Request, groupID string)
 	// GetObservabilityMetrics Retrieve gateway observability metrics snapshot
 	// (GET /admin/v1/observability/metrics)
 	GetObservabilityMetrics(w http.ResponseWriter, r *http.Request)
@@ -5612,6 +5849,84 @@ func (siw *ServerInterfaceWrapper) CreateDeployment(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateDeployment(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteDeployment operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDeployment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteDeployment(w, r, depID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDeployment operation middleware
+func (siw *ServerInterfaceWrapper) GetDeployment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDeployment(w, r, depID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchDeployment operation middleware
+func (siw *ServerInterfaceWrapper) PatchDeployment(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "depID" -------------
+	var depID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "depID", r.PathValue("depID"), &depID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "depID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchDeployment(w, r, depID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7089,6 +7404,84 @@ func (siw *ServerInterfaceWrapper) CreateModelGroup(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateModelGroup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteModelGroup operation middleware
+func (siw *ServerInterfaceWrapper) DeleteModelGroup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "groupID" -------------
+	var groupID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupID", r.PathValue("groupID"), &groupID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "groupID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteModelGroup(w, r, groupID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetModelGroup operation middleware
+func (siw *ServerInterfaceWrapper) GetModelGroup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "groupID" -------------
+	var groupID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupID", r.PathValue("groupID"), &groupID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "groupID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetModelGroup(w, r, groupID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateModelGroup operation middleware
+func (siw *ServerInterfaceWrapper) UpdateModelGroup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "groupID" -------------
+	var groupID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupID", r.PathValue("groupID"), &groupID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "groupID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateModelGroup(w, r, groupID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9663,6 +10056,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/models", wrapper.SetOrgModelPolicy)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments", wrapper.ListDeployments)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/deployments", wrapper.CreateDeployment)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/deployments/{depID}", wrapper.DeleteDeployment)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments/{depID}", wrapper.GetDeployment)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/admin/v1/deployments/{depID}", wrapper.PatchDeployment)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares", wrapper.ListDeploymentPTUShares)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares", wrapper.UpsertDeploymentPTUShare)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/deployments/{depID}/ptu-shares/{teamID}", wrapper.DeleteDeploymentPTUShare)
@@ -9708,6 +10104,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/credentials/{credID}/validate", wrapper.ValidateCredential)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-groups", wrapper.ListModelGroups)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/model-groups", wrapper.CreateModelGroup)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/model-groups/{groupID}", wrapper.DeleteModelGroup)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/model-groups/{groupID}", wrapper.GetModelGroup)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/model-groups/{groupID}", wrapper.UpdateModelGroup)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/catalogue", wrapper.ListCatalogue)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/catalogue/sync", wrapper.TriggerDiscoverySync)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/catalogue/import", wrapper.ImportCatalogue)
@@ -10401,6 +10800,108 @@ func (response CreateDeployment201JSONResponse) VisitCreateDeploymentResponse(w 
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type DeleteDeploymentRequestObject struct {
+	DepID string `json:"depID"`
+}
+
+type DeleteDeploymentResponseObject interface {
+	VisitDeleteDeploymentResponse(w http.ResponseWriter) error
+}
+
+type DeleteDeployment200JSONResponse struct {
+	Id     *string `json:"id,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
+
+func (response DeleteDeployment200JSONResponse) VisitDeleteDeploymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteDeployment404Response struct {
+}
+
+func (response DeleteDeployment404Response) VisitDeleteDeploymentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type GetDeploymentRequestObject struct {
+	DepID string `json:"depID"`
+}
+
+type GetDeploymentResponseObject interface {
+	VisitGetDeploymentResponse(w http.ResponseWriter) error
+}
+
+type GetDeployment200JSONResponse AdminDeployment
+
+func (response GetDeployment200JSONResponse) VisitGetDeploymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetDeployment404Response struct {
+}
+
+func (response GetDeployment404Response) VisitGetDeploymentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type PatchDeploymentRequestObject struct {
+	DepID string `json:"depID"`
+	Body  *PatchDeploymentJSONRequestBody
+}
+
+type PatchDeploymentResponseObject interface {
+	VisitPatchDeploymentResponse(w http.ResponseWriter) error
+}
+
+type PatchDeployment200JSONResponse AdminDeployment
+
+func (response PatchDeployment200JSONResponse) VisitPatchDeploymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PatchDeployment400Response struct {
+}
+
+func (response PatchDeployment400Response) VisitPatchDeploymentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type PatchDeployment404Response struct {
+}
+
+func (response PatchDeployment404Response) VisitPatchDeploymentResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type ListDeploymentPTUSharesRequestObject struct {
@@ -11753,6 +12254,116 @@ func (response CreateModelGroup201JSONResponse) VisitCreateModelGroupResponse(w 
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type DeleteModelGroupRequestObject struct {
+	GroupID string `json:"groupID"`
+}
+
+type DeleteModelGroupResponseObject interface {
+	VisitDeleteModelGroupResponse(w http.ResponseWriter) error
+}
+
+type DeleteModelGroup200JSONResponse struct {
+	Id     *string `json:"id,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
+
+func (response DeleteModelGroup200JSONResponse) VisitDeleteModelGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteModelGroup404Response struct {
+}
+
+func (response DeleteModelGroup404Response) VisitDeleteModelGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type GetModelGroupRequestObject struct {
+	GroupID string `json:"groupID"`
+}
+
+type GetModelGroupResponseObject interface {
+	VisitGetModelGroupResponse(w http.ResponseWriter) error
+}
+
+type GetModelGroup200JSONResponse AdminModelGroup
+
+func (response GetModelGroup200JSONResponse) VisitGetModelGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetModelGroup404Response struct {
+}
+
+func (response GetModelGroup404Response) VisitGetModelGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type UpdateModelGroupRequestObject struct {
+	GroupID string `json:"groupID"`
+	Body    *UpdateModelGroupJSONRequestBody
+}
+
+type UpdateModelGroupResponseObject interface {
+	VisitUpdateModelGroupResponse(w http.ResponseWriter) error
+}
+
+type UpdateModelGroup200JSONResponse AdminModelGroup
+
+func (response UpdateModelGroup200JSONResponse) VisitUpdateModelGroupResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateModelGroup400Response struct {
+}
+
+func (response UpdateModelGroup400Response) VisitUpdateModelGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
+type UpdateModelGroup404Response struct {
+}
+
+func (response UpdateModelGroup404Response) VisitUpdateModelGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
+}
+
+type UpdateModelGroup409Response struct {
+}
+
+func (response UpdateModelGroup409Response) VisitUpdateModelGroupResponse(w http.ResponseWriter) error {
+	w.WriteHeader(409)
+	return nil
 }
 
 type GetObservabilityMetricsRequestObject struct {
@@ -14010,6 +14621,15 @@ type StrictServerInterface interface {
 	// CreateDeployment Create a model deployment within a model group
 	// (POST /admin/v1/deployments)
 	CreateDeployment(ctx context.Context, request CreateDeploymentRequestObject) (CreateDeploymentResponseObject, error)
+	// DeleteDeployment Delete a deployment
+	// (DELETE /admin/v1/deployments/{depID})
+	DeleteDeployment(ctx context.Context, request DeleteDeploymentRequestObject) (DeleteDeploymentResponseObject, error)
+	// GetDeployment Retrieve a deployment by ID
+	// (GET /admin/v1/deployments/{depID})
+	GetDeployment(ctx context.Context, request GetDeploymentRequestObject) (GetDeploymentResponseObject, error)
+	// PatchDeployment Update deployment capacities, priority, weight, tags, or operational status (e.g. drain)
+	// (PATCH /admin/v1/deployments/{depID})
+	PatchDeployment(ctx context.Context, request PatchDeploymentRequestObject) (PatchDeploymentResponseObject, error)
 	// ListDeploymentPTUShares List team PTU capacity shares allocated on a deployment
 	// (GET /admin/v1/deployments/{depID}/ptu-shares)
 	ListDeploymentPTUShares(ctx context.Context, request ListDeploymentPTUSharesRequestObject) (ListDeploymentPTUSharesResponseObject, error)
@@ -14157,6 +14777,15 @@ type StrictServerInterface interface {
 	// CreateModelGroup Create a model group
 	// (POST /admin/v1/model-groups)
 	CreateModelGroup(ctx context.Context, request CreateModelGroupRequestObject) (CreateModelGroupResponseObject, error)
+	// DeleteModelGroup Delete a model group
+	// (DELETE /admin/v1/model-groups/{groupID})
+	DeleteModelGroup(ctx context.Context, request DeleteModelGroupRequestObject) (DeleteModelGroupResponseObject, error)
+	// GetModelGroup Retrieve a model group by ID
+	// (GET /admin/v1/model-groups/{groupID})
+	GetModelGroup(ctx context.Context, request GetModelGroupRequestObject) (GetModelGroupResponseObject, error)
+	// UpdateModelGroup Update a model group's routing strategy, fallback chains, or resilience toggles
+	// (PUT /admin/v1/model-groups/{groupID})
+	UpdateModelGroup(ctx context.Context, request UpdateModelGroupRequestObject) (UpdateModelGroupResponseObject, error)
 	// GetObservabilityMetrics Retrieve gateway observability metrics snapshot
 	// (GET /admin/v1/observability/metrics)
 	GetObservabilityMetrics(ctx context.Context, request GetObservabilityMetricsRequestObject) (GetObservabilityMetricsResponseObject, error)
@@ -15167,6 +15796,91 @@ func (sh *strictHandler) CreateDeployment(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateDeploymentResponseObject); ok {
 		if err := validResponse.VisitCreateDeploymentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteDeployment operation middleware
+func (sh *strictHandler) DeleteDeployment(w http.ResponseWriter, r *http.Request, depID string) {
+	var request DeleteDeploymentRequestObject
+
+	request.DepID = depID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteDeployment(ctx, request.(DeleteDeploymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteDeployment")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteDeploymentResponseObject); ok {
+		if err := validResponse.VisitDeleteDeploymentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetDeployment operation middleware
+func (sh *strictHandler) GetDeployment(w http.ResponseWriter, r *http.Request, depID string) {
+	var request GetDeploymentRequestObject
+
+	request.DepID = depID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetDeployment(ctx, request.(GetDeploymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetDeployment")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetDeploymentResponseObject); ok {
+		if err := validResponse.VisitGetDeploymentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PatchDeployment operation middleware
+func (sh *strictHandler) PatchDeployment(w http.ResponseWriter, r *http.Request, depID string) {
+	var request PatchDeploymentRequestObject
+
+	request.DepID = depID
+
+	var body PatchDeploymentJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PatchDeployment(ctx, request.(PatchDeploymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PatchDeployment")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PatchDeploymentResponseObject); ok {
+		if err := validResponse.VisitPatchDeploymentResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -16576,6 +17290,91 @@ func (sh *strictHandler) CreateModelGroup(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateModelGroupResponseObject); ok {
 		if err := validResponse.VisitCreateModelGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteModelGroup operation middleware
+func (sh *strictHandler) DeleteModelGroup(w http.ResponseWriter, r *http.Request, groupID string) {
+	var request DeleteModelGroupRequestObject
+
+	request.GroupID = groupID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteModelGroup(ctx, request.(DeleteModelGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteModelGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteModelGroupResponseObject); ok {
+		if err := validResponse.VisitDeleteModelGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetModelGroup operation middleware
+func (sh *strictHandler) GetModelGroup(w http.ResponseWriter, r *http.Request, groupID string) {
+	var request GetModelGroupRequestObject
+
+	request.GroupID = groupID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetModelGroup(ctx, request.(GetModelGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetModelGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetModelGroupResponseObject); ok {
+		if err := validResponse.VisitGetModelGroupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateModelGroup operation middleware
+func (sh *strictHandler) UpdateModelGroup(w http.ResponseWriter, r *http.Request, groupID string) {
+	var request UpdateModelGroupRequestObject
+
+	request.GroupID = groupID
+
+	var body UpdateModelGroupJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateModelGroup(ctx, request.(UpdateModelGroupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateModelGroup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateModelGroupResponseObject); ok {
+		if err := validResponse.VisitUpdateModelGroupResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

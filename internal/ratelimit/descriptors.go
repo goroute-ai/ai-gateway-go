@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -50,6 +51,7 @@ type localRollingSpendEntry struct {
 // descriptorKeySet holds all Redis Cluster slot-aligned keys for a single descriptor.
 type descriptorKeySet struct {
 	rpm        string
+	rpd        string
 	tpm        string
 	itpm       string
 	otpm       string
@@ -84,6 +86,7 @@ func buildDescriptorKeySet(orgID string, d domain.RateLimitDescriptor, nowMin in
 	resZ, resS, resA := reservationTuple(resBase)
 	return descriptorKeySet{
 		rpm:        fmt.Sprintf("gw:dq:%s:rpm:%s:%d", tag, entity, nowMin),
+		rpd:        fmt.Sprintf("gw:dq:%s:rpd:%s:%s", tag, entity, utcDay),
 		tpm:        fmt.Sprintf("gw:dq:%s:tpm:%s:%d", tag, entity, nowMin),
 		itpm:       fmt.Sprintf("gw:dq:%s:itpm:%s:%d", tag, entity, nowMin),
 		otpm:       fmt.Sprintf("gw:dq:%s:otpm:%s:%d", tag, entity, nowMin),
@@ -102,7 +105,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 	nowUTC := now.UTC()
 	nowMin := nowUTC.Unix() / 60
 	utcDay := nowUTC.Format("20060102")
-	keys := make([]string, 0, len(descriptors)*12)
+	keys := make([]string, 0, len(descriptors)*13)
 	for _, d := range descriptors {
 		ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
 		keys = append(keys,
@@ -118,6 +121,7 @@ func descriptorCheckKeys(orgID string, descriptors []domain.RateLimitDescriptor,
 			ks.resSum,
 			ks.resAmounts,
 			ks.r24hZSet,
+			ks.rpd,
 		)
 	}
 	return keys
@@ -226,7 +230,7 @@ func buildCheckDescriptorArgv(
 	active []domain.RateLimitDescriptor,
 ) []any {
 	nowMs := now.UTC().UnixMilli()
-	argv := make([]any, 0, 10+len(active)*13)
+	argv := make([]any, 0, 10+len(active)*14)
 	argv = append(argv,
 		len(active),
 		estInput,
@@ -257,6 +261,7 @@ func buildCheckDescriptorArgv(
 			d.SpentFloorMicros,
 			boolToInt(isRolling),
 			boolToInt(hasInit),
+			d.RPDLimit,
 		)
 		if hasInit {
 			trailingInit = append(trailingInit, len(d.RollingEntries))
@@ -558,6 +563,9 @@ func (l *Limiter) ensureLocalDescMapsLocked() {
 	if l.localDescTPD == nil {
 		l.localDescTPD = make(map[string]int64)
 	}
+	if l.localDescRPD == nil {
+		l.localDescRPD = make(map[string]int64)
+	}
 	if l.localDescConc == nil {
 		l.localDescConc = make(map[string]int)
 	}
@@ -682,6 +690,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	if l.localDescDay != utcDay {
 		l.localDescDay = utcDay
 		clear(l.localDescTPD)
+		clear(l.localDescRPD)
 	}
 
 	// Phase 1: Pure read-only validation across all descriptors.
@@ -691,6 +700,7 @@ func (l *Limiter) acquireDescriptorsLocal(
 	pendingITPM := make(map[string]int)
 	pendingOTPM := make(map[string]int)
 	pendingTPD := make(map[string]int64)
+	pendingRPD := make(map[string]int64)
 	pendingConc := make(map[string]int)
 	pendingIter := make(map[string]int)
 	pendingRes := make(map[string]bool)
@@ -737,6 +747,14 @@ func (l *Limiter) acquireDescriptorsLocal(
 				return nil, nil, toDescriptorQuotaError(scope+"_TPD_EXCEEDED", cur, d.TPDLimit, retryDay)
 			}
 			pendingTPD[lk] += int64(estTotal)
+		}
+
+		if d.RPDLimit > 0 {
+			cur := l.localDescRPD[lk] + pendingRPD[lk]
+			if cur+1 > d.RPDLimit {
+				return nil, nil, toDescriptorQuotaError(scope+"_RPD_EXCEEDED", cur, d.RPDLimit, retryDay)
+			}
+			pendingRPD[lk]++
 		}
 
 		if d.MaxConcurrent > 0 {
@@ -845,6 +863,9 @@ func (l *Limiter) acquireDescriptorsLocal(
 		}
 		if d.TPDLimit > 0 && estTotal > 0 {
 			l.localDescTPD[lk] += int64(estTotal)
+		}
+		if d.RPDLimit > 0 {
+			l.localDescRPD[lk]++
 		}
 		if d.MaxConcurrent > 0 {
 			l.localDescConc[lk]++
@@ -1063,4 +1084,131 @@ func (l *Limiter) RenewDescriptorLeases(
 		return l.renewDescriptorsScr.Run(rCtx, rdb, keys, len(budgeted), requestID, ttlSec).Result()
 	})
 	return execErr
+}
+
+// CheckDescriptorBudgetReserve verifies whether active budgeted descriptors can afford reserveMicros
+// without deducting or holding duplicate quota on fallback hops.
+func (l *Limiter) CheckDescriptorBudgetReserve(
+	ctx context.Context,
+	orgID string,
+	descriptors []domain.RateLimitDescriptor,
+	reserveMicros int64,
+	requestID string,
+) error {
+	if l == nil || reserveMicros <= 0 || len(descriptors) == 0 {
+		return nil
+	}
+	enabled, fallbackLocal, _, _, _, _ := l.configSnapshot()
+	if !enabled {
+		return nil
+	}
+	active, err := normalizeDescriptors(orgID, descriptors)
+	if err != nil {
+		return err
+	}
+	var budgeted []domain.RateLimitDescriptor
+	for _, d := range active {
+		if d.MaxBudgetMicros > 0 {
+			budgeted = append(budgeted, d)
+		}
+	}
+	if len(budgeted) == 0 {
+		return nil
+	}
+	now := l.nowUTC()
+	nowMin := now.Unix() / 60
+	utcDay := now.Format("20060102")
+	tag := orgHashTag(orgID)
+
+	if l.redis != nil && l.redis.Client() != nil {
+		res, execErr := l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
+			rCtx, cancel := l.withRedisTimeout(ctx)
+			defer cancel()
+			pipe := rdb.Pipeline()
+			type cmds struct {
+				spend  *redis.StringCmd
+				resSum *redis.StringCmd
+				reqRes *redis.StringCmd
+				desc   domain.RateLimitDescriptor
+			}
+			entries := make([]cmds, 0, len(budgeted))
+			for _, d := range budgeted {
+				ks := buildDescriptorKeySet(orgID, d, nowMin, utcDay)
+				c := cmds{
+					spend:  pipe.Get(rCtx, ks.spend),
+					resSum: pipe.Get(rCtx, ks.resSum),
+					desc:   d,
+				}
+				if requestID != "" {
+					c.reqRes = pipe.HGet(rCtx, ks.resAmounts, requestID)
+				}
+				entries = append(entries, c)
+			}
+			if _, pErr := pipe.Exec(rCtx); pErr != nil && !errors.Is(pErr, redis.Nil) {
+				return nil, pErr
+			}
+			for _, e := range entries {
+				spent := e.desc.SpentFloorMicros
+				if val, err := e.spend.Int64(); err == nil && val > spent {
+					spent = val
+				}
+				var resSum int64
+				if val, err := e.resSum.Int64(); err == nil && val > 0 {
+					resSum = val
+				}
+				var reqRes int64
+				if e.reqRes != nil {
+					if val, err := e.reqRes.Int64(); err == nil && val > 0 {
+						reqRes = val
+					}
+				}
+				otherRes := resSum - reqRes
+				if otherRes < 0 {
+					otherRes = 0
+				}
+				if spent+otherRes+reserveMicros > e.desc.MaxBudgetMicros {
+					scope := strings.ToUpper(string(e.desc.ScopeType))
+					return toQuotaError(scope + "_BUDGET_EXCEEDED"), nil
+				}
+			}
+			return nil, nil
+		})
+		if execErr == nil {
+			if qErr, ok := res.(error); ok && qErr != nil {
+				return qErr
+			}
+			return nil
+		}
+		if !fallbackLocal {
+			return limiterUnavailableError()
+		}
+	}
+
+	if !fallbackLocal {
+		return limiterUnavailableError()
+	}
+
+	l.localMu.Lock()
+	defer l.localMu.Unlock()
+	for _, d := range budgeted {
+		lk := tag + ":" + descriptorEntityKey(d)
+		spent := d.SpentFloorMicros
+		if localVal := l.localDescSpent[lk]; localVal > spent {
+			spent = localVal
+		}
+		var otherRes int64
+		for rk, entry := range l.localDescReservations[lk] {
+			if rk == requestID {
+				continue
+			}
+			if !entry.expiresAt.After(now) {
+				continue
+			}
+			otherRes += entry.amount
+		}
+		if spent+otherRes+reserveMicros > d.MaxBudgetMicros {
+			return toQuotaError(strings.ToUpper(string(d.ScopeType)) + "_BUDGET_EXCEEDED")
+		}
+	}
+	return nil
 }

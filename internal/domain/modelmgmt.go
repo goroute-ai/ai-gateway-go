@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ModelLifecycleStatus tracks the lifecycle stage of a model in the Global Catalogue.
 type ModelLifecycleStatus string
@@ -25,6 +28,34 @@ const (
 	StrategyLowestCost         RoutingStrategy = "lowest-cost"
 	StrategyRoundRobin         RoutingStrategy = "round-robin"
 )
+
+// NormalizeRoutingStrategy canonicalizes casing, underscores, and legacy routing strategy aliases.
+func NormalizeRoutingStrategy(s RoutingStrategy) RoutingStrategy {
+	norm := strings.ToLower(strings.TrimSpace(string(s)))
+	norm = strings.ReplaceAll(norm, "_", "-")
+	switch norm {
+	case "simple-shuffle", "priority-tiered":
+		return StrategyWeightedShuffle
+	default:
+		return RoutingStrategy(norm)
+	}
+}
+
+// IsValidRoutingStrategy reports whether s is a supported load-balancing strategy.
+func IsValidRoutingStrategy(s RoutingStrategy) bool {
+	switch s {
+	case StrategyWeightedShuffle,
+		StrategyLeastBusy,
+		StrategyLatencyBased,
+		StrategyFastestResponse,
+		StrategyUsageBasedHeadroom,
+		StrategyLowestCost,
+		StrategyRoundRobin:
+		return true
+	default:
+		return false
+	}
+}
 
 // DeploymentStatus represents the operational health of a model deployment.
 type DeploymentStatus string
@@ -282,6 +313,7 @@ const (
 	GuardrailActionBlock  GuardrailAction = "block"
 	GuardrailActionRedact GuardrailAction = "redact"
 	GuardrailActionAudit  GuardrailAction = "audit"
+	GuardrailActionRoute  GuardrailAction = "route"
 )
 
 // GuardrailMode controls whether a guardrail policy enforces actions or only logs violations.
@@ -310,6 +342,7 @@ type GuardrailPolicy struct {
 	ToxicityThreshold        string          `json:"toxicity_threshold,omitempty"`
 	EnabledContentCategories []string        `json:"enabled_content_categories,omitempty"`
 	ContentExceptions        []string        `json:"content_exceptions,omitempty"`
+	SensitiveRouteTarget     string          `json:"sensitive_route_target,omitempty"`
 	UpdatedAt                time.Time       `json:"updated_at"`
 }
 
@@ -357,6 +390,9 @@ type ModelGroup struct {
 	ContextWindowFallbacks []FallbackTarget `json:"context_window_fallbacks,omitempty"`
 	ContentPolicyFallbacks []FallbackTarget `json:"content_policy_fallbacks,omitempty"`
 	FallbackTargets        []FallbackTarget `json:"fallback_targets,omitempty"`
+	SaturationFallbacks    []FallbackTarget `json:"saturation_fallbacks,omitempty"`
+	DropUnsupportedParams  bool             `json:"drop_unsupported_params,omitempty"`
+	DisableCooldowns       bool             `json:"disable_cooldowns,omitempty"`
 	RetryPolicy            *RetryPolicy     `json:"retry_policy,omitempty"`
 	CooldownPolicy         *CooldownPolicy  `json:"cooldown_policy,omitempty"`
 	MaxRetries             int              `json:"max_retries"`
@@ -369,24 +405,27 @@ type ModelGroup struct {
 
 // Deployment represents Layer 4 of Model Management: a concrete physical endpoint inside a ModelGroup.
 type Deployment struct {
-	ID                string           `json:"id"`
-	CircuitProbeToken string           `json:"-"`
-	ModelGroupID      string           `json:"model_group_id"`
-	GlobalModelID     string           `json:"global_model_id"`
-	CredentialID      string           `json:"credential_id"`
-	DeploymentName    string           `json:"deployment_name"`
-	Region            string           `json:"region"`
-	Weight            int              `json:"weight"`
-	RPMCapacity       int              `json:"rpm_capacity"`
-	TPMCapacity       int              `json:"tpm_capacity"`
-	TimeoutMs         int              `json:"timeout_ms"`
-	Priority          int              `json:"priority"`
-	Tags              []string         `json:"tags,omitempty"`
-	MaxBudgetMicros   int64            `json:"max_budget_micros,omitempty"`
-	BudgetResetPeriod string           `json:"budget_reset_period,omitempty"`
-	Status            DeploymentStatus `json:"status"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at"`
+	ID                  string           `json:"id"`
+	CircuitProbeToken   string           `json:"-"`
+	ModelGroupID        string           `json:"model_group_id"`
+	GlobalModelID       string           `json:"global_model_id"`
+	CredentialID        string           `json:"credential_id"`
+	DeploymentName      string           `json:"deployment_name"`
+	Region              string           `json:"region"`
+	Weight              int              `json:"weight"`
+	RPMCapacity         int              `json:"rpm_capacity"`
+	TPMCapacity         int              `json:"tpm_capacity"`
+	ITPMCapacity        int              `json:"itpm_capacity,omitempty"`
+	OTPMCapacity        int              `json:"otpm_capacity,omitempty"`
+	MaxParallelRequests int              `json:"max_parallel_requests,omitempty"`
+	TimeoutMs           int              `json:"timeout_ms"`
+	Priority            int              `json:"priority"`
+	Tags                []string         `json:"tags,omitempty"`
+	MaxBudgetMicros     int64            `json:"max_budget_micros,omitempty"`
+	BudgetResetPeriod   string           `json:"budget_reset_period,omitempty"`
+	Status              DeploymentStatus `json:"status"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
 	// Hydrated associations for hot-path execution
 	GlobalModel *GlobalModel        `json:"global_model,omitempty"`
 	Credential  *ProviderCredential `json:"credential,omitempty"`

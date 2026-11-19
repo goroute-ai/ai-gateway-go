@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +34,7 @@ type RouterService struct {
 	signer      *GatewayCardSigner
 	verifier    *UpstreamCardVerifier
 	guardrails  *guardrails.Engine
+	pipeline    *guardrails.Pipeline
 }
 
 // NewRouterService constructs a new A2A RouterService.
@@ -64,6 +66,16 @@ func NewRouterService(
 func (s *RouterService) SetGuardrails(g *guardrails.Engine) {
 	if s != nil {
 		s.guardrails = g
+	}
+}
+
+// SetGuardrailPipeline attaches a unified v2 guardrail pipeline to the A2A RouterService.
+func (s *RouterService) SetGuardrailPipeline(p *guardrails.Pipeline) {
+	if s != nil {
+		s.pipeline = p
+		if s.guardrails == nil && p != nil && p.Engine() != nil {
+			s.guardrails = p.Engine()
+		}
 	}
 }
 
@@ -126,8 +138,9 @@ func (s *RouterService) SendMessage(
 	}
 
 	// 3b. Inbound Guardrails Evaluation on text parts
-	if s.guardrails != nil {
-		if err := s.evaluateInboundMessage(ctx, orgID, req.Message); err != nil {
+	prc := buildA2APipelineContext(ctx, idCtx, orgID, agentSlug, req.Message.TaskId)
+	if s.pipeline != nil || s.guardrails != nil {
+		if err := s.evaluateInboundMessage(ctx, prc, orgID, agentSlug, req.Message); err != nil {
 			return nil, err
 		}
 	}
@@ -222,8 +235,8 @@ func (s *RouterService) SendMessage(
 	task.TotalCostMicros += extractA2AInvocationCostMicros(upstreamResp)
 
 	// 6b. Outbound Guardrails Sanitization on text parts
-	if s.guardrails != nil && upstreamResp != nil {
-		if err := s.sanitizeOutboundResponse(ctx, orgID, upstreamResp); err != nil {
+	if (s.pipeline != nil || s.guardrails != nil) && upstreamResp != nil {
+		if err := s.sanitizeOutboundResponse(ctx, prc, orgID, upstreamResp); err != nil {
 			task.State = domain.A2ATaskStateFailed
 			task.UpdatedAt = time.Now().UTC()
 			_ = s.repo.UpdateA2ATaskState(ctx, task.ID, task.State, task.OutputMessageJSON, task.TotalCostMicros)
@@ -618,7 +631,40 @@ func (s *RouterService) domainTaskToProto(ctx context.Context, t *domain.A2ATask
 	return protoTask
 }
 
-func (s *RouterService) evaluateInboundMessage(ctx context.Context, orgID string, msg *pb.Message) error {
+func buildA2APipelineContext(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	orgID, agentSlug, taskID string,
+) guardrails.PipelineRequestContext {
+	prc := guardrails.PipelineRequestContext{
+		OrgID:     orgID,
+		RequestID: taskID,
+		Model:     agentSlug,
+		Metadata: map[string]any{
+			"agent_slug": agentSlug,
+		},
+	}
+	if idCtx != nil {
+		if prc.OrgID == "" {
+			prc.OrgID = idCtx.OrgID
+		}
+		prc.TeamID = idCtx.TeamID
+		prc.VirtualKeyID = idCtx.VirtualKeyID
+		prc.EndUserID = idCtx.UserID
+		if role := strings.TrimSpace(string(idCtx.Role)); role != "" {
+			prc.CallerRoles = []string{role}
+		}
+	}
+	prc.TraceID = observability.TraceFromContext(ctx).TraceID
+	return prc
+}
+
+func (s *RouterService) evaluateInboundMessage(
+	ctx context.Context,
+	prc guardrails.PipelineRequestContext,
+	orgID, agentSlug string,
+	msg *pb.Message,
+) error {
 	if msg == nil {
 		return nil
 	}
@@ -635,25 +681,52 @@ func (s *RouterService) evaluateInboundMessage(ctx context.Context, orgID string
 	}
 
 	chatReq := &domain.CanonicalChatRequest{
+		Model: agentSlug,
 		Messages: []domain.CanonicalMessage{{
 			Role:  "user",
 			Parts: contentParts,
 		}},
 	}
-	if _, err := s.guardrails.EvaluateInput(ctx, orgID, chatReq); err != nil {
-		var gwErr *domain.GatewayError
-		if errors.As(err, &gwErr) {
-			if gwErr.StatusCode >= 500 {
-				return gwErr
+	if s.pipeline != nil {
+		out, err := s.pipeline.EvaluatePreCall(ctx, prc, chatReq)
+		if err != nil {
+			var gwErr *domain.GatewayError
+			if errors.As(err, &gwErr) {
+				if gwErr.StatusCode >= 500 {
+					return gwErr
+				}
+				return &A2AError{
+					Code:    CodeInvalidTaskPayload,
+					Message: gwErr.Message,
+				}
 			}
 			return &A2AError{
 				Code:    CodeInvalidTaskPayload,
-				Message: gwErr.Message,
+				Message: err.Error(),
 			}
 		}
-		return &A2AError{
-			Code:    CodeInvalidTaskPayload,
-			Message: err.Error(),
+		if out != nil && strings.TrimSpace(out.RouteTarget) != "" {
+			return &A2AError{
+				Code:    CodeInvalidTaskPayload,
+				Message: fmt.Sprintf("agent %q invocation blocked by sensitive routing guardrail policy", agentSlug),
+			}
+		}
+	} else if s.guardrails != nil {
+		if _, err := s.guardrails.EvaluateInput(ctx, orgID, chatReq); err != nil {
+			var gwErr *domain.GatewayError
+			if errors.As(err, &gwErr) {
+				if gwErr.StatusCode >= 500 {
+					return gwErr
+				}
+				return &A2AError{
+					Code:    CodeInvalidTaskPayload,
+					Message: gwErr.Message,
+				}
+			}
+			return &A2AError{
+				Code:    CodeInvalidTaskPayload,
+				Message: err.Error(),
+			}
 		}
 	}
 
@@ -663,31 +736,36 @@ func (s *RouterService) evaluateInboundMessage(ctx context.Context, orgID string
 	return nil
 }
 
-func (s *RouterService) sanitizeOutboundResponse(ctx context.Context, orgID string, resp *pb.SendMessageResponse) error {
+func (s *RouterService) sanitizeOutboundResponse(
+	ctx context.Context,
+	prc guardrails.PipelineRequestContext,
+	orgID string,
+	resp *pb.SendMessageResponse,
+) error {
 	if resp == nil {
 		return nil
 	}
 	if msg := resp.GetMessage(); msg != nil {
-		if err := s.sanitizeParts(ctx, orgID, msg.Parts); err != nil {
+		if err := s.sanitizeParts(ctx, prc, orgID, msg.Parts); err != nil {
 			return err
 		}
 	}
 	if task := resp.GetTask(); task != nil {
 		if status := task.GetStatus(); status != nil && status.GetMessage() != nil {
-			if err := s.sanitizeParts(ctx, orgID, status.GetMessage().Parts); err != nil {
+			if err := s.sanitizeParts(ctx, prc, orgID, status.GetMessage().Parts); err != nil {
 				return err
 			}
 		}
 		for _, histMsg := range task.GetHistory() {
 			if histMsg != nil {
-				if err := s.sanitizeParts(ctx, orgID, histMsg.Parts); err != nil {
+				if err := s.sanitizeParts(ctx, prc, orgID, histMsg.Parts); err != nil {
 					return err
 				}
 			}
 		}
 		for _, art := range task.GetArtifacts() {
 			if art != nil {
-				if err := s.sanitizeParts(ctx, orgID, art.Parts); err != nil {
+				if err := s.sanitizeParts(ctx, prc, orgID, art.Parts); err != nil {
 					return err
 				}
 			}
@@ -696,7 +774,46 @@ func (s *RouterService) sanitizeOutboundResponse(ctx context.Context, orgID stri
 	return nil
 }
 
-func (s *RouterService) sanitizeParts(ctx context.Context, orgID string, parts []*pb.Part) error {
+func (s *RouterService) sanitizeParts(
+	ctx context.Context,
+	prc guardrails.PipelineRequestContext,
+	orgID string,
+	parts []*pb.Part,
+) error {
+	if s.pipeline != nil {
+		var textRefs []*pb.Part_Text
+		var choices []domain.CanonicalChoice
+		for _, p := range parts {
+			if p == nil {
+				continue
+			}
+			if tp, ok := p.Content.(*pb.Part_Text); ok && tp.Text != "" {
+				idx := len(choices)
+				textRefs = append(textRefs, tp)
+				choices = append(choices, domain.CanonicalChoice{
+					Index:   idx,
+					Message: domain.CanonicalMessage{Role: "assistant", Content: tp.Text},
+				})
+			}
+		}
+		if len(choices) == 0 {
+			return nil
+		}
+		chatResp := &domain.CanonicalChatResponse{
+			Model:   prc.Model,
+			Choices: choices,
+		}
+		if _, err := s.pipeline.EvaluatePostCall(ctx, prc, chatResp); err != nil {
+			return err
+		}
+		s.pipeline.EvaluateLoggingOnly(ctx, prc, &domain.CanonicalChatRequest{Model: prc.Model}, chatResp)
+		for i, tp := range textRefs {
+			if i < len(chatResp.Choices) {
+				tp.Text = chatResp.Choices[i].Message.Content
+			}
+		}
+		return nil
+	}
 	for _, p := range parts {
 		if p == nil {
 			continue

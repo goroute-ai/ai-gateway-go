@@ -443,6 +443,15 @@ func ApplyDelegatedCallerNarrowing(ctx context.Context, repo storage.Repository,
 	if delegatedTeam != nil {
 		out.DelegatedTeamID = delegatedTeam.ID
 		out.TeamID = delegatedTeam.ID
+		if delegatedTeam.MinPriorityRank > out.TeamMinPriorityRank {
+			out.TeamMinPriorityRank = delegatedTeam.MinPriorityRank
+		}
+		if len(delegatedTeam.AllowedRoutingTags) > 0 {
+			out.TeamAllowedRoutingTags = intersectModelAllowlists(out.TeamAllowedRoutingTags, delegatedTeam.AllowedRoutingTags)
+			if len(out.KeyAllowedRoutingTags) > 0 {
+				out.KeyAllowedRoutingTags = intersectModelAllowlists(out.KeyAllowedRoutingTags, delegatedTeam.AllowedRoutingTags)
+			}
+		}
 
 		if len(delegatedTeam.AllowedModels) > 0 {
 			out.TeamAllowedModels = intersectModelAllowlists(out.TeamAllowedModels, delegatedTeam.AllowedModels)
@@ -565,6 +574,8 @@ func cloneIdentityContext(idCtx *domain.IdentityContext) *domain.IdentityContext
 	cp.UserBudgetFallbacks = domain.CloneBudgetFallbacks(idCtx.UserBudgetFallbacks)
 	cp.OrgBudgetFallbacks = domain.CloneBudgetFallbacks(idCtx.OrgBudgetFallbacks)
 	cp.KeyTags = slices.Clone(idCtx.KeyTags)
+	cp.KeyAllowedRoutingTags = slices.Clone(idCtx.KeyAllowedRoutingTags)
+	cp.TeamAllowedRoutingTags = slices.Clone(idCtx.TeamAllowedRoutingTags)
 	cp.KeyMetadata = maps.Clone(idCtx.KeyMetadata)
 	return &cp
 }

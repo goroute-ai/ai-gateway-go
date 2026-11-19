@@ -21,8 +21,10 @@ var validRoles = []string{"system", "developer", "user", "assistant", "tool"}
 // Validator enforces schema, parameter bounds, model capabilities, and context-window limits
 // prior to routing and load balancing.
 type Validator struct {
-	repo                  storage.Repository
-	allowDefaultFallbacks atomic.Bool
+	repo                        storage.Repository
+	allowDefaultFallbacks       atomic.Bool
+	dropUnsupportedParams       atomic.Bool
+	fallbackOnUnsupportedParams atomic.Bool
 }
 
 func NewValidator(repo storage.Repository) *Validator {
@@ -36,6 +38,24 @@ func (v *Validator) SetAllowDefaultFallbacks(allow bool) {
 		return
 	}
 	v.allowDefaultFallbacks.Store(allow)
+}
+
+// SetDropUnsupportedParams configures whether pre-flight parameter validation
+// permits droppable capabilities/parameters to pass through for runtime sanitization.
+func (v *Validator) SetDropUnsupportedParams(allow bool) {
+	if v == nil {
+		return
+	}
+	v.dropUnsupportedParams.Store(allow)
+}
+
+// SetFallbackOnUnsupportedParams configures whether pre-flight capability checks allow
+// requests with configured fallback groups to attempt fallback routing instead of failing 400.
+func (v *Validator) SetFallbackOnUnsupportedParams(allow bool) {
+	if v == nil {
+		return
+	}
+	v.fallbackOnUnsupportedParams.Store(allow)
 }
 
 // ValidateChatRequest validates request parameters, capabilities, and context-window constraints.
@@ -102,66 +122,114 @@ func (v *Validator) ValidateChatRequest(ctx context.Context, orgID string, req *
 		}
 	}
 
-	// If the requested model is not a smart alias, resolve the target GlobalModel to verify capabilities & context limits
+	// If the requested model is not a smart alias, resolve the target group deployments / GlobalModel to verify capabilities & context limits
 	requested := strings.TrimSpace(req.Model)
 	if requested != "" && !slices.Contains(auth.SmartAliases, requested) && v.repo != nil {
 		mg, deps, gm := v.resolveTargetContext(ctx, orgID, requested)
-		if gm != nil {
-			caps := gm.ResolveCapabilities()
-			if req.Stream && caps.Streaming == domain.CapabilityUnsupported {
+		var models []*domain.GlobalModel
+		for _, d := range deps {
+			if d != nil && d.GlobalModel != nil && d.Status != domain.DeploymentStatusDisabled {
+				models = append(models, d.GlobalModel)
+			}
+		}
+		if len(models) == 0 && gm != nil {
+			models = []*domain.GlobalModel{gm}
+		}
+		if len(models) > 0 {
+			effectiveDrop := (mg != nil && mg.DropUnsupportedParams) || v.dropUnsupportedParams.Load()
+			if req.GoRouteExtensions != nil && req.GoRouteExtensions.DropUnsupportedParams != nil {
+				effectiveDrop = *req.GoRouteExtensions.DropUnsupportedParams
+			}
+			canFallbackCaps := v.fallbackOnUnsupportedParams.Load() && (v.allowDefaultFallbacks.Load() || hasGroupFallbackRefs(mg))
+
+			anySupports := func(pred func(*domain.GlobalModel) bool) bool {
+				for _, candidate := range models {
+					if pred(candidate) {
+						return true
+					}
+				}
+				return false
+			}
+
+			primaryName := models[0].ModelName
+			if req.Stream && !canFallbackCaps && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.ResolveCapabilities().Streaming != domain.CapabilityUnsupported
+			}) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "capability_not_supported",
-					Message:    fmt.Sprintf("Model %q does not support SSE streaming (stream: true)", gm.ModelName),
+					Message:    fmt.Sprintf("Model %q does not support SSE streaming (stream: true)", primaryName),
 				}
 			}
-			if len(req.Tools) > 0 && caps.Tools == domain.CapabilityUnsupported {
+			if len(req.Tools) > 0 && !effectiveDrop && !canFallbackCaps && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.ResolveCapabilities().Tools != domain.CapabilityUnsupported
+			}) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "capability_not_supported",
-					Message:    fmt.Sprintf("Model %q does not support function/tool calling", gm.ModelName),
+					Message:    fmt.Sprintf("Model %q does not support function/tool calling", primaryName),
 				}
 			}
-			if hasImageInput && caps.Vision == domain.CapabilityUnsupported {
+			if hasImageInput && !canFallbackCaps && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.ResolveCapabilities().Vision != domain.CapabilityUnsupported
+			}) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "capability_not_supported",
-					Message:    fmt.Sprintf("Model %q does not support multimodal vision inputs", gm.ModelName),
+					Message:    fmt.Sprintf("Model %q does not support multimodal vision inputs", primaryName),
 				}
 			}
-			if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_schema" && caps.StructuredOutputs == domain.CapabilityUnsupported {
+			if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_schema" && !effectiveDrop && !canFallbackCaps && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.ResolveCapabilities().StructuredOutputs != domain.CapabilityUnsupported
+			}) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "capability_not_supported",
-					Message:    fmt.Sprintf("Model %q does not support structured outputs (json_schema)", gm.ModelName),
+					Message:    fmt.Sprintf("Model %q does not support structured outputs (json_schema)", primaryName),
 				}
 			}
-			if req.ReasoningEffort != "" && caps.Reasoning == domain.CapabilityUnsupported {
+			if req.ReasoningEffort != "" && !effectiveDrop && !canFallbackCaps && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.ResolveCapabilities().Reasoning != domain.CapabilityUnsupported
+			}) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "capability_not_supported",
-					Message:    fmt.Sprintf("Model %q does not support reasoning_effort", gm.ModelName),
+					Message:    fmt.Sprintf("Model %q does not support reasoning_effort", primaryName),
 				}
 			}
-			if gm.MaxInputTokens > 0 && estimatedPromptTokens > gm.MaxInputTokens && !v.canRouteLargerContext(ctx, mg, deps, estimatedPromptTokens) {
+			maxSeenInput := 0
+			fitsAnyInput := false
+			for _, m := range models {
+				if m.MaxInputTokens <= 0 || estimatedPromptTokens <= m.MaxInputTokens {
+					fitsAnyInput = true
+					break
+				}
+				if m.MaxInputTokens > maxSeenInput {
+					maxSeenInput = m.MaxInputTokens
+				}
+			}
+			if !fitsAnyInput && maxSeenInput > 0 && !v.canRouteLargerContext(ctx, mg, deps, estimatedPromptTokens) {
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "context_length_exceeded",
-					Message:    fmt.Sprintf("Estimated prompt tokens (%d) exceed model %q maximum context window (%d tokens)", estimatedPromptTokens, gm.ModelName, gm.MaxInputTokens),
+					Message:    fmt.Sprintf("Estimated prompt tokens (%d) exceed model %q maximum context window (%d tokens)", estimatedPromptTokens, primaryName, maxSeenInput),
 				}
 			}
-			if req.MaxTokens != nil && gm.MaxOutputTokens > 0 && *req.MaxTokens > gm.MaxOutputTokens {
+			if req.MaxTokens != nil && !effectiveDrop && !anySupports(func(m *domain.GlobalModel) bool {
+				return m.MaxOutputTokens <= 0 || *req.MaxTokens <= m.MaxOutputTokens
+			}) {
+				maxOut := models[0].MaxOutputTokens
 				return &domain.GatewayError{
 					StatusCode: http.StatusBadRequest,
 					Type:       domain.ErrorTypeInvalidRequest,
 					Code:       "max_output_tokens_exceeded",
-					Message:    fmt.Sprintf("Requested max_tokens (%d) exceeds model %q maximum output tokens (%d)", *req.MaxTokens, gm.ModelName, gm.MaxOutputTokens),
+					Message:    fmt.Sprintf("Requested max_tokens (%d) exceeds model %q maximum output tokens (%d)", *req.MaxTokens, primaryName, maxOut),
 				}
 			}
 		}
@@ -224,6 +292,17 @@ func (v *Validator) resolveTargetContext(ctx context.Context, orgID, modelOrAlia
 		return nil, nil, gm
 	}
 	return nil, nil, nil
+}
+
+func hasGroupFallbackRefs(mg *domain.ModelGroup) bool {
+	if mg == nil {
+		return false
+	}
+	return len(mg.FallbackTargets) > 0 ||
+		len(mg.FallbackGroupIDs) > 0 ||
+		len(mg.ContextWindowFallbacks) > 0 ||
+		len(mg.ContentPolicyFallbacks) > 0 ||
+		len(mg.SaturationFallbacks) > 0
 }
 
 func (v *Validator) canRouteLargerContext(ctx context.Context, mg *domain.ModelGroup, deps []*domain.Deployment, estimatedPromptTokens int) bool {

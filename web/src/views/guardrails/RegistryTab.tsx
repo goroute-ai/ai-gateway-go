@@ -110,6 +110,7 @@ export const RegistryTab: React.FC = () => {
   const [weight, setWeight] = useState('1');
   const [precedence, setPrecedence] = useState('0');
   const [timeoutMs, setTimeoutMs] = useState('0');
+  const [sensitiveRouteTarget, setSensitiveRouteTarget] = useState('');
   const [enabledRolesText, setEnabledRolesText] = useState('');
   const [modeRuleDefault, setModeRuleDefault] = useState<GuardrailHook[]>([]);
   const [modeRuleTags, setModeRuleTags] = useState<Array<{ tag: string; hooks: GuardrailHook[] }>>([]);
@@ -212,6 +213,7 @@ export const RegistryTab: React.FC = () => {
     setWeight('1');
     setPrecedence('0');
     setTimeoutMs('0');
+    setSensitiveRouteTarget('');
     setEnabledRolesText('');
     setModeRuleDefault([]);
     setModeRuleTags([]);
@@ -237,6 +239,7 @@ export const RegistryTab: React.FC = () => {
     setWeight(String(def.weight || 1));
     setPrecedence(String(def.precedence || 0));
     setTimeoutMs(String(def.timeout_ms || 0));
+    setSensitiveRouteTarget(def.sensitive_route_target || '');
     setEnabledRolesText((def.enabled_roles || []).join(', '));
     setModeRuleDefault(def.mode_rule?.default || []);
     setModeRuleTags(
@@ -315,6 +318,7 @@ export const RegistryTab: React.FC = () => {
         weight: Math.max(1, parseInt(weight, 10) || 1),
         precedence: parseInt(precedence, 10) || 0,
         timeout_ms: Math.max(0, parseInt(timeoutMs, 10) || 0),
+        sensitive_route_target: sensitiveRouteTarget.trim(),
         enabled_roles: roles.length > 0 ? roles : undefined,
         config: cfg,
         ...(secrets && Object.keys(secrets).length > 0 ? { secrets } : {}),
@@ -445,6 +449,7 @@ export const RegistryTab: React.FC = () => {
                     <Badge variant={statusVariant(def.status)} size="sm">{def.status}</Badge>
                     {def.default_on && <Badge variant="primary" size="sm">default_on</Badge>}
                     {def.fail_open && <Badge variant="warning" size="sm">fail_open</Badge>}
+                    {def.sensitive_route_target && <Badge variant="neutral" size="sm">route:{def.sensitive_route_target}</Badge>}
                     {def.has_secrets && (
                       <Badge variant="success" size="sm">
                         <span className="flex items-center gap-1"><Key className="w-3 h-3" /> vault</span>
@@ -663,6 +668,18 @@ export const RegistryTab: React.FC = () => {
               <label className="text-[11px] text-brand-muted font-mono block mb-1">Timeout (ms)</label>
               <input type="number" min={0} value={timeoutMs} onChange={(e) => setTimeoutMs(e.target.value)} className={INPUT_CLS} />
             </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] text-brand-muted font-mono block mb-1">
+              Sensitive Route Target (when driver returns `route` decision)
+            </label>
+            <input
+              value={sensitiveRouteTarget}
+              onChange={(e) => setSensitiveRouteTarget(e.target.value)}
+              placeholder="e.g. private-local"
+              className={INPUT_CLS}
+            />
           </div>
 
           <div className="flex flex-wrap gap-5 items-center">

@@ -219,6 +219,7 @@ router:
     max_queue_depth: 256
     max_wait_time: 5s
     default_priority: 0
+    max_parallel_wait_ms: 0          # Bounded wait (ms) when all candidate deployments hit max_parallel_requests
   priority_capacity:
     enabled: false
     saturation_threshold: 0.85
@@ -226,12 +227,20 @@ router:
     window_duration: 1m
     default_weight: 1.0
     default_borrow_multiple: 2.0
+  latency_tolerance_pct: 0.0         # Optional band above fastest EWMA deployment for latency-based load balancing
+  max_honored_retry_after: 60s       # Upper bound on upstream Retry-After waits before failing over
+  disable_cooldowns: false           # Disable circuit breaker cooldown tripping globally
+  fallback_on_saturation: false      # Allow falling back when capacity/concurrency/priority saturation occurs
+  drop_unsupported_params: false     # Strip unsupported capabilities/params instead of rejecting requests
+  fallback_on_unsupported_params: false # Fall back on upstream unsupported-parameter errors without cooldown tripping
+  allow_strategy_override: false     # Allow per-request X-Gateway-Routing-Strategy / goroute_extensions overrides
+  debug_routing_headers: false       # Allow opt-in redacted X-Gateway-Fallback-Errors when caller sends X-Gateway-Debug-Routing: true
 
 rate_limit:
   enabled: true
   fallback_to_local_on_outage: false # Degrade to in-memory rate-limit/budget tracking if Redis is unreachable (default false = fail-closed)
   window_seconds: 60
-  concurrency_ttl_sec: 300
+  concurrency_ttl_sec: 300           # Lease TTL (s) for concurrent request slots and max_parallel_requests ZSET leases
   default_estimated_tpm: 128
   redis_timeout: 50ms
   global_rpm_limit: 0
@@ -393,12 +402,19 @@ model_list:
     #   - target: "fast-backup"
     #     overrides:
     #       max_tokens: 2048
+    # saturation_fallbacks:
+    #   - target: "fast-backup"
+    # drop_unsupported_params: false
+    # disable_cooldowns: false
     model_params:
       model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
       weight: 100
       rpm: 1000
       tpm: 1000000
+      # itpm: 500000
+      # otpm: 500000
+      # max_parallel_requests: 64
       # region: "us-east"
       # priority: 1
       # tags: ["tier:fast", "region:us"]
