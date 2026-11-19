@@ -105,11 +105,11 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.RoutingHints`, `gateway.RouterOptions`, `gateway.FallbackTarget`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.0
 ```
 
 ```go
-// Embedded gateway with silent stdout logging and v1.20.0 routing options
+// Embedded gateway with silent stdout logging and v1.21.0 routing options
 gw, err := gateway.New(
     gateway.WithModelList(
         gateway.ModelEntry{
@@ -131,6 +131,22 @@ gw, err := gateway.New(
     gateway.WithSilentLogs(), // Suppresses internal gateway logger
 )
 ```
+
+For embedded Go applications integrating bespoke corporate identity headers or mTLS claims, attach `gateway.WithCustomAuthenticator`:
+
+```go
+gw, err := gateway.New(
+    gateway.WithCustomAuthenticator(gateway.CustomAuthModeAuto, gateway.CustomAuthenticatorFunc(
+        func(ctx context.Context, r *http.Request) (*gateway.AuthDecision, error) {
+            if rawKey := r.Header.Get("X-Corp-Gateway-Key"); rawKey != "" {
+                return &gateway.AuthDecision{VirtualKey: rawKey}, nil
+            }
+            return nil, nil // abstain -> fall through to standard gateway auth in CustomAuthModeAuto
+        },
+    )),
+)
+```
+Use `CustomAuthModeOn` to require the hook unconditionally (fail closed on errors or nil abstentions) and set `RunPostChecks: true` when supplying a direct `Identity` so model, endpoint, RBAC, and quota rules are enforced.
 
 ---
 
@@ -308,8 +324,12 @@ router:
 ## Dual-Boundary Auth, 4-Layer RBAC & Credential Vault
 
 ### Dual-Boundary Security Architecture
-- **Boundary 1 (Client $\rightarrow$ Gateway)**: Clients authenticate with Gateway-issued **Virtual API Keys (`sk-gw-...`)**. Only the **SHA-256 hex digest** is persisted; the raw key is returned once upon creation. Validated in $<1\text{ ms}$ via a 2-tier cache (**L1 In-Process RWMutex Map** + **L2 Redis Cache** with instant Pub/Sub invalidation).
-- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption**:
+- **Boundary 1 (Client $\rightarrow$ Gateway)**: Clients authenticate with Gateway-issued **Virtual API Keys (`sk-gw-...`)** (via `Authorization: Bearer`, `x-api-key`, `api-key`, `x-goog-api-key`, or `auth.custom_api_key_header`; conflicting credentials across sources are rejected). Only the **SHA-256 hex digest** is persisted; the raw key is returned once upon creation. Validated via a 2-tier cache (**L1 In-Process RWMutex Map** + **L2 Redis Cache** with instant Pub/Sub invalidation).
+- **Enterprise Federation, SSO, Provisioning & Key Rotation**:
+  - **Multi-Issuer OIDC & Introspection**: Configure `auth.enable_data_plane_jwt`, `auth.oidc_issuers[]` (per-issuer JWKS/discovery, claim mappings, email domain allowlists), `auth.introspection` (RFC 7662 / UserInfo), and `auth.proxy_auth` (CIDR-guarded reverse proxy identity headers). Bind human identities explicitly by `(org_id, oidc_issuer, oidc_subject)`.
+  - **Operator Sessions, HIBP & CLI Login**: Browser sessions use signed `goroute_session` cookies plus `X-CSRF-Token` validation on mutations; `/auth/login` and `/auth/password` support optional k-anonymity HIBP password screening (`auth.enable_hibp_check`) and login throttling.
+  - **SCIM 2.0 Provisioning & Key Rotation Grace Periods**: `/scim/v2/Users` and `/scim/v2/Groups` apply user and team membership changes in tenant-scoped atomic transactions. Scheduled or manual key rotations (`POST /admin/v1/keys/{keyID}/rotate`) support dual-valid grace windows emitting `X-Gateway-Key-Deprecated` and `X-Gateway-Key-Revoke-At`.
+- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
   - Every credential gets a unique random 32-byte **Data Encryption Key (DEK)** + 12-byte `DataNonce`.
   - The DEK is encrypted by the gateway's 32-byte **Master Key Encryption Key (`master_encryption_key`)** + 12-byte `DEKNonce`.
 
@@ -425,9 +445,10 @@ $$\text{picos} = (\text{UncachedPrompt} \times \text{InRate}) + (\text{CachedPro
 $$\text{CostMicros} = \left\lfloor \frac{\text{picos} + 500,000}{1,000,000} \right\rfloor$$
 
 ### Non-Blocking Async Spend Worker & Hard Budgets
-- **Hot Path ($0\text{ ms}$ DB Blocking)**: After every inference call, `SpendWorker.Enqueue()` synchronously increments real-time budget counters and pushes a `SpendEvent` into a `16,384`-slot buffered Go channel flushed in batches of `250` every `500ms`.
-- **Hierarchical Hard Budgets & Per-Deployment/Provider Caps**: Configure `MaxBudgetMicros` and `BudgetResetPeriod` (`"daily"`, `"monthly"`, `"never"`) at the **Virtual Key**, **Team**, **Organization**, or **Deployment** (`model_params.max_budget_micros` / `router.provider_budgets`) level. Admission reserves the estimated upper-bound cost (input plus requested maximum output) in integer micro-dollars atomically in Redis, then replaces the reservation with actual spend after completion. Concurrent requests therefore cannot each spend against the same remaining balance; deployments or providers exceeding their budget window are automatically filtered out in Stage 2 (`DeploymentBudgetTracker`).
-- **Fail-Closed Estimate Requirements**: Budgeted chat, completion, Anthropic Messages, Responses, embeddings, rerank, image generation/edit/variation, and audio speech requests require known pricing and a deterministic pre-dispatch upper bound. For routed aliases, the reservation uses the maximum verified/custom rates available across matching catalog models. Embeddings use input byte length as a conservative token bound. Audio transcription, moderation, Realtime, and Batch currently return `503 budget_estimate_unavailable` before upstream dispatch/session/job creation. Redis unavailability also prevents a budgeted request from dispatching. Reservations expire after one hour if a process crashes before settlement; this can temporarily reduce available budget until expiry.
+- **Hot Path ($0\text{ ms}$ DB Blocking)**: After every inference call, `SpendWorker.Enqueue()` synchronously commits a durable outbox event and pushes a `SpendEvent` into a `16,384`-slot buffered Go channel flushed in batches of `250` every `500ms`.
+- **Multi-Dimensional Quotas & Multi-Window Budgets**: Configure `MaxBudgetMicros` and `BudgetResetPeriod` across **Virtual Key**, **Team**, **Organization**, **User**, **End User** (`/admin/v1/end-users`), **Tag** (`/admin/v1/tags`), **Model Access Group** (`/admin/v1/model-access-groups`), per-model `/admin/v1/quotas`, **Deployment**, and **Provider** levels, plus simultaneous **Multi-Window Budgets** (`/admin/v1/budget-windows`: `hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`).
+- **Soft Budget Alerts, Throttling & Temp Increases**: Configure `finops.soft_budget_webhook_url`, `finops.soft_budget_cooldown_sec`, `finops.budget_exceeded_throttle_pct`, per-key budget model fallback, and temporary budget boosts (`POST /admin/v1/keys/{keyID}/temp-budget`). Configure `router.priority_capacity` alongside `/admin/v1/deployments/{depID}/ptu-shares` and `/admin/v1/priority-classes` for Provisioned Throughput Unit guarantees and elastic borrowing.
+- **Fail-Closed Estimate Requirements**: Budgeted chat, completion, Anthropic Messages, Responses, embeddings, rerank, image generation/edit/variation, and audio speech requests require known pricing and a deterministic pre-dispatch upper bound. For routed aliases, the reservation uses the maximum verified/custom rates available across matching catalog models. Embeddings use input byte length as a conservative token bound. Audio transcription, moderation, Realtime, and Batch currently return `503 budget_estimate_unavailable` before upstream dispatch/session/job creation. Redis unavailability prevents a budgeted request from dispatching unless `rate_limit.fallback_to_local_on_outage: true` is explicitly configured for single-replica degradation. Reservations expire after one hour if a process crashes before settlement; this can temporarily reduce available budget until expiry.
 
 ### Go SDK & Control Plane Usage
 ```go
@@ -453,10 +474,11 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 
 ## Rate Limiting & Deterministic Response Caching
 
-### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM & Concurrency)
+### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM, TPD & Concurrency)
 1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Gemini/Mistral/Llama) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.
-2. **Single-Roundtrip Redis Lua Quota Check & Post-Response Reconciliation**: Atomically verifies Key, Team, and Org RPM, TPM, Concurrency, and Spend limits in 1 RTT, then reconciles `actual_tokens - estimated_tokens` after completion.
-3. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters. If Redis is unavailable, the gateway returns `HTTP 503` with `rate_limiter_unavailable`; it never substitutes per-process counters for a tenant-wide quota. Requests without configured limits do not require Redis for quota admission. This preserves quota guarantees during Redis outages at the cost of rejecting governed traffic until Redis recovers.
+2. **Single-Roundtrip Redis Lua Quota Check & Post-Response Reconciliation**: `check_descriptors.lua` atomically verifies RPM, TPM, ITPM, OTPM, TPD, Concurrency, Session Iterations, and Spend/Multi-Window Budgets across Key, Team, User, Org, End-User, Tag, Model-Access-Group, and per-model descriptors in 1 RTT, then `reconcile_descriptors.lua` reconciles `actual - estimated` tokens and replaces the micro-dollar reservation with settled spend.
+3. **`rolling_24h` Windows & Cold Recovery Boundary**: In `rolling_24h` windows, settled spend expires 24 hours after its spend timestamp (`gw:dq:{org:<org_id>}:r24h:<entity>`). On cold or evicted Redis state, `AcquireDescriptors` loads timestamped PostgreSQL `spend_logs` (plus any unexpired migration hold) and initializes Redis atomically with admission (`503 quota_policy_unavailable` if PostgreSQL history cannot load). Note the recovery boundary: PostgreSQL restores persisted spend after complete Redis state loss; Redis-only in-flight reservations and settlements not yet persisted to PostgreSQL cannot be reconstructed from that history.
+4. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters by default (`fallback_to_local_on_outage: false`). If Redis is unavailable, the gateway returns `HTTP 503 rate_limiter_unavailable`.
 
 ### Part B: Tenant-Isolated Deterministic Response Cache (`0ms`, `$0.00`)
 - **Eligibility**: Caches non-streaming requests where `temperature <= 0` or `seed != nil` (unless `X-Gateway-Cache-Control: no-cache` is sent).
@@ -602,6 +624,8 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `logging.add_source` | `GATEWAY_LOG_ADD_SOURCE` | `false` | When true, annotates log records with caller `file:line`. |
 | `storage.mode` | `GATEWAY_STORAGE_MODE` | `"memory"` | Storage backend: `"memory"` (zero external dependencies) or `"postgres"`. |
 | `storage.postgres_dsn` | `GATEWAY_POSTGRES_DSN` | `postgres://...` | PostgreSQL connection string (auto-switches storage mode to `"postgres"` when present). |
+| `storage.rds_iam.enabled` | — | `false` | Enables dynamic AWS RDS IAM token generation for new PostgreSQL connections and migrations (`sslmode=verify-full`). |
+| `storage.rds_iam.region` / `role_arn` / `web_identity_token_file` | — | `""` | Explicit RDS IAM region and credentials/IRSA fields. |
 | `storage.redis_addr` | `GATEWAY_REDIS_ADDR` | `"localhost:6379"` | Standalone Redis host:port for L2 auth caching, Lua rate limiting, and response caching. |
 | `storage.redis_addrs` | `GATEWAY_REDIS_ADDRS` | `[]` | Comma-separated Redis Cluster or Sentinel seed nodes (takes precedence over `redis_addr`). |
 | `storage.redis_master_name` | `GATEWAY_REDIS_MASTER_NAME` | `""` | Redis Sentinel master name when using Sentinel topology. |
@@ -609,7 +633,24 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `storage.redis_db` | — | `0` | Redis logical database index. |
 | `auth.master_admin_key` | `GATEWAY_MASTER_ADMIN_KEY` | `sk-gw-master-...` | Control plane bearer token (min 12 chars; must be changed in `production`). |
 | `auth.master_encryption_key` | `GATEWAY_MASTER_ENCRYPTION_KEY` | 64-char hex | 32-byte AES-256-GCM Master Key Encryption Key (must be changed in `production`). |
-| `auth.jwt_secret` | `GATEWAY_JWT_SECRET` | `"gateway-jwt-..."` | HMAC secret for signing internal JWT tokens. |
+| `auth.allow_master_key_data_plane` | `GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE` | `false` | Opt-in flag allowing Master Admin Key on `/v1/*` data plane endpoints (disabled by default). |
+| `auth.allow_ambient_cloud_iam` | — | `false` | Opt-in flag allowing ambient AWS Bedrock, GCP Vertex, Azure, and RDS IAM credential resolution. |
+| `auth.enable_data_plane_jwt` | `GATEWAY_ENABLE_DATA_PLANE_JWT` | `false` | Enables OIDC/JWT bearer token verification on `/v1/*` data plane routes. |
+| `auth.custom_api_key_header` | `GATEWAY_CUSTOM_API_KEY_HEADER` | `""` | Custom header override for virtual key extraction (conflicts across sources are rejected). |
+| `auth.jwt_secret` | `GATEWAY_JWT_SECRET` | `""` | HMAC secret for verifying HS256 JWT tokens. |
+| `auth.jwt_issuer` | `GATEWAY_JWT_ISSUER` | `""` | Default expected JWT `iss` claim for single-issuer verification. |
+| `auth.jwt_audience` | `GATEWAY_JWT_AUDIENCE` | `""` | Default expected JWT `aud` claim. |
+| `auth.oidc_jwks_url` | `GATEWAY_OIDC_JWKS_URL` | `""` | Legacy single-issuer OIDC JWKS URL (`auth.oidc_issuers[]` preferred for multi-issuer). |
+| `auth.oidc_issuers[]` | — | `[]` | Multi-issuer OIDC verifier list (`issuer`, `audience`, `jwks_url`, `discovery_url`, `claim_mapping`, `allowed_email_domains`). |
+| `auth.sso_providers[]` | — | `[]` | Browser & CLI OIDC SSO identity providers (`id`, `client_id`, `client_secret`, `issuer`, `redirect_url`, `claim_mapping`). |
+| `auth.introspection.*` | — | `{}` | RFC 7662 token introspection / OIDC UserInfo verification settings (`token_info_endpoint`, `mode`, `cache_ttl`). |
+| `auth.proxy_auth.*` | — | `{}` | CIDR-guarded reverse proxy header authentication (`enabled`, `trusted_proxy_cidrs`, `header_mapping`). |
+| `auth.key_rotation_delivery_url` / `key_rotation_delivery_token` | — | `""` | HTTPS webhook destination and bearer secret required to promote scheduled replacement keys. |
+| `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background worker interval checking due virtual key rotations. |
+| `auth.key_rotation_grace_period` | `GATEWAY_KEY_ROTATION_GRACE_PERIOD` | `24h` | Default grace window during which a rotated key remains valid with deprecation headers. |
+| `auth.ui_username` / `ui_password` | `GATEWAY_UI_USERNAME` / `GATEWAY_UI_PASSWORD` | `""` | Optional operator password login credentials for `/auth/login`. |
+| `auth.session_secret` / `session_ttl` | `GATEWAY_SESSION_SECRET` / `GATEWAY_SESSION_TTL` | `""` / `0s` | HMAC secret and lifetime for signed `goroute_session` cookies. |
+| `auth.enable_hibp_check` / `hibp_base_url` | `GATEWAY_ENABLE_HIBP_CHECK` / `GATEWAY_HIBP_BASE_URL` | `false` / `""` | Enables k-anonymity SHA-1 prefix password screening on login and `/auth/password`. |
 | `auth.default_org_id` | — | `"org_default"` | Initial default organization ID seeded at startup. |
 | `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
 | `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
@@ -626,24 +667,24 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `router.failure_window` | — | `30s` | Sliding window for counting consecutive upstream errors. |
 | `router.failure_threshold` | — | `3` | Consecutive errors required to trip circuit breaker into `OPEN` state. |
 | `router.default_fallbacks` | — | `[]` | Global fallback targets (`{target, overrides}`) evaluated if group-level chains are exhausted. |
-| `router.max_fallback_depth` | — | `16` | Maximum inter-group fallback hops allowed per request. |
+| `router.max_fallback_depth` | `GATEWAY_ROUTER_MAX_FALLBACK_DEPTH` | `16` | Maximum inter-group fallback hops allowed per request. |
 | `router.retry_policy.*` | — | `{}` | Per-class retry budgets (`rate_limit_retries`, `timeout_retries`, `server_error_retries`, `auth_error_retries`, `not_found_retries`, `bad_request_retries`, `default_retries`). |
 | `router.cooldown_policy.*` | — | `{}` | Adaptive cooldown bounds (`allowed_fails`, `failure_rate_threshold`, `min_requests_per_minute`, `max_cooldown_seconds`). |
-| `router.enable_mid_stream_continuation` | — | `false` | Enables seamless SSE assistant-prefill recovery on plain-text mid-stream drops. |
-| `router.max_stream_continuations` | — | `1` | Maximum mid-stream continuation retries permitted per request. |
-| `router.health_staleness_threshold` | — | `0s` | Rejects deployments whose last health heartbeat exceeds this age (`0` disables staleness filter). |
-| `router.strict_capacity_filtering` | — | `false` | Enforces strict per-deployment RPM/TPM filtering before load balancer selection. |
+| `router.enable_mid_stream_continuation` | `GATEWAY_ROUTER_ENABLE_MID_STREAM_CONTINUATION` | `false` | Enables seamless SSE assistant-prefill recovery on plain-text mid-stream drops. |
+| `router.max_stream_continuations` | `GATEWAY_ROUTER_MAX_STREAM_CONTINUATIONS` | `1` | Maximum mid-stream continuation retries permitted per request. |
+| `router.health_staleness_threshold` | `GATEWAY_ROUTER_HEALTH_STALENESS_THRESHOLD` | `0s` | Rejects deployments whose last health heartbeat exceeds this age (`0` disables staleness filter). |
+| `router.strict_capacity_filtering` | `GATEWAY_ROUTER_STRICT_CAPACITY_FILTERING` | `false` | Enforces strict per-deployment RPM/TPM filtering before load balancer selection. |
 | `router.provider_budgets` | — | `{}` | Map of `provider -> max_budget_micros` spending ceiling across deployments. |
-| `router.session_affinity_ttl` | — | `30m` | TTL for `AffinityStore` session and response deployment pins. |
-| `router.session_affinity_repin_on_failover` | — | `true` | Automatically updates sticky deployment pin when failover succeeds on an alternate node. |
-| `router.prompt_cache_affinity` | — | `false` | Pins requests sharing prefix hashes (`pcache`) to improve upstream prompt cache hit rates. |
-| `router.pre_router_mode` | — | `""` | Default Stage 0 pre-router mode (`"heuristic"`, `"semantic"`, `"quality"`, `"adaptive"`). |
+| `router.session_affinity_ttl` | `GATEWAY_ROUTER_SESSION_AFFINITY_TTL` | `30m` | TTL for `AffinityStore` session and response deployment pins. |
+| `router.session_affinity_repin_on_failover` | `GATEWAY_ROUTER_SESSION_AFFINITY_REPIN_ON_FAILOVER` | `true` | Automatically updates sticky deployment pin when failover succeeds on an alternate node. |
+| `router.prompt_cache_affinity` | `GATEWAY_ROUTER_PROMPT_CACHE_AFFINITY` | `false` | Pins requests sharing prefix hashes (`pcache`) to improve upstream prompt cache hit rates. |
+| `router.pre_router_mode` | `GATEWAY_ROUTER_PRE_ROUTER_MODE` | `""` | Default Stage 0 pre-router mode (`"heuristic"`, `"semantic"`, `"quality"`, `"adaptive"`). |
 | `router.semantic_router.enabled` | — | `false` | Enables embedding cosine-similarity pre-routing (`router/semantic`). |
 | `router.semantic_router.embedding_model` | — | `""` | Model alias or ID used to compute semantic centroids and prompt embeddings. |
 | `router.semantic_router.similarity_threshold` | — | `0` | Minimum cosine similarity required to match a semantic route. |
 | `router.semantic_router.timeout` | — | `0s` | Maximum timeout for semantic embedding calls before falling back. |
 | `router.semantic_router.routes[]` | — | `[]` | Intent routes (`name`, `target_model`, `utterances[]`, `description`). |
-| `router.cache_aware_routing` | — | `false` | Enables prompt-cache-prefix-aware candidate affinity scoring. |
+| `router.cache_aware_routing` | `GATEWAY_ROUTER_CACHE_AWARE_ROUTING` | `false` | Enables prompt-cache-prefix-aware candidate affinity scoring. |
 | `router.bandit.enabled` | — | `false` | Enables Thompson-sampling contextual bandit routing (`router/adaptive`). |
 | `router.bandit.default_alpha` / `default_beta` | — | `0` | Prior Beta distribution parameters for new bandit arms. |
 | `router.bandit.exploration_rate` | — | `0` | Exploration factor controlling random arm sampling. |
@@ -651,21 +692,28 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `router.bandit.latency_weight` / `cost_weight` | — | `0` | Multi-objective weights penalizing latency and token spend in bandit rewards. |
 | `router.bandit.sync_interval` | — | `0s` | Background Redis synchronization interval for cluster bandit state. |
 | `router.bandit.candidate_models[]` | — | `[]` | Candidate model aliases eligible for adaptive bandit selection. |
-| `router.hedge_delay_ms` | — | `0` | Default stagger delay in milliseconds before firing secondary hedged requests (`fastest-response`). |
-| `router.max_hedge_concurrency` | — | `2` | Maximum parallel hedged attempts per request. |
+| `router.hedge_delay_ms` | `GATEWAY_ROUTER_HEDGE_DELAY_MS` | `0` | Default stagger delay in milliseconds before firing secondary hedged requests (`fastest-response`). |
+| `router.max_hedge_concurrency` | `GATEWAY_ROUTER_MAX_HEDGE_CONCURRENCY` | `2` | Maximum parallel hedged attempts per request. |
 | `router.scheduler.enabled` | — | `false` | Enables bounded `PriorityScheduler` request queueing. |
 | `router.scheduler.max_queue_depth` | — | `0` | Maximum queued requests before rejecting overflow with `503`. |
 | `router.scheduler.max_wait_time` | — | `0s` | Maximum queue wait timeout before failing a queued request. |
 | `router.scheduler.default_priority` | — | `0` | Default scheduling priority assigned when callers omit `X-Gateway-Priority`. |
+| `router.priority_capacity.*` | — | `false` | Dynamic PTU priority-capacity borrowing (`enabled`, `saturation_threshold`, `active_caller_ttl`, `window_duration`, `default_weight`, `default_borrow_multiple`). |
 | `rate_limit.enabled` | — | `true` | Enables distributed sliding-window rate limiting via Redis Lua. |
+| `rate_limit.fallback_to_local_on_outage` | — | `false` | Opt-in in-memory fallback when Redis is unreachable (`false` fails closed with `503`). |
 | `rate_limit.window_seconds` | — | `60` | Fixed window duration in seconds for RPM/TPM calculation. |
 | `rate_limit.concurrency_ttl_sec` | — | `300` | Lease duration in seconds for concurrent in-flight request locks. |
 | `rate_limit.default_estimated_tpm` | — | `128` | Pre-flight token heuristic estimate when prompt tokens are unmeasured. |
 | `rate_limit.redis_timeout` | — | `50ms` | Maximum timeout for Redis Lua rate-limit checks before failing closed. |
+| `rate_limit.global_rpm_limit` / `global_tpm_limit` / `global_max_concurrent` | — | `0` | Gateway-wide global rate/concurrency caps (`0` = unlimited). |
+| `rate_limit.default_agent_session_max_iterations` / `max_budget_micros` / `ttl_sec` | — | `0` | Default per-agent-session loop, budget, and TTL ceilings (`0` = unlimited). |
 | `finops.channel_buffer_size` | — | `16384` | Capacity of asynchronous spend event channel. |
 | `finops.batch_size` | — | `250` | Maximum spend events aggregated per database flush. |
 | `finops.flush_interval` | `GATEWAY_FINOPS_FLUSH_INTERVAL` | `500ms` | Maximum duration between asynchronous spend ledger flushes. |
 | `finops.worker_count` | — | `4` | Number of concurrent background spend processor goroutines. |
+| `finops.soft_budget_webhook_url` | `GATEWAY_FINOPS_SOFT_BUDGET_WEBHOOK_URL` | `""` | Webhook URL notified when soft budget thresholds are crossed. |
+| `finops.soft_budget_cooldown_sec` | `GATEWAY_FINOPS_SOFT_BUDGET_COOLDOWN_SEC` | `0` (`3600` in example) | Cooldown window in seconds between duplicate soft-budget alerts. |
+| `finops.budget_exceeded_throttle_pct` | `GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT` | `0` (`0.10` in example) | Throttle probability fraction when soft budget throttling applies. |
 | `discovery.enabled` | — | `true` | Enables background upstream model catalogue discovery. |
 | `discovery.sync_interval` | — | `6h` | Polling interval for model catalogue synchronization worker. |
 | `discovery.auto_approve` | — | `false` | When true, auto-enables newly discovered upstream models. |
@@ -680,10 +728,10 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `mcp.allowed_stdio_binaries` | — | `[]` | Explicit allowlist of absolute binary paths permitted for stdio transport. |
 | `mcp.enable_session_compat_2025` | — | `true` | Enables MCP 2025-11-25 stateful session translation adapter. |
 | `mcp.session_ttl_2025` | — | `15m` | Session expiration TTL for legacy 2025 MCP connections. |
-| `mcp.cache_key_secret` | `GATEWAY_MCP_CACHE_KEY_SECRET` | — | HMAC-SHA256 secret for delimiter-collision-proof MCP cache keys. |
+| `mcp.cache_key_secret` | — | — | HMAC-SHA256 secret for delimiter-collision-proof MCP cache keys (defaults to `auth.master_encryption_key`). |
 | `mcp.max_payload_bytes` | — | `10485760` | Maximum allowed payload size for MCP requests (10 MB). |
 | `mcp.default_timeout` | — | `30s` | Default execution timeout for upstream MCP tool calls. |
-| `mcp.subscriptions_listen_active` | `GATEWAY_MCP_SUBSCRIPTIONS_LISTEN` | `true` | Enables multiplexed SSE subscriptions endpoint (`/mcp/subscriptions/listen`). |
+| `mcp.subscriptions_listen_active` | — | `true` | Enables multiplexed SSE subscriptions endpoint (`/mcp/subscriptions/listen`). |
 | `a2a.enabled` | `GATEWAY_A2A_ENABLED` | `true` | Enables Agent-to-Agent (A2A v1.0) protocol service. |
 | `a2a.enable_jsonrpc` | — | `true` | Enables JSON-RPC 2.0 transport for A2A message exchange. |
 | `a2a.enable_http_json` | — | `true` | Enables REST/HTTP+JSON transport for A2A message exchange. |
@@ -691,15 +739,15 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `a2a.allow_legacy_card_discovery` | — | `false` | Allows unsigned or legacy uncanonicalized agent card discovery. |
 | `a2a.max_task_lifespan` | — | `24h` | Maximum durability lifespan for active A2A task records. |
 | `a2a.stream_buffer_capacity` | — | `256` | Per-task SSE event streaming buffer capacity. |
-| `a2a.stream_publish_interval` | `GATEWAY_A2A_STREAM_PUBLISH_INTERVAL` | `50ms` | Interval for background task stream publication daemon. |
-| `a2a.max_push_retries` | `GATEWAY_A2A_MAX_PUSH_RETRIES` | `5` | Maximum retry attempts for transactional outbox webhooks before DLQ. |
+| `a2a.stream_publish_interval` | — | `50ms` | Interval for background task stream publication daemon. |
+| `a2a.max_push_retries` | — | `5` | Maximum retry attempts for transactional outbox webhooks before DLQ. |
 | `a2a.signing_key_id` | `GATEWAY_A2A_SIGNING_KEY_ID` | `"gw-a2a-signer-v1"` | Key ID for RFC 8785 JCS / JWS Agent Card signing. |
 | `a2a.allowed_signing_algs` | — | `["ES256", "RS256", "EdDSA"]` | Allowed cryptographic signature algorithms for inbound Agent Cards. |
 | `a2a.trusted_card_jwks` | — | `{}` | Upstream agent slug -> JWKS URL mapping for card verification. |
-| `security.network.egress_proxy_url` | `GATEWAY_EGRESS_PROXY_URL` | `""` | Corporate HTTP/HTTPS egress proxy URL for enterprise outbound firewalls. |
-| `security.network.outbound_ssrf.allow_private_networks` | `GATEWAY_SSRF_ALLOW_PRIVATE` | `false` | Enables private/internal IP egress (must remain false in production). |
+| `security.network.outbound_ssrf.egress_proxy_url` | — | `""` | Corporate HTTP/HTTPS egress proxy URL for enterprise outbound firewalls. |
+| `security.network.outbound_ssrf.allow_private_networks` | `GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE` | `false` | Enables private/internal IP egress (must remain false in production). |
 | `security.network.outbound_ssrf.allowed_private_cidrs` | — | `[]` | Explicit private CIDR allowlist (e.g. `["10.0.0.0/8"]`) when egress is gated. |
-| `security.network.outbound_ssrf.allow_insecure_http` | `GATEWAY_SSRF_ALLOW_INSECURE_HTTP` | `false` | Allows plaintext HTTP upstream requests. |
+| `security.network.outbound_ssrf.allow_insecure_http` | `GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP` | `false` | Allows plaintext HTTP upstream requests. |
 | `security.network.outbound_ssrf.allowed_schemes` | — | `["https"]` | Allowed URL schemes for provider endpoints (`https`, `http`). |
 | `security.network.outbound_ssrf.blocked_ips` | — | `["169.254.169.254", ...]` | Cloud metadata and sensitive IP addresses blocked from egress. |
 | `security.network.outbound_ssrf.dial_timeout` | — | `10s` | Network connect and TLS handshake timeout for provider egress. |

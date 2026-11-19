@@ -56,13 +56,69 @@ auth:
   master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY" # 64-char hex string (32-byte AES-256 key)
   allow_master_key_data_plane: false
   allow_ambient_cloud_iam: false
+  enable_data_plane_jwt: false       # Allow OIDC/JWT bearer auth on /v1/* data plane routes
+  custom_api_key_header: ""          # Optional custom header name overriding default virtual key extraction order
   # Secure delivery is required to activate scheduled replacement keys.
   # key_rotation_delivery_url: "https://secrets.example.com/goroute/key-rotation"
   # key_rotation_delivery_token: "os.environ/GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"
+  key_rotation_poll_interval: 1m
+  key_rotation_grace_period: 24h
   jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
   jwt_issuer: ""
   jwt_audience: ""
   oidc_jwks_url: ""
+  oidc_issuers: []
+  #  - issuer: "https://idp.example.com/oauth2/default"
+  #    audience: "goroute-gateway"
+  #    jwks_url: "https://idp.example.com/oauth2/default/v1/keys"
+  #    discovery_url: "https://idp.example.com/oauth2/default/.well-known/openid-configuration"
+  #    algorithms: ["RS256", "ES256"]
+  #    allowed_email_domains: ["example.com"]
+  #    auto_register: false
+  #    default_org_id: "org_default"
+  #    default_team_id: ""
+  #    default_role: "developer"
+  #    claim_mapping:
+  #      user_id: "sub"
+  #      email: "email"
+  #      org_id: "org_id"
+  #      team_ids: "groups"
+  #      role: "role"
+  #      end_user: "end_user_id"
+  sso_providers: []
+  #  - id: "okta"
+  #    name: "Okta Workforce SSO"
+  #    type: "oidc"
+  #    display_name: "Sign in with Okta"
+  #    client_id: "os.environ/SSO_OKTA_CLIENT_ID"
+  #    client_secret: "os.environ/SSO_OKTA_CLIENT_SECRET"
+  #    issuer: "https://idp.example.com/oauth2/default"
+  #    redirect_url: "https://gateway.example.com/auth/sso/okta/callback"
+  #    scopes: ["openid", "profile", "email"]
+  #    allowed_email_domains: ["example.com"]
+  #    auto_register: false
+  #    default_org_id: "org_default"
+  #    default_role: "org_viewer"
+  introspection: {}
+  #  token_info_endpoint: "https://idp.example.com/oauth2/v1/introspect"
+  #  client_id: "os.environ/INTROSPECT_CLIENT_ID"
+  #  client_secret: "os.environ/INTROSPECT_CLIENT_SECRET"
+  #  mode: "introspection"            # "introspection" (RFC 7662) or "userinfo"
+  #  cache_ttl: 5m
+  proxy_auth:
+    enabled: false
+    trusted_proxy_cidrs: []          # e.g. ["10.0.0.0/8"]
+    header_mapping: {}
+    #  user_id: "X-Auth-Request-User"
+    #  email: "X-Auth-Request-Email"
+    #  org_id: "X-Auth-Request-Org"
+    #  role: "X-Auth-Request-Role"
+  ui_username: ""                    # Optional password-login operator username
+  ui_password: ""                    # Optional password-login operator password (or os.environ/GATEWAY_UI_PASSWORD)
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET" # HMAC secret for operator goroute_session cookies
+  session_ttl: 24h
+  enable_hibp_check: false           # k-anonymity SHA-1 prefix breached password check
+  hibp_base_url: ""                  # Optional override for Pwned Passwords range API base URL
   default_org_id: "org_default"
   default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
   l1_cache_ttl: 15s
@@ -143,6 +199,13 @@ router:
     max_queue_depth: 256
     max_wait_time: 5s
     default_priority: 0
+  priority_capacity:
+    enabled: false
+    saturation_threshold: 0.85
+    active_caller_ttl: 5m
+    window_duration: 1m
+    default_weight: 1.0
+    default_borrow_multiple: 2.0
 
 rate_limit:
   enabled: true
@@ -154,6 +217,9 @@ rate_limit:
   global_rpm_limit: 0
   global_tpm_limit: 0
   global_max_concurrent: 0
+  default_agent_session_max_iterations: 0
+  default_agent_session_max_budget_micros: 0
+  default_agent_session_ttl_sec: 0
 
 finops:
   channel_buffer_size: 16384

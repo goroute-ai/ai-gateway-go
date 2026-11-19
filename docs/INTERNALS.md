@@ -15,7 +15,7 @@
 5. [Dual-Boundary Security & Envelope Cryptography](#5-dual-boundary-security--envelope-cryptography)
 6. [Reliability Manager: RetryPolicy, Adaptive Circuit Breakers, Specialized Fallbacks & SSE Continuation](#6-reliability-manager-retrypolicy-adaptive-circuit-breakers-specialized-fallbacks--sse-continuation)
 7. [FinOps Micro-Dollar Accounting & Asynchronous Batch Pipeline](#7-finops-micro-dollar-accounting--asynchronous-batch-pipeline)
-8. [Distributed Rate Limiting & Pre-Flight Tokenizer](#8-distributed-rate-limiting--pre-flight-tokenizer)
+8. [Distributed Rate Limiting, Descriptor Quotas, PTU Sharing & Pre-Flight Tokenizer](#8-distributed-rate-limiting-descriptor-quotas-ptu-sharing--pre-flight-tokenizer)
 9. [Deterministic Exact-Match Response Caching](#9-deterministic-exact-match-response-caching)
 10. [Cross-Cutting Platform Modules](#10-cross-cutting-platform-modules)
 11. [Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix](#11-storage-architecture-postgresql-schema--redis-keyspace-matrix)
@@ -24,7 +24,7 @@
 14. [Server-Side Autonomous Tool Loop Orchestration](#14-server-side-autonomous-tool-loop-orchestration)
 15. [Progressive Tool Discovery & Opaque Handles](#15-progressive-tool-discovery--opaque-handles)
 16. [Native A2A gRPC & OpenAI Compatibility Bridge](#16-native-a2a-grpc--openai-compatibility-bridge)
-17. [Enterprise Upstream Authentication Strategies](#17-enterprise-upstream-authentication-strategies)
+17. [Enterprise Upstream Authentication & Cloud IAM Strategies](#17-enterprise-upstream-authentication--cloud-iam-strategies)
 18. [Embedded Operator Web UI Architecture & Static Serving Mechanics](#18-embedded-operator-web-ui-architecture--static-serving-mechanics)
 19. [Stateless Guardrails Simulation & Preflight Credential Validation Mechanics](#19-stateless-guardrails-simulation--preflight-credential-validation-mechanics)
 
@@ -268,15 +268,17 @@ Adaptive strategies (`least-busy`, `latency-based`, and `usage-based-headroom`) 
 
 ## 5. Dual-Boundary Security & Envelope Cryptography
 
-GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant isolation and complete credential protection:
+GoRoute AI Gateway enforces dual security boundaries alongside enterprise federation, operator session controls, SCIM provisioning, and key rotation grace windows:
 
 ```
 +-----------------------------------------------------------------------------------------+
 |                               BOUNDARY 1: Client -> Gateway                             |
-|  - Authenticate using Virtual API Keys: sk-gw-<8char_id>-<36char_secret>                |
+|  - Virtual API Keys: sk-gw-<8char_id>-<36char_secret> (multi-header + conflict reject)  |
 |  - Persistent Storage: Only SHA-256(full_key) is stored in PostgreSQL                   |
 |  - Verification: crypto/subtle.ConstantTimeCompare against L1/L2 cached hash             |
-|  - Cached key expiry is checked on both L1 and Redis L2 hits                              |
+|  - Federated OIDC/JWT & Introspection: bound by (org_id, oidc_issuer, oidc_subject)      |
+|  - Operator Sessions: HMAC goroute_session cookie + X-CSRF-Token + HIBP k-anonymity     |
+|  - Embedded SDK: CustomAuthenticator (CustomAuthModeOff / On / Auto, RunPostChecks)     |
 |  - Key revocation broadcasts L1 eviction through gw:events:invalidation                   |
 +-----------------------------------------------------------------------------------------+
                                              |
@@ -286,11 +288,18 @@ GoRoute AI Gateway enforces two distinct security boundaries to ensure tenant is
 |  - Provider Credentials encrypted using 2-Tier AES-256-GCM Envelope Encryption          |
 |  - Tier 1 (DEK): Fresh 256-bit Data Encryption Key generated per credential             |
 |  - Tier 2 (KEK): 256-bit Master Key Encryption Key wraps the DEK                        |
+|  - Opt-in Cloud IAM & DistributedTokenCache across replicas                             |
 |  - In-Memory Security: Plaintext keys zeroed out after request construction             |
 +-----------------------------------------------------------------------------------------+
 ```
 
 Virtual-key expiry metadata is stored with each cached identity and checked on every L1 and Redis L2 cache hit. Key revocation deletes the shared L2 entry and publishes a key-hash invalidation event; gateway workers evict matching L1 identities when they receive it. If Redis cannot deliver the event, another worker can retain its L1 identity only until its configured L1 cache TTL expires.
+
+### 5.1 Identity Federation, Sessions, SCIM & Key Rotation Mechanics
+- **Federated OIDC & Strict Issuer Binding (`internal/auth/jwt.go`, `internal/auth/sso.go`, `migrations/0034`)**: Both Data Plane JWTs (`auth.enable_data_plane_jwt`) and Operator/CLI OIDC SSO authenticate users strictly by `(org_id, oidc_issuer, oidc_subject)`. Implicit cross-issuer email linking is disabled; legacy subject-only records resolve only when an organization has one unambiguous trusted issuer. Explicit `(org_id, issuer, claim_name, claim_value) -> virtual_key_id` (`jwt_key_mappings`) and ABAC `access_group_rules` remain isolated inside the verified tenant.
+- **Operator Sessions, CSRF & HIBP (`internal/auth/session.go`, `internal/auth/password.go`)**: Browser login (`/auth/login`, `/auth/sso/*`) issues `HttpOnly` signed `goroute_session` cookies backed by `operator_sessions` and Redis `gw:auth:session:{active,revoked}:{jti}` state. Cookie-authenticated state-changing requests require `X-CSRF-Token`. When `auth.enable_hibp_check` is enabled, `HIBPRangeClient` hashes the password in memory, transmits only the 5-hex SHA-1 prefix over `network.Policy`, and rejects confirmed breaches on login/password change while preserving availability on HIBP service errors.
+- **SCIM 2.0 Atomic Provisioning & Key Rotation (`internal/server/handlers_scim.go`, `internal/auth/rotation.go`)**: `/scim/v2/Users` and `/scim/v2/Groups` apply group name and membership updates inside one tenant-scoped PostgreSQL transaction, blocking cross-org user attachment. Key rotation (`POST /admin/v1/keys/{keyID}/rotate` and scheduled webhook delivery under `gw:lock:key_rotation`) keeps deprecated hashes active in `virtual_key_deprecated_hashes` through their grace window (`X-Gateway-Key-Deprecated: true`, `X-Gateway-Key-Revoke-At`).
+- **Embedded `CustomAuthenticator` (`pkg/gateway/auth.go`)**: Supports `CustomAuthModeOff`, `CustomAuthModeOn` (fail closed), and `CustomAuthModeAuto` (abstain -> fall back to standard auth); when returning a direct `Identity` with `RunPostChecks: true`, RBAC model/endpoint policies and quota limits still run through standard enforcement.
 
 ### Envelope Encryption Specification
 For every stored upstream provider API key:
@@ -420,33 +429,33 @@ CostMicros = floor((picos + 500000) / 1000000)
 
 ---
 
-## 8. Distributed Rate Limiting & Pre-Flight Tokenizer
+## 8. Distributed Rate Limiting, Descriptor Quotas, PTU Sharing & Pre-Flight Tokenizer
 
-Rate limiting is enforced atomically across **Virtual Key**, **Team**, and **Organization** scopes for Requests Per Minute (RPM), Tokens Per Minute (TPM), and Max Concurrent In-Flight Connections.
+Rate limiting and spend budgets are enforced atomically across **Virtual Key**, **Team**, **User**, **Organization**, **End User**, **Tag**, **Model Access Group**, and **Agent Session** scopes (plus per-model `quota_policies` patterns and simultaneous `budget_window_limits`) for RPM, TPM, ITPM, OTPM, TPD, Max Concurrent In-Flight Connections, Agent Session Iterations, and Integer Micro-Dollar Budgets.
 
 ### 8.1 Model-Specific Preflight Estimation
 Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 512)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
 
 These are quota-admission estimates, not provider billing tokenizers. Audio, image-generation, and provider-specific multimodal accounting remain approximate; returned provider usage is reconciled where the endpoint exposes it. Operators should size TPM limits with that limitation in mind.
 
-### 8.2 Single-Roundtrip Atomic Redis Lua Script
-The complete check and increment runs in `internal/ratelimit/scripts/check_and_increment.lua` in a single network roundtrip:
-1. Verifies that cumulative spend does not exceed `max_budget_micros`.
-2. Verifies that current concurrency is below `max_concurrency`.
-3. Checks current sliding-window RPM and increments by `1`.
-4. Checks current sliding-window TPM and increments by `EstimatedPromptTokens`.
-5. Increments active concurrency by `1`.
-6. Returns `OK` or `ERR_LIMIT_EXCEEDED` with specific breached scope and limit.
+### 8.2 Single-Roundtrip Atomic Redis Lua Scripts (`check_descriptors.lua` & `reconcile_descriptors.lua`)
+Multi-descriptor quota evaluation executes all-or-nothing in `internal/ratelimit/scripts/check_descriptors.lua` (alongside `check_and_increment.lua` for fast-path legacy checks, `renew_descriptors.lua` for long-streaming lease renewals, and `reconcile_descriptors.lua` for settlement), with every descriptor key pinned to the same `{org:<org_id>}` Redis Cluster hash slot:
+1. Checks an admission receipt key to keep retried Redis commands idempotent.
+2. Validates cumulative spend + active in-flight budget reservations (`res_zset` + `res_sum`) across every descriptor and budget window (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`), accounting for active key temporary budget boosts (`temp_budget_increase_micros`).
+3. Verifies sliding-window RPM/TPM/ITPM/OTPM/TPD, concurrency, and agent-session iteration ceilings.
+4. Only if all descriptors pass Phase 1 does Phase 2 atomically apply increments and write micro-dollar reservations.
 
-### 8.3 Post-Response Token Reconciliation
-Once the upstream provider returns actual token usage, the gateway reconciles the difference:
-$$\Delta\text{Tokens} = \text{ActualTotalTokens} - \text{EstimatedPromptTokens}$$
-The minute's TPM counter is adjusted by $\Delta\text{Tokens}$, and the in-flight concurrency counter is decremented via `DECR gw:rl:conc:{key_id}`.
+### 8.3 Post-Response Token & Budget Reconciliation
+Once the upstream provider returns actual usage, `reconcile_descriptors.lua` reconciles:
+$$\Delta\text{Tokens} = \text{ActualTotalTokens} - \text{EstimatedTotalTokens}$$
+It adjusts minute TPM/ITPM/OTPM/TPD counters by $\Delta$, releases the reservation entry in `res_zset` / `res_amounts`, decrements `conc_key`, and records settled integer micro-dollar spend in `spend_key` (and `r24h_zset` for `rolling_24h` windows).
 
-### 8.4 Redis Availability
-Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters. If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error. It does not fall back to per-process counters, because those cannot preserve tenant-wide limits across replicas. Requests without configured limits do not require Redis for quota admission.
+### 8.4 Redis Availability, `rolling_24h` Recovery & PTU Capacity Sharing
+Requests with configured RPM, TPM, concurrency, or spend limits require the shared Redis counters by default (`fallback_to_local_on_outage: false`). If Redis is missing, unreachable, or its operation fails, the gateway rejects the request with `HTTP 503 Service Unavailable` and a `rate_limiter_unavailable` error so replica-local counters cannot violate tenant-wide limits. Requests without configured limits do not require Redis for quota admission.
 
-For `rolling_24h` budget windows, each settled charge expires 24 hours after its recorded millisecond timestamp in `gw:dq:{org:<org_id>}:r24h:<entity>` independently of `window_reset_at`. When a Redis rolling counter is cold, the limiter restores persisted spend from PostgreSQL `spend_logs` (and any unexpired migration `rolling_hold_micros` at its original expiration) and initializes the window atomically and idempotently with admission, keeping surviving reservations separate from settled spend; if repository loading fails, admission returns `HTTP 503 quota_policy_unavailable`. **Recovery boundary:** PostgreSQL restores persisted spend after complete Redis state loss, whereas reservations and settlements that existed only in Redis cannot be reconstructed from that history.
+For `rolling_24h` budget windows, each settled charge expires 24 hours after its recorded millisecond timestamp in `gw:dq:{org:<org_id>}:r24h:<entity>` independently of `window_reset_at`. The initialization sentinel `"__init__:0"` is stored inside `r24h_zset` itself rather than in a separate key, so losing or deleting `r24h_zset` automatically forces cold recovery instead of reading zero spend. When `r24h_zset` is uninitialized (`ROLLING_WINDOW_COLD`), `AcquireDescriptors` loads timestamped spend from PostgreSQL `spend_logs` (plus any unexpired migration `rolling_hold_micros` at its original expiration) and initializes Redis atomically and idempotently with admission while keeping surviving reservations separate from settled spend; if repository loading fails, admission returns `HTTP 503 quota_policy_unavailable`. **Recovery boundary:** PostgreSQL restores persisted spend after complete Redis state loss, whereas reservations and settlements that existed only in Redis cannot be reconstructed from that history.
+
+**Priority Classes & PTU Capacity Borrowing (`internal/router/priority_capacity.go`)**: Below `router.priority_capacity.saturation_threshold`, idle Provisioned Throughput Unit (PTU) deployment capacity is shared dynamically across teams up to each priority class's `max_borrow_multiple` weighted by `weight` / `priority_rank`; when saturated, each team is protected down to its reserved `reserved_rpm` / `reserved_tpm` shares (`deployment_ptu_shares`).
 
 ---
 
@@ -501,23 +510,27 @@ Validates request structures before consuming upstream quota:
 ## 11. Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix
 
 ### 11.1 PostgreSQL Relational Hierarchy & Production Durability
-All entity operations (`teams`, `users`, `virtual_keys`, `spend_summaries`, `spend_logs`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
+All entity operations across migrations `0001` through `0034` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `user_credentials`, `operator_sessions`, `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN ACCESS EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
 
 ```
-[organizations]
-   |-- [teams]
-   |     |-- [users]
-   |     |-- [virtual_keys] ---> [spend_logs] ---> [spend_log_guardrails]
-   |
-   |-- [org_provider_subscriptions]
-   |-- [org_model_policies]
+[organizations] (+ soft_budget/throttle/reset/windows, 0022-0034)
+   |-- [teams] & [team_memberships] (0027) & [projects] (0027)
+   |     |-- [users] (+ oidc_issuer, 0034; scim/impersonation, 0028)
+   |     |     |-- [user_credentials] & [operator_sessions] (0033)
+   |     |-- [virtual_keys] ---> [virtual_key_deprecated_hashes] (0025)
+   |     |                  ---> [jwt_key_mappings] (0024)
+   |     |                  ---> [spend_logs] (+ rolling index, 0034) ---> [spend_log_guardrails]
+   |-- [access_group_rules] (0026) & [quota_policies] (0029) & [budget_window_limits] (0030, 0034)
+   |-- [end_users], [tags], [model_access_groups] ---> [model_access_group_members] (0031)
+   |-- [priority_classes] (0032)
+   |-- [org_provider_subscriptions] & [org_model_policies]
    |-- [guardrail_policies] (baseline + toxicity columns, 0016)
    |-- [guardrail_definitions] ---> [guardrail_bindings] (0017)
    |                           ---> [daily_guardrail_metrics] / [daily_guardrail_usage_units] (0019)
    |-- [tool_policies] (0018)
    |-- [provider_credentials] (AES-256-GCM encrypted)
    |-- [model_groups] (+ specialized_fallbacks & retry/cooldown policies, 0020)
-         |-- [model_deployments] (+ tags, max_budget_micros, budget_reset_period, 0021)
+         |-- [model_deployments] (+ tags/budgets, 0021) ---> [deployment_ptu_shares] (0032)
                |-- references [global_models] (+ quality_tier, 0021) ---> [model_pricing_history]
 ```
 
@@ -526,10 +539,20 @@ All entity operations (`teams`, `users`, `virtual_keys`, `spend_summaries`, `spe
 | Key Pattern | Type | TTL | Purpose |
 | :--- | :--- | :--- | :--- |
 | `gw:auth:key:v2:{sha256}` | `STRING` (JSON) | `300s` | Cached `VirtualKeyContext` (Key, Team, Org quotas & permissions). |
+| `gw:auth:{org_epoch,team_epoch}:{id}` | `STRING` (Int64) | Persistent | Tenant/team auth cache invalidation epochs. |
+| `gw:auth:session:{active,revoked}:{jti}` | `STRING` | Session TTL | Signed `goroute_session` active & revocation tracking. |
+| `gw:auth:login_throttle:{count,lock}:{hash}` | `STRING` | Window | Password login brute-force throttling & lockout counters. |
+| `gw:auth:introspect:{sha256}` | `STRING` (JSON) | Configured | Cached RFC 7662 token introspection / UserInfo results. |
+| `gw:sso:state:{state}` & `gw:cli:{login,poll}:{id}` | `STRING` (JSON) | Short TTL | OIDC PKCE/state correlation & CLI device login flow state. |
+| `gw:rbac:{subs,policies,access_rules}:{org_id}` | `STRING` (JSON) | Cached | Cached tenant provider subscriptions, model policies, and ABAC rules. |
+| `gw:lock:key_rotation` & `gw:upstream_token:{hash}` | `STRING` | Lease / TTL | Distributed rotation worker lock and shared Cloud IAM/OAuth2 token cache (`DistributedTokenCache`). |
 | `gw:rl:{org:<org_id>}:rpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window request counter (`scope` $\in \{\text{key}, \text{team}, \text{user}, \text{org}\}$). |
 | `gw:rl:{org:<org_id>}:tpm:{scope}:{id}:{min}` | `STRING` (Int64) | `120s` | Minute sliding window token counter. |
 | `gw:rl:{org:<org_id>}:conc:{id}` | `STRING` (Int64) | `300s` | Active in-flight concurrent connection counter (Key, Team, Org scopes). |
 | `gw:spend:{org:<org_id>}:{scope}:{id}` | `STRING` (Int64) | `3600s` | Real-time accumulated spend accumulator in micro-dollars. |
+| `gw:budget:soft_alert:{org:<org_id>}:{scope}:{id}:{period}` | `STRING` | Cooldown | Soft budget webhook notification cooldown lock. |
+| `gw:dq:{org:<org_id>}:{rpm,tpm,itpm,otpm,tpd,conc,iter,spend,res}:<entity>` | Mixed | Window/TTL | Multi-descriptor quota & reservation state (`check_descriptors.lua`). |
+| `gw:dq:{org:<org_id>}:r24h:<entity>` | `ZSET` (ms score) | `90000s` | Trailing 24h settled spend, migration holds, and `"__init__:0"` initialization marker. |
 | `gw:budget:{org:<org_id>}:dep:{dep_id}:{period}` | `STRING` (Int64) | Period | Per-deployment spend window counter (`DeploymentBudgetTracker`). |
 | `gw:budget:{org:<org_id>}:prov:{provider}:{period}` | `STRING` (Int64) | Period | Per-provider spend window counter (`router.provider_budgets`). |
 | `gw:router:{dep:<dep_id>}:circuit` | `STRING` | `60s` | Cluster-tagged circuit breaker state (`open` / `half_open`). |
@@ -719,9 +742,9 @@ Allows any OpenAI SDK client to trigger multi-agent workflows:
 
 ---
 
-## 17. Enterprise Upstream Authentication Strategies
+## 17. Enterprise Upstream Authentication & Cloud IAM Strategies
 
-The `internal/auth/upstream` package strictly isolates caller identity from upstream infrastructure credentials:
+The `internal/auth/upstream` package (alongside provider IAM adapters and `internal/storage/rds_iam.go`) strictly isolates caller identity from upstream infrastructure credentials:
 
 1. **AWS SigV4 Signing (`sigv4.go`)**:
    - Computes canonical request hashes ($H(\text{Payload})$), attaches `x-amz-date` and `x-amz-content-sha256` headers, and derives signing keys using AWS Signature Version 4.
@@ -729,14 +752,16 @@ The `internal/auth/upstream` package strictly isolates caller identity from upst
    - Generates high-entropy code verifiers, calculates SHA-256 code challenges ($\text{Base64URL}(H(\text{verifier}))$), and verifies Client Identifier Metadata Documents.
 3. **RFC 9207 & 8707 Protection (`issuer_check.go`)**:
    - Enforces exact issuer validation ($iss_{\text{response}} == iss_{\text{configured}}$) and resource URI checks to eliminate token theft and mix-up attacks across microservices.
-4. **RFC 8693 Token Exchange (`token_exchange.go`)**:
-   - Executes OAuth 2.0 token exchanges with thread-safe in-memory caching keyed by $\text{SHA256}(\text{subject} \parallel \text{audience} \parallel \text{scope})$ with automatic TTL expiration.
+4. **RFC 8693 Token Exchange & `DistributedTokenCache` (`token_exchange.go`, `token_cache.go`)**:
+   - Executes OAuth 2.0 token exchanges with SHA-256 digest keying and coalesced L1 + L2 Redis (`gw:upstream_token:{digest}`) token refresh across replicas (`DistributedTokenCache`).
+5. **Cloud IAM Token Acquisition (`auth.allow_ambient_cloud_iam` & `storage.rds_iam`)**:
+   - Supports explicit credentials and opt-in ambient IAM across AWS Bedrock, GCP Vertex AI, Azure MSI, and PostgreSQL AWS RDS IAM (refreshing short-lived tokens on new database connections and migration runs when `storage.rds_iam.enabled` is true).
 
 ---
 
 ## 18. Embedded Operator Web UI Architecture & Static Serving Mechanics
 
-The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`).
+The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`), supporting Master Admin Key, Operator Password (`/auth/login`), and OIDC SSO (`/auth/sso/{provider}/login`) authentication via `LoginView`, `OverviewView`, `PlaygroundView`, `OrganizationsView`, `ModelsView`, `KeysView` (`TempBudgetModal`), `FinOpsView` (`QuotasTab`), `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`), `CredentialsView`, `AgenticView`, and `ConfigView`.
 
 ### 18.1 Route Dispatch & Fallback Lifecycle
 ```

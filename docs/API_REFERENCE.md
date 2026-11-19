@@ -1,21 +1,27 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.20.0`  
+> **Version**: `v1.21.0`  
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`106` OpenAPI paths: `24` `/v1`, `72` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---
 
-## 1. Authentication & Common Headers
+## 1. Authentication, Sessions, Provisioning & Common Headers
 
-All Gateway endpoints require authentication using a Virtual API Key (`sk-gw-...`) or Master Admin Key passed via the standard `Authorization` header.
+### 1.1 Data Plane & Control Plane Credential Extraction
+All Data Plane (`/v1/*`) and Admin Control Plane (`/admin/v1/*`) endpoints extract caller credentials consistently:
+- **Supported Key Headers**: `Authorization: Bearer <token>`, `x-api-key`, `api-key`, `x-goog-api-key`, or a configured override header (`auth.custom_api_key_header` / `GATEWAY_CUSTOM_API_KEY_HEADER`).
+- **Conflicting Credentials Rejected**: Supplying contradictory credentials across multiple supported headers is rejected rather than silently picking one.
+- **Enterprise Data Plane Identity Modes**: When enabled, `/v1/*` accepts OIDC/JWT bearer tokens (`auth.enable_data_plane_jwt: true` + `auth.oidc_issuers` / `auth.oidc_jwks_url`), RFC 7662 token introspection / UserInfo (`auth.introspection`), and CIDR-guarded proxy headers (`auth.proxy_auth`).
+- **Operator Session Cookie (`OperatorSession`)**: Browser sessions authenticated via `/auth/login` or `/auth/sso/{provider}/callback` receive an `HttpOnly` signed `goroute_session` cookie. State-changing cookie-authenticated requests must also echo `X-CSRF-Token`.
 
 ```http
 Authorization: Bearer sk-gw-prod-7f9a2b8c4d1e
 ```
 
-### Inbound Request Routing Hint Headers
-Callers can pass per-request routing hints via HTTP headers (equivalent to `goroute_extensions` fields in the request body):
+### 1.2 Inbound Request Routing, Impersonation & Delegation Headers
+Callers can pass per-request routing hints via HTTP headers (equivalent to `goroute_extensions` fields in the request body) as well as enterprise impersonation/delegation headers:
 
 | Header | Description | Example |
 | :--- | :--- | :--- |
@@ -26,9 +32,13 @@ Callers can pass per-request routing hints via HTTP headers (equivalent to `goro
 | `X-Gateway-Hedge-After-Ms` | Per-request stagger delay override for `fastest-response` hedged racing | `150` |
 | `X-Gateway-Tags` | Comma-separated routing/guardrail tags (supports `&` / `!` expressions in filters) | `tier:fast, !experimental` |
 | `X-Gateway-Tag-<Name>` | Inject an explicit tag key/value (`<Name>=<Value>`) | `env=prod` |
+| `X-Gateway-Impersonate-User` | Impersonated end-user or member ID (requires impersonation-authorized service key/admin) | `usr_alice` |
+| `X-Gateway-Impersonate-Email` | Impersonated user email within the same organization | `alice@acme.com` |
+| `X-Gateway-Delegated-User-Id` | Delegated user ID attribution for service-account requests | `usr_bob` |
+| `X-Gateway-Delegated-Team-Id` | Delegated team ID attribution for service-account requests | `team_core` |
 
-### Standard Gateway Response Headers
-Every response from GoRoute AI Gateway includes rich tracing and attribution metadata:
+### 1.3 Standard Gateway Response Headers
+Every response from GoRoute AI Gateway includes tracing, attribution, and lifecycle metadata:
 
 | Header | Description | Example |
 | :--- | :--- | :--- |
@@ -36,19 +46,44 @@ Every response from GoRoute AI Gateway includes rich tracing and attribution met
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
 | `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `gemini`, `anthropic`, `openai` |
 | `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gemini-2.5-flash`, `claude-sonnet-4` |
+| `X-Gateway-Original-Model` | Original requested model name before budget-downgrade model fallback | `reasoning` |
 | `X-Gateway-Cost-Micros` | Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
 | `X-Gateway-Routing-Micros` | Gateway Stage 0–4 routing decision overhead in microseconds | `12` |
 | `X-Gateway-Latency-Ms` | End-to-end request latency in milliseconds | `318` |
 | `X-Gateway-Route-Reason` | Selection / step-down reason code from PreRouter or ReliabilityManager | `priority_tier_stepdown` |
 | `X-Gateway-Fallback-Attempted` | Indicates whether an inter-group fallback executed | `true` or `false` |
+| `X-Gateway-Budget-Fallback` | Indicates a soft/exceeded-budget model fallback took effect | `true` |
+| `X-Gateway-Budget-Throttled` | Indicates probability-based soft budget throttling was evaluated/applied | `true` |
 | `X-Gateway-Tier-Stepdowns` | Number of `Deployment.Priority` tier step-downs attempted | `1` |
 | `X-Gateway-Stream-Continued` | Indicates whether mid-stream SSE continuation seamlessly stitched output | `true` or `false` |
 | `X-Gateway-Cache` | Cache evaluation result | `HIT` or `MISS` |
 | `X-Gateway-Guardrail-Action` | Guardrail action applied during request/stream processing | `none`, `redact`, `block` |
 | `X-Gateway-Pricing-Status` | Billing pricing verification status (`verified` vs `unverified`) | `verified` |
+| `X-Gateway-Key-Deprecated` | Emitted as `true` when authenticating with a rotated key still inside its grace period | `true` |
+| `X-Gateway-Key-Revoke-At` | RFC 3339 expiration timestamp of a deprecated key grace window | `2026-11-20T12:00:00Z` |
 | `Retry-After` | Cooldown period sent on HTTP 429 rate limit | `45` (seconds) |
 
-When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, and `X-Gateway-Tier-Stepdowns` to browser clients.
+When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, `X-Gateway-Tier-Stepdowns`, `X-Gateway-Key-Deprecated`, `X-Gateway-Key-Revoke-At`, `X-Gateway-Budget-Throttled`, `X-Gateway-Budget-Fallback`, and `X-Gateway-Original-Model` to browser clients.
+
+### 1.4 Operator Authentication, Password Lifecycle & CLI SSO (`/auth/*`)
+1. **Password Login & Sessions**:
+   - `POST /auth/login`: Authenticates username/email + password (screening against HIBP k-anonymity range check when `auth.enable_hibp_check: true` and enforcing failed-login throttling) and issues `goroute_session` + CSRF token.
+   - `POST /auth/logout` *(authenticated)*: Revokes the active session (`gw:auth:session:revoked:{jti}`).
+   - `GET /auth/me` *(authenticated)*: Returns current principal identity, role, organization/team scope, and CSRF token.
+   - `POST /auth/password` *(authenticated)*: Changes operator password (screens new password with HIBP k-anonymity prefix check when enabled and rejects breached passwords).
+2. **Browser OIDC SSO**:
+   - `GET /auth/sso/providers`: Lists configured OIDC SSO providers.
+   - `GET /auth/sso/{provider}/login`: Generates PKCE + state + nonce and redirects (or returns JSON when `?format=json`).
+   - `GET /auth/sso/{provider}/callback`: Validates state/nonce/signature/domain/issuer binding `(org_id, oidc_issuer, oidc_subject)` and mints a `goroute_session` cookie.
+3. **CLI Device Login Flow**:
+   - `POST /auth/cli/start`: Starts a CLI login session and returns `login_id` + verification URL.
+   - `GET /auth/cli/poll/{login_id}`: Polls login status and retrieves a single-use CLI credential once completed.
+   - `POST /auth/cli/complete/{login_id}` *(authenticated session + `X-CSRF-Token`)*: Approves the pending CLI login session.
+
+### 1.5 SCIM 2.0 Identity Provisioning (`/scim/v2/*`)
+Enterprise identity providers (Okta, Microsoft Entra ID, Ping) synchronize users and groups over bearer-authenticated SCIM 2.0 endpoints:
+- **Users**: `GET /scim/v2/Users`, `POST /scim/v2/Users`, `GET /scim/v2/Users/{id}`, `PUT /scim/v2/Users/{id}`, `PATCH /scim/v2/Users/{id}`, `DELETE /scim/v2/Users/{id}`.
+- **Groups (Teams & Memberships)**: `GET /scim/v2/Groups`, `POST /scim/v2/Groups`, `GET /scim/v2/Groups/{id}`, `PUT /scim/v2/Groups/{id}`, `PATCH /scim/v2/Groups/{id}`, `DELETE /scim/v2/Groups/{id}`. Group name and membership changes execute atomically inside one tenant-scoped PostgreSQL transaction, validating foreign-org user IDs cleanly.
 
 ---
 
@@ -760,20 +795,20 @@ When an upstream agent requires clarifying input, the Gateway returns a response
 
 ## 5. Admin Control Plane APIs (`/admin/v1/*`)
 
-All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
+Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organization/team-scoped admin Virtual API Key (subject to RBAC), an admin JWT/OIDC token, or an active operator `goroute_session` cookie (cookie-authenticated mutations must include `X-CSRF-Token`).
 
 ### 5.1 Organization Management
 - `POST /admin/v1/organizations`: Create a new multi-tenant organization.
   ```json
   { "name": "acme-corp", "max_budget_micros": 500000000 }
   ```
-- `GET /admin/v1/organizations`: List all registered organizations.
+- `GET /admin/v1/organizations`: List all registered organizations (`org_admin`/`org_viewer` see only their own organization).
   ```bash
   curl http://localhost:8080/admin/v1/organizations -H "Authorization: Bearer $MASTER_ADMIN_KEY"
   ```
 
-### 5.2 Team Management
-- `POST /admin/v1/teams`: Create a team within an organization.
+### 5.2 Teams, Memberships & Projects
+- `POST /admin/v1/teams`, `GET /admin/v1/teams?org_id={orgID}`, `PUT /admin/v1/teams/{teamID}`, `DELETE /admin/v1/teams/{teamID}`: Create, list, update, and delete teams (including per-team `max_budget_micros`, `allowed_models`, RPM/TPM limits, and `budget_reset_period`).
   ```json
   {
     "org_id": "org_default",
@@ -782,28 +817,24 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
     "allowed_models": ["fast", "reasoning", "gemini-2.5-flash"]
   }
   ```
-- `GET /admin/v1/teams?org_id={orgID}`: List teams within an organization.
-  ```bash
-  curl "http://localhost:8080/admin/v1/teams?org_id=org_default" -H "Authorization: Bearer $MASTER_ADMIN_KEY"
-  ```
+- `POST /admin/v1/teams/{teamID}/members`, `GET /admin/v1/teams/{teamID}/members`, `DELETE /admin/v1/teams/{teamID}/members/{userID}`: Manage explicit multi-team user memberships and per-team budgets/roles (`team_memberships`).
+- `POST /admin/v1/projects`, `GET /admin/v1/projects?org_id={orgID}`, `PUT /admin/v1/projects/{projectID}`, `DELETE /admin/v1/projects/{projectID}`: Provision project-scoped containers inside organizations/teams for granular key and budget attribution.
 
-### 5.3 User Management
-- `POST /admin/v1/users`: Register a user and assign their enterprise role (`platform_admin`, `org_admin`, `org_viewer`, `team_admin`, `developer`, `service_account`, `viewer`).
+### 5.3 User Management & Federated Issuer Binding
+- `POST /admin/v1/users`, `GET /admin/v1/users?org_id={orgID}`, `PUT /admin/v1/users/{userID}`, `DELETE /admin/v1/users/{userID}`: Register, inspect, update, and remove organization users with enterprise RBAC roles (`platform_admin`, `org_admin`, `org_viewer`, `team_admin`, `developer`, `service_account`, `viewer`), per-user budgets/rate limits, and explicit OIDC identity binding `(org_id, oidc_issuer, oidc_subject)`.
   ```json
   {
     "org_id": "org_default",
     "team_id": "team_core",
     "email": "engineer@acme.com",
-    "role": "developer"
+    "role": "developer",
+    "oidc_issuer": "https://idp.example.com/oauth2/default",
+    "oidc_subject": "00u1abc2def3"
   }
   ```
-- `GET /admin/v1/users?org_id={orgID}`: List registered organization users.
-  ```bash
-  curl "http://localhost:8080/admin/v1/users?org_id=org_default" -H "Authorization: Bearer $MASTER_ADMIN_KEY"
-  ```
 
-### 5.4 Virtual Key Provisioning & Lifecycle
-- `POST /admin/v1/keys`: Issue a scoped Virtual API Key (`sk-gw-...`) with budget caps, RPM/TPM rate limits, and model allowlists.
+### 5.4 Virtual Key Provisioning, Rotation, Temp Budgets & Access Rules
+- `POST /admin/v1/keys`: Issue a scoped Virtual API Key (`sk-gw-...`) with budget caps, RPM/TPM rate limits, expiration, soft budget alerts, budget fallback model, and model/MCP/A2A allowlists.
   ```json
   {
     "org_id": "org_default",
@@ -818,8 +849,13 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
     "allowed_a2a_agents": ["analyst-agent"]
   }
   ```
-- `GET /admin/v1/keys?org_id={orgID}`: List virtual keys for an organization.
-- `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached permissions from L1 memory and Redis.
+- `GET /admin/v1/keys?org_id={orgID}`: List virtual keys for an organization (`team_admin` restricted to administered teams).
+- `PUT /admin/v1/keys/{keyID}`: Update mutable virtual key limits, models, and metadata.
+- `POST /admin/v1/keys/{keyID}/rotate`: Manually rotate a virtual key immediately or with a grace window (marks previous hash in `virtual_key_deprecated_hashes` and emits `X-Gateway-Key-Deprecated` / `X-Gateway-Key-Revoke-At` headers during grace).
+- `POST /admin/v1/keys/{keyID}/temp-budget`: Grant an expiring temporary budget increase (`temp_budget_increase_micros` / `increase_micros` plus `temp_budget_expires_at` / `expires_at` / `ttl_seconds`) enforced immediately at quota admission.
+- `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached permissions from L1 memory and Redis via Pub/Sub.
+- `POST /admin/v1/jwt-mappings`, `GET /admin/v1/jwt-mappings`, `DELETE /admin/v1/jwt-mappings/{id}`: Configure explicit tenant-scoped JWT claim-to-Virtual-Key (`(org_id, issuer, claim_name, claim_value) -> virtual_key_id`) bindings.
+- `POST /admin/v1/access-group-rules`, `GET /admin/v1/access-group-rules`, `DELETE /admin/v1/access-group-rules/{id}`: Configure ABAC claim/attribute dynamic access rules (`allowed_models`, `access_group_id`, `operator`, `priority`).
 
 ### 5.5 Upstream Provider Credentials Vault
 - `POST /admin/v1/credentials`: Securely stores provider credentials encrypted with AES-256-GCM.
@@ -874,6 +910,8 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
   }
   ```
 - `GET /admin/v1/deployments?model_group_id={groupID}`: Lists deployments, optionally filtered by model group. Without the query parameter, returns deployments across all groups; statuses are not filtered.
+- `POST /admin/v1/deployments/{depID}/ptu-shares`, `GET /admin/v1/deployments/{depID}/ptu-shares`, `DELETE /admin/v1/deployments/{depID}/ptu-shares/{teamID}`: Manage Provisioned Throughput Unit (PTU) reserved `reserved_rpm` and `reserved_tpm` allocations per team with elastic saturation borrowing.
+- `POST /admin/v1/priority-classes`, `GET /admin/v1/priority-classes`: Configure team/key QoS scheduling weights (`weight`, `priority_rank`, `max_borrow_multiple`).
 
 ### 5.7 Model Catalogue & Pricing Provenance
 - `GET /admin/v1/catalogue?provider={provider}&search={query}`: Queries the global model catalogue.
@@ -935,10 +973,16 @@ All Admin APIs require `Authorization: Bearer <MASTER_ADMIN_KEY>`.
   ```
   - `GET /admin/v1/organizations/{orgID}/guardrail-usage`: Returns daily guardrail metrics, top triggered guardrails, usage units, and integer micro-dollar (`cost_micros`) attribution rollups (optional filters: `start_date`, `end_date`, `guardrail_id`, `team_id`, `virtual_key_id`, `top_limit`).
 
-### 5.10 FinOps Spend & Governance Audit Ledgers
+### 5.10 Quotas, Multi-Window Budgets, FinOps Ledgers, Config & Audit Logs
+- `PUT /admin/v1/quotas`, `GET /admin/v1/quotas`, `DELETE /admin/v1/quotas/{policyID}`: Configure multi-dimensional per-model and scope quota policies (`scope_type`: `org`, `team`, `user`, `virtual_key`, `end_user`, `tag`, `model_access_group`, `agent_session`; `model_pattern`, `rpm_limit`, `tpm_limit`, `itpm_limit`, `otpm_limit`, `tpd_limit`, `max_concurrent`, `max_budget_micros`, `max_iterations`).
+- `PUT /admin/v1/budget-windows`, `GET /admin/v1/budget-windows`: Configure multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) evaluated simultaneously during atomic descriptor admission (`rolling_24h` expires each settled spend charge independently 24 hours after its spend timestamp and recovers from PostgreSQL `spend_logs` on cold Redis state).
+- `POST|PUT /admin/v1/end-users`, `GET /admin/v1/end-users`, `GET /admin/v1/end-users/{id}`, `DELETE /admin/v1/end-users/{id}`: Manage persisted end-user budgets, RPM/TPM/TPD limits, and aliases.
+- `POST|PUT /admin/v1/tags`, `GET /admin/v1/tags`, `GET /admin/v1/tags/{id}`, `DELETE /admin/v1/tags/{id}`: Manage persisted tag budgets and rate-limit policies matched on `X-Gateway-Tags` / request tags.
+- `POST|PUT /admin/v1/model-access-groups`, `GET /admin/v1/model-access-groups`, `GET /admin/v1/model-access-groups/{id}`, `DELETE /admin/v1/model-access-groups/{id}`, plus `POST /admin/v1/model-access-groups/{id}/members`, `GET /admin/v1/model-access-groups/{id}/members`, `DELETE /admin/v1/model-access-groups/{id}/members/{memberID}`: Group model aliases and deployments into named quota/budget policies.
 - `GET /admin/v1/spend/summary?org_id={orgID}&team_id={teamID}`: Aggregated real-time spend summary in integer micro-dollars. `unpriced_requests` and `unpriced_tokens` identify usage whose price is unknown or unrecorded and is not represented by the cost total.
 - `GET /admin/v1/spend/logs?org_id={orgID}&limit={limit}&offset={offset}`: Paginated raw spend ledger records including prompt, completion, cached, reasoning tokens, and modality units.
 - `GET /admin/v1/audit/logs?org_id={orgID}&limit={limit}`: Immutable governance audit trail of administrative changes (key provisioning, policy updates, credential rotations).
+- `GET /admin/v1/config`: Returns sanitized runtime configuration summary (secrets redacted) for the Operator Console.
 
 ### 5.11 Health Probing, Telemetry & Cache Invalidation
 - `GET /admin/v1/health/deployments`: Health state machine status (`CLOSED`, `HALF_OPEN`, `OPEN`), failure counts, and latency EWMA for all deployments.
@@ -1093,23 +1137,25 @@ GoRoute AI Gateway embeds a production-grade single-page application (SPA) direc
 - `GET /ui/*`: Client-Side History API fallback. Any unmapped subpath under `/ui/` (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/keys`, `/ui/finops`, `/ui/guardrails`, `/ui/credentials`, `/ui/agentic`) serves `index.html` with status `200 OK` for SPA client-side routing (`window.location.pathname` + `history.pushState`).
 
 ### 8.2 Client Authentication
-The Operator UI authenticates against the gateway's REST APIs:
-1. On initial load, the user is prompted for the Master Admin Key configured by `auth.master_admin_key` or `GATEWAY_MASTER_ADMIN_KEY`.
-2. Submitting the key probes `GET /admin/v1/organizations` with `Authorization: Bearer <key>`. On `401 Unauthorized` or any request failure, the key is cleared and an error alert is displayed instead of unlocking.
-3. Once validated, the key is held in React memory (reloading the page clears it), and all views render visible error alerts when React Query requests fail.
+The Operator UI (`LoginView`) supports three authentication mechanisms depending on gateway configuration:
+1. **Master Admin Key / Bearer Key**: Enter the Master Admin Key configured by `auth.master_admin_key` (`GATEWAY_MASTER_ADMIN_KEY`) or an authorized admin key. The UI probes `GET /admin/v1/organizations` with `Authorization: Bearer <key>` and clears invalid credentials on `401 Unauthorized` or error.
+2. **Operator Password Login**: Signs in with `POST /auth/login` (`auth.ui_username` / `auth.ui_password` or user password credentials), storing an `HttpOnly` `goroute_session` cookie and sending `X-CSRF-Token` on mutations.
+3. **Enterprise OIDC SSO**: Discovers configured providers via `GET /auth/sso/providers` and completes PKCE authorization code login via `/auth/sso/{provider}/login` and `/auth/sso/{provider}/callback`.
 
 ### 8.3 Supported Frontend Views
 | In-app view | Component | Core Functionality |
 | :--- | :--- | :--- |
+| Sign In | `LoginView` | Master Admin Key, password login, and OIDC SSO provider selector. |
 | Sidebar: Overview | `OverviewView` | Gateway health, latency, request, model, and error summaries. |
 | Sidebar: Playground | `PlaygroundView` | Streaming chat playground with cost & guardrail telemetry and escaped code export. |
-| Sidebar: Orgs & Teams | `OrganizationsView` | Organizations, teams, users, micro-dollar budgets, provider subscriptions, and org model policies. |
-| Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, and deployment creation. |
-| Sidebar: Virtual Keys | `KeysView` | Virtual key creation (team/user scope, expiry, MCP/A2A allowlists, budgets) and revocation. |
-| Sidebar: FinOps & Spend | `FinOpsView` | Spend summaries (by provider, model, team, virtual key), spend logs, and audit trail. |
-| Sidebar: Guardrails | `GuardrailsView` | Guardrail policy configuration and stateless simulation. |
+| Sidebar: Orgs & Teams | `OrganizationsView` | Organizations, teams, projects, users, micro-dollar budgets, provider subscriptions, and org model policies. |
+| Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, deployments, PTU shares, and priority classes. |
+| Sidebar: Virtual Keys | `KeysView` + `TempBudgetModal` | Virtual key creation (team/user scope, expiry, MCP/A2A allowlists, soft/hard budgets), rotation, temporary budget increases, and revocation. |
+| Sidebar: FinOps & Spend | `FinOpsView` + `QuotasTab` | Spend summaries (by provider, model, team, virtual key), spend logs, audit trail, multi-window budgets, end-users, tags, and model-access-group quotas. |
+| Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 19-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
-| Sidebar: Agentic Hub | `AgenticView` | MCP and A2A management views. |
+| Sidebar: Agentic Hub | `AgenticView` | MCP servers, toolsets, synchronized tools, and A2A agent management. |
+| Sidebar: Configuration | `ConfigView` | Read-only sanitized runtime configuration inspection (`/admin/v1/config`). |
 
 
 ## 9. Provider & Modality Compatibility Matrix
