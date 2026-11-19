@@ -143,13 +143,17 @@ jobs:
           curl -sS -X POST "https://pkg.go.dev/fetch/github.com/goroute-ai/ai-gateway-go@${TAG}" >/dev/null || true
 
       - name: Update Homebrew Tap Formula
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && !contains(steps.rel.outputs.tag, '-') }}
+        if: ${{ !contains(steps.rel.outputs.tag, '-') }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           TAG: ${{ steps.rel.outputs.tag }}
           VER: ${{ steps.rel.outputs.clean_version }}
           REPO: ${{ github.repository }}
         run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
+            exit 0
+          fi
           SHA_DARWIN_ARM64=$(awk -v f="ai-gateway_${VER}_darwin_arm64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
           SHA_DARWIN_AMD64=$(awk -v f="ai-gateway_${VER}_darwin_amd64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
           SHA_LINUX_ARM64=$(awk -v f="ai-gateway_${VER}_linux_arm64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
