@@ -562,6 +562,12 @@ func TestE2E_GW_AQ_08_CIDRProxyAuthAndEmbeddedSDKCustomAuthenticator(t *testing.
 	}
 
 	// 2. Embedded Go SDK WithCustomAuthenticator wired through live Postgres + Redis HTTP entry point.
+	for _, k := range []string{
+		"GATEWAY_JWT_SECRET", "GATEWAY_JWT_ISSUER", "GATEWAY_JWT_AUDIENCE",
+		"GATEWAY_OIDC_JWKS_URL", "GATEWAY_MASTER_ADMIN_KEY", "GATEWAY_MASTER_ENCRYPTION_KEY",
+	} {
+		t.Setenv(k, "")
+	}
 	vk := trustedCluster.issueKey(map[string]any{
 		"org_id":         org.ID,
 		"name":           trustedCluster.uniqueID("sdk-vk"),

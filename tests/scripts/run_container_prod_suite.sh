@@ -205,7 +205,7 @@ provision_fixture_tenant() {
       -d "{\"global_model_id\":\"$mid\",\"input_cost_micros_per_1m\":150000,\"output_cost_micros_per_1m\":600000,\"pricing_status\":\"verified\"}" || true
   done
   curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/catalogue/pricing" -H "$hdr_auth" -H "$hdr_json" \
-    -d '{"global_model_id":"openai/gpt-4o","input_cost_micros_per_1m":2000000,"output_cost_micros_per_1m":8000000,"pricing_status":"verified"}' >/dev/null
+    -d '{"global_model_id":"openai/gpt-4o","input_cost_micros_per_1m":2000000,"output_cost_micros_per_1m":100000000,"pricing_status":"verified"}' >/dev/null
 
   create_routed_model() {
     local alias="$1" gid="$2" cid="$3" depname="$4"
@@ -374,8 +374,14 @@ phase_3() {
   echo "  PHASE 3: Live Postgres + Redis Integration & Strict Go E2E Suites"
   echo "======================================================================"
   docker compose -f "$TEST_COMPOSE" up -d --wait
-  make test-postgres
-  make test-e2e-strict
+  env -u GATEWAY_JWT_SECRET -u GATEWAY_JWT_ISSUER -u GATEWAY_JWT_AUDIENCE \
+      -u GATEWAY_MASTER_ADMIN_KEY -u GATEWAY_MASTER_ENCRYPTION_KEY \
+      -u GATEWAY_UI_PASSWORD -u GATEWAY_SESSION_SECRET -u GATEWAY_ROTATION_DELIVERY_TOKEN \
+      make test-postgres
+  env -u GATEWAY_JWT_SECRET -u GATEWAY_JWT_ISSUER -u GATEWAY_JWT_AUDIENCE \
+      -u GATEWAY_MASTER_ADMIN_KEY -u GATEWAY_MASTER_ENCRYPTION_KEY \
+      -u GATEWAY_UI_PASSWORD -u GATEWAY_SESSION_SECRET -u GATEWAY_ROTATION_DELIVERY_TOKEN \
+      make test-e2e-strict
   docker compose -f "$TEST_COMPOSE" down -v >/dev/null 2>&1 || true
   echo "==> Phase 3 PASSED."
 }
@@ -606,18 +612,24 @@ phase_5() {
   done
   assert_eq "$rot_hook_ok" "1" "scheduled key rotation HTTPS webhook delivered with configured bearer token"
 
-  # 4. Soft budget webhook + rolling_24h budget window (1st=200 settling 88 micros on gpt-4o, 2nd=429)
-  local r24h_json
+  # 4. Soft budget webhook + rolling_24h budget window (1st=200 settling ~824 micros on gpt-4o, 2nd=429)
+  local r24h_json r24h_r1 r24h_c1 r24h_b1 r24h_r2 r24h_c2 r24h_b2
   r24h_json="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
-    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-r24h-${ts_aq}\",\"key_type\":\"llm_api\",\"soft_budget_micros\":50,\"max_budget_micros\":10000}")"
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-r24h-${ts_aq}\",\"key_type\":\"llm_api\",\"soft_budget_micros\":200,\"max_budget_micros\":100000}")"
   R24H_KEY="$(echo "$r24h_json" | jq -r '.raw_key')"
   R24H_KEY_ID="$(echo "$r24h_json" | jq -r '.id')"
   curl_tls -fsS -X PUT "$BASE_HTTPS/admin/v1/budget-windows" -H "$hdr_auth" -H "$hdr_json" \
-    -d "{\"org_id\":\"$ORG_ID\",\"scope_type\":\"key\",\"scope_id\":\"$R24H_KEY_ID\",\"window_type\":\"rolling_24h\",\"max_budget_micros\":240}" >/dev/null
+    -d "{\"org_id\":\"$ORG_ID\",\"scope_type\":\"key\",\"scope_id\":\"$R24H_KEY_ID\",\"window_type\":\"rolling_24h\",\"max_budget_micros\":1500}" >/dev/null
   sleep 0.2
-  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"rolling 1"}]}')" "200" "rolling_24h call 1 200"
+  r24h_r1="$(curl_tls -s -w '\nHTTP_STATUS:%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":8,"messages":[{"role":"user","content":"rolling 1"}]}')"
+  r24h_c1="$(echo "$r24h_r1" | awk -F: '/^HTTP_STATUS:/{print $2}')"
+  r24h_b1="$(echo "$r24h_r1" | sed '/^HTTP_STATUS:/d')"
+  assert_eq "$r24h_c1" "200" "rolling_24h call 1 200 (body=$r24h_b1)"
   sleep 0.5
-  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"rolling 2"}]}')" "429" "rolling_24h call 2 rejected 429"
+  r24h_r2="$(curl_tls -s -w '\nHTTP_STATUS:%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":8,"messages":[{"role":"user","content":"rolling 2"}]}')"
+  r24h_c2="$(echo "$r24h_r2" | awk -F: '/^HTTP_STATUS:/{print $2}')"
+  r24h_b2="$(echo "$r24h_r2" | sed '/^HTTP_STATUS:/d')"
+  assert_eq "$r24h_c2" "429" "rolling_24h call 2 rejected 429 (body=$r24h_b2)"
   local soft_ok=0 soft_cnt=0
   for _ in $(seq 1 20); do
     soft_cnt="$(curl_tls -fsS "$MOCK_HTTPS/webhooks/audit" | jq '.soft_budget | length')"
@@ -764,9 +776,13 @@ phase_7() {
     exit 1
   fi
   echo "    Deleted $r24h_deleted rolling-24h Redis sorted set(s); verifying Postgres reload rejects over-cap request..."
-  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" \
+  local r24h_r3 r24h_c3 r24h_b3
+  r24h_r3="$(curl_tls -s -w '\nHTTP_STATUS:%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" \
     -H "Authorization: Bearer $R24H_KEY" -H "Content-Type: application/json" \
-    -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"after r24h zset deletion"}]}')" "429" "rolling_24h cold recovery prevents overspend (429)"
+    -d '{"model":"gpt-4o","max_tokens":8,"messages":[{"role":"user","content":"after r24h zset deletion"}]}')"
+  r24h_c3="$(echo "$r24h_r3" | awk -F: '/^HTTP_STATUS:/{print $2}')"
+  r24h_b3="$(echo "$r24h_r3" | sed '/^HTTP_STATUS:/d')"
+  assert_eq "$r24h_c3" "429" "rolling_24h cold recovery prevents overspend 429 (body=$r24h_b3)"
 
   echo "==> Chaos C: OIDC JWKS outage stale-cache fallback across both replicas..."
   for i in $(seq 1 6); do
