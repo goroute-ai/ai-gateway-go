@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.21.1] - 2026-11-19
+
+### Security
+
+- Require certificate-verified PostgreSQL TLS for AWS RDS IAM connections, including connection fallbacks.
+
+### Fixed
+
+- Apply descriptor limits before dispatching image, speech, rerank, and individual batch requests.
+- Deduplicate rolling 24-hour spend when recovering Redis state from PostgreSQL.
+- Skip organization-wide rolling spend aggregation during quota admission.
+- Document the `400 ambiguous_gateway_credentials` response and the upgrade requirements for AWS RDS IAM.
+
+See the [upgrade guide](./docs/UPGRADING.md#upgrading-from-v1210) for rollout details.
+
+---
+
 ## [1.21.0] - 2026-11-19
 
 ### Enterprise Authentication, Federation, Multi-Dimensional Quotas & Release Hardening
