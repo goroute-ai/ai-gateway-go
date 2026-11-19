@@ -5,6 +5,7 @@ package domain
 // and unverified features.
 type CapabilityState string
 
+// Tri-state capability verification values.
 const (
 	CapabilityUnknown     CapabilityState = "unknown"
 	CapabilitySupported   CapabilityState = "supported"
@@ -31,6 +32,7 @@ type ModelCapabilities struct {
 // PricingStatus defines the provenance and verification status of a model's token pricing.
 type PricingStatus string
 
+// Pricing verification states used by fail-closed budget enforcement.
 const (
 	PricingStatusVerified   PricingStatus = "verified"
 	PricingStatusUnknown    PricingStatus = "unknown"

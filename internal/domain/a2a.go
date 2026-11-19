@@ -4,14 +4,15 @@ import (
 	"time"
 )
 
+// A2A task visibility modes, lifecycle states, and durable outbox delivery statuses.
 const (
-	// TaskVisibilityMode defines multi-tenant visibility isolation for A2A tasks
+	// TaskVisibilityKeyStrict restricts task visibility to the same org and virtual key.
 	TaskVisibilityKeyStrict  = "key_strict"  // default: caller org_id && virtual_key_id
 	TaskVisibilityUserStrict = "user_strict" // caller org_id && user_id
 	TaskVisibilityTeam       = "team"        // caller org_id && team_id
 	TaskVisibilityOrgAdmin   = "org_admin"   // all tasks within org_id
 
-	// Task states matching lf.a2a.v1.TaskState
+	// A2ATaskStateSubmitted and sibling constants match lf.a2a.v1.TaskState.
 	A2ATaskStateSubmitted     = "submitted"
 	A2ATaskStateWorking       = "working"
 	A2ATaskStateCompleted     = "completed"
@@ -19,7 +20,7 @@ const (
 	A2ATaskStateCanceled      = "canceled"
 	A2ATaskStateInputRequired = "input_required"
 
-	// Outbox event statuses
+	// OutboxStatusPending and sibling constants track durable webhook delivery state.
 	OutboxStatusPending    = "pending"
 	OutboxStatusSent       = "sent"
 	OutboxStatusDeadLetter = "dead_letter"

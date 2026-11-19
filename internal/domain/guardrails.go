@@ -5,6 +5,7 @@ import "time"
 // GuardrailHook identifies the lifecycle stage at which a guardrail executes.
 type GuardrailHook string
 
+// Guardrail lifecycle execution hooks.
 const (
 	GuardrailHookPreCall       GuardrailHook = "pre_call"
 	GuardrailHookDuringCall    GuardrailHook = "during_call"
@@ -34,6 +35,7 @@ func (h GuardrailHook) IsValid() bool {
 // StreamScope controls whether a guardrail evaluates streaming requests, non-streaming requests, or both.
 type StreamScope string
 
+// Supported stream scoping modes for guardrail execution.
 const (
 	StreamScopeBoth         StreamScope = "both"
 	StreamScopeStreaming    StreamScope = "streaming"
@@ -62,6 +64,7 @@ type GuardrailModeRule struct {
 // GuardrailStatus tracks the approval lifecycle of a GuardrailDefinition.
 type GuardrailStatus string
 
+// Lifecycle approval statuses for GuardrailDefinition records.
 const (
 	GuardrailStatusActive        GuardrailStatus = "active"
 	GuardrailStatusPendingReview GuardrailStatus = "pending_review"
@@ -81,6 +84,7 @@ func (st GuardrailStatus) IsValid() bool {
 // GuardrailDecision represents the outcome of evaluating one or more guardrails.
 type GuardrailDecision string
 
+// Guardrail evaluation decision outcomes.
 const (
 	GuardrailDecisionAllow  GuardrailDecision = "allow"
 	GuardrailDecisionBlock  GuardrailDecision = "block"

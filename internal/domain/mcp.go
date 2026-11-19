@@ -4,6 +4,7 @@ import (
 	"time"
 )
 
+// MCP protocol versions, transport drivers, and authentication modes.
 const (
 	MCPProtocolVersion2026 = "2026-07-28"
 	MCPProtocolVersion2025 = "2025-11-25"

@@ -8,6 +8,7 @@ import (
 // Role defines RBAC access levels inside an Organization.
 type Role string
 
+// Built-in data-plane RBAC roles for virtual keys and users.
 const (
 	RolePlatformAdmin  Role = "platform_admin"
 	RoleOrgAdmin       Role = "org_admin"
@@ -21,6 +22,7 @@ const (
 // OperatorRole defines RBAC roles for Control Plane (/admin/v1/*) operators.
 type OperatorRole string
 
+// Control-plane operator RBAC roles.
 const (
 	OperatorRolePlatformAdmin OperatorRole = "platform_admin"
 	OperatorRoleOrgAdmin      OperatorRole = "org_admin"
@@ -67,6 +69,7 @@ type OperatorSession struct {
 // KeyType defines capability presets applied to Virtual API Keys.
 type KeyType string
 
+// Supported VirtualKey capability presets.
 const (
 	KeyTypeDefault        KeyType = "default"
 	KeyTypeLLMAPI         KeyType = "llm_api"
@@ -78,6 +81,7 @@ const (
 // BudgetResetPeriod defines when accumulated spend counters automatically reset.
 type BudgetResetPeriod string
 
+// Supported automatic budget reset schedules.
 const (
 	BudgetResetDaily   BudgetResetPeriod = "daily"
 	BudgetResetMonthly BudgetResetPeriod = "monthly"
@@ -321,6 +325,7 @@ type JWTKeyMapping struct {
 // AccessRuleOperator defines supported comparison operators for dynamic access group rules.
 type AccessRuleOperator string
 
+// Supported AccessRuleOperator values for dynamic attribute matching.
 const (
 	AccessRuleOperatorEquals   AccessRuleOperator = "equals"
 	AccessRuleOperatorContains AccessRuleOperator = "contains"

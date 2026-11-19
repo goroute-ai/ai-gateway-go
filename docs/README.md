@@ -9,6 +9,7 @@ Welcome to the **GoRoute AI Gateway** (`github.com/goroute-ai/ai-gateway-go`) do
 ```
 docs/
 ├── CODEBASE_MAP.md            # Package navigation and source-of-truth map
+├── CODE_QUALITY_AUDIT.md      # Code quality audit, dead-code cleanup, doc coverage & refactor summary
 ├── API_REFERENCE.md           # Authoritative REST, /auth, SCIM v2, MCP, A2A, Admin & Metrics API reference
 ├── INTERNALS.md               # Code-level deep dive: sequence diagrams, algorithms, formulas & storage
 ├── ARCHITECTURE.md            # High-level & low-level production reference architecture
@@ -81,3 +82,6 @@ docs/
    - Model Context Protocol contract (`mcp.openapi.yaml`).
    - Agent-to-Agent Protocol contract (`a2a.openapi.yaml`).
    - Official upstream provider contracts (`openai`, `anthropic`, `gemini`, `mistral`, `ollama`).
+
+9. **[Code Quality Audit & Standards (`CODE_QUALITY_AUDIT.md`)](./CODE_QUALITY_AUDIT.md)**  
+   *Inventory of dead-code removal, static analysis fixes, Go documentation coverage (`doc.go` & exported APIs), structural decompositions, and Go tooling setup (`.golangci.yml`, `make lint`, `make deadcode`, `cc-skills-golang`).*

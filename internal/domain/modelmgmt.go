@@ -8,6 +8,7 @@ import (
 // ModelLifecycleStatus tracks the lifecycle stage of a model in the Global Catalogue.
 type ModelLifecycleStatus string
 
+// Global Model Catalogue lifecycle states.
 const (
 	ModelStatusDiscovered ModelLifecycleStatus = "discovered"
 	ModelStatusActive     ModelLifecycleStatus = "active"
@@ -19,6 +20,7 @@ const (
 // RoutingStrategy defines how Stage 2 Load Balancer selects among healthy deployments.
 type RoutingStrategy string
 
+// Supported Stage 2 load-balancing strategies.
 const (
 	StrategyWeightedShuffle    RoutingStrategy = "weighted-shuffle"
 	StrategyLeastBusy          RoutingStrategy = "least-busy"
@@ -60,6 +62,7 @@ func IsValidRoutingStrategy(s RoutingStrategy) bool {
 // DeploymentStatus represents the operational health of a model deployment.
 type DeploymentStatus string
 
+// Operational deployment health states.
 const (
 	DeploymentStatusActive   DeploymentStatus = "active"
 	DeploymentStatusCooldown DeploymentStatus = "cooldown"
@@ -69,6 +72,7 @@ const (
 // OperationType identifies a specific data-plane operation supported by a model or adapter.
 type OperationType string
 
+// Supported gateway inference and media operations.
 const (
 	OperationChat            OperationType = "chat"
 	OperationCompletion      OperationType = "completion"
@@ -309,6 +313,7 @@ type ProviderCredential struct {
 // GuardrailAction specifies how the gateway responds when a security guardrail is triggered.
 type GuardrailAction string
 
+// Guardrail response enforcement actions.
 const (
 	GuardrailActionBlock  GuardrailAction = "block"
 	GuardrailActionRedact GuardrailAction = "redact"
@@ -319,6 +324,7 @@ const (
 // GuardrailMode controls whether a guardrail policy enforces actions or only logs violations.
 type GuardrailMode string
 
+// Supported organization guardrail enforcement modes.
 const (
 	GuardrailModeEnforce     GuardrailMode = "enforce"
 	GuardrailModeLoggingOnly GuardrailMode = "logging_only"

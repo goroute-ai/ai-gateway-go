@@ -10,6 +10,7 @@ import (
 // runtime rate-limit descriptor applies to.
 type QuotaScopeType string
 
+// Hierarchical quota policy enforcement scopes.
 const (
 	QuotaScopeOrg              QuotaScopeType = "org"
 	QuotaScopeTeam             QuotaScopeType = "team"
@@ -166,6 +167,7 @@ func (d RateLimitDescriptor) HasLimits() bool {
 // BudgetWindowType identifies the time window for simultaneous multi-window spend caps.
 type BudgetWindowType string
 
+// Supported multi-window budget reset intervals.
 const (
 	BudgetWindowDaily      BudgetWindowType = "daily"
 	BudgetWindowWeekly     BudgetWindowType = "weekly"
@@ -233,6 +235,7 @@ func (b *BudgetWindowLimit) ToDescriptor() RateLimitDescriptor {
 // may modify team or virtual key budgets within an organization.
 type SelfServeBudgetPolicy string
 
+// Supported self-serve team budget modification policies.
 const (
 	SelfServeBudgetDisabled  SelfServeBudgetPolicy = "disabled"
 	SelfServeBudgetLowerOnly SelfServeBudgetPolicy = "lower_only"
@@ -397,6 +400,7 @@ func (t *Tag) ToDescriptor() RateLimitDescriptor {
 // ModelAccessGroupMemberType identifies the kind of member attached to a ModelAccessGroup.
 type ModelAccessGroupMemberType string
 
+// Supported ModelAccessGroup member kinds.
 const (
 	ModelAccessGroupMemberModel   ModelAccessGroupMemberType = "model"
 	ModelAccessGroupMemberKey     ModelAccessGroupMemberType = "key"

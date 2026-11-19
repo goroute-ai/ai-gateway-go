@@ -9,6 +9,7 @@ import (
 // ErrorType follows the standard OpenAI error taxonomy for drop-in SDK compatibility.
 type ErrorType string
 
+// Standard OpenAI-compatible gateway error types.
 const (
 	ErrorTypeInvalidRequest ErrorType = "invalid_request_error"
 	ErrorTypeAuthentication ErrorType = "authentication_error"
@@ -90,6 +91,7 @@ type GatewayError struct {
 	AuthFailure   bool                     `json:"-"`
 }
 
+// Error formats the gateway error with optional upstream provider, status code, and error code.
 func (e *GatewayError) Error() string {
 	if e.Provider != "" {
 		return fmt.Sprintf("[%s:%d:%s] %s", e.Provider, e.StatusCode, e.Code, e.Message)

@@ -11,6 +11,7 @@ import (
 // ProviderType identifies an upstream LLM vendor supported by the gateway.
 type ProviderType string
 
+// Canonical upstream provider identifiers supported by GoRoute.
 const (
 	ProviderOpenAI          ProviderType = "openai"
 	ProviderAnthropic       ProviderType = "anthropic"
@@ -223,10 +224,12 @@ func (e *GoRouteExtensions) Clone() *GoRouteExtensions {
 	return &cp
 }
 
+// StreamOptions controls optional metadata emitted on SSE chat streams.
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
+// ResponseFormat constrains the output format requested from the model (e.g. text, json_object, json_schema).
 type ResponseFormat struct {
 	Type       string         `json:"type"` // "text", "json_object", "json_schema"
 	JSONSchema map[string]any `json:"json_schema,omitempty"`
@@ -298,11 +301,13 @@ func (m *CanonicalMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// CacheControl marks prompt blocks eligible for upstream prompt caching.
 type CacheControl struct {
 	Type string `json:"type"`          // "ephemeral"
 	TTL  string `json:"ttl,omitempty"` // e.g. "5m", "1h"
 }
 
+// DocumentPart carries an inline base64 or URI-referenced document attachment in a multimodal message.
 type DocumentPart struct {
 	MimeType string `json:"mime_type"`          // e.g. "application/pdf", "text/plain"
 	Data     string `json:"data,omitempty"`     // base64-encoded document payload
@@ -310,11 +315,13 @@ type DocumentPart struct {
 	Filename string `json:"filename,omitempty"` // optional display filename
 }
 
+// Annotation attaches citation metadata to a generated message or content part.
 type Annotation struct {
 	Type        string       `json:"type"` // "url_citation"
 	URLCitation *URLCitation `json:"url_citation,omitempty"`
 }
 
+// URLCitation identifies a cited web source span within model output text.
 type URLCitation struct {
 	URL        string `json:"url"`
 	Title      string `json:"title,omitempty"`
@@ -322,6 +329,7 @@ type URLCitation struct {
 	EndIndex   int    `json:"end_index,omitempty"`
 }
 
+// ContentPart represents a typed element (text, image_url, or document) inside a multimodal message.
 type ContentPart struct {
 	Type         string        `json:"type"` // "text", "image_url", "document"
 	Text         string        `json:"text,omitempty"`
@@ -330,11 +338,13 @@ type ContentPart struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
+// ImageURL references an image input by URL or data URI and optional detail level.
 type ImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
 }
 
+// UnmarshalJSON accepts either a bare URL string or an ImageURL JSON object.
 func (i *ImageURL) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '"' {
 		return json.Unmarshal(data, &i.URL)
@@ -348,12 +358,14 @@ func (i *ImageURL) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// CanonicalTool declares a callable tool exposed to the model in a chat request.
 type CanonicalTool struct {
 	Type         string            `json:"type"` // "function"
 	Function     CanonicalFunction `json:"function"`
 	CacheControl *CacheControl     `json:"cache_control,omitempty"`
 }
 
+// CanonicalFunction describes a function tool's name, description, and JSON Schema parameters.
 type CanonicalFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -361,6 +373,7 @@ type CanonicalFunction struct {
 	Strict      bool           `json:"strict,omitempty"`
 }
 
+// CanonicalToolCall represents a model-emitted invocation of a declared tool.
 type CanonicalToolCall struct {
 	Index    *int                  `json:"index,omitempty"`
 	ID       string                `json:"id"`
@@ -368,6 +381,7 @@ type CanonicalToolCall struct {
 	Function CanonicalFunctionCall `json:"function"`
 }
 
+// CanonicalFunctionCall holds the target function name and JSON-encoded arguments string.
 type CanonicalFunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
@@ -386,6 +400,7 @@ type CanonicalChatResponse struct {
 	Metadata          map[string]string `json:"metadata,omitempty"`
 }
 
+// CanonicalChoice represents one completion choice returned in a non-streaming chat response.
 type CanonicalChoice struct {
 	Index        int              `json:"index"`
 	Message      CanonicalMessage `json:"message"`
@@ -403,12 +418,14 @@ type CanonicalStreamChunk struct {
 	SystemFingerprint string                  `json:"system_fingerprint,omitempty"`
 }
 
+// CanonicalStreamChoice holds the incremental delta and optional finish reason for a streamed choice.
 type CanonicalStreamChoice struct {
 	Index        int                  `json:"index"`
 	Delta        CanonicalStreamDelta `json:"delta"`
 	FinishReason *string              `json:"finish_reason"`
 }
 
+// CanonicalStreamDelta carries incremental text, reasoning, or tool-call fragments in a stream chunk.
 type CanonicalStreamDelta struct {
 	Role             string              `json:"role,omitempty"`
 	Content          string              `json:"content,omitempty"`
@@ -448,6 +465,7 @@ type CanonicalEmbeddingResponse struct {
 	Usage    TokenUsage      `json:"usage"`
 }
 
+// EmbeddingData holds a single embedding vector returned by an embeddings request.
 type EmbeddingData struct {
 	Object    string    `json:"object"` // "embedding"
 	Index     int       `json:"index"`
@@ -457,6 +475,7 @@ type EmbeddingData struct {
 // ModalityType identifies the operational modality of a gateway request.
 type ModalityType string
 
+// Supported request modalities tracked for billing and concurrency isolation.
 const (
 	ModalityChat       ModalityType = "chat"
 	ModalityCompletion ModalityType = "completion"
@@ -520,6 +539,7 @@ type RerankDocument struct {
 	Raw  map[string]any `json:"raw,omitempty"`
 }
 
+// UnmarshalJSON decodes a rerank document from either a plain string or an object map.
 func (d *RerankDocument) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {
@@ -529,6 +549,7 @@ func (d *RerankDocument) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &d.Raw)
 }
 
+// MarshalJSON encodes a rerank document as a string when Raw is empty, or as the Raw object.
 func (d RerankDocument) MarshalJSON() ([]byte, error) {
 	if d.Text != "" && len(d.Raw) == 0 {
 		return json.Marshal(d.Text)
@@ -539,6 +560,7 @@ func (d RerankDocument) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.Text)
 }
 
+// CanonicalRerankRequest is the provider-agnostic document reranking request.
 type CanonicalRerankRequest struct {
 	RequestID         string             `json:"request_id,omitempty"`
 	Model             string             `json:"model"`
@@ -552,17 +574,20 @@ type CanonicalRerankRequest struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
+// RerankResultItem holds a single scored document entry from a reranking response.
 type RerankResultItem struct {
 	Index          int            `json:"index"`
 	RelevanceScore float64        `json:"relevance_score"`
 	Document       map[string]any `json:"document,omitempty"`
 }
 
+// RerankUsage reports search-unit and token accounting for a reranking call.
 type RerankUsage struct {
 	SearchUnits int `json:"search_units"`
 	TotalTokens int `json:"total_tokens"`
 }
 
+// CanonicalRerankResponse is the standardized response returned by reranking adapters.
 type CanonicalRerankResponse struct {
 	ID       string             `json:"id"`
 	Model    string             `json:"model"`
@@ -574,6 +599,7 @@ type CanonicalRerankResponse struct {
 
 // --- MODERATION ---
 
+// CanonicalModerationRequest is the provider-agnostic content moderation request.
 type CanonicalModerationRequest struct {
 	RequestID         string             `json:"request_id,omitempty"`
 	Model             string             `json:"model"`
@@ -582,12 +608,14 @@ type CanonicalModerationRequest struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
+// ModerationResultItem holds classification flags and category confidence scores for one input.
 type ModerationResultItem struct {
 	Flagged        bool               `json:"flagged"`
 	Categories     map[string]bool    `json:"categories"`
 	CategoryScores map[string]float64 `json:"category_scores"`
 }
 
+// CanonicalModerationResponse is the standardized response returned by moderation adapters.
 type CanonicalModerationResponse struct {
 	ID       string                 `json:"id"`
 	Model    string                 `json:"model"`
@@ -602,6 +630,7 @@ type CompletionPrompt struct {
 	Strings []string
 }
 
+// UnmarshalJSON decodes a legacy completion prompt from either a single string or a string slice.
 func (p *CompletionPrompt) UnmarshalJSON(b []byte) error {
 	var single string
 	if err := json.Unmarshal(b, &single); err == nil {
@@ -611,6 +640,7 @@ func (p *CompletionPrompt) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &p.Strings)
 }
 
+// MarshalJSON encodes a single-element CompletionPrompt as a string or multi-element as an array.
 func (p CompletionPrompt) MarshalJSON() ([]byte, error) {
 	if len(p.Strings) == 1 {
 		return json.Marshal(p.Strings[0])
@@ -618,6 +648,7 @@ func (p CompletionPrompt) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.Strings)
 }
 
+// CanonicalCompletionRequest is the provider-agnostic legacy text completion request.
 type CanonicalCompletionRequest struct {
 	RequestID         string             `json:"request_id,omitempty"`
 	Model             string             `json:"model"`
@@ -633,12 +664,14 @@ type CanonicalCompletionRequest struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
+// CanonicalCompletionChoice represents a single text completion choice.
 type CanonicalCompletionChoice struct {
 	Index        int    `json:"index"`
 	Text         string `json:"text"`
 	FinishReason string `json:"finish_reason"`
 }
 
+// CanonicalCompletionResponse is the standardized response returned by legacy completion adapters.
 type CanonicalCompletionResponse struct {
 	ID       string                      `json:"id"`
 	Model    string                      `json:"model"`
@@ -649,6 +682,7 @@ type CanonicalCompletionResponse struct {
 
 // --- IMAGES ---
 
+// CanonicalImageRequest is the provider-agnostic image generation, edit, or variation request.
 type CanonicalImageRequest struct {
 	RequestID         string             `json:"request_id,omitempty"`
 	Prompt            string             `json:"prompt"`
@@ -668,12 +702,14 @@ type CanonicalImageRequest struct {
 	MaskFilename      string             `json:"-"`
 }
 
+// ImageItem represents a generated image URL or base64 payload returned by an image adapter.
 type ImageItem struct {
 	URL           string `json:"url,omitempty"`
 	B64JSON       string `json:"b64_json,omitempty"`
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
 }
 
+// CanonicalImageResponse is the standardized response returned by image generation adapters.
 type CanonicalImageResponse struct {
 	Created  int64        `json:"created"`
 	Provider ProviderType `json:"provider"`
@@ -683,6 +719,7 @@ type CanonicalImageResponse struct {
 
 // --- AUDIO ---
 
+// CanonicalAudioTranscriptionRequest is the provider-agnostic speech-to-text or translation request.
 type CanonicalAudioTranscriptionRequest struct {
 	RequestID              string             `json:"request_id,omitempty"`
 	Model                  string             `json:"model"`
@@ -699,6 +736,7 @@ type CanonicalAudioTranscriptionRequest struct {
 	GoRouteExtensions      *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
+// CanonicalAudioResponse is the standardized response returned by audio transcription adapters.
 type CanonicalAudioResponse struct {
 	Text       string         `json:"text"`
 	DurationMs int64          `json:"duration_ms,omitempty"`
@@ -708,6 +746,7 @@ type CanonicalAudioResponse struct {
 	Raw        map[string]any `json:"raw,omitempty"`
 }
 
+// CanonicalAudioSpeechRequest is the provider-agnostic text-to-speech synthesis request.
 type CanonicalAudioSpeechRequest struct {
 	RequestID         string             `json:"request_id,omitempty"`
 	Model             string             `json:"model"`
@@ -721,6 +760,7 @@ type CanonicalAudioSpeechRequest struct {
 
 // --- FILES & BATCHES ---
 
+// CanonicalFile represents an uploaded tenant file tracked against per-organization storage quotas.
 type CanonicalFile struct {
 	ID               string     `json:"id"`
 	OrgID            string     `json:"org_id"`
@@ -738,12 +778,14 @@ type CanonicalFile struct {
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 }
 
+// BatchCounts tracks per-request completion progress within an async batch job.
 type BatchCounts struct {
 	Total     int `json:"total"`
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
 }
 
+// CanonicalBatch represents a persisted asynchronous batch inference job.
 type CanonicalBatch struct {
 	ID                 string         `json:"id"`
 	OrgID              string         `json:"org_id"`
@@ -766,14 +808,17 @@ type CanonicalBatch struct {
 
 // --- RESPONSES API ---
 
+// ResponseReasoningConfig specifies reasoning effort hints for the Responses API.
 type ResponseReasoningConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
 
+// ResponseTextConfig specifies structured text output formatting for the Responses API.
 type ResponseTextConfig struct {
 	Format *ResponseFormat `json:"format,omitempty"`
 }
 
+// CanonicalResponseRequest represents an OpenAI Responses API (`/v1/responses`) request.
 type CanonicalResponseRequest struct {
 	Model           string                   `json:"model"`
 	Input           json.RawMessage          `json:"input"` // string or []CanonicalChatMessage or []any
@@ -789,11 +834,13 @@ type CanonicalResponseRequest struct {
 	Metadata        map[string]any           `json:"metadata,omitempty"`
 }
 
+// CanonicalResponseContentPart holds a single output content block inside a Responses API item.
 type CanonicalResponseContentPart struct {
 	Type string `json:"type"` // "output_text"
 	Text string `json:"text"`
 }
 
+// CanonicalResponseOutputItem represents a message or function-call output item in a Responses API result.
 type CanonicalResponseOutputItem struct {
 	ID        string                         `json:"id"`
 	Type      string                         `json:"type"`   // "message" or "function_call"
@@ -805,6 +852,7 @@ type CanonicalResponseOutputItem struct {
 	Arguments string                         `json:"arguments,omitempty"`
 }
 
+// CanonicalResponseOutput is the standardized Responses API response payload.
 type CanonicalResponseOutput struct {
 	ID        string                        `json:"id"`
 	Object    string                        `json:"object"` // "response"
@@ -817,6 +865,7 @@ type CanonicalResponseOutput struct {
 
 // --- REALTIME WEBSOCKET API ---
 
+// CanonicalRealtimeSessionConfig configures modalities, voice, and audio codecs for a Realtime session.
 type CanonicalRealtimeSessionConfig struct {
 	Modalities        []string           `json:"modalities,omitempty"` // ["text", "audio"]
 	Instructions      string             `json:"instructions,omitempty"`
@@ -827,6 +876,7 @@ type CanonicalRealtimeSessionConfig struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
+// CanonicalRealtimeClientEvent represents an inbound client WebSocket event on `/v1/realtime`.
 type CanonicalRealtimeClientEvent struct {
 	EventID           string                          `json:"event_id,omitempty"`
 	Type              string                          `json:"type"` // e.g. "session.update", "input_audio_buffer.append", "response.create"
@@ -835,6 +885,7 @@ type CanonicalRealtimeClientEvent struct {
 	GoRouteExtensions *GoRouteExtensions              `json:"goroute_extensions,omitempty"`
 }
 
+// CanonicalRealtimeServerEvent represents an outbound server WebSocket event on `/v1/realtime`.
 type CanonicalRealtimeServerEvent struct {
 	EventID string                          `json:"event_id,omitempty"`
 	Type    string                          `json:"type"`
