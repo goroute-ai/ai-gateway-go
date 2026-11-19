@@ -10,7 +10,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.20.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0)
+[![Release](https://img.shields.io/badge/Release-v1.21.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
 [![OpenAPI](<https://img.shields.io/badge/OpenAPI-3.0%20%2F%203.1-6BA539?logo=openapiinitiative>)](./docs/openapi/README.md)
@@ -38,7 +38,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.20.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.21.0
 ```
 
 ```go
@@ -69,7 +69,7 @@ func main() {
 	}
 	defer gw.Close()
 
-	// 1-Line synchronous completion (with optional v1.20.0 routing hints)
+	// 1-Line synchronous completion (with optional routing hints)
 	res, err := gw.Chat(ctx, "fast", "In one sentence, explain what an AI Gateway does.")
 	if err != nil {
 		log.Fatal(err)
@@ -78,7 +78,7 @@ func main() {
 	fmt.Printf("[%s] %s (cost: %d µ$, routing: %d µs, reason: %s)\n", res.Provider, res.Content, res.CostMicros, res.RoutingMicros, res.RouteReason)
 }
 ```
-> *SDK Routing Hooks:* `pkg/gateway` also exposes `WithRoutingPlugin`, `WithPreRouter`, `WithPreRouterMode`, `WithRouterConfig`, `WithDefaultFallbackTargets`, `WithMidStreamContinuation`, `WithHedgeConfig`, `WithSessionAffinity`, and per-request `WithRoutingHints`.
+> *SDK Routing & Auth Hooks:* `pkg/gateway` also exposes `WithCustomAuthenticator` (`CustomAuthModeOff`/`Auto`/`On`), `WithRoutingPlugin`, `WithPreRouter`, `WithPreRouterMode`, `WithRouterConfig`, `WithDefaultFallbackTargets`, `WithMidStreamContinuation`, `WithHedgeConfig`, `WithSessionAffinity`, and per-request `WithRoutingHints`.
 
 ### Path 2: Universal One-Line Shell Installer (macOS, Linux, WSL)
 
@@ -98,14 +98,14 @@ ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.20.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.21.0).*
 
 ### Path 3: Container Image (`ghcr.io`) & Production Stack (Docker Compose)
 
 Run the published multi-arch Distroless container image directly from [GitHub Packages](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go):
 
 ```bash
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.20.0
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.21.0
 # Or track latest stable: docker pull ghcr.io/goroute-ai/ai-gateway-go:latest
 ```
 
@@ -207,22 +207,21 @@ X-Gateway-Cost-Micros: 45
 
 ---
 
-### 2. Distributed Rate Limiting & Quotas
+### 2. Distributed Rate Limiting & Multi-Dimensional Quotas
 
 #### What It Does
 
-Protects upstream provider accounts from rate limits (`429`) and enforces fair usage across distributed microservices, internal teams, and external API consumers.
+Protects upstream provider accounts from `429` bursts and enforces fair, multi-tenant capacity across organizations, teams, projects, users, virtual keys, end-users, tags, model access groups, agent sessions, and MCP servers.
 
 #### How It Works Under the Hood
 
-GoRoute uses a single-roundtrip atomic Redis Lua script (`check_and_increment.lua`) that checks and increments counters in a single network hop, completely preventing race conditions. It enforces limits across four hierarchical tiers:
+GoRoute executes single-roundtrip atomic Redis Lua scripts (`check_and_increment.lua`, `check_descriptors.lua`, `reconcile_descriptors.lua`, `renew_descriptors.lua`) inside `{org:<orgID>}` cluster hash slots so multi-scope quota acquisition and settlement never leak partial counters:
 
-1. **Virtual Key Tier**: Individual client keys (`rpm_limit`, `tpm_limit`, `max_concurrent_requests`).
-2. **Team Tier**: Departmental limits aggregating all team members.
-3. **Organization Tier**: Enterprise-wide tenant capacity caps.
-4. **Upstream Deployment Tier**: Prevents exceeding provider account tier limits.
+1. **Hierarchical & Contextual Scopes**: Enforces per-model `rpm`, `tpm`, input/output-split `itpm`/`otpm`, daily `tpd`, `max_concurrent_requests`, agent session `max_iterations`/`window_ttl_sec`, `/v1/realtime` WebSocket concurrency, `/v1/batches` JSONL enqueued token holds (`batch_enqueued_*.lua`), and MCP server quotas.
+2. **Simultaneous Multi-Window Budgets & Cold Recovery**: Enforces stacked `daily`, `weekly`, `monthly`, and sliding `rolling_24h` windows alongside soft-budget webhook alerts, dynamic throttling, budget-triggered fallbacks, and TTL-expiring temporary key budget boosts (`/admin/v1/keys/{id}/temp-budget`). On cold Redis state (or `rolling_24h` sorted-set loss), the gateway atomically reconstructs trailing 24-hour spend from PostgreSQL `spend_logs`.
+3. **Saturation-Aware Priority Capacity & PTU Shares**: Reserves per-team provisioned throughput (`deployment_ptu_shares`) with idle borrowing/reclaim and enforces weighted `priority_classes` under congestion.
 
-When a client exceeds their allowance, GoRoute immediately halts execution before calling the upstream model, returning standard `HTTP 429 Too Many Requests` with a precise `Retry-After` header.
+When a client exceeds their allowance, GoRoute halts execution before calling the upstream model, returning `HTTP 429 Too Many Requests` with `Retry-After` (or a structured JSON-RPC `-32600` envelope on `/mcp/{slug}`).
 
 #### Provisioning a Rate-Limited Virtual Key (Admin API)
 
@@ -346,22 +345,24 @@ Response:
 
 ---
 
-### 5. Dual-Boundary Security, Credential Vault & SSRF Firewall
+### 5. Dual-Boundary Security, Enterprise Identity Federation, Vault & SSRF Firewall
 
 #### What It Does
 
-Isolates client applications from infrastructure secrets, encrypts credentials at rest, and prevents Server-Side Request Forgery (SSRF) attacks.
+Authenticates human operators, workload JWTs, reverse-proxy identities, and service keys across isolated tenant boundaries; encrypts upstream credentials and temporary OAuth tokens at rest; and blocks Server-Side Request Forgery (SSRF) across provider and media egress.
 
 #### How It Works Under the Hood
 
-1. **Dual Boundary Authentication**:
-   - *Boundary 1 (Client Ingress)*: External callers authenticate with Virtual API Keys (`sk-gw-...`). Callers never receive or see upstream provider keys.
-   - *Boundary 2 (Provider Egress)*: The gateway replaces the virtual key with provider-specific API keys or SigV4 signatures dynamically fetched from the vault.
-2. **AES-256-GCM Envelope Encryption**: Upstream provider secrets stored in PostgreSQL are encrypted using AES-256-GCM authenticated encryption with a 32-byte Master Key Encryption Key (KEK).
+1. **Inbound Authentication, Federation & Lifecycle**:
+   - *Data Plane Ingress*: Supports Virtual API Keys (`sk-gw-...`, optional custom header), multi-issuer OIDC/JWT verification (`RS256`–`EdDSA` / `HS256` with discovery, stale-JWKS grace caching, claim-to-key mappings, and issuer-bound `(org_id, oidc_issuer, oidc_subject)` resolution), RFC 7662 token introspection / UserInfo, CIDR-guarded reverse-proxy headers, and embedded SDK `WithCustomAuthenticator`.
+   - *Control Plane SSO & Sessions (`/auth/*`)*: Provides OIDC Authorization Code + PKCE browser login, CLI device sign-in (`/auth/cli/*`), operator password sessions with `goroute_session` cookies + CSRF protection, Redis login throttling, and server-side HIBP 5-character SHA-1 prefix screening (`/auth/password`).
+   - *Identity Governance & Key Lifecycle*: Supports `key_type` capability presets (`llm_api`, `management`, `read_only`, `service_account`), manual grace-period rotation and scheduled HTTPS key-rotation webhooks, SCIM v2 `/scim/v2/{Users,Groups}` provisioning, `team_admin` delegation, dynamic access rules, M:N `team_memberships` + `projects`, and audited operator impersonation.
+2. **Outbound Credentials, Opt-In Cloud IAM & Vault**:
+   - Upstream provider secrets are envelope-encrypted in PostgreSQL with AES-256-GCM (KEK/DEK), while upstream OAuth `client_credentials` and RFC 8693 token exchanges are cached encrypted in Redis (`DistributedTokenCache`).
+   - Ambient cloud credentials (AWS Bedrock IMDS/ECS/IRSA, GCP Vertex ADC, Azure Managed Identity, and AWS RDS IAM) are **disabled by default** (`auth.allow_ambient_cloud_iam: false`) and must be explicitly enabled.
 3. **Outbound SSRF Protection Engine**: Centralized in `internal/security/network`:
    - Enforces DNS resolution IP pinning at connect time to prevent DNS rebinding attacks.
-   - Automatically blocks RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.1`), and link-local addresses.
-   - Specifically blocks cloud instance metadata endpoints (`169.254.169.254`, `fd00:ec2::254`).
+   - Automatically blocks RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.1`), and link-local/metadata endpoints (`169.254.169.254`, `fd00:ec2::254`).
 
 #### Preflight Upstream Credential Validation
 
@@ -394,7 +395,7 @@ Returns:
 
 ### 6. Unified Multi-Modal Data Plane (`24` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Both primary `/v1` (`24` paths) and `/admin/v1` (`49` paths) contract parity are enforced by `make specgen` (`73` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`24` paths), `/admin/v1` (`72` paths), and `/auth` (`10` paths) is enforced by `make specgen` (`106` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -458,7 +459,7 @@ wscat -c "ws://localhost:8080/v1/realtime?model=gpt-4o-realtime-preview" \
 
 #### Model Context Protocol (MCP 2026-07-28 Hub)
 
-GoRoute functions as a production MCP Virtual Hub aggregating multiple upstream MCP tool servers, running local tools in sandboxed Stdio processes, and bridging tools into plain REST:
+GoRoute functions as a production MCP Virtual Hub aggregating multiple upstream Streamable HTTP (`2026-07-28`) and SSE (`2025-11-25`) MCP tool servers, encrypting Model Resumption Tokens (AEAD), pinning SHA-256 tool schemas, and bridging tools into plain REST (`mcp.allow_stdio_servers` remains fail-closed by default in Release 1):
 
 ```bash
 # 1. List aggregated tools across all registered MCP servers
@@ -498,7 +499,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### 8. Embedded Operator Web UI & Streaming Chat Playground
 
-GoRoute embeds a production React 18 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`**:
+GoRoute embeds a production React 18 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`** (supporting OIDC SSO buttons, operator password sign-in, and emergency break-glass master key unlock):
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -507,8 +508,8 @@ GoRoute embeds a production React 18 + TypeScript + Tailwind single-page applica
 │  ⚡ Overview     │  • Real-Time Gateway Vitals, Active Requests & P95 Latency           │
 │  💬 Playground   │  • Multi-Turn Streaming Chat with Cost & Routing Attribution Headers │
 │  📦 Catalogue    │  • Model Directory, Priority Tiers, Specialized Fallbacks & Budgets  │
-│  🔑 Virtual Keys │  • Issue Scoped Virtual Keys with RPM/TPM and Micro-Dollar Budgets   │
-│  💰 FinOps       │  • Real-Time Spend Breakdown by Team, Model, and Provider            │
+│  🔑 Virtual Keys │  • key_type Presets, Grace-Period Rotation, Soft Caps & Temp Boosts  │
+│  💰 FinOps       │  • Spend Breakdowns, Per-Model Quotas (ITPM/OTPM/TPD) & Multi-Window │
 │  🛡️ Guardrails   │  • Baseline Policy, 19-Driver Registry, Tool Policies & Simulator │
 │  🔐 Credentials  │  • AES-256-GCM Vault with Live Preflight Provider Validation         │
 │  🤖 Agentic      │  • MCP Tool Hub Explorer & A2A Agent Card Discovery                  │
@@ -588,11 +589,13 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Reference for the 24 `/v1` OpenAPI paths, Admin Control Plane groups (`73` total paths), and UI; see documented contract gaps.         |
-| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`router.*`, `semantic_router.*`, `bandit.*`, `scheduler.*`), SDK options, and env vars.                    |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with explicit SQL schemas (`0001`–`0021`).         |
-| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for all subsystems and `v1.20.0` routing engines. |
-| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts and vendor protocol specifications.                            |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`106` OpenAPI paths). |
+| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, routing hooks), and env vars. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0034`) and Redis cluster keyspace. |
+| **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for identity federation, quota descriptors, and routing engines. |
+| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0034`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
+| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 5-tier verification workflow: race unit tests, live Postgres/Redis E2E, Playwright UI E2E, 2-replica HA chaos/k6 containers, and canaries. |
+| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `106` paths) and vendor protocol specifications. |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 
 ---
