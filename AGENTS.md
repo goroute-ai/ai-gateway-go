@@ -5,7 +5,8 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 ## Start Here
 
 - Read [the codebase map](docs/CODEBASE_MAP.md) to locate behavior, contracts, configuration, persistence, and tests.
-- Read [the documentation index](docs/README.md) for API, architecture, internals, and configuration guides.
+- Read [the documentation index](docs/README.md) for API, architecture, internals, configuration, upgrading, and testing guides.
+- Read [the testing guide](docs/TESTING.md) before modifying or running E2E, Playwright UI E2E, or container HA suites, and [the upgrade guide](docs/UPGRADING.md) when touching migrations or rolling budget recovery.
 - Before editing, inspect the relevant implementation and tests. Treat docs as navigation and explanation, not proof of current behavior.
 
 ## Repository Invariants
@@ -27,6 +28,7 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 | Generate gateway contracts and validate API/protocol specs | `make specgen` |
 | Unit tests (race detector) | `go test -race -count=1 ./internal/... ./pkg/...` |
 | End-to-end tests | `go test -race -count=1 ./tests/e2e` (requires PostgreSQL and Redis; see `.github/workflows/ci.yml`) |
+| Headless Chromium UI E2E | `make test-ui-e2e` (requires PostgreSQL, Redis, Node.js, and Playwright Chromium; see [the testing guide](docs/TESTING.md)) |
 | Build | `go build ./cmd/gateway` |
 
 The CI workflow also builds the Docker image. `make release-check` runs formatting in write mode, so prefer the read-only formatting check above when validating an existing worktree.
