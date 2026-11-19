@@ -8,6 +8,14 @@ export const BTN_PRIMARY =
   'px-4 py-1.5 rounded-md text-xs font-semibold bg-accent-primary hover:bg-accent-dark text-accent-contrast transition-colors disabled:opacity-50';
 export const BTN_CANCEL =
   'px-3 py-1.5 rounded-md text-xs text-brand-muted hover:text-brand-title hover:bg-surface-elevated transition-colors';
+export const CARD_CLS = 'bg-surface-base border border-border-subtle rounded-lg';
+export const THEAD_CLS = 'bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle';
+export const TH_CLS = 'border-b border-border-subtle text-brand-muted text-[11px] uppercase';
+export const EMPTY_CLS = 'py-8 text-center text-xs font-mono text-brand-muted';
+export const BTN_ACC =
+  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50';
+export const BTN_ELEV =
+  'flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-medium transition';
 
 export const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div>

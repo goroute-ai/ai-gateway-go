@@ -341,36 +341,53 @@ type SSOProviderConfig struct {
 	ClaimMapping          OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
 }
 
+// KeyRotationSinkConfig configures declarative external secret-manager synchronization
+// for automated virtual key rotations.
+type KeyRotationSinkConfig struct {
+	Driver             string `yaml:"driver,omitempty"`                // "", "webhook", "vault_kv2", "aws_secrets_manager"
+	Address            string `yaml:"address,omitempty"`               // HTTPS endpoint for Vault or custom AWS Secrets Manager URL
+	Mount              string `yaml:"mount,omitempty"`                 // Vault KV v2 mount name (default "secret")
+	PathPrefix         string `yaml:"path_prefix,omitempty"`           // Secret path prefix (default "goroute/virtual-keys")
+	Token              string `yaml:"token,omitempty"`                 // Vault token (supports os.environ/...)
+	Namespace          string `yaml:"namespace,omitempty"`             // Optional Vault namespace header
+	Region             string `yaml:"region,omitempty"`                // AWS Secrets Manager region (e.g. "us-east-1")
+	AWSAccessKeyID     string `yaml:"aws_access_key_id,omitempty"`     // AWS static access key ID
+	AWSSecretAccessKey string `yaml:"aws_secret_access_key,omitempty"` // AWS static secret access key
+	AWSSessionToken    string `yaml:"aws_session_token,omitempty"`     // Optional AWS STS session token
+}
+
 type AuthConfig struct {
-	AllowAmbientCloudIAM       bool                `yaml:"allow_ambient_cloud_iam,omitempty"`
-	MasterAdminKey             string              `yaml:"master_admin_key"`
-	MasterEncryptionKey        string              `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	AllowMasterKeyDataPlane    bool                `yaml:"allow_master_key_data_plane"`
-	EnableDataPlaneJWT         bool                `yaml:"enable_data_plane_jwt"`
-	CustomAPIKeyHeader         string              `yaml:"custom_api_key_header"`
-	JWTSecret                  string              `yaml:"jwt_secret"`
-	JWTIssuer                  string              `yaml:"jwt_issuer"`
-	JWTAudience                string              `yaml:"jwt_audience"`
-	OIDCJWKSURL                string              `yaml:"oidc_jwks_url"`
-	OIDCIssuers                []OIDCIssuerConfig  `yaml:"oidc_issuers,omitempty"`
-	SSOProviders               []SSOProviderConfig `yaml:"sso_providers,omitempty"`
-	Introspection              IntrospectionConfig `yaml:"introspection,omitempty"`
-	ProxyAuth                  ProxyAuthConfig     `yaml:"proxy_auth,omitempty"`
-	DefaultOrgID               string              `yaml:"default_org_id"`
-	DefaultVirtualKey          string              `yaml:"default_virtual_key"`
-	L1CacheTTL                 time.Duration       `yaml:"l1_cache_ttl"`
-	L2CacheTTL                 time.Duration       `yaml:"l2_cache_ttl"`
-	KeyRotationDeliveryURL     string              `yaml:"key_rotation_delivery_url,omitempty"`
-	KeyRotationDeliveryToken   string              `yaml:"key_rotation_delivery_token,omitempty"`
-	KeyRotationPollInterval    time.Duration       `yaml:"key_rotation_poll_interval,omitempty"`
-	KeyRotationGracePeriod     time.Duration       `yaml:"key_rotation_grace_period,omitempty"`
-	KeyExpiryAlertPollInterval time.Duration       `yaml:"key_expiry_alert_poll_interval,omitempty"`
-	UIUsername                 string              `yaml:"ui_username,omitempty"`
-	UIPassword                 string              `yaml:"ui_password,omitempty"`
-	SessionSecret              string              `yaml:"session_secret,omitempty"`
-	SessionTTL                 time.Duration       `yaml:"session_ttl,omitempty"`
-	EnableHIBPCheck            bool                `yaml:"enable_hibp_check,omitempty"`
-	HIBPBaseURL                string              `yaml:"hibp_base_url,omitempty"`
+	AllowAmbientCloudIAM         bool                  `yaml:"allow_ambient_cloud_iam,omitempty"`
+	MasterAdminKey               string                `yaml:"master_admin_key"`
+	MasterEncryptionKey          string                `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	PreviousMasterEncryptionKeys []string              `yaml:"previous_master_encryption_keys,omitempty"`
+	AllowMasterKeyDataPlane      bool                  `yaml:"allow_master_key_data_plane"`
+	EnableDataPlaneJWT           bool                  `yaml:"enable_data_plane_jwt"`
+	CustomAPIKeyHeader           string                `yaml:"custom_api_key_header"`
+	JWTSecret                    string                `yaml:"jwt_secret"`
+	JWTIssuer                    string                `yaml:"jwt_issuer"`
+	JWTAudience                  string                `yaml:"jwt_audience"`
+	OIDCJWKSURL                  string                `yaml:"oidc_jwks_url"`
+	OIDCIssuers                  []OIDCIssuerConfig    `yaml:"oidc_issuers,omitempty"`
+	SSOProviders                 []SSOProviderConfig   `yaml:"sso_providers,omitempty"`
+	Introspection                IntrospectionConfig   `yaml:"introspection,omitempty"`
+	ProxyAuth                    ProxyAuthConfig       `yaml:"proxy_auth,omitempty"`
+	DefaultOrgID                 string                `yaml:"default_org_id"`
+	DefaultVirtualKey            string                `yaml:"default_virtual_key"`
+	L1CacheTTL                   time.Duration         `yaml:"l1_cache_ttl"`
+	L2CacheTTL                   time.Duration         `yaml:"l2_cache_ttl"`
+	KeyRotationDeliveryURL       string                `yaml:"key_rotation_delivery_url,omitempty"`
+	KeyRotationDeliveryToken     string                `yaml:"key_rotation_delivery_token,omitempty"`
+	KeyRotationSink              KeyRotationSinkConfig `yaml:"key_rotation_sink,omitempty"`
+	KeyRotationPollInterval      time.Duration         `yaml:"key_rotation_poll_interval,omitempty"`
+	KeyRotationGracePeriod       time.Duration         `yaml:"key_rotation_grace_period,omitempty"`
+	KeyExpiryAlertPollInterval   time.Duration         `yaml:"key_expiry_alert_poll_interval,omitempty"`
+	UIUsername                   string                `yaml:"ui_username,omitempty"`
+	UIPassword                   string                `yaml:"ui_password,omitempty"`
+	SessionSecret                string                `yaml:"session_secret,omitempty"`
+	SessionTTL                   time.Duration         `yaml:"session_ttl,omitempty"`
+	EnableHIBPCheck              bool                  `yaml:"enable_hibp_check,omitempty"`
+	HIBPBaseURL                  string                `yaml:"hibp_base_url,omitempty"`
 }
 
 type RouterConfig struct {
@@ -726,6 +743,51 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	if v := os.Getenv("GATEWAY_MASTER_ENCRYPTION_KEY"); v != "" {
 		cfg.Auth.MasterEncryptionKey = v
 	}
+	if v := os.Getenv("GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS"); v != "" {
+		var prev []string
+		for _, part := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				prev = append(prev, trimmed)
+			}
+		}
+		cfg.Auth.PreviousMasterEncryptionKeys = prev
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_DELIVERY_URL"); v != "" {
+		cfg.Auth.KeyRotationDeliveryURL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"); v != "" {
+		cfg.Auth.KeyRotationDeliveryToken = v
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_DRIVER"); v != "" {
+		cfg.Auth.KeyRotationSink.Driver = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_ADDRESS"); v != "" {
+		cfg.Auth.KeyRotationSink.Address = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_MOUNT"); v != "" {
+		cfg.Auth.KeyRotationSink.Mount = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_PATH_PREFIX"); v != "" {
+		cfg.Auth.KeyRotationSink.PathPrefix = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_TOKEN"); v != "" {
+		cfg.Auth.KeyRotationSink.Token = v
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_NAMESPACE"); v != "" {
+		cfg.Auth.KeyRotationSink.Namespace = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_REGION"); v != "" {
+		cfg.Auth.KeyRotationSink.Region = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_ACCESS_KEY_ID"); v != "" {
+		cfg.Auth.KeyRotationSink.AWSAccessKeyID = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_SECRET_ACCESS_KEY"); v != "" {
+		cfg.Auth.KeyRotationSink.AWSSecretAccessKey = v
+	}
+	if v := os.Getenv("GATEWAY_KEY_ROTATION_SINK_AWS_SESSION_TOKEN"); v != "" {
+		cfg.Auth.KeyRotationSink.AWSSessionToken = v
+	}
 	if v := os.Getenv("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Auth.AllowMasterKeyDataPlane = b
@@ -1028,6 +1090,20 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Auth.MasterEncryptionKey) < 32 {
 		return fmt.Errorf("auth.master_encryption_key must be at least 32 bytes for AES-256-GCM")
+	}
+	for i, pk := range c.Auth.PreviousMasterEncryptionKeys {
+		resolved := ResolveEnvValue(pk)
+		if strings.TrimSpace(pk) == "" {
+			continue
+		}
+		if len(resolved) < 32 {
+			return fmt.Errorf("auth.previous_master_encryption_keys[%d] must be at least 32 bytes for AES-256-GCM", i)
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Auth.KeyRotationSink.Driver)) {
+	case "", "webhook", "vault_kv2", "aws_secrets_manager":
+	default:
+		return fmt.Errorf("invalid auth.key_rotation_sink.driver %q", c.Auth.KeyRotationSink.Driver)
 	}
 
 	const (

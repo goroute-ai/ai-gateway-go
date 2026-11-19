@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_CANCEL, BTN_ACC } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { ProviderCredential, ProviderType, CredentialValidationResult } from '../types';
@@ -421,7 +421,7 @@ export const CredentialsView: React.FC = () => {
               type="button"
               onClick={handlePreflightTest}
               disabled={preflightTesting || (!apiKey.trim() && provider !== 'ollama')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+              className={BTN_ACC}
             >
               <Zap className={`w-3.5 h-3.5 ${preflightTesting ? 'animate-spin' : ''}`} />
               <span>{preflightTesting ? 'Testing connection...' : 'Test Upstream Before Saving'}</span>

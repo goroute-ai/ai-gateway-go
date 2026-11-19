@@ -79,6 +79,14 @@ async function run() {
     `expected mock HIBP to receive only 5-char prefix CBFDA, got ${JSON.stringify(hibpAuditRes)}`
   );
 
+  // Set a strong password on the org_admin user so we can test non-platform_admin UI RBAC later.
+  const strongOpPassword = `UiOrgAdm!Strong-${suffix}`;
+  const setPassRes = await adminAPI('/auth/password', 'POST', {
+    user_id: opUserRes.json.id,
+    new_password: strongOpPassword,
+  });
+  assert.equal(setPassRes.status, 200, `expected 200 setting strong password: ${setPassRes.text}`);
+
   // Verify OIDC SSO start redirect emits PKCE S256 challenge and state without following redirect.
   const ssoStartResp = await fetch(`${BASE_URL}/auth/sso/corp-oidc/login?redirect_after=%2Fui%2F`, {
     redirect: 'manual',
@@ -96,12 +104,14 @@ async function run() {
 
   const pageErrors = [];
   const consoleErrors = [];
+  let allowExpected403 = false;
   page.on('pageerror', (err) => pageErrors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
       const text = msg.text();
-      // Expected initial/post-logout unauthenticated /auth/me check returns 401.
-      if (!text.includes('401')) {
+      // Expected initial/post-logout unauthenticated /auth/me check returns 401;
+      // Check 7 intentionally checks org_admin access denial on /admin/v1/config (403).
+      if (!text.includes('401') && !(allowExpected403 && text.includes('403'))) {
         consoleErrors.push(text);
       }
     }
@@ -174,25 +184,25 @@ async function run() {
     await page.locator('aside button', { hasText: 'Virtual Keys' }).click();
     await page.getByRole('heading', { name: 'Virtual API Keys' }).waitFor({ state: 'visible' });
 
-    await page.getByRole('button', { name: 'Issue Virtual Key' }).click();
-    const issueModal = modalByTitle(page, 'Issue New Virtual Key');
+    await page.getByRole('button', { name: 'Issue Key' }).click();
+    const issueModal = modalByTitle(page, 'Issue Key');
     await issueModal.waitFor({ state: 'visible' });
 
     await fieldControl(issueModal, 'Key Name *').fill('ui-e2e-llm-key');
-    await fieldControl(issueModal, 'Key Type Preset').selectOption('llm_api');
-    await fieldControl(issueModal, 'Budget Cap ($)').fill('25.00');
+    await fieldControl(issueModal, 'Key Type').selectOption('llm_api');
+    await fieldControl(issueModal, 'Cap ($)').fill('25.00');
 
     const createKeyRespPromise = page.waitForResponse(
       (res) => res.url().includes('/admin/v1/keys') && res.request().method() === 'POST'
     );
-    await issueModal.getByRole('button', { name: 'Issue Key' }).click();
+    await issueModal.getByRole('button', { name: 'Issue', exact: true }).click();
     const createKeyResp = await createKeyRespPromise;
     assert.equal(createKeyResp.status(), 201, 'expected 201 from POST /admin/v1/keys');
     const createdKeyJson = await createKeyResp.json();
     const createdKeyId = createdKeyJson.id;
     assert(createdKeyId, 'created key ID must be present');
 
-    const secretModal = modalByTitle(page, 'Virtual API Key Secret');
+    const secretModal = modalByTitle(page, 'API Key Secret');
     await secretModal.waitFor({ state: 'visible' });
     const rawSecretText = await secretModal.locator('pre').innerText();
     assert(rawSecretText.startsWith('sk-gw-'), `expected raw sk-gw key secret, got: ${rawSecretText}`);
@@ -202,17 +212,72 @@ async function run() {
     await keyRow.waitFor({ state: 'visible' });
     await keyRow.getByText('llm_api', { exact: true }).waitFor({ state: 'visible' });
 
-    await keyRow.locator('button[title="Rotate key with grace period"]').click();
-    const rotateModal = modalByTitle(page, 'Rotate Key: ui-e2e-llm-key');
+    await keyRow.locator('button[title="Rotate"]').click();
+    const rotateModal = modalByTitle(page, 'Rotate: ui-e2e-llm-key');
     await rotateModal.waitFor({ state: 'visible' });
     await rotateModal.getByRole('button', { name: '5m', exact: true }).click();
-    await rotateModal.getByRole('button', { name: 'Rotate Key' }).click();
+    await rotateModal.getByRole('button', { name: 'Rotate', exact: true }).click();
 
     await secretModal.waitFor({ state: 'visible' });
-    await secretModal.getByText(/Grace active until/i).waitFor({ state: 'visible' });
+    await secretModal.getByText(/Grace until/i).waitFor({ state: 'visible' });
     await secretModal.getByRole('button', { name: 'Done' }).click();
 
-    await keyRow.getByText('Grace Hash Active', { exact: true }).waitFor({ state: 'visible' });
+    await keyRow.getByText('Grace', { exact: true }).waitFor({ state: 'visible' });
+
+    // Check 4b: KeysView single Block/Unblock, status filter ("Blocked"), and bulk Block/Unblock
+    page.once('dialog', (dialog) => dialog.accept());
+    await keyRow.locator('button[title="Block"]').click();
+    await keyRow.getByText('Revoked', { exact: true }).waitFor({ state: 'visible' });
+
+    const statusSelect = page.locator('input[placeholder="Search..."] + select');
+    await statusSelect.selectOption('revoked');
+    await keyRow.waitFor({ state: 'visible' });
+    await statusSelect.selectOption('');
+
+    // Bulk Unblock then Block/Unblock via toolbar checkboxes
+    await keyRow.locator('input[type="checkbox"]').check();
+    await page.getByRole('button', { name: 'Unblock', exact: true }).first().click();
+    await keyRow.getByText('Active', { exact: true }).waitFor({ state: 'visible' });
+
+    // Check 4c: OrganizationsView Teams tab (team_member_permissions) + bulk sync Team Members
+    await page.locator('aside button', { hasText: 'Orgs & Teams' }).click();
+    await page.getByRole('heading', { name: 'Organizations & Teams' }).waitFor({ state: 'visible' });
+    await page.locator('button', { hasText: /^Teams \(/ }).click();
+
+    await page.getByRole('button', { name: 'New Team' }).click();
+    const createTeamModal = modalByTitle(page, 'Create Team');
+    await createTeamModal.waitFor({ state: 'visible' });
+    await createTeamModal.locator('input[placeholder="Team Name *"]').fill('UI E2E Engineering');
+    await createTeamModal
+      .locator('input[placeholder*="Member Perms"]')
+      .fill('keys:create, keys:rotate');
+    await createTeamModal.getByRole('button', { name: 'Create', exact: true }).click();
+
+    const teamRow = page.locator('tbody tr', { hasText: 'UI E2E Engineering' }).first();
+    await teamRow.waitFor({ state: 'visible' });
+
+    // Verify team_member_permissions persisted when opening Edit Team modal
+    await teamRow.locator('button[title="Edit"]').click();
+    const editTeamModal = modalByTitle(page, 'Edit Team');
+    await editTeamModal.waitFor({ state: 'visible' });
+    const permsVal = await editTeamModal.locator('input[placeholder*="Member Perms"]').inputValue();
+    assert.equal(permsVal, 'keys:create, keys:rotate', `expected persisted team_member_permissions, got: ${permsVal}`);
+    await editTeamModal.getByRole('button', { name: 'Cancel' }).click();
+
+    // Sync team member add & remove via Members modal
+    await teamRow.locator('button[title="Sync members"]').click();
+    const membersModal = modalByTitle(page, 'Members: UI E2E Engineering');
+    await membersModal.waitFor({ state: 'visible' });
+    await membersModal.locator('input[placeholder="Add User IDs"]').fill(opUserRes.json.id);
+    await membersModal.getByRole('button', { name: 'Sync', exact: true }).click();
+    await membersModal.waitFor({ state: 'hidden' });
+
+    await teamRow.locator('button[title="Sync members"]').click();
+    await membersModal.waitFor({ state: 'visible' });
+    await membersModal.getByText(opUserRes.json.id).waitFor({ state: 'visible' });
+    await membersModal.locator('input[placeholder="Remove User IDs"]').fill(opUserRes.json.id);
+    await membersModal.getByRole('button', { name: 'Sync', exact: true }).click();
+    await membersModal.waitFor({ state: 'hidden' });
 
     // Check 5: QuotasTab per-model policy, rolling_24h budget window, and TempBudgetModal persistence across reload
     await page.locator('aside button', { hasText: 'FinOps & Spend' }).click();
@@ -268,6 +333,15 @@ async function run() {
     await page.locator('tbody tr', { hasText: createdKeyId }).filter({ hasText: 'rolling_24h' }).first().waitFor({ state: 'visible' });
     await page.locator('tbody tr', { hasText: 'ui-e2e-llm-key' }).first().getByText(/\+\$10\.00 until/i).waitFor({ state: 'visible' });
 
+    // Check 5b: ConfigView Rotate KEK visibility & execution for platform_admin
+    await page.locator('aside button', { hasText: 'Gateway Config' }).click();
+    await page.getByRole('heading', { name: 'Gateway Configuration' }).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'Rotate KEK' }).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'Rotate KEK' }).click();
+    await page.locator('input[placeholder="New master KEK (>=32 chars)"]').fill(`rotated-ui-e2e-master-kek-${suffix}-0123456789`);
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.getByText(/Database DEKs rotated atomically/i).waitFor({ state: 'visible' });
+
     // Check 6: Sign Out & Session Revocation
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
@@ -278,10 +352,29 @@ async function run() {
     const meStatusAfterLogout = await page.evaluate(() => fetch('/auth/me').then((r) => r.status));
     assert.equal(meStatusAfterLogout, 401, 'expected /auth/me to return 401 after sign out');
 
+    // Check 7: Sign in as org_admin and verify ConfigView hides platform_admin-only "Rotate KEK" control
+    allowExpected403 = true;
+    await page.locator('input[placeholder="operator@example.com or admin"]').fill(opUserRes.json.email);
+    await page.locator('input[placeholder="Enter password..."]').fill(strongOpPassword);
+    await page.locator('button[type="submit"]', { hasText: 'Sign In' }).click();
+    await page.locator('button[title*="Click to sign out"]').waitFor({ state: 'visible' });
+
+    await page.locator('aside button', { hasText: 'Gateway Config' }).click();
+    await page.getByRole('heading', { name: 'Gateway Configuration' }).waitFor({ state: 'visible' });
+    assert.equal(
+      await page.getByRole('button', { name: 'Rotate KEK' }).count(),
+      0,
+      'org_admin must not see Rotate KEK button on ConfigView'
+    );
+    allowExpected403 = false;
+
+    await page.locator('button[title*="Click to sign out"]').click();
+    await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
+
     assert.deepEqual(pageErrors, [], `unexpected browser pageerror exceptions: ${JSON.stringify(pageErrors)}`);
     assert.deepEqual(consoleErrors, [], `unexpected browser console.error messages: ${JSON.stringify(consoleErrors)}`);
 
-    console.log('UI E2E PASS: CSP, HIBP prefix-only, SSO PKCE redirect, cookie reload persistence, KeysView preset/rotation grace, QuotasTab rolling_24h/TempBoost persistence, and logout revocation verified.');
+    console.log('UI E2E PASS: CSP, HIBP prefix-only, SSO PKCE redirect, cookie reload persistence, KeysView preset/rotation/block/bulk, Teams perms/sync, QuotasTab rolling_24h/TempBoost, ConfigView KEK RBAC, and logout revocation verified.');
   } finally {
     await context.close();
     await browser.close();

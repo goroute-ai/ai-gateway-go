@@ -1364,6 +1364,24 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 	}
 	grRows.Close()
 
+	vkRows, err := tx.Query(ctx, `SELECT `+virtualKeySelectCols+` FROM virtual_keys WHERE COALESCE(staged_key_dek, '') <> '' ORDER BY id ASC FOR UPDATE`)
+	if err != nil {
+		return summary, err
+	}
+	for vkRows.Next() {
+		vk, sErr := scanVirtualKey(vkRows)
+		if sErr != nil {
+			vkRows.Close()
+			return summary, sErr
+		}
+		batch.StagedVirtualKeys = append(batch.StagedVirtualKeys, vk)
+	}
+	if rErr := vkRows.Err(); rErr != nil {
+		vkRows.Close()
+		return summary, rErr
+	}
+	vkRows.Close()
+
 	updated, err := rewrap(batch)
 	if err != nil {
 		return summary, err
@@ -1429,9 +1447,28 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 		}
 		summary.GuardrailsRewrapped++
 	}
+	for _, vk := range updated.StagedVirtualKeys {
+		if vk == nil || vk.ID == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE virtual_keys
+			SET staged_key_dek = $2, updated_at = NOW()
+			WHERE id = $1`,
+			vk.ID, vk.StagedKeyDEK,
+		); err != nil {
+			return summary, err
+		}
+		summary.StagedVirtualKeysRewrapped++
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return summary, err
+	}
+	for _, vk := range updated.StagedVirtualKeys {
+		if vk != nil {
+			_ = p.mem.UpdateVirtualKey(ctx, vk)
+		}
 	}
 	for _, c := range updated.Credentials {
 		if c != nil {
@@ -3082,15 +3119,19 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
 			max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active,
-			rotation_interval_sec, key_rotation_at, key_type, project_id, can_impersonate, tags, metadata
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NULLIF($35,''),$36,$37,$38)`
+			rotation_interval_sec, key_rotation_at,
+			staged_key_hash, staged_key_prefix, staged_encrypted_raw_key, staged_key_dek, staged_created_at,
+			key_type, project_id, can_impersonate, tags, metadata
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NULLIF($34,''),NULLIF($35,''),NULLIF($36,''),NULLIF($37,''),$38,$39,NULLIF($40,''),$41,$42,$43)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
 		vk.AllowedModels, vk.AllowedEndpoints,
 		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
 		vk.MaxBudgetMicros, vk.TempBudgetIncreaseMicros, vk.TempBudgetExpiresAt, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
-		vk.RotationIntervalSec, vk.KeyRotationAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
+		vk.RotationIntervalSec, vk.KeyRotationAt,
+		vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt,
+		string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, tags, marshalStringMapJSON(vk.Metadata),
 	); err != nil {
 		return err
 	}

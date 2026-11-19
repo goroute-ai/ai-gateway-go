@@ -131,18 +131,20 @@ type KeyGovernanceRepository interface {
 
 // KEKRotationBatch holds encrypted records across all vault-protected resources.
 type KEKRotationBatch struct {
-	Credentials []*domain.ProviderCredential
-	MCPServers  []*domain.MCPServer
-	A2AAgents   []*domain.A2AAgent
-	Guardrails  []*domain.GuardrailDefinition
+	Credentials       []*domain.ProviderCredential
+	MCPServers        []*domain.MCPServer
+	A2AAgents         []*domain.A2AAgent
+	Guardrails        []*domain.GuardrailDefinition
+	StagedVirtualKeys []*domain.VirtualKey
 }
 
 // KEKRotationSummary reports counts of entities updated during a transactional KEK rotation.
 type KEKRotationSummary struct {
-	CredentialsRewrapped int `json:"credentials_rewrapped"`
-	MCPServersRewrapped  int `json:"mcp_servers_rewrapped"`
-	A2AAgentsRewrapped   int `json:"a2a_agents_rewrapped"`
-	GuardrailsRewrapped  int `json:"guardrails_rewrapped"`
+	CredentialsRewrapped       int `json:"credentials_rewrapped"`
+	MCPServersRewrapped        int `json:"mcp_servers_rewrapped"`
+	A2AAgentsRewrapped         int `json:"a2a_agents_rewrapped"`
+	GuardrailsRewrapped        int `json:"guardrails_rewrapped"`
+	StagedVirtualKeysRewrapped int `json:"staged_virtual_keys_rewrapped"`
 }
 
 // KEKRotationRepository atomically loads, locks, re-wraps, and commits DEKs under a single transaction.

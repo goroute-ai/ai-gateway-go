@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_ELEV, CARD_CLS, EMPTY_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import type { MCPTool } from '../types';
@@ -280,14 +280,14 @@ export const AgenticView: React.FC = () => {
             <>
               <button
                 onClick={() => setShowCredModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-medium transition"
+                className={BTN_ELEV}
               >
                 <Plus className="w-3.5 h-3.5" />
                 Set User BYOK
               </button>
               <button
                 onClick={() => setShowToolsetModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-medium transition"
+                className={BTN_ELEV}
               >
                 <Plus className="w-3.5 h-3.5" />
                 Create Toolset
@@ -306,7 +306,7 @@ export const AgenticView: React.FC = () => {
             <>
               <button
                 onClick={() => setShowPushModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-medium transition"
+                className={BTN_ELEV}
               >
                 <Plus className="w-3.5 h-3.5" />
                 Push Webhook
@@ -414,7 +414,7 @@ export const AgenticView: React.FC = () => {
             </h3>
 
             {isMCPLoading ? (
-              <div className="py-8 text-center text-xs font-mono text-brand-muted">
+              <div className={EMPTY_CLS}>
                 Loading MCP servers...
               </div>
             ) : mcpServers.length === 0 ? (
@@ -426,7 +426,7 @@ export const AgenticView: React.FC = () => {
                 {mcpServers.map((srv) => (
                   <div
                     key={srv.id}
-                    className="bg-surface-base border border-border-subtle rounded-lg p-4 flex flex-col justify-between"
+                    className={`${CARD_CLS} p-4 flex flex-col justify-between`}
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-2">
@@ -498,7 +498,7 @@ export const AgenticView: React.FC = () => {
                 {mcpToolsets.map((ts) => (
                   <div
                     key={ts.id}
-                    className="bg-surface-base border border-border-subtle rounded-lg p-4 flex items-center justify-between"
+                    className={`${CARD_CLS} p-4 flex items-center justify-between`}
                   >
                     <div>
                       <h4 className="text-sm font-semibold text-brand-title">{ts.name}</h4>
@@ -523,7 +523,7 @@ export const AgenticView: React.FC = () => {
             </h3>
 
             {isToolsLoading ? (
-              <div className="py-8 text-center text-xs font-mono text-brand-muted">
+              <div className={EMPTY_CLS}>
                 Discovering tools from active MCP runtimes...
               </div>
             ) : filteredTools.length === 0 ? (
@@ -535,7 +535,7 @@ export const AgenticView: React.FC = () => {
                 {filteredTools.map((tool, idx) => (
                   <div
                     key={tool.name || idx}
-                    className="bg-surface-base border border-border-subtle rounded-lg p-4 flex flex-col justify-between hover:border-border-strong transition"
+                    className={`${CARD_CLS} p-4 flex flex-col justify-between hover:border-border-strong transition`}
                   >
                     <div>
                       <div className="flex items-center gap-2 mb-2">
@@ -571,7 +571,7 @@ export const AgenticView: React.FC = () => {
       {/* Tab 2: A2A (Agent-to-Agent) Mesh */}
       {activeTab === 'a2a' && (
         <div className="space-y-4">
-          <div className="bg-surface-base border border-border-subtle rounded-lg overflow-hidden">
+          <div className={`${CARD_CLS} overflow-hidden`}>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono">
                 <thead className="bg-surface-elevated text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -797,4 +798,46 @@ auth:
 			}
 		})
 	}
+}
+
+func TestConfig_PreviousKEKsAndKeyRotationSinkValidation(t *testing.T) {
+	t.Run("rejects short previous_master_encryption_keys", func(t *testing.T) {
+		c := config.Default()
+		c.Server.Environment = "test"
+		c.Auth.MasterEncryptionKey = strings.Repeat("a", 32)
+		c.Auth.PreviousMasterEncryptionKeys = []string{"too-short"}
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected error for short previous master encryption key")
+		}
+	})
+
+	t.Run("loads env overrides for previous keys and sink", func(t *testing.T) {
+		t.Setenv("GATEWAY_ENV", "test")
+		t.Setenv("GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS", "prev-key-1-012345678901234567890123, prev-key-2-012345678901234567890123")
+		t.Setenv("GATEWAY_KEY_ROTATION_SINK_DRIVER", "vault_kv2")
+		t.Setenv("GATEWAY_KEY_ROTATION_SINK_ADDRESS", "https://vault.internal.example:8200")
+		t.Setenv("GATEWAY_KEY_ROTATION_SINK_TOKEN", "hvs.test-token")
+		t.Setenv("GATEWAY_KEY_ROTATION_SINK_MOUNT", "kv")
+		t.Setenv("GATEWAY_KEY_ROTATION_SINK_PATH_PREFIX", "goroute/rotated")
+
+		cfg, err := config.Load("")
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		if len(cfg.Auth.PreviousMasterEncryptionKeys) != 2 {
+			t.Fatalf("expected 2 previous keys from env, got %v", cfg.Auth.PreviousMasterEncryptionKeys)
+		}
+		if cfg.Auth.KeyRotationSink.Driver != "vault_kv2" || cfg.Auth.KeyRotationSink.Mount != "kv" || cfg.Auth.KeyRotationSink.PathPrefix != "goroute/rotated" {
+			t.Fatalf("unexpected sink env override: %+v", cfg.Auth.KeyRotationSink)
+		}
+	})
+
+	t.Run("rejects unsupported sink driver", func(t *testing.T) {
+		c := config.Default()
+		c.Server.Environment = "test"
+		c.Auth.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "gcp_sm"}
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected validation error for unsupported sink driver")
+		}
+	})
 }

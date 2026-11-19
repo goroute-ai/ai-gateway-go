@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -314,5 +315,108 @@ func TestKeyExpiryAlertManager_IdempotentAlertsAndWebhook(t *testing.T) {
 	}
 	if res2.AlertsRecorded != 0 || res2.WebhooksSent != 0 || len(received) != 1 {
 		t.Fatalf("expected idempotent 0 alerts on RunOnce #2, got %+v", res2)
+	}
+}
+
+func TestInvalidateUserKeys_EvictsDeprecatedGraceHashes(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	mr := miniredis.RunT(t)
+	rf := storage.NewRedisFabric(mr.Addr(), "", 0)
+
+	if err := repo.CreateOrganization(ctx, &domain.Organization{
+		ID:       "org-user-inv",
+		Name:     "User Invalidate Org",
+		Slug:     "user-inv",
+		IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateUser(ctx, &domain.User{
+		ID:       "usr-inv-1",
+		OrgID:    "org-user-inv",
+		Email:    "inv@example.com",
+		Name:     "Invoker",
+		Role:     domain.RoleDeveloper,
+		IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	svc := auth.NewService(repo, rf, "test-master-admin-key", time.Minute, 5*time.Minute)
+	svc.SetNowFunc(func() time.Time { return now })
+
+	issued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:  "org-user-inv",
+		UserID: "usr-inv-1",
+		Name:   "user-grace-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRawKey := issued.RawKey
+	if _, err := svc.RotateVirtualKeyWithGrace(ctx, issued.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm L1 and Redis L2 auth caches with the deprecated grace hash.
+	if _, err := svc.AuthenticateVirtualKey(ctx, oldRawKey); err != nil {
+		t.Fatalf("warm old grace key failed: %v", err)
+	}
+
+	// Simulate user suspension/SCIM deactivation in repo followed by InvalidateUserKeys.
+	if _, err := repo.DeleteDeprecatedVirtualKeyHashesByKeyID(ctx, issued.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RevokeVirtualKey(ctx, issued.ID); err != nil {
+		t.Fatal(err)
+	}
+	svc.InvalidateUserKeys(ctx, "org-user-inv", "usr-inv-1")
+
+	if _, err := svc.AuthenticateVirtualKey(ctx, oldRawKey); err == nil {
+		t.Fatalf("expected deprecated grace key to fail immediately after InvalidateUserKeys")
+	}
+}
+
+func TestVault_NewVaultWithPreviousKeys_RollingDecrypt(t *testing.T) {
+	oldMaster := strings.Repeat("a", 32)
+	newMaster := strings.Repeat("b", 32)
+
+	oldVault, err := auth.NewVault(oldMaster)
+	if err != nil {
+		t.Fatalf("NewVault(oldMaster): %v", err)
+	}
+	cipherHex, dekHex, err := oldVault.EncryptString("rolling-staged-secret")
+	if err != nil {
+		t.Fatalf("EncryptString: %v", err)
+	}
+
+	// Rolling restart config: new master key primary, old master key in previous_master_encryption_keys.
+	rollingVault, err := auth.NewVaultWithPreviousKeys(newMaster, []string{oldMaster})
+	if err != nil {
+		t.Fatalf("NewVaultWithPreviousKeys: %v", err)
+	}
+
+	plain, err := rollingVault.DecryptString(cipherHex, dekHex)
+	if err != nil {
+		t.Fatalf("DecryptString with previous KEK: %v", err)
+	}
+	if plain != "rolling-staged-secret" {
+		t.Fatalf("got %q, want %q", plain, "rolling-staged-secret")
+	}
+
+	// Re-wrapping upgrades ciphertext DEK to the new master key cleanly.
+	newOnlyVault, err := auth.NewVault(newMaster)
+	if err != nil {
+		t.Fatalf("NewVault(newMaster): %v", err)
+	}
+	newDekHex, err := rollingVault.ReWrapString(dekHex, newOnlyVault)
+	if err != nil {
+		t.Fatalf("ReWrapString: %v", err)
+	}
+	plain2, err := newOnlyVault.DecryptString(cipherHex, newDekHex)
+	if err != nil || plain2 != "rolling-staged-secret" {
+		t.Fatalf("DecryptString after ReWrapString: plain=%q err=%v", plain2, err)
 	}
 }

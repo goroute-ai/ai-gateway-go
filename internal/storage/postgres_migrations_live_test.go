@@ -573,4 +573,46 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		)`).Scan(&jwtMapExists); err != nil || !jwtMapExists {
 		t.Fatalf("expected jwt_key_mappings restored after reapply (exists=%v, err=%v)", jwtMapExists, err)
 	}
+
+	// Verify live Postgres RotateKEKsTransactionally re-wraps virtual_keys.staged_key_dek atomically.
+	pgRepo, err := NewPostgresRepository(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewPostgresRepository: %v", err)
+	}
+	if err := pgRepo.CreateOrganization(ctx, &domain.Organization{
+		ID:       "org_live_kek",
+		Name:     "Live KEK Org",
+		Slug:     "live-kek-org",
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("CreateOrganization(live kek): %v", err)
+	}
+	if err := pgRepo.CreateVirtualKey(ctx, &domain.VirtualKey{
+		ID:            "vk_live_staged_1",
+		OrgID:         "org_live_kek",
+		Name:          "live-staged-kek",
+		KeyPrefix:     "sk-gw-lvk",
+		KeyHash:       "hash-live-kek-active",
+		StagedKeyHash: "hash-live-kek-staged",
+		StagedKeyDEK:  "live-old-staged-dek",
+		IsActive:      true,
+	}); err != nil {
+		t.Fatalf("CreateVirtualKey(live staged): %v", err)
+	}
+	liveSum, err := pgRepo.RotateKEKsTransactionally(ctx, func(batch KEKRotationBatch) (KEKRotationBatch, error) {
+		var out KEKRotationBatch
+		for _, vk := range batch.StagedVirtualKeys {
+			cp := *vk
+			cp.StagedKeyDEK = "live-new-staged-dek"
+			out.StagedVirtualKeys = append(out.StagedVirtualKeys, &cp)
+		}
+		return out, nil
+	})
+	if err != nil || liveSum.StagedVirtualKeysRewrapped != 1 {
+		t.Fatalf("live RotateKEKsTransactionally(staged_key_dek) failed: %+v err=%v", liveSum, err)
+	}
+	liveVK, err := pgRepo.GetVirtualKeyByID(ctx, "vk_live_staged_1")
+	if err != nil || liveVK.StagedKeyDEK != "live-new-staged-dek" {
+		t.Fatalf("expected live staged_key_dek updated, got vk=%+v err=%v", liveVK, err)
+	}
 }

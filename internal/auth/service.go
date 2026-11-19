@@ -705,9 +705,13 @@ func (s *Service) InvalidateUserKeys(ctx context.Context, orgID, userID string) 
 			}
 		}
 		for _, vk := range keys {
-			if vk != nil && vk.KeyHash != "" {
+			if vk == nil {
+				continue
+			}
+			if vk.KeyHash != "" {
 				s.InvalidateKeyHash(ctx, vk.KeyHash)
 			}
+			s.invalidateDeprecatedKeyHashes(ctx, vk.ID, vk.KeyHash, "", false)
 		}
 	}
 	if userID != "" {

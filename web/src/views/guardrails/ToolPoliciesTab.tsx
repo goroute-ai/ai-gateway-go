@@ -4,7 +4,7 @@ import { adminApi } from '../../api/admin';
 import { useAuth } from '../../context/AuthContext';
 import { Badge } from '../../components/common/Badge';
 import { ErrorAlert } from '../../components/common/ErrorAlert';
-import { INPUT_CLS, BTN_PRIMARY } from '../../components/common/Modal';
+import { INPUT_CLS, BTN_PRIMARY, CARD_CLS, EMPTY_CLS, TH_CLS } from '../../components/common/Modal';
 import type { ToolPolicy, ToolTrustInputLevel, ToolTrustOutputLevel } from '../../types';
 import { Plus, Trash2, ShieldCheck, Search } from 'lucide-react';
 
@@ -116,7 +116,7 @@ export const ToolPoliciesTab: React.FC = () => {
       {/* Upsert Form */}
       <form
         onSubmit={handleSubmit}
-        className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4"
+        className={`${CARD_CLS} p-5 space-y-4`}
       >
         <div>
           <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
@@ -202,7 +202,7 @@ export const ToolPoliciesTab: React.FC = () => {
       </form>
 
       {/* Matrix Table */}
-      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
+      <div className={`${CARD_CLS} p-5 space-y-4`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title">
             Tool Trust Matrix ({policies.length})
@@ -237,16 +237,16 @@ export const ToolPoliciesTab: React.FC = () => {
         )}
 
         {policiesQuery.isLoading ? (
-          <div className="py-8 text-center text-xs font-mono text-brand-muted">Loading tool trust matrix...</div>
+          <div className={EMPTY_CLS}>Loading tool trust matrix...</div>
         ) : policies.length === 0 ? (
-          <div className="py-8 text-center text-xs font-mono text-brand-muted border border-border-subtle rounded-lg">
+          <div className={`${EMPTY_CLS} border border-border-subtle rounded-lg`}>
             No tool policies configured. By default, tools without explicit trust overrides are treated as untrusted.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
+                <tr className={TH_CLS}>
                   <th className="py-2 pr-3">Tool Name</th>
                   <th className="py-2 pr-3">Scope</th>
                   <th className="py-2 pr-3">Input Trust Level</th>

@@ -837,3 +837,98 @@ func TestUpdateVirtualKey_And_SetSecretSink_GraceCacheConsistency(t *testing.T) 
 		t.Fatalf("expected old grace key to fail immediately after UpdateVirtualKey(IsActive=false)")
 	}
 }
+
+func TestKeyRotationManager_SecretSinkRetryPreservesStagedKey(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	if err := repo.CreateOrganization(ctx, &domain.Organization{
+		ID:       "org-sink-retry",
+		Name:     "Sink Retry Org",
+		Slug:     "sink-retry",
+		IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	svc := auth.NewService(repo, nil, "test-master-admin-key", time.Minute, 5*time.Minute)
+	svc.SetNowFunc(func() time.Time { return now })
+	vault, err := auth.NewVault(strings.Repeat("v", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetVault(vault)
+
+	past := now.Add(-time.Minute)
+	issued, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
+		OrgID:               "org-sink-retry",
+		Name:                "sink-retry-key",
+		RotationIntervalSec: 3600,
+		KeyRotationAt:       &past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var attempts int
+	var delivered []auth.KeyRotatedSecretEvent
+	mgr := auth.NewKeyRotationManager(svc, repo, nil, auth.KeyRotationConfig{
+		PollInterval: time.Minute,
+		GracePeriod:  time.Hour,
+		Now:          func() time.Time { return now },
+		SecretSink: auth.KeySecretSinkFunc(func(_ context.Context, ev auth.KeyRotatedSecretEvent) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("transient secret manager outage")
+			}
+			delivered = append(delivered, ev)
+			return nil
+		}),
+	})
+
+	// First sweep fails delivery -> staged encrypted key must stay persisted for idempotent retry.
+	res1, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce #1 unexpected error: %v", err)
+	}
+	if res1.Errors != 1 || res1.RotatedKeys != 0 {
+		t.Fatalf("expected Errors=1 RotatedKeys=0 on transient failure, got %+v", res1)
+	}
+	vkStaged, err := repo.GetVirtualKeyByID(ctx, issued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vkStaged.StagedKeyHash == "" || vkStaged.StagedKeyDEK == "" {
+		t.Fatalf("expected StagedKeyHash & StagedKeyDEK preserved after transient SecretSink error")
+	}
+	if vkStaged.KeyHash != issued.KeyHash {
+		t.Fatalf("expected active KeyHash unchanged after transient SecretSink error")
+	}
+	deliveries1, failures1 := mgr.DeliveryStats()
+	if deliveries1 != 0 || failures1 != 1 {
+		t.Fatalf("DeliveryStats after failure = (%d, %d), want (0, 1)", deliveries1, failures1)
+	}
+
+	// Second sweep retries exact same staged key hash and promotes it cleanly.
+	res2, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce #2 unexpected error: %v", err)
+	}
+	if res2.Errors != 0 || res2.RotatedKeys != 1 || len(delivered) != 1 {
+		t.Fatalf("expected recovery on RunOnce #2, got res=%+v delivered=%d", res2, len(delivered))
+	}
+	if auth.HashKey(delivered[0].RawKey) != vkStaged.StagedKeyHash {
+		t.Fatalf("expected retry delivery for staged hash %q, got %q", vkStaged.StagedKeyHash, auth.HashKey(delivered[0].RawKey))
+	}
+	vkPromoted, err := repo.GetVirtualKeyByID(ctx, issued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vkPromoted.KeyHash != vkStaged.StagedKeyHash || vkPromoted.StagedKeyHash != "" || vkPromoted.StagedKeyDEK != "" {
+		t.Fatalf("expected staged key promoted and cleared, got hash=%q staged=%q dek=%q", vkPromoted.KeyHash, vkPromoted.StagedKeyHash, vkPromoted.StagedKeyDEK)
+	}
+	deliveries2, failures2 := mgr.DeliveryStats()
+	if deliveries2 != 1 || failures2 != 1 {
+		t.Fatalf("DeliveryStats after retry = (%d, %d), want (1, 1)", deliveries2, failures2)
+	}
+}

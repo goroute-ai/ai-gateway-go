@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal, INPUT_CLS, BTN_CANCEL } from '../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_CANCEL, BTN_ACC, THEAD_CLS } from '../components/common/Modal';
 import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import {
   Activity,
@@ -108,7 +108,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           <button
             onClick={() => probeMutation.mutate()}
             disabled={probeMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+            className={BTN_ACC}
           >
             <Zap className={`w-3.5 h-3.5 ${probeMutation.isPending ? 'animate-spin' : ''}`} />
             <span>{probeMutation.isPending ? 'Probing...' : 'Probe Upstreams'}</span>
@@ -224,7 +224,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
+            <thead className={THEAD_CLS}>
               <tr>
                 <th className="px-6 py-3">Deployment</th>
                 <th className="px-6 py-3">Provider & Model</th>

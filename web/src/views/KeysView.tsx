@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, THEAD_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { TempBudgetModal } from '../components/common/TempBudgetModal';
 import { Badge } from '../components/common/Badge';
@@ -285,7 +285,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
 
       <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
+          <thead className={THEAD_CLS}>
             <tr>
               <th className="px-3 py-3 w-8">
                 <input

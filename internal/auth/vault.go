@@ -24,18 +24,41 @@ type Vault struct {
 	previousKEKs [][]byte
 }
 
-func NewVault(masterKey string) (*Vault, error) {
-	if len(masterKey) < 32 {
+func deriveKEK(rawKey string) ([]byte, error) {
+	if len(rawKey) < 32 {
 		return nil, fmt.Errorf("master encryption key must be at least 32 characters")
 	}
-	var kek []byte
-	if decoded, err := hex.DecodeString(masterKey); err == nil && len(decoded) == 32 {
-		kek = decoded
-	} else {
-		sum := sha256.Sum256([]byte(masterKey))
-		kek = sum[:]
+	if decoded, err := hex.DecodeString(rawKey); err == nil && len(decoded) == 32 {
+		return decoded, nil
 	}
-	return &Vault{kek: kek}, nil
+	sum := sha256.Sum256([]byte(rawKey))
+	return sum[:], nil
+}
+
+func NewVault(masterKey string) (*Vault, error) {
+	return NewVaultWithPreviousKeys(masterKey, nil)
+}
+
+// NewVaultWithPreviousKeys initializes a Vault with a primary KEK and optional fallback KEKs
+// used for zero-downtime decryption during multi-pod rolling KEK transitions.
+func NewVaultWithPreviousKeys(masterKey string, previousKeys []string) (*Vault, error) {
+	kek, err := deriveKEK(masterKey)
+	if err != nil {
+		return nil, err
+	}
+	var prev [][]byte
+	for i, pk := range previousKeys {
+		pk = strings.TrimSpace(pk)
+		if pk == "" {
+			continue
+		}
+		derived, pErr := deriveKEK(pk)
+		if pErr != nil {
+			return nil, fmt.Errorf("previous_master_encryption_keys[%d]: %w", i, pErr)
+		}
+		prev = append(prev, derived)
+	}
+	return &Vault{kek: kek, previousKEKs: prev}, nil
 }
 
 func (v *Vault) decryptDEKLocked(nonce, encDEK []byte) ([]byte, error) {

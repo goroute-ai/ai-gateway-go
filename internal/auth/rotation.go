@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -192,7 +193,9 @@ func (s *Service) RotateVirtualKeyWithGrace(ctx context.Context, id string, grac
 	return s.rotateVirtualKeyWithGraceAt(ctx, id, gracePeriod, s.now(), nil)
 }
 
-func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gracePeriod time.Duration, now time.Time, deliver RotationDelivery) (*domain.VirtualKey, error) {
+type stagedRotationDelivery func(ctx context.Context, event KeyRotatedSecretEvent) error
+
+func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gracePeriod time.Duration, now time.Time, deliver stagedRotationDelivery) (*domain.VirtualKey, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("virtual key id is required")
@@ -212,6 +215,17 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 	}
 
 	now = now.UTC()
+
+	var nextRotationPtr *time.Time
+	if existing.RotationIntervalSec > 0 {
+		nextRotation := now.Add(time.Duration(existing.RotationIntervalSec) * time.Second)
+		nextRotationPtr = &nextRotation
+	}
+	var revokeAtPtr *time.Time
+	if gracePeriod > 0 {
+		revAt := now.Add(gracePeriod).UTC()
+		revokeAtPtr = &revAt
+	}
 
 	var rawKey, nextPrefix, nextHash string
 	if deliver != nil {
@@ -249,7 +263,20 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 			}
 			existing = &staged
 		}
-		if err := deliver(ctx, existing.OrgID, existing.ID, rawKey); err != nil {
+		ev := KeyRotatedSecretEvent{
+			OrgID:                 existing.OrgID,
+			TeamID:                existing.TeamID,
+			UserID:                existing.UserID,
+			VirtualKeyID:          existing.ID,
+			Name:                  existing.Name,
+			KeyPrefix:             nextPrefix,
+			PreviousKeyPrefix:     existing.KeyPrefix,
+			RawKey:                rawKey,
+			DeprecatedKeyRevokeAt: revokeAtPtr,
+			NextRotationAt:        nextRotationPtr,
+			RotatedAt:             now,
+		}
+		if err := deliver(ctx, ev); err != nil {
 			return nil, fmt.Errorf("deliver replacement credential: %w", err)
 		}
 	} else {
@@ -269,20 +296,18 @@ func (s *Service) rotateVirtualKeyWithGraceAt(ctx context.Context, id string, gr
 	rotated.StagedKeyDEK = ""
 	rotated.StagedCreatedAt = nil
 	rotated.IsActive = true
-	if rotated.RotationIntervalSec > 0 {
-		nextRotation := now.Add(time.Duration(rotated.RotationIntervalSec) * time.Second)
-		rotated.KeyRotationAt = &nextRotation
+	if nextRotationPtr != nil {
+		rotated.KeyRotationAt = nextRotationPtr
 	}
 
 	// Store deprecated hash BEFORE swapping the primary hash so concurrent callers
 	// never observe a transient 401 window during zero-downtime grace rotation.
-	if gracePeriod > 0 && oldHash != "" {
+	if revokeAtPtr != nil && oldHash != "" {
 		rotRepo, ok := s.repo.(storage.KeyRotationRepository)
 		if !ok || rotRepo == nil {
 			return nil, fmt.Errorf("repository does not support deprecated key grace periods")
 		}
-		revokeAt := now.Add(gracePeriod)
-		if err := rotRepo.AddDeprecatedVirtualKeyHash(ctx, oldHash, existing.ID, revokeAt); err != nil {
+		if err := rotRepo.AddDeprecatedVirtualKeyHash(ctx, oldHash, existing.ID, *revokeAtPtr); err != nil {
 			return nil, fmt.Errorf("record deprecated virtual key hash: %w", err)
 		}
 	}
@@ -407,10 +432,20 @@ type KeyRotationManager struct {
 	secretSink   KeySecretSink
 	nowFn        func() time.Time
 
-	mu      sync.Mutex
-	running bool
-	cancel  context.CancelFunc
-	done    chan struct{}
+	mu                    sync.Mutex
+	running               bool
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	deliveriesTotal       atomic.Uint64
+	deliveryFailuresTotal atomic.Uint64
+}
+
+// DeliveryStats returns cumulative succeeded and failed replacement credential deliveries.
+func (m *KeyRotationManager) DeliveryStats() (deliveries, failures uint64) {
+	if m == nil {
+		return 0, 0
+	}
+	return m.deliveriesTotal.Load(), m.deliveryFailuresTotal.Load()
 }
 
 // NewKeyRotationManager constructs a KeyRotationManager with safe production defaults.
@@ -592,7 +627,8 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		result.PurgedHashes = purged
 	}
 
-	if m.deliver == nil && m.currentSecretSink() == nil {
+	secretSink := m.currentSecretSink()
+	if m.deliver == nil && secretSink == nil {
 		return result, nil
 	}
 
@@ -611,7 +647,28 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		if vk.KeyRotationAt.UTC().After(now) {
 			continue
 		}
-		rotated, rotErr := m.authSvc.rotateVirtualKeyWithGraceAt(ctx, vk.ID, m.gracePeriod, now, m.deliver)
+		activeSink := m.currentSecretSink()
+		usePreCommit := m.deliver != nil || (activeSink != nil && m.authSvc.vault != nil)
+		var deliverFn stagedRotationDelivery
+		if usePreCommit {
+			deliverFn = func(dCtx context.Context, ev KeyRotatedSecretEvent) error {
+				if m.deliver != nil {
+					if err := m.deliver(dCtx, ev.OrgID, ev.VirtualKeyID, ev.RawKey); err != nil {
+						m.deliveryFailuresTotal.Add(1)
+						return err
+					}
+				}
+				if activeSink != nil {
+					if err := activeSink.DeliverRotatedSecret(dCtx, ev); err != nil {
+						m.deliveryFailuresTotal.Add(1)
+						return err
+					}
+				}
+				m.deliveriesTotal.Add(1)
+				return nil
+			}
+		}
+		rotated, rotErr := m.authSvc.rotateVirtualKeyWithGraceAt(ctx, vk.ID, m.gracePeriod, now, deliverFn)
 		if rotErr != nil {
 			slog.WarnContext(ctx, "auth: scheduled virtual key auto-rotation failed",
 				"virtual_key_id", vk.ID,
@@ -649,8 +706,8 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 			Details:    details,
 		})
 
-		if secretSink := m.currentSecretSink(); secretSink != nil && rotated.RawKey != "" {
-			if sinkErr := secretSink.DeliverRotatedSecret(ctx, KeyRotatedSecretEvent{
+		if !usePreCommit && activeSink != nil && rotated.RawKey != "" {
+			if sinkErr := activeSink.DeliverRotatedSecret(ctx, KeyRotatedSecretEvent{
 				OrgID:                 rotated.OrgID,
 				TeamID:                rotated.TeamID,
 				UserID:                rotated.UserID,
@@ -663,9 +720,12 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 				NextRotationAt:        rotated.KeyRotationAt,
 				RotatedAt:             now,
 			}); sinkErr != nil {
+				m.deliveryFailuresTotal.Add(1)
 				slog.WarnContext(ctx, "auth: failed to deliver rotated key secret to sink",
 					"org_id", rotated.OrgID, "virtual_key_id", rotated.ID, "error", sinkErr)
 				result.Errors++
+			} else {
+				m.deliveriesTotal.Add(1)
 			}
 		}
 

@@ -176,7 +176,13 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		repo = storage.NewMemoryRepository()
 	}
 
-	vault, err := auth.NewVault(cfg.Auth.MasterEncryptionKey)
+	prevKEKs := make([]string, 0, len(cfg.Auth.PreviousMasterEncryptionKeys))
+	for _, pk := range cfg.Auth.PreviousMasterEncryptionKeys {
+		if resolved := strings.TrimSpace(config.ResolveEnvValue(pk)); resolved != "" {
+			prevKEKs = append(prevKEKs, resolved)
+		}
+	}
+	vault, err := auth.NewVaultWithPreviousKeys(config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey), prevKEKs)
 	if err != nil {
 		return nil, err
 	}
@@ -356,8 +362,16 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		}
 		return nil, err
 	}
+	secretSink, err := newKeyRotationSecretSink(cfg.Auth, netPolicy)
+	if err != nil {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(context.Background())
+		}
+		return nil, err
+	}
 	keyRotation := auth.NewKeyRotationManager(authSvc, repo, redisFabric, auth.KeyRotationConfig{
 		Deliver:       delivery,
+		SecretSink:    secretSink,
 		PollInterval:  cfg.Auth.KeyRotationPollInterval,
 		GracePeriod:   cfg.Auth.KeyRotationGracePeriod,
 		NetworkPolicy: netPolicy,
@@ -413,6 +427,9 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		metrics["gateway_budget_catalog_scans_total"] = float64(budgetStats.catalogScans.Load())
 		metrics["gateway_budgeted_reservation_checks_total"] = float64(budgetStats.budgetedChecks.Load())
 		metrics["gateway_budget_pricing_summary_lookups_total"] = float64(budgetStats.pricingSummaries.Load())
+		rotDeliveries, rotFailures := keyRotation.DeliveryStats()
+		metrics["gateway_key_rotation_deliveries_total"] = float64(rotDeliveries)
+		metrics["gateway_key_rotation_delivery_failures_total"] = float64(rotFailures)
 		if recordedRequests := collector.Snapshot().TotalRequests; recordedRequests > 0 {
 			metrics["gateway_budgeted_request_share"] = float64(budgetStats.budgetedChecks.Load()) / float64(recordedRequests)
 		}

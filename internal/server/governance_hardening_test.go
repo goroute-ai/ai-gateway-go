@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -204,12 +207,12 @@ func TestGovernanceHardening_OrgUpdate_SelfInfo_KeysAndTeamsAndKEK(t *testing.T)
 	// 5. Master KEK rotation (/admin/v1/security/rotate-kek)
 	// Non-platform admin rejected
 	recKEKForbidden := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/security/rotate-kek", env.orgAAdmin.RawKey, map[string]any{
-		"new_master_key": "0123456789abcdef0123456789abcdef-rotated",
+		"new_master_key": strings.Repeat("a", 32),
 	})
 	assert.Equal(t, http.StatusForbidden, recKEKForbidden.Code)
 
 	recKEK := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/security/rotate-kek", env.masterKey, map[string]any{
-		"new_master_key": "0123456789abcdef0123456789abcdef-rotated",
+		"new_master_key": strings.Repeat("b", 32),
 	})
 	require.Equal(t, http.StatusOK, recKEK.Code, recKEK.Body.String())
 
@@ -313,7 +316,7 @@ func TestSelfServiceKeys_TeamMemberPermissions_And_BulkSyncRemove_And_AuditDiffs
 		"name": "Updated Perm Dev",
 	}).Code)
 	recKEK := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/security/rotate-kek", env.masterKey, map[string]any{
-		"new_master_key": "0123456789abcdef0123456789abcdef-rotated-2",
+		"new_master_key": strings.Repeat("c", 32),
 	})
 	require.Equal(t, http.StatusOK, recKEK.Code)
 	assert.Contains(t, recKEK.Body.String(), "multi_pod_notice")
@@ -459,4 +462,64 @@ func TestGovernanceHardening_BulkGraceEviction_OwnershipAndAuditDiffs(t *testing
 	assert.True(t, sawSubDiff, "expected organization.subscription.updated diff")
 	assert.True(t, sawGuardDiff, "expected organization.guardrails.updated before+after diff")
 	assert.True(t, sawToolPolicyDiff, "expected tool_policy.upserted diff")
+}
+
+func TestRotateKEK_RewrapsStagedVirtualKeysAndConfigRedaction(t *testing.T) {
+	ctx := context.Background()
+	env := setupQuotaHandlerTestEnv(t, nil)
+
+	vault, err := auth.NewVault(config.Default().Auth.MasterEncryptionKey)
+	require.NoError(t, err)
+	encHex, dekHex, err := vault.EncryptString("sk-gw-prestaged-secret")
+	require.NoError(t, err)
+
+	require.NoError(t, env.repo.CreateVirtualKey(ctx, &domain.VirtualKey{
+		ID:            "vk_staged_kek_srv",
+		OrgID:         "org_a",
+		Name:          "srv-staged-kek",
+		KeyPrefix:     "sk-gw-ssk",
+		KeyHash:       "hash-srv-staged-active",
+		StagedKeyHash: "hash-srv-staged-next",
+		StagedKeyDEK:  dekHex,
+		IsActive:      true,
+	}))
+
+	newMaster := "zyxwvutsrqponmlkjihgfedcba9876543210-rotated"
+	recKEK := doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/security/rotate-kek", env.masterKey, map[string]any{
+		"new_master_key": newMaster,
+	})
+	require.Equal(t, http.StatusOK, recKEK.Code, recKEK.Body.String())
+
+	var kekResp struct {
+		Rewrapped struct {
+			StagedVirtualKeysRewrapped int `json:"staged_virtual_keys_rewrapped"`
+		} `json:"rewrapped"`
+	}
+	require.NoError(t, json.Unmarshal(recKEK.Body.Bytes(), &kekResp))
+	assert.Equal(t, 1, kekResp.Rewrapped.StagedVirtualKeysRewrapped)
+
+	updatedVK, err := env.repo.GetVirtualKeyByID(ctx, "vk_staged_kek_srv")
+	require.NoError(t, err)
+	assert.NotEqual(t, dekHex, updatedVK.StagedKeyDEK)
+
+	// New KEK decrypts the re-wrapped staged key cleanly.
+	newVault, err := auth.NewVault(newMaster)
+	require.NoError(t, err)
+	decrypted, err := newVault.DecryptString(encHex, updatedVK.StagedKeyDEK)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-gw-prestaged-secret", decrypted)
+
+	// GET /admin/v1/config includes previous_master_encryption_keys_cnt and redacted key_rotation_sink.
+	recCfg := doAdminJSONRequest(t, env.handler, http.MethodGet, "/admin/v1/config", env.masterKey, nil)
+	require.Equal(t, http.StatusOK, recCfg.Code, recCfg.Body.String())
+	var cfgResp map[string]any
+	require.NoError(t, json.Unmarshal(recCfg.Body.Bytes(), &cfgResp))
+	authSection, ok := cfgResp["auth"].(map[string]any)
+	require.True(t, ok, "expected auth section in /admin/v1/config")
+	_, hasPrevCnt := authSection["previous_master_encryption_keys_cnt"]
+	assert.True(t, hasPrevCnt, "expected previous_master_encryption_keys_cnt in /admin/v1/config")
+	sinkSection, ok := authSection["key_rotation_sink"].(map[string]any)
+	require.True(t, ok, "expected key_rotation_sink in /admin/v1/config")
+	_, hasDriver := sinkSection["driver"]
+	assert.True(t, hasDriver, "expected key_rotation_sink.driver in /admin/v1/config")
 }

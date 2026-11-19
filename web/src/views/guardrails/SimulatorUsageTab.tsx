@@ -4,7 +4,7 @@ import { adminApi } from '../../api/admin';
 import { useAuth } from '../../context/AuthContext';
 import { Badge } from '../../components/common/Badge';
 import { ErrorAlert } from '../../components/common/ErrorAlert';
-import { INPUT_CLS, BTN_PRIMARY } from '../../components/common/Modal';
+import { INPUT_CLS, BTN_PRIMARY, CARD_CLS, TH_CLS } from '../../components/common/Modal';
 import type {
   GuardrailSimulateResponse,
   GuardrailViolation,
@@ -195,7 +195,7 @@ export const SimulatorUsageTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Interactive Simulator & /v1/guardrails/apply Runner */}
-      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
+      <div className={`${CARD_CLS} p-5 space-y-4`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
@@ -431,7 +431,7 @@ export const SimulatorUsageTab: React.FC = () => {
       </div>
 
       {/* Guardrail Usage & Micro-Dollar Cost Dashboard */}
-      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-5">
+      <div className={`${CARD_CLS} p-5 space-y-5`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
@@ -548,7 +548,7 @@ export const SimulatorUsageTab: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono">
                 <thead>
-                  <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
+                  <tr className={TH_CLS}>
                     <th className="py-2 pr-3">Guardrail</th>
                     <th className="py-2 pr-3">Evals</th>
                     <th className="py-2 pr-3">Blocks</th>
@@ -585,7 +585,7 @@ export const SimulatorUsageTab: React.FC = () => {
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
               <table className="w-full text-left text-xs font-mono">
                 <thead>
-                  <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
+                  <tr className={TH_CLS}>
                     <th className="py-2 pr-3">Date</th>
                     <th className="py-2 pr-3">Guardrail</th>
                     <th className="py-2 pr-3">Evals</th>
@@ -624,7 +624,7 @@ export const SimulatorUsageTab: React.FC = () => {
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
               <table className="w-full text-left text-xs font-mono">
                 <thead>
-                  <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
+                  <tr className={TH_CLS}>
                     <th className="py-2 pr-3">Date</th>
                     <th className="py-2 pr-3">Guardrail</th>
                     <th className="py-2 pr-3">Tenant Scope</th>

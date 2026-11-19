@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
-import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS } from '../components/common/Modal';
+import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_ACC, THEAD_CLS } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert, isPlatformAdminForbidden, ScopedRoleNotice } from '../components/common/ErrorAlert';
 import type { GlobalModel, ModelGroup, Deployment } from '../types';
@@ -293,7 +293,7 @@ export const ModelsView: React.FC = () => {
               <button
                 onClick={() => syncMutation.mutate()}
                 disabled={syncMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent-primary/30 bg-accent-soft hover:bg-accent-primary/20 text-xs font-medium text-accent-primary transition-colors disabled:opacity-50"
+                className={BTN_ACC}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
                 <span>Sync Discovery</span>
@@ -403,7 +403,7 @@ export const ModelsView: React.FC = () => {
           <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
+                <thead className={THEAD_CLS}>
                   <tr>
                     <th className="px-6 py-3">Model</th>
                     <th className="px-6 py-3">Provider</th>

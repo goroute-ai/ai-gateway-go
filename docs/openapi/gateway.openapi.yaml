@@ -24,6 +24,21 @@ components:
       name: goroute_session
       description: Signed operator session cookie. Cookie-authenticated mutations also require X-CSRF-Token.
   schemas:
+    KEKRotationSummary:
+      type: object
+      properties:
+        credentials_rewrapped:
+          type: integer
+        mcp_servers_rewrapped:
+          type: integer
+        a2a_agents_rewrapped:
+          type: integer
+        guardrails_rewrapped:
+          type: integer
+        staged_virtual_keys_rewrapped:
+          type: integer
+        source_pod:
+          type: string
     OperatorProfile:
       type: object
       properties:
@@ -6621,4 +6636,11 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                required: [status, rewrapped]
+                properties:
+                  status:
+                    type: string
+                  multi_pod_notice:
+                    type: string
+                  rewrapped:
+                    $ref: '#/components/schemas/KEKRotationSummary'

@@ -1045,6 +1045,18 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 				cp.EncryptedDEK = newDEK
 				out.Guardrails = append(out.Guardrails, &cp)
 			}
+			for _, vk := range batch.StagedVirtualKeys {
+				if vk == nil || strings.TrimSpace(vk.StagedKeyDEK) == "" {
+					continue
+				}
+				newDEK, rErr := s.vault.ReWrapString(vk.StagedKeyDEK, newVault)
+				if rErr != nil {
+					return out, &domain.GatewayError{StatusCode: http.StatusInternalServerError, Type: domain.ErrorTypeServer, Code: "kek_rewrap_failed", Message: fmt.Sprintf("re-wrap virtual key %s staged DEK: %v", vk.ID, rErr)}
+				}
+				cp := *vk
+				cp.StagedKeyDEK = newDEK
+				out.StagedVirtualKeys = append(out.StagedVirtualKeys, &cp)
+			}
 			return out, nil
 		})
 		if txErr != nil {
@@ -1131,6 +1143,24 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 				}
 				rotSummary.GuardrailsRewrapped++
 			}
+			vks, _ := s.repo.ListVirtualKeys(r.Context(), org.ID)
+			for _, vk := range vks {
+				if vk == nil || strings.TrimSpace(vk.StagedKeyDEK) == "" {
+					continue
+				}
+				newDEK, rErr := s.vault.ReWrapString(vk.StagedKeyDEK, newVault)
+				if rErr != nil {
+					domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusInternalServerError, Type: domain.ErrorTypeServer, Code: "kek_rewrap_failed", Message: fmt.Sprintf("re-wrap virtual key %s staged DEK: %v", vk.ID, rErr)})
+					return
+				}
+				cp := *vk
+				cp.StagedKeyDEK = newDEK
+				if uErr := s.repo.UpdateVirtualKey(r.Context(), &cp); uErr != nil {
+					domain.WriteHTTPError(w, uErr)
+					return
+				}
+				rotSummary.StagedVirtualKeysRewrapped++
+			}
 		}
 	}
 
@@ -1151,11 +1181,12 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 	}
 
 	summary := map[string]any{
-		"credentials_rewrapped": rotSummary.CredentialsRewrapped,
-		"mcp_servers_rewrapped": rotSummary.MCPServersRewrapped,
-		"a2a_agents_rewrapped":  rotSummary.A2AAgentsRewrapped,
-		"guardrails_rewrapped":  rotSummary.GuardrailsRewrapped,
-		"source_pod":            podID,
+		"credentials_rewrapped":         rotSummary.CredentialsRewrapped,
+		"mcp_servers_rewrapped":         rotSummary.MCPServersRewrapped,
+		"a2a_agents_rewrapped":          rotSummary.A2AAgentsRewrapped,
+		"guardrails_rewrapped":          rotSummary.GuardrailsRewrapped,
+		"staged_virtual_keys_rewrapped": rotSummary.StagedVirtualKeysRewrapped,
+		"source_pod":                    podID,
 	}
 	s.auditWithDiff(r.Context(), "", "security.kek_rotated", "vault", "master_kek", summary, nil, summary)
 	writeJSON(w, http.StatusOK, map[string]any{

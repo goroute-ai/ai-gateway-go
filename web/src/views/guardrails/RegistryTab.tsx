@@ -4,7 +4,7 @@ import { adminApi } from '../../api/admin';
 import { useAuth } from '../../context/AuthContext';
 import { Badge } from '../../components/common/Badge';
 import { ErrorAlert } from '../../components/common/ErrorAlert';
-import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL } from '../../components/common/Modal';
+import { Modal, INPUT_CLS, BTN_PRIMARY, BTN_CANCEL, CARD_CLS, EMPTY_CLS, TH_CLS } from '../../components/common/Modal';
 import type {
   GuardrailDefinition,
   GuardrailDefinitionWriteRequest,
@@ -378,7 +378,7 @@ export const RegistryTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Guardrail Definitions Header & Filter Bar */}
-      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
+      <div className={`${CARD_CLS} p-5 space-y-4`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
@@ -429,9 +429,9 @@ export const RegistryTab: React.FC = () => {
         )}
 
         {defsQuery.isLoading ? (
-          <div className="py-8 text-center text-xs font-mono text-brand-muted">Loading guardrail registry...</div>
+          <div className={EMPTY_CLS}>Loading guardrail registry...</div>
         ) : filteredDefs.length === 0 ? (
-          <div className="py-8 text-center text-xs font-mono text-brand-muted border border-border-subtle rounded-lg">
+          <div className={`${EMPTY_CLS} border border-border-subtle rounded-lg`}>
             No named guardrails found. Create one to enable multi-driver pipelines.
           </div>
         ) : (
@@ -535,7 +535,7 @@ export const RegistryTab: React.FC = () => {
       </div>
 
       {/* Hierarchical Guardrail Bindings */}
-      <div className="bg-surface-base border border-border-subtle rounded-lg p-5 space-y-4">
+      <div className={`${CARD_CLS} p-5 space-y-4`}>
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-2">
@@ -564,7 +564,7 @@ export const RegistryTab: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead>
-                <tr className="border-b border-border-subtle text-brand-muted text-[11px] uppercase">
+                <tr className={TH_CLS}>
                   <th className="py-2 pr-3">Guardrail</th>
                   <th className="py-2 pr-3">Scope Targets</th>
                   <th className="py-2 pr-3">Lock</th>

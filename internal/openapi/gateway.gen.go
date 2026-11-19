@@ -2934,6 +2934,16 @@ type ImageGenerationResponse struct {
 	} `json:"data"`
 }
 
+// KEKRotationSummary defines model for KEKRotationSummary.
+type KEKRotationSummary struct {
+	A2aAgentsRewrapped         *int    `json:"a2a_agents_rewrapped,omitempty"`
+	CredentialsRewrapped       *int    `json:"credentials_rewrapped,omitempty"`
+	GuardrailsRewrapped        *int    `json:"guardrails_rewrapped,omitempty"`
+	McpServersRewrapped        *int    `json:"mcp_servers_rewrapped,omitempty"`
+	SourcePod                  *string `json:"source_pod,omitempty"`
+	StagedVirtualKeysRewrapped *int    `json:"staged_virtual_keys_rewrapped,omitempty"`
+}
+
 // LegacyCompletionRequest defines model for LegacyCompletionRequest.
 type LegacyCompletionRequest struct {
 	MaxTokens   *int                           `json:"max_tokens,omitempty"`
@@ -12433,7 +12443,11 @@ type RotateMasterKEKResponseObject interface {
 	VisitRotateMasterKEKResponse(w http.ResponseWriter) error
 }
 
-type RotateMasterKEK200JSONResponse map[string]interface{}
+type RotateMasterKEK200JSONResponse struct {
+	MultiPodNotice *string            `json:"multi_pod_notice,omitempty"`
+	Rewrapped      KEKRotationSummary `json:"rewrapped"`
+	Status         string             `json:"status"`
+}
 
 func (response RotateMasterKEK200JSONResponse) VisitRotateMasterKEKResponse(w http.ResponseWriter) error {
 

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
-import { Modal } from '../components/common/Modal';
+import { Modal, CARD_CLS, THEAD_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import { SpendEvent, AuditLog } from '../types';
@@ -32,7 +32,7 @@ const SpendBreakdownCard: React.FC<{
   const items = entries ? Object.entries(entries).sort(([, a], [, b]) => b - a) : [];
   const visible = limit ? items.slice(0, limit) : items;
   return (
-    <div className="bg-surface-base border border-border-subtle rounded-lg p-4">
+    <div className={`${CARD_CLS} p-4`}>
       <h3 className="text-xs font-mono uppercase tracking-wider text-brand-muted mb-3 flex items-center gap-2">
         {icon}
         {title}
@@ -192,7 +192,7 @@ export const FinOpsView: React.FC = () => {
           { label: 'Total Tokens', icon: <Layers className="w-4 h-4 text-accent-glow" />, val: totalTokens.toLocaleString(), sub: 'Prompt + Completion tokens' },
           { label: 'Avg Cost / Req', icon: <DollarSign className="w-4 h-4 text-status-warning" />, val: formatMicroDollars(avgCostPerReqMicros), sub: `${avgCostPerReqMicros.toLocaleString()} µ$ per request` },
         ].map((kpi) => (
-          <div key={kpi.label} className="bg-surface-base border border-border-subtle rounded-lg p-4">
+          <div key={kpi.label} className={`${CARD_CLS} p-4`}>
             <div className="flex items-center justify-between text-brand-muted mb-1">
               <span className="text-xs font-mono uppercase tracking-wider">{kpi.label}</span>
               {kpi.icon}
@@ -322,10 +322,10 @@ export const FinOpsView: React.FC = () => {
 
       {/* Tab 1: Spend Event Logs Table */}
       {activeTab === 'spend' && (
-        <div className="bg-surface-base border border-border-subtle rounded-lg overflow-hidden">
+        <div className={`${CARD_CLS} overflow-hidden`}>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
-              <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
+              <thead className={THEAD_CLS}>
                 <tr>
                   <th className="px-4 py-3">Timestamp</th>
                   <th className="px-4 py-3">Request ID</th>
@@ -406,10 +406,10 @@ export const FinOpsView: React.FC = () => {
 
       {/* Tab 2: Administrative Audit Trail Table */}
       {activeTab === 'audit' && (
-        <div className="bg-surface-base border border-border-subtle rounded-lg overflow-hidden">
+        <div className={`${CARD_CLS} overflow-hidden`}>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
-              <thead className="bg-surface-elevated/60 text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
+              <thead className={THEAD_CLS}>
                 <tr>
                   <th className="px-4 py-3">Timestamp</th>
                   <th className="px-4 py-3">Action</th>

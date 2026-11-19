@@ -7,7 +7,7 @@ import { streamChatCompletion, ChatStreamChunk, ChatStreamHeaders } from '../api
 import type { GoRouteExtensions } from '../types';
 import { Badge } from '../components/common/Badge';
 import { CodeBlock } from '../components/common/CodeBlock';
-import { Modal } from '../components/common/Modal';
+import { Modal, CARD_CLS } from '../components/common/Modal';
 import {
   X,
   Trash2,
@@ -621,7 +621,7 @@ func main() {
       {/* Right Sidebar: Model Parameters & Telemetry Inspector (300px) */}
       <div className="w-full lg:w-80 flex flex-col gap-4">
         {/* Model & Routing Configuration */}
-        <div className="bg-surface-base border border-border-subtle rounded-lg p-4 space-y-4">
+        <div className={`${CARD_CLS} p-4 space-y-4`}>
           <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-1.5">
             <Settings className="w-3.5 h-3.5 text-accent-primary" />
             Model & Parameters
@@ -721,7 +721,7 @@ func main() {
         </div>
 
         {/* Live Performance & Telemetry Card */}
-        <div className="bg-surface-base border border-border-subtle rounded-lg p-4 space-y-3">
+        <div className={`${CARD_CLS} p-4 space-y-3`}>
           <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title flex items-center gap-1.5">
             <Zap className="w-3.5 h-3.5 text-status-success" />
             Invocation Telemetry

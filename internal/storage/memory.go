@@ -1179,10 +1179,11 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 	defer r.mu.Unlock()
 
 	batch := KEKRotationBatch{
-		Credentials: make([]*domain.ProviderCredential, 0, len(r.credentials)),
-		MCPServers:  make([]*domain.MCPServer, 0, len(r.mcpServers)),
-		A2AAgents:   make([]*domain.A2AAgent, 0, len(r.a2aAgents)),
-		Guardrails:  make([]*domain.GuardrailDefinition, 0, len(r.guardrailDefs)),
+		Credentials:       make([]*domain.ProviderCredential, 0, len(r.credentials)),
+		MCPServers:        make([]*domain.MCPServer, 0, len(r.mcpServers)),
+		A2AAgents:         make([]*domain.A2AAgent, 0, len(r.a2aAgents)),
+		Guardrails:        make([]*domain.GuardrailDefinition, 0, len(r.guardrailDefs)),
+		StagedVirtualKeys: make([]*domain.VirtualKey, 0),
 	}
 	for _, c := range r.credentials {
 		if c == nil || len(c.EncryptedDEK) == 0 {
@@ -1214,6 +1215,12 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 			continue
 		}
 		batch.Guardrails = append(batch.Guardrails, cloneGuardrailDefinition(g))
+	}
+	for _, vk := range r.keysByID {
+		if vk == nil || strings.TrimSpace(vk.StagedKeyDEK) == "" {
+			continue
+		}
+		batch.StagedVirtualKeys = append(batch.StagedVirtualKeys, cloneVirtualKey(vk))
 	}
 
 	updated, err := rewrap(batch)
@@ -1260,15 +1267,28 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 		}
 	}
 	for _, g := range updated.Guardrails {
-		if g == nil || g.ID == "" {
+		if g != nil && g.ID != "" {
+			if existing, ok := r.guardrailDefs[g.ID]; ok {
+				cp := cloneGuardrailDefinition(existing)
+				cp.EncryptedDEK = g.EncryptedDEK
+				cp.UpdatedAt = now
+				r.guardrailDefs[g.ID] = cp
+				summary.GuardrailsRewrapped++
+			}
+		}
+	}
+	for _, vk := range updated.StagedVirtualKeys {
+		if vk == nil || vk.ID == "" {
 			continue
 		}
-		if existing, ok := r.guardrailDefs[g.ID]; ok {
-			cp := cloneGuardrailDefinition(existing)
-			cp.EncryptedDEK = g.EncryptedDEK
-			cp.UpdatedAt = now
-			r.guardrailDefs[g.ID] = cp
-			summary.GuardrailsRewrapped++
+		if existing, ok := r.keysByID[vk.ID]; ok {
+			cp := cloneVirtualKey(existing)
+			cp.StagedKeyDEK = vk.StagedKeyDEK
+			r.keysByID[vk.ID] = cp
+			if cp.KeyHash != "" {
+				r.keysByHash[cp.KeyHash] = cp
+			}
+			summary.StagedVirtualKeysRewrapped++
 		}
 	}
 	return summary, nil

@@ -249,7 +249,7 @@ func TestGovernanceStorage_MemoryAndPostgresFallback(t *testing.T) {
 				t.Fatalf("unexpected remaining memberships: %+v err=%v", remaining, err)
 			}
 
-			// RotateKEKsTransactionally: rollback leaves state untouched; commit updates all DEKs atomically
+			// RotateKEKsTransactionally: rollback leaves state untouched; commit updates all DEKs + staged virtual keys atomically
 			if err := r.CreateProviderCredential(ctx, &domain.ProviderCredential{
 				ID: "cred_kek_1", OrgID: org.ID, Provider: domain.ProviderOpenAI, Name: "kek-cred",
 				EncryptedAPIKey: []byte("cipher"), DataNonce: []byte("nonce1234567"),
@@ -257,6 +257,18 @@ func TestGovernanceStorage_MemoryAndPostgresFallback(t *testing.T) {
 				KeyVersion: 1, IsActive: true,
 			}); err != nil {
 				t.Fatalf("CreateProviderCredential: %v", err)
+			}
+			if err := r.CreateVirtualKey(ctx, &domain.VirtualKey{
+				ID:            "vk_kek_staged_1",
+				OrgID:         org.ID,
+				Name:          "staged-kek-key",
+				KeyPrefix:     "sk-gw-stk",
+				KeyHash:       "hash-staged-kek-active",
+				StagedKeyHash: "hash-staged-kek-next",
+				StagedKeyDEK:  "old-staged-dek-hex",
+				IsActive:      true,
+			}); err != nil {
+				t.Fatalf("CreateVirtualKey(staged): %v", err)
 			}
 			_, rbErr := r.RotateKEKsTransactionally(ctx, func(batch KEKRotationBatch) (KEKRotationBatch, error) {
 				return KEKRotationBatch{}, fmt.Errorf("injected rewrap failure")
@@ -268,6 +280,10 @@ func TestGovernanceStorage_MemoryAndPostgresFallback(t *testing.T) {
 			if string(credAfterRB.EncryptedDEK) != "old-dek" {
 				t.Fatalf("expected DEK unchanged after rollback, got %q", string(credAfterRB.EncryptedDEK))
 			}
+			vkAfterRB, _ := r.GetVirtualKeyByID(ctx, "vk_kek_staged_1")
+			if vkAfterRB.StagedKeyDEK != "old-staged-dek-hex" {
+				t.Fatalf("expected StagedKeyDEK unchanged after rollback, got %q", vkAfterRB.StagedKeyDEK)
+			}
 
 			rotSum, rotErr := r.RotateKEKsTransactionally(ctx, func(batch KEKRotationBatch) (KEKRotationBatch, error) {
 				var out KEKRotationBatch
@@ -277,14 +293,23 @@ func TestGovernanceStorage_MemoryAndPostgresFallback(t *testing.T) {
 					cp.KeyVersion++
 					out.Credentials = append(out.Credentials, &cp)
 				}
+				for _, vk := range batch.StagedVirtualKeys {
+					cp := *vk
+					cp.StagedKeyDEK = "new-staged-dek-hex"
+					out.StagedVirtualKeys = append(out.StagedVirtualKeys, &cp)
+				}
 				return out, nil
 			})
-			if rotErr != nil || rotSum.CredentialsRewrapped == 0 {
+			if rotErr != nil || rotSum.CredentialsRewrapped == 0 || rotSum.StagedVirtualKeysRewrapped != 1 {
 				t.Fatalf("RotateKEKsTransactionally commit failed: %+v err=%v", rotSum, rotErr)
 			}
 			credAfterCommit, _ := r.GetProviderCredential(ctx, "cred_kek_1")
 			if string(credAfterCommit.EncryptedDEK) != "new-dek" {
 				t.Fatalf("expected DEK updated after commit, got %q", string(credAfterCommit.EncryptedDEK))
+			}
+			vkAfterCommit, _ := r.GetVirtualKeyByID(ctx, "vk_kek_staged_1")
+			if vkAfterCommit.StagedKeyDEK != "new-staged-dek-hex" {
+				t.Fatalf("expected StagedKeyDEK updated after commit, got %q", vkAfterCommit.StagedKeyDEK)
 			}
 		})
 	}
