@@ -178,7 +178,11 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 
 	// Launch background processor only after snapshotting the initial batch response
 	// so background field mutations cannot race with JSON serialization.
-	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile, releaseBudget)
+	quotaHeaders := http.Header{
+		"X-Gateway-Tags":       r.Header.Values("X-Gateway-Tags"),
+		"X-Gateway-Session-Id": r.Header.Values("X-Gateway-Session-Id"),
+	}
+	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile, releaseBudget, quotaHeaders)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -456,12 +460,57 @@ func (s *GatewayServer) estimateBatchInput(ctx context.Context, idCtx *domain.Id
 	return est, nil
 }
 
+// The batch holds legacy budgets and enqueued tokens at submission. Each item
+// acquires its model and window descriptors immediately before provider dispatch.
+func (s *GatewayServer) acquireBatchItemQuota(ctx context.Context, id *domain.IdentityContext, req *domain.CanonicalChatRequest, requestID string) (func(int, int, int64), error) {
+	if s.limiter == nil {
+		return func(int, int, int64) {}, nil
+	}
+	desc, err := s.buildExtendedQuotaDescriptors(ctx, id, req.Model, s.nowUTC())
+	if err != nil {
+		return nil, descriptorLookupError(err)
+	}
+	if len(desc) == 0 {
+		return func(int, int, int64) {}, nil
+	}
+	estInput := ratelimit.EstimateRequestTokens(req)
+	requestedOutput := 0
+	if req.MaxTokens != nil {
+		requestedOutput = *req.MaxTokens
+	}
+	estOutput := requestedOutput
+	if estOutput == 0 {
+		estOutput = s.resolveModelMaxOutputTokens(ctx, id.OrgID, req.Model)
+	}
+	var reserve int64
+	if descriptorsHaveBudget(desc) {
+		body, err := json.Marshal(req)
+		if err != nil {
+			return nil, requestBudgetEstimateError(err)
+		}
+		reserve, err = s.tokenBudgetUpperBound(ctx, id.OrgID, req.Model, max(estInput, len(body)), requestedOutput)
+		if err != nil {
+			return nil, requestBudgetEstimateError(err)
+		}
+	}
+	release, err := s.reserveExtendedQuota(ctx, id.OrgID, requestID, estInput, estOutput, reserve, desc)
+	if err != nil {
+		return nil, err
+	}
+	stopRenewer := s.startReservationLeaseRenewerWithDescriptors(ctx, &domain.IdentityContext{OrgID: id.OrgID}, desc, requestID)
+	return func(input, output int, cost int64) {
+		stopRenewer()
+		release(input, output, cost)
+	}, nil
+}
+
 func (s *GatewayServer) processBatchAsync(
 	ctx context.Context,
 	idCtx *domain.IdentityContext,
 	batch *domain.CanonicalBatch,
 	inputFile *domain.CanonicalFile,
 	releaseBudget func(actualTokens int, overrideCostMicros int64),
+	quotaHeaders http.Header,
 ) {
 	totalActualTokens := 0
 	totalCostMicros := int64(0)
@@ -565,9 +614,32 @@ func (s *GatewayServer) processBatchAsync(
 			continue
 		}
 
-		// Execute chat request through gateway reliability pipeline
-		resp, meta, err := s.reliability.ExecuteChat(ctx, idCtx, &item.Body)
+		itemCtx, quotaState := withRequestQuotaState(ctx, &http.Request{Header: quotaHeaders}, idCtx, item.Body.User, item.Body.Metadata, item.Body.GoRouteExtensions)
+		itemRequestID := "batch_item_" + uuid.NewString()
+		releaseItemQuota, quotaErr := s.acquireBatchItemQuota(itemCtx, idCtx, &item.Body, itemRequestID)
+		if quotaErr != nil {
+			counts.Failed++
+			status, code := http.StatusServiceUnavailable, "quota_policy_unavailable"
+			var gwErr *domain.GatewayError
+			if errors.As(quotaErr, &gwErr) {
+				status, code = gwErr.StatusCode, gwErr.Code
+			}
+			entry, _ := json.Marshal(map[string]any{
+				"id": itemRequestID, "custom_id": item.CustomID,
+				"response": map[string]any{"status_code": status},
+				"error":    map[string]any{"code": code, "message": quotaErr.Error()},
+			})
+			if !appendOutput(entry) {
+				break
+			}
+			continue
+		}
+
+		spendRequestID := batch.ID + "_" + item.CustomID
+		quotaState.SettlementRequestID = spendRequestID
+		resp, meta, err := s.reliability.ExecuteChat(itemCtx, idCtx, &item.Body)
 		if err != nil {
+			releaseItemQuota(-1, -1, -1)
 			counts.Failed++
 			errItem := map[string]any{
 				"id":        "batch_req_" + uuid.NewString(),
@@ -583,30 +655,6 @@ func (s *GatewayServer) processBatchAsync(
 				break
 			}
 		} else {
-			guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
-			redacted, sanitizeErr := s.guardrails.SanitizeOutputStrict(ctx, idCtx.OrgID, guardrailResp)
-			if sanitizeErr != nil {
-				counts.Failed++
-				errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Response withheld by organization guardrail policy", "code": "guardrail_policy_unavailable"}}
-				eb, _ := json.Marshal(errItem)
-				if !appendOutput(eb) {
-					break
-				}
-				continue
-			}
-			resp.Choices = guardrailResp.Choices
-			_ = redacted
-			counts.Completed++
-			succItem := map[string]any{
-				"id":        "batch_req_" + uuid.NewString(),
-				"custom_id": item.CustomID,
-				"response": map[string]any{
-					"status_code": 200,
-					"request_id":  resp.ID,
-					"body":        resp,
-				},
-				"error": nil,
-			}
 			var gm *domain.GlobalModel
 			var depID string
 			var pricingVer int
@@ -618,12 +666,19 @@ func (s *GatewayServer) processBatchAsync(
 				}
 			}
 			costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+			releaseItemQuota(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, costMicros)
 			totalActualTokens += resp.Usage.TotalTokens
 			totalCostMicros += costMicros
+			guardrailResp := &domain.CanonicalChatResponse{Choices: resp.Choices}
+			_, sanitizeErr := s.guardrails.SanitizeOutputStrict(ctx, idCtx.OrgID, guardrailResp)
+			status := http.StatusOK
+			if sanitizeErr != nil {
+				status = http.StatusServiceUnavailable
+			}
 			if s.spendWorker != nil {
-				spendPersistErr = s.spendWorker.Record(ctx, enrichSpendEventFromContext(ctx, domain.SpendEvent{
+				spendPersistErr = s.spendWorker.Record(itemCtx, enrichSpendEventFromContext(itemCtx, domain.SpendEvent{
 					ID:             "sp_" + uuid.NewString(),
-					RequestID:      batch.ID + "_" + item.CustomID,
+					RequestID:      spendRequestID,
 					OrgID:          idCtx.OrgID,
 					TeamID:         idCtx.TeamID,
 					ProjectID:      idCtx.ProjectID,
@@ -637,14 +692,34 @@ func (s *GatewayServer) processBatchAsync(
 					PricingVersion: pricingVer,
 					Usage:          resp.Usage,
 					CostMicros:     costMicros,
-					StatusCode:     http.StatusOK,
+					StatusCode:     status,
 					CreatedAt:      time.Now().UTC(),
 				}))
 				if spendPersistErr != nil {
-					counts.Completed--
 					counts.Failed++
 					break
 				}
+			}
+			if sanitizeErr != nil {
+				counts.Failed++
+				errItem := map[string]any{"id": "batch_req_" + uuid.NewString(), "custom_id": item.CustomID, "response": nil, "error": map[string]any{"message": "Response withheld by organization guardrail policy", "code": "guardrail_policy_unavailable"}}
+				eb, _ := json.Marshal(errItem)
+				if !appendOutput(eb) {
+					break
+				}
+				continue
+			}
+			resp.Choices = guardrailResp.Choices
+			counts.Completed++
+			succItem := map[string]any{
+				"id":        "batch_req_" + uuid.NewString(),
+				"custom_id": item.CustomID,
+				"response": map[string]any{
+					"status_code": 200,
+					"request_id":  resp.ID,
+					"body":        resp,
+				},
+				"error": nil,
 			}
 			sb, _ := json.Marshal(succItem)
 			if !appendOutput(sb) {

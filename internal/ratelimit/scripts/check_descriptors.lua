@@ -163,7 +163,8 @@ for idx = 0, count - 1 do
             local eamt = tonumber(ARGV[init_ptr + 2]) or 0
             init_ptr = init_ptr + 3
             if eid ~= "" and eamt > 0 and ets > cutoff_ms then
-                entries[#entries + 1] = { id = eid, ts_ms = ets, amt = eamt }
+                local member = eid .. ":" .. eamt
+                entries[member] = { ts_ms = ets, amt = eamt }
             end
         end
         rolling_init_entries[idx] = entries
@@ -249,12 +250,12 @@ for idx = 0, count - 1 do
                     return {0, "ROLLING_WINDOW_COLD", idx, max_budget, 5}
                 end
                 local init_list = rolling_init_entries[idx] or {}
-                for _, entry in ipairs(init_list) do
+                for _, entry in pairs(init_list) do
                     cur_spent = cur_spent + entry.amt
                 end
                 local unsettled_roll = redis.call("ZRANGEBYSCORE", r24h_zset, "(" .. cutoff_ms, "9007199254740990")
                 for _, m in ipairs(unsettled_roll) do
-                    if m ~= "__init__:0" then
+                    if not init_list[m] then
                         local a = tonumber(string.match(m, ":(%d+)$") or "0")
                         if a > 0 then
                             cur_spent = cur_spent + a
@@ -367,8 +368,8 @@ for idx = 0, count - 1 do
             if init_score == false or init_score == nil then
                 redis.call("ZADD", r24h_zset, 9007199254740991, "__init__:0")
                 local init_list = rolling_init_entries[idx] or {}
-                for _, entry in ipairs(init_list) do
-                    redis.call("ZADD", r24h_zset, entry.ts_ms, entry.id .. ":" .. entry.amt)
+                for member, entry in pairs(init_list) do
+                    redis.call("ZADD", r24h_zset, entry.ts_ms, member)
                 end
             end
             redis.call("EXPIRE", r24h_zset, 90000)

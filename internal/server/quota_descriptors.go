@@ -24,6 +24,9 @@ type requestQuotaState struct {
 	SessionID             string
 	ModelAccessGroupIDs   []string
 	MatchedQuotaPolicyIDs []string
+	SettlementID          string
+	SettlementRequestID   string
+	SettlementAt          time.Time
 }
 
 func appendUniqueQuotaStr(dst []string, vals ...string) []string {
@@ -119,6 +122,12 @@ func enrichSpendEventFromContext(ctx context.Context, ev domain.SpendEvent) doma
 	state := requestQuotaStateFromContext(ctx)
 	if state == nil {
 		return ev
+	}
+	if state.SettlementID != "" && ev.RequestID == state.SettlementRequestID {
+		ev.ID = state.SettlementID
+		if !state.SettlementAt.IsZero() {
+			ev.CreatedAt = state.SettlementAt
+		}
 	}
 	if ev.ProjectID == "" && state.ProjectID != "" {
 		ev.ProjectID = state.ProjectID
@@ -476,8 +485,9 @@ func (s *GatewayServer) buildExtendedQuotaDescriptors(ctx context.Context, effID
 	}
 
 	if bwRepo, ok := s.repo.(storage.BudgetWindowRepository); ok && bwRepo != nil {
+		_, hasRollingHistory := s.repo.(storage.RollingSpendHistoryRepository)
 		windows, err := bwRepo.ListBudgetWindowLimits(ctx, storage.BudgetWindowFilter{
-			OrgID: effID.OrgID,
+			OrgID: effID.OrgID, SkipRollingSpend: hasRollingHistory,
 		})
 		if err != nil {
 			return nil, err

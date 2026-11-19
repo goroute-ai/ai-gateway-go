@@ -98,7 +98,9 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	// Estimate the actual text volume, not only the number of input elements.
 	estTokens := ratelimit.EstimateTextInputsTokens(model, inputs, 4)
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -113,14 +115,14 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 
 	resp, meta, err := s.reliability.ExecuteModeration(r.Context(), idCtx, modReq)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		s.collector.Record(observability.RequestObservation{
 			StatusCode: http.StatusBadGateway,
 		})
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	releaseQuota(estTokens)
+	releaseQuota(estTokens, 0)
 
 	var gm *domain.GlobalModel
 	var depID, depName string

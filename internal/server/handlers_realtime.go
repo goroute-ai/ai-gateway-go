@@ -511,6 +511,11 @@ func (s *GatewayServer) executeRealtimeTurn(
 	maxOutput int,
 	onAdmitted func(),
 ) (*domain.CanonicalChatResponse, error) {
+	if state := requestQuotaStateFromContext(ctx); state != nil {
+		turnState := *state
+		turnState.Tags = append([]string(nil), state.Tags...)
+		ctx = context.WithValue(ctx, requestQuotaStateContextKey{}, &turnState)
+	}
 	turnReqID := sessionID + "_turn_" + uuid.NewString()
 	var releaseTurnQuota func(actualInput, actualOutput int, overrideCostMicros int64)
 	if s.limiter != nil {

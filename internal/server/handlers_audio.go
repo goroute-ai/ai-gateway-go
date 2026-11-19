@@ -126,7 +126,9 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	// Audio tokenization varies by provider. Use the upload size and optional
 	// prompt for a conservative preflight estimate rather than a fixed allowance.
 	estTokens := ratelimit.EstimateAudioUploadTokens(model, header.Size, r.FormValue("prompt"))
-	releaseQuota, err := s.limiter.Acquire(r.Context(), idCtx, estTokens)
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
+	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, model, estTokens, reqID, nil)
 	if err != nil {
 		s.collector.Record(admissionFailureObservation(err))
 		domain.WriteHTTPError(w, err)
@@ -145,7 +147,7 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 	sttReq.IsTranslation = isTranslation
 	guardedPrompt, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, sttReq.Prompt)
 	if guardrailErr != nil {
-		releaseQuota(0)
+		releaseQuota(-1, -1)
 		domain.WriteHTTPError(w, guardrailErr)
 		return
 	}
@@ -153,13 +155,13 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 
 	resp, meta, err := s.reliability.ExecuteAudioTranscription(r.Context(), idCtx, &sttReq)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
 	}
 
-	releaseQuota(estTokens)
+	releaseQuota(estTokens, 0)
 	resp.Text, err = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, resp.Text)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
@@ -322,6 +324,15 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	guardedInput, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, raw.Input)
+	if guardrailErr != nil {
+		domain.WriteHTTPError(w, guardrailErr)
+		return
+	}
+	raw.Input = guardedInput[0]
+
+	quotaCtx, _ := withRequestQuotaState(r.Context(), r, idCtx, "", nil, nil)
+	r = r.WithContext(quotaCtx)
 	// TTS quota follows the target model's text token profile.
 	estTokens := ratelimit.EstimateTextTokens(raw.Input, ratelimit.ResolveTokenizerProfile(raw.Model))
 	releaseQuota, err := s.acquireModalityBudget(r.Context(), idCtx, raw.Model, estTokens, reqID, func(gm *domain.GlobalModel) (int64, bool) {
@@ -332,23 +343,15 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	guardedInput, guardrailErr := s.guardrailTextValues(r.Context(), idCtx.OrgID, raw.Input)
-	if guardrailErr != nil {
-		releaseQuota(0)
-		domain.WriteHTTPError(w, guardrailErr)
-		return
-	}
-	raw.Input = guardedInput[0]
 
 	stream, contentType, meta, err := s.reliability.ExecuteAudioSpeech(r.Context(), idCtx, &raw)
 	if err != nil {
-		releaseQuota(-1)
+		releaseQuota(-1, -1)
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		domain.WriteHTTPError(w, err)
 		return
 	}
 	defer stream.Close()
-	releaseQuota(estTokens)
 
 	var gm *domain.GlobalModel
 	var depID, depName string
@@ -367,6 +370,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	}
 
 	costMicros := finops.CalculateAudioTTSCostMicros(gm, len([]rune(raw.Input)))
+	releaseQuota(estTokens, costMicros)
 	pricingStatus := domain.ResolvePricingStatus(gm)
 
 	var latencyMs, routingMicros int64

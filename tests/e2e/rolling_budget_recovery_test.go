@@ -210,19 +210,30 @@ func TestLiveStack_Rolling24hRecoveryAndDualNodeConcurrency(t *testing.T) {
 
 	// Wait for the outbox worker to persist the t0 call into PostgreSQL spend_logs, then delete
 	// ONLY the rolling spend sorted set and verify admission reloads persisted spend and still rejects.
+	var settledEntry domain.RollingSpendEntry
 	flushDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(flushDeadline) {
 		hist, histErr := pgRepo.ListRollingWindowHistory(ctx, orgID, domain.QuotaScopeKey, vk.ID, clock())
-		if histErr == nil && len(hist) >= 3 {
+		if histErr == nil && len(hist) == 3 {
+			settledEntry = hist[2]
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	if settledEntry.ID == "" {
+		t.Fatal("outbox did not persist the admitted charge")
+	}
+	settledMember := fmt.Sprintf("%s:%d", settledEntry.ID, settledEntry.AmountMicros)
+	var spendKey string
 	if _, err := redisFabric.Execute(func(rdb redis.UniversalClient) (any, error) {
 		keyPattern := fmt.Sprintf("gw:dq:{org:%s}:r24h:key:%s:*", orgID, vk.ID)
 		rKeys, err := rdb.Keys(ctx, keyPattern).Result()
 		if err != nil || len(rKeys) == 0 {
 			return nil, fmt.Errorf("expected rolling spend ZSET matching %s, got %v (err=%v)", keyPattern, rKeys, err)
+		}
+		spendKey = rKeys[0]
+		if err := rdb.ZScore(ctx, spendKey, settledMember).Err(); err != nil {
+			return nil, fmt.Errorf("Redis and PostgreSQL must share the admitted charge ID: %w", err)
 		}
 		return rdb.Del(ctx, rKeys...).Result()
 	}); err != nil {
@@ -230,6 +241,12 @@ func TestLiveStack_Rolling24hRecoveryAndDualNodeConcurrency(t *testing.T) {
 	}
 	if got := callChat(ts1.URL, vk.RawKey); got != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after deleting only rolling spend ZSET (reload from Postgres), got %d", got)
+	}
+
+	// Model a settlement recreating the sorted set before recovery. The same
+	// charge now exists in both stores and must consume the budget only once.
+	if err := redisFabric.Client().ZAdd(ctx, spendKey, redis.Z{Score: float64(settledEntry.TimestampMs), Member: settledMember}).Err(); err != nil {
+		t.Fatalf("restore overlapping Redis settlement: %v", err)
 	}
 
 	// At t0 + 4h: charge 1 (t0-20h) has aged out (100,000 active out of 150,000).

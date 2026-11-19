@@ -9,8 +9,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -28,7 +30,9 @@ func TestPhase4_ImageEndpoints(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 
 	// Mock upstream OpenAI images server
+	var imageCalls atomic.Int32
 	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageCalls.Add(1)
 		switch r.URL.Path {
 		case "/v1/images/generations":
 		case "/v1/images/edits", "/v1/images/variations":
@@ -59,7 +63,9 @@ func TestPhase4_ImageEndpoints(t *testing.T) {
 	}))
 	defer imgSrv.Close()
 
-	gw, err := server.New(cfg, repo, nil, imgSrv.Client())
+	redis := storage.NewRedisFabric(miniredis.RunT(t).Addr(), "", 0)
+	t.Cleanup(func() { _ = redis.Client().Close() })
+	gw, err := server.New(cfg, repo, redis, imgSrv.Client())
 	require.NoError(t, err)
 	handler := gw.Handler()
 
@@ -203,4 +209,36 @@ func TestPhase4_ImageEndpoints(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code, "Response: %s", rec.Body.String())
 		})
 	}
+
+	t.Run("exhausted descriptor budget rejects every image operation before dispatch", func(t *testing.T) {
+		require.NoError(t, repo.UpsertBudgetWindowLimit(ctx, &domain.BudgetWindowLimit{
+			OrgID: org.ID, ScopeType: domain.QuotaScopeKey, ScopeID: issuedKey.ID,
+			WindowType: domain.BudgetWindowDaily, MaxBudgetMicros: 40000, SpentMicros: 40000,
+		}))
+		before := imageCalls.Load()
+		for _, path := range []string{"/v1/images/generations", "/v1/images/edits", "/v1/images/variations"} {
+			var body bytes.Buffer
+			contentType := "application/json"
+			if path == "/v1/images/generations" {
+				body.WriteString(`{"model":"dall-e-3","prompt":"make it blue","size":"1024x1024"}`)
+			} else {
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("image", "source.png")
+				require.NoError(t, err)
+				_, _ = part.Write([]byte("\x89PNG\r\n\x1a\nsource"))
+				require.NoError(t, writer.WriteField("model", "dall-e-3"))
+				require.NoError(t, writer.WriteField("prompt", "make it blue"))
+				require.NoError(t, writer.Close())
+				contentType = writer.FormDataContentType()
+			}
+			req := httptest.NewRequest(http.MethodPost, path, &body)
+			req.Header.Set("Content-Type", contentType)
+			req.Header.Set("Authorization", "Bearer "+issuedKey.RawKey)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusTooManyRequests, rec.Code, "%s: %s", path, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "key_budget_exceeded")
+		}
+		require.Equal(t, before, imageCalls.Load())
+	})
 }
