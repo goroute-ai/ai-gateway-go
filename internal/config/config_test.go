@@ -832,12 +832,84 @@ func TestConfig_PreviousKEKsAndKeyRotationSinkValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects unsupported sink driver", func(t *testing.T) {
-		c := config.Default()
-		c.Server.Environment = "test"
-		c.Auth.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "gcp_sm"}
-		if err := c.Validate(); err == nil {
-			t.Fatal("expected validation error for unsupported sink driver")
+	t.Run("rejects unsupported or incomplete sink and delivery config", func(t *testing.T) {
+		cases := []struct {
+			name string
+			mod  func(*config.AuthConfig)
+		}{
+			{
+				name: "unsupported driver",
+				mod:  func(a *config.AuthConfig) { a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "gcp_sm"} },
+			},
+			{
+				name: "delivery url without token",
+				mod:  func(a *config.AuthConfig) { a.KeyRotationDeliveryURL = "https://vault.example.com/hook" },
+			},
+			{
+				name: "delivery url plain http",
+				mod: func(a *config.AuthConfig) {
+					a.KeyRotationDeliveryURL = "http://vault.example.com/hook"
+					a.KeyRotationDeliveryToken = "tok"
+				},
+			},
+			{
+				name: "webhook sink missing address",
+				mod: func(a *config.AuthConfig) {
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "webhook", Token: "tok"}
+				},
+			},
+			{
+				name: "webhook sink missing token",
+				mod: func(a *config.AuthConfig) {
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "webhook", Address: "https://vault.example.com/hook"}
+				},
+			},
+			{
+				name: "vault_kv2 sink missing token",
+				mod: func(a *config.AuthConfig) {
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "vault_kv2", Address: "https://vault.example.com"}
+				},
+			},
+			{
+				name: "vault_kv2 sink http address",
+				mod: func(a *config.AuthConfig) {
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "vault_kv2", Address: "http://vault.example.com", Token: "tok"}
+				},
+			},
+			{
+				name: "aws sink missing credentials without ambient iam",
+				mod: func(a *config.AuthConfig) {
+					a.AllowAmbientCloudIAM = false
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "aws_secrets_manager", Region: "us-east-1"}
+				},
+			},
+			{
+				name: "aws sink missing region with ambient iam",
+				mod: func(a *config.AuthConfig) {
+					a.AllowAmbientCloudIAM = true
+					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "aws_secrets_manager"}
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				c := config.Default()
+				c.Server.Environment = "test"
+				tc.mod(&c.Auth)
+				if err := c.Validate(); err == nil {
+					t.Fatalf("expected validation error for %s", tc.name)
+				}
+			})
+		}
+
+		// Valid webhook reusing legacy delivery url without duplicating sink address succeeds.
+		ok := config.Default()
+		ok.Server.Environment = "test"
+		ok.Auth.KeyRotationDeliveryURL = "https://vault.example.com/hook"
+		ok.Auth.KeyRotationDeliveryToken = "tok"
+		ok.Auth.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "webhook"}
+		if err := ok.Validate(); err != nil {
+			t.Fatalf("expected webhook inheriting delivery_url to validate, got %v", err)
 		}
 	})
 }

@@ -878,7 +878,7 @@ func TestKeyRotationManager_SecretSinkRetryPreservesStagedKey(t *testing.T) {
 		Now:          func() time.Time { return now },
 		SecretSink: auth.KeySecretSinkFunc(func(_ context.Context, ev auth.KeyRotatedSecretEvent) error {
 			attempts++
-			if attempts == 1 {
+			if attempts <= 2 {
 				return errors.New("transient secret manager outage")
 			}
 			delivered = append(delivered, ev)
@@ -886,7 +886,7 @@ func TestKeyRotationManager_SecretSinkRetryPreservesStagedKey(t *testing.T) {
 		}),
 	})
 
-	// First sweep fails delivery -> staged encrypted key must stay persisted for idempotent retry.
+	// First sweep fails delivery -> staged encrypted key must stay persisted and record one failure audit entry.
 	res1, err := mgr.RunOnce(ctx)
 	if err != nil {
 		t.Fatalf("RunOnce #1 unexpected error: %v", err)
@@ -906,16 +906,48 @@ func TestKeyRotationManager_SecretSinkRetryPreservesStagedKey(t *testing.T) {
 	}
 	deliveries1, failures1 := mgr.DeliveryStats()
 	if deliveries1 != 0 || failures1 != 1 {
-		t.Fatalf("DeliveryStats after failure = (%d, %d), want (0, 1)", deliveries1, failures1)
+		t.Fatalf("DeliveryStats after failure #1 = (%d, %d), want (0, 1)", deliveries1, failures1)
+	}
+	logs1, err := repo.ListAuditLogs(ctx, "org-sink-retry", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	countAction := func(logs []*domain.AuditLog, action string) int {
+		n := 0
+		for _, l := range logs {
+			if l != nil && l.Action == action {
+				n++
+			}
+		}
+		return n
+	}
+	if got := countAction(logs1, "virtual_key.auto_rotation_failed"); got != 1 {
+		t.Fatalf("expected 1 virtual_key.auto_rotation_failed audit log after RunOnce #1, got %d", got)
 	}
 
-	// Second sweep retries exact same staged key hash and promotes it cleanly.
-	res2, err := mgr.RunOnce(ctx)
+	// Second sweep fails again on already-staged key -> must NOT duplicate failed audit log entry.
+	res2Fail, err := mgr.RunOnce(ctx)
 	if err != nil {
 		t.Fatalf("RunOnce #2 unexpected error: %v", err)
 	}
-	if res2.Errors != 0 || res2.RotatedKeys != 1 || len(delivered) != 1 {
-		t.Fatalf("expected recovery on RunOnce #2, got res=%+v delivered=%d", res2, len(delivered))
+	if res2Fail.Errors != 1 || res2Fail.RotatedKeys != 0 {
+		t.Fatalf("expected Errors=1 RotatedKeys=0 on RunOnce #2 failure, got %+v", res2Fail)
+	}
+	logs2, err := repo.ListAuditLogs(ctx, "org-sink-retry", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAction(logs2, "virtual_key.auto_rotation_failed"); got != 1 {
+		t.Fatalf("expected throttled 1 virtual_key.auto_rotation_failed audit log after RunOnce #2, got %d", got)
+	}
+
+	// Third sweep retries exact same staged key hash and promotes it cleanly.
+	res3, err := mgr.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce #3 unexpected error: %v", err)
+	}
+	if res3.Errors != 0 || res3.RotatedKeys != 1 || len(delivered) != 1 {
+		t.Fatalf("expected recovery on RunOnce #3, got res=%+v delivered=%d", res3, len(delivered))
 	}
 	if auth.HashKey(delivered[0].RawKey) != vkStaged.StagedKeyHash {
 		t.Fatalf("expected retry delivery for staged hash %q, got %q", vkStaged.StagedKeyHash, auth.HashKey(delivered[0].RawKey))
@@ -927,8 +959,15 @@ func TestKeyRotationManager_SecretSinkRetryPreservesStagedKey(t *testing.T) {
 	if vkPromoted.KeyHash != vkStaged.StagedKeyHash || vkPromoted.StagedKeyHash != "" || vkPromoted.StagedKeyDEK != "" {
 		t.Fatalf("expected staged key promoted and cleared, got hash=%q staged=%q dek=%q", vkPromoted.KeyHash, vkPromoted.StagedKeyHash, vkPromoted.StagedKeyDEK)
 	}
-	deliveries2, failures2 := mgr.DeliveryStats()
-	if deliveries2 != 1 || failures2 != 1 {
-		t.Fatalf("DeliveryStats after retry = (%d, %d), want (1, 1)", deliveries2, failures2)
+	deliveries3, failures3 := mgr.DeliveryStats()
+	if deliveries3 != 1 || failures3 != 2 {
+		t.Fatalf("DeliveryStats after retry = (%d, %d), want (1, 2)", deliveries3, failures3)
+	}
+	logs3, err := repo.ListAuditLogs(ctx, "org-sink-retry", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAction(logs3, "virtual_key.auto_rotated"); got != 1 {
+		t.Fatalf("expected 1 virtual_key.auto_rotated audit log after promotion, got %d", got)
 	}
 }

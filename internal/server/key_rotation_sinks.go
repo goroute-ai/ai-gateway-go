@@ -21,15 +21,7 @@ import (
 )
 
 func validateStrictRotationHTTPSURL(raw, errPrefix string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", nil
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("%s requires an HTTPS URL without credentials, a query, or a fragment", errPrefix)
-	}
-	return strings.TrimRight(trimmed, "/"), nil
+	return config.ValidateStrictHTTPSURL(raw, errPrefix)
 }
 
 func newRotationHTTPClient(policy *network.Policy) *http.Client {

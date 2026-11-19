@@ -1105,6 +1105,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid auth.key_rotation_sink.driver %q", c.Auth.KeyRotationSink.Driver)
 	}
+	if err := validateAuthKeyRotation(c.Auth); err != nil {
+		return err
+	}
 
 	const (
 		defaultMasterAdminKey      = "sk-gw-master-admin-default-key-change-me"
@@ -1625,4 +1628,81 @@ func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) 
 	default:
 		return "", spec, spec
 	}
+}
+
+// ValidateStrictHTTPSURL verifies that a non-empty endpoint is HTTPS with a hostname
+// and no embedded userinfo, query parameters, or fragment, returning the trimmed base URL.
+func ValidateStrictHTTPSURL(raw, errPrefix string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%s requires an HTTPS URL without credentials, a query, or a fragment", errPrefix)
+	}
+	return strings.TrimRight(trimmed, "/"), nil
+}
+
+func validateAuthKeyRotation(authCfg AuthConfig) error {
+	if endpoint, err := ValidateStrictHTTPSURL(ResolveEnvValue(authCfg.KeyRotationDeliveryURL), "key rotation delivery"); err != nil {
+		return err
+	} else if endpoint != "" && ResolveEnvValue(authCfg.KeyRotationDeliveryToken) == "" {
+		return fmt.Errorf("auth.key_rotation_delivery_token is required when auth.key_rotation_delivery_url is configured")
+	}
+
+	sink := authCfg.KeyRotationSink
+	driver := strings.ToLower(strings.TrimSpace(sink.Driver))
+	if driver == "" {
+		return nil
+	}
+	switch driver {
+	case "webhook":
+		addr := ResolveEnvValue(sink.Address)
+		if strings.TrimSpace(addr) == "" {
+			if strings.TrimSpace(ResolveEnvValue(authCfg.KeyRotationDeliveryURL)) != "" {
+				return nil
+			}
+			return fmt.Errorf("auth.key_rotation_sink.address is required for webhook driver")
+		}
+		if _, err := ValidateStrictHTTPSURL(addr, "key rotation sink webhook"); err != nil {
+			return err
+		}
+		token := ResolveEnvValue(sink.Token)
+		if token == "" {
+			token = ResolveEnvValue(authCfg.KeyRotationDeliveryToken)
+		}
+		if token == "" {
+			return fmt.Errorf("auth.key_rotation_sink.token is required for webhook driver")
+		}
+	case "vault_kv2":
+		addr, err := ValidateStrictHTTPSURL(ResolveEnvValue(sink.Address), "key rotation Vault KV v2 sink")
+		if err != nil {
+			return err
+		}
+		if addr == "" {
+			return fmt.Errorf("auth.key_rotation_sink.address is required for vault_kv2 driver")
+		}
+		if ResolveEnvValue(sink.Token) == "" {
+			return fmt.Errorf("auth.key_rotation_sink.token is required for vault_kv2 driver")
+		}
+	case "aws_secrets_manager":
+		accessKey := strings.TrimSpace(ResolveEnvValue(sink.AWSAccessKeyID))
+		secretKey := strings.TrimSpace(ResolveEnvValue(sink.AWSSecretAccessKey))
+		if (accessKey == "" || secretKey == "") && !authCfg.AllowAmbientCloudIAM {
+			return fmt.Errorf("aws_secrets_manager sink requires static AWS credentials when auth.allow_ambient_cloud_iam is false")
+		}
+		addr := ResolveEnvValue(sink.Address)
+		if strings.TrimSpace(addr) != "" {
+			if _, err := ValidateStrictHTTPSURL(addr, "AWS Secrets Manager sink"); err != nil {
+				return err
+			}
+		} else {
+			region := strings.TrimSpace(ResolveEnvValue(sink.Region))
+			if region == "" && strings.TrimSpace(os.Getenv("AWS_REGION")) == "" && strings.TrimSpace(os.Getenv("AWS_DEFAULT_REGION")) == "" {
+				return fmt.Errorf("auth.key_rotation_sink.region is required for aws_secrets_manager driver")
+			}
+		}
+	}
+	return nil
 }

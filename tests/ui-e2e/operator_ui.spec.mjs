@@ -224,7 +224,7 @@ async function run() {
 
     await keyRow.getByText('Grace', { exact: true }).waitFor({ state: 'visible' });
 
-    // Check 4b: KeysView single Block/Unblock, status filter ("Blocked"), and bulk Block/Unblock
+    // Check 4b: KeysView single Block/Unblock, status filter ("Blocked"), toolbar bulk Block/Unblock, and $0 spend reset
     page.once('dialog', (dialog) => dialog.accept());
     await keyRow.locator('button[title="Block"]').click();
     await keyRow.getByText('Revoked', { exact: true }).waitFor({ state: 'visible' });
@@ -234,10 +234,28 @@ async function run() {
     await keyRow.waitFor({ state: 'visible' });
     await statusSelect.selectOption('');
 
-    // Bulk Unblock then Block/Unblock via toolbar checkboxes
+    // Bulk Unblock -> Bulk Block -> Bulk Unblock via toolbar checkboxes (actionMut clears selection on each success)
+    const bulkToolbar = page.locator('div', { has: page.getByRole('button', { name: 'Clear', exact: true }) }).last();
     await keyRow.locator('input[type="checkbox"]').check();
-    await page.getByRole('button', { name: 'Unblock', exact: true }).first().click();
+    await bulkToolbar.getByRole('button', { name: 'Unblock', exact: true }).click();
     await keyRow.getByText('Active', { exact: true }).waitFor({ state: 'visible' });
+
+    await keyRow.locator('input[type="checkbox"]').check();
+    await bulkToolbar.getByRole('button', { name: 'Block', exact: true }).click();
+    await keyRow.getByText('Revoked', { exact: true }).waitFor({ state: 'visible' });
+
+    await keyRow.locator('input[type="checkbox"]').check();
+    await bulkToolbar.getByRole('button', { name: 'Unblock', exact: true }).click();
+    await keyRow.getByText('Active', { exact: true }).waitFor({ state: 'visible' });
+
+    // Single-key $0 spend reset action
+    const resetSpendPromise = page.waitForResponse(
+      (res) => res.url().includes(`/admin/v1/keys/${createdKeyId}/reset-spend`) && res.request().method() === 'POST'
+    );
+    page.once('dialog', (dialog) => dialog.accept());
+    await keyRow.locator('button[title="Reset spend"]').click();
+    const resetSpendResp = await resetSpendPromise;
+    assert.equal(resetSpendResp.status(), 200, 'expected 200 from POST /admin/v1/keys/{id}/reset-spend');
 
     // Check 4c: OrganizationsView Teams tab (team_member_permissions) + bulk sync Team Members
     await page.locator('aside button', { hasText: 'Orgs & Teams' }).click();

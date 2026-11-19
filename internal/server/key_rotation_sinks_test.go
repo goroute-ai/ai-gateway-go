@@ -166,4 +166,53 @@ func TestKeyRotationSecretSink_VaultKV2AndWebhookAndAWS(t *testing.T) {
 			t.Fatal("expected strict SSRF policy to block delivery to loopback HTTPS URL")
 		}
 	})
+
+	t.Run("webhook delivers bearer token and full event payload over TLS and deduplicates legacy url", func(t *testing.T) {
+		var gotAuth, gotMethod string
+		var gotPayload auth.KeyRotatedSecretEvent
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotAuth = r.Header.Get("Authorization")
+			if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+				t.Fatalf("decode webhook payload: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		sink, err := newKeyRotationSecretSinkWithClient(config.AuthConfig{
+			KeyRotationSink: config.KeyRotationSinkConfig{
+				Driver:  "webhook",
+				Address: srv.URL,
+				Token:   "webhook-secret-token",
+			},
+		}, srv.Client(), nil)
+		if err != nil {
+			t.Fatalf("newKeyRotationSecretSinkWithClient(webhook): %v", err)
+		}
+		if err := sink.DeliverRotatedSecret(ctx, event); err != nil {
+			t.Fatalf("DeliverRotatedSecret(webhook): %v", err)
+		}
+		if gotMethod != http.MethodPost || gotAuth != "Bearer webhook-secret-token" {
+			t.Fatalf("webhook method=%q auth=%q", gotMethod, gotAuth)
+		}
+		if gotPayload.RawKey != event.RawKey || gotPayload.VirtualKeyID != event.VirtualKeyID || gotPayload.OrgID != event.OrgID {
+			t.Fatalf("webhook payload mismatch: %+v", gotPayload)
+		}
+
+		// When driver=webhook omits address and legacy key_rotation_delivery_url is set, returns nil to avoid duplicate POSTs.
+		dedupSink, err := newKeyRotationSecretSink(config.AuthConfig{
+			KeyRotationDeliveryURL:   srv.URL,
+			KeyRotationDeliveryToken: "legacy-token",
+			KeyRotationSink: config.KeyRotationSinkConfig{
+				Driver: "webhook",
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("newKeyRotationSecretSink(dedup): %v", err)
+		}
+		if dedupSink != nil {
+			t.Fatalf("expected nil sink when webhook driver omits address alongside legacy key_rotation_delivery_url")
+		}
+	})
 }

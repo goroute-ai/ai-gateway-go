@@ -647,6 +647,7 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 		if vk.KeyRotationAt.UTC().After(now) {
 			continue
 		}
+		alreadyStaged := vk.StagedKeyHash != "" && vk.StagedEncryptedRawKey != "" && vk.StagedKeyDEK != ""
 		activeSink := m.currentSecretSink()
 		usePreCommit := m.deliver != nil || (activeSink != nil && m.authSvc.vault != nil)
 		var deliverFn stagedRotationDelivery
@@ -675,6 +676,23 @@ func (m *KeyRotationManager) RunOnce(ctx context.Context) (KeyRotationSweepResul
 				"org_id", vk.OrgID,
 				"error", rotErr,
 			)
+			// Record one sanitized failure event on initial staging so prolonged outages do not flood audit_logs.
+			if !alreadyStaged {
+				_ = m.repo.RecordAuditLog(ctx, &domain.AuditLog{
+					OrgID:      vk.OrgID,
+					ActorID:    "key-rotation-worker",
+					Action:     "virtual_key.auto_rotation_failed",
+					Resource:   "virtual_key",
+					ResourceID: vk.ID,
+					Details: map[string]any{
+						"key_prefix": vk.KeyPrefix,
+						"name":       vk.Name,
+						"staged":     true,
+						"pod_id":     m.podID,
+						"error":      rotErr.Error(),
+					},
+				})
+			}
 			result.Errors++
 			continue
 		}
