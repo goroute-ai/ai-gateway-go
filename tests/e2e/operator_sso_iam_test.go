@@ -23,7 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestE2E_GW_AQ_17_OperatorSessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
+func TestE2E_Operator_SessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
 	const breachedPw = "BreachedPass123!"
 	const validPw = "CleanOperator#2026!"
 	const newCleanPw = "RotatedOperator#2026!"
@@ -35,7 +35,7 @@ func TestE2E_GW_AQ_17_OperatorSessionsPasswordLoginThrottleAndHIBP(t *testing.T)
 		cfg.Auth.SessionTTL = 1 * time.Hour
 	})
 
-	org := cluster.createOrg("GW-AQ-17 Operator Auth Org")
+	org := cluster.createOrg("Operator Auth Org")
 	email := "op-" + cluster.runTag + "@corp.test"
 	var usr domain.User
 	resp, raw := cluster.c1.doJSON(http.MethodPost, "/admin/v1/users", cluster.adminHdrs, map[string]any{
@@ -144,7 +144,7 @@ func TestE2E_GW_AQ_17_OperatorSessionsPasswordLoginThrottleAndHIBP(t *testing.T)
 	}
 }
 
-func TestE2E_GW_AQ_18_OIDCPKCEBrowserAndCLIDeviceSSO(t *testing.T) {
+func TestE2E_Operator_OIDCPKCEBrowserAndCLIDeviceSSO(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	var defaultOrgID string
 	var cluster *dualNodeTestCluster
@@ -180,7 +180,7 @@ func TestE2E_GW_AQ_18_OIDCPKCEBrowserAndCLIDeviceSSO(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-18 SSO Org")
+	org := cluster.createOrg("SSO Org")
 	defaultOrgID = org.ID
 	// Re-configure SSO providers with DefaultOrgID = org.ID on a clean cluster so JIT SSO lands inside org.ID.
 	ssoCluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
@@ -316,15 +316,15 @@ func TestE2E_GW_AQ_18_OIDCPKCEBrowserAndCLIDeviceSSO(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_20_DistributedUpstreamTokenCacheRDSIAMAndOptInCloudIAM(t *testing.T) {
+func TestE2E_IAM_DistributedUpstreamTokenCacheRDSIAMAndOptInCloudIAM(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	idp.SetOAuthTokenDelay(40 * time.Millisecond)
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	orgA := cluster.createOrg("GW-AQ-20 Upstream OAuth Org A")
-	orgB := cluster.createOrg("GW-AQ-20 Upstream OAuth Org B")
+	orgA := cluster.createOrg("Upstream OAuth Org A")
+	orgB := cluster.createOrg("Upstream OAuth Org B")
 
 	// Register OAuth2-authenticated MCP servers in Org A and Org B backed by idp.OAuthTokenURL().
 	setupOAuthMCP := func(org domain.Organization, slug string) domain.VirtualKey {

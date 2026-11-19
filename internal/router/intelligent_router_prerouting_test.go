@@ -25,11 +25,11 @@ func (e *errPreRouter) Route(_ context.Context, _ string, _ *domain.CanonicalCha
 	return "", "", 0, errors.New("simulated prerouter failure")
 }
 
-func seedV120TestOrgAndGroups(t *testing.T, ctx context.Context, repo storage.Repository) *domain.Organization {
+func seedRoutingTestOrgAndGroups(t *testing.T, ctx context.Context, repo storage.Repository) *domain.Organization {
 	t.Helper()
 	org := &domain.Organization{
-		Name:     "V120RoutingOrg",
-		Slug:     "v120-routing-org",
+		Name:     "PreRouterTestOrg",
+		Slug:     "prerouter-test-org",
 		IsActive: true,
 	}
 	if err := repo.CreateOrganization(ctx, org); err != nil {
@@ -116,7 +116,7 @@ func seedV120TestOrgAndGroups(t *testing.T, ctx context.Context, repo storage.Re
 func TestIntelligentRouter_PreRouterWiringAutoAndVirtualAliases(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
-	org := seedV120TestOrgAndGroups(t, ctx, repo)
+	org := seedRoutingTestOrgAndGroups(t, ctx, repo)
 
 	cfg := config.Default().Router
 	cfg.Bandit = config.BanditConfig{
@@ -282,7 +282,7 @@ func TestIntelligentRouter_PreRouterWiringAutoAndVirtualAliases(t *testing.T) {
 func TestIntelligentRouter_PreRouterModesAndFallbackToHeuristic(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
-	org := seedV120TestOrgAndGroups(t, ctx, repo)
+	org := seedRoutingTestOrgAndGroups(t, ctx, repo)
 
 	// Case 1: PreRouterMode="semantic" without SetSemanticPreRouter falls back to heuristic.
 	semModeCfg := config.Default().Router
@@ -425,7 +425,7 @@ func TestIntelligentRouter_VirtualAliasSmartFallbackAndExplicitNoRegression(t *t
 func TestIntelligentRouter_ConcurrentSettersAndResolveGroup(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
-	org := seedV120TestOrgAndGroups(t, ctx, repo)
+	org := seedRoutingTestOrgAndGroups(t, ctx, repo)
 
 	cfg := config.Default().Router
 	cfg.Bandit.Enabled = true

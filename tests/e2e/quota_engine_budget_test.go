@@ -23,7 +23,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func TestE2E_GW_AQ_01_UserBudgetGateLeaseRenewalAndCancelSettlement(t *testing.T) {
+func TestE2E_Quota_UserBudgetGateLeaseRenewalAndCancelSettlement(t *testing.T) {
 	dispatched := make(chan struct{}, 2)
 	blockUpstream := make(chan struct{})
 	var closeBlockOnce sync.Once
@@ -62,7 +62,7 @@ func TestE2E_GW_AQ_01_UserBudgetGateLeaseRenewalAndCancelSettlement(t *testing.T
 
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-01 User Budget & Lease Org")
+	org := cluster.createOrg("User Budget & Lease Org")
 	modelAlias := cluster.uniqueID("u-chat")
 	// Pricing: input 10_000_000 micros/1M (10_000 for 1000 toks), output 20_000_000 (10_000 for 500 toks) => 20,000/call.
 	cluster.seedOpenAIModel(ctx, org.ID, modelAlias, streamUpstream.URL+"/v1", 10_000_000, 20_000_000, 0, 0)
@@ -169,7 +169,7 @@ func TestE2E_GW_AQ_01_UserBudgetGateLeaseRenewalAndCancelSettlement(t *testing.T
 	})
 }
 
-func TestE2E_GW_AQ_02_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
+func TestE2E_Quota_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 	gate := make(chan struct{})
 	inFlight := make(chan struct{}, 4)
 	var gateOnce sync.Once
@@ -201,7 +201,7 @@ func TestE2E_GW_AQ_02_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-02 Realtime & Batch Org")
+	org := cluster.createOrg("Realtime & Batch Org")
 	modelAlias := cluster.uniqueID("rtb-chat")
 	cluster.seedOpenAIModel(ctx, org.ID, modelAlias, upstream.URL+"/v1", 2_000_000, 8_000_000, 0, 0)
 
@@ -323,7 +323,7 @@ func TestE2E_GW_AQ_02_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_03_SoftBudgetWebhookThrottlingAndModelFallback(t *testing.T) {
+func TestE2E_Quota_SoftBudgetWebhookThrottlingAndModelFallback(t *testing.T) {
 	sink := newMockSecurityAndWebhookSink(t, nil, "")
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
@@ -333,7 +333,7 @@ func TestE2E_GW_AQ_03_SoftBudgetWebhookThrottlingAndModelFallback(t *testing.T) 
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-03 Soft Budget & Fallback Org")
+	org := cluster.createOrg("Soft Budget & Fallback Org")
 	expModel := cluster.uniqueID("expensive-mod")
 	cheapModel := cluster.uniqueID("cheap-mod")
 	upstream.SetUsage(100, 50)
@@ -400,12 +400,12 @@ func TestE2E_GW_AQ_03_SoftBudgetWebhookThrottlingAndModelFallback(t *testing.T) 
 	})
 }
 
-func TestE2E_GW_AQ_13_AtomicDescriptorEngineNoPartialLeakAndIdempotency(t *testing.T) {
+func TestE2E_Quota_AtomicDescriptorEngineNoPartialLeakAndIdempotency(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-13 Atomic Descriptor Org")
+	org := cluster.createOrg("Atomic Descriptor Org")
 	modelAlias := cluster.uniqueID("desc-chat")
 	cluster.seedOpenAIModel(ctx, org.ID, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 
@@ -503,7 +503,7 @@ func TestE2E_GW_AQ_13_AtomicDescriptorEngineNoPartialLeakAndIdempotency(t *testi
 	rel1(10, 10, 1_000) // replay settle must be idempotent no-op!
 }
 
-func TestE2E_GW_AQ_14_PerModelITPM_OTPM_TPD_MultiWindow_TempBudget(t *testing.T) {
+func TestE2E_Quota_PerModelITPM_OTPM_TPD_MultiWindow_TempBudget(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
@@ -511,7 +511,7 @@ func TestE2E_GW_AQ_14_PerModelITPM_OTPM_TPD_MultiWindow_TempBudget(t *testing.T)
 	now := time.Now().UTC()
 	cluster.setClock(now)
 
-	org := cluster.createOrg("GW-AQ-14 MultiWindow & ITPM/OTPM Org")
+	org := cluster.createOrg("MultiWindow & ITPM/OTPM Org")
 	modelA := cluster.uniqueID("mw-model-a")
 	modelB := cluster.uniqueID("mw-model-b")
 	upstream.SetUsage(500, 150)

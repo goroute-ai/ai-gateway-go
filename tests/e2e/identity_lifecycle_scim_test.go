@@ -17,7 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func TestE2E_GW_AQ_09_ScheduledRotationStagedDeliveryGraceAndPresets(t *testing.T) {
+func TestE2E_Identity_ScheduledRotationStagedDeliveryGraceAndPresets(t *testing.T) {
 	sink := newMockSecurityAndWebhookSink(t, nil, "rot-delivery-bearer-token")
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
@@ -47,7 +47,7 @@ func TestE2E_GW_AQ_09_ScheduledRotationStagedDeliveryGraceAndPresets(t *testing.
 		}
 	}
 
-	org := cluster.createOrg("GW-AQ-09 Rotation Org")
+	org := cluster.createOrg("Rotation Org")
 	modelAlias := cluster.uniqueID("rot-chat")
 	cluster.seedOpenAIModel(ctx, org.ID, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 	chatReq := map[string]any{"model": modelAlias, "messages": []map[string]string{{"role": "user", "content": "rot"}}}
@@ -191,7 +191,7 @@ func TestE2E_GW_AQ_09_ScheduledRotationStagedDeliveryGraceAndPresets(t *testing.
 	}
 }
 
-func TestE2E_GW_AQ_10_TeamAdminRBACAndDynamicAccessGroupRules(t *testing.T) {
+func TestE2E_Identity_TeamAdminRBACAndDynamicAccessGroupRules(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
@@ -209,7 +209,7 @@ func TestE2E_GW_AQ_10_TeamAdminRBACAndDynamicAccessGroupRules(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-10 RBAC & Rules Org")
+	org := cluster.createOrg("RBAC & Rules Org")
 	modelBase := cluster.uniqueID("rbac-base")
 	modelDyn := cluster.uniqueID("rbac-dyn")
 	cluster.seedOpenAIModel(ctx, org.ID, modelBase, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
@@ -283,12 +283,12 @@ func TestE2E_GW_AQ_10_TeamAdminRBACAndDynamicAccessGroupRules(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_11_TeamMembershipsProjectsAndAllowlistPrecedence(t *testing.T) {
+func TestE2E_Identity_TeamMembershipsProjectsAndAllowlistPrecedence(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-11 Projects & Memberships Org")
+	org := cluster.createOrg("Projects & Memberships Org")
 	modelMAG := cluster.uniqueID("proj-mag")
 	modelDeniedByProject := cluster.uniqueID("proj-denied")
 	// 10,000 micros/1M * 5_000_000? Let's make 1,000 prompt + 500 completion tokens cost cleanly:
@@ -400,12 +400,12 @@ func TestE2E_GW_AQ_11_TeamMembershipsProjectsAndAllowlistPrecedence(t *testing.T
 	}
 }
 
-func TestE2E_GW_AQ_12_SCIMv2AtomicGroupsImpersonationAndAgentNarrowing(t *testing.T) {
+func TestE2E_Identity_SCIMv2AtomicGroupsImpersonationAndAgentNarrowing(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-12 SCIM Org")
+	org := cluster.createOrg("SCIM Org")
 	modelAllowed := cluster.uniqueID("scim-allowed")
 	modelExtra := cluster.uniqueID("scim-extra")
 	cluster.seedOpenAIModel(ctx, org.ID, modelAllowed, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)

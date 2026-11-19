@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type v120TestHarness struct {
+type routingTestHarness struct {
 	t      *testing.T
 	ctx    context.Context
 	cfg    *config.Config
@@ -36,11 +36,11 @@ type v120TestHarness struct {
 	rawKey string
 }
 
-func newV120Harness(t *testing.T, modifyCfg func(*config.Config)) *v120TestHarness {
+func newRoutingHarness(t *testing.T, modifyCfg func(*config.Config)) *routingTestHarness {
 	t.Helper()
 	ctx := context.Background()
 	cfg := config.Default()
-	cfg.Auth.MasterAdminKey = "sk-gw-v120-admin-test-key"
+	cfg.Auth.MasterAdminKey = "sk-gw-routing-admin-test-key"
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	cfg.Router.BaseRetryDelay = time.Millisecond
@@ -68,8 +68,8 @@ func newV120Harness(t *testing.T, modifyCfg func(*config.Config)) *v120TestHarne
 	})
 
 	org := &domain.Organization{
-		ID:       "org-v120-" + strings.ReplaceAll(t.Name(), "/", "-"),
-		Name:     "V120 Org",
+		ID:       "org-routing-" + strings.ReplaceAll(t.Name(), "/", "-"),
+		Name:     "Routing Test Org",
 		Slug:     "v120-org-" + strconv.FormatInt(time.Now().UnixNano(), 10),
 		IsActive: true,
 	}
@@ -95,7 +95,7 @@ func newV120Harness(t *testing.T, modifyCfg func(*config.Config)) *v120TestHarne
 	require.NoError(t, json.Unmarshal(keyRec.Body.Bytes(), &issued))
 	require.NotEmpty(t, issued.RawKey)
 
-	return &v120TestHarness{
+	return &routingTestHarness{
 		t:      t,
 		ctx:    ctx,
 		cfg:    cfg,
@@ -107,7 +107,7 @@ func newV120Harness(t *testing.T, modifyCfg func(*config.Config)) *v120TestHarne
 	}
 }
 
-func (h *v120TestHarness) createOpenAICredential(name, baseURL string) *domain.ProviderCredential {
+func (h *routingTestHarness) createOpenAICredential(name, baseURL string) *domain.ProviderCredential {
 	h.t.Helper()
 	credBody, _ := json.Marshal(map[string]any{
 		"org_id":   h.org.ID,
@@ -128,7 +128,7 @@ func (h *v120TestHarness) createOpenAICredential(name, baseURL string) *domain.P
 	return &cred
 }
 
-func (h *v120TestHarness) registerModelAndDep(
+func (h *routingTestHarness) registerModelAndDep(
 	group *domain.ModelGroup,
 	gm *domain.GlobalModel,
 	cred *domain.ProviderCredential,
@@ -159,7 +159,7 @@ func (h *v120TestHarness) registerModelAndDep(
 	return dep
 }
 
-func (h *v120TestHarness) doRequest(method, path string, headers map[string]string, body any) *httptest.ResponseRecorder {
+func (h *routingTestHarness) doRequest(method, path string, headers map[string]string, body any) *httptest.ResponseRecorder {
 	h.t.Helper()
 	var rdr io.Reader
 	if body != nil {
@@ -204,8 +204,8 @@ func mockOpenAIChatServer(t *testing.T, id string, calls *atomic.Int32) *httptes
 	}))
 }
 
-func TestV120_ChatHeaderHintsAndSessionAffinity_SyncAndStream(t *testing.T) {
-	h := newV120Harness(t, nil)
+func TestRouting_ChatHeaderHintsAndSessionAffinity_SyncAndStream(t *testing.T) {
+	h := newRoutingHarness(t, nil)
 
 	var euCalls, usCalls, gpuCalls atomic.Int32
 	srvEU := mockOpenAIChatServer(t, "eu-gpu", &euCalls)
@@ -342,9 +342,9 @@ func TestV120_ChatHeaderHintsAndSessionAffinity_SyncAndStream(t *testing.T) {
 	_ = depEU
 }
 
-func TestV120_OversizedPromptContextWindowFallback_ValidatorToReliability(t *testing.T) {
+func TestRouting_OversizedPromptContextWindowFallback_ValidatorToReliability(t *testing.T) {
 	t.Run("explicit_context_window_fallbacks", func(t *testing.T) {
-		h := newV120Harness(t, nil)
+		h := newRoutingHarness(t, nil)
 
 		var smallCalls, largeCalls atomic.Int32
 		srvSmall := mockOpenAIChatServer(t, "small-ctx", &smallCalls)
@@ -413,7 +413,7 @@ func TestV120_OversizedPromptContextWindowFallback_ValidatorToReliability(t *tes
 	})
 
 	t.Run("default_fallbacks_validator_handoff", func(t *testing.T) {
-		h := newV120Harness(t, func(cfg *config.Config) {
+		h := newRoutingHarness(t, func(cfg *config.Config) {
 			cfg.Router.DefaultFallbacks = []domain.FallbackTarget{
 				{GroupAliasOrID: "default-large"},
 			}
@@ -461,9 +461,9 @@ func TestV120_OversizedPromptContextWindowFallback_ValidatorToReliability(t *tes
 	})
 }
 
-func TestV120_PriorityTierStepdownsAndMidStreamContinuation(t *testing.T) {
+func TestRouting_PriorityTierStepdownsAndMidStreamContinuation(t *testing.T) {
 	t.Run("priority_tier_stepdown_sync_and_stream", func(t *testing.T) {
-		h := newV120Harness(t, nil)
+		h := newRoutingHarness(t, nil)
 
 		srvFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -507,7 +507,7 @@ func TestV120_PriorityTierStepdownsAndMidStreamContinuation(t *testing.T) {
 	})
 
 	t.Run("mid_stream_continuation_header_and_merged_sse", func(t *testing.T) {
-		h := newV120Harness(t, func(cfg *config.Config) {
+		h := newRoutingHarness(t, func(cfg *config.Config) {
 			cfg.Router.EnableMidStreamContinuation = true
 			cfg.Router.MaxStreamContinuations = 1
 		})
@@ -605,8 +605,8 @@ func (p *customTestPreRouter) Route(_ context.Context, _ string, _ *domain.Canon
 	return p.target, p.reason, 0.99, nil
 }
 
-func TestV120_AddRoutingPluginAndRegisterPreRouter(t *testing.T) {
-	h := newV120Harness(t, nil)
+func TestRouting_AddRoutingPluginAndRegisterPreRouter(t *testing.T) {
+	h := newRoutingHarness(t, nil)
 	require.NotNil(t, h.gw.ReliabilityManager())
 	require.NotNil(t, h.gw.IntelligentRouter())
 
@@ -667,9 +667,9 @@ func TestV120_AddRoutingPluginAndRegisterPreRouter(t *testing.T) {
 	assert.Equal(t, int32(3), callsB.Load())
 }
 
-func TestV120_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *testing.T) {
+func TestRouting_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *testing.T) {
 	t.Run("deployment_budget_tracking_via_spend_worker", func(t *testing.T) {
-		h := newV120Harness(t, nil)
+		h := newRoutingHarness(t, nil)
 
 		var cappedCalls, backupCalls atomic.Int32
 		srvCapped := mockOpenAIChatServer(t, "capped", &cappedCalls)
@@ -763,7 +763,7 @@ func TestV120_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *testin
 		srvFast := mockOpenAIChatServer(t, "fast-sem", nil)
 		defer srvFast.Close()
 
-		h := newV120Harness(t, func(cfg *config.Config) {
+		h := newRoutingHarness(t, func(cfg *config.Config) {
 			cfg.Router.PreRouterMode = router.PreRouterModeSemantic
 			cfg.Router.SemanticRouter = config.SemanticRouterConfig{
 				Enabled:             true,
@@ -818,7 +818,7 @@ func TestV120_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *testin
 	})
 
 	t.Run("quality_cache_aware_bandit_and_scheduler", func(t *testing.T) {
-		h := newV120Harness(t, func(cfg *config.Config) {
+		h := newRoutingHarness(t, func(cfg *config.Config) {
 			cfg.Router.CacheAwareRouting = true
 			cfg.Router.PromptCacheAffinity = true
 			cfg.Router.Bandit = config.BanditConfig{
@@ -886,8 +886,8 @@ func TestV120_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *testin
 	})
 }
 
-func TestV120_ResponsesPreviousResponseAffinityAndMessagesTelemetry(t *testing.T) {
-	h := newV120Harness(t, nil)
+func TestRouting_ResponsesPreviousResponseAffinityAndMessagesTelemetry(t *testing.T) {
+	h := newRoutingHarness(t, nil)
 
 	var callsA, callsB atomic.Int32
 	srvA := mockOpenAIChatServer(t, "resp-a", &callsA)

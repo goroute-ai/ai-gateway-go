@@ -28,7 +28,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func postChatV120(t *testing.T, ts *httptest.Server, apiKey string, payload map[string]any) (*http.Response, []byte) {
+func postRoutingChat(t *testing.T, ts *httptest.Server, apiKey string, payload map[string]any) (*http.Response, []byte) {
 	t.Helper()
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -49,9 +49,9 @@ func postChatV120(t *testing.T, ts *httptest.Server, apiKey string, payload map[
 	return resp, raw
 }
 
-// TestRoutingV120_PostgresMigrations0020And0021 verifies that migrations 0020 and 0021
+// TestE2E_Routing_PostgresMigrations0020And0021 verifies that migrations 0020 and 0021
 // apply cleanly on live PostgreSQL and persist/reload all v1.20.0 routing schema columns.
-func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
+func TestE2E_Routing_PostgresMigrations0020And0021(t *testing.T) {
 	ctx := context.Background()
 	pgDSN := getEnvOrDefault("GATEWAY_POSTGRES_DSN", "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable")
 
@@ -104,7 +104,7 @@ func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
 	}
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	org := &domain.Organization{Name: "V120 Migration Org " + suffix, Slug: "v120-mig-" + suffix, IsActive: true}
+	org := &domain.Organization{Name: "Routing Migration Org " + suffix, Slug: "routing-mig-" + suffix, IsActive: true}
 	if err := pgRepo.CreateOrganization(ctx, org); err != nil {
 		t.Fatalf("CreateOrganization: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
 	gm := &domain.GlobalModel{
 		ID:                    "openai/v120-mig-" + suffix,
 		Provider:              domain.ProviderOpenAI,
-		ModelName:             "v120-mig-" + suffix,
+		ModelName:             "routing-mig-" + suffix,
 		QualityTier:           4,
 		SupportsInference:     true,
 		LifecycleStatus:       domain.ModelStatusActive,
@@ -208,9 +208,9 @@ func TestRoutingV120_PostgresMigrations0020And0021(t *testing.T) {
 	}
 }
 
-// TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker exercises multi-pod routing,
+// TestE2E_Routing_LiveClusterMultiPodRoutingAndCircuitBreaker exercises multi-pod routing,
 // shared session affinity, and cross-pod circuit breaker failover on live Postgres + Redis.
-func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
+func TestE2E_Routing_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	ts1, ts2, node1, node2, pgRepo, redisFabric, cleanup := setupDualNodeCluster(t)
 	defer cleanup()
 
@@ -247,7 +247,7 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 
 	var org domain.Organization
 	resp, raw := c1.doJSON("POST", "/admin/v1/organizations", adminHeaders, map[string]any{
-		"name": "LiveV120Org", "slug": "live-v120-" + suffix,
+		"name": "LiveRoutingClusterOrg", "slug": "live-routing-" + suffix,
 	}, &org)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create org failed: %d %s", resp.StatusCode, raw)
@@ -255,7 +255,7 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 
 	gmID := "openai/live-v120-" + suffix
 	if err := pgRepo.UpsertGlobalModel(ctx, &domain.GlobalModel{
-		ID: gmID, Provider: domain.ProviderOpenAI, ModelName: "live-v120-" + suffix,
+		ID: gmID, Provider: domain.ProviderOpenAI, ModelName: "live-routing-" + suffix,
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive, PricingStatus: domain.PricingStatusVerified,
 		MaxOutputTokens: 4096,
 	}); err != nil {
@@ -314,7 +314,7 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	}
 
 	// Healthy request on Pod 1
-	r1, b1 := postChatV120(t, ts1, vk.RawKey, reqBody)
+	r1, b1 := postRoutingChat(t, ts1, vk.RawKey, reqBody)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("pod1 healthy request failed: %d %s", r1.StatusCode, string(b1))
 	}
@@ -322,7 +322,7 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	// Trip primary circuit on Pod 1
 	primaryFail.Store(true)
 	for i := 0; i < 2; i++ {
-		rTrip, bTrip := postChatV120(t, ts1, vk.RawKey, reqBody)
+		rTrip, bTrip := postRoutingChat(t, ts1, vk.RawKey, reqBody)
 		if rTrip.StatusCode != http.StatusOK || rTrip.Header.Get("X-Gateway-Fallback-Attempted") != "true" {
 			t.Fatalf("pod1 failover %d failed: status=%d fb=%q body=%s", i, rTrip.StatusCode, rTrip.Header.Get("X-Gateway-Fallback-Attempted"), string(bTrip))
 		}
@@ -333,7 +333,7 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	}
 
 	primaryHits.Store(0)
-	r2, b2 := postChatV120(t, ts2, vk.RawKey, reqBody)
+	r2, b2 := postRoutingChat(t, ts2, vk.RawKey, reqBody)
 	if r2.StatusCode != http.StatusOK || r2.Header.Get("X-Gateway-Fallback-Attempted") != "true" {
 		t.Fatalf("pod2 fallback request failed: status=%d body=%s", r2.StatusCode, string(b2))
 	}
@@ -342,9 +342,9 @@ func TestRoutingV120_LiveClusterMultiPodRoutingAndCircuitBreaker(t *testing.T) {
 	}
 }
 
-// TestRoutingV120_MultiPodCircuitBreakerAndAffinity verifies shared Redis session affinity,
+// TestE2E_Routing_MultiPodCircuitBreakerAndAffinity verifies shared Redis session affinity,
 // cross-pod failover repinning, and circuit breaker OPEN/HALF_OPEN/CLOSED coordination using miniredis.
-func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
+func TestE2E_Routing_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	logger.Init(logger.Config{Level: "error", Format: "text"})
 	defer logger.Init(logger.Config{Level: "info", Format: "text"})
 
@@ -455,7 +455,7 @@ func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	}
 
 	// 1. First request on Pod 0 establishes affinity pin.
-	resp, raw := postChatV120(t, servers[0], vk.RawKey, reqBody)
+	resp, raw := postRoutingChat(t, servers[0], vk.RawKey, reqBody)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("initial affinity request failed: %d %s", resp.StatusCode, string(raw))
 	}
@@ -471,7 +471,7 @@ func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	depAHits.Store(0)
 	depBHits.Store(0)
 	for i := 0; i < 6; i++ {
-		r, b := postChatV120(t, servers[i%2], vk.RawKey, reqBody)
+		r, b := postRoutingChat(t, servers[i%2], vk.RawKey, reqBody)
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("pinned request %d failed: %d %s", i, r.StatusCode, string(b))
 		}
@@ -498,7 +498,7 @@ func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	pinnedHits.Store(0)
 	healthyHits.Store(0)
 
-	rFailover, bFailover := postChatV120(t, servers[0], vk.RawKey, reqBody)
+	rFailover, bFailover := postRoutingChat(t, servers[0], vk.RawKey, reqBody)
 	if rFailover.StatusCode != http.StatusOK {
 		t.Fatalf("failover request failed: %d %s", rFailover.StatusCode, string(bFailover))
 	}
@@ -511,7 +511,7 @@ func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	pinnedHits.Store(0)
 	healthyHits.Store(0)
 	for i := 0; i < 4; i++ {
-		r, b := postChatV120(t, servers[1], vk.RawKey, reqBody)
+		r, b := postRoutingChat(t, servers[1], vk.RawKey, reqBody)
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("post-failover Pod 1 request %d failed: %d %s", i, r.StatusCode, string(b))
 		}
@@ -528,9 +528,9 @@ func TestRoutingV120_MultiPodCircuitBreakerAndAffinity(t *testing.T) {
 	}
 }
 
-// TestRoutingV120_PriorityTiersAndSpecializedFallbacks verifies priority-tier stepdowns
+// TestE2E_Routing_PriorityTiersAndSpecializedFallbacks verifies priority-tier stepdowns
 // and context-window specialized fallbacks with parameter overrides end-to-end.
-func TestRoutingV120_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
+func TestE2E_Routing_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
 	logger.Init(logger.Config{Level: "error", Format: "text"})
 	defer logger.Init(logger.Config{Level: "info", Format: "text"})
 
@@ -675,7 +675,7 @@ func TestRoutingV120_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
 
 	// Part A: Priority tiers keep traffic on tier 0 until tier 0 fails, then step down to tier 1.
 	for i := 0; i < 4; i++ {
-		r, b := postChatV120(t, ts, vk.RawKey, map[string]any{
+		r, b := postRoutingChat(t, ts, vk.RawKey, map[string]any{
 			"model":    "tiered-chat",
 			"messages": []map[string]string{{"role": "user", "content": "tier0 healthy"}},
 		})
@@ -688,7 +688,7 @@ func TestRoutingV120_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
 	}
 
 	tier0Fail.Store(true)
-	rStep, bStep := postChatV120(t, ts, vk.RawKey, map[string]any{
+	rStep, bStep := postRoutingChat(t, ts, vk.RawKey, map[string]any{
 		"model":    "tiered-chat",
 		"messages": []map[string]string{{"role": "user", "content": "stepdown"}},
 	})
@@ -698,7 +698,7 @@ func TestRoutingV120_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
 
 	// Part B: Context-window fallback routes oversized prompt to long-ctx with max_tokens=256 override.
 	longPrompt := "token-overflow " + string(bytes.Repeat([]byte("word "), 60))
-	rCtx, bCtx := postChatV120(t, ts, vk.RawKey, map[string]any{
+	rCtx, bCtx := postRoutingChat(t, ts, vk.RawKey, map[string]any{
 		"model":      "short-ctx",
 		"max_tokens": 512,
 		"messages":   []map[string]string{{"role": "user", "content": longPrompt}},
@@ -717,9 +717,9 @@ func TestRoutingV120_PriorityTiersAndSpecializedFallbacks(t *testing.T) {
 	}
 }
 
-// TestRoutingV120_AdaptiveBanditMultiPod verifies Thompson-sampling adaptive bandit
+// TestE2E_Routing_AdaptiveBanditMultiPod verifies Thompson-sampling adaptive bandit
 // learning on Pod 1 syncs via Redis (miniredis) to Pod 2.
-func TestRoutingV120_AdaptiveBanditMultiPod(t *testing.T) {
+func TestE2E_Routing_AdaptiveBanditMultiPod(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)
 	repo := storage.NewMemoryRepository()

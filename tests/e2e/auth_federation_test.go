@@ -19,14 +19,14 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/pkg/gateway"
 )
 
-func TestE2E_GW_AQ_04_CredentialExtractionAndConflictRejection(t *testing.T) {
+func TestE2E_Auth_CredentialExtractionAndConflictRejection(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.Auth.CustomAPIKeyHeader = "X-Corp-Gateway-Key"
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-04 CredExtractor Org")
+	org := cluster.createOrg("CredExtractor Org")
 	modelAlias := cluster.uniqueID("ext-chat")
 	cluster.seedOpenAIModel(ctx, org.ID, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 
@@ -143,7 +143,7 @@ func TestE2E_GW_AQ_04_CredentialExtractionAndConflictRejection(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_05_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
+func TestE2E_Auth_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	upstream := newMockDeterministicLLMUpstream(t)
 
@@ -175,7 +175,7 @@ func TestE2E_GW_AQ_05_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-05 OIDC Org")
+	org := cluster.createOrg("OIDC Org")
 	orgID = org.ID
 	modelAlias := cluster.uniqueID("oidc-model")
 	cluster.seedOpenAIModel(ctx, orgID, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
@@ -271,7 +271,7 @@ func TestE2E_GW_AQ_05_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.
 	}
 }
 
-func TestE2E_GW_AQ_06_DataPlaneOIDC_IssuerBinding_ClaimMapping_JIT(t *testing.T) {
+func TestE2E_Auth_DataPlaneOIDC_IssuerBinding_ClaimMapping_JIT(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	upstream := newMockDeterministicLLMUpstream(t)
 
@@ -298,7 +298,7 @@ func TestE2E_GW_AQ_06_DataPlaneOIDC_IssuerBinding_ClaimMapping_JIT(t *testing.T)
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-06 OIDC Binding Org")
+	org := cluster.createOrg("OIDC Binding Org")
 	allowedModel := cluster.uniqueID("oidc-allowed")
 	blockedModel := cluster.uniqueID("oidc-blocked")
 	cluster.seedOpenAIModel(ctx, org.ID, allowedModel, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
@@ -442,7 +442,7 @@ func TestE2E_GW_AQ_06_DataPlaneOIDC_IssuerBinding_ClaimMapping_JIT(t *testing.T)
 	}
 }
 
-func TestE2E_GW_AQ_07_RFC7662IntrospectionUserInfoAndCache(t *testing.T) {
+func TestE2E_Auth_RFC7662IntrospectionUserInfoAndCache(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	upstream := newMockDeterministicLLMUpstream(t)
 
@@ -460,7 +460,7 @@ func TestE2E_GW_AQ_07_RFC7662IntrospectionUserInfoAndCache(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-07 Introspect Org")
+	org := cluster.createOrg("Introspect Org")
 	orgIDContainer = org.ID
 	modelAlias := cluster.uniqueID("intro-chat")
 	cluster.seedOpenAIModel(ctx, orgIDContainer, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
@@ -517,7 +517,7 @@ func TestE2E_GW_AQ_07_RFC7662IntrospectionUserInfoAndCache(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_08_CIDRProxyAuthAndEmbeddedSDKCustomAuthenticator(t *testing.T) {
+func TestE2E_Auth_CIDRProxyAuthAndEmbeddedSDKCustomAuthenticator(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	trustedCluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.Auth.ProxyAuth = config.ProxyAuthConfig{
@@ -531,7 +531,7 @@ func TestE2E_GW_AQ_08_CIDRProxyAuthAndEmbeddedSDKCustomAuthenticator(t *testing.
 	})
 
 	ctx := context.Background()
-	org := trustedCluster.createOrg("GW-AQ-08 Proxy & SDK Org")
+	org := trustedCluster.createOrg("Proxy & SDK Org")
 	allowedModel := trustedCluster.uniqueID("proxy-allowed")
 	blockedModel := trustedCluster.uniqueID("proxy-blocked")
 	trustedCluster.seedOpenAIModel(ctx, org.ID, allowedModel, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)

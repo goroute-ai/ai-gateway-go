@@ -13,12 +13,12 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
-func TestE2E_GW_AQ_15_EndUserTagMAGSessionAndMCPQuotas(t *testing.T) {
+func TestE2E_Quota_EndUserTagMAGSessionAndMCPQuotas(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-15 Contextual Scopes Org")
+	org := cluster.createOrg("Contextual Scopes Org")
 	modelAlpha := cluster.uniqueID("scope-alpha")
 	modelBeta := cluster.uniqueID("scope-beta")
 	modelSess := cluster.uniqueID("scope-sess")
@@ -200,7 +200,7 @@ func TestE2E_GW_AQ_15_EndUserTagMAGSessionAndMCPQuotas(t *testing.T) {
 	}
 }
 
-func TestE2E_GW_AQ_16_SaturationPriorityCapacityAndPTUTeamShares(t *testing.T) {
+func TestE2E_Quota_SaturationPriorityCapacityAndPTUTeamShares(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.Router.PriorityCapacity = config.PriorityCapacityConfig{
@@ -214,7 +214,7 @@ func TestE2E_GW_AQ_16_SaturationPriorityCapacityAndPTUTeamShares(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	org := cluster.createOrg("GW-AQ-16 PTU & Priority Org")
+	org := cluster.createOrg("PTU & Priority Org")
 	modelAlias := cluster.uniqueID("ptu-chat")
 	upstream.SetUsage(100, 50)
 	// Seed deployment with tight RPMCapacity=3 and TPMCapacity=100_000.

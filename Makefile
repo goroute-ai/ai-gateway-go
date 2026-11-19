@@ -89,7 +89,7 @@ test-e2e-strict:
 	go test -race -v -count=1 ./tests/e2e/...
 
 test-ui-e2e:
-	@echo "==> Running headless Chromium Operator Web UI E2E suite (GW-AQ-19)..."
+	@echo "==> Running headless Chromium Operator Web UI E2E suite (SSO, Virtual Keys & Multi-Window Quotas)..."
 	bash tests/ui-e2e/run_ui_e2e.sh
 
 test-load:
