@@ -8,6 +8,7 @@ RUN_DIR="${GOROUTE_PROD_RUN_DIR:-/tmp/goroute-prod-test}"
 BASE_HTTPS="https://localhost:28443"
 BASE_HTTP="http://localhost:28080"
 PROM_URL="http://localhost:19090"
+MOCK_HTTPS="https://127.0.0.1:29443"
 
 PHASE_FILTER="all"
 KEEP_STACK=0
@@ -41,22 +42,32 @@ ensure_runtime_env() {
   chmod 0700 "$RUN_DIR" || true
 
   if [[ ! -f "$RUN_DIR/.env" ]]; then
-    local pg_pass redis_pass admin_key enc_key jwt_sec
+    local pg_pass redis_pass admin_key enc_key jwt_sec ui_pass sess_sec rot_tok
     pg_pass="$(openssl rand -hex 20)"
     redis_pass="$(openssl rand -hex 20)"
     admin_key="sk-gw-prodtest-$(openssl rand -hex 24)"
     enc_key="$(openssl rand -hex 32)"
     jwt_sec="$(openssl rand -hex 32)"
+    ui_pass="ProdUi!$(openssl rand -hex 10)"
+    sess_sec="$(openssl rand -hex 32)"
+    rot_tok="rot-tok-$(openssl rand -hex 16)"
     cat >"$RUN_DIR/.env" <<EOF
 POSTGRES_PASSWORD=$pg_pass
 REDIS_PASSWORD=$redis_pass
 GATEWAY_MASTER_ADMIN_KEY=$admin_key
 GATEWAY_MASTER_ENCRYPTION_KEY=$enc_key
 GATEWAY_JWT_SECRET=$jwt_sec
+GATEWAY_UI_PASSWORD=$ui_pass
+GATEWAY_SESSION_SECRET=$sess_sec
+GATEWAY_ROTATION_DELIVERY_TOKEN=$rot_tok
 EOF
     chmod 0600 "$RUN_DIR/.env"
     printf '%s' "$admin_key" >"$RUN_DIR/prom_token"
     chmod 0644 "$RUN_DIR/prom_token"
+  else
+    grep -q '^GATEWAY_UI_PASSWORD=' "$RUN_DIR/.env" || printf 'GATEWAY_UI_PASSWORD=ProdUi!%s\n' "$(openssl rand -hex 10)" >>"$RUN_DIR/.env"
+    grep -q '^GATEWAY_SESSION_SECRET=' "$RUN_DIR/.env" || printf 'GATEWAY_SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$RUN_DIR/.env"
+    grep -q '^GATEWAY_ROTATION_DELIVERY_TOKEN=' "$RUN_DIR/.env" || printf 'GATEWAY_ROTATION_DELIVERY_TOKEN=rot-tok-%s\n' "$(openssl rand -hex 16)" >>"$RUN_DIR/.env"
   fi
 
   set -a
@@ -119,6 +130,9 @@ cleanup() {
   GATEWAY_MASTER_ADMIN_KEY="${GATEWAY_MASTER_ADMIN_KEY:-down-placeholder}" \
   GATEWAY_MASTER_ENCRYPTION_KEY="${GATEWAY_MASTER_ENCRYPTION_KEY:-down-placeholder-down-placeholder}" \
   GATEWAY_JWT_SECRET="${GATEWAY_JWT_SECRET:-down-placeholder}" \
+  GATEWAY_UI_PASSWORD="${GATEWAY_UI_PASSWORD:-down-placeholder}" \
+  GATEWAY_SESSION_SECRET="${GATEWAY_SESSION_SECRET:-down-placeholder-down-placeholder}" \
+  GATEWAY_ROTATION_DELIVERY_TOKEN="${GATEWAY_ROTATION_DELIVERY_TOKEN:-down-placeholder}" \
   docker compose -f "$PROD_COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
   docker compose -f "$TEST_COMPOSE" --profile fullstack down -v --remove-orphans >/dev/null 2>&1 || true
   if [[ -f "$RUN_DIR/state.env" ]]; then
@@ -190,6 +204,8 @@ provision_fixture_tenant() {
     curl_tls -s -o /dev/null -X POST "$BASE_HTTPS/admin/v1/catalogue/pricing" -H "$hdr_auth" -H "$hdr_json" \
       -d "{\"global_model_id\":\"$mid\",\"input_cost_micros_per_1m\":150000,\"output_cost_micros_per_1m\":600000,\"pricing_status\":\"verified\"}" || true
   done
+  curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/catalogue/pricing" -H "$hdr_auth" -H "$hdr_json" \
+    -d '{"global_model_id":"openai/gpt-4o","input_cost_micros_per_1m":2000000,"output_cost_micros_per_1m":8000000,"pricing_status":"verified"}' >/dev/null
 
   create_routed_model() {
     local alias="$1" gid="$2" cid="$3" depname="$4"
@@ -201,6 +217,7 @@ provision_fixture_tenant() {
   }
 
   create_routed_model "prod-chat" "openai/gpt-4o-mini" "$CRED_OPENAI" "gpt-4o-mini"
+  create_routed_model "gpt-4o" "openai/gpt-4o" "$CRED_OPENAI" "gpt-4o"
   create_routed_model "prod-embed" "openai/text-embedding-3-small" "$CRED_OPENAI" "text-embedding-3-small"
   create_routed_model "prod-image" "openai/gpt-image-1.5" "$CRED_OPENAI" "gpt-image-1.5"
   create_routed_model "prod-tts" "openai/tts-1" "$CRED_OPENAI" "tts-1"
@@ -243,6 +260,11 @@ provision_fixture_tenant() {
     -d "{\"org_id\":\"$unbudgeted_org_id\",\"name\":\"prod-unbudgeted-key\",\"role\":\"developer\",\"rpm_limit\":100,\"tpm_limit\":100000,\"max_budget_micros\":0}")"
   UNBUDGETED_KEY="$(echo "$unbudgeted_json" | jq -r '.raw_key')"
 
+  local quota_burst_json
+  quota_burst_json="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-quota-burst-key\",\"role\":\"developer\",\"rpm_limit\":3,\"tpm_limit\":100000,\"max_budget_micros\":50000000}")"
+  QUOTA_BURST_KEY="$(echo "$quota_burst_json" | jq -r '.raw_key')"
+
   cat >"$RUN_DIR/state.env" <<EOF
 ORG_ID=$ORG_ID
 TEAM_ID=$TEAM_ID
@@ -251,6 +273,7 @@ CRED_OPENAI=$CRED_OPENAI
 VIRTUAL_KEY=$VIRTUAL_KEY
 VIRTUAL_KEY_ID=$VIRTUAL_KEY_ID
 BURST_KEY=$BURST_KEY
+QUOTA_BURST_KEY=$QUOTA_BURST_KEY
 ROTATE_KEY=$ROTATE_KEY
 ROTATE_KEY_ID=$ROTATE_KEY_ID
 UNBUDGETED_KEY=$UNBUDGETED_KEY
@@ -313,6 +336,7 @@ phase_2() {
     -e GATEWAY_MASTER_ADMIN_KEY="$GATEWAY_MASTER_ADMIN_KEY" \
     -e GATEWAY_MASTER_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
     -e GATEWAY_JWT_SECRET="$GATEWAY_JWT_SECRET" \
+    -e GATEWAY_ROTATION_DELIVERY_TOKEN="$GATEWAY_ROTATION_DELIVERY_TOKEN" \
     goroute/ai-gateway:prod-test -config /etc/goroute/config.yaml 2>&1)"
   local neg_rc=$?
   set -e
@@ -407,7 +431,7 @@ phase_4() {
   local admin_sub org_admin_jwt
   admin_sub="oidc-org-admin-$(date +%s)"
   curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/users" -H "$hdr_auth" -H "Content-Type: application/json" \
-    -d "{\"org_id\":\"$ORG_ID\",\"email\":\"${admin_sub}@goroute.local\",\"name\":\"Org Admin\",\"role\":\"org_admin\",\"oidc_subject\":\"$admin_sub\"}" >/dev/null
+    -d "{\"org_id\":\"$ORG_ID\",\"email\":\"${admin_sub}@goroute.local\",\"name\":\"Org Admin\",\"role\":\"org_admin\",\"oidc_issuer\":\"https://auth.goroute.local\",\"oidc_subject\":\"$admin_sub\"}" >/dev/null
   org_admin_jwt="$(node -e '
     const crypto = require("crypto");
     const hdr = Buffer.from(JSON.stringify({alg:"HS256",typ:"JWT"})).toString("base64url");
@@ -510,6 +534,120 @@ phase_5() {
     code="$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $ROTATE_KEY" -H "Content-Type: application/json" -d '{"model":"prod-chat","messages":[{"role":"user","content":"after revoke"}]}')"
     assert_eq "$code" "401" "revoked key rejected everywhere (attempt $i)"
   done
+
+  echo "==> Auth & Quota HA Suite (OIDC RS256, HIBP+Sessions, Presets+RotationWebhook, Rolling24h+SoftBudget, SCIM)..."
+  local ts_aq hdr_json
+  ts_aq="$(date +%s)"
+  hdr_json="Content-Type: application/json"
+
+  # 1. OIDC RS256 Data Plane JWT (issuer-bound) + negative untrusted token
+  local oidc_sub oidc_email
+  oidc_sub="oidc-dp-sub-${ts_aq}"
+  oidc_email="oidc-dp-${ts_aq}@goroute.local"
+  curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/users" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"email\":\"$oidc_email\",\"name\":\"OIDC DP User\",\"role\":\"developer\",\"oidc_issuer\":\"https://mock-upstream:8443/oidc\",\"oidc_subject\":\"$oidc_sub\"}" >/dev/null
+  OIDC_JWT="$(curl_tls -fsS -X POST "$MOCK_HTTPS/oidc/admin/mint-jwt" -H "$hdr_json" \
+    -d "{\"sub\":\"$oidc_sub\",\"email\":\"$oidc_email\",\"org_id\":\"$ORG_ID\",\"aud\":\"goroute-gateway\",\"ttl_sec\":1800}" | jq -r '.token')"
+  [[ -n "$OIDC_JWT" && "$OIDC_JWT" != "null" ]]
+  for i in $(seq 1 8); do
+    local jcode
+    jcode="$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Connection: close" -H "Authorization: Bearer $OIDC_JWT" -H "$hdr_json" -d '{"model":"prod-chat","messages":[{"role":"user","content":"oidc jwt probe"}]}')"
+    assert_eq "$jcode" "200" "OIDC RS256 Data Plane call $i"
+  done
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer invalid.jwt.token" -H "$hdr_json" -d '{"model":"prod-chat","messages":[{"role":"user","content":"bad jwt"}]}')" "401" "invalid JWT rejected 401"
+
+  # 2. HIBP password screening (prefix-only CBFDA) + operator cookie session + CSRF + logout revocation
+  local hibp_uid hibp_resp hibp_status hibp_body
+  hibp_uid="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/users" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"email\":\"hibp-op-${ts_aq}@goroute.local\",\"name\":\"HIBP Operator\",\"role\":\"org_admin\"}" | jq -r '.id')"
+  hibp_resp="$(curl_tls -s -w '\nHTTP_STATUS:%{http_code}' -X POST "$BASE_HTTPS/auth/password" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"user_id\":\"$hibp_uid\",\"new_password\":\"password123\"}")"
+  hibp_status="$(echo "$hibp_resp" | awk -F: '/^HTTP_STATUS:/{print $2}')"
+  hibp_body="$(echo "$hibp_resp" | sed '/^HTTP_STATUS:/d')"
+  assert_eq "$hibp_status" "400" "HIBP breached password rejected ($hibp_body)"
+  echo "$hibp_body" | grep -q "breached_password"
+  curl_tls -fsS "$MOCK_HTTPS/hibp/audit" | grep -q "CBFDA"
+
+  local login_json csrf_tok
+  rm -f "$RUN_DIR/ui.cookies"
+  login_json="$(curl_tls -fsS -c "$RUN_DIR/ui.cookies" -X POST "$BASE_HTTPS/auth/login" -H "$hdr_json" \
+    -d "{\"username\":\"prod-admin\",\"email\":\"prod-admin\",\"password\":\"$GATEWAY_UI_PASSWORD\"}")"
+  csrf_tok="$(echo "$login_json" | jq -r '.csrf_token')"
+  [[ -n "$csrf_tok" && "$csrf_tok" != "null" ]]
+  for i in $(seq 1 4); do
+    assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -H "Connection: close" -b "$RUN_DIR/ui.cookies" "$BASE_HTTPS/auth/me")" "200" "cookie session /auth/me check $i"
+  done
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST -b "$RUN_DIR/ui.cookies" -H "X-CSRF-Token: $csrf_tok" "$BASE_HTTPS/auth/logout")" "200" "session logout 200"
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -b "$RUN_DIR/ui.cookies" "$BASE_HTTPS/auth/me")" "401" "revoked session rejected 401"
+  rm -f "$RUN_DIR/ui.cookies"
+
+  # 3. Key-type preset (llm_api) + manual grace rotation + scheduled HTTPS rotation delivery webhook
+  local llm_json llm_id llm_raw rot_new_raw
+  llm_json="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-llm-preset-${ts_aq}\",\"key_type\":\"llm_api\"}")"
+  llm_id="$(echo "$llm_json" | jq -r '.id')"
+  llm_raw="$(echo "$llm_json" | jq -r '.raw_key')"
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/mcp" -H "Authorization: Bearer $llm_raw" -H "$hdr_json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')" "403" "llm_api preset blocked from /mcp"
+  rot_new_raw="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys/$llm_id/rotate" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"grace_period_seconds\":60}" | jq -r '.raw_key')"
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $llm_raw" -H "$hdr_json" -d '{"model":"prod-chat","messages":[{"role":"user","content":"grace old"}]}')" "200" "grace old key still 200"
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $rot_new_raw" -H "$hdr_json" -d '{"model":"prod-chat","messages":[{"role":"user","content":"grace new"}]}')" "200" "rotated new key 200"
+
+  curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-sched-rot-${ts_aq}\",\"key_type\":\"llm_api\",\"rotation_interval_sec\":2}" >/dev/null
+  local rot_hook_ok=0 rot_cnt=0
+  for _ in $(seq 1 30); do
+    rot_cnt="$(curl_tls -fsS "$MOCK_HTTPS/webhooks/audit" | jq --arg tok "Bearer ${GATEWAY_ROTATION_DELIVERY_TOKEN}" '[.key_rotation[]? | select(.auth_header == $tok)] | length')"
+    if [[ "$rot_cnt" -ge 1 ]]; then
+      rot_hook_ok=1
+      break
+    fi
+    sleep 0.5
+  done
+  assert_eq "$rot_hook_ok" "1" "scheduled key rotation HTTPS webhook delivered with configured bearer token"
+
+  # 4. Soft budget webhook + rolling_24h budget window (1st=200 settling 88 micros on gpt-4o, 2nd=429)
+  local r24h_json
+  r24h_json="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-r24h-${ts_aq}\",\"key_type\":\"llm_api\",\"soft_budget_micros\":50,\"max_budget_micros\":10000}")"
+  R24H_KEY="$(echo "$r24h_json" | jq -r '.raw_key')"
+  R24H_KEY_ID="$(echo "$r24h_json" | jq -r '.id')"
+  curl_tls -fsS -X PUT "$BASE_HTTPS/admin/v1/budget-windows" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"scope_type\":\"key\",\"scope_id\":\"$R24H_KEY_ID\",\"window_type\":\"rolling_24h\",\"max_budget_micros\":240}" >/dev/null
+  sleep 0.2
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"rolling 1"}]}')" "200" "rolling_24h call 1 200"
+  sleep 0.5
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" -H "Authorization: Bearer $R24H_KEY" -H "$hdr_json" -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"rolling 2"}]}')" "429" "rolling_24h call 2 rejected 429"
+  local soft_ok=0 soft_cnt=0
+  for _ in $(seq 1 20); do
+    soft_cnt="$(curl_tls -fsS "$MOCK_HTTPS/webhooks/audit" | jq '.soft_budget | length')"
+    if [[ "$soft_cnt" -ge 1 ]]; then
+      soft_ok=1
+      break
+    fi
+    sleep 0.5
+  done
+  assert_eq "$soft_ok" "1" "soft budget webhook fired after exceeding soft_budget_micros"
+
+  # 5. SCIM v2 atomic group provisioning & PATCH
+  local scim_key scim_uid scim_gid scim_grp_renamed
+  scim_key="$(curl_tls -fsS -X POST "$BASE_HTTPS/admin/v1/keys" -H "$hdr_auth" -H "$hdr_json" \
+    -d "{\"org_id\":\"$ORG_ID\",\"name\":\"prod-scim-${ts_aq}\",\"role\":\"service_account\",\"allowed_endpoints\":[\"/scim/v2/*\"]}" | jq -r '.raw_key')"
+  scim_uid="$(curl_tls -fsS -X POST "$BASE_HTTPS/scim/v2/Users" -H "Authorization: Bearer $scim_key" -H "Content-Type: application/scim+json" \
+    -d "{\"userName\":\"scim-prod-${ts_aq}@goroute.local\",\"displayName\":\"SCIM Prod User\",\"active\":true,\"emails\":[{\"value\":\"scim-prod-${ts_aq}@goroute.local\",\"primary\":true}]}" | jq -r '.id')"
+  scim_gid="$(curl_tls -fsS -X POST "$BASE_HTTPS/scim/v2/Groups" -H "Authorization: Bearer $scim_key" -H "Content-Type: application/scim+json" \
+    -d "{\"displayName\":\"ProdSCIMGrp-${ts_aq}\",\"members\":[{\"value\":\"$scim_uid\"}]}" | jq -r '.id')"
+  scim_grp_renamed="ProdSCIMGrpRenamed-${ts_aq}"
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X PATCH "$BASE_HTTPS/scim/v2/Groups/$scim_gid" -H "Authorization: Bearer $scim_key" -H "Content-Type: application/scim+json" \
+    -d "{\"Operations\":[{\"op\":\"replace\",\"path\":\"displayName\",\"value\":\"$scim_grp_renamed\"}]}")" "200" "SCIM group PATCH 200"
+  curl_tls -fsS -H "Authorization: Bearer $scim_key" "$BASE_HTTPS/scim/v2/Groups/$scim_gid" | grep -q "$scim_grp_renamed"
+
+  sed -i.bak '/^OIDC_JWT=/d;/^R24H_KEY=/d;/^R24H_KEY_ID=/d' "$RUN_DIR/state.env" && rm -f "$RUN_DIR/state.env.bak"
+  cat >>"$RUN_DIR/state.env" <<EOF
+OIDC_JWT=$OIDC_JWT
+R24H_KEY=$R24H_KEY
+R24H_KEY_ID=$R24H_KEY_ID
+EOF
   echo "==> Phase 5 PASSED."
 }
 
@@ -569,6 +707,13 @@ phase_7() {
   GATEWAY_CHAT_MODEL="prod-chat" \
   k6 run "$ROOT_DIR/tests/load/k6_prod_suite.js"
 
+  echo "==> Running k6 Auth & Quota HA workload (OIDC RS256 + quota burst)..."
+  GATEWAY_BASE_URL="$BASE_HTTPS" \
+  GATEWAY_OIDC_JWT="$OIDC_JWT" \
+  GATEWAY_QUOTA_BURST_KEY="$QUOTA_BURST_KEY" \
+  GATEWAY_CHAT_MODEL="prod-chat" \
+  k6 run "$ROOT_DIR/tests/load/k6_auth_quota_prod.js"
+
   echo "==> Running pgbench & redis-benchmark inside data-net containers..."
   local pg_cid redis_cid
   pg_cid="$(docker compose -f "$PROD_COMPOSE" ps -q postgres)"
@@ -595,7 +740,49 @@ phase_7() {
   wait "$restart_pid"
   docker compose -f "$PROD_COMPOSE" up -d --wait
 
-  echo "==> Chaos B: Redis outage fail-closed & automatic recovery..."
+  echo "==> Chaos B2: Rolling-24h Redis sorted-set loss & Postgres recovery..."
+  local spend_flushed=0 r24h_rows=0
+  for _ in $(seq 1 30); do
+    r24h_rows="$(docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" "$pg_cid" psql -U gateway -d aigateway_prod_test -tAc "SELECT COUNT(*) FROM spend_logs WHERE virtual_key_id = '$R24H_KEY_ID';" | tr -d '[:space:]')"
+    if [[ "${r24h_rows:-0}" -ge 1 ]]; then
+      spend_flushed=1
+      break
+    fi
+    sleep 0.5
+  done
+  assert_eq "$spend_flushed" "1" "R24H_KEY spend flushed to Postgres spend_logs before Redis sorted-set deletion"
+
+  local r24h_deleted=0
+  while IFS= read -r rk; do
+    rk="${rk//$'\r'/}"
+    [[ -z "$rk" ]] && continue
+    docker exec "$redis_cid" redis-cli --no-auth-warning -a "$REDIS_PASSWORD" DEL "$rk" >/dev/null
+    r24h_deleted=$((r24h_deleted + 1))
+  done < <(docker exec "$redis_cid" redis-cli --no-auth-warning -a "$REDIS_PASSWORD" --scan --pattern 'gw:dq:*:r24h:*')
+  if [[ "$r24h_deleted" -lt 1 ]]; then
+    echo "FAIL: expected at least 1 gw:dq:*:r24h:* key in Redis before chaos deletion" >&2
+    exit 1
+  fi
+  echo "    Deleted $r24h_deleted rolling-24h Redis sorted set(s); verifying Postgres reload rejects over-cap request..."
+  assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" \
+    -H "Authorization: Bearer $R24H_KEY" -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"after r24h zset deletion"}]}')" "429" "rolling_24h cold recovery prevents overspend (429)"
+
+  echo "==> Chaos C: OIDC JWKS outage stale-cache fallback across both replicas..."
+  for i in $(seq 1 6); do
+    assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -H "Connection: close" -X POST "$BASE_HTTPS/v1/chat/completions" \
+      -H "Authorization: Bearer $OIDC_JWT" -H "Content-Type: application/json" \
+      -d '{"model":"prod-chat","messages":[{"role":"user","content":"warm jwks post-restart"}]}')" "200" "warm OIDC JWKS after restart ($i)"
+  done
+  curl_tls -fsS -X POST "$MOCK_HTTPS/oidc/admin/jwks-outage?fail=1" >/dev/null
+  for i in $(seq 1 4); do
+    assert_eq "$(curl_tls -s -o /dev/null -w '%{http_code}' -H "Connection: close" -X POST "$BASE_HTTPS/v1/chat/completions" \
+      -H "Authorization: Bearer $OIDC_JWT" -H "Content-Type: application/json" \
+      -d '{"model":"prod-chat","messages":[{"role":"user","content":"jwks outage fallback"}]}')" "200" "OIDC stale JWKS cache survives outage ($i)"
+  done
+  curl_tls -fsS -X POST "$MOCK_HTTPS/oidc/admin/jwks-outage?fail=0" >/dev/null
+
+  echo "==> Chaos D: Redis outage fail-closed & automatic recovery..."
   docker compose -f "$PROD_COMPOSE" stop redis
   local outage_code
   outage_code="$(curl_tls -s -o /dev/null -w '%{http_code}' -X POST "$BASE_HTTPS/v1/chat/completions" \

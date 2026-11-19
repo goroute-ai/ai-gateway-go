@@ -133,6 +133,9 @@ prod-stack-down:
 	GATEWAY_MASTER_ADMIN_KEY=$${GATEWAY_MASTER_ADMIN_KEY:-down-placeholder} \
 	GATEWAY_MASTER_ENCRYPTION_KEY=$${GATEWAY_MASTER_ENCRYPTION_KEY:-down-placeholder-down-placeholder} \
 	GATEWAY_JWT_SECRET=$${GATEWAY_JWT_SECRET:-down-placeholder} \
+	GATEWAY_UI_PASSWORD=$${GATEWAY_UI_PASSWORD:-down-placeholder} \
+	GATEWAY_SESSION_SECRET=$${GATEWAY_SESSION_SECRET:-down-placeholder-down-placeholder} \
+	GATEWAY_ROTATION_DELIVERY_TOKEN=$${GATEWAY_ROTATION_DELIVERY_TOKEN:-down-placeholder} \
 	docker compose -f deployments/docker-compose.prod-test.yml down -v --remove-orphans
 
 # ------------------------------------------------------------------------------
