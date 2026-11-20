@@ -1,0 +1,70 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: aigateway_test
+    ports:
+      - "15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  ai-gateway-test:
+    profiles: ["fullstack"]
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "18080:8080"
+    environment:
+      GATEWAY_ENV: "test"
+      GATEWAY_PORT: "8080"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres-test:5432/aigateway_test?sslmode=disable"
+      GATEWAY_REDIS_ADDR: "redis-test:6379"
+      GATEWAY_JWT_ISSUER: "https://auth.goroute.local"
+      GATEWAY_JWT_AUDIENCE: "goroute-gateway"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-test-master-admin-key"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+
+  keycloak-test:
+    profiles: ["keycloak"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "18081:8080"
+      - "19000:9000"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s

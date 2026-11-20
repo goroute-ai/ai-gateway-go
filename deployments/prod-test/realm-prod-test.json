@@ -1,0 +1,366 @@
+{
+  "realm": "goroute-prod",
+  "enabled": true,
+  "displayName": "GoRoute Prod-Test Realm",
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "components": {
+    "org.keycloak.keys.KeyProvider": [
+      {
+        "name": "ecdsa-generated",
+        "providerId": "ecdsa-generated",
+        "config": {
+          "priority": ["90"],
+          "enabled": ["true"],
+          "active": ["true"],
+          "ecdsaEllipticCurveKey": ["P-256"]
+        }
+      },
+      {
+        "name": "eddsa-generated",
+        "providerId": "eddsa-generated",
+        "config": {
+          "priority": ["80"],
+          "enabled": ["true"],
+          "active": ["true"],
+          "eddsaEllipticCurveKey": ["Ed25519"]
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "goroute-gateway",
+      "name": "GoRoute AI Gateway",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "goroute-prod-oidc-secret-2026",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "redirectUris": [
+        "https://gateway.prod.test:18443/auth/sso/keycloak/callback"
+      ],
+      "webOrigins": [
+        "https://gateway.prod.test:18443"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://gateway.prod.test:18443/ui/",
+        "access.token.signed.response.alg": "RS256",
+        "id.token.signed.response.alg": "RS256"
+      },
+      "defaultClientScopes": ["basic", "web-origins", "acr", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "goroute_role",
+            "claim.name": "role",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "goroute-ci-mint",
+      "name": "GoRoute CI Token Minter (RS256)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "goroute-ci-mint-secret-2026",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "access.token.signed.response.alg": "RS256"
+      },
+      "defaultClientScopes": ["basic", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "goroute_role",
+            "claim.name": "role",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "goroute-ci-es256",
+      "name": "GoRoute CI Token Minter (ES256)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "goroute-ci-es256-secret-2026",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "access.token.signed.response.alg": "ES256"
+      },
+      "defaultClientScopes": ["basic", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "goroute-ci-eddsa",
+      "name": "GoRoute CI Token Minter (EdDSA)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "goroute-ci-eddsa-secret-2026",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "access.token.signed.response.alg": "EdDSA"
+      },
+      "defaultClientScopes": ["basic", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@goroute.local",
+      "email": "admin@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "Admin",
+      "attributes": {
+        "org_id": ["org_default"],
+        "goroute_role": ["platform_admin"]
+      },
+      "credentials": [
+        { "type": "password", "value": "ProdAdmin!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "orgadmin@goroute.local",
+      "email": "orgadmin@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "OrgAdmin",
+      "attributes": {
+        "org_id": ["org_default"],
+        "goroute_role": ["org_admin"]
+      },
+      "credentials": [
+        { "type": "password", "value": "ProdOrgAdmin!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "viewer@goroute.local",
+      "email": "viewer@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "Viewer",
+      "attributes": {
+        "org_id": ["org_default"],
+        "goroute_role": ["org_viewer"]
+      },
+      "credentials": [
+        { "type": "password", "value": "ProdViewer!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "unverified@goroute.local",
+      "email": "unverified@goroute.local",
+      "emailVerified": false,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "Unverified",
+      "attributes": {
+        "org_id": ["org_default"],
+        "goroute_role": ["org_admin"]
+      },
+      "credentials": [
+        { "type": "password", "value": "ProdUnverified!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "syncuser@goroute.local",
+      "email": "syncuser@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "SyncUser",
+      "attributes": {
+        "org_id": ["org_default"]
+      },
+      "groups": ["goroute-org-admins", "goroute-team-alpha"],
+      "credentials": [
+        { "type": "password", "value": "ProdSyncUser!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "privcap@goroute.local",
+      "email": "privcap@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "PrivCap",
+      "attributes": {
+        "org_id": ["org_default"]
+      },
+      "groups": ["goroute-platform-admins"],
+      "credentials": [
+        { "type": "password", "value": "ProdPrivCap!2026", "temporary": false }
+      ]
+    }
+  ],
+  "groups": [
+    { "name": "goroute-platform-admins" },
+    { "name": "goroute-org-admins" },
+    { "name": "goroute-org-viewers" },
+    { "name": "goroute-developers" },
+    { "name": "goroute-team-alpha" }
+  ]
+}

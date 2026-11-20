@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: "ai-gateway-cluster"
+    metrics_path: "/metrics"
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/gateway_token
+    static_configs:
+      - targets: ["ai-gateway-1:8080", "ai-gateway-2:8080"]
+        labels:
+          cluster: "prod-verification"

@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: aigateway
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  gateway-migrate:
+    # Prebuilt alternative (replace 'build:' with 'image:'):
+    # image: qaadir/ai-gateway:0.1.0
+    # image: ghcr.io/goroute-ai/ai-gateway-go:0.1.0
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    command: ["-config", "/app/configs/config.yaml", "-migrate-only"]
+    environment:
+      GATEWAY_ENV: "${GATEWAY_ENV:-development}"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ai-gateway:
+    # Prebuilt alternative (replace 'build:' with 'image:'):
+    # image: qaadir/ai-gateway:0.1.0
+    # image: ghcr.io/goroute-ai/ai-gateway-go:0.1.0
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - "${GATEWAY_CONFIG_HOST_PATH:-../configs/config.yaml}:/app/configs/config.yaml:ro"
+    environment:
+      GATEWAY_ENV: "${GATEWAY_ENV:-development}"
+      GATEWAY_PORT: "8080"
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+      GATEWAY_REDIS_ADDR: "redis:6379"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-http://localhost:8081/realms/goroute}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:-dev-local-session-secret-change-me-0123456789abcdef}"
+      KEYCLOAK_SSO_SECRET: "${KEYCLOAK_SSO_SECRET:-goroute-gateway-dev-secret}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  keycloak:
+    profiles: ["keycloak"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: "${KC_HOSTNAME:-http://localhost:8081}"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "8081:8080"
+      - "9000:9000"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
