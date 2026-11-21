@@ -1,0 +1,204 @@
+name: Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to package and publish (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-and-release:
+    name: Build, Verify & Publish Release Assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release tag
+        id: rel
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "clean_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Verify Formatting, Vet, Specgen & Unit Tests
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files detected:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          go vet ./...
+          go generate ./internal/mcp/spec
+          go generate ./internal/openapi
+          git diff --exit-code -- internal/openapi/gateway.gen.go internal/mcp/spec/
+          go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
+
+      - name: Verify Web UI Build, Budget & Embedded Dist Parity
+        run: |
+          cd web
+          npm ci
+          npx tsc --noEmit
+          npm run build
+          node scripts/check-budget.mjs
+          cd ..
+          diff -rq web/dist internal/ui/dist
+
+      - name: Build Multi-Platform Binaries, Helm Chart, K8s Bundle & Checksums
+        env:
+          VERSION: ${{ steps.rel.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          make release-assets VERSION="${VERSION}" COMMIT="${COMMIT}" DATE="${DATE}"
+
+      - name: Extract Release Notes from CHANGELOG.md
+        id: notes
+        env:
+          VER: ${{ steps.rel.outputs.clean_version }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "GoRoute AI Gateway ${TAG}" > release_notes.md
+          fi
+
+      - name: Create or Update GitHub Release with Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "GoRoute AI Gateway ${TAG}" --notes-file release_notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "GoRoute AI Gateway ${TAG}" --notes-file release_notes.md
+          fi
+          rm -f release_notes.md
+
+      - name: Publish Helm Chart to GHCR OCI Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_ORG: ${{ github.repository_owner }}
+        run: |
+          CHART_TGZ=$(find dist -maxdepth 1 -name 'goroute-*.tgz' | head -n 1)
+          if [ -z "$CHART_TGZ" ]; then
+            echo "No Helm chart archive found in dist/."
+            exit 1
+          fi
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm push "$CHART_TGZ" "oci://ghcr.io/${GH_ORG}/charts"
+
+      - name: Generate Artifact Build Provenance Attestations
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.tgz
+
+      - name: Warm Go Proxy and pkg.go.dev Index
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          curl -fsSL "https://proxy.golang.org/github.com/goroute-ai/ai-gateway-go/@v/${TAG}.info" >/dev/null || true
+          curl -sS -X POST "https://pkg.go.dev/fetch/github.com/goroute-ai/ai-gateway-go/pkg/gateway@${TAG}" >/dev/null || true
+          curl -sS -X POST "https://pkg.go.dev/fetch/github.com/goroute-ai/ai-gateway-go@${TAG}" >/dev/null || true
+
+      - name: Update Homebrew Tap Formula
+        if: ${{ !contains(steps.rel.outputs.tag, '-') }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VER: ${{ steps.rel.outputs.clean_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
+            exit 0
+          fi
+          SHA_DARWIN_ARM64=$(awk -v f="ai-gateway_${VER}_darwin_arm64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
+          SHA_DARWIN_AMD64=$(awk -v f="ai-gateway_${VER}_darwin_amd64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
+          SHA_LINUX_ARM64=$(awk -v f="ai-gateway_${VER}_linux_arm64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
+          SHA_LINUX_AMD64=$(awk -v f="ai-gateway_${VER}_linux_amd64.tar.gz" '$2 == f {print $1}' dist/checksums.txt)
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/goroute-ai/homebrew-tap.git" /tmp/homebrew-tap
+          mkdir -p /tmp/homebrew-tap/Formula
+          cat > /tmp/homebrew-tap/Formula/ai-gateway.rb <<EOF
+          class AiGateway < Formula
+            desc "Ultra-fast AI Gateway, MCP Hub, and A2A Router in 100% Pure Go"
+            homepage "https://github.com/${REPO}"
+            version "${VER}"
+            license "Apache-2.0"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/${REPO}/releases/download/${TAG}/ai-gateway_${VER}_darwin_arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+              else
+                url "https://github.com/${REPO}/releases/download/${TAG}/ai-gateway_${VER}_darwin_amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/${REPO}/releases/download/${TAG}/ai-gateway_${VER}_linux_arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "https://github.com/${REPO}/releases/download/${TAG}/ai-gateway_${VER}_linux_amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "ai-gateway"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/ai-gateway -version")
+            end
+          end
+          EOF
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ai-gateway.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update ai-gateway to ${TAG}"
+            git push origin HEAD
+          fi
