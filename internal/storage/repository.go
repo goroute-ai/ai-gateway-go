@@ -134,6 +134,7 @@ type KEKRotationBatch struct {
 	Credentials       []*domain.ProviderCredential
 	MCPServers        []*domain.MCPServer
 	A2AAgents         []*domain.A2AAgent
+	A2APushConfigs    []*domain.A2APushNotificationConfig
 	Guardrails        []*domain.GuardrailDefinition
 	StagedVirtualKeys []*domain.VirtualKey
 }
@@ -143,6 +144,7 @@ type KEKRotationSummary struct {
 	CredentialsRewrapped       int `json:"credentials_rewrapped"`
 	MCPServersRewrapped        int `json:"mcp_servers_rewrapped"`
 	A2AAgentsRewrapped         int `json:"a2a_agents_rewrapped"`
+	A2APushConfigsRewrapped    int `json:"a2a_push_configs_rewrapped"`
 	GuardrailsRewrapped        int `json:"guardrails_rewrapped"`
 	StagedVirtualKeysRewrapped int `json:"staged_virtual_keys_rewrapped"`
 }
@@ -365,15 +367,16 @@ type Repository interface {
 	// A2A: Agents, Tasks, Events, Publications & Outbox
 	CreateA2AAgent(ctx context.Context, agent *domain.A2AAgent) error
 	UpdateA2AAgent(ctx context.Context, agent *domain.A2AAgent) error
+	DeleteA2AAgent(ctx context.Context, id string) error
 	GetA2AAgent(ctx context.Context, id string) (*domain.A2AAgent, error)
 	GetA2AAgentBySlug(ctx context.Context, orgID, slug string) (*domain.A2AAgent, error)
 	ListA2AAgents(ctx context.Context, orgID string) ([]*domain.A2AAgent, error)
 	SetA2AAgentKillSwitch(ctx context.Context, id string, killed bool) error
 
 	CreateA2ATask(ctx context.Context, task *domain.A2ATask) error
-	UpdateA2ATaskState(ctx context.Context, taskID, state string, outputJSON string, costMicros int64) error
+	UpdateA2ATask(ctx context.Context, task *domain.A2ATask, costDeltaMicros int64) error
 	GetA2ATask(ctx context.Context, id string) (*domain.A2ATask, error)
-	ListA2ATasks(ctx context.Context, agentID, virtualKeyID string, limit int) ([]*domain.A2ATask, error)
+	ListA2ATasks(ctx context.Context, filter domain.A2ATaskListFilter) ([]*domain.A2ATask, int, error)
 
 	AppendA2ATaskEvent(ctx context.Context, taskID, eventType, payloadJSON string) (*domain.A2ATaskEvent, error)
 	ListA2ATaskEvents(ctx context.Context, taskID string, afterSeq int64, limit int) ([]*domain.A2ATaskEvent, error)
@@ -384,10 +387,16 @@ type Repository interface {
 	CreateA2AOutboxEvent(ctx context.Context, event *domain.A2AOutboxEvent) error
 	ClaimPendingA2AOutboxEvents(ctx context.Context, batchSize int) ([]*domain.A2AOutboxEvent, error)
 	GetA2AOutboxEvent(ctx context.Context, id string) (*domain.A2AOutboxEvent, error)
+	UpdateA2AOutboxEvent(ctx context.Context, event *domain.A2AOutboxEvent) error
 	UpdateA2AOutboxEventStatus(ctx context.Context, id, status string) error
+	ListA2AOutboxEvents(ctx context.Context, orgID, status string, limit int) ([]*domain.A2AOutboxEvent, error)
+	ReplayA2AOutboxEvent(ctx context.Context, id string) (*domain.A2AOutboxEvent, error)
 
 	SetA2APushNotificationConfig(ctx context.Context, cfg *domain.A2APushNotificationConfig) error
-	GetA2APushNotificationConfig(ctx context.Context, taskID string) (*domain.A2APushNotificationConfig, error)
+	GetA2APushNotificationConfig(ctx context.Context, taskID, configID string) (*domain.A2APushNotificationConfig, error)
+	ListA2APushNotificationConfigs(ctx context.Context, taskID string, limit, offset int) ([]*domain.A2APushNotificationConfig, int, error)
+	DeleteA2APushNotificationConfig(ctx context.Context, taskID, configID string) error
+	PruneExpiredA2ARecords(ctx context.Context, pubBefore, outboxBefore, taskBefore time.Time) (int64, error)
 
 	// Files Management (Stateful Tenant Assets)
 	CreateFile(ctx context.Context, file *domain.CanonicalFile) error

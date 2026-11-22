@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -28,22 +27,15 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 
-	// Mock upstream A2A agent
+	// Mock upstream A2A agent (OpenAPI-first A2A v1.0)
 	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		resp := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Message{
-				Message: &pb.Message{
-					MessageId: "resp_msg_001",
-					Role:      pb.Role_ROLE_AGENT,
-					Parts: []*pb.Part{
-						{Content: &pb.Part_Text{Text: "Task completed successfully by upstream agent."}},
-					},
-				},
-			},
-		}
-		respBytes, _ := a2a.ProtoJSONMarshaler.Marshal(resp)
-		_, _ = w.Write(respBytes)
+		w.Header().Set("Content-Type", "application/a2a+json")
+		resp := a2aspec.NewSendMessageResponseMessage(&a2aspec.Message{
+			MessageId: "resp_msg_001",
+			Role:      a2aspec.ROLEAGENT,
+			Parts:     []a2aspec.Part{a2aspec.NewTextPart("Task completed successfully by upstream agent.")},
+		})
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer mockUpstream.Close()
 
@@ -54,7 +46,6 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	adminKey := "sk-gw-master-admin-key"
 
-	// Create test organization
 	require.NoError(t, repo.CreateOrganization(context.Background(), &domain.Organization{
 		ID:       "org_default",
 		Name:     "Default Organization",
@@ -74,7 +65,6 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 		IsActive: true,
 	}))
 
-	// Issue a virtual key for data-plane client calls
 	vKey := &domain.VirtualKey{
 		ID:                "key_a2a_tester",
 		KeyHash:           auth.HashKey("sk-gw-client-test-key"),
@@ -101,6 +91,7 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 		"slug": "audit-agent",
 		"endpoint_url": "%s",
 		"task_visibility_mode": "key_strict",
+		"protocol_binding": "HTTP+JSON",
 		"auth_type": "none",
 		"max_task_iterations": 20,
 		"max_task_budget_micros": 5000000
@@ -112,6 +103,7 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	defer resp.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var createResp struct {
@@ -129,6 +121,7 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var listResp struct {
@@ -143,32 +136,36 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// 4. Send Message to Agent via Data Plane (POST /a2a/v1/agents/{agentSlug})
-	sendReq := &pb.SendMessageRequest{
-		Message: &pb.Message{
+	// 4. Send Message to Agent via Canonical A2A v1.0 Data Plane (POST /a2a/v1/agents/{agentSlug}/message:send)
+	sendReq := &a2aspec.SendMessageRequest{
+		Message: a2aspec.Message{
 			MessageId: "msg_user_001",
-			Role:      pb.Role_ROLE_USER,
-			Parts: []*pb.Part{
-				{Content: &pb.Part_Text{Text: "Please audit transaction TX-999"}},
-			},
+			Role:      a2aspec.ROLEUSER,
+			Parts:     []a2aspec.Part{a2aspec.NewTextPart("Please audit transaction TX-999")},
 		},
 	}
-	sendBytes, err := a2a.ProtoJSONMarshaler.Marshal(sendReq)
+	sendBytes, err := json.Marshal(sendReq)
 	require.NoError(t, err)
 
-	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent", bytes.NewReader(sendBytes))
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent/message:send", bytes.NewReader(sendBytes))
 	req.Header.Set("Authorization", clientBearer)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/a2a+json")
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "Data plane A2A message must succeed when agent is active")
+	bodyBytes := bytesFromReader(t, resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Data plane A2A message must succeed when agent is active: %s", string(bodyBytes))
 
-	var sendResp pb.SendMessageResponse
-	require.NoError(t, a2a.StrictProtoJSONUnmarshaler.Unmarshal(bytesFromReader(t, resp.Body), &sendResp))
-	assert.Contains(t, sendResp.GetMessage().GetParts()[0].GetText(), "Task completed successfully")
+	sendResp, err := a2aspec.DecodeStrict[a2aspec.SendMessageResponse]("SendMessageResponse", bodyBytes)
+	require.NoError(t, err)
+	require.NotNil(t, sendResp.Message)
+	txt, ok := a2aspec.PartText(sendResp.Message.Parts[0])
+	require.True(t, ok)
+	assert.Contains(t, txt, "Task completed successfully")
 
 	// 5. Activate Emergency Kill-Switch via POST /admin/v1/a2a/agents/{id}/kill-switch
 	killPayload := []byte(`{"killed": true}`)
@@ -178,21 +175,24 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// 6. Immediate enforcement: Data Plane invocation MUST return 503 Service Unavailable (agent_killed)
-	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent", bytes.NewReader(sendBytes))
+	// 6. Immediate enforcement: Data Plane invocation MUST return 503 Service Unavailable (google.rpc.StatusError)
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent/message:send", bytes.NewReader(sendBytes))
 	req.Header.Set("Authorization", clientBearer)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/a2a+json")
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "Emergency kill-switch must immediately reject callers with 503")
+	errBody := bytesFromReader(t, resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "Emergency kill-switch must immediately reject callers with 503: %s", string(errBody))
 
-	var errResp map[string]any
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
-	errObj := errResp["error"].(map[string]any)
-	assert.Equal(t, "agent_killed", errObj["code"])
+	var statusErr a2aspec.GoogleRpcStatusError
+	require.NoError(t, json.Unmarshal(errBody, &statusErr))
+	assert.Equal(t, int32(http.StatusServiceUnavailable), statusErr.Error.Code)
+	assert.Contains(t, statusErr.Error.Message, "kill-switch")
 
 	// 7. Deactivate Kill-Switch: calls succeed again
 	revivePayload := []byte(`{"killed": false}`)
@@ -202,14 +202,16 @@ func TestAdminA2AAgentManagementAndKillSwitch(t *testing.T) {
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent", bytes.NewReader(sendBytes))
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/a2a/v1/agents/audit-agent/message:send", bytes.NewReader(sendBytes))
 	req.Header.Set("Authorization", clientBearer)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/a2a+json")
 
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "Revived agent must accept data plane requests")
 }
 
@@ -226,14 +228,14 @@ func TestAdminA2APushConfigRegistration(t *testing.T) {
 	require.NoError(t, repo.CreateA2ATask(context.Background(), &domain.A2ATask{
 		ID:    "task_audit_999",
 		OrgID: "org_default",
-		State: "submitted",
+		State: domain.A2ATaskStateSubmitted,
 	}))
 
 	adminKey := "sk-gw-master-admin-key"
 
 	pushPayload := []byte(`{
 		"task_id": "task_audit_999",
-		"target_url": "https://webhook.internal/a2a-notify",
+		"target_url": "https://webhook.example.com/a2a-notify",
 		"auth_token": "secret-webhook-bearer"
 	}`)
 
@@ -243,13 +245,17 @@ func TestAdminA2APushConfigRegistration(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+	defer resp.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
-	cfgStored, err := repo.GetA2APushNotificationConfig(context.Background(), "task_audit_999")
+	cfgs, total, err := repo.ListA2APushNotificationConfigs(context.Background(), "task_audit_999", 10, 0)
 	require.NoError(t, err)
-	assert.Equal(t, "https://webhook.internal/a2a-notify", cfgStored.TargetURL)
-	assert.NotEqual(t, "secret-webhook-bearer", cfgStored.AuthToken)
-	assert.Contains(t, cfgStored.AuthToken, "vault:")
+	require.Equal(t, 1, total)
+	cfgStored := cfgs[0]
+	assert.Equal(t, "https://webhook.example.com/a2a-notify", cfgStored.TargetURL)
+	assert.NotEqual(t, "secret-webhook-bearer", cfgStored.EncryptedAuthCreds)
+	assert.NotEmpty(t, cfgStored.EncryptedAuthCreds)
+	assert.NotEmpty(t, cfgStored.EncryptedAuthDEK)
 }
 
 func TestA2AOpenAIBridgeInference(t *testing.T) {
@@ -260,28 +266,22 @@ func TestA2AOpenAIBridgeInference(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 
-	// Mock upstream A2A agent
 	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		resp := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Id:        "task_agent_123",
-					ContextId: "ctx_agent_123",
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_COMPLETED,
-						Message: &pb.Message{
-							Role: pb.Role_ROLE_AGENT,
-							Parts: []*pb.Part{
-								{Content: &pb.Part_Text{Text: "A2A agent responded to OpenAI chat request."}},
-							},
-						},
-					},
+		w.Header().Set("Content-Type", "application/a2a+json")
+		ctxID := "ctx_agent_123"
+		resp := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id:        "task_agent_123",
+			ContextId: &ctxID,
+			Status: a2aspec.TaskStatus{
+				State: a2aspec.TASKSTATECOMPLETED,
+				Message: &a2aspec.Message{
+					MessageId: "msg_resp_1",
+					Role:      a2aspec.ROLEAGENT,
+					Parts:     []a2aspec.Part{a2aspec.NewTextPart("A2A agent responded to OpenAI chat request.")},
 				},
 			},
-		}
-		respBytes, _ := a2a.ProtoJSONMarshaler.Marshal(resp)
-		_, _ = w.Write(respBytes)
+		})
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer mockUpstream.Close()
 
@@ -290,13 +290,11 @@ func TestA2AOpenAIBridgeInference(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// Seed Virtual Key with permission to call a2a agent
 	rawKey := "sk-gw-client-test-key-12345"
-	keyHash := auth.HashKey(rawKey)
 	vk := &domain.VirtualKey{
 		ID:               "vk_test",
 		KeyPrefix:        "sk-gw-client",
-		KeyHash:          keyHash,
+		KeyHash:          auth.HashKey(rawKey),
 		Name:             "Dev Key",
 		OrgID:            "org_default",
 		Role:             domain.RoleDeveloper,
@@ -306,7 +304,6 @@ func TestA2AOpenAIBridgeInference(t *testing.T) {
 	}
 	require.NoError(t, repo.CreateVirtualKey(ctx, vk))
 
-	// Register chat-agent
 	agent := &domain.A2AAgent{
 		ID:                 "agent_chat",
 		OrgID:              "org_default",
@@ -319,7 +316,6 @@ func TestA2AOpenAIBridgeInference(t *testing.T) {
 	}
 	require.NoError(t, repo.CreateA2AAgent(ctx, agent))
 
-	// Issue POST /v1/chat/completions with model: "a2a/chat-agent"
 	reqPayload := []byte(`{
 		"model": "a2a/chat-agent",
 		"messages": [

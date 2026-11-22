@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -99,21 +98,19 @@ func TestUnifiedObservability_W3CTracePropagation(t *testing.T) {
 		tp := r.Header.Get("traceparent")
 		receivedA2ATrace.Store(&tp)
 
-		w.Header().Set("Content-Type", "application/json")
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_COMPLETED,
-						Message: &pb.Message{
-							Role:  pb.Role_ROLE_AGENT,
-							Parts: []*pb.Part{{Content: &pb.Part_Text{Text: "A2A trace verified"}}},
-						},
-					},
+		w.Header().Set("Content-Type", "application/a2a+json")
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id: "task_obs_1",
+			Status: a2aspec.TaskStatus{
+				State: a2aspec.TASKSTATECOMPLETED,
+				Message: &a2aspec.Message{
+					MessageId: "msg_obs_resp",
+					Role:      a2aspec.ROLEAGENT,
+					Parts:     []a2aspec.Part{a2aspec.NewTextPart("A2A trace verified")},
 				},
 			},
-		}
-		outJSON, _ := a2a.ProtoJSONMarshaler.Marshal(respObj)
+		})
+		outJSON, _ := json.Marshal(respObj)
 		_, _ = w.Write(outJSON)
 	}))
 	defer mockA2A.Close()
@@ -291,7 +288,7 @@ func TestUnifiedObservability_W3CTracePropagation(t *testing.T) {
 	a2aReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      "obs-a2a-001",
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_obs_01",

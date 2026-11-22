@@ -127,7 +127,28 @@ func main() {
 		}
 	}
 
-	// Verify A2A Protobuf generated code freshness
+	// Verify A2A OpenAPI embedded parity and generated code freshness
+	docsA2APath := filepath.Join(targetDir, "a2a.openapi.yaml")
+	embedA2APath := filepath.Join(*rootDir, "internal", "a2a", "spec", "a2a.openapi.yaml")
+	docsA2AData, err := os.ReadFile(docsA2APath)
+	if err != nil {
+		logger.Error("specgen error reading A2A OpenAPI spec", slog.String("path", docsA2APath), slog.Any("error", err))
+		os.Exit(1)
+	}
+	embedA2AData, err := os.ReadFile(embedA2APath)
+	if err != nil || !bytes.Equal(docsA2AData, embedA2AData) {
+		logger.Error("specgen error: embedded A2A OpenAPI spec out of sync (run 'make specgen')", slog.String("docs_path", docsA2APath), slog.String("embed_path", embedA2APath), slog.Any("error", err))
+		os.Exit(1)
+	}
+	a2aGenPath := filepath.Join(*rootDir, "internal", "a2a", "spec", "a2a.gen.go")
+	if stat, err := os.Stat(a2aGenPath); err != nil || stat.Size() == 0 {
+		logger.Error("specgen error: A2A OpenAPI generated Go code missing or empty (run 'make specgen')", slog.String("path", a2aGenPath))
+		os.Exit(1)
+	} else {
+		logger.Info("Verified A2A v1.0 OpenAPI Spec & Codegen", slog.Int64("bytes", stat.Size()))
+	}
+
+	// Verify A2A Protobuf generated code freshness (used by thin gRPC adapter)
 	a2aPbPath := filepath.Join(*rootDir, "internal", "a2a", "pb", "a2a.pb.go")
 	if stat, err := os.Stat(a2aPbPath); err != nil || stat.Size() == 0 {
 		logger.Error("specgen error: A2A protobuf code missing or empty", slog.String("path", a2aPbPath))

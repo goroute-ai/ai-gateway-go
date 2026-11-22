@@ -2,21 +2,20 @@ package a2a
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-// OpenAIBridge provides compatibility translation allowing any standard OpenAI
-// client to interact with registered A2A agents via `model: "a2a/{slug}"`.
+// OpenAIBridge translates OpenAI `/v1/chat/completions` (`model: "a2a/{slug}"`) requests
+// into OpenAPI-first A2A v1.0 SendMessage / SendStreamingMessage calls.
 type OpenAIBridge struct {
 	router  *RouterService
 	streams *StreamSubscriber
@@ -49,7 +48,6 @@ func (b *OpenAIBridge) HandleChatCompletion(
 ) {
 	ctx := r.Context()
 
-	// 1. RBAC check for the requested A2A agent
 	if b.rbac != nil {
 		if err := b.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
 			domain.WriteHTTPError(w, err)
@@ -58,9 +56,7 @@ func (b *OpenAIBridge) HandleChatCompletion(
 	}
 
 	taskID, contextID := extractResumptionParams(r, chatReq)
-
-	// 2. Build A2A message from conversation history
-	pbMsg, err := b.buildA2AMessage(chatReq, contextID, taskID)
+	specMsg, err := b.buildA2AMessage(chatReq, contextID, taskID)
 	if err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
@@ -71,46 +67,10 @@ func (b *OpenAIBridge) HandleChatCompletion(
 		return
 	}
 
-	sendReq := &pb.SendMessageRequest{
-		Message: pbMsg,
+	sendReq := &a2aspec.SendMessageRequest{
+		Message: *specMsg,
 	}
 
-	// 3. Dispatch to RouterService
-	resp, err := b.router.SendMessage(ctx, idCtx, agentSlug, sendReq)
-	if err != nil {
-		var gwErr *domain.GatewayError
-		if errors.As(err, &gwErr) {
-			domain.WriteHTTPError(w, gwErr)
-			return
-		}
-		var a2aErr *A2AError
-		if errors.As(err, &a2aErr) {
-			statusCode := http.StatusInternalServerError
-			if a2aErr.Code == CodeTaskNotFound {
-				statusCode = http.StatusNotFound
-			} else if a2aErr.Code == CodeAgentKilled {
-				statusCode = http.StatusServiceUnavailable
-			} else if a2aErr.Code == CodeInvalidTaskPayload || a2aErr.Code == CodeTaskStateTransitionInvalid {
-				statusCode = http.StatusBadRequest
-			}
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: statusCode,
-				Type:       domain.ErrorTypeServer,
-				Code:       fmt.Sprintf("a2a_error_%d", a2aErr.Code),
-				Message:    a2aErr.Message,
-			})
-			return
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "a2a_dispatch_error",
-			Message:    err.Error(),
-		})
-		return
-	}
-
-	// 4. Return sync or streaming response
 	if chatReq.Stream {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -122,21 +82,39 @@ func (b *OpenAIBridge) HandleChatCompletion(
 			})
 			return
 		}
-		b.handleStream(w, flusher, idCtx, agentSlug, resp, contextID, taskID)
-	} else {
-		b.handleSync(w, idCtx, agentSlug, resp, contextID, taskID)
+		b.handleStream(w, r, flusher, idCtx, agentSlug, sendReq, contextID, taskID)
+		return
 	}
+
+	resp, err := b.router.SendMessage(ctx, idCtx, agentSlug, sendReq)
+	if err != nil {
+		b.writeBridgeError(w, err)
+		return
+	}
+	b.handleSync(w, agentSlug, resp, contextID, taskID)
 }
 
 func (b *OpenAIBridge) buildA2AMessage(
 	chatReq *domain.CanonicalChatRequest,
 	contextID string,
 	taskID string,
-) (*pb.Message, error) {
+) (*a2aspec.Message, error) {
 	var systemInstructions []string
-	var parts []*pb.Part
+	var transcript []map[string]any
+	var parts []a2aspec.Part
 
-	for _, msg := range chatReq.Messages {
+	lastUserIdx := -1
+	for i := len(chatReq.Messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(strings.TrimSpace(chatReq.Messages[i].Role), "user") {
+			lastUserIdx = i
+			break
+		}
+	}
+	if lastUserIdx < 0 {
+		return nil, fmt.Errorf("no user content provided in chat completion messages")
+	}
+
+	for i, msg := range chatReq.Messages {
 		roleLower := strings.ToLower(strings.TrimSpace(msg.Role))
 		switch roleLower {
 		case "system", "developer":
@@ -144,28 +122,33 @@ func (b *OpenAIBridge) buildA2AMessage(
 				systemInstructions = append(systemInstructions, msg.Content)
 			}
 		case "user":
-			if msg.Content != "" {
-				parts = append(parts, &pb.Part{
-					Content: &pb.Part_Text{
-						Text: msg.Content,
-					},
+			if i == lastUserIdx {
+				if msg.Content != "" {
+					parts = append(parts, a2aspec.NewTextPart(msg.Content))
+				}
+				for _, p := range msg.Parts {
+					if p.Type == "text" && p.Text != "" {
+						parts = append(parts, a2aspec.NewTextPart(p.Text))
+					} else if p.Type == "image_url" && p.ImageURL != nil && p.ImageURL.URL != "" {
+						u := p.ImageURL.URL
+						parts = append(parts, a2aspec.Part{Url: &u})
+					}
+				}
+			} else {
+				transcript = append(transcript, map[string]any{
+					"role":    "user",
+					"content": canonicalMessageText(msg),
 				})
 			}
-			for _, p := range msg.Parts {
-				if p.Type == "text" && p.Text != "" {
-					parts = append(parts, &pb.Part{
-						Content: &pb.Part_Text{
-							Text: p.Text,
-						},
-					})
-				} else if p.Type == "image_url" && p.ImageURL != nil {
-					parts = append(parts, &pb.Part{
-						Content: &pb.Part_Url{
-							Url: p.ImageURL.URL,
-						},
-					})
-				}
+		case "assistant", "tool":
+			entry := map[string]any{
+				"role":    roleLower,
+				"content": canonicalMessageText(msg),
 			}
+			if msg.ToolCallID != "" {
+				entry["tool_call_id"] = msg.ToolCallID
+			}
+			transcript = append(transcript, entry)
 		}
 	}
 
@@ -173,36 +156,59 @@ func (b *OpenAIBridge) buildA2AMessage(
 		return nil, fmt.Errorf("no user content provided in chat completion messages")
 	}
 
-	// Prepend system instructions to the first turn if present
-	if len(systemInstructions) > 0 {
-		combinedInstructions := strings.Join(systemInstructions, "\n\n")
-		firstPartText := parts[0].GetText()
-		parts[0] = &pb.Part{
-			Content: &pb.Part_Text{
-				Text: fmt.Sprintf("[Instructions: %s]\n\n%s", combinedInstructions, firstPartText),
-			},
-		}
+	if len(systemInstructions) > 0 && parts[0].Text != nil {
+		combined := strings.Join(systemInstructions, "\n\n")
+		a2aspec.SetPartText(&parts[0], fmt.Sprintf("[Instructions: %s]\n\n%s", combined, *parts[0].Text))
 	}
 
-	return &pb.Message{
-		Role:      pb.Role_ROLE_USER,
+	var meta *a2aspec.Metadata
+	if len(transcript) > 0 {
+		m := a2aspec.Metadata{
+			"conversation_history": transcript,
+		}
+		meta = &m
+	}
+
+	msg := &a2aspec.Message{
+		MessageId: "msg_" + uuid.NewString(),
+		Role:      a2aspec.ROLEUSER,
 		Parts:     parts,
-		ContextId: contextID,
-		TaskId:    taskID,
-	}, nil
+		Metadata:  meta,
+	}
+	if contextID != "" {
+		msg.ContextId = &contextID
+	}
+	if taskID != "" {
+		msg.TaskId = &taskID
+	}
+	return msg, nil
+}
+
+func canonicalMessageText(msg domain.CanonicalMessage) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	var sb strings.Builder
+	for _, p := range msg.Parts {
+		if p.Type == "text" && p.Text != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
 }
 
 func extractResumptionParams(r *http.Request, chatReq *domain.CanonicalChatRequest) (string, string) {
 	taskID := ""
 	contextID := ""
 
-	// 1. From GoRouteExtensions struct
 	if chatReq.GoRouteExtensions != nil {
 		taskID = strings.TrimSpace(chatReq.GoRouteExtensions.TaskID)
 		contextID = strings.TrimSpace(chatReq.GoRouteExtensions.ContextID)
 	}
 
-	// 2. From ExtraParams map
 	if chatReq.ExtraParams != nil {
 		if taskID == "" {
 			if t, ok := chatReq.ExtraParams["task_id"].(string); ok {
@@ -228,7 +234,6 @@ func extractResumptionParams(r *http.Request, chatReq *domain.CanonicalChatReque
 		}
 	}
 
-	// 3. From HTTP request headers
 	if taskID == "" && r != nil {
 		taskID = strings.TrimSpace(r.Header.Get("X-Gateway-A2A-Task-Id"))
 	}
@@ -239,15 +244,13 @@ func extractResumptionParams(r *http.Request, chatReq *domain.CanonicalChatReque
 	if contextID == "" {
 		contextID = "ctx_" + uuid.NewString()
 	}
-
 	return taskID, contextID
 }
 
 func (b *OpenAIBridge) handleSync(
 	w http.ResponseWriter,
-	idCtx *domain.IdentityContext,
 	agentSlug string,
-	resp *pb.SendMessageResponse,
+	resp *a2aspec.SendMessageResponse,
 	contextID string,
 	taskID string,
 ) {
@@ -262,49 +265,35 @@ func (b *OpenAIBridge) handleSync(
 	}
 
 	content := ""
-	taskState := "completed"
+	taskState := domain.A2ATaskStateCompleted
 
-	if task := resp.GetTask(); task != nil {
-		if task.GetId() != "" {
-			taskID = task.GetId()
+	if task := resp.Task; task != nil {
+		if task.Id != "" {
+			taskID = task.Id
 		}
-		if task.GetContextId() != "" {
-			contextID = task.GetContextId()
+		if task.ContextId != nil && *task.ContextId != "" {
+			contextID = *task.ContextId
 		}
-
-		status := task.GetStatus()
-		if status != nil {
-			switch status.GetState() {
-			case pb.TaskState_TASK_STATE_COMPLETED:
-				taskState = "completed"
-				content = extractTaskContent(task)
-			case pb.TaskState_TASK_STATE_INPUT_REQUIRED:
-				taskState = "input_required"
-				content = extractTaskContent(task)
-			case pb.TaskState_TASK_STATE_AUTH_REQUIRED:
-				taskState = "auth_required"
-				content = extractTaskContent(task)
-			case pb.TaskState_TASK_STATE_FAILED, pb.TaskState_TASK_STATE_CANCELED, pb.TaskState_TASK_STATE_REJECTED:
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusBadGateway,
-					Type:       domain.ErrorTypeServer,
-					Code:       "a2a_task_failed",
-					Message:    fmt.Sprintf("A2A task reached terminal failure state: %s", status.GetState().String()),
-				})
-				return
-			default:
-				content = extractTaskContent(task)
-			}
-		} else {
-			content = extractTaskContent(task)
+		taskState = a2aspec.TaskStateToDomain(task.Status.State)
+		if task.Status.State == a2aspec.TASKSTATEFAILED ||
+			task.Status.State == a2aspec.TASKSTATECANCELED ||
+			task.Status.State == a2aspec.TASKSTATEREJECTED {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadGateway,
+				Type:       domain.ErrorTypeServer,
+				Code:       "a2a_task_failed",
+				Message:    fmt.Sprintf("A2A task reached terminal failure state: %s", task.Status.State),
+			})
+			return
 		}
-	} else if msg := resp.GetMessage(); msg != nil {
-		content = extractMessageText(msg)
-		if msg.GetTaskId() != "" {
-			taskID = msg.GetTaskId()
+		content = extractSpecTaskContent(task)
+	} else if msg := resp.Message; msg != nil {
+		content = extractSpecMessageText(msg)
+		if msg.TaskId != nil && *msg.TaskId != "" {
+			taskID = *msg.TaskId
 		}
-		if msg.GetContextId() != "" {
-			contextID = msg.GetContextId()
+		if msg.ContextId != nil && *msg.ContextId != "" {
+			contextID = *msg.ContextId
 		}
 	}
 
@@ -341,129 +330,120 @@ func (b *OpenAIBridge) handleSync(
 
 func (b *OpenAIBridge) handleStream(
 	w http.ResponseWriter,
+	r *http.Request,
 	flusher http.Flusher,
 	idCtx *domain.IdentityContext,
 	agentSlug string,
-	resp *pb.SendMessageResponse,
+	sendReq *a2aspec.SendMessageRequest,
 	contextID string,
 	taskID string,
 ) {
 	completionID := "chatcmpl_" + uuid.NewString()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-Gateway-A2A-Task-Id", taskID)
-	w.Header().Set("X-Gateway-A2A-Context-Id", contextID)
+	headersWritten := false
+	resolvedTaskID := taskID
+	resolvedContextID := contextID
+	finalState := domain.A2ATaskStateCompleted
 
-	flusher.Flush()
-
-	if resp == nil {
-		emitSSEError(w, flusher, "a2a_task_failed", "upstream returned empty response")
-		return
-	}
-
-	if task := resp.GetTask(); task != nil {
-		if task.GetId() != "" {
-			taskID = task.GetId()
+	initSSEHeaders := func(tid, cid string) {
+		if headersWritten {
+			return
 		}
-		if task.GetContextId() != "" {
-			contextID = task.GetContextId()
+		headersWritten = true
+		if tid != "" {
+			resolvedTaskID = tid
 		}
-		status := task.GetStatus()
-		if status != nil {
-			switch status.GetState() {
-			case pb.TaskState_TASK_STATE_FAILED, pb.TaskState_TASK_STATE_CANCELED, pb.TaskState_TASK_STATE_REJECTED:
-				emitSSEError(w, flusher, "a2a_task_failed", fmt.Sprintf("A2A task reached failure state: %s", status.GetState().String()))
-				return
-			case pb.TaskState_TASK_STATE_INPUT_REQUIRED, pb.TaskState_TASK_STATE_AUTH_REQUIRED:
-				content := extractTaskContent(task)
-				stateStr := "input_required"
-				if status.GetState() == pb.TaskState_TASK_STATE_AUTH_REQUIRED {
-					stateStr = "auth_required"
-				}
-				chunk := map[string]any{
-					"id":      completionID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   "a2a/" + agentSlug,
-					"choices": []map[string]any{
-						{
-							"index": 0,
-							"delta": map[string]any{
-								"content": content,
-							},
-							"finish_reason": "stop",
-						},
-					},
-					"goroute_a2a": map[string]any{
-						"task_id":    taskID,
-						"context_id": contextID,
-						"task_state": stateStr,
-					},
-				}
-				chunkBytes, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", chunkBytes)
-				fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
+		if cid != "" {
+			resolvedContextID = cid
 		}
-		content := extractTaskContent(task)
-		emitSSEChunks(w, flusher, completionID, agentSlug, content, taskID, contextID)
-		return
-	} else if msg := resp.GetMessage(); msg != nil {
-		content := extractMessageText(msg)
-		emitSSEChunks(w, flusher, completionID, agentSlug, content, taskID, contextID)
-		return
-	}
-
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
-}
-
-func emitSSEError(w http.ResponseWriter, flusher http.Flusher, code, message string) {
-	errPayload, _ := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-		},
-	})
-	fmt.Fprintf(w, "event: error\ndata: %s\n\n", errPayload)
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
-}
-
-func emitSSEChunks(w http.ResponseWriter, flusher http.Flusher, completionID, agentSlug, content, taskID, contextID string) {
-	words := strings.Fields(content)
-	if len(words) == 0 && content != "" {
-		words = []string{content}
-	}
-	for i, word := range words {
-		deltaText := word
-		if i > 0 {
-			deltaText = " " + word
-		}
-		chunk := map[string]any{
-			"id":      completionID,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   "a2a/" + agentSlug,
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"content": deltaText,
-					},
-					"finish_reason": nil,
-				},
-			},
-		}
-		chunkBytes, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", chunkBytes)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("X-Gateway-A2A-Task-Id", resolvedTaskID)
+		w.Header().Set("X-Gateway-A2A-Context-Id", resolvedContextID)
+		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 	}
 
+	err := b.router.SendStreamingMessage(r.Context(), idCtx, agentSlug, sendReq, func(frame *a2aspec.StreamResponse, _ int64) error {
+		if frame == nil {
+			return nil
+		}
+		var deltaContent string
+		switch {
+		case frame.Task != nil:
+			cid := resolvedContextID
+			if frame.Task.ContextId != nil && *frame.Task.ContextId != "" {
+				cid = *frame.Task.ContextId
+			}
+			initSSEHeaders(frame.Task.Id, cid)
+			finalState = a2aspec.TaskStateToDomain(frame.Task.Status.State)
+			if frame.Task.Status.State == a2aspec.TASKSTATEFAILED ||
+				frame.Task.Status.State == a2aspec.TASKSTATECANCELED ||
+				frame.Task.Status.State == a2aspec.TASKSTATEREJECTED {
+				emitSSEError(w, flusher, "a2a_task_failed", fmt.Sprintf("A2A task reached failure state: %s", frame.Task.Status.State))
+				return fmt.Errorf("a2a task failed: %s", frame.Task.Status.State)
+			}
+			deltaContent = extractSpecTaskContent(frame.Task)
+		case frame.StatusUpdate != nil:
+			initSSEHeaders(frame.StatusUpdate.TaskId, frame.StatusUpdate.ContextId)
+			finalState = a2aspec.TaskStateToDomain(frame.StatusUpdate.Status.State)
+			if frame.StatusUpdate.Status.Message != nil {
+				deltaContent = extractSpecMessageText(frame.StatusUpdate.Status.Message)
+			}
+			if frame.StatusUpdate.Status.State == a2aspec.TASKSTATEFAILED ||
+				frame.StatusUpdate.Status.State == a2aspec.TASKSTATECANCELED ||
+				frame.StatusUpdate.Status.State == a2aspec.TASKSTATEREJECTED {
+				emitSSEError(w, flusher, "a2a_task_failed", fmt.Sprintf("A2A task reached failure state: %s", frame.StatusUpdate.Status.State))
+				return fmt.Errorf("a2a task failed: %s", frame.StatusUpdate.Status.State)
+			}
+		case frame.ArtifactUpdate != nil:
+			initSSEHeaders(frame.ArtifactUpdate.TaskId, frame.ArtifactUpdate.ContextId)
+			deltaContent = extractArtifactPartsText(frame.ArtifactUpdate.Artifact.Parts)
+		case frame.Message != nil:
+			tid := resolvedTaskID
+			if frame.Message.TaskId != nil && *frame.Message.TaskId != "" {
+				tid = *frame.Message.TaskId
+			}
+			cid := resolvedContextID
+			if frame.Message.ContextId != nil && *frame.Message.ContextId != "" {
+				cid = *frame.Message.ContextId
+			}
+			initSSEHeaders(tid, cid)
+			deltaContent = extractSpecMessageText(frame.Message)
+		}
+
+		if deltaContent != "" {
+			chunk := map[string]any{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   "a2a/" + agentSlug,
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"delta": map[string]any{
+							"content": deltaContent,
+						},
+						"finish_reason": nil,
+					},
+				},
+			}
+			chunkBytes, _ := json.Marshal(chunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunkBytes)
+			flusher.Flush()
+		}
+		return nil
+	})
+	if err != nil {
+		if !headersWritten {
+			b.writeBridgeError(w, err)
+			return
+		}
+		return
+	}
+
+	initSSEHeaders(resolvedTaskID, resolvedContextID)
 	stopChunk := map[string]any{
 		"id":      completionID,
 		"object":  "chat.completion.chunk",
@@ -477,24 +457,46 @@ func emitSSEChunks(w http.ResponseWriter, flusher http.Flusher, completionID, ag
 			},
 		},
 		"goroute_a2a": map[string]any{
-			"task_id":    taskID,
-			"context_id": contextID,
-			"task_state": "completed",
+			"task_id":    resolvedTaskID,
+			"context_id": resolvedContextID,
+			"task_state": finalState,
 		},
 	}
 	stopBytes, _ := json.Marshal(stopChunk)
-	fmt.Fprintf(w, "data: %s\n\n", stopBytes)
-	fmt.Fprintf(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", stopBytes)
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-func extractMessageText(msg *pb.Message) string {
+func (b *OpenAIBridge) writeBridgeError(w http.ResponseWriter, err error) {
+	norm := NormalizeA2AError(err)
+	domain.WriteHTTPError(w, &domain.GatewayError{
+		StatusCode: norm.HTTPStatus,
+		Type:       domain.ErrorTypeServer,
+		Code:       fmt.Sprintf("a2a_error_%d", norm.JSONRPCCode),
+		Message:    norm.Message,
+	})
+}
+
+func emitSSEError(w http.ResponseWriter, flusher http.Flusher, code, message string) {
+	errPayload, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	})
+	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", errPayload)
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func extractSpecMessageText(msg *a2aspec.Message) string {
 	if msg == nil {
 		return ""
 	}
 	var sb strings.Builder
 	for _, p := range msg.Parts {
-		if txt := p.GetText(); txt != "" {
+		if txt, ok := a2aspec.PartText(p); ok && txt != "" {
 			if sb.Len() > 0 {
 				sb.WriteString("\n")
 			}
@@ -504,18 +506,31 @@ func extractMessageText(msg *pb.Message) string {
 	return sb.String()
 }
 
-func extractTaskContent(task *pb.Task) string {
+func extractArtifactPartsText(parts []a2aspec.Part) string {
+	var sb strings.Builder
+	for _, p := range parts {
+		if txt, ok := a2aspec.PartText(p); ok && txt != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(txt)
+		}
+	}
+	return sb.String()
+}
+
+func extractSpecTaskContent(task *a2aspec.Task) string {
 	if task == nil {
 		return ""
 	}
-	if task.GetStatus() != nil && task.GetStatus().GetMessage() != nil {
-		if txt := extractMessageText(task.GetStatus().GetMessage()); txt != "" {
+	if task.Status.Message != nil {
+		if txt := extractSpecMessageText(task.Status.Message); txt != "" {
 			return txt
 		}
 	}
-	for _, art := range task.GetArtifacts() {
-		for _, p := range art.GetParts() {
-			if txt := p.GetText(); txt != "" {
+	if task.Artifacts != nil {
+		for _, art := range *task.Artifacts {
+			if txt := extractArtifactPartsText(art.Parts); txt != "" {
 				return txt
 			}
 		}

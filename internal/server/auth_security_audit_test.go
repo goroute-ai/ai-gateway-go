@@ -350,7 +350,7 @@ func TestAuthHardening_AUTH07_MCPAndA2APrivateURLRequiresPlatformAdmin(t *testin
 		t.Fatalf("expected 403 platform_admin_required on A2A create by org_admin, got %d (%s)", a2aRec.Code, a2aRec.Body.String())
 	}
 
-	// platform_admin succeeds.
+	// platform_admin succeeds on MCP create and A2A create, then org_admin is still blocked from sync-card with private URLs.
 	platRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/admin/v1/mcp/servers", map[string]any{
 		"org_id":       "org-sso",
 		"name":         "Internal MCP",
@@ -361,6 +361,33 @@ func TestAuthHardening_AUTH07_MCPAndA2APrivateURLRequiresPlatformAdmin(t *testin
 	})
 	if platRec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for platform_admin MCP create, got %d (%s)", platRec.Code, platRec.Body.String())
+	}
+
+	platA2ARec := doJSONReq(t, srv.Handler(), http.MethodPost, "/admin/v1/a2a/agents", map[string]any{
+		"org_id":       "org-sso",
+		"name":         "Internal Agent",
+		"slug":         "internal-agent",
+		"endpoint_url": "http://127.0.0.1:9091/a2a",
+	}, map[string]string{
+		"Authorization": "Bearer " + cfg.Auth.MasterAdminKey,
+	})
+	if platA2ARec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for platform_admin A2A create, got %d (%s)", platA2ARec.Code, platA2ARec.Body.String())
+	}
+	var createdA2A struct {
+		Agent domain.A2AAgent `json:"agent"`
+	}
+	if err := json.Unmarshal(platA2ARec.Body.Bytes(), &createdA2A); err != nil {
+		t.Fatalf("decode created A2A agent: %v", err)
+	}
+	syncRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/admin/v1/a2a/agents/"+createdA2A.Agent.ID+"/sync-card", map[string]any{
+		"agent_card_url": "http://127.0.0.1:9091/.well-known/agent-card.json",
+		"jwks_url":       "http://127.0.0.1:9091/.well-known/jwks.json",
+	}, map[string]string{
+		"Authorization": "Bearer " + orgAdminSess.Token,
+	})
+	if syncRec.Code != http.StatusForbidden || !strings.Contains(syncRec.Body.String(), "platform_admin_required") {
+		t.Fatalf("expected 403 platform_admin_required on A2A sync-card by org_admin, got %d (%s)", syncRec.Code, syncRec.Body.String())
 	}
 }
 
@@ -582,10 +609,10 @@ func TestAuthHardening_AUTH10_AUTH11_AUTH12_A2ADiscoveryVisibilityAndGRPCRBAC(t 
 		}
 	}
 
-	// AUTH-10: Unauthenticated agent card lookup for specific agent slug -> 401.
+	// AUTH-10: Unauthenticated agent card lookup for private agent slug fails closed with 404 (no slug existence oracle).
 	unauthCard := doJSONReq(t, srv.Handler(), http.MethodGet, "/.well-known/agent-card.json?agent=team-shared-agent", nil, nil)
-	if unauthCard.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 on unauthenticated specific agent card lookup, got %d (%s)", unauthCard.Code, unauthCard.Body.String())
+	if unauthCard.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on unauthenticated private agent card lookup, got %d (%s)", unauthCard.Code, unauthCard.Body.String())
 	}
 
 	// AUTH-10: Authenticated caller in org-sso cannot discover org-other-a2a's agent -> 404.

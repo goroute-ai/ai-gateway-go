@@ -549,7 +549,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0039) down through 0022.
+	// Exercise reverse down migrations from latest (0040) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -562,8 +562,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 18 {
-		t.Fatalf("expected 18 down migrations for 0022..0039, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 19 {
+		t.Fatalf("expected 19 down migrations for 0022..0040, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
@@ -691,4 +691,195 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
 		t.Fatalf("RunMigrationsDir reapply 0036 failed: %v", err)
 	}
+
+	// Verify 0040 A2A v1.0 OpenAPI-first schema columns, reversible down/re-up, and live Postgres round-trip.
+	a2aCols := []struct {
+		table string
+		col   string
+	}{
+		{"a2a_agents", "is_public_card"},
+		{"a2a_agents", "protocol_binding"},
+		{"a2a_agents", "extended_agent_card_json"},
+		{"a2a_agents", "auth_header_name"},
+		{"a2a_tasks", "context_id"},
+		{"a2a_tasks", "status_message_json"},
+		{"a2a_tasks", "status_timestamp"},
+		{"a2a_tasks", "history_json"},
+		{"a2a_tasks", "artifacts_json"},
+		{"a2a_tasks", "metadata_json"},
+		{"a2a_push_notification_configs", "tenant"},
+		{"a2a_push_notification_configs", "token"},
+		{"a2a_push_notification_configs", "encrypted_auth_scheme"},
+		{"a2a_push_notification_configs", "encrypted_auth_creds"},
+		{"a2a_push_notification_configs", "encrypted_auth_dek"},
+		{"a2a_push_notification_configs", "updated_at"},
+		{"a2a_outbox_events", "push_config_id"},
+		{"a2a_outbox_events", "last_error"},
+		{"a2a_outbox_events", "updated_at"},
+	}
+	for _, tc := range a2aCols {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
+			t.Fatalf("expected column %s.%s after 0040 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+		}
+	}
+
+	down0040, err := os.ReadFile(filepath.Join(migrationsDir, "0040_a2a_v1_production_spec.down.sql"))
+	if err != nil {
+		t.Fatalf("read 0040 down migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(down0040)); err != nil {
+		t.Fatalf("exec 0040 down migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, "0040_a2a_v1_production_spec.up.sql"); err != nil {
+		t.Fatalf("delete schema_migrations 0040: %v", err)
+	}
+	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("RunMigrationsDir reapply 0040 failed: %v", err)
+	}
+
+	// Live Postgres A2A v1.0 CRUD, multi-push-config, SKIP LOCKED outbox replay, and KEK rotation round-trip.
+	nowA2A := time.Now().UTC().Truncate(time.Microsecond)
+	a2aAgent := &domain.A2AAgent{
+		ID:                  "agent_live_0039_1",
+		OrgID:               "org_live_kek",
+		Name:                "Live PG A2A Agent",
+		Slug:                "live-pg-a2a",
+		EndpointURL:         "https://agent.example.com/a2a",
+		AgentCardJSON:       `{"name":"Live PG A2A Agent","version":"1.0.0"}`,
+		IsPublicCard:        true,
+		ProtocolBinding:     domain.A2AProtocolBindingHTTPJSON,
+		AuthType:            "static",
+		AuthHeaderName:      "X-API-Key",
+		EncryptedAuthSecret: "enc-agent-secret-v1",
+		EncryptedAuthDEK:    "live-old-agent-dek",
+		TaskVisibilityMode:  domain.TaskVisibilityKeyStrict,
+		MaxTaskIterations:   25,
+		IsActive:            true,
+		CreatedAt:           nowA2A,
+		UpdatedAt:           nowA2A,
+	}
+	if err := pgRepo.CreateA2AAgent(ctx, a2aAgent); err != nil {
+		t.Fatalf("CreateA2AAgent(live pg): %v", err)
+	}
+	a2aAgent.Name = "Live PG A2A Agent Updated"
+	a2aAgent.ExtendedAgentCardJSON = `{"name":"Extended Live PG Agent","version":"1.0.0"}`
+	if err := pgRepo.UpdateA2AAgent(ctx, a2aAgent); err != nil {
+		t.Fatalf("UpdateA2AAgent(live pg): %v", err)
+	}
+	gotAgent, err := pgRepo.GetA2AAgentBySlug(ctx, "org_live_kek", "live-pg-a2a")
+	if err != nil || gotAgent.Name != "Live PG A2A Agent Updated" || !gotAgent.IsPublicCard || gotAgent.AuthHeaderName != "X-API-Key" {
+		t.Fatalf("GetA2AAgentBySlug mismatch: %+v err=%v", gotAgent, err)
+	}
+
+	a2aTask := &domain.A2ATask{
+		ID:            "task_live_0039_1",
+		OrgID:         "org_live_kek",
+		AgentID:       a2aAgent.ID,
+		ContextID:     "ctx_live_0039",
+		VirtualKeyID:  "vk_live_staged_1",
+		State:         domain.A2ATaskStateWorking,
+		HistoryJSON:   `[{"messageId":"m1","role":"ROLE_USER","parts":[{"text":"hi"}]}]`,
+		ArtifactsJSON: `[]`,
+		MetadataJSON:  `{"env":"live-pg"}`,
+		CreatedAt:     nowA2A,
+		UpdatedAt:     nowA2A,
+	}
+	if err := pgRepo.CreateA2ATask(ctx, a2aTask); err != nil {
+		t.Fatalf("CreateA2ATask(live pg): %v", err)
+	}
+	// Store 2 distinct push configs for the same task (validates multi-config migration 0039).
+	pushCfg1 := &domain.A2APushNotificationConfig{
+		ID:                 "pc_live_1",
+		TaskID:             a2aTask.ID,
+		Tenant:             "org_live_kek",
+		TargetURL:          "https://hooks.example.com/a2a/1",
+		Token:              "tok-1",
+		AuthScheme:         "Bearer",
+		EncryptedAuthCreds: "enc-push-creds-1",
+		EncryptedAuthDEK:   "live-old-push-dek-1",
+		CreatedAt:          nowA2A,
+		UpdatedAt:          nowA2A,
+	}
+	pushCfg2 := &domain.A2APushNotificationConfig{
+		ID:        "pc_live_2",
+		TaskID:    a2aTask.ID,
+		Tenant:    "org_live_kek",
+		TargetURL: "https://hooks.example.com/a2a/2",
+		Token:     "tok-2",
+		CreatedAt: nowA2A.Add(time.Second),
+		UpdatedAt: nowA2A.Add(time.Second),
+	}
+	if err := pgRepo.SetA2APushNotificationConfig(ctx, pushCfg1); err != nil {
+		t.Fatalf("SetA2APushNotificationConfig #1: %v", err)
+	}
+	if err := pgRepo.SetA2APushNotificationConfig(ctx, pushCfg2); err != nil {
+		t.Fatalf("SetA2APushNotificationConfig #2: %v", err)
+	}
+	listedPush, totalPush, err := pgRepo.ListA2APushNotificationConfigs(ctx, a2aTask.ID, 10, 0)
+	if err != nil || totalPush != 2 || len(listedPush) != 2 {
+		t.Fatalf("ListA2APushNotificationConfigs expected 2, got len=%d total=%d err=%v", len(listedPush), totalPush, err)
+	}
+
+	// Verify transactional KEK rotation re-wraps both A2AAgents and A2APushConfigs in live Postgres.
+	a2aKEKSum, err := pgRepo.RotateKEKsTransactionally(ctx, func(batch KEKRotationBatch) (KEKRotationBatch, error) {
+		var out KEKRotationBatch
+		for _, ag := range batch.A2AAgents {
+			cp := *ag
+			cp.EncryptedAuthDEK = "live-new-agent-dek"
+			out.A2AAgents = append(out.A2AAgents, &cp)
+		}
+		for _, pc := range batch.A2APushConfigs {
+			cp := *pc
+			cp.EncryptedAuthDEK = "live-new-push-dek"
+			out.A2APushConfigs = append(out.A2APushConfigs, &cp)
+		}
+		return out, nil
+	})
+	if err != nil || a2aKEKSum.A2AAgentsRewrapped < 1 || a2aKEKSum.A2APushConfigsRewrapped < 1 {
+		t.Fatalf("live RotateKEKsTransactionally(a2a) failed: %+v err=%v", a2aKEKSum, err)
+	}
+	rewrappedPush, err := pgRepo.GetA2APushNotificationConfig(ctx, a2aTask.ID, pushCfg1.ID)
+	if err != nil || rewrappedPush.EncryptedAuthDEK != "live-new-push-dek" {
+		t.Fatalf("expected rewrapped push DEK, got %+v err=%v", rewrappedPush, err)
+	}
+
+	// Verify outbox dead-letter + replay in live Postgres.
+	outboxEv := &domain.A2AOutboxEvent{
+		ID:            "outbox_live_0039_1",
+		TaskID:        a2aTask.ID,
+		PushConfigID:  pushCfg1.ID,
+		EventType:     "statusUpdate",
+		TargetURL:     pushCfg1.TargetURL,
+		PayloadJSON:   `{"statusUpdate":{"taskId":"task_live_0039_1"}}`,
+		Status:        domain.OutboxStatusDeadLetter,
+		AttemptCount:  5,
+		LastError:     "upstream 503",
+		NextAttemptAt: nowA2A,
+		CreatedAt:     nowA2A,
+		UpdatedAt:     nowA2A,
+	}
+	if err := pgRepo.CreateA2AOutboxEvent(ctx, outboxEv); err != nil {
+		t.Fatalf("CreateA2AOutboxEvent(live pg): %v", err)
+	}
+	replayed, err := pgRepo.ReplayA2AOutboxEvent(ctx, outboxEv.ID)
+	if err != nil || replayed.Status != domain.OutboxStatusPending || replayed.AttemptCount != 0 {
+		t.Fatalf("ReplayA2AOutboxEvent mismatch: %+v err=%v", replayed, err)
+	}
+	claimed, err := pgRepo.ClaimPendingA2AOutboxEvents(ctx, 10)
+	if err != nil || len(claimed) == 0 || claimed[0].ID != outboxEv.ID {
+		t.Fatalf("ClaimPendingA2AOutboxEvents expected %s, got %+v err=%v", outboxEv.ID, claimed, err)
+	}
+	if err := pgRepo.DeleteA2APushNotificationConfig(ctx, a2aTask.ID, pushCfg2.ID); err != nil {
+		t.Fatalf("DeleteA2APushNotificationConfig: %v", err)
+	}
+	if err := pgRepo.DeleteA2AAgent(ctx, a2aAgent.ID); err != nil {
+		t.Fatalf("DeleteA2AAgent: %v", err)
+	}
+	// Clean up synthetic non-hex DEK rows so subsequent live E2E tests sharing aigateway_test can run rotate-kek cleanly.
+	_, _ = pool.Exec(ctx, `DELETE FROM virtual_keys WHERE id = 'vk_live_staged_1'`)
 }

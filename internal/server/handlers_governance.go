@@ -1093,6 +1093,18 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 				cp.EncryptedAuthDEK = newDEK
 				out.A2AAgents = append(out.A2AAgents, &cp)
 			}
+			for _, pc := range batch.A2APushConfigs {
+				if pc == nil || strings.TrimSpace(pc.EncryptedAuthDEK) == "" {
+					continue
+				}
+				newDEK, rErr := s.vault.ReWrapString(pc.EncryptedAuthDEK, newVault)
+				if rErr != nil {
+					return out, &domain.GatewayError{StatusCode: http.StatusInternalServerError, Type: domain.ErrorTypeServer, Code: "kek_rewrap_failed", Message: fmt.Sprintf("re-wrap A2A push config %s DEK: %v", pc.ID, rErr)}
+				}
+				cp := *pc
+				cp.EncryptedAuthDEK = newDEK
+				out.A2APushConfigs = append(out.A2APushConfigs, &cp)
+			}
 			for _, gd := range batch.Guardrails {
 				if gd == nil || strings.TrimSpace(gd.EncryptedDEK) == "" {
 					continue
@@ -1185,6 +1197,33 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 				}
 				rotSummary.A2AAgentsRewrapped++
 			}
+			a2aTasks, _, _ := s.repo.ListA2ATasks(r.Context(), domain.A2ATaskListFilter{
+				OrgID: org.ID,
+				Limit: 10000,
+			})
+			for _, t := range a2aTasks {
+				if t == nil {
+					continue
+				}
+				pushCfgs, _, _ := s.repo.ListA2APushNotificationConfigs(r.Context(), t.ID, 1000, 0)
+				for _, pc := range pushCfgs {
+					if pc == nil || strings.TrimSpace(pc.EncryptedAuthDEK) == "" {
+						continue
+					}
+					newDEK, rErr := s.vault.ReWrapString(pc.EncryptedAuthDEK, newVault)
+					if rErr != nil {
+						domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusInternalServerError, Type: domain.ErrorTypeServer, Code: "kek_rewrap_failed", Message: fmt.Sprintf("re-wrap A2A push config %s DEK: %v", pc.ID, rErr)})
+						return
+					}
+					cp := *pc
+					cp.EncryptedAuthDEK = newDEK
+					if uErr := s.repo.SetA2APushNotificationConfig(r.Context(), &cp); uErr != nil {
+						domain.WriteHTTPError(w, uErr)
+						return
+					}
+					rotSummary.A2APushConfigsRewrapped++
+				}
+			}
 			grDefs, _ := s.repo.ListGuardrailDefinitions(r.Context(), org.ID, "", "")
 			for _, gd := range grDefs {
 				if gd == nil || strings.TrimSpace(gd.EncryptedDEK) == "" {
@@ -1244,6 +1283,7 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 		"credentials_rewrapped":         rotSummary.CredentialsRewrapped,
 		"mcp_servers_rewrapped":         rotSummary.MCPServersRewrapped,
 		"a2a_agents_rewrapped":          rotSummary.A2AAgentsRewrapped,
+		"a2a_push_configs_rewrapped":    rotSummary.A2APushConfigsRewrapped,
 		"guardrails_rewrapped":          rotSummary.GuardrailsRewrapped,
 		"staged_virtual_keys_rewrapped": rotSummary.StagedVirtualKeysRewrapped,
 		"source_pod":                    podID,

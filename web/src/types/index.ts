@@ -822,13 +822,34 @@ export interface A2AAgent {
   slug: string;
   endpoint_url: string;
   agent_card_url?: string;
+  agent_card_json?: string;
+  extended_agent_card_json?: string;
+  is_public_card?: boolean;
+  protocol_binding?: 'HTTP+JSON' | 'JSONRPC' | 'GRPC' | string;
   task_visibility_mode?: string;
   auth_type?: 'none' | 'static' | 'vault_jwt';
+  auth_header_name?: string;
   max_task_iterations?: number;
   max_task_budget_micros?: number;
   is_active: boolean;
   is_killed: boolean;
   created_at: string;
+  updated_at?: string;
+}
+
+export interface A2AOutboxEvent {
+  id: string;
+  task_id: string;
+  push_config_id?: string;
+  event_type: string;
+  target_url: string;
+  payload_json: string;
+  status: 'pending' | 'sent' | 'dead_letter' | string;
+  attempt_count: number;
+  last_error?: string;
+  next_attempt_at?: string;
+  created_at: string;
+  updated_at?: string;
 }
 
 export interface GatewayConfig {

@@ -4,105 +4,79 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
 
-// A2A JSON-RPC 2.0 protocol error codes returned during agent task validation and dispatch.
-const (
-	// CodeBudgetExceeded indicates the task exceeded allocated budget or maximum iterations.
-	CodeBudgetExceeded             = -32000 // Task has exceeded allocated budget or maximum iterations
-	CodeTaskNotFound               = -32001 // Requested task ID not found or forbidden by visibility policy
-	CodeTaskCancelled              = -32002 // Task was cancelled
-	CodeTaskAlreadyCompleted       = -32003 // Operation cannot be performed because task is completed
-	CodeTaskStateTransitionInvalid = -32004 // Illegal task state transition
-	CodeInvalidTaskPayload         = -32005 // Malformed or invalid task message/artifact payload
-	CodePushNotificationFailed     = -32006 // Failed to deliver or register push notification
-	CodeStreamingUnsupported       = -32007 // Agent does not support streaming
-	CodeExtensionNotSupported      = -32008 // Requested extension URI not supported by agent
-	CodeExtensionVersionMismatch   = -32009 // Extension version incompatible
-	CodeAgentKilled                = -32010 // Agent disabled via admin emergency kill-switch
-)
-
-// A2AError represents an error conforming to the A2A JSON-RPC 2.0 specification.
-type A2AError struct {
-	Code    int            `json:"code"`
-	Message string         `json:"message"`
-	Data    map[string]any `json:"data,omitempty"`
-}
-
-func (e *A2AError) Error() string {
-	return fmt.Sprintf("A2A error %d: %s", e.Code, e.Message)
-}
-
-// ValidateStateTransition checks whether a proposed task state transition is legal per A2A v1.0.
-func ValidateStateTransition(from, to pb.TaskState) error {
-	// Identity transition (no-op) is always legal
+// ValidateStateTransition checks whether a proposed task state transition is legal per A2A v1.0
+// across all 8 non-unspecified TaskState values (including AUTH_REQUIRED and REJECTED).
+func ValidateStateTransition(from, to a2aspec.TaskState) error {
 	if from == to {
 		return nil
 	}
-
-	// Terminal states CANNOT transition to any other state
-	if isTerminal(from) {
-		return &A2AError{
-			Code:    CodeTaskStateTransitionInvalid,
-			Message: fmt.Sprintf("Illegal transition: task in terminal state %s cannot transition to %s", from.String(), to.String()),
-		}
+	if a2aspec.IsTerminalTaskState(from) {
+		return ErrTaskNotCancelable(
+			fmt.Sprintf("illegal transition: task in terminal state %s cannot transition to %s", from, to),
+			"",
+		)
 	}
 
 	switch from {
-	case pb.TaskState_TASK_STATE_UNSPECIFIED, pb.TaskState_TASK_STATE_SUBMITTED:
+	case a2aspec.TASKSTATEUNSPECIFIED, a2aspec.TASKSTATESUBMITTED:
 		switch to {
-		case pb.TaskState_TASK_STATE_WORKING,
-			pb.TaskState_TASK_STATE_INPUT_REQUIRED,
-			pb.TaskState_TASK_STATE_COMPLETED,
-			pb.TaskState_TASK_STATE_FAILED,
-			pb.TaskState_TASK_STATE_CANCELED:
+		case a2aspec.TASKSTATEWORKING,
+			a2aspec.TASKSTATEINPUTREQUIRED,
+			a2aspec.TASKSTATEAUTHREQUIRED,
+			a2aspec.TASKSTATECOMPLETED,
+			a2aspec.TASKSTATEFAILED,
+			a2aspec.TASKSTATECANCELED,
+			a2aspec.TASKSTATEREJECTED:
 			return nil
 		}
-	case pb.TaskState_TASK_STATE_WORKING:
+	case a2aspec.TASKSTATEWORKING:
 		switch to {
-		case pb.TaskState_TASK_STATE_INPUT_REQUIRED,
-			pb.TaskState_TASK_STATE_COMPLETED,
-			pb.TaskState_TASK_STATE_FAILED,
-			pb.TaskState_TASK_STATE_CANCELED:
+		case a2aspec.TASKSTATEINPUTREQUIRED,
+			a2aspec.TASKSTATEAUTHREQUIRED,
+			a2aspec.TASKSTATECOMPLETED,
+			a2aspec.TASKSTATEFAILED,
+			a2aspec.TASKSTATECANCELED,
+			a2aspec.TASKSTATEREJECTED:
 			return nil
 		}
-	case pb.TaskState_TASK_STATE_INPUT_REQUIRED:
+	case a2aspec.TASKSTATEINPUTREQUIRED, a2aspec.TASKSTATEAUTHREQUIRED:
 		switch to {
-		case pb.TaskState_TASK_STATE_WORKING,
-			pb.TaskState_TASK_STATE_COMPLETED,
-			pb.TaskState_TASK_STATE_FAILED,
-			pb.TaskState_TASK_STATE_CANCELED:
+		case a2aspec.TASKSTATEWORKING,
+			a2aspec.TASKSTATEINPUTREQUIRED,
+			a2aspec.TASKSTATEAUTHREQUIRED,
+			a2aspec.TASKSTATECOMPLETED,
+			a2aspec.TASKSTATEFAILED,
+			a2aspec.TASKSTATECANCELED,
+			a2aspec.TASKSTATEREJECTED:
 			return nil
 		}
 	}
 
-	return &A2AError{
-		Code:    CodeTaskStateTransitionInvalid,
-		Message: fmt.Sprintf("Illegal task state transition from %s to %s", from.String(), to.String()),
-	}
+	return ErrInvalidParams(fmt.Sprintf("illegal task state transition from %s to %s", from, to))
 }
 
-func isTerminal(s pb.TaskState) bool {
-	return s == pb.TaskState_TASK_STATE_COMPLETED ||
-		s == pb.TaskState_TASK_STATE_FAILED ||
-		s == pb.TaskState_TASK_STATE_CANCELED
-}
-
-// CheckTaskVisibility checks whether the caller identity is authorized to view or mutate the task
-// under the agent's configured TaskVisibilityMode.
-// Returns false if forbidden, which causes a 404 / CodeTaskNotFound to prevent information leakage.
-func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mode string) bool {
-	if task == nil || idCtx == nil {
+// CheckTaskVisibility checks that:
+// 1. Both task and agent exist and belong to the caller's exact non-empty organization.
+// 2. task.AgentID matches agent.ID (closing C1 cross-agent task visibility bypass).
+// 3. The caller identity is permitted by agent.TaskVisibilityMode.
+func CheckTaskVisibility(task *domain.A2ATask, agent *domain.A2AAgent, idCtx *domain.IdentityContext) bool {
+	if task == nil || agent == nil || idCtx == nil {
 		return false
 	}
 
-	// Cross-tenant protection: caller and task must belong to the exact same non-empty organization
-	if task.OrgID == "" || idCtx.OrgID == "" || task.OrgID != idCtx.OrgID {
+	if task.AgentID == "" || agent.ID == "" || task.AgentID != agent.ID {
 		return false
 	}
 
+	if task.OrgID == "" || idCtx.OrgID == "" || task.OrgID != idCtx.OrgID || agent.OrgID != idCtx.OrgID {
+		return false
+	}
+
+	mode := agent.TaskVisibilityMode
 	if mode == "" {
 		mode = domain.TaskVisibilityKeyStrict
 	}
@@ -111,54 +85,66 @@ func CheckTaskVisibility(task *domain.A2ATask, idCtx *domain.IdentityContext, mo
 
 	switch mode {
 	case domain.TaskVisibilityKeyStrict:
-		// Only the exact same Virtual Key that created the task can access it
 		return keyMatch
-
 	case domain.TaskVisibilityUserStrict:
-		// Any Virtual Key belonging to the same user can access it
 		if task.UserID != "" && idCtx.UserID != "" && task.UserID == idCtx.UserID {
 			return true
 		}
-		// Fallback to key match if user ID is not set
 		return keyMatch
-
 	case domain.TaskVisibilityTeam:
-		// Any Virtual Key belonging to the same team can access it
 		if task.TeamID != "" && idCtx.TeamID != "" && task.TeamID == idCtx.TeamID {
 			return true
 		}
-		// Fallback to user or key match
 		return (task.UserID != "" && idCtx.UserID != "" && task.UserID == idCtx.UserID) || keyMatch
-
 	case domain.TaskVisibilityOrgAdmin:
-		// Only organization/platform administrators within the organization can view/access
 		return idCtx.Role == domain.RolePlatformAdmin || idCtx.Role == domain.RoleOrgAdmin
-
 	default:
-		// Unknown mode fails closed to key_strict
 		return keyMatch
 	}
 }
 
-// ValidateExtensions verifies that all requested extension URIs and versions are supported by the target agent.
-func ValidateExtensions(requestedURIs []string, supportedExts []*pb.AgentExtension) error {
-	if len(requestedURIs) == 0 {
-		return nil
+// ValidateExtensions verifies:
+// 1. Every requested extension URI in A2A-Extensions / message.extensions is declared by the agent card.
+// 2. Every required extension (`ext.Required == true`) on the agent card is declared by the caller.
+func ValidateExtensions(requestedURIs []string, card *a2aspec.AgentCard) error {
+	var supportedExts []a2aspec.AgentExtension
+	if card != nil && card.Capabilities.Extensions != nil {
+		supportedExts = *card.Capabilities.Extensions
 	}
 
-	supportedMap := make(map[string]*pb.AgentExtension)
+	supportedMap := make(map[string]a2aspec.AgentExtension, len(supportedExts))
 	for _, ext := range supportedExts {
-		if ext != nil && ext.Uri != "" {
-			supportedMap[strings.ToLower(ext.Uri)] = ext
+		if ext.Uri != nil && *ext.Uri != "" {
+			supportedMap[strings.ToLower(*ext.Uri)] = ext
 		}
 	}
 
+	requestedSet := make(map[string]struct{}, len(requestedURIs))
 	for _, uri := range requestedURIs {
-		_, ok := supportedMap[strings.ToLower(uri)]
-		if !ok {
-			return &A2AError{
-				Code:    CodeExtensionNotSupported,
-				Message: fmt.Sprintf("Extension URI %q is not supported by this agent", uri),
+		norm := strings.ToLower(strings.TrimSpace(uri))
+		if norm == "" {
+			continue
+		}
+		requestedSet[norm] = struct{}{}
+		if _, ok := supportedMap[norm]; !ok {
+			return ErrExtensionSupportRequired(
+				fmt.Sprintf("extension URI %q is not supported by this agent", uri),
+				uri,
+			)
+		}
+	}
+
+	for normURI, ext := range supportedMap {
+		if ext.Required != nil && *ext.Required {
+			if _, ok := requestedSet[normURI]; !ok {
+				rawURI := normURI
+				if ext.Uri != nil {
+					rawURI = *ext.Uri
+				}
+				return ErrExtensionSupportRequired(
+					fmt.Sprintf("agent requires client support for extension URI %q via A2A-Extensions", rawURI),
+					rawURI,
+				)
 			}
 		}
 	}

@@ -32,6 +32,8 @@ components:
           type: integer
         a2a_agents_rewrapped:
           type: integer
+        a2a_push_configs_rewrapped:
+          type: integer
         guardrails_rewrapped:
           type: integer
         staged_virtual_keys_rewrapped:
@@ -2625,7 +2627,7 @@ components:
       required:
         - slug
         - name
-        - card_url
+        - endpoint_url
       properties:
         org_id:
           type: string
@@ -2633,12 +2635,69 @@ components:
           type: string
         name:
           type: string
-        card_url:
+        endpoint_url:
           type: string
+        agent_card_url:
+          type: string
+        agent_card_json:
+          type: string
+        extended_agent_card_json:
+          type: string
+        is_public_card:
+          type: boolean
+        protocol_binding:
+          type: string
+          enum: [HTTP+JSON, JSONRPC, GRPC]
+        task_visibility_mode:
+          type: string
+          enum: [key_strict, user_strict, team, org_admin]
         auth_type:
           type: string
-        auth_token:
+          enum: [none, static, vault_jwt]
+        auth_header_name:
           type: string
+        auth_secret:
+          type: string
+        max_task_iterations:
+          type: integer
+        max_task_budget_micros:
+          type: integer
+          format: int64
+        is_active:
+          type: boolean
+    AdminA2AAgentUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        endpoint_url:
+          type: string
+        agent_card_url:
+          type: string
+        agent_card_json:
+          type: string
+        extended_agent_card_json:
+          type: string
+        is_public_card:
+          type: boolean
+        protocol_binding:
+          type: string
+          enum: [HTTP+JSON, JSONRPC, GRPC]
+        task_visibility_mode:
+          type: string
+          enum: [key_strict, user_strict, team, org_admin]
+        auth_type:
+          type: string
+          enum: [none, static, vault_jwt]
+        auth_header_name:
+          type: string
+        auth_secret:
+          type: string
+        max_task_iterations:
+          type: integer
+        max_task_budget_micros:
+          type: integer
+          format: int64
         is_active:
           type: boolean
     AdminA2AKillSwitchRequest:
@@ -2661,6 +2720,10 @@ components:
         task_id:
           type: string
         target_url:
+          type: string
+        token:
+          type: string
+        auth_scheme:
           type: string
         auth_token:
           type: string
@@ -6869,6 +6932,78 @@ paths:
                   agent:
                     type: object
                     additionalProperties: true
+    put:
+      operationId: updateA2AAgent
+      summary: Update an A2A agent definition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminA2AAgentUpdateRequest'
+      responses:
+        '200':
+          description: Updated A2A agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  agent:
+                    type: object
+                    additionalProperties: true
+    delete:
+      operationId: deleteA2AAgent
+      summary: Delete an A2A agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted A2A agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+  /admin/v1/a2a/agents/{id}/sync-card:
+    post:
+      operationId: syncA2AAgentCard
+      summary: Fetch, schema-validate, and verify the upstream AgentCard from agent_card_url
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Synchronized and validated A2A agent card
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  agent:
+                    type: object
+                    additionalProperties: true
   /admin/v1/a2a/agents/{id}/kill-switch:
     post:
       operationId: setA2AKillSwitch
@@ -6920,6 +7055,62 @@ paths:
                   status:
                     type: string
                   push_config:
+                    type: object
+                    additionalProperties: true
+  /admin/v1/a2a/outbox:
+    get:
+      operationId: listA2AOutboxEvents
+      summary: List A2A push notification outbox events (pending, sent, or dead_letter)
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of A2A outbox events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /admin/v1/a2a/outbox/{id}/replay:
+    post:
+      operationId: replayA2AOutboxEvent
+      summary: Re-queue a dead-lettered or failed A2A outbox event for immediate delivery
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Outbox event re-queued for delivery
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  event:
                     type: object
                     additionalProperties: true
   /v1/guardrails/apply:

@@ -2,7 +2,7 @@
 
 > **Version**: `v1.24.1`\
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`125` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`128` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml) (`21` OpenAPI paths, `27` operations)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---
@@ -617,12 +617,13 @@ Connect existing RESTful microservices directly to the MCP ecosystem without wri
 
 ## 4. Agent-to-Agent Protocol (A2A v1.0) APIs
 
-GoRoute AI Gateway implements the Linux Foundation **Agent-to-Agent (A2A v1.0)** protocol specification.
+GoRoute AI Gateway implements the Linux Foundation **Agent-to-Agent (A2A v1.0)** OpenAPI contract (`docs/openapi/a2a.openapi.yaml`) via generated server bindings (`internal/a2a/spec`). All HTTP REST and JSON-RPC error responses use the canonical `google.rpc.StatusError` JSON envelope (`error.code`, `error.message`, `error.status`, `error.details`).
 
-### 4.1 Cryptographic Agent Card Discovery
-`GET /.well-known/agent-card.json`
-
-Serves canonical agent card formatted with **RFC 8785 JSON Canonicalization Scheme (JCS)** and signed with **RFC 7515 JWS (`ES256`)**.
+### 4.1 Agent Card Discovery & Extended Agent Cards
+- **Gateway Discovery Card**: `GET /.well-known/agent-card.json` (plus optional legacy alias `GET /.well-known/agent.json` when `a2a.allow_legacy_card_discovery: true`). Publicly serves cards for active agents with `is_public_card: true` formatted with **RFC 8785 JCS** and signed with **RFC 7515 JWS**.
+- **Authenticated Extended Agent Card**:
+  - `GET /a2a/v1/agents/{agentSlug}/extendedAgentCard`
+  - `GET /a2a/v1/agents/{agentSlug}/{tenant}/extendedAgentCard`
 
 ```json
 {
@@ -631,7 +632,8 @@ Serves canonical agent card formatted with **RFC 8785 JSON Canonicalization Sche
   "supportedInterfaces": [
     {
       "url": "http://localhost:8080/a2a/v1/agents/analyst",
-      "protocolBinding": "HTTP+JSON"
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
     }
   ],
   "signatures": [
@@ -643,19 +645,25 @@ Serves canonical agent card formatted with **RFC 8785 JSON Canonicalization Sche
 }
 ```
 
-### 4.2 Dual-Binding Agent Message Dispatch
-`POST /a2a/v1/agents/{agentSlug}`
+### 4.2 A2A v1.0 REST (`HTTP+JSON`) & JSON-RPC 2.0 Bindings
+Each registered agent mounts canonical un-tenanted (`/a2a/v1/agents/{agentSlug}/...`) and multi-tenant (`/a2a/v1/agents/{agentSlug}/{tenant}/...`) endpoints gated by `a2a.enable_http_json` and `a2a.enable_jsonrpc`:
 
-Accepts both standard HTTP+JSON (`application/json`) and JSON-RPC 2.0 payloads.
+- **REST (`HTTP+JSON`) Endpoints**:
+  - `POST /message:send` and `POST /message:stream`
+  - `GET /tasks`, `GET /tasks/{id}`, `POST /tasks/{id}:cancel`
+  - `GET /tasks/{id}:subscribe` (optional `POST /tasks/{id}:subscribe` when `a2a.enable_subscribe_post_compat: true`)
+  - `POST /tasks/{taskId}/pushNotificationConfigs`, `GET /tasks/{taskId}/pushNotificationConfigs`, `GET /tasks/{taskId}/pushNotificationConfigs/{id}`, `DELETE /tasks/{taskId}/pushNotificationConfigs/{id}`
+- **JSON-RPC 2.0** (`POST /a2a/v1/agents/{agentSlug}` and `POST /a2a/v1/agents/{agentSlug}/{tenant}`): accepts PascalCase A2A v1.0 methods (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`, `GetExtendedAgentCard`).
 
-#### JSON-RPC 2.0 Format (`tasks/send`):
+#### JSON-RPC 2.0 Format (`SendMessage`):
 ```json
 {
   "jsonrpc": "2.0",
   "id": "req-a2a-001",
-  "method": "tasks/send",
+  "method": "SendMessage",
   "params": {
     "message": {
+      "messageId": "msg-001",
       "role": "ROLE_USER",
       "parts": [
         { "text": "Perform portfolio Value-at-Risk assessment." }
@@ -671,19 +679,22 @@ Accepts both standard HTTP+JSON (`application/json`) and JSON-RPC 2.0 payloads.
   "jsonrpc": "2.0",
   "id": "req-a2a-001",
   "result": {
-    "role": "ROLE_AGENT",
-    "parts": [
-      { "text": "Portfolio risk assessment: Value-at-Risk (VaR 95%) is 1.42%." }
-    ],
-    "taskId": "task_a2a_5b91a7c"
+    "message": {
+      "messageId": "msg-002",
+      "role": "ROLE_AGENT",
+      "parts": [
+        { "text": "Portfolio risk assessment: Value-at-Risk (VaR 95%) is 1.42%." }
+      ],
+      "taskId": "task_a2a_5b91a7c"
+    }
   }
 }
 ```
 
 ### 4.3 Subscribe-First Real-Time SSE Task Streaming
-`GET /a2a/v1/agents/{agentSlug}/tasks/{taskID}:subscribe`
+`GET /a2a/v1/agents/{agentSlug}/tasks/{id}:subscribe` (and `/{tenant}/tasks/{id}:subscribe`)
 
-Clients connect to stream durable task events (status transitions, intermediate thoughts, artifact publications) in real-time. Emits `a2a-event` Server-Sent Events with strictly monotonic sequence numbers (`seq`).
+Clients connect to stream durable task `StreamResponse` events (`statusUpdate`, `artifactUpdate`, `task`, `message`) in real-time with strictly monotonic sequence numbers (`id` / `seq`).
 
 ```http
 HTTP/1.1 200 OK
@@ -692,25 +703,33 @@ Cache-Control: no-cache
 Connection: keep-alive
 
 event: a2a-event
-data: {"seq":1,"taskId":"task_a2a_5b91a7c","state":"working","timestamp":"2026-11-08T21:00:00Z"}
+id: 1
+data: {"statusUpdate":{"taskId":"task_a2a_5b91a7c","contextId":"ctx_001","status":{"state":"TASK_STATE_WORKING","timestamp":"2026-11-08T21:00:00Z"}}}
 
 event: a2a-event
-data: {"seq":2,"taskId":"task_a2a_5b91a7c","state":"completed","output":{"role":"ROLE_AGENT","parts":[{"text":"Done."}]}}
+id: 2
+data: {"statusUpdate":{"taskId":"task_a2a_5b91a7c","contextId":"ctx_001","status":{"state":"TASK_STATE_COMPLETED"}}}
 ```
 
 ### 4.4 Native A2A gRPC Service
 `lf.a2a.v1.A2AService`
 
-For ultra-low latency inter-agent communication, the Gateway exposes a native gRPC server implementing the official Linux Foundation A2A Protobuf contract. Configure `server.grpc_port` (default `0`, disabled; or set `GATEWAY_GRPC_PORT`) in YAML/env to enable the gRPC listener (for example `9090`).
+For ultra-low latency inter-agent communication, the Gateway exposes a native gRPC server implementing all 11 RPCs of the official Linux Foundation A2A Protobuf contract (backed by the shared OpenAPI domain router). Configure `server.grpc_port` (default `0`, disabled; or set `GATEWAY_GRPC_PORT`) and `a2a.enabled: true` in YAML/env to enable the gRPC listener (for example `9090`).
 
 #### gRPC Service Definition
 ```protobuf
 service A2AService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc SendStreamingMessage(SendStreamingMessageRequest) returns (stream StreamResponse);
   rpc GetTask(GetTaskRequest) returns (Task);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (Task);
-  rpc SubscribeToTask(SubscribeToTaskRequest) returns (stream StreamTaskResponse);
+  rpc SubscribeToTask(SubscribeToTaskRequest) returns (stream StreamResponse);
+  rpc CreateTaskPushNotificationConfig(CreateTaskPushNotificationConfigRequest) returns (TaskPushNotificationConfig);
+  rpc GetTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest) returns (TaskPushNotificationConfig);
+  rpc ListTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest) returns (ListTaskPushNotificationConfigsResponse);
+  rpc DeleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest) returns (google.protobuf.Empty);
+  rpc GetExtendedAgentCard(GetExtendedAgentCardRequest) returns (AgentCard);
 }
 ```
 
@@ -962,11 +981,16 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 - `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.
 - `GET /admin/v1/mcp/toolsets`: Lists curated toolsets.
 - `POST /admin/v1/mcp/credentials`: Stores or updates per-user BYOK credentials for an MCP server.
-- `POST /admin/v1/a2a/agents`: Registers an upstream Agent-to-Agent endpoint and card.
+- `POST /admin/v1/a2a/agents`: Registers an upstream Agent-to-Agent endpoint (`protocol_binding`, `is_public_card`, `auth_header_name`) and OpenAPI-validated Agent Card.
 - `GET /admin/v1/a2a/agents`: Lists registered A2A agents.
 - `GET /admin/v1/a2a/agents/{id}`: Retrieves details for a registered A2A agent.
+- `PUT /admin/v1/a2a/agents/{id}`: Updates mutable A2A agent configuration, card JSON, visibility, binding, or Vault-encrypted credentials.
+- `DELETE /admin/v1/a2a/agents/{id}`: Deletes an A2A agent registration.
+- `POST /admin/v1/a2a/agents/{id}/sync-card`: Fetches the upstream discovery card via the SSRF-safe network policy, verifies JWS against `trusted_card_jwks`, and updates the stored card.
 - `POST /admin/v1/a2a/agents/{id}/kill-switch`: Toggles emergency kill-switch (`{ "killed": true }`), instantly returning `HTTP 503 agent_killed` across all cluster pods.
-- `POST /admin/v1/a2a/push-configs`: Configures webhook push notifications for A2A tasks.
+- `POST /admin/v1/a2a/push-configs`: Configures Vault-encrypted webhook push notifications for A2A tasks.
+- `GET /admin/v1/a2a/outbox`: Lists transactional push notification outbox events with status filtering (`pending`, `processing`, `sent`, `failed`, `dead_letter`).
+- `POST /admin/v1/a2a/outbox/{id}/replay`: Resets a `dead_letter` or `failed` outbox event back to `pending` for immediate webhook delivery replay.
 
 ---
 

@@ -341,10 +341,14 @@ func (s *GatewayServer) decodeAndValidateChatRequest(w http.ResponseWriter, r *h
 		return nil, nil, 0, false
 	}
 
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
-		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
-		domain.WriteHTTPError(w, err)
-		return nil, nil, 0, false
+	// Bypass LLM model allowlist for "a2a/<agentSlug>" so OpenAIBridge enforces
+	// virtual-key A2A agent allowlists (AllowedA2AAgents) rather than chat model lists.
+	if !strings.HasPrefix(chatReq.Model, "a2a/") {
+		if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
+			s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
+			domain.WriteHTTPError(w, err)
+			return nil, nil, 0, false
+		}
 	}
 
 	estTokens := ratelimit.EstimateRequestTokens(&chatReq)
@@ -359,17 +363,17 @@ func (s *GatewayServer) decodeAndValidateChatRequest(w http.ResponseWriter, r *h
 }
 
 func (s *GatewayServer) dispatchA2ACompatChat(w http.ResponseWriter, r *http.Request, idCtx *domain.IdentityContext, chatReq *domain.CanonicalChatRequest) {
-	agentSlug := strings.TrimPrefix(chatReq.Model, "a2a/")
-	if s.a2aBridge != nil {
-		s.a2aBridge.HandleChatCompletion(w, r, idCtx, agentSlug, chatReq)
+	if !s.cfg.A2A.Enabled || s.a2aBridge == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusServiceUnavailable,
+			Type:       domain.ErrorTypeServer,
+			Code:       "a2a_bridge_disabled",
+			Message:    "A2A OpenAI compatibility bridge is disabled",
+		})
 		return
 	}
-	domain.WriteHTTPError(w, &domain.GatewayError{
-		StatusCode: http.StatusServiceUnavailable,
-		Type:       domain.ErrorTypeServer,
-		Code:       "a2a_bridge_disabled",
-		Message:    "A2A OpenAI compatibility bridge is disabled",
-	})
+	agentSlug := strings.TrimPrefix(chatReq.Model, "a2a/")
+	s.a2aBridge.HandleChatCompletion(w, r, idCtx, agentSlug, chatReq)
 }
 
 func (s *GatewayServer) acquireChatQuotaAndSettlement(

@@ -157,14 +157,42 @@ func TestA2AStorageCRUDAndSequenceMonotonicity(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	// Register Push Config
+	// Test DeleteA2AAgent & (org_id, slug) uniqueness
+	dupAgent := &domain.A2AAgent{
+		OrgID:       org.ID,
+		Name:        "Duplicate Weather Agent",
+		Slug:        "weather",
+		EndpointURL: "https://agent.dup.internal/a2a",
+	}
+	if err := repo.CreateA2AAgent(ctx, dupAgent); err == nil {
+		t.Fatalf("expected duplicate (org_id, slug) error in CreateA2AAgent")
+	}
+
+	// Register multiple Push Configs per task (A2A v1.0 ListTaskPushNotificationConfigs)
 	pushCfg := &domain.A2APushNotificationConfig{
+		ID:        "push_cfg_1",
 		TaskID:    task.ID,
 		TargetURL: "https://subscriber.client/webhook",
 		AuthToken: "webhook_secret",
 	}
 	if err := repo.SetA2APushNotificationConfig(ctx, pushCfg); err != nil {
-		t.Fatalf("set push config: %v", err)
+		t.Fatalf("set push config 1: %v", err)
+	}
+	pushCfg2 := &domain.A2APushNotificationConfig{
+		ID:        "push_cfg_2",
+		TaskID:    task.ID,
+		TargetURL: "https://subscriber2.client/webhook",
+		Token:     "tok_2",
+	}
+	if err := repo.SetA2APushNotificationConfig(ctx, pushCfg2); err != nil {
+		t.Fatalf("set push config 2: %v", err)
+	}
+	cfgs, totalCfgs, err := repo.ListA2APushNotificationConfigs(ctx, task.ID, 10, 0)
+	if err != nil || totalCfgs != 2 || len(cfgs) != 2 {
+		t.Fatalf("expected 2 push configs, got %d (total=%d, err=%v)", len(cfgs), totalCfgs, err)
+	}
+	if err := repo.DeleteA2APushNotificationConfig(ctx, task.ID, "push_cfg_2"); err != nil {
+		t.Fatalf("delete push config 2: %v", err)
 	}
 
 	// Test Concurrent AppendTaskEvent with strict sequence monotonicity
@@ -240,5 +268,17 @@ func TestA2AStorageCRUDAndSequenceMonotonicity(t *testing.T) {
 	outboxAfter, _ := repo.ClaimPendingA2AOutboxEvents(ctx, 100)
 	if len(outboxAfter) != 0 {
 		t.Fatalf("expected 0 pending outbox events, got %d", len(outboxAfter))
+	}
+
+	// Verify UpdateA2ATask atomic cost delta (no triangular double counting)
+	if err := repo.UpdateA2ATask(ctx, &domain.A2ATask{ID: task.ID, State: domain.A2ATaskStateWorking}, 100); err != nil {
+		t.Fatalf("UpdateA2ATask turn 1: %v", err)
+	}
+	if err := repo.UpdateA2ATask(ctx, &domain.A2ATask{ID: task.ID, State: domain.A2ATaskStateCompleted}, 100); err != nil {
+		t.Fatalf("UpdateA2ATask turn 2: %v", err)
+	}
+	finalTask, _ := repo.GetA2ATask(ctx, task.ID)
+	if finalTask.TotalCostMicros != 200 {
+		t.Fatalf("expected atomic cost sum 200 micros, got %d", finalTask.TotalCostMicros)
 	}
 }

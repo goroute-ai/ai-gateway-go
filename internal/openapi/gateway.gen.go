@@ -20,6 +20,138 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AdminA2AAgentCreateRequestAuthType.
+const (
+	AdminA2AAgentCreateRequestAuthTypeNone     AdminA2AAgentCreateRequestAuthType = "none"
+	AdminA2AAgentCreateRequestAuthTypeStatic   AdminA2AAgentCreateRequestAuthType = "static"
+	AdminA2AAgentCreateRequestAuthTypeVaultJwt AdminA2AAgentCreateRequestAuthType = "vault_jwt"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentCreateRequestAuthType enum.
+func (e AdminA2AAgentCreateRequestAuthType) Valid() bool {
+	switch e {
+	case AdminA2AAgentCreateRequestAuthTypeNone:
+		return true
+	case AdminA2AAgentCreateRequestAuthTypeStatic:
+		return true
+	case AdminA2AAgentCreateRequestAuthTypeVaultJwt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminA2AAgentCreateRequestProtocolBinding.
+const (
+	AdminA2AAgentCreateRequestProtocolBindingGRPC     AdminA2AAgentCreateRequestProtocolBinding = "GRPC"
+	AdminA2AAgentCreateRequestProtocolBindingHTTPJSON AdminA2AAgentCreateRequestProtocolBinding = "HTTP+JSON"
+	AdminA2AAgentCreateRequestProtocolBindingJSONRPC  AdminA2AAgentCreateRequestProtocolBinding = "JSONRPC"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentCreateRequestProtocolBinding enum.
+func (e AdminA2AAgentCreateRequestProtocolBinding) Valid() bool {
+	switch e {
+	case AdminA2AAgentCreateRequestProtocolBindingGRPC:
+		return true
+	case AdminA2AAgentCreateRequestProtocolBindingHTTPJSON:
+		return true
+	case AdminA2AAgentCreateRequestProtocolBindingJSONRPC:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminA2AAgentCreateRequestTaskVisibilityMode.
+const (
+	AdminA2AAgentCreateRequestTaskVisibilityModeKeyStrict  AdminA2AAgentCreateRequestTaskVisibilityMode = "key_strict"
+	AdminA2AAgentCreateRequestTaskVisibilityModeOrgAdmin   AdminA2AAgentCreateRequestTaskVisibilityMode = "org_admin"
+	AdminA2AAgentCreateRequestTaskVisibilityModeTeam       AdminA2AAgentCreateRequestTaskVisibilityMode = "team"
+	AdminA2AAgentCreateRequestTaskVisibilityModeUserStrict AdminA2AAgentCreateRequestTaskVisibilityMode = "user_strict"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentCreateRequestTaskVisibilityMode enum.
+func (e AdminA2AAgentCreateRequestTaskVisibilityMode) Valid() bool {
+	switch e {
+	case AdminA2AAgentCreateRequestTaskVisibilityModeKeyStrict:
+		return true
+	case AdminA2AAgentCreateRequestTaskVisibilityModeOrgAdmin:
+		return true
+	case AdminA2AAgentCreateRequestTaskVisibilityModeTeam:
+		return true
+	case AdminA2AAgentCreateRequestTaskVisibilityModeUserStrict:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminA2AAgentUpdateRequestAuthType.
+const (
+	AdminA2AAgentUpdateRequestAuthTypeNone     AdminA2AAgentUpdateRequestAuthType = "none"
+	AdminA2AAgentUpdateRequestAuthTypeStatic   AdminA2AAgentUpdateRequestAuthType = "static"
+	AdminA2AAgentUpdateRequestAuthTypeVaultJwt AdminA2AAgentUpdateRequestAuthType = "vault_jwt"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentUpdateRequestAuthType enum.
+func (e AdminA2AAgentUpdateRequestAuthType) Valid() bool {
+	switch e {
+	case AdminA2AAgentUpdateRequestAuthTypeNone:
+		return true
+	case AdminA2AAgentUpdateRequestAuthTypeStatic:
+		return true
+	case AdminA2AAgentUpdateRequestAuthTypeVaultJwt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminA2AAgentUpdateRequestProtocolBinding.
+const (
+	AdminA2AAgentUpdateRequestProtocolBindingGRPC     AdminA2AAgentUpdateRequestProtocolBinding = "GRPC"
+	AdminA2AAgentUpdateRequestProtocolBindingHTTPJSON AdminA2AAgentUpdateRequestProtocolBinding = "HTTP+JSON"
+	AdminA2AAgentUpdateRequestProtocolBindingJSONRPC  AdminA2AAgentUpdateRequestProtocolBinding = "JSONRPC"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentUpdateRequestProtocolBinding enum.
+func (e AdminA2AAgentUpdateRequestProtocolBinding) Valid() bool {
+	switch e {
+	case AdminA2AAgentUpdateRequestProtocolBindingGRPC:
+		return true
+	case AdminA2AAgentUpdateRequestProtocolBindingHTTPJSON:
+		return true
+	case AdminA2AAgentUpdateRequestProtocolBindingJSONRPC:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminA2AAgentUpdateRequestTaskVisibilityMode.
+const (
+	AdminA2AAgentUpdateRequestTaskVisibilityModeKeyStrict  AdminA2AAgentUpdateRequestTaskVisibilityMode = "key_strict"
+	AdminA2AAgentUpdateRequestTaskVisibilityModeOrgAdmin   AdminA2AAgentUpdateRequestTaskVisibilityMode = "org_admin"
+	AdminA2AAgentUpdateRequestTaskVisibilityModeTeam       AdminA2AAgentUpdateRequestTaskVisibilityMode = "team"
+	AdminA2AAgentUpdateRequestTaskVisibilityModeUserStrict AdminA2AAgentUpdateRequestTaskVisibilityMode = "user_strict"
+)
+
+// Valid indicates whether the value is a known member of the AdminA2AAgentUpdateRequestTaskVisibilityMode enum.
+func (e AdminA2AAgentUpdateRequestTaskVisibilityMode) Valid() bool {
+	switch e {
+	case AdminA2AAgentUpdateRequestTaskVisibilityModeKeyStrict:
+		return true
+	case AdminA2AAgentUpdateRequestTaskVisibilityModeOrgAdmin:
+		return true
+	case AdminA2AAgentUpdateRequestTaskVisibilityModeTeam:
+		return true
+	case AdminA2AAgentUpdateRequestTaskVisibilityModeUserStrict:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminAccessGroupRuleOperator.
 const (
 	AdminAccessGroupRuleOperatorContains AdminAccessGroupRuleOperator = "contains"
@@ -1882,14 +2014,59 @@ func (e CreateSelfServiceKeyJSONBodyKeyType) Valid() bool {
 
 // AdminA2AAgentCreateRequest defines model for AdminA2AAgentCreateRequest.
 type AdminA2AAgentCreateRequest struct {
-	AuthToken *string `json:"auth_token,omitempty"`
-	AuthType  *string `json:"auth_type,omitempty"`
-	CardUrl   string  `json:"card_url"`
-	IsActive  *bool   `json:"is_active,omitempty"`
-	Name      string  `json:"name"`
-	OrgId     *string `json:"org_id,omitempty"`
-	Slug      string  `json:"slug"`
+	AgentCardJson         *string                                       `json:"agent_card_json,omitempty"`
+	AgentCardUrl          *string                                       `json:"agent_card_url,omitempty"`
+	AuthHeaderName        *string                                       `json:"auth_header_name,omitempty"`
+	AuthSecret            *string                                       `json:"auth_secret,omitempty"`
+	AuthType              *AdminA2AAgentCreateRequestAuthType           `json:"auth_type,omitempty"`
+	EndpointUrl           string                                        `json:"endpoint_url"`
+	ExtendedAgentCardJson *string                                       `json:"extended_agent_card_json,omitempty"`
+	IsActive              *bool                                         `json:"is_active,omitempty"`
+	IsPublicCard          *bool                                         `json:"is_public_card,omitempty"`
+	MaxTaskBudgetMicros   *int64                                        `json:"max_task_budget_micros,omitempty"`
+	MaxTaskIterations     *int                                          `json:"max_task_iterations,omitempty"`
+	Name                  string                                        `json:"name"`
+	OrgId                 *string                                       `json:"org_id,omitempty"`
+	ProtocolBinding       *AdminA2AAgentCreateRequestProtocolBinding    `json:"protocol_binding,omitempty"`
+	Slug                  string                                        `json:"slug"`
+	TaskVisibilityMode    *AdminA2AAgentCreateRequestTaskVisibilityMode `json:"task_visibility_mode,omitempty"`
 }
+
+// AdminA2AAgentCreateRequestAuthType defines model for AdminA2AAgentCreateRequest.AuthType.
+type AdminA2AAgentCreateRequestAuthType string
+
+// AdminA2AAgentCreateRequestProtocolBinding defines model for AdminA2AAgentCreateRequest.ProtocolBinding.
+type AdminA2AAgentCreateRequestProtocolBinding string
+
+// AdminA2AAgentCreateRequestTaskVisibilityMode defines model for AdminA2AAgentCreateRequest.TaskVisibilityMode.
+type AdminA2AAgentCreateRequestTaskVisibilityMode string
+
+// AdminA2AAgentUpdateRequest defines model for AdminA2AAgentUpdateRequest.
+type AdminA2AAgentUpdateRequest struct {
+	AgentCardJson         *string                                       `json:"agent_card_json,omitempty"`
+	AgentCardUrl          *string                                       `json:"agent_card_url,omitempty"`
+	AuthHeaderName        *string                                       `json:"auth_header_name,omitempty"`
+	AuthSecret            *string                                       `json:"auth_secret,omitempty"`
+	AuthType              *AdminA2AAgentUpdateRequestAuthType           `json:"auth_type,omitempty"`
+	EndpointUrl           *string                                       `json:"endpoint_url,omitempty"`
+	ExtendedAgentCardJson *string                                       `json:"extended_agent_card_json,omitempty"`
+	IsActive              *bool                                         `json:"is_active,omitempty"`
+	IsPublicCard          *bool                                         `json:"is_public_card,omitempty"`
+	MaxTaskBudgetMicros   *int64                                        `json:"max_task_budget_micros,omitempty"`
+	MaxTaskIterations     *int                                          `json:"max_task_iterations,omitempty"`
+	Name                  *string                                       `json:"name,omitempty"`
+	ProtocolBinding       *AdminA2AAgentUpdateRequestProtocolBinding    `json:"protocol_binding,omitempty"`
+	TaskVisibilityMode    *AdminA2AAgentUpdateRequestTaskVisibilityMode `json:"task_visibility_mode,omitempty"`
+}
+
+// AdminA2AAgentUpdateRequestAuthType defines model for AdminA2AAgentUpdateRequest.AuthType.
+type AdminA2AAgentUpdateRequestAuthType string
+
+// AdminA2AAgentUpdateRequestProtocolBinding defines model for AdminA2AAgentUpdateRequest.ProtocolBinding.
+type AdminA2AAgentUpdateRequestProtocolBinding string
+
+// AdminA2AAgentUpdateRequestTaskVisibilityMode defines model for AdminA2AAgentUpdateRequest.TaskVisibilityMode.
+type AdminA2AAgentUpdateRequestTaskVisibilityMode string
 
 // AdminA2AKillSwitchRequest defines model for AdminA2AKillSwitchRequest.
 type AdminA2AKillSwitchRequest struct {
@@ -1899,10 +2076,12 @@ type AdminA2AKillSwitchRequest struct {
 
 // AdminA2APushConfigRequest defines model for AdminA2APushConfigRequest.
 type AdminA2APushConfigRequest struct {
-	AuthToken *string `json:"auth_token,omitempty"`
-	OrgId     *string `json:"org_id,omitempty"`
-	TargetUrl string  `json:"target_url"`
-	TaskId    string  `json:"task_id"`
+	AuthScheme *string `json:"auth_scheme,omitempty"`
+	AuthToken  *string `json:"auth_token,omitempty"`
+	OrgId      *string `json:"org_id,omitempty"`
+	TargetUrl  string  `json:"target_url"`
+	TaskId     string  `json:"task_id"`
+	Token      *string `json:"token,omitempty"`
 }
 
 // AdminAccessGroupRule defines model for AdminAccessGroupRule.
@@ -3494,6 +3673,7 @@ type ImageGenerationResponse struct {
 // KEKRotationSummary defines model for KEKRotationSummary.
 type KEKRotationSummary struct {
 	A2aAgentsRewrapped         *int    `json:"a2a_agents_rewrapped,omitempty"`
+	A2aPushConfigsRewrapped    *int    `json:"a2a_push_configs_rewrapped,omitempty"`
 	CredentialsRewrapped       *int    `json:"credentials_rewrapped,omitempty"`
 	GuardrailsRewrapped        *int    `json:"guardrails_rewrapped,omitempty"`
 	McpServersRewrapped        *int    `json:"mcp_servers_rewrapped,omitempty"`
@@ -3918,6 +4098,13 @@ type ListA2AAgentsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// ListA2AOutboxEventsParams defines parameters for ListA2AOutboxEvents.
+type ListA2AOutboxEventsParams struct {
+	OrgId  *string `form:"org_id,omitempty" json:"org_id,omitempty"`
+	Status *string `form:"status,omitempty" json:"status,omitempty"`
+	Limit  *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListAccessGroupRulesParams defines parameters for ListAccessGroupRules.
 type ListAccessGroupRulesParams struct {
 	OrgId      *string `form:"org_id,omitempty" json:"org_id,omitempty"`
@@ -4270,6 +4457,9 @@ type CreateSelfServiceKeyJSONBodyKeyType string
 
 // CreateA2AAgentJSONRequestBody defines body for CreateA2AAgent for application/json ContentType.
 type CreateA2AAgentJSONRequestBody = AdminA2AAgentCreateRequest
+
+// UpdateA2AAgentJSONRequestBody defines body for UpdateA2AAgent for application/json ContentType.
+type UpdateA2AAgentJSONRequestBody = AdminA2AAgentUpdateRequest
 
 // SetA2AKillSwitchJSONRequestBody defines body for SetA2AKillSwitch for application/json ContentType.
 type SetA2AKillSwitchJSONRequestBody = AdminA2AKillSwitchRequest
@@ -5510,12 +5700,27 @@ type ServerInterface interface {
 	// CreateA2AAgent Register an A2A agent
 	// (POST /admin/v1/a2a/agents)
 	CreateA2AAgent(w http.ResponseWriter, r *http.Request)
+	// DeleteA2AAgent Delete an A2A agent
+	// (DELETE /admin/v1/a2a/agents/{id})
+	DeleteA2AAgent(w http.ResponseWriter, r *http.Request, id string)
 	// GetA2AAgent Retrieve an A2A agent by ID
 	// (GET /admin/v1/a2a/agents/{id})
 	GetA2AAgent(w http.ResponseWriter, r *http.Request, id string)
+	// UpdateA2AAgent Update an A2A agent definition
+	// (PUT /admin/v1/a2a/agents/{id})
+	UpdateA2AAgent(w http.ResponseWriter, r *http.Request, id string)
 	// SetA2AKillSwitch Enable or disable the kill switch for an A2A agent
 	// (POST /admin/v1/a2a/agents/{id}/kill-switch)
 	SetA2AKillSwitch(w http.ResponseWriter, r *http.Request, id string)
+	// SyncA2AAgentCard Fetch, schema-validate, and verify the upstream AgentCard from agent_card_url
+	// (POST /admin/v1/a2a/agents/{id}/sync-card)
+	SyncA2AAgentCard(w http.ResponseWriter, r *http.Request, id string)
+	// ListA2AOutboxEvents List A2A push notification outbox events (pending, sent, or dead_letter)
+	// (GET /admin/v1/a2a/outbox)
+	ListA2AOutboxEvents(w http.ResponseWriter, r *http.Request, params ListA2AOutboxEventsParams)
+	// ReplayA2AOutboxEvent Re-queue a dead-lettered or failed A2A outbox event for immediate delivery
+	// (POST /admin/v1/a2a/outbox/{id}/replay)
+	ReplayA2AOutboxEvent(w http.ResponseWriter, r *http.Request, id string)
 	// SetA2APushConfig Create a push notification configuration for an A2A task
 	// (POST /admin/v1/a2a/push-configs)
 	SetA2APushConfig(w http.ResponseWriter, r *http.Request)
@@ -6093,6 +6298,32 @@ func (siw *ServerInterfaceWrapper) CreateA2AAgent(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteA2AAgent operation middleware
+func (siw *ServerInterfaceWrapper) DeleteA2AAgent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteA2AAgent(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetA2AAgent operation middleware
 func (siw *ServerInterfaceWrapper) GetA2AAgent(w http.ResponseWriter, r *http.Request) {
 
@@ -6119,6 +6350,32 @@ func (siw *ServerInterfaceWrapper) GetA2AAgent(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateA2AAgent operation middleware
+func (siw *ServerInterfaceWrapper) UpdateA2AAgent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateA2AAgent(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SetA2AKillSwitch operation middleware
 func (siw *ServerInterfaceWrapper) SetA2AKillSwitch(w http.ResponseWriter, r *http.Request) {
 
@@ -6136,6 +6393,117 @@ func (siw *ServerInterfaceWrapper) SetA2AKillSwitch(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetA2AKillSwitch(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SyncA2AAgentCard operation middleware
+func (siw *ServerInterfaceWrapper) SyncA2AAgentCard(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SyncA2AAgentCard(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListA2AOutboxEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListA2AOutboxEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListA2AOutboxEventsParams
+
+	// ------------- Optional query parameter "org_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "org_id", r.URL.Query(), &params.OrgId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "org_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListA2AOutboxEvents(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReplayA2AOutboxEvent operation middleware
+func (siw *ServerInterfaceWrapper) ReplayA2AOutboxEvent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReplayA2AOutboxEvent(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11095,9 +11463,14 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/credentials", wrapper.SetMCPUserCredential)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/agents", wrapper.ListA2AAgents)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents", wrapper.CreateA2AAgent)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}", wrapper.DeleteA2AAgent)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}", wrapper.GetA2AAgent)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}", wrapper.UpdateA2AAgent)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}/sync-card", wrapper.SyncA2AAgentCard)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}/kill-switch", wrapper.SetA2AKillSwitch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/push-configs", wrapper.SetA2APushConfig)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/outbox", wrapper.ListA2AOutboxEvents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/outbox/{id}/replay", wrapper.ReplayA2AOutboxEvent)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/guardrails/apply", wrapper.ApplyGuardrails)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-definitions", wrapper.ListGuardrailDefinitions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-definitions", wrapper.CreateGuardrailDefinition)
@@ -11179,6 +11552,31 @@ func (response CreateA2AAgent201JSONResponse) VisitCreateA2AAgentResponse(w http
 	return err
 }
 
+type DeleteA2AAgentRequestObject struct {
+	Id string `json:"id"`
+}
+
+type DeleteA2AAgentResponseObject interface {
+	VisitDeleteA2AAgentResponse(w http.ResponseWriter) error
+}
+
+type DeleteA2AAgent200JSONResponse struct {
+	Id     *string `json:"id,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
+
+func (response DeleteA2AAgent200JSONResponse) VisitDeleteA2AAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetA2AAgentRequestObject struct {
 	Id string `json:"id"`
 }
@@ -11192,6 +11590,32 @@ type GetA2AAgent200JSONResponse struct {
 }
 
 func (response GetA2AAgent200JSONResponse) VisitGetA2AAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateA2AAgentRequestObject struct {
+	Id   string `json:"id"`
+	Body *UpdateA2AAgentJSONRequestBody
+}
+
+type UpdateA2AAgentResponseObject interface {
+	VisitUpdateA2AAgentResponse(w http.ResponseWriter) error
+}
+
+type UpdateA2AAgent200JSONResponse struct {
+	Agent  *map[string]interface{} `json:"agent,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response UpdateA2AAgent200JSONResponse) VisitUpdateA2AAgentResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -11219,6 +11643,80 @@ type SetA2AKillSwitch200JSONResponse struct {
 }
 
 func (response SetA2AKillSwitch200JSONResponse) VisitSetA2AKillSwitchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SyncA2AAgentCardRequestObject struct {
+	Id string `json:"id"`
+}
+
+type SyncA2AAgentCardResponseObject interface {
+	VisitSyncA2AAgentCardResponse(w http.ResponseWriter) error
+}
+
+type SyncA2AAgentCard200JSONResponse struct {
+	Agent  *map[string]interface{} `json:"agent,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response SyncA2AAgentCard200JSONResponse) VisitSyncA2AAgentCardResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListA2AOutboxEventsRequestObject struct {
+	Params ListA2AOutboxEventsParams
+}
+
+type ListA2AOutboxEventsResponseObject interface {
+	VisitListA2AOutboxEventsResponse(w http.ResponseWriter) error
+}
+
+type ListA2AOutboxEvents200JSONResponse struct {
+	Events *[]map[string]interface{} `json:"events,omitempty"`
+}
+
+func (response ListA2AOutboxEvents200JSONResponse) VisitListA2AOutboxEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReplayA2AOutboxEventRequestObject struct {
+	Id string `json:"id"`
+}
+
+type ReplayA2AOutboxEventResponseObject interface {
+	VisitReplayA2AOutboxEventResponse(w http.ResponseWriter) error
+}
+
+type ReplayA2AOutboxEvent200JSONResponse struct {
+	Event  *map[string]interface{} `json:"event,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response ReplayA2AOutboxEvent200JSONResponse) VisitReplayA2AOutboxEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -15967,12 +16465,27 @@ type StrictServerInterface interface {
 	// CreateA2AAgent Register an A2A agent
 	// (POST /admin/v1/a2a/agents)
 	CreateA2AAgent(ctx context.Context, request CreateA2AAgentRequestObject) (CreateA2AAgentResponseObject, error)
+	// DeleteA2AAgent Delete an A2A agent
+	// (DELETE /admin/v1/a2a/agents/{id})
+	DeleteA2AAgent(ctx context.Context, request DeleteA2AAgentRequestObject) (DeleteA2AAgentResponseObject, error)
 	// GetA2AAgent Retrieve an A2A agent by ID
 	// (GET /admin/v1/a2a/agents/{id})
 	GetA2AAgent(ctx context.Context, request GetA2AAgentRequestObject) (GetA2AAgentResponseObject, error)
+	// UpdateA2AAgent Update an A2A agent definition
+	// (PUT /admin/v1/a2a/agents/{id})
+	UpdateA2AAgent(ctx context.Context, request UpdateA2AAgentRequestObject) (UpdateA2AAgentResponseObject, error)
 	// SetA2AKillSwitch Enable or disable the kill switch for an A2A agent
 	// (POST /admin/v1/a2a/agents/{id}/kill-switch)
 	SetA2AKillSwitch(ctx context.Context, request SetA2AKillSwitchRequestObject) (SetA2AKillSwitchResponseObject, error)
+	// SyncA2AAgentCard Fetch, schema-validate, and verify the upstream AgentCard from agent_card_url
+	// (POST /admin/v1/a2a/agents/{id}/sync-card)
+	SyncA2AAgentCard(ctx context.Context, request SyncA2AAgentCardRequestObject) (SyncA2AAgentCardResponseObject, error)
+	// ListA2AOutboxEvents List A2A push notification outbox events (pending, sent, or dead_letter)
+	// (GET /admin/v1/a2a/outbox)
+	ListA2AOutboxEvents(ctx context.Context, request ListA2AOutboxEventsRequestObject) (ListA2AOutboxEventsResponseObject, error)
+	// ReplayA2AOutboxEvent Re-queue a dead-lettered or failed A2A outbox event for immediate delivery
+	// (POST /admin/v1/a2a/outbox/{id}/replay)
+	ReplayA2AOutboxEvent(ctx context.Context, request ReplayA2AOutboxEventRequestObject) (ReplayA2AOutboxEventResponseObject, error)
 	// SetA2APushConfig Create a push notification configuration for an A2A task
 	// (POST /admin/v1/a2a/push-configs)
 	SetA2APushConfig(ctx context.Context, request SetA2APushConfigRequestObject) (SetA2APushConfigResponseObject, error)
@@ -16590,6 +17103,32 @@ func (sh *strictHandler) CreateA2AAgent(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// DeleteA2AAgent operation middleware
+func (sh *strictHandler) DeleteA2AAgent(w http.ResponseWriter, r *http.Request, id string) {
+	var request DeleteA2AAgentRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteA2AAgent(ctx, request.(DeleteA2AAgentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteA2AAgent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteA2AAgentResponseObject); ok {
+		if err := validResponse.VisitDeleteA2AAgentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetA2AAgent operation middleware
 func (sh *strictHandler) GetA2AAgent(w http.ResponseWriter, r *http.Request, id string) {
 	var request GetA2AAgentRequestObject
@@ -16609,6 +17148,39 @@ func (sh *strictHandler) GetA2AAgent(w http.ResponseWriter, r *http.Request, id 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetA2AAgentResponseObject); ok {
 		if err := validResponse.VisitGetA2AAgentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateA2AAgent operation middleware
+func (sh *strictHandler) UpdateA2AAgent(w http.ResponseWriter, r *http.Request, id string) {
+	var request UpdateA2AAgentRequestObject
+
+	request.Id = id
+
+	var body UpdateA2AAgentJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateA2AAgent(ctx, request.(UpdateA2AAgentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateA2AAgent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateA2AAgentResponseObject); ok {
+		if err := validResponse.VisitUpdateA2AAgentResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -16642,6 +17214,84 @@ func (sh *strictHandler) SetA2AKillSwitch(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetA2AKillSwitchResponseObject); ok {
 		if err := validResponse.VisitSetA2AKillSwitchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SyncA2AAgentCard operation middleware
+func (sh *strictHandler) SyncA2AAgentCard(w http.ResponseWriter, r *http.Request, id string) {
+	var request SyncA2AAgentCardRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SyncA2AAgentCard(ctx, request.(SyncA2AAgentCardRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SyncA2AAgentCard")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SyncA2AAgentCardResponseObject); ok {
+		if err := validResponse.VisitSyncA2AAgentCardResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListA2AOutboxEvents operation middleware
+func (sh *strictHandler) ListA2AOutboxEvents(w http.ResponseWriter, r *http.Request, params ListA2AOutboxEventsParams) {
+	var request ListA2AOutboxEventsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListA2AOutboxEvents(ctx, request.(ListA2AOutboxEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListA2AOutboxEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListA2AOutboxEventsResponseObject); ok {
+		if err := validResponse.VisitListA2AOutboxEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReplayA2AOutboxEvent operation middleware
+func (sh *strictHandler) ReplayA2AOutboxEvent(w http.ResponseWriter, r *http.Request, id string) {
+	var request ReplayA2AOutboxEventRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReplayA2AOutboxEvent(ctx, request.(ReplayA2AOutboxEventRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReplayA2AOutboxEvent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReplayA2AOutboxEventResponseObject); ok {
+		if err := validResponse.VisitReplayA2AOutboxEventResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
@@ -208,7 +209,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 
 	collector := observability.NewCollector()
 	budgetStats := &budgetLookupStats{}
-	registerCollectorMetricsProvider(collector, repo, respCache, outboundMetrics, budgetStats, authDeps.keyRotation)
 
 	var metricsExporter *observability.OTLPMetricsExporter
 	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
@@ -234,6 +234,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
 
 	protoDeps := buildMCPAndA2ASubsystem(cfg, repo, redisFabric, netPolicy, authDeps.vault, authDeps.rbac, limiter, guardrailsEng, spendWorker, routingDeps.relMgr)
+	registerCollectorMetricsProvider(collector, repo, respCache, outboundMetrics, budgetStats, authDeps.keyRotation, protoDeps)
 
 	var uploadSem chan struct{}
 	if cfg.Server.MaxConcurrentFileUploads > 0 {
@@ -556,6 +557,7 @@ func registerCollectorMetricsProvider(
 	outboundMetrics *network.HTTPClientMetrics,
 	budgetStats *budgetLookupStats,
 	keyRotation *auth.KeyRotationManager,
+	protoDeps *serverProtocolDeps,
 ) {
 	collector.SetAdditionalMetricsProvider(func() map[string]float64 {
 		l1Size, l1Capacity, l1Evictions := respCache.L1Stats()
@@ -612,6 +614,27 @@ func registerCollectorMetricsProvider(
 			metrics["gateway_storage_empty_subscription_queries_total"] = float64(emptySubscriptionQueries)
 			metrics["gateway_storage_guardrail_fallback_queries_total"] = float64(guardrailQueries)
 			metrics["gateway_storage_missing_guardrail_queries_total"] = float64(missingGuardrailQueries)
+		}
+		if protoDeps != nil {
+			if protoDeps.a2aRouter != nil {
+				rm := protoDeps.a2aRouter.Metrics()
+				metrics["gateway_a2a_tasks_dispatched_total"] = float64(rm.TasksDispatchedTotal)
+				metrics["gateway_a2a_tasks_completed_total"] = float64(rm.TasksCompletedTotal)
+				metrics["gateway_a2a_tasks_failed_total"] = float64(rm.TasksFailedTotal)
+				metrics["gateway_a2a_tasks_canceled_total"] = float64(rm.TasksCanceledTotal)
+				metrics["gateway_a2a_upstream_http_json_total"] = float64(rm.UpstreamHTTPJSONTotal)
+				metrics["gateway_a2a_upstream_jsonrpc_total"] = float64(rm.UpstreamJSONRPCTotal)
+				metrics["gateway_a2a_upstream_grpc_total"] = float64(rm.UpstreamGRPCTotal)
+			}
+			if protoDeps.a2aStreamSub != nil {
+				metrics["gateway_a2a_active_stream_subscribers"] = float64(protoDeps.a2aStreamSub.ActiveSubscribers())
+			}
+			if protoDeps.a2aOutboxWorker != nil {
+				delivered, deadLetter, pruned := protoDeps.a2aOutboxWorker.Metrics()
+				metrics["gateway_a2a_outbox_delivered_total"] = float64(delivered)
+				metrics["gateway_a2a_outbox_dead_letter_total"] = float64(deadLetter)
+				metrics["gateway_a2a_records_pruned_total"] = float64(pruned)
+			}
 		}
 		return metrics
 	})
@@ -806,12 +829,20 @@ func buildMCPAndA2ASubsystem(
 	mcpHub.SetRuntimeSettings(initialSettings)
 
 	a2aSigner := a2a.NewGatewayCardSigner(cfg.A2A.SigningKeyID, "ES256", nil, vault)
-	a2aVerifier := a2a.NewUpstreamCardVerifier(nil)
+	a2aVerifier := a2a.NewUpstreamCardVerifier(
+		nil,
+		a2a.WithVerifierNetworkPolicy(netPolicy),
+		a2a.WithVerifierAllowedAlgs(cfg.A2A.AllowedSigningAlgs),
+		a2a.WithVerifierTrustedJWKS(cfg.A2A.TrustedCardJWKS),
+	)
 	a2aRouter := a2a.NewRouterService(repo, vault, rbac, netPolicy, redisFabric, a2aSigner, a2aVerifier)
+	a2aRouter.SetConfig(cfg.A2A)
 	a2aRouter.SetGuardrails(guardrailsEng)
-	a2aStreamSub := a2a.NewStreamSubscriber(repo, redisFabric)
+	a2aRouter.SetLimiter(limiter)
+	a2aRouter.SetSpendRecorder(spendWorker)
+	a2aStreamSub := a2a.NewStreamSubscriber(repo, rbac, redisFabric, cfg.A2A.StreamBufferCapacity)
 	a2aPublisher := a2a.NewStreamPublisher(repo, redisFabric, cfg.A2A.StreamPublishInterval)
-	a2aOutboxWorker := a2a.NewOutboxWorker(repo, netPolicy, cfg.A2A.MaxPushRetries, 200*time.Millisecond)
+	a2aOutboxWorker := a2a.NewOutboxWorker(repo, vault, netPolicy, cfg.A2A.MaxPushRetries, 200*time.Millisecond)
 	a2aBridge := a2a.NewOpenAIBridge(a2aRouter, a2aStreamSub, repo, rbac)
 	toolOrchestrator := orchestrator.NewToolLoopOrchestrator(relMgr, mcpHub, orchestrator.DefaultBudgetPolicy())
 
@@ -1037,18 +1068,24 @@ func (s *GatewayServer) registerMCPRoutes(r chi.Router) {
 }
 
 func (s *GatewayServer) registerA2AAndSCIMRoutes(r chi.Router) {
-	// Well-known Agent Card discovery
-	r.Get("/.well-known/agent-card.json", s.handleA2AWellKnownCard)
-
 	if s.cfg.A2A.Enabled {
+		// Well-known Agent Card discovery (RFC 8615 / A2A v1.0 Section 8.2)
+		r.Get("/.well-known/agent-card.json", s.handleA2AWellKnownCard)
+		if s.cfg.A2A.AllowLegacyCardDiscovery {
+			r.Get("/.well-known/agent.json", s.handleA2AWellKnownCard)
+		}
+
+		adapter := s.newA2AHTTPAdapter()
+		// Accept POST /a2a/v1/agents/{agentSlug} (without trailing slash) for JSON-RPC 2.0
+		r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Post("/a2a/v1/agents/{agentSlug}", func(w http.ResponseWriter, r *http.Request) {
+			adapter.DispatchJsonRpc(w, r, a2aspec.DispatchJsonRpcParams{})
+		})
 		r.Route("/a2a/v1/agents/{agentSlug}", func(a2aRouter chi.Router) {
-			a2aRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
-			a2aRouter.Post("/", s.handleA2AAgentMessage)
-			a2aRouter.Get("/tasks", s.handleA2AListTasks)
-			a2aRouter.Get("/tasks/{taskID}", s.handleA2AGetTask)
-			a2aRouter.Post("/tasks/{taskID}:cancel", s.handleA2ACancelTask)
-			a2aRouter.Get("/tasks/{taskID}:subscribe", s.handleA2ASubscribeTask)
-			a2aRouter.Post("/tasks/{taskID}:subscribe", s.handleA2ASubscribeTask)
+			a2aRouter.Use(s.a2aDataPlaneAuthMiddleware())
+			a2aspec.HandlerWithOptions(adapter, a2aspec.ChiServerOptions{
+				BaseRouter:       a2aRouter,
+				ErrorHandlerFunc: a2aChiErrorHandler,
+			})
 		})
 	}
 
@@ -1225,12 +1262,17 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 		adm.Get("/mcp/tools", s.handleAdminListMCPTools)
 		adm.Post("/mcp/credentials", s.handleAdminSetMCPUserCredential)
 
-		// A2A Enterprise Management: Agents, Kill-Switch, Push Notification Configs
+		// A2A Enterprise Management: Agents, Card Sync, Kill-Switch, Push Notification Configs & Outbox
 		adm.Post("/a2a/agents", s.handleAdminCreateA2AAgent)
 		adm.Get("/a2a/agents", s.handleAdminListA2AAgents)
 		adm.Get("/a2a/agents/{id}", s.handleAdminGetA2AAgent)
+		adm.Put("/a2a/agents/{id}", s.handleAdminUpdateA2AAgent)
+		adm.Delete("/a2a/agents/{id}", s.handleAdminDeleteA2AAgent)
+		adm.Post("/a2a/agents/{id}/sync-card", s.handleAdminSyncA2AAgentCard)
 		adm.Post("/a2a/agents/{id}/kill-switch", s.handleAdminSetA2AKillSwitch)
 		adm.Post("/a2a/push-configs", s.handleAdminSetA2APushConfig)
+		adm.Get("/a2a/outbox", s.handleAdminListA2AOutboxEvents)
+		adm.Post("/a2a/outbox/{id}/replay", s.handleAdminReplayA2AOutboxEvent)
 	})
 }
 
@@ -1349,6 +1391,11 @@ func (s *GatewayServer) A2ARouter() *a2a.RouterService {
 	return s.a2aRouter
 }
 
+// A2AStreamSubscriber returns the A2A task SSE/gRPC stream subscriber.
+func (s *GatewayServer) A2AStreamSubscriber() *a2a.StreamSubscriber {
+	return s.a2aStreamSub
+}
+
 // AuthService returns the virtual-key and identity authentication Service.
 func (s *GatewayServer) AuthService() *auth.Service {
 	return s.authSvc
@@ -1437,10 +1484,10 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	if s.semanticPreRouter != nil {
 		go s.warmupSemanticPreRouter(ctx)
 	}
-	if s.a2aPublisher != nil {
+	if s.cfg.A2A.Enabled && s.a2aPublisher != nil {
 		s.a2aPublisher.Start(ctx)
 	}
-	if s.a2aOutboxWorker != nil {
+	if s.cfg.A2A.Enabled && s.a2aOutboxWorker != nil {
 		s.a2aOutboxWorker.Start(ctx)
 	}
 	if s.metricsExporter != nil {

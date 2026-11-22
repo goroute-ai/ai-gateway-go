@@ -66,6 +66,8 @@ type VirtualKeyRequest struct {
 	RPMLimit           int      `json:"rpm_limit,omitempty"`
 	TPMLimit           int      `json:"tpm_limit,omitempty"`
 	AllowedModels      []string `json:"allowed_models,omitempty"`
+	AllowedEndpoints   []string `json:"allowed_endpoints,omitempty"`
+	AllowedA2AAgents   []string `json:"allowed_a2a_agents,omitempty"`
 	MinPriorityRank    int      `json:"min_priority_rank,omitempty"`
 	AllowedRoutingTags []string `json:"allowed_routing_tags,omitempty"`
 }
@@ -100,11 +102,23 @@ type MCPServerConfig struct {
 
 // A2AAgentConfig specifies registration parameters for an Agent-to-Agent protocol agent.
 type A2AAgentConfig struct {
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	Description string `json:"description,omitempty"`
-	EndpointURL string `json:"endpoint_url"`
-	Status      string `json:"status,omitempty"`
+	OrgID                 string `json:"org_id,omitempty"`
+	Name                  string `json:"name"`
+	Slug                  string `json:"slug"`
+	Description           string `json:"description,omitempty"`
+	EndpointURL           string `json:"endpoint_url"`
+	AgentCardURL          string `json:"agent_card_url,omitempty"`
+	AgentCardJSON         string `json:"agent_card_json,omitempty"`
+	ExtendedAgentCardJSON string `json:"extended_agent_card_json,omitempty"`
+	IsPublicCard          bool   `json:"is_public_card,omitempty"`
+	ProtocolBinding       string `json:"protocol_binding,omitempty"`
+	TaskVisibilityMode    string `json:"task_visibility_mode,omitempty"`
+	AuthType              string `json:"auth_type,omitempty"`
+	AuthHeaderName        string `json:"auth_header_name,omitempty"`
+	AuthSecret            string `json:"auth_secret,omitempty"`
+	MaxTaskIterations     int    `json:"max_task_iterations,omitempty"`
+	MaxTaskBudgetMicros   int64  `json:"max_task_budget_micros,omitempty"`
+	Status                string `json:"status,omitempty"`
 }
 
 // SystemIdentity represents an authenticated system or service caller identity.

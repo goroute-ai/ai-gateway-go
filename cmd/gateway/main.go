@@ -22,6 +22,8 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -149,15 +151,23 @@ func main() {
 	}()
 
 	var grpcSrv *grpc.Server
-	if cfg.Server.GRPCPort > 0 {
+	if cfg.A2A.Enabled && cfg.Server.GRPCPort > 0 {
 		grpcAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.GRPCPort)
 		lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", grpcAddr)
 		if err != nil {
 			logger.Error("Failed to listen for A2A gRPC server", slog.String("addr", grpcAddr), slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		grpcSrv = grpc.NewServer()
-		a2a.NewGRPCServer(gw.A2ARouter(), gw.AuthService(), gw.RBAC()).Register(grpcSrv)
+		grpcSrv = grpc.NewServer(
+			grpc.UnaryInterceptor(grpcUnaryRecoveryInterceptor),
+			grpc.StreamInterceptor(grpcStreamRecoveryInterceptor),
+		)
+		a2aGRPC := a2a.NewGRPCServer(gw.A2ARouter(), gw.AuthService(), gw.RBAC())
+		a2aGRPC.SetAuthResolver(gw.AuthResolver())
+		if sub := gw.A2AStreamSubscriber(); sub != nil {
+			a2aGRPC.SetStreamSubscriber(sub)
+		}
+		a2aGRPC.Register(grpcSrv)
 		go func() {
 			l.Info("A2A gRPC server listening", slog.String("addr", grpcAddr))
 			if err := grpcSrv.Serve(lis); err != nil {
@@ -197,6 +207,42 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	gw.Shutdown(shutdownCtx)
 	logger.Info("GoRoute AI Gateway shutdown complete")
+}
+
+func grpcUnaryRecoveryInterceptor(
+	ctx context.Context,
+	req any,
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic recovered in A2A gRPC unary handler",
+				slog.String("method", info.FullMethod),
+				slog.Any("panic", r),
+			)
+			err = status.Errorf(codes.Internal, "internal gRPC error")
+		}
+	}()
+	return handler(ctx, req)
+}
+
+func grpcStreamRecoveryInterceptor(
+	srv any,
+	ss grpc.ServerStream,
+	info *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic recovered in A2A gRPC stream handler",
+				slog.String("method", info.FullMethod),
+				slog.Any("panic", r),
+			)
+			err = status.Errorf(codes.Internal, "internal gRPC streaming error")
+		}
+	}()
+	return handler(srv, ss)
 }
 
 func postgresPoolOptions(cfg *config.Config) (storage.PostgresPoolOptions, error) {
