@@ -1,4 +1,13 @@
+# ==============================================================================
+# GoRoute AI Gateway — Local Development Configuration
+# ==============================================================================
+# Tailored for local quickstarts (`make run` / `deployments/docker-compose.yml`).
+# For production deployments, use `configs/config.example.yaml` and
+# `deployments/docker-compose.prod.yml`.
+# ==============================================================================
+
 server:
+  environment: "development"
   host: "0.0.0.0"
   port: 8080
   read_timeout: 30s
@@ -21,7 +30,10 @@ auth:
   master_admin_key: "sk-gw-master-admin-default-key-change-me"
   master_encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   jwt_secret: "gateway-jwt-hmac-secret-change-me"
+  jwt_issuer: "https://auth.goroute.local"
+  jwt_audience: "goroute-gateway"
   default_org_id: "org_default"
+  # Local development convenience key only; blocked in production unless overridden/cleared via GATEWAY_DEFAULT_VIRTUAL_KEY.
   default_virtual_key: "sk-gw-master-admin-default-key-change-me"
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
@@ -72,6 +84,7 @@ security:
       allowed_schemes: ["http", "https"]
       blocked_ips:
         - "169.254.169.254"
+        - "fd00:ec2::254"
       dial_timeout: 10s
       max_redirects: 3
     inbound_caller:

@@ -897,3 +897,218 @@ func TestConfig_PreviousKEKsAndKeyRotationSinkValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveSecretAndStorageEnvRefs(t *testing.T) {
+	t.Run("resolves custom env placeholders in secrets and storage DSNs", func(t *testing.T) {
+		t.Setenv("CUSTOM_ADMIN_SECRET", "sk-gw-custom-prod-admin-secret")
+		t.Setenv("CUSTOM_MASTER_KEK", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+		t.Setenv("CUSTOM_JWT_SECRET", "custom-jwt-hmac-signing-secret")
+		t.Setenv("CUSTOM_PG_DSN", "postgres://gw:pw@db.internal:5432/gateway")
+		t.Setenv("CUSTOM_REDIS_ADDR", "redis.internal:6379")
+
+		yamlContent := `
+server:
+  environment: "production"
+storage:
+  mode: "postgres"
+  postgres_dsn: "os.environ/CUSTOM_PG_DSN"
+  redis_addr: "${CUSTOM_REDIS_ADDR}"
+auth:
+  master_admin_key: "os.environ/CUSTOM_ADMIN_SECRET"
+  master_encryption_key: "${CUSTOM_MASTER_KEK}"
+  jwt_secret: "$CUSTOM_JWT_SECRET"
+  jwt_issuer: "https://auth.example.com"
+  jwt_audience: "goroute-api"
+`
+		tmpPath := filepath.Join(t.TempDir(), "custom-env.yaml")
+		if err := os.WriteFile(tmpPath, []byte(yamlContent), 0600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := config.Load(tmpPath)
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		if cfg.Auth.MasterAdminKey != "sk-gw-custom-prod-admin-secret" {
+			t.Fatalf("expected resolved MasterAdminKey, got %q", cfg.Auth.MasterAdminKey)
+		}
+		if cfg.Auth.MasterEncryptionKey != "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" {
+			t.Fatalf("expected resolved MasterEncryptionKey, got %q", cfg.Auth.MasterEncryptionKey)
+		}
+		if cfg.Auth.JWTSecret != "custom-jwt-hmac-signing-secret" {
+			t.Fatalf("expected resolved JWTSecret, got %q", cfg.Auth.JWTSecret)
+		}
+		if cfg.Storage.PostgresDSN != "postgres://gw:pw@db.internal:5432/gateway" {
+			t.Fatalf("expected resolved PostgresDSN, got %q", cfg.Storage.PostgresDSN)
+		}
+		if cfg.Storage.RedisAddr != "redis.internal:6379" {
+			t.Fatalf("expected resolved RedisAddr, got %q", cfg.Storage.RedisAddr)
+		}
+	})
+
+	failClosedCases := []struct {
+		name string
+		edit func(*config.Config)
+		want string
+	}{
+		{
+			name: "unset master_admin_key env ref",
+			edit: func(c *config.Config) {
+				c.Auth.MasterAdminKey = "os.environ/UNSET_ADMIN_KEY_XYZ"
+			},
+			want: "UNSET_ADMIN_KEY_XYZ",
+		},
+		{
+			name: "unset master_encryption_key env ref",
+			edit: func(c *config.Config) {
+				c.Auth.MasterEncryptionKey = "${UNSET_KEK_XYZ}"
+			},
+			want: "UNSET_KEK_XYZ",
+		},
+		{
+			name: "unset postgres_dsn env ref in postgres mode",
+			edit: func(c *config.Config) {
+				c.Storage.Mode = "postgres"
+				c.Storage.PostgresDSN = "os.environ/UNSET_PG_DSN_XYZ"
+			},
+			want: "UNSET_PG_DSN_XYZ",
+		},
+	}
+	for _, tc := range failClosedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := config.Default()
+			c.Server.Environment = "development"
+			tc.edit(c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	t.Run("resolved default admin secret is rejected in production", func(t *testing.T) {
+		t.Setenv("LEAKED_DEFAULT_ADMIN", "sk-gw-master-admin-default-key-change-me")
+		c := config.Default()
+		c.Server.Environment = "production"
+		c.Auth.MasterAdminKey = "os.environ/LEAKED_DEFAULT_ADMIN"
+		c.Auth.MasterEncryptionKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "security violation") {
+			t.Fatalf("expected security violation for resolved default admin key, got %v", err)
+		}
+	})
+
+	t.Run("literal secrets with dollar signs are not mistaken for env vars", func(t *testing.T) {
+		got := config.ResolveEnvValue("$2a$10$abcdefghijklmnopqrstuv")
+		if got != "$2a$10$abcdefghijklmnopqrstuv" {
+			t.Fatalf("expected literal bcrypt-style string preserved, got %q", got)
+		}
+	})
+}
+
+func TestCheckedInConfigTemplatesParseAndValidate(t *testing.T) {
+	t.Run("config.yaml parses cleanly in development mode", func(t *testing.T) {
+		t.Setenv("GATEWAY_ENV", "development")
+		cfg, err := config.Load("../../configs/config.yaml")
+		if err != nil {
+			t.Fatalf("config.Load(configs/config.yaml): %v", err)
+		}
+		if cfg.Auth.JWTIssuer == "" || cfg.Auth.JWTAudience == "" {
+			t.Fatalf("expected non-empty jwt_issuer/jwt_audience in configs/config.yaml, got issuer=%q audience=%q", cfg.Auth.JWTIssuer, cfg.Auth.JWTAudience)
+		}
+	})
+
+	t.Run("config.example.yaml parses and validates with production secrets", func(t *testing.T) {
+		t.Setenv("GATEWAY_MASTER_ADMIN_KEY", "sk-gw-prod-test-admin-secret-0001")
+		t.Setenv("GATEWAY_MASTER_ENCRYPTION_KEY", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+		t.Setenv("GATEWAY_JWT_SECRET", "prod-jwt-hmac-signing-secret-0001")
+		t.Setenv("GATEWAY_SESSION_SECRET", "prod-session-hmac-secret-0001")
+		t.Setenv("GATEWAY_DEFAULT_KEY", "sk-gw-prod-default-virtual-key-0001")
+		t.Setenv("GATEWAY_JWT_ISSUER", "https://auth.example.com")
+		t.Setenv("GATEWAY_JWT_AUDIENCE", "goroute-gateway")
+
+		cfg, err := config.Load("../../configs/config.example.yaml")
+		if err != nil {
+			t.Fatalf("config.Load(configs/config.example.yaml): %v", err)
+		}
+		if cfg.Server.Environment != "production" {
+			t.Fatalf("expected production environment, got %q", cfg.Server.Environment)
+		}
+		if cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks {
+			t.Fatalf("expected allow_private_networks=false in config.example.yaml")
+		}
+		if cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP {
+			t.Fatalf("expected allow_insecure_http=false in config.example.yaml")
+		}
+		if cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP {
+			t.Fatalf("expected allow_loopback_http=false in config.example.yaml")
+		}
+		if cfg.Providers.RequestTimeout <= 0 {
+			t.Fatalf("expected positive providers.request_timeout, got %v", cfg.Providers.RequestTimeout)
+		}
+	})
+
+	t.Run("config.example.yaml fails closed when secret env vars are unset", func(t *testing.T) {
+		for _, k := range []string{
+			"GATEWAY_MASTER_ADMIN_KEY",
+			"GATEWAY_MASTER_ENCRYPTION_KEY",
+			"GATEWAY_JWT_SECRET",
+			"GATEWAY_SESSION_SECRET",
+			"GATEWAY_DEFAULT_KEY",
+		} {
+			t.Setenv(k, "")
+		}
+		if _, err := config.Load("../../configs/config.example.yaml"); err == nil {
+			t.Fatalf("expected config.Load(configs/config.example.yaml) to fail closed when env secrets are unset")
+		}
+	})
+
+	t.Run("GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP env override is honored", func(t *testing.T) {
+		t.Setenv("GATEWAY_ENV", "development")
+		t.Setenv("GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP", "true")
+		cfg, err := config.Load("")
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		if !cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP {
+			t.Fatalf("expected AllowLoopbackHTTP=true when GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP=true")
+		}
+	})
+}
+
+func TestCheckedInConfigProductionSecretAndCIDROverrides(t *testing.T) {
+	t.Run("config.yaml in production rejects hardcoded default_virtual_key even when admin/KEK/JWT are rotated", func(t *testing.T) {
+		t.Setenv("GATEWAY_ENV", "production")
+		t.Setenv("GATEWAY_MASTER_ADMIN_KEY", "sk-gw-prod-test-admin-secret-0001")
+		t.Setenv("GATEWAY_MASTER_ENCRYPTION_KEY", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+		t.Setenv("GATEWAY_JWT_SECRET", "prod-jwt-hmac-signing-secret-0001")
+
+		if _, err := config.Load("../../configs/config.yaml"); err == nil || !strings.Contains(err.Error(), "default_virtual_key") {
+			t.Fatalf("expected default_virtual_key security violation in production, got %v", err)
+		}
+
+		// Clearing or overriding default_virtual_key and clearing baked allowed_private_cidrs succeeds cleanly.
+		t.Setenv("GATEWAY_DEFAULT_VIRTUAL_KEY", "none")
+		t.Setenv("GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS", "none")
+		cfg, err := config.Load("../../configs/config.yaml")
+		if err != nil {
+			t.Fatalf("expected config.yaml with overridden default_virtual_key and cleared CIDRs to pass: %v", err)
+		}
+		if cfg.Auth.DefaultVirtualKey != "" {
+			t.Fatalf("expected empty DefaultVirtualKey after GATEWAY_DEFAULT_VIRTUAL_KEY=none, got %q", cfg.Auth.DefaultVirtualKey)
+		}
+		if len(cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) != 0 {
+			t.Fatalf("expected empty AllowedPrivateCIDRs after GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS=none, got %v", cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs)
+		}
+	})
+
+	t.Run("GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS parses explicit CSV", func(t *testing.T) {
+		t.Setenv("GATEWAY_ENV", "development")
+		t.Setenv("GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS", "10.10.0.0/16, 172.16.0.0/12")
+		cfg, err := config.Load("")
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		if len(cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) != 2 {
+			t.Fatalf("expected 2 parsed CIDRs, got %v", cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs)
+		}
+	})
+}

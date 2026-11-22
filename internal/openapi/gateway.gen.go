@@ -5693,6 +5693,9 @@ type ServerInterface interface {
 	// CreateMCPServer Register a downstream MCP server
 	// (POST /admin/v1/mcp/servers)
 	CreateMCPServer(w http.ResponseWriter, r *http.Request)
+	// DeleteMCPServer Delete a registered downstream MCP server and its synced tools
+	// (DELETE /admin/v1/mcp/servers/{serverID})
+	DeleteMCPServer(w http.ResponseWriter, r *http.Request, serverID string)
 	// UpdateMCPServer Update an existing downstream MCP server configuration and protocol specification
 	// (PUT /admin/v1/mcp/servers/{serverID})
 	UpdateMCPServer(w http.ResponseWriter, r *http.Request, serverID string)
@@ -7747,6 +7750,32 @@ func (siw *ServerInterfaceWrapper) CreateMCPServer(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateMCPServer(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteMCPServer operation middleware
+func (siw *ServerInterfaceWrapper) DeleteMCPServer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "serverID" -------------
+	var serverID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serverID", r.PathValue("serverID"), &serverID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serverID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteMCPServer(w, r, serverID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11057,6 +11086,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/mcp/spec", wrapper.UpdateMCPSpec)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.ListMCPServers)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.CreateMCPServer)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}", wrapper.DeleteMCPServer)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}", wrapper.UpdateMCPServer)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}/sync", wrapper.SyncMCPServer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/toolsets", wrapper.ListMCPToolsets)
@@ -12763,6 +12793,55 @@ func (response CreateMCPServer201JSONResponse) VisitCreateMCPServerResponse(w ht
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type DeleteMCPServerRequestObject struct {
+	ServerID string `json:"serverID"`
+}
+
+type DeleteMCPServerResponseObject interface {
+	VisitDeleteMCPServerResponse(w http.ResponseWriter) error
+}
+
+type DeleteMCPServer200JSONResponse struct {
+	ServerId *string `json:"server_id,omitempty"`
+	Status   *string `json:"status,omitempty"`
+}
+
+func (response DeleteMCPServer200JSONResponse) VisitDeleteMCPServerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMCPServer401Response struct {
+}
+
+func (response DeleteMCPServer401Response) VisitDeleteMCPServerResponse(w http.ResponseWriter) error {
+	w.WriteHeader(401)
+	return nil
+}
+
+type DeleteMCPServer403Response struct {
+}
+
+func (response DeleteMCPServer403Response) VisitDeleteMCPServerResponse(w http.ResponseWriter) error {
+	w.WriteHeader(403)
+	return nil
+}
+
+type DeleteMCPServer404Response struct {
+}
+
+func (response DeleteMCPServer404Response) VisitDeleteMCPServerResponse(w http.ResponseWriter) error {
+	w.WriteHeader(404)
+	return nil
 }
 
 type UpdateMCPServerRequestObject struct {
@@ -16071,6 +16150,9 @@ type StrictServerInterface interface {
 	// CreateMCPServer Register a downstream MCP server
 	// (POST /admin/v1/mcp/servers)
 	CreateMCPServer(ctx context.Context, request CreateMCPServerRequestObject) (CreateMCPServerResponseObject, error)
+	// DeleteMCPServer Delete a registered downstream MCP server and its synced tools
+	// (DELETE /admin/v1/mcp/servers/{serverID})
+	DeleteMCPServer(ctx context.Context, request DeleteMCPServerRequestObject) (DeleteMCPServerResponseObject, error)
 	// UpdateMCPServer Update an existing downstream MCP server configuration and protocol specification
 	// (PUT /admin/v1/mcp/servers/{serverID})
 	UpdateMCPServer(ctx context.Context, request UpdateMCPServerRequestObject) (UpdateMCPServerResponseObject, error)
@@ -18248,6 +18330,32 @@ func (sh *strictHandler) CreateMCPServer(w http.ResponseWriter, r *http.Request)
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateMCPServerResponseObject); ok {
 		if err := validResponse.VisitCreateMCPServerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteMCPServer operation middleware
+func (sh *strictHandler) DeleteMCPServer(w http.ResponseWriter, r *http.Request, serverID string) {
+	var request DeleteMCPServerRequestObject
+
+	request.ServerID = serverID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteMCPServer(ctx, request.(DeleteMCPServerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteMCPServer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteMCPServerResponseObject); ok {
+		if err := validResponse.VisitDeleteMCPServerResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

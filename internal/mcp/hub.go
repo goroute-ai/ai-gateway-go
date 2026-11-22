@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -275,7 +276,7 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 	input.ToolName = resolvedToolName
 
-	if err := h.verifyToolPinning(targetServer, targetTool, input.ToolName); err != nil {
+	if err := h.verifyToolPinning(ctx, targetServer, targetTool, input.ToolName); err != nil {
 		return nil, err
 	}
 
@@ -295,8 +296,9 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
 	}
 
+	isResumingMRTR := strings.TrimSpace(input.RequestState) != "" || len(input.InputResponses) > 0
 	var cacheKey string
-	if h.cache != nil {
+	if h.cache != nil && !isResumingMRTR {
 		keyPrefix := ""
 		if idCtx != nil {
 			keyPrefix = idCtx.KeyPrefix
@@ -317,12 +319,35 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		}
 	}
 
+	bindingBytes := mrtrBindingBytes(targetServer.Slug, input.ToolName, input.Arguments)
+	upstreamState := ""
+	if h.mrtr != nil && strings.TrimSpace(input.RequestState) != "" {
+		claims, mrtrErr := h.mrtr.VerifyAndConsumeToken(ctx, input.RequestState, idCtx, "tools/call", bindingBytes)
+		if mrtrErr != nil {
+			h.recordAudit(ctx, idCtx, "mcp.mrtr.rejected", "mcp_tool", targetServer.Slug+"/"+input.ToolName, map[string]any{
+				"server_slug": targetServer.Slug,
+				"tool_name":   input.ToolName,
+				"reason":      mrtrErr.Error(),
+			})
+			return nil, mrtrErr
+		}
+		upstreamState = claims.UpstreamState
+	}
+
 	reqHeaders, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, targetServer, meta.CallerMetadata, nil)
 	paramsMap := map[string]any{"name": input.ToolName}
 	if input.Arguments != nil {
 		paramsMap["arguments"] = input.Arguments
 	} else {
 		paramsMap["arguments"] = map[string]any{}
+	}
+	if upstreamState != "" {
+		paramsMap["requestState"] = upstreamState
+	} else if h.mrtr == nil && strings.TrimSpace(input.RequestState) != "" {
+		paramsMap["requestState"] = input.RequestState
+	}
+	if len(input.InputResponses) > 0 {
+		paramsMap["inputResponses"] = input.InputResponses
 	}
 	paramsBytes, _ := json.Marshal(paramsMap)
 	reqBodyBytes, _ := json.Marshal(JSONRPCRequest{
@@ -352,12 +377,20 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, err
 	}
 	if cacheKey != "" && h.cache != nil && ShouldCache("tools/call", resp) {
-		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
+		_ = h.cache.Set(ctx, cacheKey, resp, CacheTTL(resp, 5*time.Minute))
 	}
 
 	callResp, err := extractCallToolResponse(resp.Result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse upstream tool result: %w", err)
+	}
+	if h.mrtr != nil && isInputRequiredResponse(callResp) {
+		mrtrToken, mrtrErr := h.mrtr.IssueTokenWithState(ctx, idCtx, "tools/call", bindingBytes, callResp.RequestState, 10*time.Minute)
+		if mrtrErr != nil {
+			return nil, fmt.Errorf("issue mrtr token: %w", mrtrErr)
+		}
+		callResp.ResultType = "input_required"
+		callResp.RequestState = mrtrToken
 	}
 	h.recordAudit(ctx, idCtx, "mcp.tool.call", "mcp_tool", targetServer.Slug+"/"+input.ToolName, map[string]any{
 		"server_slug": targetServer.Slug,
@@ -523,22 +556,29 @@ func (h *Hub) resolveToolTarget(
 	return matchServers[0], matchTools[0], toolName, nil
 }
 
-func (h *Hub) verifyToolPinning(server *domain.MCPServer, tool *domain.MCPTool, toolName string) error {
-	if server.PinnedToolHash == "" || (h.guardrails == nil && h.pipeline == nil) {
+func (h *Hub) pinningEngine() *guardrails.Engine {
+	if h.guardrails != nil {
+		return h.guardrails
+	}
+	if h.pipeline != nil {
+		return h.pipeline.Engine()
+	}
+	return nil
+}
+
+func (h *Hub) verifyToolPinning(ctx context.Context, server *domain.MCPServer, tool *domain.MCPTool, toolName string) error {
+	pinEng := h.pinningEngine()
+	if server == nil || strings.TrimSpace(server.PinnedToolHash) == "" || pinEng == nil {
 		return nil
 	}
 	if tool == nil {
 		return fmt.Errorf("tool pinning violation: tool %q not found in catalog", toolName)
 	}
-	pinnedHash := tool.ToolDefHash
-	if pinnedHash == "" {
-		pinnedHash = server.PinnedToolHash
+	var allTools []*domain.MCPTool
+	if strings.HasPrefix(strings.TrimSpace(server.PinnedToolHash), "manifest:") {
+		allTools, _ = h.repo.ListMCPTools(ctx, server.ID)
 	}
-	pinEng := h.guardrails
-	if pinEng == nil && h.pipeline != nil {
-		pinEng = h.pipeline.Engine()
-	}
-	if err := pinEng.VerifyToolPinning(tool, pinnedHash); err != nil {
+	if err := pinEng.VerifyServerToolPinning(server, tool, allTools); err != nil {
 		return fmt.Errorf("tool pinning violation: %w", err)
 	}
 	return nil
@@ -1026,21 +1066,21 @@ func (h *Hub) dispatchScopedRequest(
 		return h.dispatchScopedToolsCall(ctx, idCtx, serverSlug, jsonReq, reqHeaders, profile)
 	}
 
+	reqBody, paramsMap, mrtrBindingBytes, hasReqState, mrtrErrResp := h.unwrapScopedRequestMRTR(ctx, idCtx, serverSlug, jsonReq, reqBody)
+	if mrtrErrResp != nil {
+		return mrtrErrResp, nil, nil
+	}
+
 	var cacheKey string
-	if h.cache != nil && jsonReq.Method == "tools/list" {
-		keyPrefix := ""
-		if idCtx != nil {
-			keyPrefix = idCtx.KeyPrefix
+	if !hasReqState {
+		var cachedResp *JSONRPCResponse
+		var cacheErrResp *JSONRPCResponse
+		cacheKey, cachedResp, cacheErrResp = h.tryServeCachedDiscovery(ctx, orgID, idCtx, server, jsonReq, profile)
+		if cacheErrResp != nil {
+			return cacheErrResp, nil, nil
 		}
-		cacheKey = h.cache.ComputeCacheKey(orgID, keyPrefix, serverSlug, "tools/list", nil, server.ConfigVersion)
-		if cachedResp, ok := h.cache.Get(ctx, cacheKey); ok {
-			if errResp := h.verifyCachedListPinning(ctx, server, jsonReq); errResp != nil {
-				return errResp, nil, nil
-			}
-			shapedCopy := *cachedResp
-			shapedCopy.ID = jsonReq.ID
-			shapedCopy.Result = profile.ShapeResult(jsonReq.Method, shapedCopy.Result)
-			return &shapedCopy, nil, nil
+		if cachedResp != nil {
+			return cachedResp, nil, nil
 		}
 	}
 
@@ -1048,10 +1088,6 @@ func (h *Hub) dispatchScopedRequest(
 	var scopedPRC guardrails.PipelineRequestContext
 	var scopedCallCtx *guardrails.MCPCallContext
 	if isGuardedMethod && (h.pipeline != nil || h.guardrails != nil) {
-		var paramsMap map[string]any
-		if len(jsonReq.Params) > 0 {
-			_ = json.Unmarshal(jsonReq.Params, &paramsMap)
-		}
 		if h.pipeline != nil {
 			scopedPRC = buildMCPPipelineRequestContext(ctx, idCtx, fmt.Sprint(jsonReq.ID), nil, reqHeaders)
 			scopedCallCtx = &guardrails.MCPCallContext{
@@ -1085,14 +1121,223 @@ func (h *Hub) dispatchScopedRequest(
 		}
 	}
 
+	if err := h.wrapScopedResponseMRTR(ctx, idCtx, jsonReq.Method, mrtrBindingBytes, resp); err != nil {
+		return scopedJSONRPCError(jsonReq.ID, err.Error()), respHeaders, nil
+	}
+
 	if cacheKey != "" && h.cache != nil && ShouldCache(jsonReq.Method, resp) {
-		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
+		_ = h.cache.Set(ctx, cacheKey, resp, CacheTTL(resp, 5*time.Minute))
 	}
 
 	if resp.Result != nil {
 		resp.Result = profile.ShapeResult(jsonReq.Method, resp.Result)
 	}
 	return resp, respHeaders, nil
+}
+
+const mcpMetaKey = "_meta"
+
+func mrtrBindingBytes(serverSlug, toolName string, args map[string]any) []byte {
+	if args == nil {
+		args = map[string]any{}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"server_slug": serverSlug,
+		"tool_name":   toolName,
+		"arguments":   args,
+	})
+	return b
+}
+
+func scopedMRTRBindingBytes(serverSlug, method string, params map[string]any) []byte {
+	boundParams := make(map[string]any, len(params))
+	for k, v := range params {
+		if k == "requestState" || k == "inputResponses" || k == mcpMetaKey {
+			continue
+		}
+		boundParams[k] = v
+	}
+	b, _ := json.Marshal(map[string]any{
+		"server_slug": serverSlug,
+		"method":      method,
+		"params":      boundParams,
+	})
+	return b
+}
+
+func isInputRequiredResultMap(resMap map[string]any) bool {
+	if resMap == nil {
+		return false
+	}
+	if rt, _ := resMap["resultType"].(string); strings.EqualFold(rt, "input_required") {
+		return true
+	}
+	if rs, _ := resMap["requestState"].(string); strings.TrimSpace(rs) != "" {
+		return true
+	}
+	if ir, ok := resMap["inputRequests"].(map[string]any); ok && len(ir) > 0 {
+		return true
+	}
+	return false
+}
+
+func (h *Hub) tryServeCachedDiscovery(
+	ctx context.Context,
+	orgID string,
+	idCtx *domain.IdentityContext,
+	server *domain.MCPServer,
+	jsonReq *JSONRPCRequest,
+	profile SpecProfile,
+) (string, *JSONRPCResponse, *JSONRPCResponse) {
+	if h.cache == nil || !IsCacheableDiscoveryMethod(jsonReq.Method) {
+		return "", nil, nil
+	}
+	keyPrefix := ""
+	if idCtx != nil {
+		keyPrefix = idCtx.KeyPrefix
+	}
+	normParams := normalizeCacheParams(jsonReq.Params)
+	cacheKey := h.cache.ComputeCacheKey(orgID, keyPrefix, server.Slug, jsonReq.Method, normParams, server.ConfigVersion)
+	cachedResp, ok := h.cache.Get(ctx, cacheKey)
+	if !ok {
+		return cacheKey, nil, nil
+	}
+	if jsonReq.Method == "tools/list" {
+		if errResp := h.verifyCachedListPinning(ctx, server, jsonReq); errResp != nil {
+			return cacheKey, nil, errResp
+		}
+	}
+	shapedCopy := *cachedResp
+	shapedCopy.ID = jsonReq.ID
+	shapedCopy.Result = profile.ShapeResult(jsonReq.Method, shapedCopy.Result)
+	return cacheKey, &shapedCopy, nil
+}
+
+func (h *Hub) unwrapScopedRequestMRTR(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	serverSlug string,
+	jsonReq *JSONRPCRequest,
+	rawBody []byte,
+) ([]byte, map[string]any, []byte, bool, *JSONRPCResponse) {
+	var paramsMap map[string]any
+	if len(jsonReq.Params) > 0 {
+		_ = json.Unmarshal(jsonReq.Params, &paramsMap)
+	}
+	reqState, _ := paramsMap["requestState"].(string)
+	hasReqState := strings.TrimSpace(reqState) != ""
+	if h.mrtr == nil {
+		return rawBody, paramsMap, nil, hasReqState, nil
+	}
+	bindingBytes := scopedMRTRBindingBytes(serverSlug, jsonReq.Method, paramsMap)
+	if !hasReqState {
+		return rawBody, paramsMap, bindingBytes, false, nil
+	}
+
+	claims, mrtrErr := h.mrtr.VerifyAndConsumeToken(ctx, reqState, idCtx, jsonReq.Method, bindingBytes)
+	if mrtrErr != nil {
+		h.recordAudit(ctx, idCtx, "mcp.mrtr.rejected", "mcp_server", serverSlug, map[string]any{
+			"server_slug": serverSlug,
+			"method":      jsonReq.Method,
+			"reason":      mrtrErr.Error(),
+		})
+		return nil, nil, nil, true, unwrapToolCallError(jsonReq.ID, mrtrErr)
+	}
+
+	// Replace the gateway AEAD token with the sealed upstream cursor before forwarding upstream.
+	rewrittenParams := maps.Clone(paramsMap)
+	if rewrittenParams == nil {
+		rewrittenParams = make(map[string]any)
+	}
+	if claims.UpstreamState != "" {
+		rewrittenParams["requestState"] = claims.UpstreamState
+	} else {
+		delete(rewrittenParams, "requestState")
+	}
+	encodedParams, err := json.Marshal(rewrittenParams)
+	if err != nil {
+		return nil, nil, nil, true, scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("failed to encode rewritten mrtr params: %v", err))
+	}
+	rpcVersion := jsonReq.JSONRPC
+	if rpcVersion == "" {
+		rpcVersion = "2.0"
+	}
+	updatedBody, err := json.Marshal(JSONRPCRequest{
+		JSONRPC: rpcVersion,
+		ID:      jsonReq.ID,
+		Method:  jsonReq.Method,
+		Params:  encodedParams,
+	})
+	if err != nil {
+		return nil, nil, nil, true, scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("failed to encode rewritten mrtr request: %v", err))
+	}
+	return updatedBody, paramsMap, bindingBytes, true, nil
+}
+
+func (h *Hub) wrapScopedResponseMRTR(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	method string,
+	bindingBytes []byte,
+	resp *JSONRPCResponse,
+) error {
+	resMap, ok := mrtrWrapTargetMap(h.mrtr, resp)
+	if !ok {
+		return nil
+	}
+	upstreamState, _ := resMap["requestState"].(string)
+	mrtrToken, err := h.mrtr.IssueTokenWithState(ctx, idCtx, method, bindingBytes, upstreamState, 10*time.Minute)
+	if err != nil {
+		return fmt.Errorf("issue mrtr token: %w", err)
+	}
+	resMap["resultType"] = "input_required"
+	resMap["requestState"] = mrtrToken
+	resp.Result = resMap
+	return nil
+}
+
+func mrtrWrapTargetMap(mgr *MRTRManager, resp *JSONRPCResponse) (map[string]any, bool) {
+	if mgr == nil || resp == nil || resp.Error != nil || resp.Result == nil {
+		return nil, false
+	}
+	resMap, ok := resp.Result.(map[string]any)
+	if !ok || !isInputRequiredResultMap(resMap) {
+		return nil, false
+	}
+	return resMap, true
+}
+
+func unwrapToolCallError(id any, err error) *JSONRPCResponse {
+	if rpcErr, ok := errors.AsType[*JSONRPCError](err); ok {
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error:   rpcErr,
+		}
+	}
+	code := CodeInvalidRequest
+	if _, isAmbiguous := errors.AsType[*AmbiguousToolError](err); isAmbiguous {
+		code = CodeInvalidParams
+	} else if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		code = CodeMethodNotFound
+	}
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    code,
+			Message: err.Error(),
+		},
+	}
+}
+
+func isInputRequiredResponse(resp *CallToolResponse) bool {
+	if resp == nil {
+		return false
+	}
+	return strings.EqualFold(resp.ResultType, "input_required") ||
+		len(resp.InputRequests) > 0 ||
+		strings.TrimSpace(resp.RequestState) != ""
 }
 
 func scopedJSONRPCError(id any, message string) *JSONRPCResponse {
@@ -1115,8 +1360,10 @@ func (h *Hub) dispatchScopedToolsCall(
 	profile SpecProfile,
 ) (*JSONRPCResponse, http.Header, error) {
 	var toolCallParams struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
+		Name           string         `json:"name"`
+		Arguments      map[string]any `json:"arguments"`
+		RequestState   string         `json:"requestState"`
+		InputResponses map[string]any `json:"inputResponses"`
 	}
 	if len(jsonReq.Params) > 0 {
 		_ = json.Unmarshal(jsonReq.Params, &toolCallParams)
@@ -1128,16 +1375,18 @@ func (h *Hub) dispatchScopedToolsCall(
 	}
 
 	callResp, err := h.CallTool(ctx, idCtx, ToolCallInput{
-		ServerSlug: serverSlug,
-		ToolName:   toolCallParams.Name,
-		Arguments:  toolCallParams.Arguments,
+		ServerSlug:     serverSlug,
+		ToolName:       toolCallParams.Name,
+		Arguments:      toolCallParams.Arguments,
+		RequestState:   toolCallParams.RequestState,
+		InputResponses: toolCallParams.InputResponses,
 	}, CallMetadata{
 		ProtocolVersion: profile.Version(),
 		RequestID:       fmt.Sprint(jsonReq.ID),
 		CallerMetadata:  callerMeta,
 	})
 	if err != nil {
-		return scopedJSONRPCError(jsonReq.ID, err.Error()), nil, nil
+		return unwrapToolCallError(jsonReq.ID, err), nil, nil
 	}
 
 	return &JSONRPCResponse{
@@ -1148,14 +1397,13 @@ func (h *Hub) dispatchScopedToolsCall(
 }
 
 func (h *Hub) verifyCachedListPinning(ctx context.Context, server *domain.MCPServer, jsonReq *JSONRPCRequest) *JSONRPCResponse {
-	if server.PinnedToolHash == "" || h.guardrails == nil {
+	pinEng := h.pinningEngine()
+	if server == nil || strings.TrimSpace(server.PinnedToolHash) == "" || pinEng == nil {
 		return nil
 	}
 	tools, _ := h.repo.ListMCPTools(ctx, server.ID)
-	for _, t := range tools {
-		if err := h.guardrails.VerifyToolPinning(t, server.PinnedToolHash); err != nil {
-			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("Tool pinning violation: %v", err))
-		}
+	if err := pinEng.VerifyServerCatalogPinning(server, tools); err != nil {
+		return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("Tool pinning violation: %v", err))
 	}
 	return nil
 }
@@ -1265,8 +1513,10 @@ func (h *Hub) dispatchToolsetRequest(
 
 	case "tools/call":
 		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
+			Name           string         `json:"name"`
+			Arguments      map[string]any `json:"arguments"`
+			RequestState   string         `json:"requestState"`
+			InputResponses map[string]any `json:"inputResponses"`
 		}
 		_ = json.Unmarshal(jsonReq.Params, &params)
 		if params.Name == "" {
@@ -1310,23 +1560,18 @@ func (h *Hub) dispatchToolsetRequest(
 			callerMeta[k] = reqHeaders.Get(k)
 		}
 		callResp, err := h.CallTool(ctx, idCtx, ToolCallInput{
-			ServerSlug: targetServer.Slug,
-			ToolName:   params.Name,
-			Arguments:  params.Arguments,
+			ServerSlug:     targetServer.Slug,
+			ToolName:       params.Name,
+			Arguments:      params.Arguments,
+			RequestState:   params.RequestState,
+			InputResponses: params.InputResponses,
 		}, CallMetadata{
 			ProtocolVersion: profile.Version(),
 			RequestID:       fmt.Sprint(jsonReq.ID),
 			CallerMetadata:  callerMeta,
 		})
 		if err != nil {
-			return &JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      jsonReq.ID,
-				Error: &JSONRPCError{
-					Code:    CodeInvalidRequest,
-					Message: err.Error(),
-				},
-			}, nil, nil
+			return unwrapToolCallError(jsonReq.ID, err), nil, nil
 		}
 
 		return &JSONRPCResponse{
@@ -1396,7 +1641,7 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 		ID:      id,
 		Result: profile.ShapeResult("tools/list", map[string]any{
 			"tools": aggregatedTools,
-			"_meta": map[string]any{
+			mcpMetaKey: map[string]any{
 				"goroute.ai/server_outcomes": serverOutcomes,
 			},
 		}),
@@ -1411,8 +1656,10 @@ func (h *Hub) handleVirtualToolsCall(
 	profile SpecProfile,
 ) (*JSONRPCResponse, http.Header, error) {
 	var params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
+		Name           string         `json:"name"`
+		Arguments      map[string]any `json:"arguments"`
+		RequestState   string         `json:"requestState"`
+		InputResponses map[string]any `json:"inputResponses"`
 	}
 	_ = json.Unmarshal(req.Params, &params)
 	if params.Name == "" {
@@ -1432,9 +1679,11 @@ func (h *Hub) handleVirtualToolsCall(
 	}
 
 	callResp, err := h.CallTool(ctx, idCtx, ToolCallInput{
-		ServerSlug: "", // Let CallTool perform unambiguous resolution
-		ToolName:   params.Name,
-		Arguments:  params.Arguments,
+		ServerSlug:     "", // Let CallTool perform unambiguous resolution
+		ToolName:       params.Name,
+		Arguments:      params.Arguments,
+		RequestState:   params.RequestState,
+		InputResponses: params.InputResponses,
 	}, CallMetadata{
 		ProtocolVersion: profile.Version(),
 		RequestID:       fmt.Sprint(req.ID),
@@ -1442,21 +1691,7 @@ func (h *Hub) handleVirtualToolsCall(
 	})
 
 	if err != nil {
-		var ambErr *AmbiguousToolError
-		code := CodeInvalidRequest
-		if errors.As(err, &ambErr) {
-			code = CodeInvalidParams
-		} else if strings.Contains(strings.ToLower(err.Error()), "not found") {
-			code = CodeMethodNotFound
-		}
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &JSONRPCError{
-				Code:    code,
-				Message: err.Error(),
-			},
-		}, nil, nil
+		return unwrapToolCallError(req.ID, err), nil, nil
 	}
 
 	return &JSONRPCResponse{
@@ -1483,8 +1718,14 @@ func buildCallToolResultMap(callResp *CallToolResponse, profile SpecProfile) map
 	if callResp.ResultType != "" {
 		resMap["resultType"] = callResp.ResultType
 	}
+	if len(callResp.InputRequests) > 0 {
+		resMap["inputRequests"] = callResp.InputRequests
+	}
+	if callResp.RequestState != "" {
+		resMap["requestState"] = callResp.RequestState
+	}
 	if len(callResp.Meta) > 0 {
-		resMap["_meta"] = callResp.Meta
+		resMap[mcpMetaKey] = callResp.Meta
 	}
 	if shaped, ok := profile.ShapeResult("tools/call", resMap).(map[string]any); ok {
 		return shaped
@@ -1523,7 +1764,7 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 	}
 
 	// _meta
-	if m, exists := resMap["_meta"]; exists {
+	if m, exists := resMap[mcpMetaKey]; exists {
 		if metaMap, ok := m.(map[string]any); ok {
 			callResp.Meta = metaMap
 		}
@@ -1534,6 +1775,16 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 	if rt, exists := resMap["resultType"]; exists {
 		if rts, ok := rt.(string); ok {
 			callResp.ResultType = rts
+		}
+	}
+	if ir, exists := resMap["inputRequests"]; exists {
+		if irMap, ok := ir.(map[string]any); ok {
+			callResp.InputRequests = irMap
+		}
+	}
+	if rs, exists := resMap["requestState"]; exists {
+		if rss, ok := rs.(string); ok {
+			callResp.RequestState = rss
 		}
 	}
 
@@ -1568,7 +1819,7 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 		if ann, ok := itemMap["annotations"].(map[string]any); ok {
 			tc.Annotations = ann
 		}
-		if m, ok := itemMap["_meta"].(map[string]any); ok {
+		if m, ok := itemMap[mcpMetaKey].(map[string]any); ok {
 			tc.Meta = m
 		}
 		return tc

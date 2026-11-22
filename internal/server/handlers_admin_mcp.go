@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -107,6 +108,10 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 			Code:       "invalid_rpm_limit",
 			Message:    "rpm_limit cannot be negative",
 		})
+		return
+	}
+	if err := s.validateMCPEndpointURLs(input.TransportType, input.EndpointURL, input.OAuth2Endpoint); err != nil {
+		domain.WriteHTTPError(w, err)
 		return
 	}
 
@@ -387,17 +392,15 @@ func (s *GatewayServer) handleAdminSyncMCPServer(w http.ResponseWriter, r *http.
 				})
 				return
 			}
-
-			// If server has a PinnedToolHash configured, verify integrity
-			if server.PinnedToolHash != "" {
-				if err := s.guardrails.VerifyToolPinning(tool, server.PinnedToolHash); err != nil {
-					domain.WriteHTTPError(w, err)
-					return
-				}
-			}
 		}
 
 		discoveredTools = append(discoveredTools, tool)
+	}
+
+	// Verify server-level pinning (including multi-tool manifest digests) once all tools are parsed.
+	if err := s.guardrails.VerifyServerCatalogPinning(server, discoveredTools); err != nil {
+		domain.WriteHTTPError(w, err)
+		return
 	}
 
 	// Save tools to repository
@@ -938,6 +941,12 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 		existing.EncryptedAuthSecret = cipher
 		existing.EncryptedAuthDEK = dek
 	}
+	if err := s.validateMCPEndpointURLs(existing.TransportType, existing.EndpointURL, existing.OAuth2Endpoint); err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	existing.ConfigVersion++
+	existing.UpdatedAt = time.Now().UTC()
 
 	if err := s.repo.UpdateMCPServer(r.Context(), existing); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -953,4 +962,127 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 		"status": "updated",
 		"server": existing,
 	})
+}
+
+// handleAdminDeleteMCPServer serves `DELETE /admin/v1/mcp/servers/{serverID}` to deregister an MCP server and its synced tools.
+func (s *GatewayServer) handleAdminDeleteMCPServer(w http.ResponseWriter, r *http.Request) {
+	serverID := strings.TrimSpace(chi.URLParam(r, "serverID"))
+	if serverID == "" {
+		if _, ok := s.authorizeAdmin(w, r, "", true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_server_id",
+			Message:    "serverID URL parameter is required",
+		})
+		return
+	}
+
+	existing, err := s.repo.GetMCPServer(r.Context(), serverID)
+	if err != nil || existing == nil {
+		if _, ok := s.authorizeAdmin(w, r, resolveScopedOrgID(r, r.URL.Query().Get("org_id")), true); !ok {
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "server_not_found",
+			Message:    fmt.Sprintf("MCP server %q not found", serverID),
+		})
+		return
+	}
+	op, ok := s.authorizeAdmin(w, r, existing.OrgID, true)
+	if !ok {
+		return
+	}
+
+	if err := s.repo.DeleteMCPServer(r.Context(), serverID); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "storage_error",
+			Message:    "Failed to delete MCP server: " + err.Error(),
+		})
+		return
+	}
+
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{
+		Type:       "mcp_server",
+		EntityType: "mcp_server",
+		EntityID:   serverID,
+		OrgID:      existing.OrgID,
+	})
+
+	actor := "admin"
+	if op != nil && op.ActorID != "" {
+		actor = op.ActorID
+	}
+	_ = s.repo.RecordAuditLog(r.Context(), &domain.AuditLog{
+		OrgID:      existing.OrgID,
+		ActorID:    actor,
+		Action:     "mcp.server.deleted",
+		Resource:   "mcp_server",
+		ResourceID: serverID,
+		Details: map[string]any{
+			"slug":             existing.Slug,
+			auditDetailNameKey: existing.Name,
+		},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    statusDeleted,
+		"server_id": serverID,
+	})
+}
+
+const (
+	statusDeleted      = "deleted"
+	auditDetailNameKey = "name"
+)
+
+func (s *GatewayServer) validateMCPEndpointURLs(transportType, endpointURL, oauth2Endpoint string) *domain.GatewayError {
+	if s.netPolicy == nil || transportType == domain.MCPTransportStdio {
+		return nil
+	}
+	if trimmed := strings.TrimSpace(endpointURL); trimmed != "" {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_endpoint_url",
+				Message:    fmt.Sprintf("invalid endpoint_url: %v", err),
+			}
+		}
+		if err := s.netPolicy.ValidateURL(u); err != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_endpoint_url",
+				Message:    fmt.Sprintf("endpoint_url blocked by network policy: %v", err),
+			}
+		}
+	}
+	if trimmedOAuth := strings.TrimSpace(oauth2Endpoint); trimmedOAuth != "" {
+		u, err := url.Parse(trimmedOAuth)
+		if err != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_oauth2_endpoint_url",
+				Message:    fmt.Sprintf("invalid oauth2_endpoint: %v", err),
+			}
+		}
+		if err := s.netPolicy.ValidateURL(u); err != nil {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_oauth2_endpoint_url",
+				Message:    fmt.Sprintf("oauth2_endpoint blocked by network policy: %v", err),
+			}
+		}
+	}
+	return nil
 }

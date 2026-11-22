@@ -71,7 +71,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 6. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v1.24.0`, migrations `0022`–`0038`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v1.24.1` (production secret guards, Helm/Compose hardening, migrations `0022`–`0038`), `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 7. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL & Redis E2E suites, and Playwright headless Chromium Web UI tests.*

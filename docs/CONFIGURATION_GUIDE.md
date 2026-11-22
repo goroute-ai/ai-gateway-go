@@ -83,11 +83,11 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.RoutingHints`, `gateway.RouterOptions`, `gateway.FallbackTarget`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.1
 ```
 
 ```go
-// Embedded gateway with silent stdout logging, v1.24.0 routing/rotation, and custom auth options
+// Embedded gateway with silent stdout logging, v1.24.1 routing/rotation, and custom auth options
 gw, err := gateway.New(
     gateway.WithModelList(
         gateway.ModelEntry{
@@ -631,7 +631,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.session_secret` / `session_ttl` | `GATEWAY_SESSION_SECRET` / `GATEWAY_SESSION_TTL` | `""` / `0s` | HMAC secret and lifetime for signed `goroute_session` cookies. |
 | `auth.enable_hibp_check` / `hibp_base_url` | `GATEWAY_ENABLE_HIBP_CHECK` / `GATEWAY_HIBP_BASE_URL` | `false` / `""` | Enables k-anonymity SHA-1 prefix password screening on login and `/auth/password`. |
 | `auth.default_org_id` | — | `"org_default"` | Initial default organization ID seeded at startup. |
-| `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
+| `auth.default_virtual_key` | `GATEWAY_DEFAULT_VIRTUAL_KEY` / `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key (set `"none"` via env to clear a file default; well-known defaults are rejected in production). |
 | `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
 | `auth.l2_cache_ttl` | — | `5m` | Redis L2 cache TTL for virtual key identity and permissions. |
 | `auth.enable_data_plane_jwt` | — | `false` | Allows verified OIDC/JWT bearer tokens on data-plane routes (`jwt_key_mappings` + JIT user resolution). |
@@ -744,8 +744,9 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `a2a.trusted_card_jwks` | — | `{}` | Upstream agent slug -> JWKS URL mapping for card verification. |
 | `security.network.outbound_ssrf.egress_proxy_url` | — | `""` | Corporate HTTP/HTTPS egress proxy URL for enterprise outbound firewalls. |
 | `security.network.outbound_ssrf.allow_private_networks` | `GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE` | `false` | Enables private/internal IP egress (must remain false in production). |
-| `security.network.outbound_ssrf.allowed_private_cidrs` | — | `[]` | Explicit private CIDR allowlist (e.g. `["10.0.0.0/8"]`) when egress is gated. |
+| `security.network.outbound_ssrf.allowed_private_cidrs` | `GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS` | `[]` | Explicit private CIDR allowlist (e.g. `["10.0.0.0/8"]`) when egress is gated; set env to `"none"` or `""` to clear file defaults. |
 | `security.network.outbound_ssrf.allow_insecure_http` | `GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP` | `false` | Allows plaintext HTTP upstream requests. |
+| `security.network.outbound_ssrf.allow_loopback_http` | `GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP` | `false` | Allows plaintext HTTP only for loopback targets (`localhost`, `127.0.0.1`, `::1`, `*.localhost`) without exposing external HTTP or non-loopback private CIDRs. |
 | `security.network.outbound_ssrf.allowed_schemes` | — | `["https"]` | Allowed URL schemes for provider endpoints (`https`, `http`). |
 | `security.network.outbound_ssrf.blocked_ips` | — | `["169.254.169.254", ...]` | Cloud metadata and sensitive IP addresses blocked from egress. |
 | `security.network.outbound_ssrf.dial_timeout` | — | `10s` | Network connect and TLS handshake timeout for provider egress. |

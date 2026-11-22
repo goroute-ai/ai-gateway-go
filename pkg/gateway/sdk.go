@@ -5,17 +5,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
@@ -90,10 +92,10 @@ type Client struct {
 	masterKey   string
 	httpClient  *http.Client
 	embeddedGW  *server.GatewayServer
-	embeddedTS  *httptest.Server
+	embeddedTS  *localHTTPServer
 	repo        storage.Repository
 	redisFabric *storage.RedisFabric
-	mockServers []*httptest.Server
+	mockServers []*localHTTPServer
 	closeFns    []func()
 	borrowed    bool
 }
@@ -111,6 +113,8 @@ type clientConfig struct {
 	httpClient            *http.Client
 	demoMocksFallback     bool
 	allowPrivateNetworks  bool
+	environment           string
+	devMode               bool
 	customLogger          *slog.Logger
 	silentLogs            bool
 	logLevel              string
@@ -183,6 +187,7 @@ func WithHTTPClient(hc *http.Client) Option {
 
 // WithDemoMocksIfEnvMissing enables built-in local mock providers for any `ModelEntry` whose
 // environment variable API key is not set, allowing demos and local quickstarts to run with zero setup.
+// Restricted to development and test environments; fails closed in production or staging.
 func WithDemoMocksIfEnvMissing() Option {
 	return func(c *clientConfig) {
 		c.demoMocksFallback = true
@@ -193,6 +198,21 @@ func WithDemoMocksIfEnvMissing() Option {
 func WithAllowPrivateNetworks() Option {
 	return func(c *clientConfig) {
 		c.allowPrivateNetworks = true
+	}
+}
+
+// WithEnvironment sets an explicit runtime environment (e.g. "production", "staging", "development")
+// when initializing an embedded gateway without a config file.
+func WithEnvironment(env string) Option {
+	return func(c *clientConfig) {
+		c.environment = strings.TrimSpace(env)
+	}
+}
+
+// WithDevelopmentMode explicitly enables development-mode secret fallbacks for embedded SDK instances.
+func WithDevelopmentMode() Option {
+	return func(c *clientConfig) {
+		c.devMode = true
 	}
 }
 
@@ -257,9 +277,24 @@ func New(opts ...Option) (*Client, error) {
 	if cc.configPath != "" {
 		cfg, err = config.Load(cc.configPath)
 	} else {
-		cfg, err = config.LoadWithDefaultEnvironment("", "development")
+		defaultEnv := cc.environment
+		if defaultEnv == "" {
+			if cc.devMode {
+				defaultEnv = "development"
+			} else if !hasExternalBackendEnv() {
+				defaultEnv = "development"
+			}
+		}
+		cfg, err = config.LoadWithDefaultEnvironment("", defaultEnv)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(cfg.Server.Environment, "development") &&
+		cfg.Auth.MasterAdminKey == "sk-gw-master-admin-default-key-change-me" {
+		slog.Warn("embedded gateway running with default development credentials; configure auth.master_admin_key and auth.master_encryption_key before production deployment")
+	}
+	if err := validateSDKDemoOptions(cfg, cc); err != nil {
 		return nil, err
 	}
 	for _, mut := range cc.routerMutations {
@@ -268,54 +303,34 @@ func New(opts ...Option) (*Client, error) {
 		}
 	}
 
-	var mockServers []*httptest.Server
-	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL string
-	if cc.demoMocksFallback || cc.allowPrivateNetworks {
+	var mockServers []*localHTTPServer
+	closeMocks := func() {
+		for _, ms := range mockServers {
+			ms.Close()
+		}
+	}
+	var mockURLs demoMockURLs
+	if cc.allowPrivateNetworks {
 		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	} else if cc.demoMocksFallback {
+		allowLoopbackOnly(&cfg.Security.Network.OutboundSSRF)
 	}
 	if cc.demoMocksFallback {
-		openAICompatDemo := func(provLabel, modelID, reply string) *httptest.Server {
-			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, "/embeddings") {
-					w.Header().Set("Content-Type", "application/json")
-					fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.023,-0.041,0.088,0.114]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`)
-					return
-				}
-				var reqBody struct {
-					Stream bool `json:"stream"`
-				}
-				_ = json.NewDecoder(r.Body).Decode(&reqBody)
-				if reqBody.Stream {
-					w.Header().Set("Content-Type", "text/event-stream")
-					fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"GoRoute AI Gateway \"}}]}\n\n", provLabel, modelID)
-					fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"streams SSE tokens.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":14,\"completion_tokens\":16,\"total_tokens\":30}}\n\n", provLabel, modelID)
-					fmt.Fprint(w, "data: [DONE]\n\n")
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{"id":"chatcmpl_%s","object":"chat.completion","created":1730000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":19,"total_tokens":34}}`, provLabel, modelID, reply)
-			}))
+		var demoServers []*localHTTPServer
+		var demoErr error
+		mockURLs, demoServers, demoErr = startDemoMockServers()
+		if demoErr != nil {
+			closeMocks()
+			return nil, fmt.Errorf("gateway: start local demo mock servers: %w", demoErr)
 		}
-		mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"msg_demo","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Raft guarantees election safety via monotonic term numbers and majority quorum intersection."}],"stop_reason":"end_turn","usage":{"input_tokens":28,"output_tokens":36}}`)
-		}))
-		mockOpenAI := openAICompatDemo("openai", "gpt-4.1-mini", "OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract.")
-		mockGroq := openAICompatDemo("groq", "llama-3.1-8b-instant", "Groq Llama 3.1 handled this request through the unified canonical gateway contract.")
-		mockOpenRouter := openAICompatDemo("openrouter", "openai/gpt-4o-mini", "OpenRouter handled this request through the unified canonical gateway contract.")
-		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter)
-		mockGroqURL = mockGroq.URL
-		mockClaudeURL = mockClaude.URL
-		mockOpenAIURL = mockOpenAI.URL
-		mockOpenRouterURL = mockOpenRouter.URL
+		mockServers = append(mockServers, demoServers...)
 	}
 
 	for _, e := range cc.modelList {
 		rawBase := config.ResolveEnvValue(e.APIBase)
-		if strings.HasPrefix(rawBase, "http://127.0.0.1") || strings.HasPrefix(rawBase, "http://localhost") || e.SimulateStatus >= 400 {
-			cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
-			cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+		if isLoopbackHTTPURL(rawBase) || e.SimulateStatus >= 400 {
+			allowLoopbackOnly(&cfg.Security.Network.OutboundSSRF)
 		}
 	}
 
@@ -326,11 +341,15 @@ func New(opts ...Option) (*Client, error) {
 
 		if e.SimulateStatus >= 400 {
 			status := e.SimulateStatus
-			faultSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			faultSrv, faultErr := startLocalHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
-				fmt.Fprintf(w, `{"error":{"message":"simulated upstream status %d","type":"upstream_error"}}`, status)
+				_, _ = fmt.Fprintf(w, `{"error":{"message":"simulated upstream status %d","type":"upstream_error"}}`, status)
 			}))
+			if faultErr != nil {
+				closeMocks()
+				return nil, fmt.Errorf("gateway: start simulated fault upstream: %w", faultErr)
+			}
 			mockServers = append(mockServers, faultSrv)
 			apiBase = faultSrv.URL
 			if apiKey == "" {
@@ -341,13 +360,13 @@ func New(opts ...Option) (*Client, error) {
 			if apiBase == "" {
 				switch prov {
 				case domain.ProviderGroq:
-					apiBase = mockGroqURL
+					apiBase = mockURLs.groq
 				case domain.ProviderAnthropic:
-					apiBase = mockClaudeURL
+					apiBase = mockURLs.claude
 				case domain.ProviderOpenRouter:
-					apiBase = mockOpenRouterURL
+					apiBase = mockURLs.openRouter
 				default:
-					apiBase = mockOpenAIURL
+					apiBase = mockURLs.openAI
 				}
 			}
 		}
@@ -441,7 +460,7 @@ func New(opts ...Option) (*Client, error) {
 		}
 	}
 
-	if cc.configPath != "" && cfg.Storage.Mode == "postgres" && strings.TrimSpace(cfg.Storage.PostgresDSN) != "" {
+	if cfg.Storage.Mode == "postgres" && strings.TrimSpace(cfg.Storage.PostgresDSN) != "" {
 		pool, poolErr := storage.NewPostgresPool(context.Background(), cfg.Storage.PostgresDSN)
 		if poolErr != nil {
 			cleanupOnErr()
@@ -461,34 +480,17 @@ func New(opts ...Option) (*Client, error) {
 		repo = storage.NewMemoryRepository()
 	}
 
-	explicitRedisConfigured := rawCfgFile.Storage.RedisAddr != "" || len(rawCfgFile.Storage.RedisAddrs) > 0 || rawCfgFile.Redis.URL != "" || rawCfgFile.Redis.Addr != "" || len(rawCfgFile.Redis.Addrs) > 0
-	if cc.configPath != "" && (explicitRedisConfigured || len(cfg.Storage.RedisAddrs) > 0 || (strings.TrimSpace(cfg.Storage.RedisAddr) != "" && (cfg.Storage.Mode == "postgres" || cfg.Storage.RedisAddr != "localhost:6379"))) {
-		rawAddr := strings.TrimSpace(cfg.Storage.RedisAddr)
-		if len(cfg.Storage.RedisAddrs) == 0 && (strings.HasPrefix(rawAddr, "redis://") || strings.HasPrefix(rawAddr, "rediss://")) {
-			opt, parseErr := redis.ParseURL(rawAddr)
-			if parseErr != nil {
-				cleanupOnErr()
-				return nil, fmt.Errorf("parse redis url: %w", parseErr)
-			}
-			redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
-				Addrs:      []string{opt.Addr},
-				Username:   opt.Username,
-				Password:   opt.Password,
-				DB:         opt.DB,
-				TLSConfig:  opt.TLSConfig,
-				MasterName: cfg.Storage.RedisMasterName,
-			})
-		} else {
-			addrs := cfg.Storage.RedisAddrs
-			if len(addrs) == 0 {
-				addrs = []string{rawAddr}
-			}
-			redisFabric = storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
-				Addrs:      addrs,
-				MasterName: cfg.Storage.RedisMasterName,
-				Password:   cfg.Storage.RedisPass,
-				DB:         cfg.Storage.RedisDB,
-			})
+	explicitRedisConfigured := rawCfgFile.Storage.RedisAddr != "" ||
+		len(rawCfgFile.Storage.RedisAddrs) > 0 ||
+		rawCfgFile.Redis.URL != "" ||
+		rawCfgFile.Redis.Addr != "" ||
+		len(rawCfgFile.Redis.Addrs) > 0
+	if shouldInitSDKRedis(cfg, explicitRedisConfigured) {
+		var redisErr error
+		redisFabric, redisErr = buildSDKRedisFabric(cfg)
+		if redisErr != nil {
+			cleanupOnErr()
+			return nil, redisErr
 		}
 		if redisFabric != nil && redisFabric.Client() != nil {
 			rdb := redisFabric.Client()
@@ -563,7 +565,12 @@ func New(opts ...Option) (*Client, error) {
 	}
 	gw.StartWorkers(context.Background())
 
-	ts := httptest.NewServer(gw.Handler())
+	ts, tsErr := startLocalHTTPServer(gw.Handler())
+	if tsErr != nil {
+		gw.Shutdown(context.Background())
+		cleanupOnErr()
+		return nil, fmt.Errorf("gateway: start embedded loopback server: %w", tsErr)
+	}
 	apiKey := cfg.Auth.DefaultVirtualKey
 	if apiKey == "" {
 		apiKey = cfg.Auth.MasterAdminKey
@@ -912,6 +919,7 @@ func (c *Client) CreateVirtualKey(ctx context.Context, req VirtualKeyRequest) (*
 		TeamID:             req.TeamID,
 		UserID:             req.UserID,
 		Role:               domain.Role(req.Role),
+		KeyType:            domain.KeyType(req.KeyType),
 		MaxBudgetMicros:    req.MaxBudgetMicros,
 		RPMLimit:           req.RPMLimit,
 		TPMLimit:           req.TPMLimit,
@@ -929,6 +937,7 @@ func (c *Client) CreateVirtualKey(ctx context.Context, req VirtualKeyRequest) (*
 		KeyPrefix:          vk.KeyPrefix,
 		Name:               vk.Name,
 		Role:               string(vk.Role),
+		KeyType:            string(vk.KeyType),
 		OrgID:              vk.OrgID,
 		MaxBudgetMicros:    vk.MaxBudgetMicros,
 		RPMLimit:           vk.RPMLimit,
@@ -1076,10 +1085,41 @@ func (c *Client) CallMCP(ctx context.Context, route string, reqBody []byte, head
 	return &rpcResp, nil
 }
 
+func (c *Client) mcpMetaAndHeaders(method, toolName string) (map[string]any, http.Header) {
+	activeVersion := domain.MCPProtocolVersion20260728
+	if c.embeddedGW != nil && c.embeddedGW.MCPHub() != nil {
+		if v := strings.TrimSpace(c.embeddedGW.MCPHub().ActiveSpec()); v != "" {
+			activeVersion = v
+		}
+	}
+	meta := map[string]any{
+		"io.modelcontextprotocol/protocolVersion":    activeVersion,
+		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+	}
+	hdrs := make(http.Header)
+	hdrs.Set("Mcp-Method", method)
+	if toolName != "" {
+		hdrs.Set("Mcp-Name", mcp.EncodeBase64Sentinel(toolName))
+	}
+	return meta, hdrs
+}
+
 // ListMCPTools retrieves available tools from the Virtual Hub, scoped server, or curated toolset.
 func (c *Client) ListMCPTools(ctx context.Context, route string) ([]map[string]any, error) {
-	reqBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	resp, err := c.CallMCP(ctx, route, reqBody, nil)
+	meta, hdrs := c.mcpMetaAndHeaders("tools/list", "")
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+		"params": map[string]any{
+			"_meta": meta,
+		},
+	}
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.CallMCP(ctx, route, reqBody, hdrs)
 	if err != nil {
 		return nil, err
 	}
@@ -1107,11 +1147,16 @@ func (c *Client) ListMCPTools(ctx context.Context, route string) ([]map[string]a
 
 // CallMCPTool executes a tool on the target MCP endpoint.
 func (c *Client) CallMCPTool(ctx context.Context, route, name string, args map[string]any) (*mcp.JSONRPCResponse, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	meta, hdrs := c.mcpMetaAndHeaders("tools/call", name)
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
+			"_meta":     meta,
 			"name":      name,
 			"arguments": args,
 		},
@@ -1120,7 +1165,7 @@ func (c *Client) CallMCPTool(ctx context.Context, route, name string, args map[s
 	if err != nil {
 		return nil, err
 	}
-	return c.CallMCP(ctx, route, reqBytes, nil)
+	return c.CallMCP(ctx, route, reqBytes, hdrs)
 }
 
 // SendA2AMessage sends a message to an A2A agent (supporting HTTP+JSON or JSON-RPC dispatch via the gateway).
@@ -1305,6 +1350,34 @@ func (c *Client) RegisterMCPServer(ctx context.Context, srv domain.MCPServer) (s
 		return "", err
 	}
 	return res.Server.ID, nil
+}
+
+// DeleteMCPServer removes a registered MCP server via `DELETE /admin/v1/mcp/servers/{serverID}`.
+func (c *Client) DeleteMCPServer(ctx context.Context, serverID string) error {
+	cleanID := strings.TrimSpace(serverID)
+	if cleanID == "" {
+		return errors.New("delete mcp server: serverID cannot be empty")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/admin/v1/mcp/servers/"+url.PathEscape(cleanID), nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.adminKey())
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("delete mcp server error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 // SyncMCPTools triggers a discovery sync for an MCP server via POST /admin/v1/mcp/servers/{serverID}/sync.
@@ -2456,4 +2529,201 @@ func (c *Client) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequ
 // GetSpendSummary retrieves the FinOps ledger summary via `GET /admin/v1/spend/summary` using pure SDK types.
 func (c *Client) GetSpendSummary(ctx context.Context) (*SpendSummaryResponse, error) {
 	return doJSON[SpendSummaryResponse](c, ctx, http.MethodGet, "/admin/v1/spend/summary", c.adminKey(), nil)
+}
+
+func hasExternalBackendEnv() bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_STORAGE_MODE")), "postgres") {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv("GATEWAY_POSTGRES_DSN")) != "" ||
+		strings.TrimSpace(os.Getenv("GATEWAY_REDIS_ADDR")) != "" ||
+		strings.TrimSpace(os.Getenv("GATEWAY_REDIS_ADDRS")) != ""
+}
+
+func shouldInitSDKRedis(cfg *config.Config, explicitRawConfig bool) bool {
+	explicitRedisEnv := strings.TrimSpace(os.Getenv("GATEWAY_REDIS_ADDR")) != "" ||
+		strings.TrimSpace(os.Getenv("GATEWAY_REDIS_ADDRS")) != ""
+	if explicitRedisEnv || explicitRawConfig || len(cfg.Storage.RedisAddrs) > 0 {
+		return true
+	}
+	addr := strings.TrimSpace(cfg.Storage.RedisAddr)
+	return addr != "" && addr != "localhost:6379"
+}
+
+func buildSDKRedisFabric(cfg *config.Config) (*storage.RedisFabric, error) {
+	rawAddr := strings.TrimSpace(cfg.Storage.RedisAddr)
+	if len(cfg.Storage.RedisAddrs) == 0 && (strings.HasPrefix(rawAddr, "redis://") || strings.HasPrefix(rawAddr, "rediss://")) {
+		opt, parseErr := redis.ParseURL(rawAddr)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse redis url: %w", parseErr)
+		}
+		return storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+			Addrs:      []string{opt.Addr},
+			Username:   opt.Username,
+			Password:   opt.Password,
+			DB:         opt.DB,
+			TLSConfig:  opt.TLSConfig,
+			MasterName: cfg.Storage.RedisMasterName,
+		}), nil
+	}
+	addrs := cfg.Storage.RedisAddrs
+	if len(addrs) == 0 {
+		addrs = []string{rawAddr}
+	}
+	return storage.NewRedisFabricWithOptions(&redis.UniversalOptions{
+		Addrs:      addrs,
+		MasterName: cfg.Storage.RedisMasterName,
+		Password:   cfg.Storage.RedisPass,
+		DB:         cfg.Storage.RedisDB,
+	}), nil
+}
+
+func isLoopbackHTTPURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || !strings.EqualFold(u.Scheme, "http") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimRight(u.Hostname(), "."))
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+func allowLoopbackOnly(ssrf *config.OutboundSSRFConfig) {
+	if ssrf == nil {
+		return
+	}
+	ssrf.AllowLoopbackHTTP = true
+	for _, cidr := range []string{"127.0.0.1/32", "::1/128"} {
+		if !slices.Contains(ssrf.AllowedPrivateCIDRs, cidr) {
+			ssrf.AllowedPrivateCIDRs = append(ssrf.AllowedPrivateCIDRs, cidr)
+		}
+	}
+}
+
+type localHTTPServer struct {
+	URL string
+	ln  net.Listener
+	srv *http.Server
+}
+
+func startLocalHTTPServer(handler http.Handler) (*localHTTPServer, error) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	return &localHTTPServer{
+		URL: "http://" + ln.Addr().String(),
+		ln:  ln,
+		srv: srv,
+	}, nil
+}
+
+func (s *localHTTPServer) Close() {
+	if s == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if s.srv != nil {
+		_ = s.srv.Shutdown(ctx)
+	}
+	if s.ln != nil {
+		_ = s.ln.Close()
+	}
+}
+
+type demoMockURLs struct {
+	groq       string
+	claude     string
+	openAI     string
+	openRouter string
+}
+
+func validateSDKDemoOptions(cfg *config.Config, cc *clientConfig) error {
+	if config.IsDevelopmentOrTestEnv(cfg.Server.Environment) {
+		return nil
+	}
+	if cc.demoMocksFallback {
+		return fmt.Errorf("gateway: WithDemoMocksIfEnvMissing is restricted to development/test environments (got %q)", cfg.Server.Environment)
+	}
+	for _, e := range cc.modelList {
+		if e.SimulateStatus >= 400 {
+			return fmt.Errorf("gateway: ModelEntry.SimulateStatus is restricted to development/test environments (got %q)", cfg.Server.Environment)
+		}
+	}
+	return nil
+}
+
+func startOpenAICompatDemoServer(provLabel, modelID, reply string) (*localHTTPServer, error) {
+	return startLocalHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/embeddings") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.023,-0.041,0.088,0.114]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`)
+			return
+		}
+		var reqBody struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if reqBody.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"GoRoute AI Gateway \"}}]}\n\n", provLabel, modelID)
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"streams SSE tokens.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":14,\"completion_tokens\":16,\"total_tokens\":30}}\n\n", provLabel, modelID)
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"chatcmpl_%s","object":"chat.completion","created":1730000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":19,"total_tokens":34}}`, provLabel, modelID, reply)
+	}))
+}
+
+func startDemoMockServers() (demoMockURLs, []*localHTTPServer, error) {
+	var urls demoMockURLs
+	var servers []*localHTTPServer
+	cleanup := func() {
+		for _, srv := range servers {
+			srv.Close()
+		}
+	}
+
+	mockClaude, err := startLocalHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"msg_demo","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Raft guarantees election safety via monotonic term numbers and majority quorum intersection."}],"stop_reason":"end_turn","usage":{"input_tokens":28,"output_tokens":36}}`)
+	}))
+	if err != nil {
+		return urls, nil, err
+	}
+	servers = append(servers, mockClaude)
+
+	specs := []struct {
+		dst   *string
+		prov  string
+		model string
+		reply string
+	}{
+		{&urls.openAI, "openai", "gpt-4.1-mini", "OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract."},
+		{&urls.groq, "groq", "llama-3.1-8b-instant", "Groq Llama 3.1 handled this request through the unified canonical gateway contract."},
+		{&urls.openRouter, "openrouter", "openai/gpt-4o-mini", "OpenRouter handled this request through the unified canonical gateway contract."},
+	}
+	for _, spec := range specs {
+		srv, startErr := startOpenAICompatDemoServer(spec.prov, spec.model, spec.reply)
+		if startErr != nil {
+			cleanup()
+			return demoMockURLs{}, nil, startErr
+		}
+		servers = append(servers, srv)
+		*spec.dst = srv.URL
+	}
+	urls.claude = mockClaude.URL
+	return urls, servers, nil
 }

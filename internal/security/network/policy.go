@@ -59,6 +59,7 @@ type Policy struct {
 	AllowPrivateNetworks bool
 	AllowedPrivateCIDRs  []*net.IPNet
 	AllowInsecureHTTP    bool
+	AllowLoopbackHTTP    bool
 	AllowedSchemes       map[string]bool
 	BlockedIPs           []net.IP
 	DialTimeout          time.Duration
@@ -75,6 +76,7 @@ func NewPolicy(cfg config.OutboundSSRFConfig) (*Policy, error) {
 	p := &Policy{
 		AllowPrivateNetworks: cfg.AllowPrivateNetworks,
 		AllowInsecureHTTP:    cfg.AllowInsecureHTTP,
+		AllowLoopbackHTTP:    cfg.AllowLoopbackHTTP,
 		AllowedSchemes:       make(map[string]bool),
 		DialTimeout:          cfg.DialTimeout,
 		MaxRedirects:         cfg.MaxRedirects,
@@ -95,6 +97,11 @@ func NewPolicy(cfg config.OutboundSSRFConfig) (*Policy, error) {
 	for _, s := range schemes {
 		p.AllowedSchemes[strings.ToLower(strings.TrimSpace(s))] = true
 	}
+	if (p.AllowInsecureHTTP || p.AllowLoopbackHTTP) && p.AllowedSchemes["https"] {
+		// Allow scheme-level dispatch to ValidateURL when an operator explicitly enables HTTP toggles via env/config;
+		// non-loopback HTTP remains blocked unless AllowInsecureHTTP is true.
+		p.AllowedSchemes["http"] = true
+	}
 
 	for _, cidr := range cfg.AllowedPrivateCIDRs {
 		_, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr))
@@ -114,6 +121,50 @@ func NewPolicy(cfg config.OutboundSSRFConfig) (*Policy, error) {
 	return p, nil
 }
 
+func isLoopbackHostname(hostname string) bool {
+	return hostname == "localhost" ||
+		hostname == "127.0.0.1" ||
+		hostname == "::1" ||
+		strings.HasSuffix(hostname, ".localhost")
+}
+
+func (p *Policy) allowsLoopbackCIDR() bool {
+	loopbackV4 := net.ParseIP("127.0.0.1")
+	loopbackV6 := net.ParseIP("::1")
+	for _, cidr := range p.AllowedPrivateCIDRs {
+		if cidr.Contains(loopbackV4) || cidr.Contains(loopbackV6) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequiresLoopbackIPForURL reports whether u uses plain HTTP permitted only by
+// AllowLoopbackHTTP and must therefore resolve exclusively to loopback IPs.
+func (p *Policy) RequiresLoopbackIPForURL(u *url.URL) bool {
+	return p != nil && u != nil && strings.EqualFold(u.Scheme, "http") && !p.AllowInsecureHTTP && p.AllowLoopbackHTTP
+}
+
+// ValidateLoopbackIP validates ip against the policy and confirms it is a loopback IP.
+func (p *Policy) ValidateLoopbackIP(ip net.IP) error {
+	if ip == nil {
+		return errors.New("network: nil IP")
+	}
+	if p != nil {
+		if err := p.ValidateIP(ip); err != nil {
+			return err
+		}
+	}
+	cleanIP := ip
+	if unmapped := ip.To4(); unmapped != nil {
+		cleanIP = unmapped
+	}
+	if !cleanIP.IsLoopback() {
+		return fmt.Errorf("%w: destination IP %s is not a loopback address", ErrInsecureHTTPBlocked, cleanIP.String())
+	}
+	return nil
+}
+
 // ValidateURL checks URL scheme, host, and port invariants.
 func (p *Policy) ValidateURL(u *url.URL) error {
 	if u == nil {
@@ -127,13 +178,13 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	} else if scheme != "https" && scheme != "http" {
 		return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
 	}
-	if scheme == "http" && !p.AllowInsecureHTTP {
-		return ErrInsecureHTTPBlocked
-	}
 
 	hostname := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
 	if hostname == "" {
 		return errors.New("network: missing hostname in URL")
+	}
+	if scheme == "http" && !p.AllowInsecureHTTP && (!p.AllowLoopbackHTTP || !isLoopbackHostname(hostname)) {
+		return ErrInsecureHTTPBlocked
 	}
 
 	// Strictly block known cloud metadata hostnames unless explicitly opted into ambient cloud IAM
@@ -148,11 +199,14 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 		return p.ValidateIP(ip)
 	}
 
-	if !p.AllowPrivateNetworks && len(p.AllowedPrivateCIDRs) == 0 {
+	if !p.AllowPrivateNetworks {
 		if p.allowCloudMetadata && hostname == "localhost" {
 			return nil
 		}
-		if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || strings.HasSuffix(hostname, ".local") {
+		if strings.HasSuffix(hostname, ".local") {
+			return fmt.Errorf("%w: local hostname %q is forbidden by SSRF policy", ErrPrivateNetworkBlocked, hostname)
+		}
+		if (hostname == "localhost" || strings.HasSuffix(hostname, ".localhost")) && !p.allowsLoopbackCIDR() {
 			return fmt.Errorf("%w: local hostname %q is forbidden by SSRF policy", ErrPrivateNetworkBlocked, hostname)
 		}
 	}

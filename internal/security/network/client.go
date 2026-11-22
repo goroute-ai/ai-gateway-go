@@ -110,6 +110,32 @@ func WithStreamingRequest(ctx context.Context) context.Context {
 
 type streamingRequestContextKey struct{}
 
+type loopbackOnlyHTTPContextKey struct{}
+
+func contextWithLoopbackHTTPCheck(ctx context.Context, policy *Policy, u *url.URL) context.Context {
+	// Always set explicitly (true or false) so HTTP redirects cannot carry a stale loopback-only flag to HTTPS hops.
+	return context.WithValue(ctx, loopbackOnlyHTTPContextKey{}, policy != nil && policy.RequiresLoopbackIPForURL(u))
+}
+
+func filterLoopbackIPs(policy *Policy, ips []net.IP) ([]net.IP, error) {
+	loopbackIPs := make([]net.IP, 0, len(ips))
+	var lastErr error
+	for _, ip := range ips {
+		if err := policy.ValidateLoopbackIP(ip); err != nil {
+			lastErr = err
+			continue
+		}
+		loopbackIPs = append(loopbackIPs, ip)
+	}
+	if len(loopbackIPs) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, ErrInsecureHTTPBlocked
+	}
+	return loopbackIPs, nil
+}
+
 // NewHTTPClientWithTimeouts constructs the SSRF-restricted client with separate
 // total request, response-header, and response-body idle timeouts. A total
 // timeout applies only to non-streaming requests.
@@ -181,6 +207,12 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 			validIPs, err := resolver.LookupAndValidate(ctx, host)
 			if err != nil {
 				return nil, err
+			}
+			if loopbackOnly, _ := ctx.Value(loopbackOnlyHTTPContextKey{}).(bool); loopbackOnly && policy.EgressProxyURL == "" {
+				validIPs, err = filterLoopbackIPs(policy, validIPs)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			// Connect to the first validated IP to prevent DNS rebinding races
@@ -255,6 +287,7 @@ func (rt policyValidatingRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 		if err := rt.policy.ValidateURL(req.URL); err != nil {
 			return nil, err
 		}
+		req = req.Clone(contextWithLoopbackHTTPCheck(req.Context(), rt.policy, req.URL))
 	}
 	return rt.base.RoundTrip(req)
 }
@@ -296,7 +329,7 @@ func (rt idleTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	}
 	streaming, _ := req.Context().Value(streamingRequestContextKey{}).(bool)
 	streaming = streaming || strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream")
-	ctx := req.Context()
+	ctx := contextWithLoopbackHTTPCheck(req.Context(), rt.policy, req.URL)
 	var cancel context.CancelFunc
 	if !streaming && rt.requestTimeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, rt.requestTimeout)

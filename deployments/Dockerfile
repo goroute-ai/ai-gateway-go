@@ -10,7 +10,7 @@ RUN go mod download
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION=v1.24.0
+ARG VERSION=v1.24.1
 ARG COMMIT=dev
 ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
@@ -26,6 +26,7 @@ LABEL org.opencontainers.image.title="GoRoute AI Gateway" \
 WORKDIR /app
 COPY --from=builder /out/ai-gateway /app/ai-gateway
 COPY configs/config.yaml /app/configs/config.yaml
+COPY configs/config.example.yaml /app/configs/config.example.yaml
 COPY migrations /app/migrations
 EXPOSE 8080
 ENTRYPOINT ["/app/ai-gateway"]

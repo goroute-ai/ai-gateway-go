@@ -55,6 +55,103 @@ func (e *Engine) VerifyToolPinning(tool *domain.MCPTool, pinnedHash string) erro
 	return nil
 }
 
+// IsPinningSentinel reports whether pinnedHash selects per-tool hash verification mode rather than a single fixed hash.
+func IsPinningSentinel(pinnedHash string) bool {
+	trimmed := strings.TrimSpace(pinnedHash)
+	return trimmed == "per_tool" || trimmed == "server_pin_enabled" || trimmed == "pinned"
+}
+
+// ComputeToolManifestHash computes a deterministic SHA-256 manifest digest over all active tools
+// on a server, prefixed with "manifest:" for server-wide multi-tool pinning.
+func ComputeToolManifestHash(tools []*domain.MCPTool) string {
+	entries := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t == nil || !t.IsActive {
+			continue
+		}
+		h := ComputeToolDefinitionHash(t.Name, t.Description, t.InputSchema)
+		entries = append(entries, fmt.Sprintf("%s:%s", t.Name, h))
+	}
+	slices.Sort(entries)
+	sum := sha256.Sum256([]byte(strings.Join(entries, "\n")))
+	return "manifest:" + hex.EncodeToString(sum[:])
+}
+
+// VerifyServerToolPinning enforces server-level and per-tool cryptographic pinning consistently
+// across discovery sync and runtime execution, preventing stale ToolDefHash values from shadowing
+// updated server pins while still failing closed on catalog tampering.
+func (e *Engine) VerifyServerToolPinning(server *domain.MCPServer, tool *domain.MCPTool, allServerTools []*domain.MCPTool) error {
+	if server == nil || strings.TrimSpace(server.PinnedToolHash) == "" {
+		return nil
+	}
+	if tool == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "tool_hash_mismatch",
+			Message:    "Tool cannot be verified against server pin: tool not found in catalog",
+		}
+	}
+
+	// Always verify catalog integrity against tool's own recorded hash when present.
+	if tool.ToolDefHash != "" {
+		if err := e.VerifyToolPinning(tool, tool.ToolDefHash); err != nil {
+			return err
+		}
+	}
+
+	pinned := strings.TrimSpace(server.PinnedToolHash)
+	if IsPinningSentinel(pinned) {
+		if tool.ToolDefHash == "" {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "tool_hash_mismatch",
+				Message:    fmt.Sprintf("Tool %q is missing recorded ToolDefHash under per-tool pinning mode", tool.Name),
+			}
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(pinned, "manifest:") {
+		actualManifest := ComputeToolManifestHash(allServerTools)
+		if actualManifest != pinned {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "tool_hash_mismatch",
+				Message:    fmt.Sprintf("Server %q tool manifest hash (%s) does not match pinned manifest (%s)", server.Slug, actualManifest, pinned),
+			}
+		}
+		return nil
+	}
+
+	// Direct server pin hash must match this tool's actual definition even if tool.ToolDefHash differed or predated pinning.
+	return e.VerifyToolPinning(tool, pinned)
+}
+
+// VerifyServerCatalogPinning validates an entire synchronized or cached tool catalog
+// against server.PinnedToolHash in one pass, avoiding O(N^2) manifest recomputation and
+// failing closed if a manifest-pinned server returns an empty tool list.
+func (e *Engine) VerifyServerCatalogPinning(server *domain.MCPServer, tools []*domain.MCPTool) error {
+	if e == nil || server == nil || strings.TrimSpace(server.PinnedToolHash) == "" {
+		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(server.PinnedToolHash), "manifest:") {
+		probeTool := &domain.MCPTool{Name: "manifest"}
+		if len(tools) > 0 {
+			probeTool = tools[0]
+		}
+		return e.VerifyServerToolPinning(server, probeTool, tools)
+	}
+	for _, tool := range tools {
+		if err := e.VerifyServerToolPinning(server, tool, tools); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ScanMCPToolDiscovery scans an incoming tool definition for adversarial poisoning, prompt injection,
 // and excessive context flooding during discovery sync.
 func (e *Engine) ScanMCPToolDiscovery(tool *domain.MCPTool) error {

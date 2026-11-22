@@ -5,9 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 )
 
 type testRoundTripper func(*http.Request) (*http.Response, error)
@@ -158,5 +161,54 @@ func TestIdleTimeoutRoundTripperAppliesTotalDeadlineOnlyToNonStreamingRequests(t
 	}
 	if string(data) != strings.Repeat("x", 4) {
 		t.Fatalf("stream body = %q", data)
+	}
+}
+
+func TestLoopbackHTTPContextResetsAcrossSchemesAndBlocksNonLoopbackDial(t *testing.T) {
+	policy, err := NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: false,
+		AllowInsecureHTTP:    false,
+		AllowLoopbackHTTP:    true,
+		AllowedPrivateCIDRs:  []string{"127.0.0.1/32", "10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+
+	var seenFlags []bool
+	base := testRoundTripper(func(req *http.Request) (*http.Response, error) {
+		flag, _ := req.Context().Value(loopbackOnlyHTTPContextKey{}).(bool)
+		seenFlags = append(seenFlags, flag)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})
+	rt := idleTimeoutRoundTripper{base: base, policy: policy, requestTimeout: time.Second, idleTimeout: time.Second}
+
+	httpReq, _ := http.NewRequest(http.MethodGet, "http://rebind.localhost:8080/mcp", nil)
+	resp1, err := rt.RoundTrip(httpReq)
+	if err != nil {
+		t.Fatalf("http localhost roundtrip: %v", err)
+	}
+	_ = resp1.Body.Close()
+
+	// Simulate http.Client carrying the first request's context across a redirect to HTTPS.
+	reboundCtx := contextWithLoopbackHTTPCheck(context.Background(), policy, httpReq.URL)
+	httpsReq, _ := http.NewRequestWithContext(reboundCtx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	resp2, err := rt.RoundTrip(httpsReq)
+	if err != nil {
+		t.Fatalf("https roundtrip: %v", err)
+	}
+	_ = resp2.Body.Close()
+
+	if len(seenFlags) != 2 || !seenFlags[0] || seenFlags[1] {
+		t.Fatalf("expected loopbackOnly flags [true, false], got %v", seenFlags)
+	}
+
+	// Verify DialContext rejects non-loopback IP literal when loopbackOnlyHTTPContextKey is active, even if allowlisted.
+	client := NewHTTPClient(policy)
+	wrappedRT := client.Transport.(idleTimeoutRoundTripper)
+	transport := wrappedRT.base.(*http.Transport)
+	ctxLoopback := contextWithLoopbackHTTPCheck(context.Background(), policy, &url.URL{Scheme: "http", Host: "rebind.localhost:8080"})
+	if _, err := transport.DialContext(ctxLoopback, "tcp", "10.0.0.5:8080"); !errors.Is(err, ErrInsecureHTTPBlocked) {
+		t.Fatalf("expected DialContext with loopbackOnly HTTP context to reject 10.0.0.5 with ErrInsecureHTTPBlocked, got %v", err)
 	}
 }

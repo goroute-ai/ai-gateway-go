@@ -17,11 +17,11 @@ GoRoute sits between client applications and OpenAPI-first model providers (Open
 Multi-arch Distroless nonroot images (`gcr.io/distroless/static-debian12:nonroot`, `linux/amd64` + `linux/arm64`) are published to Docker Hub (`docker.io/qaadir/ai-gateway`) and GitHub Container Registry (`ghcr.io/goroute-ai/ai-gateway-go`).
 
 - `latest` — Latest stable release
-- `1.24.0` / `v1.24.0` — Pinned feature release (both bare and `v`-prefixed tags supported)
+- `1.24.1` / `v1.24.1` — Pinned feature/security release (both bare and `v`-prefixed tags supported)
 - `1.24` / `1` — Minor and major rolling release channels
 
 ```bash
-docker pull qaadir/ai-gateway:1.24.0
+docker pull qaadir/ai-gateway:1.24.1
 # or
 docker pull qaadir/ai-gateway:latest
 ```
@@ -36,7 +36,7 @@ docker pull qaadir/ai-gateway:latest
 docker run --rm -p 8080:8080 \
   -e GATEWAY_MASTER_ADMIN_KEY="sk-gw-change-me" \
   -e OPENAI_API_KEY="sk-..." \
-  qaadir/ai-gateway:1.24.0
+  qaadir/ai-gateway:1.24.1
 ```
 
 Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
@@ -45,15 +45,17 @@ Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
 
 ```bash
 curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
-docker compose up -d
+curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.prod.yml
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-To pull the prebuilt image instead of building from source, replace `build:` with `image: qaadir/ai-gateway:1.24.0` (or `ghcr.io/goroute-ai/ai-gateway-go:1.24.0`).
+To pull the prebuilt image instead of building from source, replace `build:` with `image: qaadir/ai-gateway:1.24.1` (or `ghcr.io/goroute-ai/ai-gateway-go:1.24.1`).
 
 ### 3. Kubernetes (Helm OCI)
 
 ```bash
-helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.8.0
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.8.1 \
+  --set secrets.existingSecret=goroute-secrets
 ```
 
 ---
@@ -78,7 +80,7 @@ Health endpoints for container orchestrators: `GET /healthz`, `GET /readyz`, or 
 Every release image digest is signed with Sigstore Cosign keyless OIDC and backed by BuildKit provenance & SPDX SBOM attestations:
 
 ```bash
-cosign verify docker.io/qaadir/ai-gateway:1.24.0 \
+cosign verify docker.io/qaadir/ai-gateway:1.24.1 \
   --certificate-identity-regexp="^https://github.com/goroute-ai/ai-gateway-go/.github/workflows/docker-publish.yml@" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```

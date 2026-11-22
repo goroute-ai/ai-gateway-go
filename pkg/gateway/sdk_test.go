@@ -1085,3 +1085,288 @@ func TestSDK_PureSDKModalityAndFinOpsWrappers(t *testing.T) {
 		t.Fatalf("GetSpendSummary failed: summary=%+v err=%v", summary, err)
 	}
 }
+
+func TestSDKSecurityHardening(t *testing.T) {
+	ctx := context.Background()
+
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"c1","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer mockSrv.Close()
+
+	gw, err := gateway.New(
+		gateway.WithSilentLogs(),
+		gateway.WithModelList(gateway.ModelEntry{
+			ModelName: "local-mock",
+			Model:     "openai/gpt-4o-mini",
+			APIKey:    "sk-test",
+			APIBase:   mockSrv.URL,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+	defer gw.Close()
+
+	// Loopback model inference works without disabling global SSRF protection.
+	if _, err := gw.Chat(ctx, "local-mock", "ping"); err != nil {
+		t.Fatalf("loopback Chat failed: %v", err)
+	}
+
+	// Registering external http:// or RFC 1918 MCP servers fails fast at registration under SSRF policy.
+	if _, err := gw.RegisterMCPServer(ctx, domain.MCPServer{
+		Name:            "External HTTP",
+		Slug:            "ext-http",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     "http://example.com/mcp",
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	}); err == nil {
+		t.Fatalf("expected RegisterMCPServer for http://example.com/mcp to fail SSRF check")
+	}
+
+	if _, err := gw.RegisterMCPServer(ctx, domain.MCPServer{
+		Name:            "Private RFC1918",
+		Slug:            "priv-10",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     "https://10.0.0.5/mcp",
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	}); err == nil {
+		t.Fatalf("expected RegisterMCPServer for https://10.0.0.5/mcp to fail SSRF check")
+	}
+}
+
+func TestSDKSecurityHardening_FailClosedProductionAndExternalBackends(t *testing.T) {
+	if _, err := gateway.New(gateway.WithSilentLogs(), gateway.WithEnvironment("production")); err == nil {
+		t.Fatalf("expected WithEnvironment(production) with default secrets to fail closed")
+	}
+
+	t.Setenv("GATEWAY_REDIS_ADDR", "redis.internal:6379")
+	if _, err := gateway.New(gateway.WithSilentLogs()); err == nil {
+		t.Fatalf("expected external backend env without WithDevelopmentMode to fail closed")
+	}
+}
+
+func TestSDKSecurityHardening_VirtualKeyTypePropagation(t *testing.T) {
+	ctx := context.Background()
+	gw, err := gateway.New(gateway.WithSilentLogs())
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+	defer gw.Close()
+
+	vk, err := gw.CreateVirtualKey(ctx, gateway.VirtualKeyRequest{
+		Name:    "scoped-llm-key",
+		Role:    "developer",
+		KeyType: "llm_api",
+	})
+	if err != nil {
+		t.Fatalf("CreateVirtualKey: %v", err)
+	}
+	if vk.KeyType != "llm_api" {
+		t.Fatalf("expected key_type=llm_api, got %q", vk.KeyType)
+	}
+}
+
+func TestSDKSecurityHardening_MCPStrictSchemaAndDelete(t *testing.T) {
+	ctx := context.Background()
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any            `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result": map[string]any{
+					"tools": []map[string]any{
+						{
+							"name":        "strict_echo",
+							"description": "Echo input safely",
+							"inputSchema": map[string]any{"type": "object"},
+						},
+					},
+				},
+			})
+		case "tools/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result": map[string]any{
+					"content": []map[string]any{{"type": "text", "text": "strict-ok"}},
+					"isError": false,
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+		}
+	}))
+	defer mcpSrv.Close()
+
+	gw, err := gateway.New(gateway.WithSilentLogs(), gateway.WithAllowPrivateNetworks())
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+	defer gw.Close()
+
+	setMCPSpec := func(version string, strict bool) {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]any{
+			"protocol_version":         version,
+			"strict_schema_validation": strict,
+		})
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPut, gw.BaseURL()+"/admin/v1/mcp/spec", bytes.NewReader(payload))
+		if reqErr != nil {
+			t.Fatalf("new spec request: %v", reqErr)
+		}
+		req.Header.Set("Authorization", "Bearer sk-gw-master-admin-default-key-change-me")
+		req.Header.Set("Content-Type", "application/json")
+		resp, doErr := http.DefaultClient.Do(req)
+		if doErr != nil {
+			t.Fatalf("PUT /admin/v1/mcp/spec: %v", doErr)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 switching spec, got %d", resp.StatusCode)
+		}
+	}
+
+	setMCPSpec(domain.MCPProtocolVersion20260728, true)
+
+	if _, err := gw.RegisterMCPServer(ctx, domain.MCPServer{
+		Name:            "Strict Server",
+		Slug:            "strict-srv",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     mcpSrv.URL,
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	}); err != nil {
+		t.Fatalf("RegisterMCPServer: %v", err)
+	}
+
+	tools, err := gw.ListMCPTools(ctx, "strict-srv")
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("ListMCPTools under strict_schema_validation failed: tools=%v err=%v", tools, err)
+	}
+
+	callResp, err := gw.CallMCPTool(ctx, "strict-srv", "strict_echo", map[string]any{"msg": "hi"})
+	if err != nil || callResp.Error != nil {
+		t.Fatalf("CallMCPTool under strict_schema_validation failed: resp=%+v err=%v", callResp, err)
+	}
+
+	// Verify backward compatibility when gateway switches to 2025-11-25 strict mode.
+	setMCPSpec(domain.MCPProtocolVersion20251125, true)
+	tools2025, err := gw.ListMCPTools(ctx, "strict-srv")
+	if err != nil || len(tools2025) != 1 {
+		t.Fatalf("ListMCPTools under 2025-11-25 failed: tools=%v err=%v", tools2025, err)
+	}
+
+	srvID, err := gw.RegisterMCPServer(ctx, domain.MCPServer{
+		Name:            "Disposable Server",
+		Slug:            "disposable-srv",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     "http://127.0.0.1:19999/mcp",
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	})
+	if err != nil {
+		t.Fatalf("RegisterMCPServer disposable: %v", err)
+	}
+	if err := gw.DeleteMCPServer(ctx, srvID); err != nil {
+		t.Fatalf("DeleteMCPServer: %v", err)
+	}
+	if err := gw.DeleteMCPServer(ctx, srvID); err == nil {
+		t.Fatalf("expected second DeleteMCPServer on deleted ID to fail with 404")
+	}
+}
+
+func TestSDKSecurityHardening_EnvDrivenRedisParity(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	t.Setenv("GATEWAY_REDIS_ADDR", mr.Addr())
+
+	// Without WithDevelopmentMode() or custom production secrets, external backend env must fail closed.
+	if _, err := gateway.New(gateway.WithSilentLogs()); err == nil {
+		t.Fatalf("expected gateway.New with GATEWAY_REDIS_ADDR and no dev mode/custom secrets to fail closed")
+	}
+
+	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl_redis","object":"chat.completion","created":1730000015,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"redis connected"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
+	}))
+	defer mockOpenAI.Close()
+
+	gw, err := gateway.New(
+		gateway.WithSilentLogs(),
+		gateway.WithDevelopmentMode(),
+		gateway.WithAllowPrivateNetworks(),
+		gateway.WithModelList(gateway.ModelEntry{
+			ModelName: "gpt-4o-mini",
+			Model:     "openai/gpt-4o-mini",
+			APIKey:    "sk-test",
+			APIBase:   mockOpenAI.URL,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("gateway.New with GATEWAY_REDIS_ADDR + WithDevelopmentMode: %v", err)
+	}
+	defer gw.Close()
+
+	vk, err := gw.IssueVirtualKey(ctx, domain.VirtualKey{
+		Name:          "env-redis-key",
+		AllowedModels: []string{"gpt-4o-mini"},
+		RPMLimit:      5,
+	})
+	if err != nil {
+		t.Fatalf("IssueVirtualKey: %v", err)
+	}
+	if _, err := gw.WithKey(vk.RawKey).Chat(ctx, "gpt-4o-mini", "hello redis"); err != nil {
+		t.Fatalf("Chat over env-configured Redis gateway failed: %v", err)
+	}
+	if mr.TotalConnectionCount() == 0 {
+		t.Fatalf("expected gateway.New without WithConfigFile to connect to GATEWAY_REDIS_ADDR miniredis")
+	}
+}
+
+func TestSDKSecurityHardening_DemoAndFaultOptionsFailClosedInProduction(t *testing.T) {
+	t.Setenv("GATEWAY_MASTER_ADMIN_KEY", "sk-gw-prod-test-admin-"+strings.Repeat("x", 16))
+	t.Setenv("GATEWAY_MASTER_ENCRYPTION_KEY", strings.Repeat("a1", 32))
+	t.Setenv("GATEWAY_JWT_SECRET", "prod-test-jwt-secret-"+strings.Repeat("y", 16))
+	t.Setenv("GATEWAY_JWT_ISSUER", "https://auth.example.com")
+	t.Setenv("GATEWAY_JWT_AUDIENCE", "goroute-gateway")
+
+	if _, err := gateway.New(
+		gateway.WithSilentLogs(),
+		gateway.WithEnvironment("production"),
+		gateway.WithDemoMocksIfEnvMissing(),
+		gateway.WithModelList(gateway.ModelEntry{
+			ModelName: "fast",
+			Model:     "openai/gpt-4o-mini",
+		}),
+	); err == nil || !strings.Contains(err.Error(), "WithDemoMocksIfEnvMissing") {
+		t.Fatalf("expected WithDemoMocksIfEnvMissing in production to fail closed, got err=%v", err)
+	}
+
+	if _, err := gateway.New(
+		gateway.WithSilentLogs(),
+		gateway.WithEnvironment("production"),
+		gateway.WithModelList(gateway.ModelEntry{
+			ModelName:      "faulty",
+			Model:          "openai/gpt-4o-mini",
+			SimulateStatus: http.StatusServiceUnavailable,
+		}),
+	); err == nil || !strings.Contains(err.Error(), "SimulateStatus") {
+		t.Fatalf("expected SimulateStatus in production to fail closed, got err=%v", err)
+	}
+}

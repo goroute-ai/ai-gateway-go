@@ -36,6 +36,10 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -50,9 +54,11 @@ spec:
             - name: {{ $key }}
               value: {{ $val | quote }}
             {{- end }}
+          {{- if or .Values.secrets.create .Values.secrets.existingSecret }}
           envFrom:
             - secretRef:
                 name: {{ include "goroute.secretName" . }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:

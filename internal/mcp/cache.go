@@ -1,9 +1,9 @@
 package mcp
 
 import (
-	"bytes"
 	"container/list"
 	"context"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +20,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const maxMCPCacheMemEntries = 4096
+const (
+	maxMCPCacheMemEntries   = 4096
+	mcpMethodServerDiscover = "server/discover"
+	mcpMethodToolsList      = "tools/list"
+	mcpMethodToolsCall      = "tools/call"
+)
 
 // MCPCache provides high-performance length-prefixed HMAC caching for MCP operations.
 type MCPCache struct {
@@ -50,6 +57,79 @@ func NewMCPCacheStrict(secret []byte, redis *storage.RedisFabric) (*MCPCache, er
 		memLRU:   list.New(),
 		maxMem:   maxMCPCacheMemEntries,
 	}, nil
+}
+
+// DeriveCacheKeySecret returns an explicit MCP cache HMAC secret or derives a domain-separated
+// 32-byte subkey via HKDF-SHA256 from masterEncryptionKey so raw KEK bytes are never reused directly.
+func DeriveCacheKeySecret(cacheKeySecret, masterEncryptionKey string) []byte {
+	if trimmed := strings.TrimSpace(cacheKeySecret); trimmed != "" {
+		return []byte(trimmed)
+	}
+	if seed := strings.TrimSpace(masterEncryptionKey); seed != "" {
+		derived, err := hkdf.Key(sha256.New, []byte(seed), nil, "goroute-mcp-cache-hmac-v1", 32)
+		if err == nil {
+			return derived
+		}
+	}
+	return nil
+}
+
+// IsCacheableDiscoveryMethod reports whether method is a read-only discovery RPC eligible for MCP caching.
+func IsCacheableDiscoveryMethod(method string) bool {
+	switch method {
+	case mcpMethodServerDiscover, mcpMethodToolsList, "resources/list", "resources/templates/list", "prompts/list":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCacheParams(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	delete(m, "_meta")
+	if len(m) == 0 {
+		return nil
+	}
+	canon, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return canon
+}
+
+func extractTTLMs(val any) (int64, bool) {
+	switch ttl := val.(type) {
+	case int:
+		return int64(ttl), true
+	case int64:
+		return ttl, true
+	case float64:
+		return int64(ttl), true
+	case json.Number:
+		if n, err := ttl.Int64(); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// CacheTTL computes the effective cache TTL from a result's ttlMs field, falling back to defaultTTL.
+func CacheTTL(resp *JSONRPCResponse, defaultTTL time.Duration) time.Duration {
+	if resp == nil {
+		return defaultTTL
+	}
+	if resMap, ok := resp.Result.(map[string]any); ok {
+		if ttlMs, hasTTL := extractTTLMs(resMap["ttlMs"]); hasTTL && ttlMs > 0 {
+			return time.Duration(ttlMs) * time.Millisecond
+		}
+	}
+	return defaultTTL
 }
 
 // NewMCPCache creates a new MCP cache instance. If secret is empty, a random per-process
@@ -95,55 +175,121 @@ func (c *MCPCache) ComputeCacheKey(
 	return "gw:mcp:cache:" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// ShouldCache inspects the method and JSON-RPC response to ensure safety and CacheableResult rules.
+// ShouldCache inspects the method and JSON-RPC response structure to ensure safety and CacheableResult rules.
 // Never caches InputRequiredResult, input_required, requestState, ttlMs=0, or session-bound structures.
 func ShouldCache(method string, resp *JSONRPCResponse) bool {
 	if resp == nil || resp.Error != nil {
 		return false
 	}
 
-	if resMap, ok := resp.Result.(map[string]any); ok {
-		if rt, _ := resMap["resultType"].(string); rt == "input_required" {
-			return false
-		}
-		switch ttl := resMap["ttlMs"].(type) {
-		case int:
-			if ttl == 0 {
-				return false
-			}
-		case int64:
-			if ttl == 0 {
-				return false
-			}
-		case float64:
-			if ttl == 0 {
-				return false
-			}
-		}
-		if scope, _ := resMap["cacheScope"].(string); scope != "" && scope != "public" && scope != "private" {
-			return false
-		}
-	}
-
-	// Forbid caching interactive or stateful results
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return false
-	}
-	lower := bytes.ToLower(resultBytes)
-	if bytes.Contains(lower, []byte("inputrequiredresult")) ||
-		bytes.Contains(lower, []byte("requeststate")) ||
-		bytes.Contains(lower, []byte("mrtr_")) {
+	resMap := inspectResultMap(resp.Result)
+	if hasUncacheableResultFields(resMap) {
 		return false
 	}
 
-	// Cache discovery/read methods
-	switch method {
-	case "server/discover", "tools/list", "resources/list", "resources/templates/list", "prompts/list":
+	hasExplicitPositiveTTL, scope, validDirectives := extractCacheableToolDirectives(resMap)
+	if !validDirectives {
+		return false
+	}
+
+	if IsCacheableDiscoveryMethod(method) {
 		return true
-	default:
-		return false // Non-discovery methods default to non-cacheable unless explicitly enabled
 	}
+	if method == mcpMethodToolsCall {
+		// Opt-in CacheableResult only: positive ttlMs and valid public/private cacheScope.
+		return hasExplicitPositiveTTL && (scope == "public" || scope == "private")
+	}
+	return false
+}
+
+func hasUncacheableResultFields(resMap map[string]any) bool {
+	if resMap == nil {
+		return false
+	}
+	if rt, _ := resMap["resultType"].(string); strings.EqualFold(rt, "input_required") {
+		return true
+	}
+	if typ, _ := resMap["type"].(string); strings.EqualFold(typ, "InputRequiredResult") {
+		return true
+	}
+	if rs, _ := resMap["requestState"].(string); strings.TrimSpace(rs) != "" {
+		return true
+	}
+	if ir, hasIR := resMap["inputRequests"]; hasIR && ir != nil {
+		if irMap, ok := ir.(map[string]any); !ok || len(irMap) > 0 {
+			return true
+		}
+	}
+	return hasUncacheableMetaFields(resMap)
+}
+
+func hasUncacheableMetaFields(resMap map[string]any) bool {
+	metaMap, ok := resMap["_meta"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if rs, _ := metaMap["requestState"].(string); strings.TrimSpace(rs) != "" {
+		return true
+	}
+	if tok, _ := metaMap["mrtrToken"].(string); strings.TrimSpace(tok) != "" {
+		return true
+	}
+	req, _ := metaMap["inputRequired"].(bool)
+	return req
+}
+
+func extractCacheableToolDirectives(resMap map[string]any) (bool, string, bool) {
+	if resMap == nil {
+		return false, "", true
+	}
+	var hasExplicitPositiveTTL bool
+	if ttlVal, exists := resMap["ttlMs"]; exists {
+		ttlMs, ok := extractTTLMs(ttlVal)
+		if !ok || ttlMs <= 0 {
+			return false, "", false
+		}
+		hasExplicitPositiveTTL = true
+	}
+	var scope string
+	if sc, ok := resMap["cacheScope"].(string); ok && sc != "" {
+		if sc != "public" && sc != "private" {
+			return false, "", false
+		}
+		scope = sc
+	}
+	return hasExplicitPositiveTTL, scope, true
+}
+
+func inspectResultMap(res any) map[string]any {
+	if res == nil {
+		return nil
+	}
+	if m, ok := res.(map[string]any); ok {
+		return m
+	}
+	m, err := resultAsMap(res)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
+func resultAsMap(res any) (map[string]any, error) {
+	if res == nil {
+		return nil, nil
+	}
+	if m, ok := res.(map[string]any); ok {
+		return maps.Clone(m), nil
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // Get retrieves a cached JSONRPCResponse if present and unexpired.

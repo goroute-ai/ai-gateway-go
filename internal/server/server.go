@@ -405,18 +405,23 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 			prevKEKs = append(prevKEKs, resolved)
 		}
 	}
-	vault, err := auth.NewVaultWithPreviousKeys(config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey), prevKEKs)
+	masterEncryptionKey := config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey)
+	masterAdminKey := config.ResolveEnvValue(cfg.Auth.MasterAdminKey)
+	jwtSecret := config.ResolveEnvValue(cfg.Auth.JWTSecret)
+	sessionSecretInput := config.ResolveEnvValue(cfg.Auth.SessionSecret)
+
+	vault, err := auth.NewVaultWithPreviousKeys(masterEncryptionKey, prevKEKs)
 	if err != nil {
 		return nil, err
 	}
 
-	authSvc := auth.NewService(repo, redisFabric, cfg.Auth.MasterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
-	authSvc.SetMasterEncryptionKey(cfg.Auth.MasterEncryptionKey)
+	authSvc := auth.NewService(repo, redisFabric, masterAdminKey, cfg.Auth.L1CacheTTL, cfg.Auth.L2CacheTTL)
+	authSvc.SetMasterEncryptionKey(masterEncryptionKey)
 	authSvc.SetVault(vault)
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
 	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:        cfg.Auth.JWTSecret,
+		Secret:        jwtSecret,
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,
 		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
@@ -425,7 +430,7 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 		NetworkPolicy: netPolicy,
 	})
 	authSvc.SetJWTVerifier(jwtVerifier)
-	sessionSecret := auth.DeriveSessionSecret(cfg.Auth.SessionSecret, cfg.Auth.MasterEncryptionKey, cfg.Auth.JWTSecret, cfg.Auth.MasterAdminKey)
+	sessionSecret := auth.DeriveSessionSecret(sessionSecretInput, masterEncryptionKey, jwtSecret, masterAdminKey)
 	sessionMgr := auth.NewSessionManager(repo, redisFabric, sessionSecret, cfg.Auth.SessionTTL)
 	loginThrottle := auth.NewLoginThrottle(redisFabric)
 	var breachScreener auth.BreachScreener
@@ -769,18 +774,16 @@ func buildMCPAndA2ASubsystem(
 	spendWorker *finops.SpendWorker,
 	relMgr *router.ReliabilityManager,
 ) *serverProtocolDeps {
+	masterEncryptionKey := config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey)
 	mcpDispatcher := mcp.NewTransportDispatcher(netPolicy, redisFabric, cfg.MCP.AllowStdioServers)
 	mcpAuthResolver := mcp.NewAuthResolver(vault, netPolicy)
 	mcpAuthResolver.SetTokenCache(upstream.NewDistributedTokenCache(redisFabric, upstream.DistributedTokenCacheConfig{
-		EncryptionKey: cfg.Auth.MasterEncryptionKey,
+		EncryptionKey: masterEncryptionKey,
 	}))
 	mcpHub := mcp.NewHub(repo, vault, rbac, mcpDispatcher, mcpAuthResolver)
 
-	mcpSecret := cfg.MCP.CacheKeySecret
-	if mcpSecret == "" {
-		mcpSecret = cfg.Auth.MasterEncryptionKey
-	}
-	mcpHub.SetCache(mcp.NewMCPCache([]byte(mcpSecret), redisFabric))
+	mcpSecret := mcp.DeriveCacheKeySecret(config.ResolveEnvValue(cfg.MCP.CacheKeySecret), masterEncryptionKey)
+	mcpHub.SetCache(mcp.NewMCPCache(mcpSecret, redisFabric))
 	mcpHub.SetMRTR(mcp.NewMRTRManager(vault, redisFabric, "mrtr_v1"))
 	mcpHub.SetSubscriptions(mcp.NewSubscriptionManager(redisFabric))
 	mcpHub.SetGuardrails(guardrailsEng)
@@ -1215,6 +1218,7 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 		adm.Put("/mcp/spec", s.handleAdminUpdateMCPSpec)
 		adm.Post("/mcp/servers", s.handleAdminCreateMCPServer)
 		adm.Put("/mcp/servers/{serverID}", s.handleAdminUpdateMCPServer)
+		adm.Delete("/mcp/servers/{serverID}", s.handleAdminDeleteMCPServer)
 		adm.Get("/mcp/servers", s.handleAdminListMCPServers)
 		adm.Post("/mcp/servers/{serverID}/sync", s.handleAdminSyncMCPServer)
 		adm.Post("/mcp/toolsets", s.handleAdminCreateMCPToolset)

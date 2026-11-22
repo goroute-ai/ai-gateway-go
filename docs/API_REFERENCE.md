@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.24.0`\
+> **Version**: `v1.24.1`\
 > **Base URL (Local)**: `http://localhost:8080`  
 > **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`125` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
@@ -956,6 +956,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 - `POST /admin/v1/mcp/servers`: Registers an upstream MCP server endpoint (validates `protocol_version` against supported official releases).
 - `GET /admin/v1/mcp/servers`: Lists registered MCP servers.
 - `PUT /admin/v1/mcp/servers/{serverID}`: Updates an existing upstream MCP server's `protocol_version`, `transport_type`, `is_active`, or connection settings.
+- `DELETE /admin/v1/mcp/servers/{serverID}`: Deregisters an upstream MCP server and removes its synchronized tools.
 - `POST /admin/v1/mcp/servers/{serverID}/sync`: Synchronizes tools, runs anti-poisoning scans, and pins SHA-256 tool digests.
 - `GET /admin/v1/mcp/tools`: Lists synchronized MCP tools scoped to the operator's organization (used by the Operator Web UI).
 - `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.

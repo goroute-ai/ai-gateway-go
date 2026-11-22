@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +143,47 @@ func TestMCPCacheBehavior(t *testing.T) {
 		},
 	}
 	assert.False(t, ShouldCache("tools/call", statefulResp))
+
+	// Regression: tools named "mrtr_op" or prose mentioning requestState in tools/list MUST still cache
+	toolNamedMRTR := &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      4,
+		Result: map[string]any{
+			"tools": []map[string]any{
+				{
+					"name":        "mrtr_op",
+					"description": "Reads requestState documentation without triggering interactive state",
+				},
+			},
+		},
+	}
+	assert.True(t, ShouldCache("tools/list", toolNamedMRTR))
+
+	// Opt-in CacheableResult for tools/call
+	assert.True(t, ShouldCache("tools/call", &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      5,
+		Result: map[string]any{
+			"ttlMs":      30000,
+			"cacheScope": "private",
+			"content":    []map[string]any{{"type": "text", "text": "cached"}},
+		},
+	}))
+	assert.False(t, ShouldCache("tools/call", &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      6,
+		Result: map[string]any{
+			"ttlMs":      0,
+			"cacheScope": "public",
+		},
+	}))
+
+	// Domain-separated HKDF secret must not equal raw KEK bytes
+	rawKEK := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	derived := DeriveCacheKeySecret("", rawKEK)
+	assert.Len(t, derived, 32)
+	assert.NotEqual(t, []byte(rawKEK), derived)
+	assert.Equal(t, []byte("explicit-hmac-secret"), DeriveCacheKeySecret("explicit-hmac-secret", rawKEK))
 }
 
 // 3. MCP Guardrails: Anti-Tool-Poisoning & Tool Pinning
@@ -309,4 +352,356 @@ func TestMCPHubWithCacheAndPinning(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
 	assert.Equal(t, 1, callCount, "second call must be served from cache without upstream hit")
+
+	// Scoped resources/list & prompts/list also cache consistently
+	for _, method := range []string{"resources/list", "prompts/list"} {
+		before := callCount
+		body := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":%q,"params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`, method))
+		r1, _, err1 := hub.DispatchScopedServer(ctx, idCtx, "pinned-server", body, http.Header{})
+		require.NoError(t, err1)
+		require.Nil(t, r1.Error)
+		r2, _, err2 := hub.DispatchScopedServer(ctx, idCtx, "pinned-server", body, http.Header{})
+		require.NoError(t, err2)
+		require.Nil(t, r2.Error)
+		assert.Equal(t, before+1, callCount, "method %s second call must hit cache", method)
+	}
+}
+
+func TestMCPHubMRTRRuntimeLifecycle(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	rbac := auth.NewRBACEngine(repo)
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	require.NoError(t, err)
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpcReq JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&rpcReq)
+		var params struct {
+			Name           string         `json:"name"`
+			RequestState   string         `json:"requestState"`
+			InputResponses map[string]any `json:"inputResponses"`
+		}
+		_ = json.Unmarshal(rpcReq.Params, &params)
+		w.Header().Set("Content-Type", "application/json")
+		if params.RequestState == "upstream-cursor-99" && len(params.InputResponses) > 0 {
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      rpcReq.ID,
+				Result: map[string]any{
+					"resultType": "complete",
+					"content":    []map[string]any{{"type": "text", "text": "approved-resumed"}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      rpcReq.ID,
+			Result: map[string]any{
+				"resultType":   "input_required",
+				"requestState": "upstream-cursor-99",
+				"inputRequests": map[string]any{
+					"confirm": map[string]any{"method": "elicitation/create"},
+				},
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	srv := &domain.MCPServer{
+		ID:              "srv_mrtr",
+		OrgID:           "org_mrtr",
+		Name:            "MRTR Server",
+		Slug:            "mrtr-srv",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     mockUpstream.URL,
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	}
+	require.NoError(t, repo.CreateMCPServer(ctx, srv))
+	require.NoError(t, repo.UpsertMCPTools(ctx, srv.ID, "org_mrtr", []*domain.MCPTool{
+		{ID: "t_mrtr", ServerID: srv.ID, OrgID: "org_mrtr", Name: "approve_transfer", IsActive: true},
+	}))
+
+	hub := NewHub(repo, vault, rbac, NewTransportDispatcher(netPolicy, nil, false), NewAuthResolver(vault, netPolicy))
+	hub.SetMRTR(NewMRTRManager(vault, nil, "mrtr_v1"))
+
+	callerA := &domain.IdentityContext{OrgID: "org_mrtr", KeyPrefix: "sk-gw-a"}
+	callerB := &domain.IdentityContext{OrgID: "org_mrtr", KeyPrefix: "sk-gw-b"}
+
+	// 1. Initial call triggers input_required -> Hub replaces upstream cursor with AEAD v1.* MRTR token
+	call1, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", []byte(`{
+		"jsonrpc":"2.0","id":1,"method":"tools/call",
+		"params":{"name":"approve_transfer","arguments":{"amount":100}}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, call1.Error)
+	res1 := call1.Result.(map[string]any)
+	assert.Equal(t, "input_required", res1["resultType"])
+	token, _ := res1["requestState"].(string)
+	require.True(t, strings.HasPrefix(token, "v1.mrtr_v1."), "expected sealed AEAD MRTR token, got %q", token)
+
+	// 2. Wrong caller (key prefix B) cannot consume caller A's MRTR token
+	wrongCallerBody, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 100},
+			"requestState":   token,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	respWrong, _, err := hub.DispatchScopedServer(ctx, callerB, "mrtr-srv", wrongCallerBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, respWrong.Error)
+	assert.Contains(t, respWrong.Error.Message, "key prefix mismatch")
+
+	// 3. Tampered arguments fail HMAC/payload binding before consuming token
+	tamperedBody, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 99999},
+			"requestState":   token,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	respTamper, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", tamperedBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, respTamper.Error)
+	assert.Contains(t, respTamper.Error.Message, "hash mismatch")
+
+	// 4. Legitimate resume consumes token, unwraps "upstream-cursor-99" to upstream, and completes
+	respOK, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", wrongCallerBody, http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, respOK.Error)
+
+	// 5. Replaying the consumed token fails closed
+	respReplay, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", wrongCallerBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, respReplay.Error)
+	assert.Contains(t, respReplay.Error.Message, "replay detected")
+
+	// 6. Virtual Hub (/mcp) MRTR round-trip + tamper + replay parity
+	vCall1, _, err := hub.DispatchVirtualHub(ctx, callerA, []byte(`{
+		"jsonrpc":"2.0","id":10,"method":"tools/call",
+		"params":{"name":"approve_transfer","arguments":{"amount":250}}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, vCall1.Error)
+	vToken, _ := vCall1.Result.(map[string]any)["requestState"].(string)
+	require.True(t, strings.HasPrefix(vToken, "v1.mrtr_v1."))
+
+	vTamperBody, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 1},
+			"requestState":   vToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	vTamperResp, _, err := hub.DispatchVirtualHub(ctx, callerA, vTamperBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, vTamperResp.Error)
+	assert.Contains(t, vTamperResp.Error.Message, "hash mismatch")
+
+	vOKBody, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 12, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 250},
+			"requestState":   vToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	vOKResp, _, err := hub.DispatchVirtualHub(ctx, callerA, vOKBody, http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, vOKResp.Error)
+
+	vReplayResp, _, err := hub.DispatchVirtualHub(ctx, callerA, vOKBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, vReplayResp.Error)
+	assert.Contains(t, vReplayResp.Error.Message, "replay detected")
+
+	// 7. Curated Toolset (/mcp/toolsets/{slug}) MRTR round-trip + replay parity
+	require.NoError(t, repo.CreateMCPToolset(ctx, &domain.MCPToolset{
+		ID:       "ts_mrtr",
+		OrgID:    "org_mrtr",
+		Name:     "MRTR Toolset",
+		Slug:     "mrtr-set",
+		ToolIDs:  []string{"t_mrtr"},
+		IsActive: true,
+	}))
+	tsCall1, _, err := hub.DispatchToolset(ctx, callerA, "mrtr-set", []byte(`{
+		"jsonrpc":"2.0","id":20,"method":"tools/call",
+		"params":{"name":"approve_transfer","arguments":{"amount":300}}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, tsCall1.Error)
+	tsToken, _ := tsCall1.Result.(map[string]any)["requestState"].(string)
+	require.True(t, strings.HasPrefix(tsToken, "v1.mrtr_v1."))
+
+	tsWrongResp, _, err := hub.DispatchToolset(ctx, callerB, "mrtr-set", mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 300},
+			"requestState":   tsToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	}), http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, tsWrongResp.Error)
+	assert.Contains(t, tsWrongResp.Error.Message, "key prefix mismatch")
+
+	tsOKBody := mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 22, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{"amount": 300},
+			"requestState":   tsToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	tsOKResp, _, err := hub.DispatchToolset(ctx, callerA, "mrtr-set", tsOKBody, http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, tsOKResp.Error)
+
+	tsReplayResp, _, err := hub.DispatchToolset(ctx, callerA, "mrtr-set", tsOKBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, tsReplayResp.Error)
+	assert.Contains(t, tsReplayResp.Error.Message, "replay detected")
+
+	// 8. Scoped non-tools/call RPC (prompts/get) MRTR round-trip + tamper + replay parity
+	pCall1, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", []byte(`{
+		"jsonrpc":"2.0","id":30,"method":"prompts/get",
+		"params":{"name":"confirm_prompt","arguments":{"env":"prod"}}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, pCall1.Error)
+	pToken, _ := pCall1.Result.(map[string]any)["requestState"].(string)
+	require.True(t, strings.HasPrefix(pToken, "v1.mrtr_v1."), "expected sealed AEAD MRTR token on prompts/get, got %q", pToken)
+
+	pTamperResp, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 31, "method": "prompts/get",
+		"params": map[string]any{
+			"name":           "confirm_prompt",
+			"arguments":      map[string]any{"env": "dev"},
+			"requestState":   pToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	}), http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, pTamperResp.Error)
+	assert.Contains(t, pTamperResp.Error.Message, "hash mismatch")
+
+	pOKBody := mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 32, "method": "prompts/get",
+		"params": map[string]any{
+			"name":           "confirm_prompt",
+			"arguments":      map[string]any{"env": "prod"},
+			"requestState":   pToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	})
+	pOKResp, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", pOKBody, http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, pOKResp.Error)
+	assert.Equal(t, "complete", pOKResp.Result.(map[string]any)["resultType"])
+
+	pReplayResp, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", pOKBody, http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, pReplayResp.Error)
+	assert.Contains(t, pReplayResp.Error.Message, "replay detected")
+
+	// 9. Omitted arguments (nil map) on initial call hashes identically to explicit {} on resume
+	nilArgsCall1, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", []byte(`{
+		"jsonrpc":"2.0","id":40,"method":"tools/call",
+		"params":{"name":"approve_transfer"}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, nilArgsCall1.Error)
+	nilArgsToken, _ := nilArgsCall1.Result.(map[string]any)["requestState"].(string)
+	require.True(t, strings.HasPrefix(nilArgsToken, "v1.mrtr_v1."))
+
+	nilArgsResumeResp, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 41, "method": "tools/call",
+		"params": map[string]any{
+			"name":           "approve_transfer",
+			"arguments":      map[string]any{},
+			"requestState":   nilArgsToken,
+			"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		},
+	}), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, nilArgsResumeResp.Error)
+
+	// 10. Warm discovery cache MUST NOT bypass MRTR verification when a requestState token is provided.
+	hub.SetCache(NewMCPCache([]byte("0123456789abcdef0123456789abcdef"), nil))
+	warmList1, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", []byte(`{
+		"jsonrpc":"2.0","id":50,"method":"prompts/list","params":{}
+	}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, warmList1.Error)
+
+	warmTamperResp, _, err := hub.DispatchScopedServer(ctx, callerA, "mrtr-srv", mustJSON(t, map[string]any{
+		"jsonrpc": "2.0", "id": 51, "method": "prompts/list",
+		"params": map[string]any{
+			"requestState": "v1.mrtr_v1.forged-invalid-token",
+		},
+	}), http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, warmTamperResp.Error)
+	assert.Contains(t, warmTamperResp.Error.Message, "mrtr")
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
+func TestShouldCacheTypedStructResultBlocksMRTRFields(t *testing.T) {
+	type structuredResult struct {
+		ResultType    string         `json:"resultType,omitempty"`
+		TTLMs         int64          `json:"ttlMs,omitempty"`
+		CacheScope    string         `json:"cacheScope,omitempty"`
+		InputRequests map[string]any `json:"inputRequests,omitempty"`
+		Meta          map[string]any `json:"_meta,omitempty"`
+	}
+
+	assert.False(t, ShouldCache("tools/call", &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      1,
+		Result: structuredResult{
+			TTLMs:         60000,
+			CacheScope:    "public",
+			InputRequests: map[string]any{"confirm": true},
+		},
+	}))
+
+	assert.False(t, ShouldCache("tools/call", &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      2,
+		Result: structuredResult{
+			TTLMs:      60000,
+			CacheScope: "public",
+			Meta:       map[string]any{"mrtrToken": "v1.mrtr_v1.sealed"},
+		},
+	}))
+
+	assert.True(t, ShouldCache("tools/call", &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      3,
+		Result: structuredResult{
+			TTLMs:      60000,
+			CacheScope: "public",
+		},
+	}))
 }

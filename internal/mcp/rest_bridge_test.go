@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
@@ -276,4 +277,136 @@ func TestRESTBridge_RBACDenial(t *testing.T) {
 	bridge.HandleCallTool(w, req)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestRESTBridge_MRTRErrorMappingAndResume(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	rbac := auth.NewRBACEngine(repo)
+
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	require.NoError(t, err)
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpcReq mcp.JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&rpcReq)
+		var params struct {
+			RequestState   string         `json:"requestState"`
+			InputResponses map[string]any `json:"inputResponses"`
+		}
+		_ = json.Unmarshal(rpcReq.Params, &params)
+		w.Header().Set("Content-Type", "application/json")
+		if params.RequestState == "upstream-rest-cursor" && len(params.InputResponses) > 0 {
+			_ = json.NewEncoder(w).Encode(mcp.JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      rpcReq.ID,
+				Result: map[string]any{
+					"resultType": "complete",
+					"content":    []map[string]any{{"type": "text", "text": "rest-resumed"}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(mcp.JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      rpcReq.ID,
+			Result: map[string]any{
+				"resultType":   "input_required",
+				"requestState": "upstream-rest-cursor",
+				"inputRequests": map[string]any{
+					"confirm": map[string]any{"method": "elicitation/create"},
+				},
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	srv := &domain.MCPServer{
+		ID:              "srv_rest_mrtr",
+		OrgID:           "org_test",
+		Name:            "REST MRTR Server",
+		Slug:            "rest-mrtr-srv",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     mockUpstream.URL,
+		AuthType:        domain.MCPAuthNone,
+		IsActive:        true,
+	}
+	require.NoError(t, repo.CreateMCPServer(ctx, srv))
+	require.NoError(t, repo.UpsertMCPTools(ctx, srv.ID, "org_test", []*domain.MCPTool{
+		{ID: "tool_rest_mrtr", ServerID: srv.ID, OrgID: "org_test", Name: "rest_confirm", IsActive: true},
+	}))
+
+	hub := mcp.NewHub(repo, vault, rbac, mcp.NewTransportDispatcher(netPolicy, nil, false), mcp.NewAuthResolver(vault, netPolicy))
+	hub.SetMRTR(mcp.NewMRTRManager(vault, nil, "mrtr_v1"))
+	bridge := mcp.NewRESTBridge(hub)
+
+	callerA := &domain.IdentityContext{OrgID: "org_test", KeyPrefix: "sk-gw-a"}
+	callerB := &domain.IdentityContext{OrgID: "org_test", KeyPrefix: "sk-gw-b"}
+
+	doCall := func(caller *domain.IdentityContext, payload map[string]any) *httptest.ResponseRecorder {
+		raw, err := json.Marshal(payload)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/mcp-rest/tools/call", bytes.NewReader(raw))
+		req = req.WithContext(auth.WithIdentity(req.Context(), caller))
+		rec := httptest.NewRecorder()
+		bridge.HandleCallTool(rec, req)
+		return rec
+	}
+
+	// 1. Initial call returns 200 with sealed v1.* MRTR request_state token
+	rec1 := doCall(callerA, map[string]any{
+		"server_slug": "rest-mrtr-srv",
+		"tool_name":   "rest_confirm",
+		"arguments":   map[string]any{"amount": 50},
+	})
+	require.Equal(t, http.StatusOK, rec1.Code)
+	var resp1 mcp.CallToolResponse
+	require.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &resp1))
+	assert.Equal(t, "input_required", resp1.ResultType)
+	require.True(t, strings.HasPrefix(resp1.RequestState, "v1.mrtr_v1."))
+
+	// 2. Wrong caller -> 403 mcp_forbidden (not 502 Bad Gateway)
+	recWrong := doCall(callerB, map[string]any{
+		"server_slug":     "rest-mrtr-srv",
+		"tool_name":       "rest_confirm",
+		"arguments":       map[string]any{"amount": 50},
+		"request_state":   resp1.RequestState,
+		"input_responses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+	})
+	assert.Equal(t, http.StatusForbidden, recWrong.Code)
+	assert.Contains(t, recWrong.Body.String(), "mcp_forbidden")
+
+	// 3. Tampered arguments -> 400 mcp_invalid_request (not 502 Bad Gateway)
+	recTamper := doCall(callerA, map[string]any{
+		"server_slug":     "rest-mrtr-srv",
+		"tool_name":       "rest_confirm",
+		"arguments":       map[string]any{"amount": 999},
+		"request_state":   resp1.RequestState,
+		"input_responses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+	})
+	assert.Equal(t, http.StatusBadRequest, recTamper.Code)
+	assert.Contains(t, recTamper.Body.String(), "mcp_invalid_request")
+
+	// 4. Legitimate resume -> 200
+	resumePayload := map[string]any{
+		"server_slug":     "rest-mrtr-srv",
+		"tool_name":       "rest_confirm",
+		"arguments":       map[string]any{"amount": 50},
+		"request_state":   resp1.RequestState,
+		"input_responses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+	}
+	recOK := doCall(callerA, resumePayload)
+	require.Equal(t, http.StatusOK, recOK.Code)
+	assert.Contains(t, recOK.Body.String(), "rest-resumed")
+
+	// 5. Consumed token replay -> 400 mcp_invalid_request
+	recReplay := doCall(callerA, resumePayload)
+	assert.Equal(t, http.StatusBadRequest, recReplay.Code)
+	assert.Contains(t, recReplay.Body.String(), "replay detected")
 }

@@ -197,6 +197,27 @@ paths:
       responses:
         '200':
           description: List of registered MCP servers
+  /admin/v1/mcp/servers/{serverID}:
+    delete:
+      summary: Delete Registered MCP Server
+      operationId: adminDeleteMCPServer
+      security:
+        - MasterAdminAuth: []
+      parameters:
+        - name: serverID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: MCP server deleted
+        '401':
+          description: Missing or invalid authentication credentials
+        '403':
+          description: Caller lacks admin permissions for this MCP server
+        '404':
+          description: MCP server not found
 components:
   securitySchemes:
     VirtualKeyAuth:

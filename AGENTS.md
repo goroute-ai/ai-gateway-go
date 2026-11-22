@@ -12,8 +12,8 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 ## Repository Invariants
 
 - Keep public API and provider wire behavior aligned with the applicable OpenAPI or protocol contract.
-- Keep provider egress behind the network security policy; inspect `internal/security/network` before adding outbound HTTP calls.
-- Preserve tenant identity and authorization checks when changing model, tool, or agent access.
+- Keep provider egress behind the network security policy; inspect `internal/security/network` before adding outbound HTTP calls (registration-time MCP SSRF checks live in `internal/server/handlers_admin_mcp.go`).
+- Preserve tenant identity and authorization checks when changing model, tool, or agent access (including `Engine.VerifyServerCatalogPinning` and MCP MRTR fail-closed binding checks).
 - Financial values use integer micro-dollars; avoid floating-point accounting.
 - Generated files must be updated through their documented generator, not hand-edited. Check `go:generate` directives and `Makefile` before changing generated code.
 - Keep package dependencies pointed inward toward domain types and interfaces. Add package-specific guidance only where a real local convention needs explanation.
