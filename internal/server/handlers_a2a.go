@@ -17,7 +17,58 @@ import (
 
 // handleA2AWellKnownCard serves `GET /.well-known/agent-card.json`.
 func (s *GatewayServer) handleA2AWellKnownCard(w http.ResponseWriter, r *http.Request) {
-	a2a.ServeWellKnownAgentCard(w, r, s.repo, s.a2aSigner, s.serverBaseURL(r), "")
+	orgID := ""
+	agentSlug := r.URL.Query().Get("agent")
+	if agentSlug == "" {
+		agentSlug = r.URL.Query().Get("slug")
+	}
+
+	hasAuthHeader := r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != ""
+	if hasAuthHeader && s.authSvc != nil {
+		var (
+			idCtx *domain.IdentityContext
+			err   error
+		)
+		if s.authResolver != nil {
+			idCtx, err = s.authResolver.ResolveRequest(r.Context(), r)
+		} else if s.authSvc.DataPlaneResolver() != nil {
+			idCtx, err = s.authSvc.DataPlaneResolver().ResolveRequest(r.Context(), r)
+		} else {
+			cred, credErr := auth.ExtractCredentials(r, s.authSvc.ExtractorOptions())
+			if credErr != nil {
+				err = credErr
+			} else {
+				idCtx, err = s.authSvc.AuthenticateVirtualKey(r.Context(), cred.Token)
+			}
+		}
+		if err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+		orgID = idCtx.OrgID
+		if agentSlug != "" && s.rbac != nil {
+			if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
+		}
+	} else if !s.cfg.A2A.AllowLegacyCardDiscovery {
+		// When unauthenticated and legacy card discovery is not enabled,
+		// do not expose individual tenant agent cards or enumerate across organizations.
+		if agentSlug != "" {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "unauthenticated",
+				Message:    "Authentication is required to discover tenant A2A agent cards",
+			})
+			return
+		}
+		a2a.ServeWellKnownGatewayHubCard(w, s.serverBaseURL(r))
+		return
+	}
+
+	a2a.ServeWellKnownAgentCardForOrg(w, r, s.repo, s.a2aSigner, s.serverBaseURL(r), orgID, "")
 }
 
 // handleA2AAgentMessage serves `POST /a2a/v1/agents/{agentSlug}`
@@ -239,9 +290,5 @@ func (s *GatewayServer) writeA2AError(w http.ResponseWriter, err error) {
 }
 
 func (s *GatewayServer) serverBaseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s", scheme, r.Host)
+	return s.canonicalBaseURL(r)
 }

@@ -21,6 +21,28 @@ import (
 
 const maxFileUploadBytes = 512 * 1024 * 1024 // 512 MB
 
+func canAccessTenantAsset(idCtx *domain.IdentityContext, assetOrgID, assetTeamID, assetUserID string) bool {
+	if idCtx == nil || idCtx.OrgID == "" || idCtx.OrgID != assetOrgID {
+		return false
+	}
+	if idCtx.Role == domain.RolePlatformAdmin || idCtx.Role == domain.RoleOrgAdmin {
+		return true
+	}
+	if idCtx.TeamID != "" {
+		if assetTeamID != idCtx.TeamID {
+			return false
+		}
+		if idCtx.UserID != "" && assetUserID != "" && idCtx.UserID != assetUserID {
+			return false
+		}
+		return true
+	}
+	if idCtx.UserID != "" {
+		return assetTeamID == "" && (assetUserID == "" || assetUserID == idCtx.UserID)
+	}
+	return assetTeamID == "" && assetUserID == ""
+}
+
 func (s *GatewayServer) maxFileStorageBytesPerOrg() int64 {
 	if s.cfg == nil {
 		return 0
@@ -298,10 +320,16 @@ func (s *GatewayServer) handleListFiles(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	filtered := make([]*domain.CanonicalFile, 0, len(files))
+	for _, f := range files {
+		if f != nil && canAccessTenantAsset(idCtx, f.OrgID, f.TeamID, f.UserID) {
+			filtered = append(filtered, f)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"data":   files,
+		"data":   filtered,
 		"object": "list",
 	})
 }
@@ -321,7 +349,7 @@ func (s *GatewayServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
 
 	fileID := chi.URLParam(r, "file_id")
 	f, err := s.repo.GetFile(r.Context(), idCtx.OrgID, fileID)
-	if err != nil || f == nil {
+	if err != nil || f == nil || !canAccessTenantAsset(idCtx, f.OrgID, f.TeamID, f.UserID) {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
@@ -349,7 +377,7 @@ func (s *GatewayServer) handleGetFileContent(w http.ResponseWriter, r *http.Requ
 
 	fileID := chi.URLParam(r, "file_id")
 	f, err := s.repo.GetFile(r.Context(), idCtx.OrgID, fileID)
-	if err != nil || f == nil {
+	if err != nil || f == nil || !canAccessTenantAsset(idCtx, f.OrgID, f.TeamID, f.UserID) {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
@@ -391,7 +419,7 @@ func (s *GatewayServer) handleDeleteFile(w http.ResponseWriter, r *http.Request)
 
 	fileID := chi.URLParam(r, "file_id")
 	f, err := s.repo.GetFile(r.Context(), idCtx.OrgID, fileID)
-	if err != nil || f == nil {
+	if err != nil || f == nil || !canAccessTenantAsset(idCtx, f.OrgID, f.TeamID, f.UserID) {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,

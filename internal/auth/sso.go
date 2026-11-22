@@ -46,6 +46,8 @@ var (
 	ErrCLILoginAlreadyCompleted = errors.New("cli login session is already completed")
 	// ErrCLIPollRateLimited indicates the CLI polled faster than the allowed interval.
 	ErrCLIPollRateLimited = errors.New("cli poll rate limit exceeded")
+	// ErrCLILoginInvalidUserCode indicates the supplied user_code does not match the pending CLI login session.
+	ErrCLILoginInvalidUserCode = errors.New("invalid cli login user code")
 )
 
 var consumeAndDeleteLua = redis.NewScript(`
@@ -1433,6 +1435,34 @@ func (s *CLILoginStore) Get(ctx context.Context, loginID string) (*CLILoginSessi
 	}
 	cp := *sess
 	return &cp, nil
+}
+
+// VerifyUserCode checks whether userCode matches the pending CLI login session's user_code
+// in constant time (ignoring hyphens and ASCII case). If userCode is empty, it returns nil
+// so internal SSO-state-bound completions remain compatible while explicit user_code values are verified.
+func (s *CLILoginStore) VerifyUserCode(ctx context.Context, loginID, userCode string) error {
+	if s == nil {
+		return ErrCLILoginNotFound
+	}
+	sess, err := s.Get(ctx, loginID)
+	if err != nil {
+		return err
+	}
+	normalizedProvided := normalizeCLIUserCode(userCode)
+	if normalizedProvided == "" {
+		return nil
+	}
+	normalizedExpected := normalizeCLIUserCode(sess.UserCode)
+	if normalizedExpected == "" || subtle.ConstantTimeCompare([]byte(normalizedProvided), []byte(normalizedExpected)) != 1 {
+		return ErrCLILoginInvalidUserCode
+	}
+	return nil
+}
+
+func normalizeCLIUserCode(code string) string {
+	cleaned := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(code)), "-", "")
+	cleaned = strings.ReplaceAll(cleaned, " ", "")
+	return cleaned
 }
 
 // Complete marks a pending CLI login session as completed and stores the encrypted Virtual Key

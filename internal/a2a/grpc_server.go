@@ -65,6 +65,12 @@ func (s *GRPCServer) authenticate(ctx context.Context) (*domain.IdentityContext,
 		return nil, "", status.Error(codes.Unauthenticated, "invalid virtual key: "+err.Error())
 	}
 
+	if s.rbac != nil {
+		if err := s.rbac.AuthorizeEndpoint(idCtx, "/a2a/v1/agents"); err != nil {
+			return nil, "", status.Error(codes.PermissionDenied, err.Error())
+		}
+	}
+
 	agentSlug := ""
 	slugHeaders := md.Get("x-a2a-agent-slug")
 	if len(slugHeaders) > 0 {
@@ -72,6 +78,13 @@ func (s *GRPCServer) authenticate(ctx context.Context) (*domain.IdentityContext,
 	}
 
 	return idCtx, agentSlug, nil
+}
+
+func authorizeGRPCMutation(idCtx *domain.IdentityContext) error {
+	if idCtx != nil && (idCtx.KeyType == domain.KeyTypeReadOnly || idCtx.Role == domain.RoleViewer || idCtx.Role == domain.RoleOrgViewer) {
+		return status.Error(codes.PermissionDenied, "read-only credentials cannot perform mutating A2A gRPC operations")
+	}
+	return nil
 }
 
 func (s *GRPCServer) resolveAgentSlug(ctx context.Context, idCtx *domain.IdentityContext, agentSlug, taskID string) (string, error) {
@@ -94,6 +107,9 @@ func (s *GRPCServer) resolveAgentSlug(ctx context.Context, idCtx *domain.Identit
 func (s *GRPCServer) SendMessage(ctx context.Context, req *pb.SendMessageRequest) (*pb.SendMessageResponse, error) {
 	idCtx, agentSlug, err := s.authenticate(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := authorizeGRPCMutation(idCtx); err != nil {
 		return nil, err
 	}
 
@@ -180,6 +196,9 @@ func (s *GRPCServer) ListTasks(ctx context.Context, req *pb.ListTasksRequest) (*
 func (s *GRPCServer) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb.Task, error) {
 	idCtx, agentSlug, err := s.authenticate(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := authorizeGRPCMutation(idCtx); err != nil {
 		return nil, err
 	}
 
@@ -347,6 +366,9 @@ func (s *GRPCServer) CreateTaskPushNotificationConfig(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	if err := authorizeGRPCMutation(idCtx); err != nil {
+		return nil, err
+	}
 
 	if req.TaskId == "" || req.Url == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id and url are required")
@@ -419,6 +441,9 @@ type a2aPushConfigDeleter interface {
 func (s *GRPCServer) DeleteTaskPushNotificationConfig(ctx context.Context, req *pb.DeleteTaskPushNotificationConfigRequest) (*emptypb.Empty, error) {
 	idCtx, _, err := s.authenticate(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := authorizeGRPCMutation(idCtx); err != nil {
 		return nil, err
 	}
 

@@ -360,7 +360,11 @@ func (s *RouterService) ListTasks(
 		return nil, &A2AError{Code: CodeTaskNotFound, Message: "Agent not found"}
 	}
 
-	tasks, err := s.repo.ListA2ATasks(ctx, agent.ID, idCtx.VirtualKeyID, 100)
+	filterKeyID := ""
+	if agent.TaskVisibilityMode == "" || agent.TaskVisibilityMode == domain.TaskVisibilityKeyStrict {
+		filterKeyID = idCtx.VirtualKeyID
+	}
+	tasks, err := s.repo.ListA2ATasks(ctx, agent.ID, filterKeyID, 100)
 	if err != nil {
 		return nil, fmt.Errorf("a2a: list tasks: %w", err)
 	}
@@ -596,8 +600,8 @@ func (s *RouterService) invokeUpstreamAgent(
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("upstream agent returned HTTP %d: %s", resp.StatusCode, string(b))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("upstream agent returned HTTP %d", resp.StatusCode)
 	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))

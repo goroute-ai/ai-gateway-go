@@ -253,8 +253,8 @@ func (p *PostgresRepository) CreateMCPToolset(ctx context.Context, toolset *doma
 }
 
 func (p *PostgresRepository) GetMCPToolsetBySlug(ctx context.Context, orgID, slug string) (*domain.MCPToolset, error) {
-	if ts, err := p.mem.GetMCPToolsetBySlug(ctx, orgID, slug); err == nil && ts != nil {
-		return ts, nil
+	if p.pool == nil {
+		return p.mem.GetMCPToolsetBySlug(ctx, orgID, slug)
 	}
 	const q = `SELECT id, org_id, name, slug, tool_ids, is_active, created_at, updated_at FROM mcp_toolsets WHERE (org_id = $1 OR $1 = '') AND slug = $2 LIMIT 1`
 	var ts domain.MCPToolset
@@ -301,8 +301,8 @@ func (p *PostgresRepository) SetMCPUserCredential(ctx context.Context, cred *dom
 }
 
 func (p *PostgresRepository) GetMCPUserCredential(ctx context.Context, serverID, userID string) (*domain.MCPUserCredential, error) {
-	if c, err := p.mem.GetMCPUserCredential(ctx, serverID, userID); err == nil && c != nil {
-		return c, nil
+	if p.pool == nil {
+		return p.mem.GetMCPUserCredential(ctx, serverID, userID)
 	}
 	const q = `SELECT id, server_id, user_id, org_id, encrypted_token, encrypted_dek, created_at, updated_at FROM mcp_user_credentials WHERE server_id = $1 AND user_id = $2`
 	var c domain.MCPUserCredential
@@ -532,8 +532,8 @@ func (p *PostgresRepository) UpdateA2ATaskState(ctx context.Context, taskID, sta
 }
 
 func (p *PostgresRepository) GetA2ATask(ctx context.Context, id string) (*domain.A2ATask, error) {
-	if t, err := p.mem.GetA2ATask(ctx, id); err == nil && t != nil {
-		return t, nil
+	if p.pool == nil {
+		return p.mem.GetA2ATask(ctx, id)
 	}
 	const q = `
 		SELECT id, agent_id, org_id, team_id, virtual_key_id, user_id, client_task_id,
@@ -764,8 +764,8 @@ func (p *PostgresRepository) UpdateA2AOutboxEventStatus(ctx context.Context, id,
 }
 
 func (p *PostgresRepository) GetA2AOutboxEvent(ctx context.Context, id string) (*domain.A2AOutboxEvent, error) {
-	if ev, err := p.mem.GetA2AOutboxEvent(ctx, id); err == nil && ev != nil {
-		return ev, nil
+	if p.pool == nil {
+		return p.mem.GetA2AOutboxEvent(ctx, id)
 	}
 	const q = `SELECT id, task_id, event_type, target_url, payload_json, status, attempt_count, next_attempt_at, created_at FROM a2a_outbox_events WHERE id = $1`
 	var o domain.A2AOutboxEvent
@@ -792,8 +792,8 @@ func (p *PostgresRepository) SetA2APushNotificationConfig(ctx context.Context, c
 }
 
 func (p *PostgresRepository) GetA2APushNotificationConfig(ctx context.Context, taskID string) (*domain.A2APushNotificationConfig, error) {
-	if c, err := p.mem.GetA2APushNotificationConfig(ctx, taskID); err == nil && c != nil {
-		return c, nil
+	if p.pool == nil {
+		return p.mem.GetA2APushNotificationConfig(ctx, taskID)
 	}
 	const q = `SELECT id, task_id, target_url, auth_token, created_at FROM a2a_push_notification_configs WHERE task_id = $1`
 	var cfg domain.A2APushNotificationConfig
@@ -824,8 +824,8 @@ func (p *PostgresRepository) CreateFile(ctx context.Context, file *domain.Canoni
 }
 
 func (p *PostgresRepository) GetFile(ctx context.Context, orgID, fileID string) (*domain.CanonicalFile, error) {
-	if f, err := p.mem.GetFile(ctx, orgID, fileID); err == nil && f != nil {
-		return f, nil
+	if p.pool == nil {
+		return p.mem.GetFile(ctx, orgID, fileID)
 	}
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), COALESCE(user_id::text, ''), bytes, created_at, filename, purpose, status, content_sha256, storage_path, COALESCE(upstream_provider, ''), COALESCE(upstream_id, ''), expires_at
@@ -894,8 +894,8 @@ func (p *PostgresRepository) CreateBatch(ctx context.Context, batch *domain.Cano
 }
 
 func (p *PostgresRepository) GetBatch(ctx context.Context, orgID, batchID string) (*domain.CanonicalBatch, error) {
-	if b, err := p.mem.GetBatch(ctx, orgID, batchID); err == nil && b != nil {
-		return b, nil
+	if p.pool == nil {
+		return p.mem.GetBatch(ctx, orgID, batchID)
 	}
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), input_file_id, COALESCE(output_file_id, ''), COALESCE(error_file_id, ''), endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, estimated_tokens, reserved_cost_micros, COALESCE(upstream_provider, ''), COALESCE(upstream_id, '')

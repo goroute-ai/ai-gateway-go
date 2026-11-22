@@ -88,7 +88,7 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 
 	// 1. Verify input file belongs to tenant
 	inputFile, err := s.repo.GetFile(r.Context(), idCtx.OrgID, payload.InputFileID)
-	if err != nil || inputFile == nil {
+	if err != nil || inputFile == nil || !canAccessTenantAsset(idCtx, inputFile.OrgID, inputFile.TeamID, inputFile.UserID) {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
@@ -223,10 +223,16 @@ func (s *GatewayServer) handleListBatches(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	filtered := make([]*domain.CanonicalBatch, 0, len(batches))
+	for _, b := range batches {
+		if b != nil && canAccessTenantAsset(idCtx, b.OrgID, b.TeamID, "") {
+			filtered = append(filtered, b)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"data":   batches,
+		"data":   filtered,
 		"object": "list",
 	})
 }
@@ -246,7 +252,7 @@ func (s *GatewayServer) handleGetBatch(w http.ResponseWriter, r *http.Request) {
 
 	batchID := chi.URLParam(r, "batch_id")
 	b, err := s.repo.GetBatch(r.Context(), idCtx.OrgID, batchID)
-	if err != nil || b == nil {
+	if err != nil || b == nil || !canAccessTenantAsset(idCtx, b.OrgID, b.TeamID, "") {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
@@ -275,7 +281,7 @@ func (s *GatewayServer) handleCancelBatch(w http.ResponseWriter, r *http.Request
 
 	batchID := chi.URLParam(r, "batch_id")
 	b, err := s.repo.GetBatch(r.Context(), idCtx.OrgID, batchID)
-	if err != nil || b == nil {
+	if err != nil || b == nil || !canAccessTenantAsset(idCtx, b.OrgID, b.TeamID, "") {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
@@ -803,10 +809,15 @@ func (s *GatewayServer) processBatchAsync(
 		return
 	}
 
+	outUserID := ""
+	if idCtx != nil {
+		outUserID = idCtx.UserID
+	}
 	outFile := &domain.CanonicalFile{
 		ID:            outID,
 		OrgID:         batch.OrgID,
 		TeamID:        batch.TeamID,
+		UserID:        outUserID,
 		Bytes:         int64(len(outBytes)),
 		CreatedAt:     time.Now().UTC(),
 		Filename:      batch.ID + "_output.jsonl",

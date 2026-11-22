@@ -299,6 +299,15 @@ func (s *GatewayServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	if !user.SCIMActive {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "scim_deprovisioned",
+			Message:    "Operator user account has been deprovisioned via SCIM",
+		})
+		return
+	}
 
 	org, err := s.repo.GetOrganization(r.Context(), user.OrgID)
 	if err != nil || !org.IsActive {
@@ -579,23 +588,112 @@ type cliCompleteRequest struct {
 	TeamID        string   `json:"team_id,omitempty"`
 	ProjectID     string   `json:"project_id,omitempty"`
 	KeyName       string   `json:"key_name,omitempty"`
+	UserCode      string   `json:"user_code,omitempty"`
 	AllowedModels []string `json:"allowed_models,omitempty"`
 	TTLSeconds    int64    `json:"ttl_seconds,omitempty"`
 }
 
-func requestBaseURL(r *http.Request) string {
+func (s *GatewayServer) canonicalBaseURL(r *http.Request) string {
+	if s != nil && s.cfg != nil {
+		if pub := strings.TrimRight(strings.TrimSpace(s.cfg.Server.PublicBaseURL), "/"); pub != "" {
+			return pub
+		}
+	}
 	if r == nil {
 		return ""
 	}
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+	if r.TLS != nil {
+		scheme = "https"
+	} else if s.isTrustedProxyRequest(r) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
 		scheme = "https"
 	}
-	host := strings.TrimSpace(r.Host)
+	host := sanitizeCanonicalHost(r.Host)
+	if host == "" && s != nil && s.cfg != nil {
+		cfgHost := strings.TrimSpace(s.cfg.Server.Host)
+		if cfgHost == "" || cfgHost == "0.0.0.0" || cfgHost == "::" {
+			cfgHost = "localhost"
+		}
+		if s.cfg.Server.Port > 0 {
+			host = fmt.Sprintf("%s:%d", cfgHost, s.cfg.Server.Port)
+		} else {
+			host = cfgHost
+		}
+	}
 	if host == "" {
 		return ""
 	}
 	return scheme + "://" + host
+}
+
+func (s *GatewayServer) isTrustedProxyRequest(r *http.Request) bool {
+	if s == nil || s.cfg == nil || r == nil {
+		return false
+	}
+	var cidrs []string
+	cidrs = append(cidrs, s.cfg.Security.Network.InboundCaller.TrustedProxyCIDRs...)
+	cidrs = append(cidrs, s.cfg.Auth.ProxyAuth.TrustedProxyCIDRs...)
+	if len(cidrs) == 0 {
+		return false
+	}
+	remoteHost := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(remoteHost); err == nil {
+		remoteHost = h
+	}
+	ip := net.ParseIP(remoteHost)
+	if ip == nil {
+		return false
+	}
+	for _, rawCIDR := range cidrs {
+		rawCIDR = strings.TrimSpace(rawCIDR)
+		if rawCIDR == "" {
+			continue
+		}
+		if _, subnet, err := net.ParseCIDR(rawCIDR); err == nil && subnet.Contains(ip) {
+			return true
+		}
+		if singleIP := net.ParseIP(rawCIDR); singleIP != nil && singleIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeCanonicalHost(rawHost string) string {
+	host := strings.TrimSpace(rawHost)
+	if host == "" {
+		return ""
+	}
+	if strings.ContainsAny(host, "/\\@?# \t\r\n\x00") {
+		return ""
+	}
+	// Validate host or host:port structure.
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if h == "" || p == "" || !isValidHostnameOrLiteralIP(h) {
+			return ""
+		}
+		return host
+	}
+	if !isValidHostnameOrLiteralIP(host) {
+		return ""
+	}
+	return host
+}
+
+func isValidHostnameOrLiteralIP(h string) bool {
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return true
+	}
+	if strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") {
+		return false
+	}
+	for _, r := range h {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func acceptsJSONResponse(r *http.Request) bool {
@@ -708,7 +806,7 @@ func (s *GatewayServer) handleAuthSSOLogin(w http.ResponseWriter, r *http.Reques
 	}
 
 	redirectURI := ""
-	if base := requestBaseURL(r); base != "" {
+	if base := s.canonicalBaseURL(r); base != "" {
 		redirectURI = base + "/auth/sso/" + url.PathEscape(providerID) + "/callback"
 	}
 
@@ -827,7 +925,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if authState.CLILoginID != "" {
+	if authState.CLILoginID != "" && user.Role != domain.RoleViewer && user.Role != domain.RoleOrgViewer {
 		if _, cliErr := s.mintAndCompleteCLILogin(
 			r.Context(),
 			authState.CLILoginID,
@@ -934,9 +1032,22 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 		}
 	}
 
-	orgID := strings.TrimSpace(claims.OrgID)
+	providerOrgID := ""
+	if p != nil {
+		providerOrgID = strings.TrimSpace(p.DefaultOrgID())
+	}
+	claimOrgID := strings.TrimSpace(claims.OrgID)
+	if providerOrgID != "" && claimOrgID != "" && claimOrgID != providerOrgID {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_org_access_denied",
+			Message:    "SSO token org_id claim does not match provider organization",
+		}
+	}
+	orgID := providerOrgID
 	if orgID == "" {
-		orgID = p.DefaultOrgID()
+		orgID = claimOrgID
 	}
 	if orgID == "" && s.cfg != nil {
 		orgID = strings.TrimSpace(s.cfg.Auth.DefaultOrgID)
@@ -1085,6 +1196,7 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			OIDCSubject:       claims.Subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
 			IsActive:          true,
+			SCIMActive:        true,
 		}
 
 		if oidcRepo, ok := s.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
@@ -1129,14 +1241,21 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			Message:    "User account is inactive",
 		}
 	}
+	if !user.SCIMActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "scim_deprovisioned",
+			Message:    "User account has been deprovisioned via SCIM",
+		}
+	}
 	return user, nil
 }
 
 func resolveSSOProvisionRole(claimRole, defaultRole string) domain.Role {
 	for _, candidate := range []string{claimRole, defaultRole} {
 		switch domain.Role(strings.ToLower(strings.TrimSpace(candidate))) {
-		case domain.RolePlatformAdmin,
-			domain.RoleOrgAdmin,
+		case domain.RoleOrgAdmin,
 			domain.RoleOrgViewer,
 			domain.RoleTeamAdmin,
 			domain.RoleDeveloper,
@@ -1205,7 +1324,7 @@ func (s *GatewayServer) handleAuthCLIStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	verificationURL := requestBaseURL(r) + "/ui/cli?login_id=" + url.QueryEscape(sess.LoginID) + "&user_code=" + url.QueryEscape(sess.UserCode)
+	verificationURL := s.canonicalBaseURL(r) + "/ui/cli?login_id=" + url.QueryEscape(sess.LoginID)
 	if sess.Provider != "" {
 		verificationURL += "&provider=" + url.QueryEscape(sess.Provider)
 	}
@@ -1281,12 +1400,41 @@ func (s *GatewayServer) handleAuthCLIComplete(w http.ResponseWriter, r *http.Req
 		orgID = "org_default"
 	}
 
+	if op.Role == domain.OperatorRoleOrgViewer {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cli_approve_read_only_denied",
+			Message:    "Read-only viewer operators cannot approve CLI login sessions or mint virtual API keys",
+		})
+		return
+	}
+
 	if op.Role != domain.OperatorRolePlatformAdmin && orgID != op.OrgID {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,
 			Code:       "cross_org_access_denied",
 			Message:    fmt.Sprintf("Operator in organization %q is not authorized to access organization %q", op.OrgID, orgID),
+		})
+		return
+	}
+
+	if err := s.cliLoginStore.VerifyUserCode(r.Context(), loginID, req.UserCode); err != nil {
+		if errors.Is(err, auth.ErrCLILoginInvalidUserCode) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "invalid_cli_user_code",
+				Message:    "Provided user_code does not match the pending CLI login session",
+			})
+			return
+		}
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "cli_login_not_found",
+			Message:    "CLI login session was not found or has expired",
 		})
 		return
 	}

@@ -713,13 +713,16 @@ func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any)
 		claims.Email = v
 	}
 
-	orgPath := strings.TrimSpace(o.claimMapping.OrgID)
-	if orgPath == "" {
-		orgPath = "org_id"
+	if orgPath := strings.TrimSpace(o.claimMapping.OrgID); orgPath != "" {
+		if v, ok := extractStringClaim(raw, orgPath); ok {
+			claims.OrgID = v
+		}
+	} else if o.defaultOrgID == "" {
+		if v, ok := extractStringClaim(raw, "org_id"); ok {
+			claims.OrgID = v
+		}
 	}
-	if v, ok := extractStringClaim(raw, orgPath); ok {
-		claims.OrgID = v
-	} else if o.defaultOrgID != "" {
+	if claims.OrgID == "" && o.defaultOrgID != "" {
 		claims.OrgID = o.defaultOrgID
 	}
 
@@ -733,13 +736,14 @@ func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any)
 		claims.TeamIDs = []string{o.defaultTeamID}
 	}
 
-	rolePath := strings.TrimSpace(o.claimMapping.Role)
-	if rolePath == "" {
-		rolePath = "role"
-	}
-	if v, ok := extractStringClaim(raw, rolePath); ok {
+	if rolePath := strings.TrimSpace(o.claimMapping.Role); rolePath != "" {
+		if v, ok := extractStringClaim(raw, rolePath); ok {
+			claims.Role = v
+		}
+	} else if v, ok := extractStringClaim(raw, "role"); ok {
 		claims.Role = v
-	} else if o.defaultRole != "" {
+	}
+	if claims.Role == "" && o.defaultRole != "" {
 		claims.Role = o.defaultRole
 	}
 

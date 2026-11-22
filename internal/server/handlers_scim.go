@@ -545,6 +545,9 @@ func (s *GatewayServer) handleSCIMDeleteUser(w http.ResponseWriter, r *http.Requ
 	if s.authSvc != nil {
 		s.authSvc.InvalidateUserKeys(r.Context(), orgID, updated.ID)
 	}
+	if s.sessionMgr != nil {
+		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), updated.ID)
+	}
 	s.auditWithDiff(r.Context(), orgID, "scim.user.deprovisioned", "user", updated.ID, map[string]any{
 		"email":            updated.Email,
 		"scim_external_id": updated.SCIMExternalID,
@@ -558,6 +561,9 @@ func (s *GatewayServer) handleSCIMUserActiveTransition(ctx context.Context, orgI
 	if !curr.SCIMActive || !curr.IsActive {
 		if s.authSvc != nil {
 			s.authSvc.InvalidateUserKeys(ctx, orgID, curr.ID)
+		}
+		if s.sessionMgr != nil {
+			_ = s.sessionMgr.RevokeAllUserSessions(ctx, curr.ID)
 		}
 		s.auditWithDiff(ctx, orgID, "scim.user.deprovisioned", "user", curr.ID, map[string]any{
 			"email":            curr.Email,

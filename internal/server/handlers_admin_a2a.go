@@ -53,8 +53,41 @@ func (s *GatewayServer) handleAdminCreateA2AAgent(w http.ResponseWriter, r *http
 	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
 	}
-	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, input.OrgID, true)
+	if !ok {
 		return
+	}
+	if gwErr := s.authorizeCustomBaseURL(op, input.EndpointURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	if gwErr := s.authorizeCustomBaseURL(op, input.AgentCardURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	cleanEndpoint, err := s.validateCredentialBaseURL(input.EndpointURL)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_endpoint_url",
+			Message:    err.Error(),
+		})
+		return
+	}
+	input.EndpointURL = cleanEndpoint
+	if strings.TrimSpace(input.AgentCardURL) != "" {
+		cleanCardURL, err := s.validateCredentialBaseURL(input.AgentCardURL)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_agent_card_url",
+				Message:    err.Error(),
+			})
+			return
+		}
+		input.AgentCardURL = cleanCardURL
 	}
 	if input.TaskVisibilityMode == "" {
 		input.TaskVisibilityMode = domain.TaskVisibilityKeyStrict
@@ -250,9 +283,25 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 	if targetOrgID == "" {
 		targetOrgID = s.cfg.Auth.DefaultOrgID
 	}
-	if _, ok := s.authorizeAdmin(w, r, targetOrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, targetOrgID, true)
+	if !ok {
 		return
 	}
+	if gwErr := s.authorizeCustomBaseURL(op, input.TargetURL); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	cleanTargetURL, err := s.validateCredentialBaseURL(input.TargetURL)
+	if err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_target_url",
+			Message:    err.Error(),
+		})
+		return
+	}
+	input.TargetURL = cleanTargetURL
 
 	encryptedAuthToken := ""
 	if trimmedToken := strings.TrimSpace(input.AuthToken); trimmedToken != "" {
