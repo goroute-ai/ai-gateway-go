@@ -42,11 +42,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 
 ## Scoped Rules
 
-Claude Code discovers Markdown rules in `.claude/rules/`; `paths` frontmatter limits each rule to matching files:
-
-- Go backend: `.claude/rules/go-backend.md`
-- Frontend and embedded UI: `.claude/rules/frontend-web.md`
-- API and protocol contracts: `.claude/rules/api-contracts.md`
+Optional local path-scoped rules and skill overrides live in `.claude/` and `.agents/` (gitignored and kept local only, not tracked in this repository).
 
 ## Verification
 

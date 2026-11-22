@@ -567,9 +567,8 @@ main();
 The repository keeps shared coding guidance for Claude Code and other coding agents:
 
 - **`CLAUDE.md`**: Concise project guide that imports shared repository instructions from `AGENTS.md`.
-- **Scoped Rules (`.claude/rules/`)**: Path-specific rules for Go backend (`go-backend.md`), React Operator UI (`frontend-web.md`), and API contracts (`api-contracts.md`).
 - **Rapid Verification Loop**: Standardized commands for formatting (`gofmt`), static analysis (`go vet`), contract generation and verification (`make specgen`), race-detector tests, and frontend bundle budgets.
-- **Cross-Agent Standards**: Shared invariants are maintained in [AGENTS.md](./AGENTS.md), with Claude Code-specific rule loading documented in `CLAUDE.md`.
+- **Cross-Agent Standards**: Shared invariants are maintained in [AGENTS.md](./AGENTS.md), with Claude Code-specific quick workflow guidance documented in `CLAUDE.md`.
 
 ---
 

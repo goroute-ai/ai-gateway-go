@@ -33,8 +33,7 @@ web/dist/
 !internal/ui/dist/
 !internal/ui/dist/**
 
-# Claude Code local memory & private overrides
+# Local coding-agent rules & workspace memory (kept local only, not tracked on GitHub)
 CLAUDE.local.md
-.claude/local/
-.claude/memory/
-**/.claude/settings.local.json
+.claude/
+.agents/
