@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/cohere"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -21,93 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestExecuteRerank(t *testing.T) {
-	ctx := context.Background()
-	repo := storage.NewMemoryRepository()
-	vault, _ := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-	rbac := auth.NewRBACEngine(repo)
-
-	org := &domain.Organization{Name: "TestOrg", Slug: "test-org", IsActive: true}
-	require.NoError(t, repo.CreateOrganization(ctx, org))
-
-	cohereServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v2/rerank", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"rerank-123","results":[{"index":0,"relevance_score":0.98}],"meta":{"billed_units":{"search_units":1}}}`)
-	}))
-	defer cohereServer.Close()
-
-	cred := &domain.ProviderCredential{
-		OrgID:    org.ID,
-		Provider: domain.ProviderCohere,
-		Name:     "cohere-cred",
-		BaseURL:  cohereServer.URL,
-		IsActive: true,
-	}
-	require.NoError(t, vault.EncryptCredential(cred, "test-api-key"))
-	require.NoError(t, repo.CreateProviderCredential(ctx, cred))
-
-	gm := &domain.GlobalModel{
-		ID:                "cohere/rerank-v3.5",
-		Provider:          domain.ProviderCohere,
-		ModelName:         "rerank-v3.5",
-		DisplayName:       "Cohere Rerank v3.5",
-		SupportsInference: true,
-		LifecycleStatus:   domain.ModelStatusActive,
-		Capabilities: domain.ModelCapabilities{
-			Rerank: domain.CapabilitySupported,
-		},
-	}
-	require.NoError(t, repo.UpsertGlobalModel(ctx, gm))
-
-	group := &domain.ModelGroup{
-		OrgID:           org.ID,
-		Alias:           "rerank-v3.5",
-		RoutingStrategy: domain.StrategyWeightedShuffle,
-		IsActive:        true,
-	}
-	require.NoError(t, repo.CreateModelGroup(ctx, group))
-
-	dep := &domain.Deployment{
-		ModelGroupID:   group.ID,
-		GlobalModelID:  gm.ID,
-		CredentialID:   cred.ID,
-		DeploymentName: "cohere-rerank-dep",
-		Weight:         1,
-		Status:         domain.DeploymentStatusActive,
-	}
-	require.NoError(t, repo.CreateDeployment(ctx, dep))
-
-	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
-	require.NoError(t, polErr)
-	reg := adapter.NewRegistry()
-	reg.Register(cohere.NewAdapter(cohereServer.Client(), pol))
-
-	rCfg := config.Default().Router
-	rCfg.BaseRetryDelay = 1 * time.Millisecond
-	rCfg.MaxRetryDelay = 5 * time.Millisecond
-
-	ir := router.NewIntelligentRouter(repo, rCfg)
-	lb := router.NewLoadBalancer()
-	rm := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, nil, rCfg)
-
-	req := &domain.CanonicalRerankRequest{
-		Model:     "rerank-v3.5",
-		Query:     "deep learning",
-		Documents: []domain.RerankDocument{{Text: "Deep learning is a subset of machine learning."}},
-	}
-	idCtx := &domain.IdentityContext{OrgID: org.ID}
-
-	resp, meta, err := rm.ExecuteRerank(ctx, idCtx, req)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	assert.Equal(t, "rerank-123", resp.ID)
-	assert.Len(t, resp.Results, 1)
-	assert.Equal(t, 0.98, resp.Results[0].RelevanceScore)
-	assert.Equal(t, 1, resp.Usage.SearchUnits)
-	assert.Equal(t, dep.ID, meta.WinningDeployment.ID)
-}
 
 func TestExecuteModeration(t *testing.T) {
 	ctx := context.Background()
@@ -227,26 +140,28 @@ func TestExecuteCompletionStream_SuccessAndUnsupported(t *testing.T) {
 		ModelGroupID: mgOAI.ID, GlobalModelID: oaiModel.ID, CredentialID: oaiCred.ID, Weight: 1, Status: domain.DeploymentStatusActive,
 	}))
 
-	// 2. Unsupported provider (cohere does not implement StreamingCompletionAdapter)
-	cohModel := &domain.GlobalModel{ID: "cohere/command-r", Provider: domain.ProviderCohere, ModelName: "command-r", SupportsInference: true, LifecycleStatus: domain.ModelStatusActive}
-	require.NoError(t, repo.UpsertGlobalModel(ctx, cohModel))
-	cohCred := &domain.ProviderCredential{OrgID: org.ID, Provider: domain.ProviderCohere, BaseURL: oaiServer.URL, IsActive: true}
-	require.NoError(t, vault.EncryptCredential(cohCred, "sk-coh"))
-	require.NoError(t, repo.CreateProviderCredential(ctx, cohCred))
+	// 2. Unsupported provider (anthropic does not implement StreamingCompletionAdapter)
+	antModel := &domain.GlobalModel{ID: "anthropic/claude-haiku-4-5-20251001", Provider: domain.ProviderAnthropic, ModelName: "claude-haiku-4-5-20251001", SupportsInference: true, LifecycleStatus: domain.ModelStatusActive}
+	require.NoError(t, repo.UpsertGlobalModel(ctx, antModel))
+	antCred := &domain.ProviderCredential{OrgID: org.ID, Provider: domain.ProviderAnthropic, BaseURL: oaiServer.URL, IsActive: true}
+	require.NoError(t, vault.EncryptCredential(antCred, "sk-ant"))
+	require.NoError(t, repo.CreateProviderCredential(ctx, antCred))
 
-	mgCoh := &domain.ModelGroup{OrgID: org.ID, Alias: "cmpl-unsup", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
-	require.NoError(t, repo.CreateModelGroup(ctx, mgCoh))
+	mgAnt := &domain.ModelGroup{OrgID: org.ID, Alias: "cmpl-unsup", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
+	require.NoError(t, repo.CreateModelGroup(ctx, mgAnt))
 	require.NoError(t, repo.CreateDeployment(ctx, &domain.Deployment{
-		ModelGroupID: mgCoh.ID, GlobalModelID: cohModel.ID, CredentialID: cohCred.ID, Weight: 1, Status: domain.DeploymentStatusActive,
+		ModelGroupID: mgAnt.ID, GlobalModelID: antModel.ID, CredentialID: antCred.ID, Weight: 1, Status: domain.DeploymentStatusActive,
 	}))
 
 	pol, polErr := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
 	require.NoError(t, polErr)
 	oaiAdp := openai.NewAdapter(oaiServer.Client())
 	oaiAdp.SetSSRFPolicy(pol)
+	antAdp := anthropic.NewAdapter(oaiServer.Client())
+	antAdp.SetSSRFPolicy(pol)
 	reg := adapter.NewRegistry()
 	reg.Register(oaiAdp)
-	reg.Register(cohere.NewAdapter(oaiServer.Client(), pol))
+	reg.Register(antAdp)
 
 	rCfg := config.Default().Router
 	rCfg.BaseRetryDelay = time.Millisecond

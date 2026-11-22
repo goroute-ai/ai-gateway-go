@@ -550,8 +550,8 @@ func TestPostgres_GuardrailRegistryAndVaultRotationLive(t *testing.T) {
 
 	defA1 := &domain.GuardrailDefinition{
 		OrgID:       orgA.ID,
-		Name:        "bedrock-guard",
-		Provider:    "bedrock",
+		Name:        "openai-mod-guard",
+		Provider:    "openai_moderation",
 		EventHooks:  []domain.GuardrailHook{domain.GuardrailHookPreCall, domain.GuardrailHookPostCall},
 		StreamScope: domain.StreamScopeStreaming,
 		StreamScopeByHook: domain.StreamScopeByHook{
@@ -575,8 +575,8 @@ func TestPostgres_GuardrailRegistryAndVaultRotationLive(t *testing.T) {
 	}
 	defA2 := &domain.GuardrailDefinition{
 		OrgID:      orgA.ID,
-		Name:       "bedrock-guard",
-		Provider:   "bedrock",
+		Name:       "openai-mod-guard",
+		Provider:   "openai_moderation",
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPreCall},
 		Precedence: 2,
 		Status:     domain.GuardrailStatusActive,
@@ -592,8 +592,8 @@ func TestPostgres_GuardrailRegistryAndVaultRotationLive(t *testing.T) {
 	}
 	defB := &domain.GuardrailDefinition{
 		OrgID:      orgB.ID,
-		Name:       "bedrock-guard",
-		Provider:   "bedrock",
+		Name:       "openai-mod-guard",
+		Provider:   "openai_moderation",
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPreCall},
 		Status:     domain.GuardrailStatusActive,
 	}
@@ -685,14 +685,14 @@ func TestPostgres_GuardrailRegistryAndVaultRotationLive(t *testing.T) {
 	}
 
 	// Update definition without secrets preserves rotated secret and propagates renamed guardrail_name.
-	gotDef.Name = "bedrock-guard-renamed"
+	gotDef.Name = "openai-mod-guard-renamed"
 	gotDef.EncryptedSecrets = ""
 	gotDef.EncryptedDEK = ""
 	if err := freshRepo.UpdateGuardrailDefinition(ctx, gotDef); err != nil {
 		t.Fatalf("UpdateGuardrailDefinition: %v", err)
 	}
 	gotB1, err := freshRepo.GetGuardrailBinding(ctx, b1.ID)
-	if err != nil || gotB1.GuardrailName != "bedrock-guard-renamed" {
+	if err != nil || gotB1.GuardrailName != "openai-mod-guard-renamed" {
 		t.Fatalf("expected binding GuardrailName updated in Postgres, got %+v err=%v", gotB1, err)
 	}
 	gotDefAfter, err := freshRepo.GetGuardrailDefinition(ctx, defA1.ID)

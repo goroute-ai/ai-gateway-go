@@ -31,33 +31,11 @@ This guide explains how to configure, operate, and integrate every architectural
 Set any upstream provider API key in your environment and start the server or SDK. The gateway automatically seeds the default organization (`org_default`), encrypts your keys in the in-memory AES-256-GCM vault, and registers standard aliases (`"fast"`, `"reasoning"`, `"auto"`):
 
 ```bash
-# Frontier LLM Providers
+# OpenAPI-First LLM Providers
 export OPENAI_API_KEY="sk-proj-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
-export GEMINI_API_KEY="AIzaSy..."
-export MISTRAL_API_KEY="mis_..."
-
-# Enterprise Cloud Hyperscalers
-export AWS_ACCESS_KEY_ID="AKIA..."
-export AWS_SECRET_ACCESS_KEY="..."
-export AWS_REGION="us-east-1"
-
-export GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"my-proj",...}'
-export GCP_PROJECT_ID="my-project"
-export GCP_REGION="us-central1"
-
-# Cohere v2
-export COHERE_API_KEY="co-..."
-
-# Certified High-Performance OpenAI-Compatible Engines
 export GROQ_API_KEY="gsk_..."
-export CEREBRAS_API_KEY="csk_..."
-export SAMBANOVA_API_KEY="..."
-export XAI_API_KEY="xai-..."
-export TOGETHER_API_KEY="..."
-export FIREWORKS_API_KEY="..."
-export DEEPSEEK_API_KEY="dsk_..."
-export PERPLEXITY_API_KEY="pplx-..."
+export OPENROUTER_API_KEY="sk-or-v1-..."
 
 go run ./cmd/gateway -config configs/config.yaml
 ```
@@ -82,22 +60,22 @@ model_list:
 
   - model_name: "fast"
     model_params:
-      model: "gemini/gemini-2.5-flash"
-      api_key: "os.environ/GEMINI_API_KEY"
+      model: "openai/gpt-4o-mini"
+      api_key: "os.environ/OPENAI_API_KEY"
       weight: 20
       rpm: 1000
 
   - model_name: "reasoning"
     routing_strategy: "latency-based"
     model_params:
-      model: "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
-      api_key: "os.environ/AWS_ACCESS_KEY_ID:os.environ/AWS_SECRET_ACCESS_KEY:us-east-1"
+      model: "anthropic/claude-sonnet-4-20250514"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
       weight: 100
 
-  - model_name: "enterprise-vertex"
+  - model_name: "openrouter-sonnet"
     model_params:
-      model: "vertex/gemini-2.5-pro"
-      api_key: "os.environ/GCP_SERVICE_ACCOUNT_JSON"
+      model: "openrouter/anthropic/claude-sonnet-4-5"
+      api_key: "os.environ/OPENROUTER_API_KEY"
       weight: 100
 ```
 
@@ -105,17 +83,17 @@ model_list:
 Import `github.com/goroute-ai/ai-gateway-go/pkg/gateway` directly in your Go application. The SDK provides self-contained public mirror types (`gateway.ChatRequest`, `gateway.Message`, `gateway.RoutingHints`, `gateway.RouterOptions`, `gateway.FallbackTarget`, `gateway.VirtualKeyRequest`, `gateway.VirtualKeyInfo`, `gateway.MCPServerConfig`, `gateway.A2AAgentConfig`) so callers do not need to import gateway internals:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.23.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.0
 ```
 
 ```go
-// Embedded gateway with silent stdout logging, v1.23.0 routing/rotation, and custom auth options
+// Embedded gateway with silent stdout logging, v1.24.0 routing/rotation, and custom auth options
 gw, err := gateway.New(
     gateway.WithModelList(
         gateway.ModelEntry{
             ModelName:         "fast",
-            Model:             "gemini/gemini-2.5-flash",
-            APIKey:            "os.environ/GEMINI_API_KEY",
+            Model:             "openai/gpt-4o-mini",
+            APIKey:            "os.environ/OPENAI_API_KEY",
             RoutingStrategy:   "latency-based",
             Priority:          0,
             Region:            "us-central1",
@@ -162,10 +140,10 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 ### Operator Console Features
 - **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency, micro-dollar cost, and guardrail action telemetry.
 - **Organizations, Teams & Policies**: Create and manage organizations, teams, users, micro-dollar budgets, provider subscriptions, and org-level model policies.
-- **Model Catalogue & Routing Explorer**: Search and filter 100+ AI models across 12+ providers, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
+- **Model Catalogue & Routing Explorer**: Search and filter models across `openai`, `anthropic`, `groq`, and `openrouter`, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
 - **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team/user ownership, expiry, allowed MCP servers / A2A agents, monthly micro-dollar budget limits, and RPM/TPM rate limits.
 - **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, virtual key, model, and provider.
-- **Guardrails Console & Usage Metrics**: Configure Layer 0 baseline rules (prompt injection, PII, secrets, 5 toxicity categories), register & bind any of the 19 built-in guardrail drivers (cloud, OSS, Starlark `custom_code`, webhooks, LLM judges), manage cross-turn tool trust policies, simulate via `/v1/guardrails/apply`, and track micro-dollar guardrail cost attribution.
+- **Guardrails Console & Usage Metrics**: Configure Layer 0 baseline rules (prompt injection, PII, secrets, 5 toxicity categories), register & bind any of the 15 built-in guardrail drivers (external moderation/PII services, Starlark `custom_code`, webhooks, LLM judges, tool/MCP governance), manage cross-turn tool trust policies, simulate via `/v1/guardrails/apply`, and track micro-dollar guardrail cost attribution.
 - **Upstream Credentials Vault**: Add and rotate AES-256-GCM encrypted provider credentials with live preflight validation against provider endpoints.
 
 ---
@@ -173,19 +151,18 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 ## Unified API & Wire Normalization
 
 ### What It Does
-Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) and translates requests/responses through dedicated adapters and configurable OpenAI-compatible provider profiles. The current adapter implementations are under `internal/adapter/`; consult those packages and provider tests for exact capabilities.
-- **OpenAI** (`/v1/chat/completions`, `/v1/embeddings`)
+Exposes a single OpenAI-compatible Data Plane (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`, `/v1/responses`, `/v1/messages`, `/v1/audio/*`, `/v1/images/*`, `/v1/files`, `/v1/batches`, `/v1/realtime`) and translates requests/responses strictly through OpenAPI-first adapters under `internal/adapter/`:
+- **OpenAI** (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*`, `/v1/realtime`)
 - **Anthropic Claude** (`/v1/messages` with stateful SSE event synthesis: `message_start` $\rightarrow$ `content_block_delta` $\rightarrow$ `message_delta` $\rightarrow$ `message_stop`)
-- **Google Gemini** (`/v1beta/models/{model}:generateContent` & `:streamGenerateContent?alt=sse`, plus Vertex AI Express Mode auto-detection)
-- **Mistral AI** (`/v1/chat/completions`, `/v1/embeddings`)
-- **Ollama** (Local `/v1/chat/completions`, `/v1/embeddings`)
+- **Groq** (`/openai/v1/chat/completions`, `/openai/v1/completions`, `/openai/v1/audio/*`, `/openai/v1/models`)
+- **OpenRouter** (`/api/v1/chat/completions`, `/api/v1/models` with reasoning parameter mapping)
 
 ### Key Techniques Normalized Automatically
 | Feature | How the Gateway Normalizes It |
 | :--- | :--- |
-| **System Prompts** | Extracted into top-level `system` parameter for Anthropic and `systemInstruction` for Gemini. |
-| **Reasoning / Thinking** | `reasoning_effort: "low" \| "medium" \| "high"` maps to `budget_tokens` (`1024`/`4096`/`16384`) on Anthropic and `thinkingConfig.thinkingBudget` on Gemini 2.5. |
-| **Tool / Function Calling** | OpenAI `tools[]` & `tool_calls[]` translate bidirectionally to Anthropic `tool_use`/`tool_result` blocks and Gemini `functionDeclarations`/`functionCall` parts. |
+| **System Prompts** | Extracted into top-level `system` parameter for Anthropic and `developer` role for OpenAI reasoning models. |
+| **Reasoning / Thinking** | `reasoning_effort: "low" \| "medium" \| "high"` maps to `budget_tokens` (`1024`/`4096`/`16384`) on Anthropic and OpenRouter `reasoning` effort fields. |
+| **Tool / Function Calling** | OpenAI `tools[]` & `tool_calls[]` translate bidirectionally to Anthropic `tool_use`/`tool_result` blocks and Groq/OpenRouter tool calls. |
 | **Zero-Buffer SSE Framing** | Flushes every SSE `data:` frame immediately via `http.Flusher` with zero intermediate response buffering. |
 
 ### Go SDK Usage & Routing Options
@@ -216,8 +193,8 @@ Custom Go hooks can also be injected at initialization with `WithRouterConfig`, 
 ### HTTP Request Routing Hints & Response Telemetry Headers
 Every `/v1/chat/completions` call accepts optional inbound routing hint headers (`X-Gateway-Allowed-Region`, `X-Gateway-Session-Id`, `X-Gateway-Preferred-Deployment-Id`, `X-Gateway-Priority`, `X-Gateway-Hedge-After-Ms`, `X-Gateway-Tags`, `X-Gateway-Tag-<Name>`) and returns real-time telemetry headers:
 - `X-Gateway-Request-Id`: Unique request correlation ID (`req_...`)
-- `X-Gateway-Provider`: Winning upstream provider (`gemini`, `anthropic`, `openai`, `mistral`, `ollama`)
-- `X-Gateway-Model`: Resolved upstream model (`gemini-2.5-flash`, `claude-sonnet-4-20250514`, etc.)
+- `X-Gateway-Provider`: Winning upstream provider (`openai`, `anthropic`, `groq`, `openrouter`)
+- `X-Gateway-Model`: Resolved upstream model (`gpt-4o-mini`, `claude-sonnet-4-20250514`, etc.)
 - `X-Gateway-Cost-Micros`: Exact request cost in micro-USD ($10^{-6}\text{ USD}$)
 - `X-Gateway-Latency-Ms`: End-to-end request latency in milliseconds
 - `X-Gateway-Routing-Micros`: Stage 0–4 routing decision time in microseconds
@@ -234,7 +211,7 @@ Every `/v1/chat/completions` call accepts optional inbound routing hint headers 
 ### What It Does
 Enforces a strict **4-Layer Multi-Tenant Model Hierarchy** while supporting zero-friction **Dynamic `provider/model` Wildcard Routing** and **Automated Upstream Model Discovery**:
 1. **Layer 1 (Global Model Catalogue)**: Capabilities (`supports_tools`, `supports_reasoning`, `max_input_tokens`) and versioned pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`) for all models.
-2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `gemini`, `mistral`, `ollama`) a tenant organization is entitled to use.
+2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `groq`, `openrouter`) a tenant organization is entitled to use.
 3. **Layer 3 (Organization Model Policies)**: Explicit tenant compliance approval per `global_model_id`.
 4. **Layer 4 (Model Groups & Physical Deployments)**: Maps logical aliases (`"fast"`, `"reasoning"`) to physical provider endpoints and encrypted Vault credentials.
 
@@ -247,11 +224,11 @@ discovery:
 ```
 
 ### Go SDK & Dynamic Wildcard Usage
-You can pass any `"provider/model"` string (e.g., `"gemini/gemini-2.5-flash"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`) directly to `gw.Chat(...)` without pre-creating an alias:
+You can pass any `"provider/model"` string (e.g., `"groq/llama-3.1-8b-instant"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`, `"openrouter/openai/gpt-4o-mini"`) directly to `gw.Chat(...)` without pre-creating an alias:
 
 ```go
 models, _ := gw.ListModels(ctx) // Returns tenant-filtered model IDs from GET /v1/models
-res, _ := gw.Chat(ctx, "gemini/gemini-2.5-flash", "Direct wildcard routing!")
+res, _ := gw.Chat(ctx, "openai/gpt-4o-mini", "Direct wildcard routing!")
 ```
 
 ### Control Plane HTTP Endpoints
@@ -271,7 +248,7 @@ curl -X POST http://localhost:8080/admin/v1/organizations/org_default/subscripti
 ## Intelligent Pre-Routing, Candidate Filtering & Load Balancing
 
 ### Stage 0: PreRouter & Model Resolution Modes
-1. **Explicit Model (`"gemini-2.5-flash"`, `"claude-sonnet-4-20250514"`)**: Routes directly to the specified model or `"provider/model"`.
+1. **Explicit Model (`"gpt-4o-mini"`, `"claude-sonnet-4-20250514"`)**: Routes directly to the specified model or `"provider/model"`.
 2. **Logical Alias (`"fast"`, `"reasoning"`, `"coding"`)**: Routes to a named `ModelGroup` containing one or more priority-tiered, load-balanced deployments across regions or providers.
 3. **Comma-Separated Racing (`"model-a,model-b"`)**: Races candidate groups/models concurrently with hedged stagger delays (`hedge_delay_ms`).
 4. **Virtual Pre-Routers (`PreRouterRegistry`)**:
@@ -285,7 +262,7 @@ Before selection, `DeploymentFilterChain` narrows candidates by deployment healt
 
 | Strategy Value | Selection Algorithm | Best For |
 | :--- | :--- | :--- |
-| `weighted-shuffle` | Random selection proportional to deployment `weight` ($P(d_i) = w_i / \sum w_j$). | Traffic splitting (e.g., 80% Gemini / 20% OpenAI). |
+| `weighted-shuffle` | Random selection proportional to deployment `weight` ($P(d_i) = w_i / \sum w_j$). | Traffic splitting (e.g., 80% Groq / 20% OpenAI). |
 | `round-robin` | Atomic deterministic rotation across healthy peers in the tier. | Even request distribution across homogeneous nodes. |
 | `least-busy` | Picks deployment with lowest shared in-flight request count. | Long-running streaming & reasoning workloads. |
 | `latency-based` | Picks lowest shared time-to-first-token EWMA (alpha 0.3); uses a 250 ms baseline for deployments without a sample. | Latency-critical interactive chat. |
@@ -329,7 +306,7 @@ router:
   - **Multi-Issuer OIDC & Introspection**: Configure `auth.enable_data_plane_jwt`, `auth.oidc_issuers[]` (per-issuer JWKS/discovery, claim mappings, email domain allowlists), `auth.introspection` (RFC 7662 / UserInfo), and `auth.proxy_auth` (CIDR-guarded reverse proxy identity headers). Bind human identities explicitly by `(org_id, oidc_issuer, oidc_subject)`.
   - **Operator Sessions, HIBP & CLI Login**: Browser sessions use signed `goroute_session` cookies plus `X-CSRF-Token` validation on mutations; `/auth/login` and `/auth/password` support optional k-anonymity HIBP password screening (`auth.enable_hibp_check`) and login throttling.
   - **SCIM 2.0 Provisioning & Key Rotation Grace Periods**: `/scim/v2/Users` and `/scim/v2/Groups` apply user and team membership changes in tenant-scoped atomic transactions. Scheduled or manual key rotations (`POST /admin/v1/keys/{keyID}/rotate`) support dual-valid grace windows emitting `X-Gateway-Key-Deprecated` and `X-Gateway-Key-Revoke-At`.
-- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
+- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
   - Every credential gets a unique random 32-byte **Data Encryption Key (DEK)** + 12-byte `DataNonce`.
   - The DEK is encrypted by the gateway's 32-byte **Master Key Encryption Key (`master_encryption_key`)** + 12-byte `DEKNonce`.
 
@@ -421,10 +398,10 @@ model_list:
     fallback_targets:
       - target: "backup-claude"
     model_params:
-      model: "gemini/gemini-2.5-flash"
-      api_key: "os.environ/GEMINI_API_KEY"
+      model: "openai/gpt-4o-mini"
+      api_key: "os.environ/OPENAI_API_KEY"
       priority: 0
-      region: "us-central1"
+      region: "us-east"
       tags: ["tier:primary"]
   - model_name: "backup-claude"
     model_params:
@@ -448,7 +425,7 @@ $$\text{CostMicros} = \left\lfloor \frac{\text{picos} + 500,000}{1,000,000} \rig
 - **Hot Path ($0\text{ ms}$ DB Blocking)**: After every inference call, `SpendWorker.Enqueue()` synchronously commits a durable outbox event and pushes a `SpendEvent` into a `16,384`-slot buffered Go channel flushed in batches of `250` every `500ms`.
 - **Multi-Dimensional Quotas & Multi-Window Budgets**: Configure `MaxBudgetMicros` and `BudgetResetPeriod` across **Virtual Key**, **Team**, **Organization**, **User**, **End User** (`/admin/v1/end-users`), **Tag** (`/admin/v1/tags`), **Model Access Group** (`/admin/v1/model-access-groups`), per-model `/admin/v1/quotas`, **Deployment**, and **Provider** levels, plus simultaneous **Multi-Window Budgets** (`/admin/v1/budget-windows`: `hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`).
 - **Soft Budget Alerts, Throttling & Temp Increases**: Configure `finops.soft_budget_webhook_url`, `finops.soft_budget_cooldown_sec`, `finops.budget_exceeded_throttle_pct`, per-key budget model fallback, and temporary budget boosts (`POST /admin/v1/keys/{keyID}/temp-budget`). Configure `router.priority_capacity` alongside `/admin/v1/deployments/{depID}/ptu-shares` and `/admin/v1/priority-classes` for Provisioned Throughput Unit guarantees and elastic borrowing.
-- **Fail-Closed Estimate Requirements**: Budgeted chat, completion, Anthropic Messages, Responses, embeddings, rerank, image generation/edit/variation, and audio speech requests require known pricing and a deterministic pre-dispatch upper bound. For routed aliases, the reservation uses the maximum verified/custom rates available across matching catalog models. Embeddings use input byte length as a conservative token bound. Audio transcription, moderation, Realtime, and Batch currently return `503 budget_estimate_unavailable` before upstream dispatch/session/job creation. Redis unavailability prevents a budgeted request from dispatching unless `rate_limit.fallback_to_local_on_outage: true` is explicitly configured for single-replica degradation. Reservations expire after one hour if a process crashes before settlement; this can temporarily reduce available budget until expiry.
+- **Fail-Closed Estimate Requirements**: Budgeted chat, completion, Anthropic Messages, Responses, embeddings, image generation/edit/variation, and audio speech requests require known pricing and a deterministic pre-dispatch upper bound. For routed aliases, the reservation uses the maximum verified/custom rates available across matching catalog models. Embeddings use input byte length as a conservative token bound. Audio transcription, moderation, Realtime, and Batch currently return `503 budget_estimate_unavailable` before upstream dispatch/session/job creation. Redis unavailability prevents a budgeted request from dispatching unless `rate_limit.fallback_to_local_on_outage: true` is explicitly configured for single-replica degradation. Reservations expire after one hour if a process crashes before settlement; this can temporarily reduce available budget until expiry.
 
 ### Go SDK & Control Plane Usage
 ```go
@@ -464,7 +441,7 @@ fmt.Printf("Total Spend: %d micro-USD ($%.6f)\n", summary.TotalCostMicros, summa
 curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
   -H "Authorization: Bearer $MASTER_ADMIN_KEY" \
   -d '{
-    "global_model_id": "gemini/gemini-2.5-flash",
+    "global_model_id": "openai/gpt-4o-mini",
     "input_cost_micros_per_1m": 150000,
     "output_cost_micros_per_1m": 600000
   }'
@@ -475,7 +452,7 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 ## Rate Limiting & Deterministic Response Caching
 
 ### Part A: Multi-Level Atomic Rate Limiting (RPM, TPM, TPD & Concurrency)
-1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Gemini/Mistral/Llama) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.
+1. **Model-Specific BPE Pre-Flight Token Estimation**: Estimates input tokens using family-specific character-to-token ratios (`3.2` for Claude, `3.5` for GPT-4o/4.1/o3, `3.8` for Llama/open-weight models) + per-message chat template overhead + `1024` reserve when `reasoning_effort` is active.
 2. **Single-Roundtrip Redis Lua Quota Check & Post-Response Reconciliation**: `check_descriptors.lua` atomically verifies RPM, TPM, ITPM, OTPM, TPD, Concurrency, Session Iterations, and Spend/Multi-Window Budgets across Key, Team, User, Org, End-User, Tag, Model-Access-Group, and per-model descriptors in 1 RTT, then `reconcile_descriptors.lua` reconciles `actual - estimated` tokens and replaces the micro-dollar reservation with settled spend.
 3. **`rolling_24h` Windows & Cold Recovery Boundary**: In `rolling_24h` windows, settled spend expires 24 hours after its spend timestamp (`gw:dq:{org:<org_id>}:r24h:<entity>`). On cold or evicted Redis state, `AcquireDescriptors` loads timestamped PostgreSQL `spend_logs` (plus any unexpired migration hold) and initializes Redis atomically with admission (`503 quota_policy_unavailable` if PostgreSQL history cannot load). Note the recovery boundary: PostgreSQL restores persisted spend after complete Redis state loss; Redis-only in-flight reservations and settlements not yet persisted to PostgreSQL cannot be reconstructed from that history.
 4. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters by default (`fallback_to_local_on_outage: false`). If Redis is unavailable, the gateway returns `HTTP 503 rate_limiter_unavailable`.
@@ -519,9 +496,9 @@ GoRoute combines a **Layer 0** per-organization baseline policy (`POST /admin/v1
   - **Built-in Toxicity & Content Filtering**: Evaluates prompts and outputs across 5 selectable categories (`harm_toxic_abuse`, `harmful_violence`, `harmful_self_harm`, `denied_insults`, `bias`) with `low`/`medium`/`high` severity thresholds and custom `content_exceptions`, persisted in PostgreSQL (`0016`).
   - **Configurable Modes & Actions**: `"block"`, `"redact"`, or `"audit"` actions under `"enforce"` or `"logging_only"` mode (`0010`), plus custom blocked keywords.
 - **Layer 1 Named Guardrail Registry & Hierarchical Bindings (`guardrail_definitions` & `guardrail_bindings`)**:
-  - **19 Built-In Drivers**: `local_content_filter`, `custom_code` (sandboxed Starlark executing `def apply_guardrail(inputs, request_data, input_type):` with deterministic step/timeout caps and SSRF-checked `http_get`/`http_post`), `generic_http` (rich webhook payload with `modify` support and independent per-scanner timeouts/fail-open policies), `llm_as_a_judge`, `decision_model`, `openai_moderation`, `bedrock` (SigV4), `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `tool_permission`, `tool_policy` (cross-turn untrusted->trusted taint tracking), `block_code_execution`, `mcp_security`, and `mcp_end_user_permission`. Upstream MCP hops also support `mcp_jwt_signer` token verification, claim transforms, and short-lived Vault JWT signing.
+  - **15 Built-In Drivers**: `local_content_filter`, `custom_code` (sandboxed Starlark executing `def apply_guardrail(inputs, request_data, input_type):` with deterministic step/timeout caps and SSRF-checked `http_get`/`http_post`), `generic_http` (rich webhook payload with `modify` support and independent per-scanner timeouts/fail-open policies), `llm_as_a_judge`, `decision_model`, `openai_moderation`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `tool_permission`, `tool_policy` (cross-turn untrusted->trusted taint tracking), `block_code_execution`, `mcp_security`, and `mcp_end_user_permission`. Upstream MCP hops also support `mcp_jwt_signer` token verification, claim transforms, and short-lived Vault JWT signing.
   - **7 Lifecycle Hooks & Scopes**: Supports `pre_call`, parallel `during_call` (cancels upstream dispatch immediately on violation), `post_call`, async `logging_only`, `pre_mcp_call`, `during_mcp_call`, and `post_mcp_call`; configurable per-hook `stream_scope` (`both`, `streaming`, `non_streaming`), tag-driven `mode_rule` matrices, weighted load balancing with cooldowns across same-named definitions, and anti-bypass `default_on` / `is_locked` enforcement.
-- **Endpoint & Streaming Coverage**: Text input/output checks run across `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings`, `/v1/rerank`, `/v1/moderations`, `/v1/images/*`, `/v1/audio/*`, `/v1/realtime`, Batch items, MCP hubs, and A2A flows. SSE streaming responses are scanned chunk-by-chunk through bounded rolling-overlap buffers (`StreamRedactor` and `StreamWindowEvaluator`) plus incremental streamed `tool_calls` delta inspection, masking or halting the stream immediately if sensitive content crosses chunk boundaries.
+- **Endpoint & Streaming Coverage**: Text input/output checks run across `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings`, `/v1/moderations`, `/v1/images/*`, `/v1/audio/*`, `/v1/realtime`, Batch items, MCP hubs, and A2A flows. SSE streaming responses are scanned chunk-by-chunk through bounded rolling-overlap buffers (`StreamRedactor` and `StreamWindowEvaluator`) plus incremental streamed `tool_calls` delta inspection, masking or halting the stream immediately if sensitive content crosses chunk boundaries.
 - **Fail-Closed Policy Lookup**: If policy storage is unavailable, requests fail closed with `503 guardrail_policy_unavailable` before dispatch (or withhold outputs). A confirmed missing policy allows the request cleanly unless named `default_on` or locked guardrails apply.
 - **Standalone Evaluation API**: Virtual Keys authorized for `POST /v1/guardrails/apply` can evaluate any active named guardrail against texts, messages, tools, or tool calls without upstream LLM calls.
 
@@ -635,7 +612,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.master_encryption_key` | `GATEWAY_MASTER_ENCRYPTION_KEY` | 64-char hex | 32-byte AES-256-GCM Master Key Encryption Key (must be changed in `production`). |
 | `auth.previous_master_encryption_keys` | `GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS` | `[]` | Ordered list (or comma-separated env list) of prior 32-byte KEKs accepted read-only during rolling restarts after KEK rotation. |
 | `auth.allow_master_key_data_plane` | `GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE` | `false` | Opt-in flag allowing Master Admin Key on `/v1/*` data plane endpoints (disabled by default). |
-| `auth.allow_ambient_cloud_iam` | — | `false` | Opt-in flag allowing ambient AWS Bedrock, GCP Vertex, Azure, and RDS IAM credential resolution. |
+| `auth.allow_ambient_cloud_iam` | — | `false` | Opt-in flag allowing ambient `storage.rds_iam` credential resolution. |
 | `auth.enable_data_plane_jwt` | `GATEWAY_ENABLE_DATA_PLANE_JWT` | `false` | Enables OIDC/JWT bearer token verification on `/v1/*` data plane routes. |
 | `auth.custom_api_key_header` | `GATEWAY_CUSTOM_API_KEY_HEADER` | `""` | Custom header override for virtual key extraction (conflicts across sources are rejected). |
 | `auth.jwt_secret` | `GATEWAY_JWT_SECRET` | `""` | HMAC secret for verifying HS256 JWT tokens. |
@@ -647,7 +624,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.introspection.*` | — | `{}` | RFC 7662 token introspection / OIDC UserInfo verification settings (`token_info_endpoint`, `mode`, `cache_ttl`). |
 | `auth.proxy_auth.*` | — | `{}` | CIDR-guarded reverse proxy header authentication (`enabled`, `trusted_proxy_cidrs`, `header_mapping`). |
 | `auth.key_rotation_delivery_url` / `key_rotation_delivery_token` | `GATEWAY_KEY_ROTATION_DELIVERY_URL` / `_TOKEN` | `""` | HTTPS webhook destination and bearer secret required to promote scheduled replacement keys. |
-| `auth.key_rotation_sink.*` | `GATEWAY_KEY_ROTATION_SINK_*` | `""` | Declarative secret-manager sink (`driver`: `webhook`, `vault_kv2`, or `aws_secrets_manager`; `address`, `mount`, `path_prefix`, `namespace`, `token`, `region`, `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`). |
+| `auth.key_rotation_sink.*` | `GATEWAY_KEY_ROTATION_SINK_*` | `""` | Declarative secret-manager sink (`driver`: `webhook` or `vault_kv2`; `address`, `mount`, `path_prefix`, `namespace`, `token`). |
 | `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background worker interval checking due virtual key rotations. |
 | `auth.key_rotation_grace_period` | `GATEWAY_KEY_ROTATION_GRACE_PERIOD` | `24h` | Default grace window during which a rotated key remains valid with deprecation headers. |
 | `auth.ui_username` / `ui_password` | `GATEWAY_UI_USERNAME` / `GATEWAY_UI_PASSWORD` | `""` | Optional operator password login credentials for `/auth/login`. |
@@ -743,9 +720,11 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `guardrails.definitions[]` | — | `[]` | Declarative named guardrail definitions seeded into the registry on startup (encrypts `secrets` via Vault). |
 | `guardrails.tool_policies[]` | — | `[]` | Declarative per-tool `input_policy` / `output_policy` trust rules seeded on startup. |
 | `mcp.enabled` | `GATEWAY_MCP_ENABLED` | `true` | Enables Model Context Protocol (MCP) data plane & control plane. |
+| `mcp.default_protocol_version` | — | `"2026-07-28"` | Default active Gateway MCP specification (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, or `2026-07-28`; overridable at runtime via `PUT /admin/v1/mcp/spec` / Web UI). |
+| `mcp.strict_schema_validation` | — | `false` | Validates incoming `/mcp` JSON-RPC payloads against the active release's embedded `schema.yaml` via `jsonschema/v6`. |
 | `mcp.allow_stdio_servers` | `GATEWAY_MCP_ALLOW_STDIO` | `false` | Enables local stdio subprocess MCP transport (requires explicit opt-in). |
 | `mcp.allowed_stdio_binaries` | — | `[]` | Explicit allowlist of absolute binary paths permitted for stdio transport. |
-| `mcp.enable_session_compat_2025` | — | `true` | Enables MCP 2025-11-25 stateful session translation adapter. |
+| `mcp.enable_session_compat_2025` | — | `true` | Enables `StatefulStreamableTransport` session translation for `2025-03-26`, `2025-06-18`, and `2025-11-25` MCP servers. |
 | `mcp.session_ttl_2025` | — | `15m` | Session expiration TTL for legacy 2025 MCP connections. |
 | `mcp.cache_key_secret` | — | — | HMAC-SHA256 secret for delimiter-collision-proof MCP cache keys (defaults to `auth.master_encryption_key`). |
 | `mcp.max_payload_bytes` | — | `10485760` | Maximum allowed payload size for MCP requests (10 MB). |
@@ -773,14 +752,6 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `security.network.outbound_ssrf.max_redirects` | — | `3` | Maximum HTTP redirect hops permitted on outbound provider calls. |
 | `security.network.inbound_caller.expose_on_public_internet` | — | `false` | Network policy flag documenting internet exposure stance. |
 | `security.network.inbound_caller.allowed_client_cidrs` | — | `[]` | Client CIDR allowlist for incoming network requests. |
-| `providers.custom_openai_compatible[].id` | — | — | Unique provider identifier (e.g. `"custom-vllm"`). |
-| `providers.custom_openai_compatible[].display_name` | — | — | Human-readable provider label. |
-| `providers.custom_openai_compatible[].base_url` | — | — | Upstream endpoint base URL. |
-| `providers.custom_openai_compatible[].supports_streaming` | — | `"true"` | Streaming capability override (`"true"`, `"false"`, `"unknown"`). |
-| `providers.custom_openai_compatible[].supports_tools` | — | `"true"` | Function/tool calling capability override. |
-| `providers.custom_openai_compatible[].supports_structured_outputs` | — | `"true"` | Structured outputs (`response_format: json_schema`) capability. |
-| `providers.custom_openai_compatible[].supports_list_models` | — | `true` | Whether upstream provider implements `GET /models`. |
-| `providers.custom_openai_compatible[].default_headers` | — | `{}` | Key-value HTTP headers automatically attached to outbound calls. |
 | `model_list[].model_name` | — | — | Virtual model name or alias presented to clients (`"fast"`, `"reasoning"`). |
 | `model_list[].routing_strategy` | — | `"weighted-shuffle"` | Routing policy: `"weighted-shuffle"`, `"round-robin"`, `"least-busy"`, `"latency-based"`, `"fastest-response"`, `"usage-based-headroom"`, `"lowest-cost"`. |
 | `model_list[].fallbacks` | — | `[]` | Ordered array of fallback model names triggered on upstream outage or rate-limit. |
@@ -790,10 +761,10 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `model_list[].saturation_fallbacks` | — | `[]` | Ordered specialized fallback targets triggered on saturation when `router.fallback_on_saturation` is true. |
 | `model_list[].drop_unsupported_params` | — | `false` | Group-level parameter stripping toggle overriding `router.drop_unsupported_params`. |
 | `model_list[].disable_cooldowns` | — | `false` | Group-level toggle suppressing circuit-breaker cooldown tripping. |
-| `model_list[].model_params.model` | — | — | Upstream provider/model identifier (e.g. `"gemini/gemini-2.5-flash"`). |
+| `model_list[].model_params.model` | — | — | Upstream provider/model identifier (e.g. `"openai/gpt-4o-mini"`, `"groq/llama-3.1-8b-instant"`). |
 | `model_list[].model_params.api_key` | — | — | Upstream provider API key (supports `os.environ/VAR`). |
 | `model_list[].model_params.api_base` | — | `""` | Custom upstream base URL override. |
-| `model_list[].model_params.region` | — | `""` | Cloud region for deployment affinity/region filtering (e.g. Bedrock/Vertex/regional clusters). |
+| `model_list[].model_params.region` | — | `""` | Region tag for deployment affinity/region filtering. |
 | `model_list[].model_params.priority` | — | `0` | Numeric priority tier (`0` is highest priority; lower tiers are exhausted before higher ones). |
 | `model_list[].model_params.tags` | — | `[]` | Deployment tags matched by request `&`/`!` tag filter expressions and enforced against team/key `allowed_routing_tags`. |
 | `model_list[].model_params.max_budget_micros` | — | `0` | Per-deployment spend cap in integer micro-dollars (`0` = unlimited). |
@@ -804,14 +775,11 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `model_list[].model_params.itpm` | — | `0` | Per-deployment Input Tokens Per Minute capacity limit (persisted as `itpm_capacity` in Admin API / OpenAPI / database). |
 | `model_list[].model_params.otpm` | — | `0` | Per-deployment Output Tokens Per Minute capacity limit (persisted as `otpm_capacity` in Admin API / OpenAPI / database). |
 | `model_list[].model_params.max_parallel_requests` | — | `0` | Distributed per-deployment concurrent in-flight request limit (`0` = unlimited). |
-| `model_list[].model_params.azure_deployment_name` | — | `""` | Deployment name for Azure OpenAI endpoints. |
-| `model_list[].model_params.api_version` | — | `""` | API version query parameter for Azure OpenAI endpoints. |
 | `model_list[].model_params.headers` | — | `{}` | Custom HTTP headers forwarded to the upstream model provider. |
 | `files.storage_dir` | `GOROUTE_FILES_DIR` | `os.TempDir()/goroute-files` | Local disk directory for stateful tenant files and batch JSONL files (enforces `0700` directory mode and `0600` file mode). |
 
-### Provider & Dialect Profile Options
-- OpenAI-compatible profiles in `internal/adapter/openaicompat` declare explicit `SupportedOperations`, `SupportsStreamOptions`, `DropUnsupportedParams` (opt-in, default `false`), `StrippedParams`, `ExtraBodyFields`, and `ReasoningMapping`.
-- Local/self-hosted profiles (`ollama`, `vllm`, `lm_studio`, `llamafile`, `xinference`) require explicit allowlisting in `security.network` if targeting private/loopback addresses.
+### Provider Options
+- All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
 - Imported catalog pricing defaults to `PricingStatusUnknown` (non-zero rates) or `PricingStatusUnrecorded` (zero rates); budgeted traffic requires `PricingStatusVerified` or `PricingStatusCustom` plus a deterministic pre-dispatch bound.
 
 ### Federated identity, key delivery, and upstream IAM
@@ -820,8 +788,8 @@ Link an existing user with the `oidc_issuer` and `oidc_subject` fields on the ad
 
 With `auth.enable_hibp_check` enabled, the gateway computes a password digest in memory and sends its five-character prefix to the configured range service. A confirmed breach blocks login and password changes. Service outages are logged and preserve password availability. Administrators can reset a breached operator password through the authorized password endpoint.
 
-Scheduled key rotation requires either an in-process Go SDK `KeySecretSink`, `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, or a declarative `auth.key_rotation_sink` (`webhook`, `vault_kv2`, or `aws_secrets_manager`). Both `Deliver` webhooks and `SecretSink` pushes execute transactionally inside scheduled rotation sweeps with strict SSRF controls (`https://` only, redirects disabled, private IP checks) and reuse the same AES-GCM-encrypted staged replacement across transient delivery failures until a `2xx` response promotes the key and begins the old key's grace window. Delivery success/failure counters are exported as `gateway_key_rotation_deliveries_total` and `gateway_key_rotation_delivery_failures_total`. Manual rotations return the replacement directly to the authorized caller.
+Scheduled key rotation requires either an in-process Go SDK `KeySecretSink`, `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, or a declarative `auth.key_rotation_sink` (`webhook` or `vault_kv2`). Both `Deliver` webhooks and `SecretSink` pushes execute transactionally inside scheduled rotation sweeps with strict SSRF controls (`https://` only, redirects disabled, private IP checks) and reuse the same AES-GCM-encrypted staged replacement across transient delivery failures until a `2xx` response promotes the key and begins the old key's grace window. Delivery success/failure counters are exported as `gateway_key_rotation_deliveries_total` and `gateway_key_rotation_delivery_failures_total`. Manual rotations return the replacement directly to the authorized caller.
 
 For zero-downtime master KEK rotation (`POST /admin/v1/security/rotate-kek`), `RotateKEKsTransactionally` atomically re-wraps all provider credentials, MCP servers, A2A agents, guardrail definitions, and `virtual_keys.staged_key_dek` rows before promoting the new KEK locally. During rolling multi-pod restarts, keep the retired key in `auth.previous_master_encryption_keys` (or `GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS`) until all replicas have rolled onto the new primary KEK.
 
-For RDS IAM, enable `storage.rds_iam.enabled`, set the region, and use the actual RDS endpoint and database user in a PostgreSQL DSN with `sslmode=verify-full`. Both startup and migration-only mode refresh IAM tokens on new connections. Use explicit credentials or configure the role and web identity token file. Set `auth.allow_ambient_cloud_iam` to opt in to Bedrock, Vertex, Azure, and RDS ambient credential resolution. Gateway replicas sharing a Redis upstream cache must use the same master encryption key.
+For RDS IAM, enable `storage.rds_iam.enabled`, set the region, and use the actual RDS endpoint and database user in a PostgreSQL DSN with `sslmode=verify-full`. Both startup and migration-only mode refresh IAM tokens on new connections. Use explicit credentials or configure the role and web identity token file. Set `auth.allow_ambient_cloud_iam` to opt in to RDS ambient credential resolution. Gateway replicas sharing a Redis upstream cache must use the same master encryption key.

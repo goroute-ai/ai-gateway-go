@@ -18,8 +18,6 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 | Live PostgreSQL persistence tests | `make test-postgres` (requires PostgreSQL and Redis) |
 | Strict live E2E tests (no skips) | `make test-e2e-strict` (requires PostgreSQL and Redis) |
 | Headless Chromium UI E2E | `make test-ui-e2e` (requires PostgreSQL, Redis, Node.js, and Playwright Chromium) |
-| Full containerized prod suite (Phases 1–8) | `make test-prod-containers` |
-| Live upstream provider canary | `make test-canary` (key-gated via `-tags=canary`) |
 | Build gateway into ignored output directory | `go build -o bin/ai-gateway ./cmd/gateway` |
 | Install UI dependencies | `make ui-install` |
 | Build and synchronize UI assets | `make ui-build` |
@@ -28,7 +26,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 
 `make release-check` runs `gofmt -w` through its `fmt` prerequisite, then vet, generation, unit tests, and E2E tests. It modifies files and requires PostgreSQL and Redis; inspect its prerequisites before running it on an existing worktree. `make ui-build` writes generated files under `internal/ui/dist/`.
 
-## Release Invariants (v1.23.0)
+## Release Invariants (v1.24.0)
 
 - Route provider and tool egress through `internal/security/network`; validate custom `BaseURL` inputs via `adapter.ValidateAndResolveBaseURL`, isolate untrusted user media fetches behind `DefaultPublicMediaPolicy` (`mediaPolicy`/`mediaClient`), and keep private-network preflight probes restricted to `platform_admin`.
 - Preserve tenant identity, `(org_id, oidc_issuer, oidc_subject)` federated binding (`0034`, including the transaction-locked duplicate-subject rollback preflight), single-transaction SCIM group updates, `team_member_permissions` and `self_serve_budget_policy` enforcement, `team_admin` hierarchy boundaries (`0035`), tri-state JSON allowlist semantics (`null` = Inherit vs `[]` = Deny All via `optionalStringSlice` and explicit JSON tags without `,omitempty` on `IdentityContext`, `Team`, and `VirtualKey`), and fail-closed authorization across `PreRouter`, `DeploymentFilterChain`, operator roles, virtual keys, `CustomAuthenticator`, MCP tools, and A2A agents.
@@ -39,7 +37,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 - Preserve file-upload quotas and concurrency limits. Defaults are 5 GiB per organization and 8 concurrent uploads; zero disables the corresponding limit.
 - Preserve durable spend delivery, idempotent Redis reconciliation, upper-bound budget reservations, lease renewal, `rolling_24h` `__init__:0` single-ZSET cold recovery from PostgreSQL (`503 quota_policy_unavailable` on history load failure), and budget-reset synchronization across multi-replica PostgreSQL/Redis deployments.
 - Preserve streaming guardrail inspection and redaction, including fail-closed policy handling, `logging_only` behavior, pre-first-chunk `X-Gateway-Provider`/`X-Gateway-Model` emission, and CORS `Access-Control-Expose-Headers`.
-- Treat OpenAPI and protocol specs as contract sources. `make specgen` validates OpenAPI/MCP/A2A specs and enforces `/v1`, `/admin/v1`, and `/auth` route parity (`120` OpenAPI paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`); it does not verify aliases, `/scim/v2/*`, MCP, or A2A routes automatically.
+- Treat OpenAPI and protocol specs as contract sources. `make specgen` validates OpenAPI/MCP/A2A specs, runs `cmd/mcpgen`, and enforces `/v1`, `/admin/v1`, and `/auth` route parity (`125` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `10` `/auth`, plus `4` provider aliases); it does not verify `/scim/v2/*`, MCP, or A2A routes automatically.
 - Keep `pkg/gateway` public SDK types self-contained (including `WithCustomAuthenticator`, `CustomAuthenticator`, `WithKeyRotationSecretSink`, `WithRoutingPlugin`, `WithPreRouter`, `WithRoutingHints`, `ConnectRealtime`, modality/spend helpers, and `WithHTTPClient`), model pricing history append-only, and `internal/ui/dist/` strictly synced with `web/dist/` within the `<= 560 KB` / `<= 150 KB` gzip bundle budget.
 
 ## Scoped Rules

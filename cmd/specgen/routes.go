@@ -14,11 +14,10 @@ var supportedHTTPMethods = map[string]bool{
 	"options": true, "head": true, "trace": true,
 }
 
-// checkDataPlaneRouteCoverage keeps the primary /v1 and /admin/v1 chi route
-// groups aligned with the gateway OpenAPI contract. Alias, MCP, and A2A route
-// groups are tracked separately.
+// checkDataPlaneRouteCoverage keeps the primary /v1, /admin/v1, /auth, /openai/v1,
+// and /anthropic/v1 chi route groups aligned with the gateway OpenAPI contract.
 func checkDataPlaneRouteCoverage(serverFile string, specPaths map[string]any) error {
-	for _, prefix := range []string{"/v1", "/admin/v1", "/auth"} {
+	for _, prefix := range []string{"/v1", "/admin/v1", "/auth", "/openai/v1", "/anthropic/v1"} {
 		if err := checkRouteGroupCoverage(serverFile, prefix, specPaths); err != nil {
 			return err
 		}

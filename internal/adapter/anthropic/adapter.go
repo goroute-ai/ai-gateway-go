@@ -60,71 +60,11 @@ func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string
 	return base + suffix, nil
 }
 
-type wireCacheControl struct {
-	Type string `json:"type"`
-	TTL  string `json:"ttl,omitempty"`
-}
-
-type wireContentBlock struct {
-	Type         string            `json:"type"`
-	Text         string            `json:"text,omitempty"`
-	Thinking     string            `json:"thinking,omitempty"`
-	ID           string            `json:"id,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	Input        any               `json:"input,omitempty"`
-	ToolUseID    string            `json:"tool_use_id,omitempty"`
-	Content      any               `json:"content,omitempty"`
-	Source       map[string]any    `json:"source,omitempty"`
-	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
-}
-
-type wireInputMessage struct {
-	Role    string             `json:"role"`
-	Content []wireContentBlock `json:"content"`
-}
-
-type wireTool struct {
-	Name         string            `json:"name"`
-	Description  string            `json:"description,omitempty"`
-	InputSchema  map[string]any    `json:"input_schema"`
-	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
-}
-
-type wireThinking struct {
-	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens,omitempty"`
-}
-
-type wireOutputConfig struct {
-	Effort string `json:"effort,omitempty"`
-}
-
-type wireOutputFormat struct {
-	Type   string `json:"type"`
-	Schema any    `json:"schema,omitempty"`
-}
-
-type wireMessageRequest struct {
-	Model         string             `json:"model"`
-	Messages      []wireInputMessage `json:"messages"`
-	MaxTokens     int                `json:"max_tokens"`
-	System        any                `json:"system,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Stream        bool               `json:"stream,omitempty"`
-	Tools         []wireTool         `json:"tools,omitempty"`
-	ToolChoice    any                `json:"tool_choice,omitempty"`
-	Thinking      *wireThinking      `json:"thinking,omitempty"`
-	OutputConfig  *wireOutputConfig  `json:"output_config,omitempty"`
-	OutputFormat  *wireOutputFormat  `json:"output_format,omitempty"`
-}
-
-func toWireCacheControl(cc *domain.CacheControl) *wireCacheControl {
+func toProviderCacheControl(cc *domain.CacheControl) *providers.AnthropicCacheControl {
 	if cc == nil || cc.Type == "" {
 		return nil
 	}
-	return &wireCacheControl{Type: cc.Type, TTL: cc.TTL}
+	return &providers.AnthropicCacheControl{Type: cc.Type, TTL: cc.TTL}
 }
 
 // sanitizeToolName normalizes tool names to match Anthropic's ^[a-zA-Z0-9_-]{1,128}$ constraint.
@@ -164,7 +104,11 @@ func isAdaptiveThinkingModel(model string) bool {
 	return strings.Contains(lower, "4-6") ||
 		strings.Contains(lower, "4.6") ||
 		strings.Contains(lower, "4-7") ||
-		strings.Contains(lower, "4.7")
+		strings.Contains(lower, "4.7") ||
+		strings.Contains(lower, "4-8") ||
+		strings.Contains(lower, "4.8") ||
+		strings.Contains(lower, "-5") ||
+		strings.Contains(lower, ".5")
 }
 
 func validateThinkingOutputLimit(model string, req *domain.CanonicalChatRequest) error {
@@ -228,14 +172,14 @@ func buildAnthropicToolChoice(tc any, origToSanitized map[string]string) any {
 	return nil
 }
 
-func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
-	var blocks []wireContentBlock
+func translateUserParts(m domain.CanonicalMessage) []providers.AnthropicContentBlock {
+	var blocks []providers.AnthropicContentBlock
 	if len(m.Parts) > 0 {
 		for _, p := range m.Parts {
-			cc := toWireCacheControl(p.CacheControl)
+			cc := toProviderCacheControl(p.CacheControl)
 			switch p.Type {
 			case "text":
-				blocks = append(blocks, wireContentBlock{
+				blocks = append(blocks, providers.AnthropicContentBlock{
 					Type:         "text",
 					Text:         p.Text,
 					CacheControl: cc,
@@ -243,7 +187,7 @@ func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
 			case "image_url":
 				if p.ImageURL != nil && p.ImageURL.URL != "" {
 					if mime, b64, ok := parseDataURI(p.ImageURL.URL); ok {
-						blocks = append(blocks, wireContentBlock{
+						blocks = append(blocks, providers.AnthropicContentBlock{
 							Type: "image",
 							Source: map[string]any{
 								"type":       "base64",
@@ -253,7 +197,7 @@ func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
 							CacheControl: cc,
 						})
 					} else {
-						blocks = append(blocks, wireContentBlock{
+						blocks = append(blocks, providers.AnthropicContentBlock{
 							Type: "image",
 							Source: map[string]any{
 								"type": "url",
@@ -270,7 +214,7 @@ func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
 						if mime == "" {
 							mime = "application/pdf"
 						}
-						blocks = append(blocks, wireContentBlock{
+						blocks = append(blocks, providers.AnthropicContentBlock{
 							Type: "document",
 							Source: map[string]any{
 								"type":       "base64",
@@ -280,7 +224,7 @@ func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
 							CacheControl: cc,
 						})
 					} else if p.Document.URL != "" {
-						blocks = append(blocks, wireContentBlock{
+						blocks = append(blocks, providers.AnthropicContentBlock{
 							Type: "document",
 							Source: map[string]any{
 								"type": "url",
@@ -294,30 +238,30 @@ func translateUserParts(m domain.CanonicalMessage) []wireContentBlock {
 		}
 	}
 	if len(blocks) == 0 {
-		blocks = append(blocks, wireContentBlock{
+		blocks = append(blocks, providers.AnthropicContentBlock{
 			Type: "text",
 			Text: m.Content,
 		})
 	}
 	if m.CacheControl != nil && len(blocks) > 0 && blocks[len(blocks)-1].CacheControl == nil {
-		blocks[len(blocks)-1].CacheControl = toWireCacheControl(m.CacheControl)
+		blocks[len(blocks)-1].CacheControl = toProviderCacheControl(m.CacheControl)
 	}
 	return blocks
 }
 
 // toAnthropicRequest translates CanonicalChatRequest into Anthropic's /v1/messages request body.
-func toAnthropicRequest(model string, req *domain.CanonicalChatRequest, stream bool) wireMessageRequest {
+func toAnthropicRequest(model string, req *domain.CanonicalChatRequest, stream bool) providers.AnthropicMessageRequest {
 	antReq, _ := toAnthropicRequestWithMap(model, req, stream)
 	return antReq
 }
 
 // toAnthropicRequestWithMap translates CanonicalChatRequest into Anthropic's /v1/messages request body.
-// Returns the wire payload and a map from sanitized tool names back to original names.
-func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, stream bool) (wireMessageRequest, map[string]string) {
-	var systemBlocks []wireContentBlock
+// Returns the OpenAPI-generated payload and a map from sanitized tool names back to original names.
+func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, stream bool) (providers.AnthropicMessageRequest, map[string]string) {
+	var systemBlocks []providers.AnthropicContentBlock
 	var systemPlain []string
 	hasSystemCacheControl := false
-	var messages []wireInputMessage
+	var messages []providers.AnthropicInputMessage
 
 	origToSanitized := make(map[string]string, len(req.Tools))
 	sanitizedToOrig := make(map[string]string, len(req.Tools))
@@ -332,36 +276,36 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 		case "system", "developer":
 			if strings.TrimSpace(m.Content) != "" {
 				systemPlain = append(systemPlain, m.Content)
-				cc := toWireCacheControl(m.CacheControl)
+				cc := toProviderCacheControl(m.CacheControl)
 				if cc != nil {
 					hasSystemCacheControl = true
 				}
-				systemBlocks = append(systemBlocks, wireContentBlock{
+				systemBlocks = append(systemBlocks, providers.AnthropicContentBlock{
 					Type:         "text",
 					Text:         m.Content,
 					CacheControl: cc,
 				})
 			}
 		case "tool":
-			block := wireContentBlock{
+			block := providers.AnthropicContentBlock{
 				Type:         "tool_result",
 				ToolUseID:    m.ToolCallID,
 				Content:      m.Content,
-				CacheControl: toWireCacheControl(m.CacheControl),
+				CacheControl: toProviderCacheControl(m.CacheControl),
 			}
 			// Consolidate consecutive tool results into a single user message to respect Anthropic's role alternation rule
 			if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 				messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, block)
 			} else {
-				messages = append(messages, wireInputMessage{
+				messages = append(messages, providers.AnthropicInputMessage{
 					Role:    "user",
-					Content: []wireContentBlock{block},
+					Content: []providers.AnthropicContentBlock{block},
 				})
 			}
 		case "assistant":
-			var blocks []wireContentBlock
+			var blocks []providers.AnthropicContentBlock
 			if m.Content != "" {
-				blocks = append(blocks, wireContentBlock{
+				blocks = append(blocks, providers.AnthropicContentBlock{
 					Type: "text",
 					Text: m.Content,
 				})
@@ -377,7 +321,7 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 				} else {
 					name = sanitizeToolName(name)
 				}
-				blocks = append(blocks, wireContentBlock{
+				blocks = append(blocks, providers.AnthropicContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  name,
@@ -386,15 +330,15 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 			}
 			if len(blocks) > 0 {
 				if m.CacheControl != nil && blocks[len(blocks)-1].CacheControl == nil {
-					blocks[len(blocks)-1].CacheControl = toWireCacheControl(m.CacheControl)
+					blocks[len(blocks)-1].CacheControl = toProviderCacheControl(m.CacheControl)
 				}
-				messages = append(messages, wireInputMessage{
+				messages = append(messages, providers.AnthropicInputMessage{
 					Role:    "assistant",
 					Content: blocks,
 				})
 			}
 		default: // "user"
-			messages = append(messages, wireInputMessage{
+			messages = append(messages, providers.AnthropicInputMessage{
 				Role:    "user",
 				Content: translateUserParts(m),
 			})
@@ -423,7 +367,7 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 		maxTok = *req.MaxTokens
 	}
 
-	var tools []wireTool
+	var tools []providers.AnthropicTool
 	for _, t := range req.Tools {
 		schema := t.Function.Parameters
 		if schema == nil {
@@ -433,11 +377,11 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 		if san == "" {
 			san = sanitizeToolName(t.Function.Name)
 		}
-		tools = append(tools, wireTool{
+		tools = append(tools, providers.AnthropicTool{
 			Name:         san,
 			Description:  t.Function.Description,
 			InputSchema:  schema,
-			CacheControl: toWireCacheControl(t.CacheControl),
+			CacheControl: toProviderCacheControl(t.CacheControl),
 		})
 	}
 
@@ -448,7 +392,7 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 		systemVal = strings.Join(systemPlain, "\n\n")
 	}
 
-	antReq := wireMessageRequest{
+	antReq := providers.AnthropicMessageRequest{
 		Model:         model,
 		Messages:      messages,
 		MaxTokens:     maxTok,
@@ -466,7 +410,7 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 		if inner, ok := req.ResponseFormat.JSONSchema["schema"]; ok {
 			schema = inner
 		}
-		antReq.OutputFormat = &wireOutputFormat{
+		antReq.OutputFormat = &providers.AnthropicOutputFormat{
 			Type:   "json_schema",
 			Schema: schema,
 		}
@@ -474,8 +418,8 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 
 	if req.ReasoningEffort != "" {
 		if isAdaptiveThinkingModel(model) {
-			antReq.Thinking = &wireThinking{Type: "adaptive"}
-			antReq.OutputConfig = &wireOutputConfig{Effort: mapAnthropicEffort(req.ReasoningEffort)}
+			antReq.Thinking = &providers.AnthropicThinking{Type: "adaptive"}
+			antReq.OutputConfig = &providers.AnthropicOutputConfig{Effort: mapAnthropicEffort(req.ReasoningEffort)}
 		} else {
 			budget := 2048
 			switch strings.ToLower(req.ReasoningEffort) {
@@ -493,7 +437,7 @@ func toAnthropicRequestWithMap(model string, req *domain.CanonicalChatRequest, s
 			} else if req.MaxTokens == nil && maxTok <= budget {
 				antReq.MaxTokens = budget + 2048
 			}
-			antReq.Thinking = &wireThinking{
+			antReq.Thinking = &providers.AnthropicThinking{
 				Type:         "enabled",
 				BudgetTokens: budget,
 			}
@@ -851,7 +795,7 @@ func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *d
 		StatusCode: http.StatusBadRequest,
 		Type:       domain.ErrorTypeInvalidRequest,
 		Code:       "unsupported_capability",
-		Message:    "Anthropic does not expose a native /v1/embeddings endpoint; configure OpenAI, Gemini, Mistral, or Ollama for embeddings",
+		Message:    "Anthropic does not expose a native /v1/embeddings endpoint; configure OpenAI for embeddings",
 		Provider:   domain.ProviderAnthropic,
 	}
 }

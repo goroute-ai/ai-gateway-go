@@ -33,7 +33,7 @@
 # Component & Subsystem Labels
 - name: "area/provider"
   color: "1d76db"
-  description: "Upstream provider adapters (OpenAI, Anthropic, Cohere, Bedrock, Vertex, etc.)"
+  description: "OpenAPI-first upstream provider adapters (OpenAI, Anthropic, Groq, OpenRouter)"
 
 - name: "area/routing"
   color: "5319e7"
@@ -57,7 +57,7 @@
 
 - name: "area/data-plane"
   color: "c2e0c6"
-  description: "Unified inference endpoints (Chat, Embeddings, Rerank, Audio, Images, Batches)"
+  description: "Unified inference endpoints (Chat, Embeddings, Responses, Messages, Audio, Images, Batches)"
 
 # Status Labels
 - name: "status/review-needed"

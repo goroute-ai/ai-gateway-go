@@ -210,3 +210,42 @@ func TestOpenAIAdapter_FailClosedBaseURLWithoutSSRFPolicy(t *testing.T) {
 		t.Fatalf("expected zero upstream dials when BaseURL fails validation, got %d", calls)
 	}
 }
+
+func TestOpenAIAdapter_ModerateUsesResolvedModel(t *testing.T) {
+	var sentModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode moderation body: %v", err)
+		}
+		sentModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"modr-1","model":"omni-moderation-latest","results":[{"flagged":false}]}`))
+	}))
+	defer srv.Close()
+
+	pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	adp := NewAdapter(srv.Client())
+	adp.SetSSRFPolicy(pol)
+	dep := &domain.Deployment{
+		ID:          "dep-mod",
+		GlobalModel: &domain.GlobalModel{Provider: domain.ProviderOpenAI, ModelName: "omni-moderation-latest"},
+		Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "sk-test"},
+	}
+	_, err = adp.Moderate(context.Background(), dep, &domain.CanonicalModerationRequest{
+		Model:         "alias-group-name",
+		ResolvedModel: "omni-moderation-latest",
+		Input:         []string{"hello"},
+	})
+	if err != nil {
+		t.Fatalf("Moderate: %v", err)
+	}
+	if sentModel != "omni-moderation-latest" {
+		t.Fatalf("sent model = %q, want omni-moderation-latest", sentModel)
+	}
+}

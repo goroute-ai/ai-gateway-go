@@ -326,12 +326,12 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings,
 			input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m,
 			cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m,
-			rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd,
+			image_cost_micros_base, image_cost_micros_hd,
 			audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, modality_pricing_json,
 			pricing_version, pricing_status, pricing_provenance_source,
 			pricing_effective_date, quality_tier, lifecycle_status, deprecation_date, capabilities, supported_operations,
 			supports_inference, discovered_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,NOW(),NOW())
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			max_input_tokens = EXCLUDED.max_input_tokens,
@@ -346,7 +346,6 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 			cached_input_cost_micros_per_1m = EXCLUDED.cached_input_cost_micros_per_1m,
 			cache_write_cost_micros_per_1m = EXCLUDED.cache_write_cost_micros_per_1m,
 			reasoning_cost_micros_per_1m = EXCLUDED.reasoning_cost_micros_per_1m,
-			rerank_cost_micros_per_search_unit = EXCLUDED.rerank_cost_micros_per_search_unit,
 			image_cost_micros_base = EXCLUDED.image_cost_micros_base,
 			image_cost_micros_hd = EXCLUDED.image_cost_micros_hd,
 			audio_stt_cost_micros_per_second = EXCLUDED.audio_stt_cost_micros_per_second,
@@ -373,7 +372,7 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 		m.SupportsStreaming, m.SupportsTools, m.SupportsVision, m.SupportsReasoning, m.SupportsEmbeddings,
 		m.InputCostMicrosPer1M, m.OutputCostMicrosPer1M, m.CachedInputCostMicrosPer1M,
 		m.CacheWriteCostMicrosPer1M, m.ReasoningCostMicrosPer1M,
-		m.RerankCostMicrosPerSearchUnit, m.ImageCostMicrosBase, m.ImageCostMicrosHD,
+		m.ImageCostMicrosBase, m.ImageCostMicrosHD,
 		m.AudioSTTCostMicrosPerSecond, m.AudioTTSCostMicrosPer1KChars, modPricingJSON,
 		pv, pricingStatus, m.PricingProvenanceSource,
 		m.PricingEffectiveDate, m.QualityTier, string(m.LifecycleStatus), m.DeprecationDate, capsJSON, opsJSON,
@@ -382,7 +381,7 @@ func (p *PostgresRepository) UpsertGlobalModel(ctx context.Context, m *domain.Gl
 	return err
 }
 
-const globalModelSelectCols = `id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, rerank_cost_micros_per_search_unit, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), COALESCE(quality_tier, 0), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference`
+const globalModelSelectCols = `id, provider, model_name, display_name, max_input_tokens, max_output_tokens, supports_streaming, supports_tools, supports_vision, supports_reasoning, supports_embeddings, input_cost_micros_per_1m, output_cost_micros_per_1m, cached_input_cost_micros_per_1m, cache_write_cost_micros_per_1m, reasoning_cost_micros_per_1m, image_cost_micros_base, image_cost_micros_hd, audio_stt_cost_micros_per_second, audio_tts_cost_micros_per_1k_chars, COALESCE(modality_pricing_json, '{}'::jsonb), pricing_version, COALESCE(pricing_status, 'unknown'), COALESCE(pricing_provenance_source, ''), COALESCE(pricing_effective_date, ''), COALESCE(quality_tier, 0), lifecycle_status, deprecation_date, COALESCE(capabilities, '{}'::jsonb), COALESCE(supported_operations, '[]'::jsonb), supports_inference`
 
 func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 	var m domain.GlobalModel
@@ -393,7 +392,7 @@ func scanGlobalModel(row rowScanner) (*domain.GlobalModel, error) {
 		&m.SupportsStreaming, &m.SupportsTools, &m.SupportsVision, &m.SupportsReasoning, &m.SupportsEmbeddings,
 		&m.InputCostMicrosPer1M, &m.OutputCostMicrosPer1M, &m.CachedInputCostMicrosPer1M,
 		&m.CacheWriteCostMicrosPer1M, &m.ReasoningCostMicrosPer1M,
-		&m.RerankCostMicrosPerSearchUnit, &m.ImageCostMicrosBase, &m.ImageCostMicrosHD,
+		&m.ImageCostMicrosBase, &m.ImageCostMicrosHD,
 		&m.AudioSTTCostMicrosPerSecond, &m.AudioTTSCostMicrosPer1KChars, &rawModPricing,
 		&m.PricingVersion, &pricingStatus, &m.PricingProvenanceSource,
 		&m.PricingEffectiveDate, &m.QualityTier, &status, &m.DeprecationDate, &rawCaps, &rawOps, &m.SupportsInference,

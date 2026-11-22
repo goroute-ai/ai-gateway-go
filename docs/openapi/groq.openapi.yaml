@@ -1,0 +1,510 @@
+openapi: 3.0.3
+info:
+  title: Groq Fast Inference API
+  version: 1.0.0
+  description: >
+    Authoritative OpenAPI specification for Groq Cloud inference endpoints supported by GoRoute AI Gateway.
+servers:
+  - url: https://api.groq.com/openai/v1
+paths:
+  /chat/completions:
+    post:
+      operationId: createGroqChatCompletion
+      summary: Create a Groq chat completion (sync or SSE stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroqChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroqChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/GroqStreamChunk'
+  /completions:
+    post:
+      operationId: createGroqCompletion
+      summary: Create a Groq legacy text completion (sync or SSE stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroqCompletionRequest'
+      responses:
+        '200':
+          description: Text completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroqCompletionResponse'
+  /audio/transcriptions:
+    post:
+      operationId: createGroqAudioTranscription
+      summary: Transcribe audio to text via Groq Whisper models
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - model
+                - file
+              properties:
+                model:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+                language:
+                  type: string
+                prompt:
+                  type: string
+                response_format:
+                  type: string
+      responses:
+        '200':
+          description: Transcription response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroqAudioResponse'
+  /audio/translations:
+    post:
+      operationId: createGroqAudioTranslation
+      summary: Translate audio into English via Groq Whisper models
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - model
+                - file
+              properties:
+                model:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+                prompt:
+                  type: string
+                response_format:
+                  type: string
+      responses:
+        '200':
+          description: Translation response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroqAudioResponse'
+  /audio/speech:
+    post:
+      operationId: createGroqAudioSpeech
+      summary: Generate synthesized speech audio via Groq Orpheus TTS models
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroqAudioSpeechRequest'
+      responses:
+        '200':
+          description: Binary synthesized audio stream
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+  /models:
+    get:
+      operationId: listGroqModels
+      summary: List models available from Groq Cloud
+      responses:
+        '200':
+          description: Available Groq models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroqModelsResponse'
+components:
+  schemas:
+    GroqStreamOptions:
+      type: object
+      required:
+        - include_usage
+      properties:
+        include_usage:
+          type: boolean
+    GroqResponseFormat:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+        json_schema:
+          type: object
+          additionalProperties: true
+    GroqFunctionCall:
+      type: object
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+    GroqToolCall:
+      type: object
+      required:
+        - function
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/GroqFunctionCall'
+    GroqFunction:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        strict:
+          type: boolean
+    GroqTool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/GroqFunction'
+    GroqMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+        content:
+          description: String message text or multimodal array of content parts
+        name:
+          type: string
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqToolCall'
+        reasoning:
+          type: string
+        reasoning_content:
+          type: string
+    GroqChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      description: >
+        Groq chat completion request. Note Groq strips OpenAI-only parameters
+        (logprobs, top_logprobs, logit_bias, service_tier) and maps
+        max_completion_tokens to max_tokens.
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqMessage'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqTool'
+        tool_choice: {}
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        max_tokens:
+          type: integer
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        stream_options:
+          $ref: '#/components/schemas/GroqStreamOptions'
+        response_format:
+          $ref: '#/components/schemas/GroqResponseFormat'
+        reasoning_effort:
+          type: string
+        user:
+          type: string
+    GroqChoice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/GroqMessage'
+        finish_reason:
+          type: string
+    GroqPromptTokensDetails:
+      type: object
+      properties:
+        cached_tokens:
+          type: integer
+    GroqCompletionTokensDetails:
+      type: object
+      properties:
+        reasoning_tokens:
+          type: integer
+    GroqUsage:
+      type: object
+      required:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        prompt_tokens_details:
+          $ref: '#/components/schemas/GroqPromptTokensDetails'
+        completion_tokens_details:
+          $ref: '#/components/schemas/GroqCompletionTokensDetails'
+    GroqChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqChoice'
+        usage:
+          $ref: '#/components/schemas/GroqUsage'
+        system_fingerprint:
+          type: string
+    GroqStreamDelta:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        reasoning:
+          type: string
+        reasoning_content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqToolCall'
+    GroqStreamChoice:
+      type: object
+      required:
+        - index
+        - delta
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/GroqStreamDelta'
+        finish_reason:
+          type: string
+          nullable: true
+    GroqStreamChunk:
+      type: object
+      required:
+        - id
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqStreamChoice'
+        usage:
+          $ref: '#/components/schemas/GroqUsage'
+    GroqCompletionRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+        prompt: {}
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        user:
+          type: string
+    GroqCompletionChoice:
+      type: object
+      required:
+        - index
+        - text
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        text:
+          type: string
+        finish_reason:
+          type: string
+    GroqCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqCompletionChoice'
+        usage:
+          $ref: '#/components/schemas/GroqUsage'
+    GroqAudioResponse:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+        task:
+          type: string
+        language:
+          type: string
+        duration:
+          type: number
+          format: double
+    GroqAudioSpeechRequest:
+      type: object
+      required:
+        - model
+        - input
+        - voice
+      properties:
+        model:
+          type: string
+        input:
+          type: string
+        voice:
+          type: string
+        response_format:
+          type: string
+        speed:
+          type: number
+          format: double
+    GroqModel:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        owned_by:
+          type: string
+        active:
+          type: boolean
+        context_window:
+          type: integer
+    GroqModelsResponse:
+      type: object
+      required:
+        - data
+      properties:
+        object:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroqModel'

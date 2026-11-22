@@ -1,12 +1,29 @@
-// Code generated from anthropic_api.yaml; DO NOT EDIT MANUALLY.
+// Code generated from anthropic.openapi.yaml; DO NOT EDIT MANUALLY.
 package providers
 
-// AnthropicMessageRequest matches MessageRequestBody in anthropic_api.yaml (/v1/messages).
+// AnthropicCacheControl marks prompt blocks eligible for Anthropic prompt caching.
+type AnthropicCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+// AnthropicOutputConfig configures reasoning effort on adaptive thinking models.
+type AnthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+// AnthropicOutputFormat configures constrained structured JSON output.
+type AnthropicOutputFormat struct {
+	Type   string `json:"type"`
+	Schema any    `json:"schema,omitempty"`
+}
+
+// AnthropicMessageRequest matches MessageRequestBody in anthropic.openapi.yaml (/v1/messages).
 type AnthropicMessageRequest struct {
 	Model         string                  `json:"model"`
 	Messages      []AnthropicInputMessage `json:"messages"`
 	MaxTokens     int                     `json:"max_tokens"`
-	System        string                  `json:"system,omitempty"`
+	System        any                     `json:"system,omitempty"`
 	Temperature   *float64                `json:"temperature,omitempty"`
 	TopP          *float64                `json:"top_p,omitempty"`
 	StopSequences []string                `json:"stop_sequences,omitempty"`
@@ -14,11 +31,13 @@ type AnthropicMessageRequest struct {
 	Tools         []AnthropicTool         `json:"tools,omitempty"`
 	ToolChoice    any                     `json:"tool_choice,omitempty"`
 	Thinking      *AnthropicThinking      `json:"thinking,omitempty"`
+	OutputConfig  *AnthropicOutputConfig  `json:"output_config,omitempty"`
+	OutputFormat  *AnthropicOutputFormat  `json:"output_format,omitempty"`
 }
 
 type AnthropicThinking struct {
-	Type         string `json:"type"` // "enabled"
-	BudgetTokens int    `json:"budget_tokens"`
+	Type         string `json:"type"` // "enabled" | "adaptive" | "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type AnthropicInputMessage struct {
@@ -27,24 +46,26 @@ type AnthropicInputMessage struct {
 }
 
 type AnthropicContentBlock struct {
-	Type      string         `json:"type"` // "text", "image", "tool_use", "tool_result", "thinking"
-	Text      string         `json:"text,omitempty"`
-	Thinking  string         `json:"thinking,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     any            `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
-	Content   string         `json:"content,omitempty"`
-	Source    map[string]any `json:"source,omitempty"`
+	Type         string                 `json:"type"` // "text", "image", "document", "tool_use", "tool_result", "thinking"
+	Text         string                 `json:"text,omitempty"`
+	Thinking     string                 `json:"thinking,omitempty"`
+	ID           string                 `json:"id,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Input        any                    `json:"input,omitempty"`
+	ToolUseID    string                 `json:"tool_use_id,omitempty"`
+	Content      any                    `json:"content,omitempty"`
+	Source       map[string]any         `json:"source,omitempty"`
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type AnthropicTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description,omitempty"`
+	InputSchema  map[string]any         `json:"input_schema"`
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
-// AnthropicMessageResponse matches MessageResponse in anthropic_api.yaml.
+// AnthropicMessageResponse matches MessageResponse in anthropic.openapi.yaml.
 type AnthropicMessageResponse struct {
 	ID           string                  `json:"id"`
 	Type         string                  `json:"type"` // "message"
@@ -81,7 +102,7 @@ type AnthropicDelta struct {
 	StopReason  string `json:"stop_reason,omitempty"`
 }
 
-// AnthropicModelsResponse matches GET /v1/models in anthropic_api.yaml.
+// AnthropicModelsResponse matches GET /v1/models in anthropic.openapi.yaml.
 type AnthropicModelsResponse struct {
 	Data    []AnthropicModelInfo `json:"data"`
 	FirstID string               `json:"first_id,omitempty"`

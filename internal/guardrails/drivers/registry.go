@@ -21,18 +21,14 @@ import (
 )
 
 const (
-	ProviderOpenAIModeration     = "openai_moderation"
-	ProviderBedrock              = "bedrock"
-	ProviderAzurePromptShield    = "azure/prompt_shield"
-	ProviderAzureTextModerations = "azure/text_moderations"
-	ProviderModelArmor           = "model_armor"
-	ProviderPresidio             = "presidio"
-	ProviderLakeraV2             = "lakera_v2"
-	ProviderGuardrailsAI         = "guardrails_ai"
-	ProviderPangea               = "pangea"
-	ProviderLocalContentFilter   = "local_content_filter"
-	ProviderGenericHTTP          = DriverNameGenericHTTP
-	ProviderCustomCode           = CustomCodeProvider
+	ProviderOpenAIModeration   = "openai_moderation"
+	ProviderPresidio           = "presidio"
+	ProviderLakeraV2           = "lakera_v2"
+	ProviderGuardrailsAI       = "guardrails_ai"
+	ProviderPangea             = "pangea"
+	ProviderLocalContentFilter = "local_content_filter"
+	ProviderGenericHTTP        = DriverNameGenericHTTP
+	ProviderCustomCode         = CustomCodeProvider
 )
 
 const defaultMaxGuardrailResponseBytes int64 = 4 << 20 // 4 MiB
@@ -115,12 +111,8 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 		r.httpClient = network.NewHTTPClient(r.networkPolicy)
 	}
 
-	// Wave 1: Cloud, OSS, and local content filters.
+	// Wave 1: OpenAI moderation, OSS, and local content filters.
 	r.Register(ProviderOpenAIModeration, NewOpenAIModerationDriver)
-	r.Register(ProviderBedrock, NewBedrockDriver)
-	r.Register(ProviderAzurePromptShield, NewAzurePromptShieldDriver)
-	r.Register(ProviderAzureTextModerations, NewAzureTextModerationsDriver)
-	r.Register(ProviderModelArmor, NewModelArmorDriver)
 	r.Register(ProviderPresidio, NewPresidioDriver)
 	r.Register(ProviderLakeraV2, NewLakeraV2Driver)
 	r.Register(ProviderGuardrailsAI, NewGuardrailsAIDriver)
@@ -376,29 +368,6 @@ func configFloatMap(cfg guardrails.DriverConfig, keys ...string) map[string]floa
 				out := make(map[string]float64, len(m))
 				for k, v := range m {
 					out[k] = float64(v)
-				}
-				return out
-			}
-		}
-	}
-	return nil
-}
-
-func configIntMap(cfg guardrails.DriverConfig, keys ...string) map[string]int {
-	cm := configMap(cfg)
-	for _, key := range keys {
-		if raw, ok := lookupAnyCaseInsensitive(cm, key); ok {
-			switch m := raw.(type) {
-			case map[string]int:
-				out := make(map[string]int, len(m))
-				maps.Copy(out, m)
-				return out
-			case map[string]any:
-				out := make(map[string]int, len(m))
-				for k, v := range m {
-					if n, ok := intFromAny(v); ok {
-						out[k] = n
-					}
 				}
 				return out
 			}

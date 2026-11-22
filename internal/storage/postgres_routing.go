@@ -22,18 +22,16 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	}
 	const q = `
 		INSERT INTO provider_credentials (
-			id, org_id, provider, name, base_url, azure_deployment_name, api_version,
+			id, org_id, provider, name, base_url,
 			encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version,
 			expires_at, last_rotated_at, last_validated_at, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (org_id, name) DO UPDATE SET
 			encrypted_api_key = EXCLUDED.encrypted_api_key,
 			data_nonce = EXCLUDED.data_nonce,
 			encrypted_dek = EXCLUDED.encrypted_dek,
 			dek_nonce = EXCLUDED.dek_nonce,
 			base_url = EXCLUDED.base_url,
-			azure_deployment_name = EXCLUDED.azure_deployment_name,
-			api_version = EXCLUDED.api_version,
 			updated_at = NOW()
 		RETURNING id`
 	kv := cred.KeyVersion
@@ -42,7 +40,6 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	}
 	if err := p.pool.QueryRow(ctx, q,
 		cred.ID, cred.OrgID, string(cred.Provider), cred.Name, cred.BaseURL,
-		cred.AzureDeploymentName, cred.APIVersion,
 		cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
 		kv, cred.ExpiresAt, cred.LastRotatedAt, cred.LastValidatedAt, cred.IsActive,
 	).Scan(&cred.ID); err != nil {
@@ -51,13 +48,13 @@ func (p *PostgresRepository) CreateProviderCredential(ctx context.Context, cred 
 	return p.mem.CreateProviderCredential(ctx, cred)
 }
 
-const providerCredentialSelectCols = `id, org_id, provider, name, base_url, COALESCE(azure_deployment_name, ''), COALESCE(api_version, ''), encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active`
+const providerCredentialSelectCols = `id, org_id, provider, name, base_url, encrypted_api_key, data_nonce, encrypted_dek, dek_nonce, key_version, expires_at, last_rotated_at, last_validated_at, is_active`
 
 func scanProviderCredential(row rowScanner) (*domain.ProviderCredential, error) {
 	var c domain.ProviderCredential
 	var prov string
 	if err := row.Scan(
-		&c.ID, &c.OrgID, &prov, &c.Name, &c.BaseURL, &c.AzureDeploymentName, &c.APIVersion,
+		&c.ID, &c.OrgID, &prov, &c.Name, &c.BaseURL,
 		&c.EncryptedAPIKey, &c.DataNonce, &c.EncryptedDEK, &c.DEKNonce,
 		&c.KeyVersion, &c.ExpiresAt, &c.LastRotatedAt, &c.LastValidatedAt, &c.IsActive,
 	); err != nil {
@@ -110,20 +107,18 @@ func (p *PostgresRepository) UpdateProviderCredential(ctx context.Context, cred 
 	}
 	if _, err := p.pool.Exec(ctx, `
 		UPDATE provider_credentials SET
-			azure_deployment_name = $2,
-			api_version = $3,
-			encrypted_api_key = $4,
-			data_nonce = $5,
-			encrypted_dek = $6,
-			dek_nonce = $7,
-			key_version = $8,
-			expires_at = $9,
-			last_rotated_at = $10,
-			last_validated_at = $11,
-			is_active = $12,
+			encrypted_api_key = $2,
+			data_nonce = $3,
+			encrypted_dek = $4,
+			dek_nonce = $5,
+			key_version = $6,
+			expires_at = $7,
+			last_rotated_at = $8,
+			last_validated_at = $9,
+			is_active = $10,
 			updated_at = NOW()
 		WHERE id = $1`,
-		cred.ID, cred.AzureDeploymentName, cred.APIVersion,
+		cred.ID,
 		cred.EncryptedAPIKey, cred.DataNonce, cred.EncryptedDEK, cred.DEKNonce,
 		kv, cred.ExpiresAt, cred.LastRotatedAt, cred.LastValidatedAt, cred.IsActive,
 	); err != nil {

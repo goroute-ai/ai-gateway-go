@@ -29,12 +29,12 @@ func TestFourLayerModelIsolationAndAutomatedDiscovery(t *testing.T) {
 	_ = repo.CreateOrganization(ctx, orgA)
 	_ = repo.CreateOrganization(ctx, orgB)
 
-	// Org A subscribes ONLY to OpenAI; Org B subscribes ONLY to Gemini
+	// Org A subscribes ONLY to OpenAI; Org B subscribes ONLY to Groq
 	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
 		OrgID: orgA.ID, Provider: domain.ProviderOpenAI, IsEnabled: true,
 	})
 	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
-		OrgID: orgB.ID, Provider: domain.ProviderGemini, IsEnabled: true,
+		OrgID: orgB.ID, Provider: domain.ProviderGroq, IsEnabled: true,
 	})
 
 	// Verify Org A only sees OpenAI models
@@ -48,14 +48,14 @@ func TestFourLayerModelIsolationAndAutomatedDiscovery(t *testing.T) {
 		}
 	}
 
-	// Verify Org B only sees Gemini models
+	// Verify Org B only sees Groq models
 	listB, err := svc.ListVisibleModelsForIdentity(ctx, &domain.IdentityContext{OrgID: orgB.ID})
 	if err != nil || len(listB.Data) == 0 {
 		t.Fatalf("list models for Org B failed: %v", err)
 	}
 	for _, m := range listB.Data {
-		if m.Provider != string(domain.ProviderGemini) {
-			t.Fatalf("Org B should only see Gemini models, got %s (%s)", m.ID, m.Provider)
+		if m.Provider != string(domain.ProviderGroq) {
+			t.Fatalf("Org B should only see Groq models, got %s (%s)", m.ID, m.Provider)
 		}
 	}
 

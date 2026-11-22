@@ -1,27 +1,27 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.23.0`**.
+This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.24.0`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
 
-## Upgrading from v1.22.0 / v1.21.x
+## Upgrading from v1.23.0 / v1.22.x / v1.21.x
 
-`v1.23.0` is an additive routing, guardrail, key-rotation, and code-quality release over `v1.22.0` adding migration `0036_production_routing_hardening` alongside rolling KEK decryption (`auth.previous_master_encryption_keys`) and transactional secret sinks (`webhook`, `vault_kv2`, `aws_secrets_manager`). Because `0036` (like `0035`) adds nullable/defaulted columns idempotently (`ADD COLUMN IF NOT EXISTS`), run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. When upgrading from `v1.21.0` or earlier, also review the `v1.21.1`/`v1.21.0` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, rerank, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
+`v1.24.0` delivers strict 4-provider OpenAPI-first consolidation (`0037_prune_unsupported_providers`, pruning legacy non-OpenAPI providers/rerank columns and removed cloud guardrail definitions) and the UI-selectable 5-release MCP YAML schema engine (`0038_mcp_runtime_spec`), building on `v1.23.0` production routing hardening (`0036`), rolling KEK decryption (`auth.previous_master_encryption_keys`), and transactional secret sinks (`webhook`, `vault_kv2`). Because `0036`/`0038` add nullable/defaulted columns or new tables cleanly, run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. When upgrading from `v1.21.0` or earlier, also review the `v1.21.1`/`v1.21.0` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
-## 1. Summary of Breaking & Behavior Changes (`v1.21.0`)
+## 1. Summary of Breaking & Behavior Changes (`v1.21.0`+)
 
 1. **Ambient Cloud IAM Is Disabled by Default (`auth.allow_ambient_cloud_iam: false`)**:
-   - AWS Bedrock (IMDSv2/ECS/IRSA), GCP Vertex AI ADC, Azure Managed Identity, and AWS RDS IAM no longer consume ambient host/pod metadata credentials automatically unless `auth.allow_ambient_cloud_iam: true` is explicitly configured (or explicit static credentials are supplied).
+   - AWS RDS IAM no longer consumes ambient host/pod metadata credentials automatically unless `auth.allow_ambient_cloud_iam: true` is explicitly configured (or explicit static credentials are supplied).
 2. **Issuer-Bound OIDC Identities (`(org_id, oidc_issuer, oidc_subject)`)**:
    - Data Plane JWT and Control Plane OIDC bindings now isolate subjects per issuer via `users.oidc_issuer` and unique index `idx_users_org_issuer_subject`.
    - Legacy rows with empty `oidc_issuer` resolve only when exactly one trusted issuer can be determined unambiguously for the tenant; multi-issuer deployments require explicit administrator issuer binding.
 3. **Conflicting Inbound Credentials Fail Closed (`400`)**:
    - Presenting different credentials simultaneously across supported sources (e.g., mismatched `Authorization` bearer token and `X-API-Key` / configured `auth.custom_api_key_header`) is rejected with `400 ambiguous_gateway_credentials`.
 4. **Scheduled Key Auto-Rotation Delivery & Rolling Master KEK Transition**:
-   - Keys with `rotation_interval_sec > 0` remain untouched unless `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, a declarative `auth.key_rotation_sink` (`webhook`, `vault_kv2`, or `aws_secrets_manager`), or a Go SDK `KeySecretSink` is configured. All HTTPS sinks run behind `internal/security/network` SSRF protections, reuse encrypted staged secrets (`virtual_keys.staged_key_dek`) across transient failures, and promote only after a `2xx` ACK.
+   - Keys with `rotation_interval_sec > 0` remain untouched unless `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, a declarative `auth.key_rotation_sink` (`webhook`, `vault_kv2`), or a Go SDK `KeySecretSink` is configured. All HTTPS sinks run behind `internal/security/network` SSRF protections, reuse encrypted staged secrets (`virtual_keys.staged_key_dek`) across transient failures, and promote only after a `2xx` ACK.
    - During zero-downtime `POST /admin/v1/security/rotate-kek` transitions, database DEKs (including `staged_key_dek`) are re-wrapped atomically; configure `auth.previous_master_encryption_keys` during rolling replica restarts so peers can decrypt both previous and newly re-wrapped DEKs until all pods share the new primary key.
 5. **Server-Side Password Breach Screening (`auth.enable_hibp_check`)**:
    - Passwords are submitted over TLS to `POST /auth/login` and `POST /auth/password`; client-side SHA-1 hashing (`password_sha1`) is removed. When `enable_hibp_check: true`, GoRoute hashes server-side, queries HIBP k-anonymity range APIs with strictly the **5-character uppercase SHA-1 prefix**, and fails open on upstream HIBP availability errors according to existing availability settings.
@@ -30,7 +30,7 @@ This guide covers safe zero-downtime upgrades and rollback precautions when upgr
 
 ---
 
-## 2. Database Migrations (`0022`–`0034`)
+## 2. Database Migrations (`0022`–`0038`)
 
 Run migrations with the `-migrate-only` flag before rolling gateway pods:
 
@@ -55,6 +55,8 @@ ai-gateway -config /etc/goroute/config.yaml -migrate-only
 | `0034_auth_quota_reconciliation` | Adds `users.oidc_issuer` (`idx_users_org_issuer_subject`), `virtual_keys` staged rotation columns, `spend_logs` attribution columns (`project_id`, `model_access_group_ids`, `matched_quota_policy_ids`), and `budget_window_limits.rolling_hold_micros` / `rolling_hold_expires_at` with 24h backfill. |
 | `0035_production_governance_hardening` | Adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns (`last_rotated_at`, `rotation_count`, `revoked_at`, `revoked_by`, `expiry_alert_sent_days`). |
 | `0036_production_routing_hardening` | Adds `model_deployments.{max_parallel_requests,itpm_capacity,otpm_capacity}`, `model_groups.{drop_unsupported_params,disable_cooldowns,saturation_fallbacks}`, `quota_policies.rpd_limit`, `virtual_keys.{min_priority_rank,allowed_routing_tags}`, `teams.{min_priority_rank,allowed_routing_tags}`, `guardrail_policies.sensitive_route_target`, and `guardrail_definitions.sensitive_route_target`. |
+| `0037_prune_unsupported_providers` | Prunes legacy non-4-provider deployments/models/credentials, removes `provider_credentials.{azure_deployment_name,api_version}` and `global_models.rerank_cost_micros_per_search_unit`, deletes removed cloud guardrail drivers, and seeds default Groq/OpenRouter models. |
+| `0038_mcp_runtime_spec` | Creates `mcp_runtime_settings` (`active_protocol_version` defaulting to `'2026-07-28'`, `strict_schema_validation`, `updated_by`, `updated_at`) backing live UI/API MCP specification switching. |
 
 All columns added in `0036_production_routing_hardening` are nullable or defaulted idempotently (`ADD COLUMN IF NOT EXISTS`) with safe zero/false defaults:
 - `allow_strategy_override: false` and `debug_routing_headers: false` ensure untrusted request strategy overrides and diagnostic fallback error headers remain off unless explicitly opted in.
@@ -110,5 +112,5 @@ resolve conflicting bindings explicitly before retrying rollback
 
 1. Confirm `/readyz` returns `HTTP 200` on all gateway replicas.
 2. Confirm Control Plane `/ui/` loads with strict CSP (`script-src 'self'`) and expected OIDC SSO providers under `/auth/sso/providers`.
-3. If using AWS Bedrock, GCP Vertex AI, Azure Managed Identity, or AWS RDS IAM via host/pod credentials, verify `auth.allow_ambient_cloud_iam: true` is set in your config.
-4. Run `make test-postgres` and `make test-e2e-strict` (or `make test-prod-containers`) against staging before production rollout; see the [Testing Guide](./TESTING.md).
+3. If using AWS RDS IAM via host/pod credentials, verify `auth.allow_ambient_cloud_iam: true` is set in your config.
+4. Run `make test-postgres` and `make test-e2e-strict` against staging before production rollout; see the [Testing Guide](./TESTING.md).

@@ -127,22 +127,6 @@ func TestIncomingGuardrailsAcrossEndpoints(t *testing.T) {
 			wantRedact:  "[REDACTED_EMAIL]",
 			wantMissing: "eve@example.com",
 		},
-		{
-			name: "rerank",
-			path: "/v1/rerank",
-			blockBody: map[string]any{
-				"model":     "rerank",
-				"query":     "forbidden_phrase query",
-				"documents": []string{"doc one"},
-			},
-			redactBody: map[string]any{
-				"model":     "rerank",
-				"query":     "find frank@example.com",
-				"documents": []string{"document text"},
-			},
-			wantRedact:  "[REDACTED_EMAIL]",
-			wantMissing: "frank@example.com",
-		},
 	}
 
 	for _, tc := range endpoints {

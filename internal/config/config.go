@@ -63,13 +63,15 @@ type InboundCallerConfig struct {
 	TrustedProxyCIDRs      []string `yaml:"trusted_proxy_cidrs"`
 }
 
-// MCPConfig defines parameters for Model Context Protocol (2026-07-28 & 2025-11-25 compat).
+// MCPConfig defines parameters for Model Context Protocol across all UI-selectable releases.
 type MCPConfig struct {
 	Enabled                   bool          `yaml:"enabled"`
-	AllowStdioServers         bool          `yaml:"allow_stdio_servers"`         // default false; stdio disabled until BL-02 sandbox
+	DefaultProtocolVersion    string        `yaml:"default_protocol_version"`    // default "2026-07-28"
+	StrictSchemaValidation    bool          `yaml:"strict_schema_validation"`    // validate incoming JSON-RPC payloads against active schema.yaml
+	AllowStdioServers         bool          `yaml:"allow_stdio_servers"`         // default false; stdio disabled unless explicitly enabled
 	AllowedStdioBinaries      []string      `yaml:"allowed_stdio_binaries"`      // canonical path allowlist
-	EnableSessionCompat2025   bool          `yaml:"enable_session_compat_2025"`  // default true for 2025-11-25 compatibility
-	SessionTTL2025            time.Duration `yaml:"session_ttl_2025"`            // default 15m
+	EnableSessionCompat2025   bool          `yaml:"enable_session_compat_2025"`  // enables stateful Streamable HTTP upstream sessions (2025-*)
+	SessionTTL2025            time.Duration `yaml:"session_ttl_2025"`            // session TTL for stateful Streamable HTTP (default 15m)
 	CacheKeySecret            string        `yaml:"cache_key_secret"`            // for HMAC-SHA256 cache keys (defaults to Auth.MasterEncryptionKey)
 	MaxPayloadBytes           int64         `yaml:"max_payload_bytes"`           // default 10MB
 	DefaultTimeout            time.Duration `yaml:"default_timeout"`             // default 30s
@@ -125,8 +127,8 @@ type ModelListEntry struct {
 
 // ModelParams holds upstream provider and model routing parameters for a deployment entry.
 type ModelParams struct {
-	Model               string            `yaml:"model" json:"model"`       // e.g. "gemini/gemini-2.5-flash" or "anthropic/claude-sonnet-4-20250514"
-	APIKey              string            `yaml:"api_key" json:"api_key"`   // literal key or "os.environ/GEMINI_API_KEY" or "${GEMINI_API_KEY}"
+	Model               string            `yaml:"model" json:"model"`       // e.g. "openai/gpt-4o-mini" or "anthropic/claude-haiku-4-5-20251001"
+	APIKey              string            `yaml:"api_key" json:"api_key"`   // literal key or "os.environ/OPENAI_API_KEY" or "${OPENAI_API_KEY}"
 	APIBase             string            `yaml:"api_base" json:"api_base"` // optional custom upstream base URL
 	Region              string            `yaml:"region,omitempty" json:"region,omitempty"`
 	Weight              int               `yaml:"weight,omitempty" json:"weight,omitempty"`
@@ -139,34 +141,16 @@ type ModelParams struct {
 	Tags                []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	MaxBudgetMicros     int64             `yaml:"max_budget_micros,omitempty" json:"max_budget_micros,omitempty"`
 	BudgetResetPeriod   string            `yaml:"budget_reset_period,omitempty" json:"budget_reset_period,omitempty"`
-	AzureDeploymentName string            `yaml:"azure_deployment_name,omitempty" json:"azure_deployment_name,omitempty"`
-	APIVersion          string            `yaml:"api_version,omitempty" json:"api_version,omitempty"`
 	Headers             map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
-// ProvidersConfig configures upstream HTTP client timeouts, pooling, and custom OpenAI-compatible providers.
+// ProvidersConfig configures upstream HTTP client timeouts and connection pooling.
 type ProvidersConfig struct {
-	RequestTimeout         time.Duration          `yaml:"request_timeout" json:"request_timeout"`
-	ResponseHeaderTimeout  time.Duration          `yaml:"response_header_timeout" json:"response_header_timeout"`
-	StreamIdleTimeout      time.Duration          `yaml:"stream_idle_timeout" json:"stream_idle_timeout"`
-	MaxIdleConns           int                    `yaml:"max_idle_conns" json:"max_idle_conns"`
-	MaxIdleConnsPerHost    int                    `yaml:"max_idle_conns_per_host" json:"max_idle_conns_per_host"`
-	CustomOpenAICompatible []CustomProviderConfig `yaml:"custom_openai_compatible" json:"custom_openai_compatible"`
-}
-
-// CustomProviderConfig defines a declarative OpenAI-compatible upstream provider profile.
-type CustomProviderConfig struct {
-	ID                        string            `yaml:"id" json:"id"`
-	DisplayName               string            `yaml:"display_name" json:"display_name"`
-	BaseURL                   string            `yaml:"base_url" json:"base_url"`
-	SupportsStreaming         string            `yaml:"supports_streaming,omitempty" json:"supports_streaming,omitempty"`
-	SupportsTools             string            `yaml:"supports_tools,omitempty" json:"supports_tools,omitempty"`
-	SupportsStructuredOutputs string            `yaml:"supports_structured_outputs,omitempty" json:"supports_structured_outputs,omitempty"`
-	SupportsListModels        bool              `yaml:"supports_list_models" json:"supports_list_models"`
-	DefaultHeaders            map[string]string `yaml:"default_headers,omitempty" json:"default_headers,omitempty"`
-	SupportedOperations       []string          `yaml:"supported_operations,omitempty" json:"supported_operations,omitempty"`
-	ParamMappings             map[string]string `yaml:"param_mappings,omitempty" json:"param_mappings,omitempty"`
-	ReasoningMapping          string            `yaml:"reasoning_mapping,omitempty" json:"reasoning_mapping,omitempty"`
+	RequestTimeout        time.Duration `yaml:"request_timeout" json:"request_timeout"`
+	ResponseHeaderTimeout time.Duration `yaml:"response_header_timeout" json:"response_header_timeout"`
+	StreamIdleTimeout     time.Duration `yaml:"stream_idle_timeout" json:"stream_idle_timeout"`
+	MaxIdleConns          int           `yaml:"max_idle_conns" json:"max_idle_conns"`
+	MaxIdleConnsPerHost   int           `yaml:"max_idle_conns_per_host" json:"max_idle_conns_per_host"`
 }
 
 // GuardrailsConfig configures guardrail scanners, declarative definitions, and tool trust policies.
@@ -356,16 +340,12 @@ type SSOProviderConfig struct {
 // KeyRotationSinkConfig configures declarative external secret-manager synchronization
 // for automated virtual key rotations.
 type KeyRotationSinkConfig struct {
-	Driver             string `yaml:"driver,omitempty"`                // "", "webhook", "vault_kv2", "aws_secrets_manager"
-	Address            string `yaml:"address,omitempty"`               // HTTPS endpoint for Vault or custom AWS Secrets Manager URL
-	Mount              string `yaml:"mount,omitempty"`                 // Vault KV v2 mount name (default "secret")
-	PathPrefix         string `yaml:"path_prefix,omitempty"`           // Secret path prefix (default "goroute/virtual-keys")
-	Token              string `yaml:"token,omitempty"`                 // Vault token (supports os.environ/...)
-	Namespace          string `yaml:"namespace,omitempty"`             // Optional Vault namespace header
-	Region             string `yaml:"region,omitempty"`                // AWS Secrets Manager region (e.g. "us-east-1")
-	AWSAccessKeyID     string `yaml:"aws_access_key_id,omitempty"`     // AWS static access key ID
-	AWSSecretAccessKey string `yaml:"aws_secret_access_key,omitempty"` // AWS static secret access key
-	AWSSessionToken    string `yaml:"aws_session_token,omitempty"`     // Optional AWS STS session token
+	Driver     string `yaml:"driver,omitempty"`      // "", "webhook", "vault_kv2"
+	Address    string `yaml:"address,omitempty"`     // HTTPS endpoint for Webhook or Vault KV v2
+	Mount      string `yaml:"mount,omitempty"`       // Vault KV v2 mount name (default "secret")
+	PathPrefix string `yaml:"path_prefix,omitempty"` // Secret path prefix (default "goroute/virtual-keys")
+	Token      string `yaml:"token,omitempty"`       // Vault/Webhook token (supports os.environ/...)
+	Namespace  string `yaml:"namespace,omitempty"`   // Optional Vault namespace header
 }
 
 // AuthConfig configures virtual-key, JWT/OIDC, SSO, proxy auth, key rotation, and HIBP screening.
@@ -650,6 +630,8 @@ func Default() *Config {
 		},
 		MCP: MCPConfig{
 			Enabled:                   true,
+			DefaultProtocolVersion:    domain.MCPProtocolVersion20260728,
+			StrictSchemaValidation:    false,
 			AllowStdioServers:         false,
 			AllowedStdioBinaries:      nil,
 			EnableSessionCompat2025:   true,
@@ -822,10 +804,6 @@ func (c *Config) applyAuthEnvOverrides() {
 	envTrimStr("GATEWAY_KEY_ROTATION_SINK_PATH_PREFIX", &c.Auth.KeyRotationSink.PathPrefix)
 	envStr("GATEWAY_KEY_ROTATION_SINK_TOKEN", &c.Auth.KeyRotationSink.Token)
 	envTrimStr("GATEWAY_KEY_ROTATION_SINK_NAMESPACE", &c.Auth.KeyRotationSink.Namespace)
-	envTrimStr("GATEWAY_KEY_ROTATION_SINK_REGION", &c.Auth.KeyRotationSink.Region)
-	envTrimStr("GATEWAY_KEY_ROTATION_SINK_AWS_ACCESS_KEY_ID", &c.Auth.KeyRotationSink.AWSAccessKeyID)
-	envStr("GATEWAY_KEY_ROTATION_SINK_AWS_SECRET_ACCESS_KEY", &c.Auth.KeyRotationSink.AWSSecretAccessKey)
-	envStr("GATEWAY_KEY_ROTATION_SINK_AWS_SESSION_TOKEN", &c.Auth.KeyRotationSink.AWSSessionToken)
 	envBool("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE", &c.Auth.AllowMasterKeyDataPlane)
 	envBool("GATEWAY_ENABLE_DATA_PLANE_JWT", &c.Auth.EnableDataPlaneJWT)
 	envTrimStr("GATEWAY_CUSTOM_API_KEY_HEADER", &c.Auth.CustomAPIKeyHeader)
@@ -895,7 +873,6 @@ func (c *Config) Validate() error {
 		c.validateAuth,
 		c.validateNetworkSecurity,
 		c.validateMCPAndA2A,
-		c.validateCustomProviders,
 		c.validateGuardrails,
 	}
 	for _, fn := range validators {
@@ -1072,7 +1049,7 @@ func (c *Config) validateAuth() error {
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Auth.KeyRotationSink.Driver)) {
-	case "", "webhook", "vault_kv2", "aws_secrets_manager":
+	case "", "webhook", "vault_kv2":
 	default:
 		return fmt.Errorf("invalid auth.key_rotation_sink.driver %q", c.Auth.KeyRotationSink.Driver)
 	}
@@ -1325,30 +1302,6 @@ func (c *Config) validateMCPAndA2A() error {
 	return nil
 }
 
-func (c *Config) validateCustomProviders() error {
-	for _, cp := range c.Providers.CustomOpenAICompatible {
-		id := strings.ToLower(strings.TrimSpace(cp.ID))
-		if id == "" {
-			return fmt.Errorf("providers.custom_openai_compatible: id cannot be empty")
-		}
-		if strings.TrimSpace(cp.BaseURL) == "" {
-			return fmt.Errorf("providers.custom_openai_compatible %q: base_url cannot be empty", id)
-		}
-		u, err := url.Parse(strings.TrimSpace(cp.BaseURL))
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("providers.custom_openai_compatible %q: base_url must have http or https scheme", id)
-		}
-		if rm := strings.TrimSpace(cp.ReasoningMapping); rm != "" {
-			switch rm {
-			case "passthrough", "openrouter_reasoning", "dashscope_thinking", "thinking_enabled", "chat_template_thinking", "strip":
-			default:
-				return fmt.Errorf("providers.custom_openai_compatible %q: unsupported reasoning_mapping %q", id, cp.ReasoningMapping)
-			}
-		}
-	}
-	return nil
-}
-
 func (c *Config) validateGuardrails() error {
 	seenScanners := make(map[string]struct{}, len(c.Guardrails.Scanners))
 	for i, sc := range c.Guardrails.Scanners {
@@ -1441,152 +1394,14 @@ func ResolveEnvValue(val string) string {
 func NormalizeProvider(raw string) domain.ProviderType {
 	lower := strings.ToLower(strings.TrimSpace(raw))
 	switch {
-	case lower == "gemini" || lower == "google" || lower == "google_ai_studio":
-		return domain.ProviderGemini
-	case lower == "vertex_ai" || lower == "vertex" || strings.HasPrefix(lower, "vertex_ai-") || strings.HasPrefix(lower, "vertex-"):
-		return domain.ProviderVertex
 	case lower == "anthropic" || lower == "claude":
 		return domain.ProviderAnthropic
 	case lower == "openai" || lower == "chatgpt" || lower == "text-completion-openai":
 		return domain.ProviderOpenAI
-	case lower == "azure" || lower == "azure_ai" || lower == "azure_text" || lower == "azure_openai":
-		return domain.ProviderAzure
-	case lower == "bedrock" || lower == "bedrock_converse" || lower == "bedrock_mantle" || lower == "amazon_nova" || lower == "amazon-nova":
-		return domain.ProviderBedrock
-	case lower == "cohere" || lower == "cohere_chat":
-		return domain.ProviderCohere
-	case lower == "mistral" || lower == "mistralai" || lower == "codestral" || lower == "text-completion-codestral":
-		return domain.ProviderMistral
-	case lower == "ollama" || lower == "ollama_chat":
-		return domain.ProviderOllama
-	case lower == "together" || lower == "together_ai":
-		return domain.ProviderTogether
-	case lower == "fireworks" || lower == "fireworks_ai" || strings.HasPrefix(lower, "fireworks_ai-"):
-		return domain.ProviderFireworks
 	case lower == "groq":
 		return domain.ProviderGroq
-	case lower == "deepseek":
-		return domain.ProviderDeepSeek
-	case lower == "cerebras":
-		return domain.ProviderCerebras
-	case lower == "sambanova":
-		return domain.ProviderSambaNova
-	case lower == "xai":
-		return domain.ProviderXAI
-	case lower == "perplexity":
-		return domain.ProviderPerplexity
-	case lower == "anyscale":
-		return domain.ProviderAnyscale
-	case lower == "deepinfra":
-		return domain.ProviderDeepInfra
-	case lower == "novita":
-		return domain.ProviderNovita
-	case lower == "nebius":
-		return domain.ProviderNebius
-	case lower == "hyperbolic":
-		return domain.ProviderHyperbolic
-	case lower == "lambda" || lower == "lambda_ai":
-		return domain.ProviderLambda
-	case lower == "friendli" || lower == "friendliai":
-		return domain.ProviderFriendli
 	case lower == "openrouter":
 		return domain.ProviderOpenRouter
-	case lower == "vllm":
-		return domain.ProviderVLLM
-	case lower == "cloudflare" || lower == "clf_ai_gateway":
-		return domain.ProviderCloudflare
-	case lower == "databricks":
-		return domain.ProviderDatabricks
-	case lower == "snowflake":
-		return domain.ProviderSnowflake
-	case lower == "dashscope" || lower == "qwen_ai_platform" || lower == "qwencloud":
-		return domain.ProviderDashScope
-	case lower == "volcengine":
-		return domain.ProviderVolcengine
-	case lower == "bigmodel" || lower == "zhipu":
-		return domain.ProviderBigModel
-	case lower == "moonshot":
-		return domain.ProviderMoonshot
-	case lower == "minimax":
-		return domain.ProviderMiniMax
-	case lower == "siliconflow":
-		return domain.ProviderSiliconFlow
-	case lower == "voyage":
-		return domain.ProviderVoyage
-	case lower == "jina" || lower == "jina_ai":
-		return domain.ProviderJina
-	case lower == "replicate":
-		return domain.ProviderReplicate
-	case lower == "ai21":
-		return domain.ProviderAI21
-	case lower == "baseten":
-		return domain.ProviderBaseten
-	case lower == "nvidia" || lower == "nvidia_nim" || lower == "nim":
-		return domain.ProviderNvidia
-	case lower == "scaleway":
-		return domain.ProviderScaleway
-	case lower == "github_copilot" || lower == "copilot":
-		return domain.ProviderGitHubCopilot
-	case lower == "vercel_ai_gateway" || lower == "vercel":
-		return domain.ProviderVercelAIGateway
-	case lower == "huggingface" || lower == "hf":
-		return domain.ProviderHuggingFace
-	case lower == "featherless" || lower == "featherless_ai":
-		return domain.ProviderFeatherless
-	case lower == "fal" || lower == "fal_ai":
-		return domain.ProviderFal
-	case lower == "zai" || lower == "z_ai":
-		return domain.ProviderZAI
-	case lower == "poe":
-		return domain.ProviderPoe
-	case lower == "helicone":
-		return domain.ProviderHelicone
-	case lower == "aihubmix":
-		return domain.ProviderAIHubMix
-	case lower == "venice" || lower == "veniceai":
-		return domain.ProviderVenice
-	case lower == "chutes":
-		return domain.ProviderChutes
-	case lower == "gmi":
-		return domain.ProviderGMI
-	case lower == "llamagate":
-		return domain.ProviderLlamaGate
-	case lower == "sarvam":
-		return domain.ProviderSarvam
-	case lower == "crusoe":
-		return domain.ProviderCrusoe
-	case lower == "parasail":
-		return domain.ProviderParasail
-	case lower == "upstage":
-		return domain.ProviderUpstage
-	case lower == "ovhcloud":
-		return domain.ProviderOVHCloud
-	case lower == "wandb":
-		return domain.ProviderWandB
-	case lower == "nscale":
-		return domain.ProviderNscale
-	case lower == "publicai":
-		return domain.ProviderPublicAI
-	case lower == "synthetic":
-		return domain.ProviderSynthetic
-	case lower == "nano_gpt" || lower == "nano-gpt":
-		return domain.ProviderNanoGPT
-	case lower == "xiaomi_mimo":
-		return domain.ProviderXiaomiMiMo
-	case lower == "reka":
-		return domain.ProviderReka
-	case lower == "yi" || lower == "01ai":
-		return domain.ProviderYi
-	case lower == "baichuan":
-		return domain.ProviderBaichuan
-	case lower == "stepfun":
-		return domain.ProviderStepFun
-	case lower == "lm_studio" || lower == "lmstudio":
-		return domain.ProviderLMStudio
-	case lower == "llamafile":
-		return domain.ProviderLlamafile
-	case lower == "xinference":
-		return domain.ProviderXinference
 	default:
 		return domain.ProviderType(lower)
 	}
@@ -1607,8 +1422,9 @@ func IsKnownProviderAlias(raw string) bool {
 	return false
 }
 
-// ParseProviderModel parses a model string (e.g. "gemini/gemini-2.5-flash",
-// "vertex_ai/gemini-1.5-pro", or "gemini-2.5-flash") into (ProviderType, bareModelName, canonicalGlobalModelID).
+// ParseProviderModel parses a model string (e.g. "openai/gpt-4o-mini",
+// "anthropic/claude-haiku-4-5-20251001", "groq/llama-3.1-8b-instant",
+// or "openrouter/openai/gpt-4o-mini") into (ProviderType, bareModelName, canonicalGlobalModelID).
 func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) {
 	spec := strings.TrimSpace(modelSpec)
 	if spec == "" {
@@ -1623,18 +1439,10 @@ func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) 
 
 	lower := strings.ToLower(spec)
 	switch {
-	case strings.HasPrefix(lower, "gemini") || strings.HasPrefix(lower, "text-embedding-004"):
-		return domain.ProviderGemini, spec, fmt.Sprintf("%s/%s", domain.ProviderGemini, spec)
 	case strings.HasPrefix(lower, "claude"):
 		return domain.ProviderAnthropic, spec, fmt.Sprintf("%s/%s", domain.ProviderAnthropic, spec)
-	case strings.HasPrefix(lower, "gpt-") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.HasPrefix(lower, "text-embedding-3"):
+	case strings.HasPrefix(lower, "gpt-") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.HasPrefix(lower, "text-embedding-3") || strings.HasPrefix(lower, "omni-moderation"):
 		return domain.ProviderOpenAI, spec, fmt.Sprintf("%s/%s", domain.ProviderOpenAI, spec)
-	case strings.HasPrefix(lower, "mistral") || strings.HasPrefix(lower, "codestral") || strings.HasPrefix(lower, "pixtral"):
-		return domain.ProviderMistral, spec, fmt.Sprintf("%s/%s", domain.ProviderMistral, spec)
-	case strings.HasPrefix(lower, "command"):
-		return domain.ProviderCohere, spec, fmt.Sprintf("%s/%s", domain.ProviderCohere, spec)
-	case strings.HasPrefix(lower, "llama") || strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "deepseek"):
-		return domain.ProviderOllama, spec, fmt.Sprintf("%s/%s", domain.ProviderOllama, spec)
 	default:
 		return "", spec, spec
 	}
@@ -1695,23 +1503,6 @@ func validateAuthKeyRotation(authCfg AuthConfig) error {
 		}
 		if ResolveEnvValue(sink.Token) == "" {
 			return fmt.Errorf("auth.key_rotation_sink.token is required for vault_kv2 driver")
-		}
-	case "aws_secrets_manager":
-		accessKey := strings.TrimSpace(ResolveEnvValue(sink.AWSAccessKeyID))
-		secretKey := strings.TrimSpace(ResolveEnvValue(sink.AWSSecretAccessKey))
-		if (accessKey == "" || secretKey == "") && !authCfg.AllowAmbientCloudIAM {
-			return fmt.Errorf("aws_secrets_manager sink requires static AWS credentials when auth.allow_ambient_cloud_iam is false")
-		}
-		addr := ResolveEnvValue(sink.Address)
-		if strings.TrimSpace(addr) != "" {
-			if _, err := ValidateStrictHTTPSURL(addr, "AWS Secrets Manager sink"); err != nil {
-				return err
-			}
-		} else {
-			region := strings.TrimSpace(ResolveEnvValue(sink.Region))
-			if region == "" && strings.TrimSpace(os.Getenv("AWS_REGION")) == "" && strings.TrimSpace(os.Getenv("AWS_DEFAULT_REGION")) == "" {
-				return fmt.Errorf("auth.key_rotation_sink.region is required for aws_secrets_manager driver")
-			}
 		}
 	}
 	return nil

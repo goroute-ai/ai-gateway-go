@@ -283,6 +283,20 @@ func (t *OpenAPITransport) RoundTrip(
 	}
 
 	switch jsonRPCReq.Method {
+	case "server/discover":
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      jsonRPCReq.ID,
+			Result: map[string]any{
+				"resultType":        "complete",
+				"cacheScope":        "private",
+				"ttlMs":             60000,
+				"supportedVersions": []string{domain.MCPProtocolVersion20260728},
+				"capabilities": map[string]any{
+					"tools": map[string]any{"listChanged": false},
+				},
+			},
+		}, nil, nil
 	case "tools/list":
 		ops, respHeaders, err := t.getOperations(ctx, server, authStrategy, authCtx)
 		if err != nil {

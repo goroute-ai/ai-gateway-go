@@ -21,7 +21,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func TestPhase6_ResponsesAPI(t *testing.T) {
+func TestHandlers_ResponsesAPI(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()
@@ -217,7 +217,7 @@ func TestPhase6_ResponsesAPI(t *testing.T) {
 	})
 }
 
-func TestPhase6_RealtimeWebSocket(t *testing.T) {
+func TestHandlers_RealtimeWebSocket(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()

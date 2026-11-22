@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+
+	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 )
 
 const (
@@ -196,15 +198,19 @@ func ValidateHTTPRequest(r *http.Request, allowedOrigins []string) (int, error) 
 	return http.StatusOK, nil
 }
 
-// ValidateProtocolVersion validates requested MCP protocol version.
+// ValidateProtocolVersion validates requested MCP protocol version against generated official releases.
 func ValidateProtocolVersion(version string) *JSONRPCError {
 	version = strings.TrimSpace(version)
-	if version == "" || version == "2026-07-28" || version == "2025-11-25" {
+	if version == "" || spec.IsSupported(version) {
 		return nil
 	}
 	return &JSONRPCError{
 		Code:    CodeUnsupportedProtocolVersion,
-		Message: fmt.Sprintf("unsupported protocol version %q; supported versions are 2026-07-28 and 2025-11-25", version),
+		Message: fmt.Sprintf("unsupported protocol version %q; supported versions are %s", version, strings.Join(spec.SupportedVersions(), ", ")),
+		Data: map[string]any{
+			"requested": version,
+			"supported": spec.SupportedVersions(),
+		},
 	}
 }
 
@@ -259,18 +265,18 @@ func ValidateMCPTransportHeaders(r *http.Request) *JSONRPCError {
 }
 
 // ValidateMirroredHeaderParameters checks that mirrored Mcp-Param-* and Mcp-Name headers
-// strictly match the JSON-RPC tool call payload arguments (MCP 2026-07-28 spec).
+// strictly match the JSON-RPC payload arguments/name/uri (MCP 2026-07-28 spec).
 func ValidateMirroredHeaderParameters(r *http.Request, req *JSONRPCRequest) *JSONRPCError {
-	if req.Method != "tools/call" {
+	if r == nil || req == nil || len(req.Params) == 0 {
 		return nil
 	}
-
-	if len(req.Params) == 0 {
+	if req.Method != "tools/call" && req.Method != "resources/read" && req.Method != "prompts/get" {
 		return nil
 	}
 
 	var params struct {
 		Name      string          `json:"name"`
+		URI       string          `json:"uri"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
 
@@ -279,19 +285,27 @@ func ValidateMirroredHeaderParameters(r *http.Request, req *JSONRPCRequest) *JSO
 	if err := dec.Decode(&params); err != nil {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
-			Message: "Invalid tools/call params structure",
+			Message: fmt.Sprintf("Invalid %s params structure", req.Method),
 		}
 	}
 
-	// 1. Validate Mcp-Name header if present
+	// 1. Validate Mcp-Name header if present (matches params.name or resources/read params.uri)
+	expectedTarget := params.Name
+	if req.Method == "resources/read" {
+		expectedTarget = params.URI
+	}
 	if mcpName := r.Header.Get("Mcp-Name"); mcpName != "" {
 		decodedName, err := DecodeBase64Sentinel(mcpName)
-		if err != nil || decodedName != params.Name {
+		if err != nil || decodedName != expectedTarget {
 			return &JSONRPCError{
 				Code:    CodeHeaderMismatch,
-				Message: fmt.Sprintf("Header Mcp-Name %q does not match params.name %q", decodedName, params.Name),
+				Message: fmt.Sprintf("Header Mcp-Name %q does not match target %q", decodedName, expectedTarget),
 			}
 		}
+	}
+
+	if req.Method != "tools/call" {
+		return nil
 	}
 
 	// 2. Validate mirrored Mcp-Param-{Name} headers against arguments

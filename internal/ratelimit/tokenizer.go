@@ -13,11 +13,10 @@ import (
 type TokenizerProfile string
 
 const (
-	ProfileO200K         TokenizerProfile = "o200k_base"     // GPT-4o, GPT-4.1, o1, o3, o4
-	ProfileCL100K        TokenizerProfile = "cl100k_base"    // GPT-4, GPT-3.5, text-embedding-3
-	ProfileClaudeBPE     TokenizerProfile = "claude_bpe"     // Anthropic Claude 3.x / 4.x
-	ProfileGeminiSP      TokenizerProfile = "gemini_sp"      // Google Gemini SentencePiece
-	ProfileMistralTekken TokenizerProfile = "mistral_tekken" // Mistral Tekken / Llama 3 BPE
+	ProfileO200K     TokenizerProfile = "o200k_base"  // GPT-4o, GPT-4.1, o1, o3, o4
+	ProfileCL100K    TokenizerProfile = "cl100k_base" // GPT-4, GPT-3.5, text-embedding-3
+	ProfileClaudeBPE TokenizerProfile = "claude_bpe"  // Anthropic Claude 3.x / 4.x
+	ProfileLlamaBPE  TokenizerProfile = "llama_bpe"   // Groq Llama / Qwen / DeepSeek BPE
 )
 
 // ResolveTokenizerProfile selects the appropriate subword tokenization profile for a model.
@@ -26,10 +25,8 @@ func ResolveTokenizerProfile(model string) TokenizerProfile {
 	switch {
 	case strings.Contains(m, "claude") || strings.HasPrefix(m, "anthropic/"):
 		return ProfileClaudeBPE
-	case strings.Contains(m, "gemini") || strings.Contains(m, "gemma"):
-		return ProfileGeminiSP
-	case strings.Contains(m, "mistral") || strings.Contains(m, "llama"):
-		return ProfileMistralTekken
+	case strings.Contains(m, "llama") || strings.Contains(m, "qwen") || strings.HasPrefix(m, "groq/"):
+		return ProfileLlamaBPE
 	case strings.Contains(m, "gpt-3.5") || strings.Contains(m, "embedding"):
 		return ProfileCL100K
 	default:
@@ -49,9 +46,7 @@ func EstimateTextTokens(text string, profile TokenizerProfile) int {
 	switch profile {
 	case ProfileClaudeBPE:
 		charsPerTokenX100 = 360 // Claude BPE is slightly denser on prose/code (~3.6 chars/token)
-	case ProfileGeminiSP:
-		charsPerTokenX100 = 410 // Gemini SentencePiece averages ~4.1 chars/token
-	case ProfileMistralTekken:
+	case ProfileLlamaBPE:
 		charsPerTokenX100 = 380
 	case ProfileCL100K:
 		charsPerTokenX100 = 390
@@ -97,8 +92,6 @@ func EstimateRequestTokens(req *domain.CanonicalChatRequest) int {
 	msgFraming := 4
 	if profile == ProfileClaudeBPE {
 		msgFraming = 5
-	} else if profile == ProfileGeminiSP {
-		msgFraming = 3
 	}
 
 	for _, m := range req.Messages {
@@ -144,26 +137,6 @@ func EstimateTextInputsTokens(model string, inputs []string, perInputOverhead in
 	total := 0
 	for _, input := range inputs {
 		total += perInputOverhead + EstimateTextTokens(input, profile)
-	}
-	if total < 1 {
-		return 1
-	}
-	return total
-}
-
-// EstimateRerankTokens includes the query and the serialized size of every
-// document, including structured document fields.
-func EstimateRerankTokens(model, query string, docs []domain.RerankDocument) int {
-	profile := ResolveTokenizerProfile(model)
-	total := 8 + EstimateTextTokens(query, profile)
-	for _, doc := range docs {
-		text := doc.Text
-		if len(doc.Raw) > 0 {
-			if b, err := json.Marshal(doc.Raw); err == nil {
-				text += string(b)
-			}
-		}
-		total += 4 + EstimateTextTokens(text, profile)
 	}
 	if total < 1 {
 		return 1

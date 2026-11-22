@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -51,7 +50,9 @@ func (t *StreamableHTTP2026Transport) RoundTrip(
 		return nil, nil, errors.New("mcp: nil server")
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, server.EndpointURL, bytes.NewReader(reqBytes))
+	normalizedBody, method, targetName := prepare2026OutboundRequest(reqBytes)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, server.EndpointURL, bytes.NewReader(normalizedBody))
 	if err != nil {
 		return nil, nil, fmt.Errorf("create mcp request: %w", err)
 	}
@@ -59,17 +60,24 @@ func (t *StreamableHTTP2026Transport) RoundTrip(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
-	// Inject W3C distributed tracing context
+	// Inject W3C distributed tracing context.
 	observability.InjectTraceHeaders(ctx, httpReq)
 
-	// Forward mirrored Mcp-* headers from client
+	// Forward mirrored Mcp-* headers from client before setting canonical 2026-07-28 headers.
 	for k, v := range clientHeaders {
 		if strings.HasPrefix(strings.ToLower(k), "mcp-") {
 			httpReq.Header[k] = v
 		}
 	}
+	httpReq.Header.Set("MCP-Protocol-Version", domain.MCPProtocolVersion20260728)
+	if method != "" {
+		httpReq.Header.Set("Mcp-Method", method)
+	}
+	if targetName != "" {
+		httpReq.Header.Set("Mcp-Name", EncodeBase64Sentinel(targetName))
+	}
 
-	// Apply upstream authentication strategy
+	// Apply upstream authentication strategy.
 	if authStrategy != nil {
 		if err := authStrategy.Apply(ctx, httpReq, authCtx); err != nil {
 			return nil, nil, fmt.Errorf("apply upstream auth: %w", err)
@@ -82,48 +90,74 @@ func (t *StreamableHTTP2026Transport) RoundTrip(
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	jsonResp, rpcErr := parseMCPHTTPResponse(resp)
+	if rpcErr != nil {
+		return nil, resp.Header, rpcErr
+	}
+	return jsonResp, resp.Header, nil
+}
+
+// prepare2026OutboundRequest ensures outgoing requests conform to MCP 2026-07-28 params._meta rules
+// and extracts the method and target name/URI for mirrored HTTP routing headers.
+func prepare2026OutboundRequest(reqBytes []byte) ([]byte, string, string) {
+	var msg map[string]any
+	dec := json.NewDecoder(bytes.NewReader(reqBytes))
+	dec.UseNumber()
+	if err := dec.Decode(&msg); err != nil {
+		return reqBytes, "", ""
+	}
+	method, _ := msg["method"].(string)
+
+	params, ok := msg["params"].(map[string]any)
+	if !ok || params == nil {
+		params = make(map[string]any)
+		msg["params"] = params
+	}
+	targetName := ""
+	if name, ok := params["name"].(string); ok && name != "" {
+		targetName = name
+	} else if uri, ok := params["uri"].(string); ok && uri != "" {
+		targetName = uri
+	}
+
+	meta, ok := params["_meta"].(map[string]any)
+	if !ok || meta == nil {
+		meta = make(map[string]any)
+		params["_meta"] = meta
+	}
+	if _, exists := meta["io.modelcontextprotocol/protocolVersion"]; !exists {
+		meta["io.modelcontextprotocol/protocolVersion"] = domain.MCPProtocolVersion20260728
+	}
+	if _, exists := meta["io.modelcontextprotocol/clientCapabilities"]; !exists {
+		meta["io.modelcontextprotocol/clientCapabilities"] = map[string]any{}
+	}
+
+	encoded, err := json.Marshal(msg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read mcp response: %w", err)
+		return reqBytes, method, targetName
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, resp.Header, &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: fmt.Sprintf("upstream returned HTTP status %d: %s", resp.StatusCode, string(respBody)),
-		}
-	}
-
-	var jsonResp JSONRPCResponse
-	if err := json.Unmarshal(respBody, &jsonResp); err != nil {
-		return nil, resp.Header, &JSONRPCError{
-			Code:    CodeParseError,
-			Message: fmt.Sprintf("invalid json-rpc response from upstream: %v", err),
-		}
-	}
-
-	return &jsonResp, resp.Header, nil
+	return encoded, method, targetName
 }
 
-// TransportDispatcher routes MCP calls to the appropriate transport version.
+// TransportDispatcher routes MCP calls to the appropriate protocol-release transport driver.
 type TransportDispatcher struct {
-	transport2026    *StreamableHTTP2026Transport
-	adapter2025      *StreamableHTTP2025Adapter
-	adapter2024      *HTTPSSEServer2024Transport
-	transportOpenAPI *OpenAPITransport
-	transportStdio   *StdioTransport
-	allowStdio       bool
+	transport2026     *StreamableHTTP2026Transport
+	statefulTransport *StatefulStreamableTransport
+	adapter2024       *HTTPSSEServer2024Transport
+	transportOpenAPI  *OpenAPITransport
+	transportStdio    *StdioTransport
+	allowStdio        bool
 }
 
-// NewTransportDispatcher creates a new TransportDispatcher.
+// NewTransportDispatcher creates a new TransportDispatcher covering all official MCP releases.
 func NewTransportDispatcher(netPolicy *network.Policy, redisFabric *storage.RedisFabric, allowStdio bool) *TransportDispatcher {
 	return &TransportDispatcher{
-		transport2026:    NewStreamableHTTP2026Transport(netPolicy),
-		adapter2025:      NewStreamableHTTP2025Adapter(netPolicy, redisFabric),
-		adapter2024:      NewHTTPSSEServer2024Transport(netPolicy),
-		transportOpenAPI: NewOpenAPITransport(netPolicy),
-		transportStdio:   NewStdioTransport(StdioSecurityPolicy{AllowedBinaries: []string{}, DefaultTimeout: 30 * time.Second}),
-		allowStdio:       allowStdio,
+		transport2026:     NewStreamableHTTP2026Transport(netPolicy),
+		statefulTransport: NewStatefulStreamableTransport(netPolicy, redisFabric),
+		adapter2024:       NewHTTPSSEServer2024Transport(netPolicy),
+		transportOpenAPI:  NewOpenAPITransport(netPolicy),
+		transportStdio:    NewStdioTransport(StdioSecurityPolicy{AllowedBinaries: []string{}, DefaultTimeout: 30 * time.Second}),
+		allowStdio:        allowStdio,
 	}
 }
 
@@ -132,7 +166,7 @@ func (d *TransportDispatcher) SetStdioPolicy(policy StdioSecurityPolicy) {
 	d.transportStdio = NewStdioTransport(policy)
 }
 
-// Dispatch executes the round-trip through the corresponding transport adapter.
+// Dispatch executes the round-trip through the upstream server's configured MCP specification driver.
 func (d *TransportDispatcher) Dispatch(
 	ctx context.Context,
 	server *domain.MCPServer,
@@ -141,6 +175,10 @@ func (d *TransportDispatcher) Dispatch(
 	reqBytes []byte,
 	clientHeaders http.Header,
 ) (*JSONRPCResponse, http.Header, error) {
+	if server == nil {
+		return nil, nil, errors.New("mcp: nil server")
+	}
+
 	if server.TransportType == domain.MCPTransportStdio {
 		if !d.allowStdio {
 			return nil, nil, ErrStdioDisabled
@@ -148,18 +186,20 @@ func (d *TransportDispatcher) Dispatch(
 		return d.transportStdio.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
 	}
 
-	if server.TransportType == "openapi" {
+	if server.TransportType == domain.MCPTransportOpenAPI {
 		return d.transportOpenAPI.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
 	}
 
-	if server.ProtocolVersion == "2024-11-05" || server.TransportType == "http_sse_2024" {
+	if server.ProtocolVersion == domain.MCPProtocolVersion20241105 || server.TransportType == domain.MCPTransportHTTPSSE2024 {
 		return d.adapter2024.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
 	}
 
-	if server.ProtocolVersion == domain.MCPProtocolVersion2025 {
-		return d.adapter2025.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
+	switch server.ProtocolVersion {
+	case domain.MCPProtocolVersion20250326, domain.MCPProtocolVersion20250618, domain.MCPProtocolVersion20251125:
+		return d.statefulTransport.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
+	case "", domain.MCPProtocolVersion20260728:
+		return d.transport2026.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
+	default:
+		return nil, nil, fmt.Errorf("mcp: unsupported server protocol version %q", server.ProtocolVersion)
 	}
-
-	// Default to primary MCP 2026-07-28 stateless transport
-	return d.transport2026.RoundTrip(ctx, server, authStrategy, authCtx, reqBytes, clientHeaders)
 }

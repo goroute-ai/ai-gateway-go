@@ -1318,7 +1318,7 @@ func TestReliability_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 
 		// 3. Non-prefill adapter refusal.
 		noPrefillAdp := &routingNoPrefillAdapter{
-			provider: domain.ProviderGemini,
+			provider: domain.ProviderGroq,
 			streamFn: func(_ context.Context, _ *domain.Deployment, _ *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 				_ = onChunk(&domain.CanonicalStreamChunk{ID: "np1", Choices: []domain.CanonicalStreamChoice{{Index: 0, Delta: domain.CanonicalStreamDelta{Content: "hello"}}}})
 				return nil, io.ErrUnexpectedEOF
@@ -1328,11 +1328,11 @@ func TestReliability_MidStreamSSEContinuationAndRefusals(t *testing.T) {
 		npGroup := &domain.ModelGroup{OrgID: org.ID, Alias: "no-prefill-group", RoutingStrategy: domain.StrategyRoundRobin, IsActive: true}
 		_ = repo.CreateModelGroup(ctx, npGroup)
 		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
-			ID: "gemini/np-1", Provider: domain.ProviderGemini, ModelName: "np-1",
+			ID: "groq/np-1", Provider: domain.ProviderGroq, ModelName: "np-1",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "np-dep-1", "http://localhost")
 		_ = registerRoutingModelAndDep(t, repo, vault, org.ID, npGroup, &domain.GlobalModel{
-			ID: "gemini/np-2", Provider: domain.ProviderGemini, ModelName: "np-2",
+			ID: "groq/np-2", Provider: domain.ProviderGroq, ModelName: "np-2",
 			SupportsInference: true, SupportsStreaming: true, LifecycleStatus: domain.ModelStatusActive,
 		}, "np-dep-2", "http://localhost")
 

@@ -95,25 +95,41 @@ func (c *MCPCache) ComputeCacheKey(
 	return "gw:mcp:cache:" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// ShouldCache inspects the method and JSON-RPC response to ensure safety.
-// Never caches InputRequiredResult, requestState, or session-bound structures.
+// ShouldCache inspects the method and JSON-RPC response to ensure safety and CacheableResult rules.
+// Never caches InputRequiredResult, input_required, requestState, ttlMs=0, or session-bound structures.
 func ShouldCache(method string, resp *JSONRPCResponse) bool {
 	if resp == nil || resp.Error != nil {
 		return false
 	}
 
-	// Always cache discovery methods
-	if method == "tools/list" || method == "resources/list" || method == "prompts/list" {
-		return true
+	if resMap, ok := resp.Result.(map[string]any); ok {
+		if rt, _ := resMap["resultType"].(string); rt == "input_required" {
+			return false
+		}
+		switch ttl := resMap["ttlMs"].(type) {
+		case int:
+			if ttl == 0 {
+				return false
+			}
+		case int64:
+			if ttl == 0 {
+				return false
+			}
+		case float64:
+			if ttl == 0 {
+				return false
+			}
+		}
+		if scope, _ := resMap["cacheScope"].(string); scope != "" && scope != "public" && scope != "private" {
+			return false
+		}
 	}
 
-	// For tools/call: inspect result payload
+	// Forbid caching interactive or stateful results
 	resultBytes, err := json.Marshal(resp.Result)
 	if err != nil {
 		return false
 	}
-
-	// Forbid caching interactive or stateful results
 	lower := bytes.ToLower(resultBytes)
 	if bytes.Contains(lower, []byte("inputrequiredresult")) ||
 		bytes.Contains(lower, []byte("requeststate")) ||
@@ -121,7 +137,13 @@ func ShouldCache(method string, resp *JSONRPCResponse) bool {
 		return false
 	}
 
-	return false // Non-discovery methods default to non-cacheable unless explicitly enabled
+	// Cache discovery/read methods
+	switch method {
+	case "server/discover", "tools/list", "resources/list", "resources/templates/list", "prompts/list":
+		return true
+	default:
+		return false // Non-discovery methods default to non-cacheable unless explicitly enabled
+	}
 }
 
 // Get retrieves a cached JSONRPCResponse if present and unexpired.

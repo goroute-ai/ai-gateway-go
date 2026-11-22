@@ -407,3 +407,10 @@ type Repository interface {
 type RoutingRevisionProvider interface {
 	RoutingRevision() uint64
 }
+
+// MCPRuntimeSettingsRepository is optionally implemented by repositories that persist
+// the active gateway-wide MCP API specification selected via Control Plane / Web UI.
+type MCPRuntimeSettingsRepository interface {
+	GetMCPRuntimeSettings(ctx context.Context) (*domain.MCPRuntimeSettings, error)
+	UpdateMCPRuntimeSettings(ctx context.Context, settings *domain.MCPRuntimeSettings) error
+}

@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is a Go service and embeddable SDK (`v1.21.0`) that routes inference requests across model providers, exposes Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v1.24.0`) that routes inference requests across OpenAPI-first model providers (`openai`, `anthropic`, `groq`, `openrouter`), exposes UI-selectable multi-release Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 
@@ -20,7 +20,7 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 2. **FinOps Integer Accounting**: All financial calculations use 64-bit integer micro-dollars (`$1.00 = 1,000,000 µ$`). Never use floating-point math for cost accumulation or pricing.
 3. **SSRF-Protected Network Egress**: All outbound HTTP traffic to upstream LLM providers or webhooks must route through the SSRF-guarded transport in `internal/security/network`. Admin credential `BaseURL` inputs and adapter `ListModels` endpoints must validate URLs via `adapter.ValidateAndResolveBaseURL`, and remote media fetches must use the strict HTTPS-only public `mediaPolicy`.
 4. **Multi-Tenant Isolation & Security Headers**: Boundary 1 Virtual Key / JWT authentication, tri-state multi-tenant RBAC allowlists (`null` inherit vs `[]` deny all across `Org > Team > User > VirtualKey`), fail-closed quota/policy checks, Redis Pub/Sub cross-replica invalidation, and `SecurityHeadersMiddleware` ([`internal/server/security_headers.go`](./internal/server/security_headers.go)) must be preserved across all endpoints.
-5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs and interfaces are generated, and `/v1`, `/admin/v1`, and `/auth` routes (`106` OpenAPI paths) are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
+5. **OpenAPI-First Design**: The gateway OpenAPI contract ([`docs/openapi/gateway.openapi.yaml`](./docs/openapi/gateway.openapi.yaml)) and protocol schemas under `docs/specs/` are authoritative. Gateway DTOs, provider DTOs, and MCP spec types/validators are generated, and `/v1`, `/admin/v1`, and `/auth` routes (`125` OpenAPI paths) are checked against the contract. Update handlers and explicit domain mappings as needed, then run `make specgen` after contract changes.
 6. **Tri-State Capabilities**: Model capabilities must use explicit tri-state semantics (`supported`, `unsupported`, `unknown`). Never downgrade `unknown` to `unsupported` unless verified.
 7. **Single-Binary Web UI Embedding**: Frontend assets in `web/` are compiled into `internal/ui/dist/` and embedded via Go `embed.FS`. The production bundle must remain within `<= 560 KB` uncompressed and `<= 150 KB` gzipped, strictly enforced by `web/scripts/check-budget.mjs`.
 8. **Secret & CI Hygiene**: Never commit real or realistic secret/token literals—even in unit tests (construct synthetic fixtures dynamically if needed). Keep tests compatible with `.gitleaks.toml` and GitHub Push Protection.
@@ -33,7 +33,7 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 - **Go**: Version `1.26.0+` (matching [`go.mod`](./go.mod))
 - **Git**
 - **Node.js `20+` & npm** (required only if contributing to the Operator Web UI in `web/`)
-- **Optional Tooling**: **Docker** (live PostgreSQL 16 + Redis 7 integration tests and containerized production suite), **`gitleaks`**, **`govulncheck`**, and **`k6`**
+- **Optional Tooling**: **Docker** (live PostgreSQL 16 + Redis 7 integration tests), **`gitleaks`**, and **`govulncheck`**
 
 ### Local Build and Test
 Clone the repository and verify your local toolchain:
@@ -98,31 +98,15 @@ If you are new to the codebase, look for issues labeled [`good first issue`](htt
 
 Here are great areas to get started:
 
-### 1. Add an OpenAI-Compatible Provider Profile
-GoRoute configures certified OpenAI-compatible dialect profiles in [`internal/adapter/openaicompat/builtin_profiles.go`](./internal/adapter/openaicompat/builtin_profiles.go). Registering a new provider inside `(r *ProfileRegistry) registerBuiltinProfiles()` takes just one `&DialectProfile` entry (alongside its `domain.Provider` constant in `internal/domain/`):
+### 1. Add or Extend an OpenAPI-First Provider Adapter
+All first-class providers (`openai`, `anthropic`, `groq`, `openrouter`) generate wire DTOs directly from pinned specifications under [`docs/openapi/`](./docs/openapi/README.md) via `make specgen`:
+1. Pin the upstream OpenAPI spec (`docs/openapi/<provider>.openapi.yaml`) and codegen config (`docs/openapi/<provider>.codegen.yaml`).
+2. Add the `//go:generate` directive in `internal/openapi/generate.go` and run `make specgen`.
+3. Implement `adapter.ProviderAdapter` under `internal/adapter/<provider>/` using the generated DTOs and `internal/security/network`.
 
-```go
-r.profiles[domain.Provider("myprovider")] = &DialectProfile{
-    ID:                 domain.Provider("myprovider"),
-    DisplayName:        "My Provider Cloud",
-    DefaultBaseURL:     "https://api.myprovider.com/v1",
-    EndpointStrategy:   &adapter.StandardOpenAIEndpointStrategy{DefaultBaseURL: "https://api.myprovider.com/v1"},
-    AuthStrategy:       &adapter.BearerAuthStrategy{},
-    SupportsListModels: true,
-    DefaultCapabilities: domain.ModelCapabilities{
-        Tools:             domain.CapabilitySupported,
-        Streaming:         domain.CapabilitySupported,
-        StructuredOutputs: domain.CapabilitySupported,
-    },
-}
-```
-
-### 2. Implement a Secondary Modality Adapter
-Expand modality coverage in `internal/adapter/`:
-- **Voyage AI Rerank**: Implement `adapter.RerankAdapter` calling Voyage's `/v1/rerank` endpoint.
-- **AWS Bedrock Rerank**: Implement `adapter.RerankAdapter` inside [`internal/adapter/bedrock/`](./internal/adapter/bedrock/).
-- **ElevenLabs Speech**: Implement `adapter.AudioAdapter` for ElevenLabs TTS.
-- **Vertex AI Imagen**: Implement `adapter.ImageAdapter` inside [`internal/adapter/vertex/`](./internal/adapter/vertex/).
+### 2. Expand Protocol & Safety Coverage
+- **MCP Protocol Extensions**: Extend multi-release schema tests in [`internal/mcp/schema_conformance_test.go`](./internal/mcp/schema_conformance_test.go) or `SpecProfile` helpers in `internal/mcp/spec_profile.go`.
+- **Custom Guardrail Drivers**: Add new safety or policy scanner drivers under `internal/guardrails/drivers/`.
 
 ### 3. Documentation & Examples
 - Add client code examples (Python, TypeScript, cURL, Go SDK via `pkg/gateway`).
@@ -141,7 +125,7 @@ git checkout -b feat/my-new-feature
 
 ### 2. Commit Message Conventions
 We follow [Conventional Commits](https://www.conventionalcommits.org/):
-- `feat(component): add new feature` (e.g. `feat(adapter): add voyage rerank adapter`)
+- `feat(component): add new feature` (e.g. `feat(mcp): add schema validation rule`)
 - `fix(component): fix bug description` (e.g. `fix(finops): prevent integer overflow in audio calculation`)
 - `docs(component): update documentation`
 - `test(component): add unit or integration tests`
@@ -186,7 +170,7 @@ When changing storage, auth, caching, FinOps, or HTTP/UI routes, also verify liv
 3. In the PR description:
    - Reference any related issues (e.g., `Closes #123`).
    - Describe what changed and why.
-   - List the commands run and tests executed (noting any live-service checks skipped if PostgreSQL/Redis/k6 were unavailable).
+   - List the commands run and tests executed (noting any live-service checks skipped if PostgreSQL/Redis/Playwright were unavailable).
 4. Maintainers will review your PR and verify CI (`CI` and `CodeQL`) passes before merging.
 
 ---

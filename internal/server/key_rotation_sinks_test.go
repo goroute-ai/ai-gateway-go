@@ -67,68 +67,15 @@ func TestKeyRotationSecretSink_VaultKV2AndWebhookAndAWS(t *testing.T) {
 		}
 	})
 
-	t.Run("aws_secrets_manager signs SigV4 PutSecretValue and falls back to CreateSecret", func(t *testing.T) {
-		var targets []string
-		var authHeaders []string
-		var createName string
-		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			target := r.Header.Get("X-Amz-Target")
-			targets = append(targets, target)
-			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
-			var payload map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode aws payload: %v", err)
-			}
-			if target == "secretsmanager.PutSecretValue" {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(`{"__type":"ResourceNotFoundException","Message":"Secrets Manager can't find the specified secret."}`))
-				return
-			}
-			createName, _ = payload["Name"].(string)
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:ok"}`))
-		}))
-		defer srv.Close()
-
-		sink, err := newKeyRotationSecretSinkWithClient(config.AuthConfig{
-			KeyRotationSink: config.KeyRotationSinkConfig{
-				Driver:             "aws_secrets_manager",
-				Address:            srv.URL,
-				Region:             "us-east-1",
-				PathPrefix:         "goroute/keys",
-				AWSAccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
-				AWSSecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-			},
-		}, srv.Client(), nil)
-		if err != nil {
-			t.Fatalf("newKeyRotationSecretSinkWithClient(aws): %v", err)
-		}
-		if err := sink.DeliverRotatedSecret(ctx, event); err != nil {
-			t.Fatalf("DeliverRotatedSecret(aws): %v", err)
-		}
-		if len(targets) != 2 || targets[0] != "secretsmanager.PutSecretValue" || targets[1] != "secretsmanager.CreateSecret" {
-			t.Fatalf("unexpected target sequence: %v", targets)
-		}
-		for i, h := range authHeaders {
-			if !strings.HasPrefix(h, "AWS4-HMAC-SHA256 ") || !strings.Contains(h, "/us-east-1/secretsmanager/aws4_request") {
-				t.Fatalf("request %d missing SigV4 secretsmanager authorization: %q", i, h)
-			}
-		}
-		if createName != "goroute/keys/org-1/vk-1" {
-			t.Fatalf("CreateSecret Name = %q", createName)
-		}
-	})
-
-	t.Run("aws rejects ambient IAM fallback when AllowAmbientCloudIAM is false", func(t *testing.T) {
+	t.Run("unsupported sink driver like aws_secrets_manager is rejected", func(t *testing.T) {
 		_, err := newKeyRotationSecretSink(config.AuthConfig{
-			AllowAmbientCloudIAM: false,
 			KeyRotationSink: config.KeyRotationSinkConfig{
-				Driver: "aws_secrets_manager",
-				Region: "us-east-1",
+				Driver:  "aws_secrets_manager",
+				Address: "https://secretsmanager.us-east-1.amazonaws.com",
 			},
 		}, nil)
-		if err == nil || !strings.Contains(err.Error(), "allow_ambient_cloud_iam") {
-			t.Fatalf("expected ambient IAM opt-in error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "unsupported auth.key_rotation_sink.driver") {
+			t.Fatalf("expected unsupported key_rotation_sink driver error, got %v", err)
 		}
 	})
 

@@ -487,63 +487,6 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 	})
 }
 
-// ExecuteRerank routes and executes a `/v1/rerank` request across rerank-capable deployments.
-func (rm *ReliabilityManager) ExecuteRerank(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, *ExecutionMeta, error) {
-	chars := len(req.Query)
-	for _, doc := range req.Documents {
-		chars += len(doc.Text)
-	}
-	return executeNonChat(rm, ctx, idCtx, nonChatSpec[*domain.CanonicalRerankResponse]{
-		OperationLabel:     "rerank",
-		RequestedModel:     req.Model,
-		NotFoundCode:       "rerank_model_not_found",
-		NotFoundMessage:    "No active rerank model group configured for: " + req.Model,
-		UnavailableMessage: "All primary and fallback rerank deployments are currently unavailable or in cooldown",
-		RouterReq: &domain.CanonicalChatRequest{
-			RequestID:         req.RequestID,
-			Model:             req.Model,
-			GoRouteExtensions: req.GoRouteExtensions,
-		},
-		EstInputTokens: estimateCharTokens(chars),
-		CapabilityFilter: func(deps []*domain.Deployment) []*domain.Deployment {
-			return filterByCapability(deps, func(caps domain.ModelCapabilities) domain.CapabilityState {
-				return caps.Rerank
-			})
-		},
-		Prepare: func(adp adapter.ProviderAdapter, dep *domain.Deployment) (nonChatDispatchFn[*domain.CanonicalRerankResponse], error) {
-			if opErr := checkDeploymentOperation(adp, dep, domain.OperationRerank); opErr != nil {
-				return nil, opErr
-			}
-			rerankAdp, ok := adp.(adapter.RerankAdapter)
-			if !ok {
-				return nil, &domain.GatewayError{
-					StatusCode: http.StatusNotImplemented,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "rerank_not_supported",
-					Message:    "Provider " + string(dep.GlobalModel.Provider) + " does not support reranking",
-				}
-			}
-			return func(callCtx context.Context, d *domain.Deployment, _ map[string]any, _ nonChatStreamFinalizeFn) (*domain.CanonicalRerankResponse, int, int, int, bool, error) {
-				reqCopy := *req
-				reqCopy.ResolvedModel = d.GlobalModel.ModelName
-				spanCtx, span := rm.startGenAIClientSpan(callCtx, "rerank", d)
-				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
-				resp, callErr := rerankAdp.Rerank(depCtx, d, &reqCopy)
-				depCancel()
-				var usage *domain.TokenUsage
-				if resp != nil {
-					usage = &domain.TokenUsage{TotalTokens: resp.Usage.TotalTokens}
-				}
-				finishGenAIClientSpan(span, usage, callErr)
-				if callErr != nil || resp == nil {
-					return nil, 0, 0, 0, false, callErr
-				}
-				return resp, resp.Usage.TotalTokens, 0, resp.Usage.TotalTokens, true, nil
-			}, nil
-		},
-	})
-}
-
 // ExecuteModeration routes and executes a `/v1/moderations` request.
 func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *domain.IdentityContext, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, *ExecutionMeta, error) {
 	chars := 0

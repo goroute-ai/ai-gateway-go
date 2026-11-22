@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"log/slog"
 	"os"
@@ -38,9 +38,8 @@ func main() {
 		{Name: "Gateway Unified Spec", Path: filepath.Join(targetDir, "gateway.openapi.yaml")},
 		{Name: "OpenAI Official Spec", Path: filepath.Join(targetDir, "openai.openapi.yaml")},
 		{Name: "Anthropic Official Spec", Path: filepath.Join(targetDir, "anthropic.openapi.yaml")},
-		{Name: "Gemini Official Spec", Path: filepath.Join(targetDir, "gemini.openapi.yaml")},
-		{Name: "Mistral Official Spec", Path: filepath.Join(targetDir, "mistral.openapi.yaml")},
-		{Name: "Ollama Official Spec", Path: filepath.Join(targetDir, "ollama.openapi.yaml")},
+		{Name: "Groq Official Spec", Path: filepath.Join(targetDir, "groq.openapi.yaml")},
+		{Name: "OpenRouter Official Spec", Path: filepath.Join(targetDir, "openrouter.openapi.yaml")},
 		{Name: "MCP Protocol Spec", Path: filepath.Join(targetDir, "mcp.openapi.yaml")},
 		{Name: "A2A Protocol Spec", Path: filepath.Join(targetDir, "a2a.openapi.yaml")},
 	}
@@ -90,19 +89,42 @@ func main() {
 		logger.Info("Validated OpenAPI specification", slog.String("spec", s.Name), slog.String("openapi", doc.OpenAPI), slog.Int("paths", len(pathList)))
 	}
 
-	// Validate MCP 2026-07-28 Schema
-	mcpSchemaPath := filepath.Join(*rootDir, "docs", "specs", "mcp", "2026-07-28", "schema.json")
-	if mcpData, err := os.ReadFile(mcpSchemaPath); err == nil {
-		var mcpSchema map[string]any
-		if err := json.Unmarshal(mcpData, &mcpSchema); err != nil {
-			logger.Error("specgen error parsing MCP schema", slog.String("path", mcpSchemaPath), slog.Any("error", err))
-			os.Exit(1)
+	// Validate all vendored MCP YAML schema releases and embedded parity
+	mcpDir := filepath.Join(*rootDir, "docs", "specs", "mcp")
+	embedMCPDir := filepath.Join(*rootDir, "internal", "mcp", "spec", "schemas")
+	if entries, err := os.ReadDir(mcpDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			ver := entry.Name()
+			mcpSchemaPath := filepath.Join(mcpDir, ver, "schema.yaml")
+			mcpData, err := os.ReadFile(mcpSchemaPath)
+			if err != nil {
+				logger.Error("specgen error reading MCP YAML schema", slog.String("version", ver), slog.String("path", mcpSchemaPath), slog.Any("error", err))
+				os.Exit(1)
+			}
+			var mcpSchema map[string]any
+			if err := yaml.Unmarshal(mcpData, &mcpSchema); err != nil {
+				logger.Error("specgen error parsing MCP YAML schema", slog.String("version", ver), slog.String("path", mcpSchemaPath), slog.Any("error", err))
+				os.Exit(1)
+			}
+			defs, ok := mcpSchema["$defs"].(map[string]any)
+			if !ok {
+				defs, _ = mcpSchema["definitions"].(map[string]any)
+			}
+			if len(defs) == 0 {
+				logger.Error("specgen error: MCP YAML schema contains zero definitions", slog.String("version", ver), slog.String("path", mcpSchemaPath))
+				os.Exit(1)
+			}
+			embedSchemaPath := filepath.Join(embedMCPDir, ver, "schema.yaml")
+			embedData, err := os.ReadFile(embedSchemaPath)
+			if err != nil || !bytes.Equal(mcpData, embedData) {
+				logger.Error("specgen error: embedded MCP YAML schema out of sync (run 'make specgen')", slog.String("version", ver), slog.String("docs_path", mcpSchemaPath), slog.String("embed_path", embedSchemaPath), slog.Any("error", err))
+				os.Exit(1)
+			}
+			logger.Info("Validated MCP Schema (YAML)", slog.String("version", ver), slog.Int("definitions", len(defs)))
 		}
-		defs, ok := mcpSchema["$defs"].(map[string]any)
-		if !ok {
-			defs, _ = mcpSchema["definitions"].(map[string]any)
-		}
-		logger.Info("Validated MCP JSON Schema", slog.String("spec", "MCP 2026-07-28 Schema"), slog.Int("definitions", len(defs)))
 	}
 
 	// Verify A2A Protobuf generated code freshness

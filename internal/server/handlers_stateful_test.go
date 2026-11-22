@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPhase5_FilesAndBatches(t *testing.T) {
+func TestHandlers_FilesAndBatches(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()

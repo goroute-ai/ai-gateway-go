@@ -441,42 +441,6 @@ type EmbeddingResponse struct {
 	Usage    UsageInfo       `json:"usage"`
 }
 
-// RerankRequest configures a document reranking request to `POST /v1/rerank`.
-// Elements of Documents may be strings or map[string]any objects.
-type RerankRequest struct {
-	Model           string        `json:"model"`
-	Query           string        `json:"query"`
-	Documents       []any         `json:"documents"`
-	TopN            *int          `json:"top_n,omitempty"`
-	RankFields      []string      `json:"rank_fields,omitempty"`
-	ReturnDocuments bool          `json:"return_documents,omitempty"`
-	MaxTokensPerDoc *int          `json:"max_tokens_per_doc,omitempty"`
-	RoutingHints    *RoutingHints `json:"goroute_extensions,omitempty"`
-}
-
-// RerankResult represents a single ranked document in a RerankResponse.
-type RerankResult struct {
-	Index          int            `json:"index"`
-	RelevanceScore float64        `json:"relevance_score"`
-	Document       map[string]any `json:"document,omitempty"`
-}
-
-// RerankUsage reports billing units consumed by `POST /v1/rerank`.
-type RerankUsage struct {
-	SearchUnits int `json:"search_units"`
-	TotalTokens int `json:"total_tokens"`
-}
-
-// RerankResponse holds the response from `POST /v1/rerank`.
-type RerankResponse struct {
-	ID       string         `json:"id"`
-	Model    string         `json:"model"`
-	Provider string         `json:"provider"`
-	Results  []RerankResult `json:"results"`
-	Meta     map[string]any `json:"meta,omitempty"`
-	Usage    RerankUsage    `json:"usage"`
-}
-
 // ModerationRequest configures a content moderation check via `POST /v1/moderations`.
 type ModerationRequest struct {
 	Model        string        `json:"model"`

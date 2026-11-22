@@ -10,10 +10,9 @@ Only the latest minor release branch receives active security updates and vulner
 
 | Version | Supported          | Status         |
 | :------ | :----------------- | :------------- |
-| 1.20.x  | :white_check_mark: | Active Support |
-| 1.8.x   | :x:                | End of Life    |
-| 1.7.x   | :x:                | End of Life    |
-| <= 1.6  | :x:                | End of Life    |
+| 1.24.x  | :white_check_mark: | Active Support |
+| 1.23.x  | :x:                | End of Life    |
+| <= 1.22 | :x:                | End of Life    |
 
 ---
 

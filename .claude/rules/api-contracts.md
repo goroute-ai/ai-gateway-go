@@ -16,7 +16,7 @@ paths:
 
 - Gateway HTTP contracts are in `docs/openapi/gateway.openapi.yaml`; related provider contracts are in `docs/openapi/`.
 - MCP and A2A protocol schemas are pinned under `docs/specs/`. Keep runtime behavior aligned with the matching protocol contract.
-- Some runtime routes and handlers remain handwritten. `make specgen` validates `/v1`, `/admin/v1`, and `/auth` route parity (`106` OpenAPI paths: `24` `/v1`, `72` `/admin/v1`, `10` `/auth`), while unversioned/provider aliases, `/scim/v2/*`, MCP, and A2A routes remain verified by focused server and E2E tests.
+- Some runtime routes and handlers remain handwritten. `make specgen` validates `/v1`, `/admin/v1`, and `/auth` route parity (`125` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `10` `/auth`, plus `4` provider aliases), while `/scim/v2/*`, MCP, and A2A routes remain verified by focused server and E2E tests.
 
 ## Contract changes
 

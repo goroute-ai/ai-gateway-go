@@ -152,7 +152,7 @@ func main() {
 			prov, bareModel, _ = config.ParseProviderModel(rawKey)
 		}
 
-		if prov == "" {
+		if prov == "" || !config.IsKnownProviderAlias(string(prov)) {
 			continue
 		}
 		if bareModel == "" {
@@ -178,9 +178,9 @@ func main() {
 		cacheWriteCostMicros := int64(math.Round(entry.CacheCreationInputTokenCost * 1e12))
 		reasoningCostMicros := int64(math.Round(entry.OutputCostPerReasoningToken * 1e12))
 
-		var rerankCostMicros, imageCostMicrosBase, audioSTTCostMicros, audioTTSCostMicros int64
-		if entry.Mode == "rerank" && entry.InputCostPerQuery > 0 {
-			rerankCostMicros = int64(math.Round(entry.InputCostPerQuery * 1e6))
+		var imageCostMicrosBase, audioSTTCostMicros, audioTTSCostMicros int64
+		if entry.Mode == "rerank" {
+			continue
 		}
 		if (entry.Mode == "image_generation" || entry.Mode == "image_edit") && (entry.InputCostPerImage > 0 || entry.OutputCostPerImage > 0) {
 			imageCostMicrosBase = int64(math.Round(math.Max(entry.InputCostPerImage, entry.OutputCostPerImage) * 1e6))
@@ -201,7 +201,7 @@ func main() {
 		// Imported upstream catalog prices remain unverified (PricingStatusUnknown)
 		// until explicitly approved by an operator or custom pricing policy.
 		pricingStatus := domain.PricingStatusUnknown
-		if inCostMicros == 0 && outCostMicros == 0 && rerankCostMicros == 0 && imageCostMicrosBase == 0 && audioSTTCostMicros == 0 && audioTTSCostMicros == 0 {
+		if inCostMicros == 0 && outCostMicros == 0 && imageCostMicrosBase == 0 && audioSTTCostMicros == 0 && audioTTSCostMicros == 0 {
 			pricingStatus = domain.PricingStatusUnrecorded
 		}
 
@@ -212,7 +212,6 @@ func main() {
 			Reasoning:         domain.CapabilityUnknown,
 			StructuredOutputs: domain.CapabilityUnknown,
 			Embeddings:        domain.CapabilityUnknown,
-			Rerank:            domain.CapabilityUnknown,
 			Moderation:        domain.CapabilityUnknown,
 			ImageGen:          domain.CapabilityUnknown,
 			AudioSTT:          domain.CapabilityUnknown,
@@ -274,9 +273,6 @@ func main() {
 		case "embedding":
 			caps.Embeddings = domain.CapabilitySupported
 			supportedOps = []domain.OperationType{domain.OperationEmbedding}
-		case "rerank":
-			caps.Rerank = domain.CapabilitySupported
-			supportedOps = []domain.OperationType{domain.OperationRerank}
 		case "moderation":
 			caps.Moderation = domain.CapabilitySupported
 			supportedOps = []domain.OperationType{domain.OperationModeration}
@@ -309,37 +305,36 @@ func main() {
 		supportsInference := entry.Mode == "chat" || entry.Mode == "completion" || entry.Mode == "responses" || entry.Mode == "embedding" || entry.Mode == ""
 
 		gm := &domain.GlobalModel{
-			ID:                            globalID,
-			Provider:                      prov,
-			ModelName:                     bareModel,
-			DisplayName:                   fmt.Sprintf("%s (%s)", bareModel, strings.ToUpper(string(prov))),
-			MaxInputTokens:                maxIn,
-			MaxOutputTokens:               maxOut,
-			Capabilities:                  caps,
-			SupportedOperations:           supportedOps,
-			SupportsStreaming:             caps.Streaming == domain.CapabilitySupported,
-			SupportsTools:                 caps.Tools == domain.CapabilitySupported,
-			SupportsVision:                caps.Vision == domain.CapabilitySupported,
-			SupportsReasoning:             caps.Reasoning == domain.CapabilitySupported,
-			SupportsEmbeddings:            caps.Embeddings == domain.CapabilitySupported,
-			SupportsInference:             supportsInference,
-			InputCostMicrosPer1M:          inCostMicros,
-			OutputCostMicrosPer1M:         outCostMicros,
-			CachedInputCostMicrosPer1M:    cachedCostMicros,
-			CacheWriteCostMicrosPer1M:     cacheWriteCostMicros,
-			ReasoningCostMicrosPer1M:      reasoningCostMicros,
-			RerankCostMicrosPerSearchUnit: rerankCostMicros,
-			ImageCostMicrosBase:           imageCostMicrosBase,
-			AudioSTTCostMicrosPerSecond:   audioSTTCostMicros,
-			AudioTTSCostMicrosPer1KChars:  audioTTSCostMicros,
-			PricingVersion:                1,
-			PricingStatus:                 pricingStatus,
-			PricingProvenanceSource:       "upstream-model-catalog-v1.1",
-			PricingEffectiveDate:          "2026-01-01",
-			LifecycleStatus:               domain.ModelStatusActive,
-			DeprecationDate:               deprecationDate,
-			DiscoveredAt:                  now,
-			UpdatedAt:                     now,
+			ID:                           globalID,
+			Provider:                     prov,
+			ModelName:                    bareModel,
+			DisplayName:                  fmt.Sprintf("%s (%s)", bareModel, strings.ToUpper(string(prov))),
+			MaxInputTokens:               maxIn,
+			MaxOutputTokens:              maxOut,
+			Capabilities:                 caps,
+			SupportedOperations:          supportedOps,
+			SupportsStreaming:            caps.Streaming == domain.CapabilitySupported,
+			SupportsTools:                caps.Tools == domain.CapabilitySupported,
+			SupportsVision:               caps.Vision == domain.CapabilitySupported,
+			SupportsReasoning:            caps.Reasoning == domain.CapabilitySupported,
+			SupportsEmbeddings:           caps.Embeddings == domain.CapabilitySupported,
+			SupportsInference:            supportsInference,
+			InputCostMicrosPer1M:         inCostMicros,
+			OutputCostMicrosPer1M:        outCostMicros,
+			CachedInputCostMicrosPer1M:   cachedCostMicros,
+			CacheWriteCostMicrosPer1M:    cacheWriteCostMicros,
+			ReasoningCostMicrosPer1M:     reasoningCostMicros,
+			ImageCostMicrosBase:          imageCostMicrosBase,
+			AudioSTTCostMicrosPerSecond:  audioSTTCostMicros,
+			AudioTTSCostMicrosPer1KChars: audioTTSCostMicros,
+			PricingVersion:               1,
+			PricingStatus:                pricingStatus,
+			PricingProvenanceSource:      "upstream-model-catalog-v1.1",
+			PricingEffectiveDate:         "2026-01-01",
+			LifecycleStatus:              domain.ModelStatusActive,
+			DeprecationDate:              deprecationDate,
+			DiscoveredAt:                 now,
+			UpdatedAt:                    now,
 		}
 
 		if existing, exists := catalogModels[globalID]; exists {

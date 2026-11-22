@@ -59,7 +59,6 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 	requiredCols := []string{
 		"supported_operations",
 		"cache_write_cost_micros_per_1m",
-		"rerank_cost_micros_per_search_unit",
 		"image_cost_micros_base",
 		"audio_tts_cost_micros_per_1k_chars",
 		"pricing_status",
@@ -141,20 +140,19 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 	}
 
 	gm := &domain.GlobalModel{
-		ID:                            "openai/live-pg-roundtrip",
-		Provider:                      domain.ProviderOpenAI,
-		ModelName:                     "live-pg-roundtrip",
-		DisplayName:                   "Live PG Roundtrip",
-		SupportsInference:             true,
-		LifecycleStatus:               domain.ModelStatusActive,
-		PricingStatus:                 domain.PricingStatusVerified,
-		InputCostMicrosPer1M:          2500000,
-		OutputCostMicrosPer1M:         10000000,
-		CachedInputCostMicrosPer1M:    1250000,
-		CacheWriteCostMicrosPer1M:     3125000,
-		RerankCostMicrosPerSearchUnit: 2000,
-		ImageCostMicrosBase:           40000,
-		AudioTTSCostMicrosPer1KChars:  15000,
+		ID:                           "openai/live-pg-roundtrip",
+		Provider:                     domain.ProviderOpenAI,
+		ModelName:                    "live-pg-roundtrip",
+		DisplayName:                  "Live PG Roundtrip",
+		SupportsInference:            true,
+		LifecycleStatus:              domain.ModelStatusActive,
+		PricingStatus:                domain.PricingStatusVerified,
+		InputCostMicrosPer1M:         2500000,
+		OutputCostMicrosPer1M:        10000000,
+		CachedInputCostMicrosPer1M:   1250000,
+		CacheWriteCostMicrosPer1M:    3125000,
+		ImageCostMicrosBase:          40000,
+		AudioTTSCostMicrosPer1KChars: 15000,
 		SupportedOperations: []domain.OperationType{
 			domain.OperationChat,
 			domain.OperationResponses,
@@ -173,7 +171,6 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		t.Fatalf("GetGlobalModel: %v", err)
 	}
 	if got.CacheWriteCostMicrosPer1M != gm.CacheWriteCostMicrosPer1M ||
-		got.RerankCostMicrosPerSearchUnit != gm.RerankCostMicrosPerSearchUnit ||
 		got.ImageCostMicrosBase != gm.ImageCostMicrosBase ||
 		got.AudioTTSCostMicrosPer1KChars != gm.AudioTTSCostMicrosPer1KChars ||
 		len(got.SupportedOperations) != 2 {
@@ -275,6 +272,7 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 		{"teams", []string{"enforce_guaranteed_throughput", "default_member_max_budget_micros", "default_member_rpm_limit", "default_member_tpm_limit", "default_member_allowed_models", "team_member_permissions"}},
 		{"virtual_keys", []string{"last_rotated_at", "rotation_count", "revoked_at", "revoked_by", "expiry_alert_sent_days"}},
 		{"audit_logs", []string{"before_value", "after_value"}},
+		{"mcp_runtime_settings", []string{"id", "active_protocol_version", "strict_schema_validation", "updated_by", "updated_at"}},
 	} {
 		for _, col := range tc.cols {
 			var exists bool
@@ -289,6 +287,40 @@ func TestPostgres_MigrationsUpDownIdempotentAndModelRoundTrip(t *testing.T) {
 				t.Fatalf("expected column %s.%s to exist after migrations", tc.table, col)
 			}
 		}
+	}
+
+	// 8. Verify 0038_mcp_runtime_spec default row & live Get/Update persistence across fresh PostgresRepository.
+	rsDefault, err := freshRepo.GetMCPRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetMCPRuntimeSettings default: %v", err)
+	}
+	if rsDefault.ActiveProtocolVersion != domain.MCPProtocolVersion20260728 || rsDefault.StrictSchemaValidation {
+		t.Fatalf("unexpected default MCP runtime settings: %+v", rsDefault)
+	}
+	if err := repo.UpdateMCPRuntimeSettings(ctx, &domain.MCPRuntimeSettings{
+		ActiveProtocolVersion:  domain.MCPProtocolVersion20250326,
+		StrictSchemaValidation: true,
+		UpdatedBy:              "pg-live-test",
+	}); err != nil {
+		t.Fatalf("UpdateMCPRuntimeSettings 2025-03-26: %v", err)
+	}
+	reloadRepo, err := NewPostgresRepository(ctx, pool)
+	if err != nil {
+		t.Fatalf("reload PostgresRepository: %v", err)
+	}
+	rsReloaded, err := reloadRepo.GetMCPRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetMCPRuntimeSettings reloaded: %v", err)
+	}
+	if rsReloaded.ActiveProtocolVersion != domain.MCPProtocolVersion20250326 || !rsReloaded.StrictSchemaValidation || rsReloaded.UpdatedBy != "pg-live-test" {
+		t.Fatalf("reloaded MCP runtime settings mismatch: %+v", rsReloaded)
+	}
+	if err := reloadRepo.UpdateMCPRuntimeSettings(ctx, &domain.MCPRuntimeSettings{
+		ActiveProtocolVersion:  domain.MCPProtocolVersion20260728,
+		StrictSchemaValidation: false,
+		UpdatedBy:              "system",
+	}); err != nil {
+		t.Fatalf("restore default MCP runtime settings: %v", err)
 	}
 }
 
@@ -517,7 +549,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from 0036 down through 0022.
+	// Exercise reverse down migrations from latest (0038) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -530,8 +562,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 15 {
-		t.Fatalf("expected 15 down migrations for 0022..0036, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 17 {
+		t.Fatalf("expected 17 down migrations for 0022..0038, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))

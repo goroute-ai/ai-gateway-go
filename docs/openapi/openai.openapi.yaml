@@ -2101,7 +2101,7 @@ components:
                 $ref: '#/components/schemas/ChatCompletionResponseMessage'
               finish_reason:
                 type: string
-                enum: ["stop", "length", "function_call"]
+                enum: ["stop", "length", "function_call", "tool_calls", "content_filter"]
         usage:
           type: object
           properties:
@@ -2144,7 +2144,7 @@ components:
                 $ref: '#/components/schemas/ChatCompletionStreamResponseDelta'
               finish_reason:
                 type: string
-                enum: ["stop", "length", "function_call"]
+                enum: ["stop", "length", "function_call", "tool_calls", "content_filter"]
       required: 
         - id
         - object

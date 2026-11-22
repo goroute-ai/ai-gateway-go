@@ -10,12 +10,11 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
 
 | Provider | Specification File | Format / Version | Upstream Origin / Fetch Command | Core Covered Endpoints |
 | :--- | :--- | :---: | :--- | :--- |
-| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain`, `internal/server`, and `internal/openapi` | Primary `/v1`, `/admin/v1`, and `/auth` paths (`120` total OpenAPI paths: `28` `/v1` + `82` `/admin/v1` + `10` `/auth`); remaining alias/SCIM/MCP/A2A gaps noted below |
-| **Google Gemini** | [`gemini.openapi.yaml`](./gemini.openapi.yaml) | OpenAPI 3.0.3 | Google Discovery Engine v1beta:<br/>`curl "https://generativelanguage.googleapis.com/$discovery/OPENAPI3_0?version=v1beta"` | `POST /v1beta/models/{model}:generateContent`<br/>`POST /v1beta/models/{model}:streamGenerateContent`<br/>`POST /v1beta/models/{model}:embedContent`<br/>`GET /v1beta/models` |
-| **OpenAI** | [`openai.openapi.yaml`](./openai.openapi.yaml) | OpenAPI 3.0.0 | Official OpenAI Repository (release `0c432eb`):<br/>`curl "https://raw.githubusercontent.com/openai/openai-openapi/0c432eb66fd0c758fd8b9bd69db41c1096e5f4db/openapi.yaml"` | `POST /v1/chat/completions`<br/>`POST /v1/embeddings`<br/>`GET /v1/models` |
-| **Anthropic Claude** | [`anthropic.openapi.yaml`](./anthropic.openapi.yaml) | OpenAPI 3.0.0 | Anthropic Messages REST API | `POST /v1/messages`<br/>`POST /v1/messages/count_tokens`<br/>`GET /v1/models` |
-| **Mistral AI** | [`mistral.openapi.yaml`](./mistral.openapi.yaml) | OpenAPI 3.1.0 | Mistral AI Platform Spec | `POST /v1/chat/completions`<br/>`POST /v1/embeddings`<br/>`GET /v1/models` |
-| **Ollama** | [`ollama.openapi.yaml`](./ollama.openapi.yaml) | OpenAPI 3.1.0 | Ollama Local Inference REST Spec | `POST /api/chat`<br/>`POST /api/embed`<br/>`GET /api/tags` |
+| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain`, `internal/server`, and `internal/openapi` | Primary `/v1`, `/admin/v1`, `/auth`, `/openai/v1`, and `/anthropic/v1` paths |
+| **OpenAI** | [`openai.openapi.yaml`](./openai.openapi.yaml) | OpenAPI 3.0.0 | Official OpenAI Repository (release `0c432eb`) | `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` |
+| **Anthropic Claude** | [`anthropic.openapi.yaml`](./anthropic.openapi.yaml) | OpenAPI 3.0.0 | Anthropic Messages REST API | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` |
+| **Groq** | [`groq.openapi.yaml`](./groq.openapi.yaml) | OpenAPI 3.0.3 | Groq OpenAI-Compatible Inference REST Spec | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
+| **OpenRouter** | [`openrouter.openapi.yaml`](./openrouter.openapi.yaml) | OpenAPI 3.0.3 | OpenRouter Unified Inference REST Spec | `POST /api/v1/chat/completions`, `GET /api/v1/models` |
 
 ---
 
@@ -33,22 +32,18 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
                        │    CanonicalChatRequest       │
                        └──────────────┬────────────────┘
                                       │
-             ┌────────────────────────┼────────────────────────┐
-             ▼                        ▼                        ▼
-┌────────────────────────┐┌────────────────────────┐┌────────────────────────┐
-│  gemini.openapi.yaml   ││ anthropic.openapi.yaml ││  openai.openapi.yaml   │
-│ GenerateContentRequest ││  MessageRequestBody    ││  CreateChatCompletion  │
-│  (x-goog-api-key)      ││   (x-api-key, 2023)    ││    (Bearer auth)       │
-└────────────────────────┘└────────────────────────┘└────────────────────────┘
+        ┌───────────────────┬─────────┴──────────┬──────────────────┐
+        ▼                   ▼                    ▼                  ▼
+┌────────────────┐ ┌──────────────────┐ ┌────────────────┐ ┌────────────────────┐
+│  openai.yaml   │ │  anthropic.yaml  │ │   groq.yaml    │ │  openrouter.yaml   │
+│ ChatCompletion │ │MessageRequestBody│ │ ChatCompletion │ │  ChatCompletion    │
+│ (Bearer auth)  │ │  (x-api-key)     │ │ (Bearer auth)  │ │  (Bearer+Referer)  │
+└────────────────┘ └──────────────────┘ └────────────────┘ └────────────────────┘
 ```
 
-1. **Reproducible Gateway Generation**: `gateway.gen.go` is generated from `gateway.openapi.yaml` with `oapi-codegen` v2.8.0 using [`gateway.codegen.yaml`](./gateway.codegen.yaml). It contains gateway DTOs plus standard-library and strict server interfaces. CI regenerates the file and fails if committed output is stale.
-2. **Contract Validation**: `oapi-codegen` validates the gateway OpenAPI document during generation. `cmd/specgen` semantically validates the checked-in OpenAPI documents and checks the MCP JSON Schema and generated A2A protobuf file. The validator currently skips schema validation of example and default values because upstream provider specs include invalid or overlapping examples/defaults. The local OpenAI and Gemini snapshots contain small normalization fixes for invalid values and path-template syntax. Route parity is enforced across the primary `/v1`, `/admin/v1`, and `/auth` route groups (`106` total OpenAPI paths: `24` `/v1`, `72` `/admin/v1`, `10` `/auth`); it does not yet compare unversioned/provider aliases, `/scim/v2/*`, MCP, A2A, health, metrics, and UI routes.
-3. **Runtime Mapping**: Existing chi routes and handlers still decode many requests into domain or handler-local structs. The generated gateway interfaces are not yet implemented by `GatewayServer` or used to register all runtime routes. Provider adapters translate wire payloads and normalize errors; only selected adapters use generated provider DTOs.
-
-### Current Contract Coverage Gaps
-
-`/v1/audio/translations` and `/v1/messages/count_tokens` were registered in the server but absent from the gateway contract; both are now documented alongside the `/auth` and expanded `/admin/v1` control-plane routes. Unversioned/provider aliases (`/openai/v1/*`, `/anthropic/v1/*`), `/scim/v2/*`, optional MCP/A2A endpoints, operational endpoints, and any remaining admin routes have not yet been reconciled with OpenAPI. Do not treat generated interfaces as proof that the runtime implements every documented operation. The strict wrapper provides typed decoding and response encoding; it does not validate incoming requests against every JSON Schema by itself.
+1. **Reproducible Gateway Generation**: `gateway.gen.go` is generated from `gateway.openapi.yaml` with `oapi-codegen` v2.8.0 using [`gateway.codegen.yaml`](./gateway.codegen.yaml), alongside provider DTO packages generated from `openai.codegen.yaml`, `anthropic.codegen.yaml`, `groq.codegen.yaml`, and `openrouter.codegen.yaml`. CI regenerates via `make specgen` and fails if committed output is stale.
+2. **Contract Validation**: `oapi-codegen` validates the gateway and provider OpenAPI documents during generation. `cmd/specgen` semantically validates all checked-in OpenAPI documents (`gateway`, `openai`, `anthropic`, `groq`, `openrouter`), the MCP JSON Schema, and the generated A2A protobuf descriptor. Route parity is enforced across `/v1`, `/admin/v1`, `/auth`, `/openai/v1`, and `/anthropic/v1`.
+3. **Runtime Mapping**: Provider adapters (`internal/adapter/{openai,anthropic,groq,openrouter}`) translate canonical requests/responses using the OpenAPI-generated DTOs in `internal/openapi/providers`.
 
 ---
 
@@ -56,22 +51,12 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
 
 To refresh or update the upstream specifications:
 
-### 1. Refresh Google Gemini Specification
-```bash
-# Fetch from Google Discovery and pipe or convert to YAML:
-curl -s "https://generativelanguage.googleapis.com/\$discovery/OPENAPI3_0?version=v1beta" | yq -P > docs/openapi/gemini.openapi.yaml
-```
-*(If using an authenticated key)*:
-```bash
-curl -s "https://generativelanguage.googleapis.com/\$discovery/OPENAPI3_0?version=v1beta&key=${GOOGLE_API_KEY}" | yq -P > docs/openapi/gemini.openapi.yaml
-```
-
-### 2. Refresh OpenAI Specification
+### 1. Refresh OpenAI Specification
 ```bash
 curl -s "https://raw.githubusercontent.com/openai/openai-openapi/0c432eb66fd0c758fd8b9bd69db41c1096e5f4db/openapi.yaml" -o docs/openapi/openai.openapi.yaml
 ```
 
-### 3. Validate All Specifications
+### 2. Validate All Specifications
 ```bash
 make specgen
 ```

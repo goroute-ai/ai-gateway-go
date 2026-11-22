@@ -75,12 +75,12 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		gm.MaxInputTokens = 8192
 		gm.MaxOutputTokens = 1536
 	}
-	if strings.Contains(lower, "gpt-4") || strings.Contains(lower, "claude") || strings.Contains(lower, "gemini") || strings.Contains(lower, "pixtral") {
+	if strings.Contains(lower, "gpt-4") || strings.Contains(lower, "claude") {
 		gm.SupportsVision = true
 	}
 	if strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") ||
 		strings.Contains(lower, "sonnet-4") || strings.Contains(lower, "opus-4") ||
-		strings.Contains(lower, "2.5-pro") || strings.Contains(lower, "deepseek-r1") {
+		strings.Contains(lower, "deepseek-r1") {
 		gm.SupportsReasoning = true
 	}
 
@@ -112,27 +112,17 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 			gm.OutputCostMicrosPer1M = 15000000
 			gm.CachedInputCostMicrosPer1M = 300000
 		}
-	case domain.ProviderGemini:
-		gm.MaxInputTokens = 1048576
-		if strings.Contains(lower, "flash") {
-			gm.InputCostMicrosPer1M = 150000
-			gm.OutputCostMicrosPer1M = 600000
-		} else if strings.Contains(lower, "embed") {
-			gm.InputCostMicrosPer1M = 10000
-		} else {
-			gm.InputCostMicrosPer1M = 1250000
-			gm.OutputCostMicrosPer1M = 10000000
+	case domain.ProviderGroq:
+		gm.MaxInputTokens = 131072
+		if strings.Contains(lower, "8b") || strings.Contains(lower, "instant") {
+			gm.InputCostMicrosPer1M = 50000
+			gm.OutputCostMicrosPer1M = 80000
 		}
-	case domain.ProviderMistral:
-		if strings.Contains(lower, "embed") {
-			gm.InputCostMicrosPer1M = 100000
-		} else {
-			gm.InputCostMicrosPer1M = 2000000
-			gm.OutputCostMicrosPer1M = 6000000
+	case domain.ProviderOpenRouter:
+		if strings.Contains(lower, ":free") {
+			gm.InputCostMicrosPer1M = 0
+			gm.OutputCostMicrosPer1M = 0
 		}
-	case domain.ProviderOllama:
-		gm.InputCostMicrosPer1M = 0
-		gm.OutputCostMicrosPer1M = 0
 	}
 
 	return gm

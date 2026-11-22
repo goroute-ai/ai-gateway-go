@@ -36,10 +36,11 @@ jobs:
       - name: Static Analysis (go vet)
         run: go vet ./...
 
-      - name: Validate OpenAPI & Protobuf Contracts (cmd/specgen)
+      - name: Validate OpenAPI, MCP YAML & Protobuf Contracts (cmd/specgen + cmd/mcpgen)
         run: |
+          go generate ./internal/mcp/spec
           go generate ./internal/openapi
-          git diff --exit-code -- internal/openapi/gateway.gen.go
+          git diff --exit-code -- internal/openapi/gateway.gen.go internal/mcp/spec/
 
   test:
     name: Test Suite (Race Detector)

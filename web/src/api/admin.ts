@@ -153,8 +153,6 @@ export const adminApi = {
       name: string;
       api_key: string;
       base_url?: string;
-      azure_deployment_name?: string;
-      api_version?: string;
       headers?: Record<string, string>;
       expires_at?: string;
     }
@@ -175,8 +173,6 @@ export const adminApi = {
       provider: string;
       api_key: string;
       base_url?: string;
-      azure_deployment_name?: string;
-      api_version?: string;
       headers?: Record<string, string>;
     }
   ) =>
@@ -414,6 +410,17 @@ export const adminApi = {
     ),
 
   // MCP & A2A
+  getMCPSpec: (key: string) =>
+    apiFetch<any>('/admin/v1/mcp/spec', {}, key),
+  updateMCPSpec: (
+    key: string,
+    data: { protocol_version: string; strict_schema_validation?: boolean }
+  ) =>
+    apiFetch<any>(
+      '/admin/v1/mcp/spec',
+      { method: 'PUT', body: JSON.stringify(data) },
+      key
+    ),
   listMCPServers: (key: string, orgId?: string) =>
     apiFetch<{ servers?: MCPServer[]; data?: MCPServer[] }>(
       `/admin/v1/mcp/servers${qs({ org_id: orgId })}`,
@@ -441,6 +448,25 @@ export const adminApi = {
     apiFetch<{ status: string; server: MCPServer }>(
       '/admin/v1/mcp/servers',
       { method: 'POST', body: JSON.stringify(data) },
+      key
+    ),
+  updateMCPServer: (
+    key: string,
+    serverId: string,
+    data: {
+      name?: string;
+      protocol_version?: string;
+      transport_type?: string;
+      endpoint_url?: string;
+      auth_type?: string;
+      auth_secret?: string;
+      pinned_tool_hash?: string;
+      is_active?: boolean;
+    }
+  ) =>
+    apiFetch<{ status: string; server: MCPServer }>(
+      `/admin/v1/mcp/servers/${enc(serverId)}`,
+      { method: 'PUT', body: JSON.stringify(data) },
       key
     ),
   syncMCPServer: (key: string, serverId: string) =>

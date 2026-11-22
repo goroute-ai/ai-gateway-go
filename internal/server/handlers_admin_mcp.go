@@ -14,7 +14,9 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
+	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
+	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 // handleAdminCreateMCPServer registers a new upstream MCP server.
@@ -57,10 +59,36 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 	}
 
 	if input.ProtocolVersion == "" {
-		input.ProtocolVersion = domain.MCPProtocolVersion2026
+		if s.mcpHub != nil {
+			input.ProtocolVersion = s.mcpHub.ActiveSpec()
+		} else {
+			input.ProtocolVersion = domain.MCPProtocolVersion2026
+		}
+	}
+	if !spec.IsSupported(input.ProtocolVersion) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_protocol_version",
+			Message:    fmt.Sprintf("unsupported protocol_version %q; supported versions are %s", input.ProtocolVersion, strings.Join(spec.SupportedVersions(), ", ")),
+		})
+		return
 	}
 	if input.TransportType == "" {
-		input.TransportType = domain.MCPTransportStreamableHTTP
+		if info, ok := spec.GetSpec(input.ProtocolVersion); ok && info.DefaultTransport != "" {
+			input.TransportType = info.DefaultTransport
+		} else {
+			input.TransportType = domain.MCPTransportStreamableHTTP
+		}
+	}
+	if !domain.IsSupportedMCPTransportType(input.TransportType) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_transport_type",
+			Message:    fmt.Sprintf("unsupported transport_type %q", input.TransportType),
+		})
+		return
 	}
 	if input.OrgID == "" {
 		input.OrgID = resolveScopedOrgID(r, "")
@@ -669,5 +697,260 @@ func (s *GatewayServer) handleAdminListMCPTools(w http.ResponseWriter, r *http.R
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tools": tools,
+	})
+}
+
+// handleAdminGetMCPSpec serves `GET /admin/v1/mcp/spec` returning the active UI-selected MCP release
+// and full capability descriptors for every generated official MCP release.
+func (s *GatewayServer) handleAdminGetMCPSpec(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
+		return
+	}
+
+	settings := domain.MCPRuntimeSettings{ActiveProtocolVersion: spec.DefaultVersion}
+	if s.mcpHub != nil {
+		settings = s.mcpHub.RuntimeSettings()
+	}
+	if settingsRepo, ok := s.repo.(storage.MCPRuntimeSettingsRepository); ok && settingsRepo != nil {
+		if stored, err := settingsRepo.GetMCPRuntimeSettings(r.Context()); err == nil && stored != nil && !stored.UpdatedAt.IsZero() {
+			settings = *stored
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active_protocol_version":  settings.ActiveProtocolVersion,
+		"strict_schema_validation": settings.StrictSchemaValidation,
+		"updated_by":               settings.UpdatedBy,
+		"updated_at":               settings.UpdatedAt,
+		"available_specs":          spec.SupportedSpecs(),
+	})
+}
+
+// handleAdminUpdateMCPSpec serves `PUT /admin/v1/mcp/spec` switching the gateway-wide active MCP release from the Web UI.
+func (s *GatewayServer) handleAdminUpdateMCPSpec(w http.ResponseWriter, r *http.Request) {
+	op, ok := s.authorizeAdmin(w, r, "", true)
+	if !ok {
+		return
+	}
+
+	var input struct {
+		ProtocolVersion        string `json:"protocol_version"`
+		StrictSchemaValidation *bool  `json:"strict_schema_validation,omitempty"`
+	}
+	if err := decodeAdminJSON(w, r, &input); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_json",
+			Message:    "Invalid request payload: " + err.Error(),
+		})
+		return
+	}
+
+	targetVersion := strings.TrimSpace(input.ProtocolVersion)
+	if !spec.IsSupported(targetVersion) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "unsupported_protocol_version",
+			Message:    fmt.Sprintf("unsupported protocol_version %q; supported versions are %s", input.ProtocolVersion, strings.Join(spec.SupportedVersions(), ", ")),
+		})
+		return
+	}
+
+	strict := false
+	if s.mcpHub != nil {
+		strict = s.mcpHub.RuntimeSettings().StrictSchemaValidation
+	}
+	if input.StrictSchemaValidation != nil {
+		strict = *input.StrictSchemaValidation
+	}
+
+	actor := "admin"
+	if op != nil && op.ActorID != "" {
+		actor = op.ActorID
+	}
+	updated := domain.MCPRuntimeSettings{
+		ActiveProtocolVersion:  targetVersion,
+		StrictSchemaValidation: strict,
+		UpdatedBy:              actor,
+		UpdatedAt:              time.Now().UTC(),
+	}
+
+	if settingsRepo, ok := s.repo.(storage.MCPRuntimeSettingsRepository); ok && settingsRepo != nil {
+		if err := settingsRepo.UpdateMCPRuntimeSettings(r.Context(), &updated); err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusInternalServerError,
+				Type:       domain.ErrorTypeServer,
+				Code:       "storage_error",
+				Message:    "Failed to persist MCP specification setting: " + err.Error(),
+			})
+			return
+		}
+	}
+
+	if s.mcpHub != nil {
+		s.mcpHub.SetRuntimeSettings(updated)
+	}
+	s.invalidateRoutingCaches(r.Context(), storage.InvalidationEvent{
+		Type:       "mcp_spec",
+		EntityType: "mcp_spec",
+		EntityID:   updated.ActiveProtocolVersion,
+	})
+
+	_ = s.repo.RecordAuditLog(r.Context(), &domain.AuditLog{
+		ActorID:    actor,
+		Action:     "mcp.spec.updated",
+		Resource:   "mcp_runtime_settings",
+		ResourceID: "default",
+		Details: map[string]any{
+			"active_protocol_version":  updated.ActiveProtocolVersion,
+			"strict_schema_validation": updated.StrictSchemaValidation,
+		},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                   "updated",
+		"active_protocol_version":  updated.ActiveProtocolVersion,
+		"strict_schema_validation": updated.StrictSchemaValidation,
+		"updated_by":               updated.UpdatedBy,
+		"updated_at":               updated.UpdatedAt,
+		"available_specs":          spec.SupportedSpecs(),
+	})
+}
+
+// handleAdminUpdateMCPServer serves `PUT /admin/v1/mcp/servers/{serverID}` allowing per-server spec/transport edits from the Web UI.
+func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *http.Request) {
+	serverID := strings.TrimSpace(chi.URLParam(r, "serverID"))
+	if serverID == "" {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "missing_server_id",
+			Message:    "serverID URL parameter is required",
+		})
+		return
+	}
+
+	existing, err := s.repo.GetMCPServer(r.Context(), serverID)
+	if err != nil || existing == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusNotFound,
+			Type:       domain.ErrorTypeNotFound,
+			Code:       "server_not_found",
+			Message:    fmt.Sprintf("MCP server %q not found", serverID),
+		})
+		return
+	}
+	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+		return
+	}
+
+	var input struct {
+		Name            *string           `json:"name,omitempty"`
+		ProtocolVersion *string           `json:"protocol_version,omitempty"`
+		TransportType   *string           `json:"transport_type,omitempty"`
+		EndpointURL     *string           `json:"endpoint_url,omitempty"`
+		AuthType        *string           `json:"auth_type,omitempty"`
+		AuthSecret      *string           `json:"auth_secret,omitempty"`
+		StaticHeaders   map[string]string `json:"static_headers,omitempty"`
+		PinnedToolHash  *string           `json:"pinned_tool_hash,omitempty"`
+		RPMLimit        *int              `json:"rpm_limit,omitempty"`
+		IsActive        *bool             `json:"is_active,omitempty"`
+	}
+	if err := decodeAdminJSON(w, r, &input); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_json",
+			Message:    "Invalid request payload: " + err.Error(),
+		})
+		return
+	}
+
+	if input.ProtocolVersion != nil {
+		pv := strings.TrimSpace(*input.ProtocolVersion)
+		if !spec.IsSupported(pv) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "unsupported_protocol_version",
+				Message:    fmt.Sprintf("unsupported protocol_version %q", pv),
+			})
+			return
+		}
+		existing.ProtocolVersion = pv
+	}
+	if input.TransportType != nil {
+		tt := strings.TrimSpace(*input.TransportType)
+		if !domain.IsSupportedMCPTransportType(tt) {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_transport_type",
+				Message:    fmt.Sprintf("unsupported transport_type %q", tt),
+			})
+			return
+		}
+		existing.TransportType = tt
+	}
+	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
+		existing.Name = strings.TrimSpace(*input.Name)
+	}
+	if input.EndpointURL != nil && strings.TrimSpace(*input.EndpointURL) != "" {
+		existing.EndpointURL = strings.TrimSpace(*input.EndpointURL)
+	}
+	if input.AuthType != nil {
+		existing.AuthType = strings.TrimSpace(*input.AuthType)
+	}
+	if input.StaticHeaders != nil {
+		existing.StaticHeaders = input.StaticHeaders
+	}
+	if input.PinnedToolHash != nil {
+		existing.PinnedToolHash = strings.TrimSpace(*input.PinnedToolHash)
+	}
+	if input.RPMLimit != nil {
+		if *input.RPMLimit < 0 {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_rpm_limit",
+				Message:    "rpm_limit cannot be negative",
+			})
+			return
+		}
+		existing.RPMLimit = *input.RPMLimit
+	}
+	if input.IsActive != nil {
+		existing.IsActive = *input.IsActive
+	}
+	if input.AuthSecret != nil && *input.AuthSecret != "" {
+		cipher, dek, encErr := s.vault.EncryptString(*input.AuthSecret)
+		if encErr != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusInternalServerError,
+				Type:       domain.ErrorTypeServer,
+				Code:       "vault_encryption_error",
+				Message:    "Failed to encrypt auth secret: " + encErr.Error(),
+			})
+			return
+		}
+		existing.EncryptedAuthSecret = cipher
+		existing.EncryptedAuthDEK = dek
+	}
+
+	if err := s.repo.UpdateMCPServer(r.Context(), existing); err != nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusInternalServerError,
+			Type:       domain.ErrorTypeServer,
+			Code:       "storage_error",
+			Message:    "Failed to update MCP server: " + err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "updated",
+		"server": existing,
 	})
 }

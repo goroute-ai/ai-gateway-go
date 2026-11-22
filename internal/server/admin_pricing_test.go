@@ -27,18 +27,18 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	redisServer := miniredis.RunT(t)
 
-	// Mock upstream server for Cerebras
+	// Mock upstream server for Groq
 	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
-			"id": "chatcmpl-cerebras",
-			"model": "llama-3.3-70b",
+			"id": "chatcmpl-groq",
+			"model": "openai/gpt-oss-20b",
 			"choices": [{
 				"index": 0,
 				"message": {
 					"role": "assistant",
-					"content": "Cerebras fast response"
+					"content": "Groq fast response"
 				},
 				"finish_reason": "stop"
 			}],
@@ -58,8 +58,8 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 
 	router := gw.Handler()
 
-	// 1. Admin imports Cerebras models from embedded catalogue
-	importReq, _ := http.NewRequest(http.MethodPost, "/admin/v1/catalogue/import?provider=cerebras", nil)
+	// 1. Admin imports Groq models from embedded catalogue
+	importReq, _ := http.NewRequest(http.MethodPost, "/admin/v1/catalogue/import?provider=groq", nil)
 	importReq.Header.Set("Authorization", "Bearer admin_secret_key")
 	importRec := httptest.NewRecorder()
 	router.ServeHTTP(importRec, importReq)
@@ -71,7 +71,7 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	assert.Greater(t, importedCount, 0.0)
 
 	// Check that the imported model has pricing_status: "unknown"
-	gm, err := repo.GetGlobalModel(ctx, "cerebras/llama-3.3-70b")
+	gm, err := repo.GetGlobalModel(ctx, "groq/openai/gpt-oss-20b")
 	require.NoError(t, err)
 	require.NotNil(t, gm)
 	assert.Equal(t, domain.PricingStatusUnknown, gm.PricingStatus)
@@ -98,31 +98,31 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	require.NotEmpty(t, issuedKey.RawKey)
 
 	cred := &domain.ProviderCredential{
-		ID:              "cred-cerebras-test",
+		ID:              "cred-groq-test",
 		OrgID:           org.ID,
-		Provider:        domain.ProviderCerebras,
-		Name:            "cerebras-cred",
+		Provider:        domain.ProviderGroq,
+		Name:            "groq-cred",
 		BaseURL:         upstreamSrv.URL,
-		DecryptedAPIKey: "csk_test_key",
+		DecryptedAPIKey: "gsk_test_key",
 		IsActive:        true,
 	}
 	_ = repo.CreateProviderCredential(ctx, cred)
 
 	mg := &domain.ModelGroup{
-		ID:              "mg-cerebras-llama",
+		ID:              "mg-groq-oss",
 		OrgID:           org.ID,
-		Alias:           "cerebras-llama",
+		Alias:           "groq-oss",
 		RoutingStrategy: domain.StrategyWeightedShuffle,
 		IsActive:        true,
 	}
 	_ = repo.CreateModelGroup(ctx, mg)
 
 	dep := &domain.Deployment{
-		ID:             "dep-cerebras-llama",
+		ID:             "dep-groq-oss",
 		ModelGroupID:   mg.ID,
 		GlobalModelID:  gm.ID,
 		CredentialID:   cred.ID,
-		DeploymentName: "cerebras-llama-dep",
+		DeploymentName: "groq-oss-dep",
 		Status:         domain.DeploymentStatusActive,
 		Weight:         100,
 	}
@@ -130,7 +130,7 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 
 	// Try inference from budgeted caller while pricing_status is UNKNOWN -> rejected!
 	chatBody, _ := json.Marshal(map[string]any{
-		"model": "cerebras-llama",
+		"model": "groq-oss",
 		"messages": []map[string]string{
 			{"role": "user", "content": "Hello"},
 		},
@@ -185,5 +185,5 @@ func TestAdminPricing_PromotionUnblocksBudgetRestrictedCallers(t *testing.T) {
 	chatRec2 := httptest.NewRecorder()
 	router.ServeHTTP(chatRec2, chatReq2)
 	assert.Equal(t, http.StatusOK, chatRec2.Code)
-	assert.Contains(t, chatRec2.Body.String(), "Cerebras fast response")
+	assert.Contains(t, chatRec2.Body.String(), "Groq fast response")
 }

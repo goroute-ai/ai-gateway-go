@@ -187,128 +187,6 @@ func TestLiveStack_PostgresAndRedisConnectivity(t *testing.T) {
 	}
 }
 
-// TestLiveStack_LiveOllamaInferenceAndStreaming exercises real local LLM execution via Ollama container.
-func TestLiveStack_LiveOllamaInferenceAndStreaming(t *testing.T) {
-	ollamaURL := getEnvOrDefault("GATEWAY_OLLAMA_URL", "http://localhost:11434")
-
-	// Pre-check Ollama reachability
-	checkResp, err := http.Get(ollamaURL + "/api/tags")
-	if err != nil || checkResp.StatusCode != http.StatusOK {
-		t.Skipf("skipping live Ollama test: cannot reach Ollama at %s: %v", ollamaURL, err)
-	}
-	checkResp.Body.Close()
-
-	ts, _, _, _, cleanup := setupLiveGateway(t)
-	defer cleanup()
-
-	client := &httpClientHelper{t: t, ts: ts}
-	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-master-admin-live-e2e-key"}
-
-	// 1. Create Org
-	var org domain.Organization
-	resp, raw := client.doJSON(http.MethodPost, "/admin/v1/organizations", adminHeaders, map[string]any{
-		"name":              "Live Ollama Test Org",
-		"slug":              fmt.Sprintf("live-ollama-%d", time.Now().UnixNano()),
-		"max_budget_micros": 100_000_000,
-	}, &org)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create org failed (%d): %s", resp.StatusCode, string(raw))
-	}
-
-	// 2. Subscribe to Ollama
-	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
-		"provider": "ollama", "is_enabled": true,
-	}, nil)
-
-	// 3. Register Ollama Provider Credential
-	var cred domain.ProviderCredential
-	resp, raw = client.doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
-		"org_id":   org.ID,
-		"provider": "ollama",
-		"name":     "local-ollama",
-		"base_url": ollamaURL,
-		"api_key":  "ollama-local-key",
-	}, &cred)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create ollama cred failed (%d): %s", resp.StatusCode, string(raw))
-	}
-
-	// 4. Create Model Group and Deployment for llama3.2:1b
-	var modelGroup domain.ModelGroup
-	client.doJSON(http.MethodPost, "/admin/v1/model-groups", adminHeaders, map[string]any{
-		"org_id":           org.ID,
-		"alias":            "local-llama",
-		"routing_strategy": "weighted-shuffle",
-	}, &modelGroup)
-
-	client.doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
-		"model_group_id":  modelGroup.ID,
-		"global_model_id": "ollama/llama3.2:1b",
-		"credential_id":   cred.ID,
-		"deployment_name": "local-llama32-deployment",
-		"weight":          100,
-	}, nil)
-
-	// 5. Issue Virtual Key
-	var vk domain.VirtualKey
-	resp, raw = client.doJSON(http.MethodPost, "/admin/v1/keys", adminHeaders, map[string]any{
-		"org_id":            org.ID,
-		"name":              "ollama-test-key",
-		"rpm_limit":         60,
-		"tpm_limit":         100000,
-		"max_budget_micros": 50_000_000,
-	}, &vk)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("issue virtual key failed (%d): %s", resp.StatusCode, string(raw))
-	}
-
-	vkHeaders := map[string]string{"Authorization": "Bearer " + vk.RawKey}
-
-	// 6. Test Non-Streaming Chat Completion through Ollama
-	var chatResp domain.CanonicalChatResponse
-	resp, raw = client.doJSON(http.MethodPost, "/v1/chat/completions", vkHeaders, domain.CanonicalChatRequest{
-		Model: "local-llama",
-		Messages: []domain.CanonicalMessage{
-			{Role: "user", Content: "Say 'pong' and nothing else."},
-		},
-	}, &chatResp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("live ollama completion failed (%d): %s", resp.StatusCode, string(raw))
-	}
-	if len(chatResp.Choices) == 0 || chatResp.Choices[0].Message.Content == "" {
-		t.Fatalf("expected non-empty Ollama completion content, got: %+v", chatResp)
-	}
-	if chatResp.Provider != domain.ProviderOllama {
-		t.Fatalf("expected provider ollama, got: %s", chatResp.Provider)
-	}
-
-	// 7. Test Real SSE Streaming through Ollama
-	streamResp, lines := client.doStream(http.MethodPost, "/v1/chat/completions", vkHeaders, domain.CanonicalChatRequest{
-		Model:  "local-llama",
-		Stream: true,
-		Messages: []domain.CanonicalMessage{
-			{Role: "user", Content: "Say 'hello' in one word."},
-		},
-	})
-	if streamResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 on live Ollama stream, got %d", streamResp.StatusCode)
-	}
-
-	foundDone := false
-	foundData := false
-	for _, line := range lines {
-		if strings.Contains(line, "data: [DONE]") {
-			foundDone = true
-		}
-		if strings.HasPrefix(line, "data: {") {
-			foundData = true
-		}
-	}
-	if !foundDone || !foundData {
-		t.Fatalf("expected SSE chunks and terminal [DONE] from live Ollama stream, got lines: %v", lines)
-	}
-}
-
 // TestLiveStack_MCPStatelessAndAggregated tests the MCP 2026-07-28 & 2025-11-25 engines backed by PostgreSQL.
 func TestLiveStack_MCPStatelessAndAggregated(t *testing.T) {
 	ts, _, _, _, cleanup := setupLiveGateway(t)
@@ -641,10 +519,10 @@ func TestLiveStack_UnifiedMultiProtocolAgenticLoop(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if call == 1 {
 			// Return tool call to "search_issues"
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Searching repository issues..."},{"functionCall":{"name":"search_issues","args":{"query":"memory leak"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":25,"totalTokenCount":75}}`)
+			fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"Searching repository issues...","tool_calls":[{"id":"call_search_1","type":"function","function":{"name":"search_issues","arguments":"{\"query\":\"memory leak\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":25,"total_tokens":75}}`)
 		} else {
 			// Return final completion
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Issue #42 found: memory leak in buffer pool. Task delegated."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":40,"totalTokenCount":140}}`)
+			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"Issue #42 found: memory leak in buffer pool. Task delegated."},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":40,"total_tokens":140}}`)
 		}
 	}))
 	defer mockLLMSrv.Close()
@@ -692,16 +570,16 @@ func TestLiveStack_UnifiedMultiProtocolAgenticLoop(t *testing.T) {
 	}, &org)
 
 	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
-		"provider": "gemini", "is_enabled": true,
+		"provider": "groq", "is_enabled": true,
 	}, nil)
 
 	var cred domain.ProviderCredential
 	client.doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
 		"org_id":   org.ID,
-		"provider": "gemini",
-		"name":     "mock-gemini-cred",
+		"provider": "groq",
+		"name":     "mock-groq-cred",
 		"base_url": mockLLMSrv.URL,
-		"api_key":  "gemini-test-key",
+		"api_key":  "gsk-test-key",
 	}, &cred)
 
 	var mg domain.ModelGroup
@@ -713,9 +591,9 @@ func TestLiveStack_UnifiedMultiProtocolAgenticLoop(t *testing.T) {
 
 	client.doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
 		"model_group_id":  mg.ID,
-		"global_model_id": "gemini/gemini-2.5-flash",
+		"global_model_id": "groq/llama-3.1-8b-instant",
 		"credential_id":   cred.ID,
-		"deployment_name": "agent-gemini-deployment",
+		"deployment_name": "agent-groq-deployment",
 		"weight":          100,
 	}, nil)
 
@@ -850,10 +728,11 @@ func TestLiveStack_MultiModelAutoRoutingAndCache(t *testing.T) {
 	client := &httpClientHelper{t: t, ts: ts}
 	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-master-admin-live-e2e-key"}
 
-	gemUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Fast Gemini answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":50,"totalTokenCount":150}}`)
+	groqUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl_e2e_groq","object":"chat.completion","model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"Fast Groq answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
 	}))
-	defer gemUpstream.Close()
+	defer groqUpstream.Close()
 
 	antUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"id":"msg_e2e","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Deep Claude reasoning"}],"stop_reason":"end_turn","usage":{"input_tokens":500,"output_tokens":200}}`)
@@ -868,8 +747,8 @@ func TestLiveStack_MultiModelAutoRoutingAndCache(t *testing.T) {
 		"max_budget_micros": 50_000_000,
 	}, &org)
 
-	// Subscribe Org to Gemini & Anthropic
-	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{"provider": "gemini", "is_enabled": true}, nil)
+	// Subscribe Org to Groq & Anthropic
+	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{"provider": "groq", "is_enabled": true}, nil)
 	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{"provider": "anthropic", "is_enabled": true}, nil)
 
 	// Guardrails: Block prompt injection, Redact PII
@@ -881,10 +760,10 @@ func TestLiveStack_MultiModelAutoRoutingAndCache(t *testing.T) {
 	}, nil)
 
 	// 2. Credentials
-	var gemCred, antCred domain.ProviderCredential
+	var groqCred, antCred domain.ProviderCredential
 	client.doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
-		"org_id": org.ID, "provider": "gemini", "name": "gemini-live", "base_url": gemUpstream.URL, "api_key": "AIzaDummyKey",
-	}, &gemCred)
+		"org_id": org.ID, "provider": "groq", "name": "groq-live", "base_url": groqUpstream.URL, "api_key": "gsk_DummyKey",
+	}, &groqCred)
 	client.doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
 		"org_id": org.ID, "provider": "anthropic", "name": "anthropic-live", "base_url": antUpstream.URL, "api_key": "sk-ant-DummyKey",
 	}, &antCred)
@@ -895,7 +774,7 @@ func TestLiveStack_MultiModelAutoRoutingAndCache(t *testing.T) {
 		"org_id": org.ID, "alias": "fast", "routing_strategy": "weighted-shuffle",
 	}, &fastGroup)
 	client.doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
-		"model_group_id": fastGroup.ID, "global_model_id": "gemini/gemini-2.5-flash", "credential_id": gemCred.ID, "deployment_name": "gem-fast", "weight": 100,
+		"model_group_id": fastGroup.ID, "global_model_id": "groq/llama-3.1-8b-instant", "credential_id": groqCred.ID, "deployment_name": "groq-fast", "weight": 100,
 	}, nil)
 
 	client.doJSON(http.MethodPost, "/admin/v1/model-groups", adminHeaders, map[string]any{
@@ -912,13 +791,13 @@ func TestLiveStack_MultiModelAutoRoutingAndCache(t *testing.T) {
 	}, &vk)
 	vkHeaders := map[string]string{"Authorization": "Bearer " + vk.RawKey}
 
-	// 5. Test Auto-Routing: Greeting -> fast (Gemini) + Cache
+	// 5. Test Auto-Routing: Greeting -> fast (Groq) + Cache
 	zero := 0.0
 	var chatResp domain.CanonicalChatResponse
 	resp, raw := client.doJSON(http.MethodPost, "/v1/chat/completions", vkHeaders, domain.CanonicalChatRequest{
 		Model: "auto", Temperature: &zero, Messages: []domain.CanonicalMessage{{Role: "user", Content: "Hello there!"}},
 	}, &chatResp)
-	if resp.StatusCode != http.StatusOK || chatResp.Provider != domain.ProviderGemini {
+	if resp.StatusCode != http.StatusOK || chatResp.Provider != domain.ProviderGroq {
 		t.Fatalf("auto greeting failed (%d): %s", resp.StatusCode, string(raw))
 	}
 	if resp.Header.Get("X-Gateway-Cache") != "MISS" {

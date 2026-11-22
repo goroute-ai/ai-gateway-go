@@ -12,7 +12,7 @@ body:
     attributes:
       label: Task Summary
       description: What needs to be done?
-      placeholder: E.g., Add a new OpenAI-compatible provider profile for Groq / DeepSeek.
+      placeholder: E.g., Add unit test cases for Groq adapter parameter translation.
     validations:
       required: true
   - type: textarea
@@ -20,7 +20,7 @@ body:
     attributes:
       label: Relevant Files & Pointers
       description: Where in the codebase should the contributor start?
-      placeholder: E.g., Inspect internal/adapter/openaicompat/builtin_profiles.go and add tests in builtin_profiles_test.go.
+      placeholder: E.g., Inspect internal/adapter/groq/adapter.go and internal/mcp/spec_profile.go.
     validations:
       required: true
   - type: textarea

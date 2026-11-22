@@ -62,8 +62,9 @@ jobs:
             exit 1
           fi
           go vet ./...
+          go generate ./internal/mcp/spec
           go generate ./internal/openapi
-          git diff --exit-code -- internal/openapi/gateway.gen.go
+          git diff --exit-code -- internal/openapi/gateway.gen.go internal/mcp/spec/
           go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 
       - name: Verify Web UI Build, Budget & Embedded Dist Parity

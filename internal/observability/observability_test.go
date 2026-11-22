@@ -31,10 +31,10 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 		RetryCount:        1,
 	})
 	col.Record(RequestObservation{
-		Provider:         "gemini",
-		Model:            "gemini-3.5-flash-lite",
-		DeploymentID:     "dep-gem",
-		DeploymentName:   "gemini-live",
+		Provider:         "groq",
+		Model:            "llama-3.1-8b-instant",
+		DeploymentID:     "dep-groq",
+		DeploymentName:   "groq-live",
 		StatusCode:       200,
 		LatencyMs:        420,
 		TTFTMs:           150,
@@ -44,8 +44,8 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 		CostMicros:       4,
 	})
 	col.Record(RequestObservation{
-		Provider:   "gemini",
-		Model:      "gemini-3.5-flash-lite",
+		Provider:   "groq",
+		Model:      "llama-3.1-8b-instant",
 		StatusCode: 200,
 		CacheHit:   true,
 	})

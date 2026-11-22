@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPhase2_EcosystemBridgesAndTokenize(t *testing.T) {
+func TestHandlers_EcosystemBridgesAndTokenize(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()

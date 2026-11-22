@@ -4,7 +4,8 @@ info:
   version: 2026-07-28
   description: >
     Production-grade enterprise gateway endpoints for Model Context Protocol (MCP).
-    Supports stateless Streamable HTTP (2026-07-28) primary protocol, 2025-11-25 stateful compatibility adapter,
+    Supports UI-selectable MCP specifications across all official releases
+    (2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28),
     virtual hub aggregation, scoped servers, curated toolsets, AEAD-encrypted MRTR resumption,
     arbitrary precision decimal preservation, and SSE event multiplexing.
 servers:
@@ -180,7 +181,8 @@ paths:
                 org_id: {type: string}
                 name: {type: string}
                 slug: {type: string}
-                protocol_version: {type: string, enum: ['2026-07-28', '2025-11-25']}
+                protocol_version: {type: string, enum: ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25', '2026-07-28']}
+                transport_type: {type: string, enum: ['streamable_http', 'http_sse_2024', 'stdio', 'openapi']}
                 endpoint_url: {type: string, format: uri}
                 auth_type: {type: string, enum: ['none', 'static', 'byok']}
                 auth_secret: {type: string}

@@ -338,9 +338,6 @@ func mergeVerifiedBudgetModel(match **domain.GlobalModel, sawUnverified *bool, g
 	if gm.AudioTTSCostMicrosPer1KChars > m.AudioTTSCostMicrosPer1KChars {
 		m.AudioTTSCostMicrosPer1KChars = gm.AudioTTSCostMicrosPer1KChars
 	}
-	if gm.RerankCostMicrosPerSearchUnit > m.RerankCostMicrosPerSearchUnit {
-		m.RerankCostMicrosPerSearchUnit = gm.RerankCostMicrosPerSearchUnit
-	}
 	if gm.MaxOutputTokens > m.MaxOutputTokens {
 		m.MaxOutputTokens = gm.MaxOutputTokens
 	}

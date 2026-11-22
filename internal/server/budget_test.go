@@ -173,15 +173,6 @@ func TestNonTokenModalityEndpointsRejectBudgetedRequests(t *testing.T) {
 		s.handleModerations(w, req)
 		assertBudgetEstimateUnavailable("moderations", w)
 	}
-
-	// 5. Rerank
-	{
-		req := httptest.NewRequest(http.MethodPost, "/v1/rerank", bytes.NewBufferString(`{"model":"rerank-english-v3.0","query":"q","documents":["doc1"]}`))
-		req = req.WithContext(auth.WithIdentity(req.Context(), id))
-		w := httptest.NewRecorder()
-		s.handleRerank(w, req)
-		assertBudgetEstimateUnavailable("rerank", w)
-	}
 }
 
 func TestResolveMatchedVerifiedModel_ResolvesModelGroupAlias(t *testing.T) {

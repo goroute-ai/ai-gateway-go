@@ -13,79 +13,10 @@ type ProviderType string
 
 // Canonical upstream provider identifiers supported by GoRoute.
 const (
-	ProviderOpenAI          ProviderType = "openai"
-	ProviderAnthropic       ProviderType = "anthropic"
-	ProviderGemini          ProviderType = "gemini"
-	ProviderMistral         ProviderType = "mistral"
-	ProviderOllama          ProviderType = "ollama"
-	ProviderGroq            ProviderType = "groq"
-	ProviderDeepSeek        ProviderType = "deepseek"
-	ProviderTogether        ProviderType = "together"
-	ProviderAzure           ProviderType = "azure"
-	ProviderBedrock         ProviderType = "bedrock"
-	ProviderVertex          ProviderType = "vertex"
-	ProviderCohere          ProviderType = "cohere"
-	ProviderCerebras        ProviderType = "cerebras"
-	ProviderSambaNova       ProviderType = "sambanova"
-	ProviderXAI             ProviderType = "xai"
-	ProviderFireworks       ProviderType = "fireworks"
-	ProviderPerplexity      ProviderType = "perplexity"
-	ProviderAnyscale        ProviderType = "anyscale"
-	ProviderDeepInfra       ProviderType = "deepinfra"
-	ProviderNovita          ProviderType = "novita"
-	ProviderNebius          ProviderType = "nebius"
-	ProviderHyperbolic      ProviderType = "hyperbolic"
-	ProviderLambda          ProviderType = "lambda"
-	ProviderFriendli        ProviderType = "friendli"
-	ProviderOpenRouter      ProviderType = "openrouter"
-	ProviderVLLM            ProviderType = "vllm"
-	ProviderCloudflare      ProviderType = "cloudflare"
-	ProviderDatabricks      ProviderType = "databricks"
-	ProviderSnowflake       ProviderType = "snowflake"
-	ProviderDashScope       ProviderType = "dashscope"
-	ProviderVolcengine      ProviderType = "volcengine"
-	ProviderBigModel        ProviderType = "bigmodel"
-	ProviderMoonshot        ProviderType = "moonshot"
-	ProviderMiniMax         ProviderType = "minimax"
-	ProviderSiliconFlow     ProviderType = "siliconflow"
-	ProviderVoyage          ProviderType = "voyage"
-	ProviderJina            ProviderType = "jina"
-	ProviderReplicate       ProviderType = "replicate"
-	ProviderAI21            ProviderType = "ai21"
-	ProviderBaseten         ProviderType = "baseten"
-	ProviderNvidia          ProviderType = "nvidia"
-	ProviderScaleway        ProviderType = "scaleway"
-	ProviderGitHubCopilot   ProviderType = "github_copilot"
-	ProviderVercelAIGateway ProviderType = "vercel_ai_gateway"
-	ProviderHuggingFace     ProviderType = "huggingface"
-	ProviderFeatherless     ProviderType = "featherless"
-	ProviderFal             ProviderType = "fal"
-	ProviderZAI             ProviderType = "zai"
-	ProviderPoe             ProviderType = "poe"
-	ProviderHelicone        ProviderType = "helicone"
-	ProviderAIHubMix        ProviderType = "aihubmix"
-	ProviderVenice          ProviderType = "venice"
-	ProviderChutes          ProviderType = "chutes"
-	ProviderGMI             ProviderType = "gmi"
-	ProviderLlamaGate       ProviderType = "llamagate"
-	ProviderSarvam          ProviderType = "sarvam"
-	ProviderCrusoe          ProviderType = "crusoe"
-	ProviderParasail        ProviderType = "parasail"
-	ProviderUpstage         ProviderType = "upstage"
-	ProviderOVHCloud        ProviderType = "ovhcloud"
-	ProviderWandB           ProviderType = "wandb"
-	ProviderNscale          ProviderType = "nscale"
-	ProviderPublicAI        ProviderType = "publicai"
-	ProviderSynthetic       ProviderType = "synthetic"
-	ProviderNanoGPT         ProviderType = "nano_gpt"
-	ProviderXiaomiMiMo      ProviderType = "xiaomi_mimo"
-	ProviderReka            ProviderType = "reka"
-	ProviderYi              ProviderType = "yi"
-	ProviderBaichuan        ProviderType = "baichuan"
-	ProviderStepFun         ProviderType = "stepfun"
-	ProviderLMStudio        ProviderType = "lm_studio"
-	ProviderLlamafile       ProviderType = "llamafile"
-	ProviderXinference      ProviderType = "xinference"
+	ProviderOpenAI     ProviderType = "openai"
+	ProviderAnthropic  ProviderType = "anthropic"
+	ProviderGroq       ProviderType = "groq"
+	ProviderOpenRouter ProviderType = "openrouter"
 )
 
 // AllProviders returns the list of supported upstream providers.
@@ -93,77 +24,8 @@ func AllProviders() []ProviderType {
 	return []ProviderType{
 		ProviderOpenAI,
 		ProviderAnthropic,
-		ProviderGemini,
-		ProviderMistral,
-		ProviderOllama,
 		ProviderGroq,
-		ProviderDeepSeek,
-		ProviderTogether,
-		ProviderAzure,
-		ProviderBedrock,
-		ProviderVertex,
-		ProviderCohere,
-		ProviderCerebras,
-		ProviderSambaNova,
-		ProviderXAI,
-		ProviderFireworks,
-		ProviderPerplexity,
-		ProviderAnyscale,
-		ProviderDeepInfra,
-		ProviderNovita,
-		ProviderNebius,
-		ProviderHyperbolic,
-		ProviderLambda,
-		ProviderFriendli,
 		ProviderOpenRouter,
-		ProviderVLLM,
-		ProviderCloudflare,
-		ProviderDatabricks,
-		ProviderSnowflake,
-		ProviderDashScope,
-		ProviderVolcengine,
-		ProviderBigModel,
-		ProviderMoonshot,
-		ProviderMiniMax,
-		ProviderSiliconFlow,
-		ProviderVoyage,
-		ProviderJina,
-		ProviderReplicate,
-		ProviderAI21,
-		ProviderBaseten,
-		ProviderNvidia,
-		ProviderScaleway,
-		ProviderGitHubCopilot,
-		ProviderVercelAIGateway,
-		ProviderHuggingFace,
-		ProviderFeatherless,
-		ProviderFal,
-		ProviderZAI,
-		ProviderPoe,
-		ProviderHelicone,
-		ProviderAIHubMix,
-		ProviderVenice,
-		ProviderChutes,
-		ProviderGMI,
-		ProviderLlamaGate,
-		ProviderSarvam,
-		ProviderCrusoe,
-		ProviderParasail,
-		ProviderUpstage,
-		ProviderOVHCloud,
-		ProviderWandB,
-		ProviderNscale,
-		ProviderPublicAI,
-		ProviderSynthetic,
-		ProviderNanoGPT,
-		ProviderXiaomiMiMo,
-		ProviderReka,
-		ProviderYi,
-		ProviderBaichuan,
-		ProviderStepFun,
-		ProviderLMStudio,
-		ProviderLlamafile,
-		ProviderXinference,
 	}
 }
 
@@ -480,7 +342,6 @@ const (
 	ModalityChat       ModalityType = "chat"
 	ModalityCompletion ModalityType = "completion"
 	ModalityEmbedding  ModalityType = "embedding"
-	ModalityRerank     ModalityType = "rerank"
 	ModalityModeration ModalityType = "moderation"
 	ModalityImage      ModalityType = "image"
 	ModalityAudioSTT   ModalityType = "audio_stt"
@@ -529,72 +390,6 @@ type SpendEvent struct {
 	RetryCount              int            `json:"retry_count"`
 	ErrorMessage            string         `json:"error_message,omitempty"`
 	CreatedAt               time.Time      `json:"created_at"`
-}
-
-// --- RERANK ---
-
-// RerankDocument represents a document in a reranking request, which can be either a plain string or a structured JSON object.
-type RerankDocument struct {
-	Text string         `json:"text,omitempty"`
-	Raw  map[string]any `json:"raw,omitempty"`
-}
-
-// UnmarshalJSON decodes a rerank document from either a plain string or an object map.
-func (d *RerankDocument) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err == nil {
-		d.Text = s
-		return nil
-	}
-	return json.Unmarshal(b, &d.Raw)
-}
-
-// MarshalJSON encodes a rerank document as a string when Raw is empty, or as the Raw object.
-func (d RerankDocument) MarshalJSON() ([]byte, error) {
-	if d.Text != "" && len(d.Raw) == 0 {
-		return json.Marshal(d.Text)
-	}
-	if len(d.Raw) > 0 {
-		return json.Marshal(d.Raw)
-	}
-	return json.Marshal(d.Text)
-}
-
-// CanonicalRerankRequest is the provider-agnostic document reranking request.
-type CanonicalRerankRequest struct {
-	RequestID         string             `json:"request_id,omitempty"`
-	Model             string             `json:"model"`
-	ResolvedModel     string             `json:"resolved_model,omitempty"`
-	Query             string             `json:"query"`
-	Documents         []RerankDocument   `json:"documents"`
-	TopN              *int               `json:"top_n,omitempty"`
-	RankFields        []string           `json:"rank_fields,omitempty"`
-	ReturnDocuments   bool               `json:"return_documents"`
-	MaxTokensPerDoc   *int               `json:"max_tokens_per_doc,omitempty"`
-	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
-}
-
-// RerankResultItem holds a single scored document entry from a reranking response.
-type RerankResultItem struct {
-	Index          int            `json:"index"`
-	RelevanceScore float64        `json:"relevance_score"`
-	Document       map[string]any `json:"document,omitempty"`
-}
-
-// RerankUsage reports search-unit and token accounting for a reranking call.
-type RerankUsage struct {
-	SearchUnits int `json:"search_units"`
-	TotalTokens int `json:"total_tokens"`
-}
-
-// CanonicalRerankResponse is the standardized response returned by reranking adapters.
-type CanonicalRerankResponse struct {
-	ID       string             `json:"id"`
-	Model    string             `json:"model"`
-	Provider ProviderType       `json:"provider"`
-	Results  []RerankResultItem `json:"results"`
-	Meta     map[string]any     `json:"meta,omitempty"`
-	Usage    RerankUsage        `json:"usage"`
 }
 
 // --- MODERATION ---

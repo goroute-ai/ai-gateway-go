@@ -33,9 +33,9 @@ import (
 
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
 type ModelEntry struct {
-	ModelName              string           // Client-facing model name or alias (e.g. "fast", "reasoning", "gemini-2.5-flash")
-	Model                  string           // Upstream provider/model (e.g. "gemini/gemini-2.5-flash", "anthropic/claude-sonnet-4-20250514")
-	APIKey                 string           // Literal key or "os.environ/GEMINI_API_KEY"
+	ModelName              string           // Client-facing model name or alias (e.g. "fast", "reasoning", "gpt-4o-mini")
+	Model                  string           // Upstream provider/model (e.g. "openai/gpt-4o-mini", "anthropic/claude-sonnet-4-20250514", "groq/llama-3.1-8b-instant")
+	APIKey                 string           // Literal key or "os.environ/OPENAI_API_KEY"
 	APIBase                string           // Optional custom upstream endpoint
 	RoutingStrategy        string           // Optional: "weighted-shuffle", "least-busy", "latency-based", "lowest-cost", "priority-tiered", "fastest-response"
 	Fallbacks              []string         // Optional: ordered fallback model group aliases (e.g. []string{"backup-claude"})
@@ -189,7 +189,7 @@ func WithDemoMocksIfEnvMissing() Option {
 	}
 }
 
-// WithAllowPrivateNetworks permits connections to local or private network addresses (e.g. for mock testing or local Ollama).
+// WithAllowPrivateNetworks permits connections to local or private network addresses (e.g. for mock testing).
 func WithAllowPrivateNetworks() Option {
 	return func(c *clientConfig) {
 		c.allowPrivateNetworks = true
@@ -211,7 +211,7 @@ func WithGuardrailScanner(name string, scanner GuardrailScanner, opts ...Guardra
 // New initializes a Gateway Client.
 //   - If `WithRemote(url, key)` is provided, it connects to that remote gateway.
 //   - Otherwise, it starts an embedded in-memory Gateway auto-configured from `WithModelList(...)`,
-//     `WithConfigFile(...)`, and/or standard environment variables (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
+//     `WithConfigFile(...)`, and/or standard environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`).
 func New(opts ...Option) (*Client, error) {
 	cc := &clientConfig{
 		httpClient: http.DefaultClient,
@@ -269,44 +269,51 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	var mockServers []*httptest.Server
-	var mockGemURL, mockClaudeURL, mockOpenAIURL string
+	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL string
 	if cc.demoMocksFallback || cc.allowPrivateNetworks {
 		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	}
 	if cc.demoMocksFallback {
-		mockGem := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "streamGenerateContent") {
-				w.Header().Set("Content-Type", "text/event-stream")
-				fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"GoRoute AI Gateway \"}]}}]}\n\n")
-				fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"streams SSE tokens with \"}]}}]}\n\n")
-				fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"sub-millisecond routing overhead.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":14,\"candidatesTokenCount\":16,\"totalTokenCount\":30}}\n\n")
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Pure Go code compiles directly to native machine code without Cgo or external runtime dependencies."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":18,"totalTokenCount":30}}`)
-		}))
+		openAICompatDemo := func(provLabel, modelID, reply string) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/embeddings") {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.023,-0.041,0.088,0.114]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`)
+					return
+				}
+				var reqBody struct {
+					Stream bool `json:"stream"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&reqBody)
+				if reqBody.Stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"GoRoute AI Gateway \"}}]}\n\n", provLabel, modelID)
+					fmt.Fprintf(w, "data: {\"id\":\"chatcmpl_%s\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"streams SSE tokens.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":14,\"completion_tokens\":16,\"total_tokens\":30}}\n\n", provLabel, modelID)
+					fmt.Fprint(w, "data: [DONE]\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"id":"chatcmpl_%s","object":"chat.completion","created":1730000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":19,"total_tokens":34}}`, provLabel, modelID, reply)
+			}))
+		}
 		mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"id":"msg_demo","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Raft guarantees election safety via monotonic term numbers and majority quorum intersection."}],"stop_reason":"end_turn","usage":{"input_tokens":28,"output_tokens":36}}`)
 		}))
-		mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if strings.HasSuffix(r.URL.Path, "/embeddings") {
-				fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.023,-0.041,0.088,0.114]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`)
-				return
-			}
-			fmt.Fprint(w, `{"id":"chatcmpl_demo","object":"chat.completion","created":1730000000,"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract."},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":19,"total_tokens":34}}`)
-		}))
-		mockServers = append(mockServers, mockGem, mockClaude, mockOpenAI)
-		mockGemURL = mockGem.URL
+		mockOpenAI := openAICompatDemo("openai", "gpt-4.1-mini", "OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract.")
+		mockGroq := openAICompatDemo("groq", "llama-3.1-8b-instant", "Groq Llama 3.1 handled this request through the unified canonical gateway contract.")
+		mockOpenRouter := openAICompatDemo("openrouter", "openai/gpt-4o-mini", "OpenRouter handled this request through the unified canonical gateway contract.")
+		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter)
+		mockGroqURL = mockGroq.URL
 		mockClaudeURL = mockClaude.URL
 		mockOpenAIURL = mockOpenAI.URL
+		mockOpenRouterURL = mockOpenRouter.URL
 	}
 
 	for _, e := range cc.modelList {
 		rawBase := config.ResolveEnvValue(e.APIBase)
-		if strings.HasPrefix(rawBase, "http://127.0.0.1") || strings.HasPrefix(rawBase, "http://localhost") || strings.HasPrefix(e.Model, "ollama/") || e.SimulateStatus >= 400 {
+		if strings.HasPrefix(rawBase, "http://127.0.0.1") || strings.HasPrefix(rawBase, "http://localhost") || e.SimulateStatus >= 400 {
 			cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 			cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 		}
@@ -333,10 +340,12 @@ func New(opts ...Option) (*Client, error) {
 			apiKey = "demo-mock-key"
 			if apiBase == "" {
 				switch prov {
-				case domain.ProviderGemini:
-					apiBase = mockGemURL
+				case domain.ProviderGroq:
+					apiBase = mockGroqURL
 				case domain.ProviderAnthropic:
 					apiBase = mockClaudeURL
+				case domain.ProviderOpenRouter:
+					apiBase = mockOpenRouterURL
 				default:
 					apiBase = mockOpenAIURL
 				}
@@ -672,7 +681,7 @@ func WithReasoningEffort(effort string) RequestOption {
 	}
 }
 
-// Chat executes a 1-line chat completion request (supporting explicit models like "gemini-2.5-flash",
+// Chat executes a 1-line chat completion request (supporting explicit models like "gpt-4o-mini",
 // logical aliases like "fast" or "reasoning", and smart routing "auto").
 func (c *Client) Chat(ctx context.Context, model, userPrompt string, opts ...RequestOption) (*ChatResult, error) {
 	req := domain.CanonicalChatRequest{
@@ -1577,11 +1586,6 @@ func (c *Client) Embeddings(ctx context.Context, req domain.CanonicalEmbeddingRe
 	return doJSONPost[domain.CanonicalEmbeddingRequest, domain.CanonicalEmbeddingResponse](c, ctx, "/v1/embeddings", req)
 }
 
-// Rerank scores and reorders candidate documents via `POST /v1/rerank`.
-func (c *Client) Rerank(ctx context.Context, req domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
-	return doJSONPost[domain.CanonicalRerankRequest, domain.CanonicalRerankResponse](c, ctx, "/v1/rerank", req)
-}
-
 // Moderations classifies content safety via `POST /v1/moderations`.
 func (c *Client) Moderations(ctx context.Context, req domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error) {
 	return doJSONPost[domain.CanonicalModerationRequest, domain.CanonicalModerationResponse](c, ctx, "/v1/moderations", req)
@@ -2373,11 +2377,6 @@ func (s *RealtimeSession) Close() error {
 // CreateEmbedding generates vector embeddings via `POST /v1/embeddings` using pure SDK types.
 func (c *Client) CreateEmbedding(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error) {
 	return doJSON[EmbeddingResponse](c, ctx, http.MethodPost, "/v1/embeddings", c.apiKey, req)
-}
-
-// CreateRerank scores and reorders candidate documents via `POST /v1/rerank` using pure SDK types.
-func (c *Client) CreateRerank(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
-	return doJSON[RerankResponse](c, ctx, http.MethodPost, "/v1/rerank", c.apiKey, req)
 }
 
 // CreateModeration classifies content safety via `POST /v1/moderations` using pure SDK types.

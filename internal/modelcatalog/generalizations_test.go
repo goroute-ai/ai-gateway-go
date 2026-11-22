@@ -11,9 +11,9 @@ func TestStripRegionalModelPrefix(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"us.anthropic.claude-3-7-sonnet-20250219-v1:0", "anthropic.claude-3-7-sonnet-20250219-v1"},
-		{"eu.anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-sonnet-4-20250514-v1"},
-		{"global.anthropic.claude-opus-4-6-v1", "anthropic.claude-opus-4-6-v1"},
+		{"us.claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"},
+		{"eu.gpt-4o-mini", "gpt-4o-mini"},
+		{"global.openai/gpt-oss-20b", "openai/gpt-oss-20b"},
 		{"gpt-4o", "gpt-4o"},
 	}
 	for _, tc := range tests {
@@ -24,12 +24,22 @@ func TestStripRegionalModelPrefix(t *testing.T) {
 }
 
 func TestInferFamilyCapabilities_ExplicitlyInferred(t *testing.T) {
-	inf := InferFamilyCapabilities("us.anthropic.claude-sonnet-4-6-20260101-v1:0")
+	inf := InferFamilyCapabilities("claude-sonnet-4-6-20260101")
 	if !inf.Inferred || inf.Source != "family-pattern-heuristic" {
 		t.Fatalf("expected explicit inferred result, got %+v", inf)
 	}
 	if inf.Capabilities.Reasoning != domain.CapabilitySupported || inf.Capabilities.Vision != domain.CapabilitySupported {
 		t.Errorf("expected reasoning and vision supported, got %+v", inf.Capabilities)
+	}
+
+	gpt6 := InferFamilyCapabilities("gpt-6-astra")
+	if !gpt6.Inferred || gpt6.Capabilities.Reasoning != domain.CapabilitySupported {
+		t.Errorf("expected gpt-6-astra reasoning inferred, got %+v", gpt6)
+	}
+
+	oss := InferFamilyCapabilities("openai/gpt-oss-20b")
+	if !oss.Inferred || oss.Capabilities.Tools != domain.CapabilitySupported || oss.Capabilities.Reasoning != domain.CapabilitySupported {
+		t.Errorf("expected openai/gpt-oss-20b inferred tools+reasoning, got %+v", oss)
 	}
 
 	unknown := InferFamilyCapabilities("completely-custom-local-model")

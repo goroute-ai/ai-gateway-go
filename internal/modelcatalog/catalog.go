@@ -55,7 +55,7 @@ func initCatalog() {
 
 	catalogList = make([]*domain.GlobalModel, 0, len(rawMap))
 	for id, m := range rawMap {
-		if m == nil {
+		if m == nil || !IsCallableProvider(m.Provider) {
 			continue
 		}
 		if m.QualityTier == 0 {
@@ -71,13 +71,9 @@ func initCatalog() {
 			modelsByName[nameKey] = m
 		} else {
 			// Prefer primary/authoritative provider for bare model names
-			if (strings.HasPrefix(nameKey, "gpt-") || strings.HasPrefix(nameKey, "o1-") || strings.HasPrefix(nameKey, "o3-") || strings.HasPrefix(nameKey, "text-embedding-")) && m.Provider == domain.ProviderOpenAI {
+			if (strings.HasPrefix(nameKey, "gpt-") || strings.HasPrefix(nameKey, "o1-") || strings.HasPrefix(nameKey, "o3-") || strings.HasPrefix(nameKey, "o4-") || strings.HasPrefix(nameKey, "text-embedding-")) && m.Provider == domain.ProviderOpenAI {
 				modelsByName[nameKey] = m
 			} else if strings.HasPrefix(nameKey, "claude-") && m.Provider == domain.ProviderAnthropic {
-				modelsByName[nameKey] = m
-			} else if strings.HasPrefix(nameKey, "gemini-") && (m.Provider == domain.ProviderGemini || m.Provider == domain.ProviderVertex) {
-				modelsByName[nameKey] = m
-			} else if strings.HasPrefix(nameKey, "deepseek-") && m.Provider == domain.ProviderDeepSeek {
 				modelsByName[nameKey] = m
 			}
 		}
@@ -118,8 +114,8 @@ func All() []*domain.GlobalModel {
 	return out
 }
 
-// Lookup finds a model by its canonical GlobalModelID (e.g. "groq/llama-3.3-70b-versatile"),
-// an aliased ID (e.g. "vertex_ai/gemini-1.5-pro"), or bare model name.
+// Lookup finds a model by its canonical GlobalModelID (e.g. "groq/llama-3.1-8b-instant")
+// or bare model name.
 func Lookup(globalModelID string) (*domain.GlobalModel, bool) {
 	EnsureLoaded()
 	clean := strings.TrimSpace(globalModelID)
@@ -165,8 +161,7 @@ func Lookup(globalModelID string) (*domain.GlobalModel, bool) {
 }
 
 // LookupByProviderAndModel finds a model by its provider and model name,
-// automatically normalizing provider aliases (e.g. "vertex_ai" -> "vertex", "bedrock_converse" -> "bedrock")
-// and stripping regional prefixes (e.g. "us.", "eu.", "apac.", "global.") on fallback.
+// normalizing provider aliases before lookup.
 func LookupByProviderAndModel(prov domain.ProviderType, modelName string) (*domain.GlobalModel, bool) {
 	EnsureLoaded()
 	normProv := config.NormalizeProvider(string(prov))

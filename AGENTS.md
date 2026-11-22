@@ -6,7 +6,7 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 
 - Read [the codebase map](docs/CODEBASE_MAP.md) to locate behavior, contracts, configuration, persistence, and tests.
 - Read [the documentation index](docs/README.md) for API, architecture, internals, configuration, upgrading, and testing guides.
-- Read [the testing guide](docs/TESTING.md) before modifying or running E2E, Playwright UI E2E, or container HA suites, and [the upgrade guide](docs/UPGRADING.md) when touching migrations or rolling budget recovery.
+- Read [the testing guide](docs/TESTING.md) before modifying or running E2E or Playwright UI E2E suites, and [the upgrade guide](docs/UPGRADING.md) when touching migrations or rolling budget recovery.
 - Before editing, inspect the relevant implementation and tests. Treat docs as navigation and explanation, not proof of current behavior.
 
 ## Repository Invariants

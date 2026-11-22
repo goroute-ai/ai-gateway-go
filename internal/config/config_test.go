@@ -13,25 +13,30 @@ import (
 )
 
 func TestResolveEnvValueAndParseProviderModel(t *testing.T) {
-	t.Setenv("TEST_GEMINI_KEY", "AIzaSyTest123")
+	t.Setenv("TEST_GROQ_KEY", "gsk_Test123")
 	t.Setenv("TEST_CLAUDE_KEY", "sk-ant-Test456")
 
-	if got := config.ResolveEnvValue("os.environ/TEST_GEMINI_KEY"); got != "AIzaSyTest123" {
-		t.Fatalf("expected AIzaSyTest123, got %q", got)
+	if got := config.ResolveEnvValue("os.environ/TEST_GROQ_KEY"); got != "gsk_Test123" {
+		t.Fatalf("expected gsk_Test123, got %q", got)
 	}
 	if got := config.ResolveEnvValue("${TEST_CLAUDE_KEY}"); got != "sk-ant-Test456" {
 		t.Fatalf("expected sk-ant-Test456, got %q", got)
 	}
-	if got := config.ResolveEnvValue("$TEST_GEMINI_KEY"); got != "AIzaSyTest123" {
-		t.Fatalf("expected AIzaSyTest123, got %q", got)
+	if got := config.ResolveEnvValue("$TEST_GROQ_KEY"); got != "gsk_Test123" {
+		t.Fatalf("expected gsk_Test123, got %q", got)
 	}
 	if got := config.ResolveEnvValue("sk-literal-key"); got != "sk-literal-key" {
 		t.Fatalf("expected literal key unchanged, got %q", got)
 	}
 
-	prov, bare, globalID := config.ParseProviderModel("gemini/gemini-2.5-flash")
-	if prov != domain.ProviderGemini || bare != "gemini-2.5-flash" || globalID != "gemini/gemini-2.5-flash" {
-		t.Fatalf("unexpected ParseProviderModel for gemini/gemini-2.5-flash: %v %v %v", prov, bare, globalID)
+	prov, bare, globalID := config.ParseProviderModel("groq/llama-3.1-8b-instant")
+	if prov != domain.ProviderGroq || bare != "llama-3.1-8b-instant" || globalID != "groq/llama-3.1-8b-instant" {
+		t.Fatalf("unexpected ParseProviderModel for groq/llama-3.1-8b-instant: %v %v %v", prov, bare, globalID)
+	}
+
+	prov, bare, globalID = config.ParseProviderModel("openrouter/openai/gpt-4o-mini")
+	if prov != domain.ProviderOpenRouter || bare != "openai/gpt-4o-mini" || globalID != "openrouter/openai/gpt-4o-mini" {
+		t.Fatalf("unexpected ParseProviderModel for openrouter/openai/gpt-4o-mini: %v %v %v", prov, bare, globalID)
 	}
 
 	prov, bare, globalID = config.ParseProviderModel("claude-sonnet-4-20250514")
@@ -52,11 +57,11 @@ auth:
 model_list:
   - model_name: fast
     model_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
   - model_name: reasoning
     model_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 `
 	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
@@ -71,7 +76,7 @@ model_list:
 	if len(cfg.ModelList) != 2 {
 		t.Fatalf("expected 2 model_list entries, got %d", len(cfg.ModelList))
 	}
-	if cfg.ModelList[0].ModelName != "fast" || cfg.ModelList[0].ModelParams.Model != "gemini/gemini-2.5-flash" {
+	if cfg.ModelList[0].ModelName != "fast" || cfg.ModelList[0].ModelParams.Model != "groq/llama-3.1-8b-instant" {
 		t.Fatalf("unexpected model_list[0]: %+v", cfg.ModelList[0])
 	}
 	if cfg.Auth.DefaultVirtualKey != "sk-gw-dev-default-key" {
@@ -280,15 +285,6 @@ guardrails:
       fail_open: true
       headers:
         Authorization: "Bearer test-token"
-providers:
-  custom_openai_compatible:
-    - id: "vllm-local"
-      display_name: "vLLM"
-      base_url: "http://127.0.0.1:8000/v1"
-      supported_operations: ["chat", "embeddings"]
-      param_mappings:
-        max_completion_tokens: "max_tokens"
-      reasoning_mapping: "chat_template_thinking"
 `
 	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
@@ -301,10 +297,6 @@ providers:
 	}
 	if len(cfg.Guardrails.Scanners) != 1 || cfg.Guardrails.Scanners[0].Name != "dlp-webhook" || !cfg.Guardrails.Scanners[0].FailOpen || cfg.Guardrails.Scanners[0].TimeoutMs != 1500 {
 		t.Fatalf("unexpected guardrails config: %+v", cfg.Guardrails)
-	}
-	cp := cfg.Providers.CustomOpenAICompatible[0]
-	if len(cp.SupportedOperations) != 2 || cp.ParamMappings["max_completion_tokens"] != "max_tokens" || cp.ReasoningMapping != "chat_template_thinking" {
-		t.Fatalf("unexpected custom provider config: %+v", cp)
 	}
 
 	// Verify RateLimit.FallbackToLocalOnOutage and Tracing.Enabled YAML unmarshaling
@@ -877,16 +869,8 @@ func TestConfig_PreviousKEKsAndKeyRotationSinkValidation(t *testing.T) {
 				},
 			},
 			{
-				name: "aws sink missing credentials without ambient iam",
+				name: "unsupported aws_secrets_manager sink driver",
 				mod: func(a *config.AuthConfig) {
-					a.AllowAmbientCloudIAM = false
-					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "aws_secrets_manager", Region: "us-east-1"}
-				},
-			},
-			{
-				name: "aws sink missing region with ambient iam",
-				mod: func(a *config.AuthConfig) {
-					a.AllowAmbientCloudIAM = true
 					a.KeyRotationSink = config.KeyRotationSinkConfig{Driver: "aws_secrets_manager"}
 				},
 			},

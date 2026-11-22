@@ -245,3 +245,195 @@ func TestAdminMCPManagementAndToolSync(t *testing.T) {
 	assert.NotEmpty(t, feedData.Servers[0].Tools)
 	assert.True(t, strings.HasPrefix(feedData.Servers[0].Tools[0].ToolHandle, "tool_hdl_"))
 }
+
+func TestAdminMCPSpecSwitchingAndServerEdit(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "sk-gw-master-admin-key"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"tools": []map[string]any{
+					{"name": "echo", "description": "Echo input", "inputSchema": map[string]any{"type": "object"}},
+				},
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	srv, err := server.New(cfg, repo, nil, nil)
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	adminKey := cfg.Auth.MasterAdminKey
+
+	doAdmin := func(method, path string, body any) (*http.Response, []byte) {
+		t.Helper()
+		var buf bytes.Buffer
+		if body != nil {
+			require.NoError(t, json.NewEncoder(&buf).Encode(body))
+		}
+		req, err := http.NewRequest(method, ts.URL+path, &buf)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+adminKey)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		var raw bytes.Buffer
+		_, err = raw.ReadFrom(resp.Body)
+		require.NoError(t, err)
+		return resp, raw.Bytes()
+	}
+
+	// 1. GET /admin/v1/mcp/spec returns default 2026-07-28 and all 5 releases.
+	resp, body := doAdmin(http.MethodGet, "/admin/v1/mcp/spec", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	var specState struct {
+		ActiveProtocolVersion string `json:"active_protocol_version"`
+		StrictSchema          bool   `json:"strict_schema_validation"`
+		AvailableSpecs        []struct {
+			Version string `json:"version"`
+		} `json:"available_specs"`
+	}
+	require.NoError(t, json.Unmarshal(body, &specState))
+	assert.Equal(t, domain.MCPProtocolVersion20260728, specState.ActiveProtocolVersion)
+	assert.Len(t, specState.AvailableSpecs, 5)
+
+	// 2. Reject unknown MCP spec version with 400 Bad Request.
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/spec", map[string]any{
+		"protocol_version": "1999-01-01",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(body))
+
+	// Create virtual key with wildcard MCP access to test live /mcp behavior.
+	resp, body = doAdmin(http.MethodPost, "/admin/v1/keys", map[string]any{
+		"org_id":              "org_default",
+		"name":                "mcp-spec-switch-vk",
+		"allowed_endpoints":   []string{"*"},
+		"allowed_mcp_servers": []string{"*"},
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
+	var vk domain.VirtualKey
+	require.NoError(t, json.Unmarshal(body, &vk))
+
+	postMCP := func(payload string, extraHeaders map[string]string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+vk.RawKey)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		var raw bytes.Buffer
+		_, err = raw.ReadFrom(resp.Body)
+		require.NoError(t, err)
+		return resp, raw.Bytes()
+	}
+
+	// 3. Hot-switch Gateway active spec -> 2025-03-26 (batching allowed, initialize supported).
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/spec", map[string]any{
+		"protocol_version":         domain.MCPProtocolVersion20250326,
+		"strict_schema_validation": true,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+
+	resp, body = postMCP(`[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}]`, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	var batchOut []map[string]any
+	require.NoError(t, json.Unmarshal(body, &batchOut), string(body))
+	require.Len(t, batchOut, 2)
+	assert.Contains(t, string(body), `"protocolVersion":"2025-03-26"`)
+
+	// 4. Hot-switch -> 2025-11-25 (batch rejected, initialize returns 2025-11-25).
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/spec", map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20251125,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+
+	resp, body = postMCP(`[{"jsonrpc":"2.0","id":1,"method":"ping"}]`, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `-32600`)
+
+	resp, body = postMCP(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `"protocolVersion":"2025-11-25"`)
+
+	// 5. Hot-switch -> 2024-11-05 (initialize returns 2024-11-05).
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/spec", map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20241105,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	resp, body = postMCP(`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `"protocolVersion":"2024-11-05"`)
+
+	// 6. Hot-switch back -> 2026-07-28 (server/discover supported, initialize rejected with -32601).
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/spec", map[string]any{
+		"protocol_version":         domain.MCPProtocolVersion20260728,
+		"strict_schema_validation": true,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+
+	resp, body = postMCP(`{"jsonrpc":"2.0","id":4,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`, map[string]string{
+		"MCP-Protocol-Version": domain.MCPProtocolVersion20260728,
+		"Mcp-Method":           "server/discover",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `"supportedVersions":["2026-07-28"]`)
+	assert.Contains(t, string(body), `"resultType":"complete"`)
+
+	resp, body = postMCP(`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`, map[string]string{
+		"MCP-Protocol-Version": domain.MCPProtocolVersion20260728,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `-32601`)
+
+	// 7. Create & edit per-server specification via PUT /admin/v1/mcp/servers/{serverID}.
+	resp, body = doAdmin(http.MethodPost, "/admin/v1/mcp/servers", map[string]any{
+		"org_id":           "org_default",
+		"name":             "Switchable MCP",
+		"slug":             "switch-mcp",
+		"protocol_version": domain.MCPProtocolVersion20250618,
+		"transport_type":   domain.MCPTransportStreamableHTTP,
+		"endpoint_url":     mockUpstream.URL,
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
+	var createSrvOut struct {
+		Server domain.MCPServer `json:"server"`
+	}
+	require.NoError(t, json.Unmarshal(body, &createSrvOut))
+	createdSrv := createSrvOut.Server
+	require.NotEmpty(t, createdSrv.ID)
+
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/servers/"+createdSrv.ID, map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20241105,
+		"transport_type":   domain.MCPTransportHTTPSSE2024,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	var updateSrvOut struct {
+		Server domain.MCPServer `json:"server"`
+	}
+	require.NoError(t, json.Unmarshal(body, &updateSrvOut))
+	assert.Equal(t, domain.MCPProtocolVersion20241105, updateSrvOut.Server.ProtocolVersion)
+	assert.Equal(t, domain.MCPTransportHTTPSSE2024, updateSrvOut.Server.TransportType)
+
+	// Invalid server protocol_version returns 400.
+	resp, body = doAdmin(http.MethodPut, "/admin/v1/mcp/servers/"+createdSrv.ID, map[string]any{
+		"protocol_version": "invalid-version",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(body))
+}

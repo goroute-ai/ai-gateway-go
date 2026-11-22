@@ -295,10 +295,10 @@ func TestEvaluateCustomAuth_InvalidInputs(t *testing.T) {
 }
 
 func TestWithCustomAuthenticator_EmbeddedHTTP(t *testing.T) {
-	mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"custom-auth-ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"totalTokenCount":8}}`)
+	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":"chatcmpl_auth","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"custom-auth-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
 	}))
-	defer mockGemini.Close()
+	defer mockOpenAI.Close()
 
 	t.Run("rejects remote gateway combination", func(t *testing.T) {
 		_, err := gateway.New(
@@ -319,9 +319,9 @@ func TestWithCustomAuthenticator_EmbeddedHTTP(t *testing.T) {
 			gateway.WithAllowPrivateNetworks(),
 			gateway.WithModelList(gateway.ModelEntry{
 				ModelName: "fast",
-				Model:     "gemini/gemini-2.5-flash",
-				APIKey:    "dummy-gemini-key",
-				APIBase:   mockGemini.URL,
+				Model:     "openai/gpt-4o-mini",
+				APIKey:    "dummy-openai-key",
+				APIBase:   mockOpenAI.URL,
 			}),
 			gateway.WithCustomAuthenticator(gateway.CustomAuthModeOn, gateway.CustomAuthenticatorFunc(func(ctx context.Context, r *http.Request) (*gateway.AuthDecision, error) {
 				switch r.Header.Get("X-Test-Scenario") {
@@ -426,9 +426,9 @@ func TestWithCustomAuthenticator_EmbeddedHTTP(t *testing.T) {
 			gateway.WithAllowPrivateNetworks(),
 			gateway.WithModelList(gateway.ModelEntry{
 				ModelName: "fast",
-				Model:     "gemini/gemini-2.5-flash",
-				APIKey:    "dummy-gemini-key",
-				APIBase:   mockGemini.URL,
+				Model:     "openai/gpt-4o-mini",
+				APIKey:    "dummy-openai-key",
+				APIBase:   mockOpenAI.URL,
 			}),
 			gateway.WithCustomAuthenticator(gateway.CustomAuthModeAuto, gateway.CustomAuthenticatorFunc(func(context.Context, *http.Request) (*gateway.AuthDecision, error) {
 				return nil, nil

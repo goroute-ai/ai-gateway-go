@@ -457,7 +457,7 @@ func (d *protocolPostRedactorDriver) Evaluate(_ context.Context, input *domain.G
 	}, nil
 }
 
-func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
+func TestToolGovernance_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	ctx := context.Background()
 
 	// Part 1: Gateway HTTP /v1/chat/completions with block_code_execution + mcp_security
@@ -595,7 +595,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	// Part 2: mcp.Hub executing pre_mcp_call (mcp_end_user_permission + block_code_execution + mcp_security)
 	//         & post_mcp_call alongside VerifyToolPinning and MCPAuthVaultJWT (mcp_jwt_signer).
 	repo := storage.NewMemoryRepository()
-	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org-mcp-p3b", Name: "MCP Phase3B Org"}))
+	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org-mcp-gov", Name: "MCP Tool Governance Org"}))
 	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
 	rbac := auth.NewRBACEngine(repo)
@@ -647,7 +647,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 
 	mcpSrv := &domain.MCPServer{
 		ID:                  "srv-vault-jwt",
-		OrgID:               "org-mcp-p3b",
+		OrgID:               "org-mcp-gov",
 		Slug:                "tickets-mcp",
 		TransportType:       domain.MCPTransportStreamableHTTP,
 		EndpointURL:         mockMCPServer.URL,
@@ -660,11 +660,11 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	require.NoError(t, repo.CreateMCPServer(ctx, mcpSrv))
 
 	toolSchema := map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}}
-	require.NoError(t, repo.UpsertMCPTools(ctx, mcpSrv.ID, "org-mcp-p3b", []*domain.MCPTool{
+	require.NoError(t, repo.UpsertMCPTools(ctx, mcpSrv.ID, "org-mcp-gov", []*domain.MCPTool{
 		{
 			ID:          "tool-update-ticket",
 			ServerID:    mcpSrv.ID,
-			OrgID:       "org-mcp-p3b",
+			OrgID:       "org-mcp-gov",
 			Name:        "update_ticket",
 			Description: "Update support ticket",
 			InputSchema: toolSchema,
@@ -674,7 +674,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 		{
 			ID:          "tool-bash-unpinned",
 			ServerID:    mcpSrv.ID,
-			OrgID:       "org-mcp-p3b",
+			OrgID:       "org-mcp-gov",
 			Name:        "bash",
 			Description: "Shell runner",
 			InputSchema: toolSchema,
@@ -700,7 +700,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 
 	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
 		ID:         "hub-def-mcp-sec",
-		OrgID:      "org-mcp-p3b",
+		OrgID:      "org-mcp-gov",
 		Name:       "hub-mcp-sec",
 		Provider:   drivers.ProviderMCPSecurity,
 		DefaultOn:  true,
@@ -711,7 +711,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	}))
 	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
 		ID:         "hub-def-code-exec",
-		OrgID:      "org-mcp-p3b",
+		OrgID:      "org-mcp-gov",
 		Name:       "hub-code-exec",
 		Provider:   drivers.ProviderCodeExecution,
 		DefaultOn:  true,
@@ -722,7 +722,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	}))
 	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
 		ID:         "hub-def-rbac",
-		OrgID:      "org-mcp-p3b",
+		OrgID:      "org-mcp-gov",
 		Name:       "hub-end-user-rbac",
 		Provider:   drivers.ProviderMCPEndUserPermission,
 		DefaultOn:  true,
@@ -745,7 +745,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 	}))
 	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
 		ID:         "hub-def-post-pii",
-		OrgID:      "org-mcp-p3b",
+		OrgID:      "org-mcp-gov",
 		Name:       "hub-post-pii",
 		Provider:   "post-redactor",
 		DefaultOn:  true,
@@ -776,7 +776,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 		"department": "sales",
 		"roles":      []string{"viewer"},
 	})
-	deniedID := &domain.IdentityContext{OrgID: "org-mcp-p3b", TeamID: "team-sec", UserID: "bob-viewer"}
+	deniedID := &domain.IdentityContext{OrgID: "org-mcp-gov", TeamID: "team-sec", UserID: "bob-viewer"}
 	_, err = hub.CallTool(deniedCtx, deniedID, mcp.ToolCallInput{
 		ServerSlug: "tickets-mcp",
 		ToolName:   "update_ticket",
@@ -794,7 +794,7 @@ func TestPhase3B_CodeExecutionMCPSecurityEndUserRBACAndJWTSigner(t *testing.T) {
 		"department": "security",
 		"roles":      []string{"mcp_operator"},
 	})
-	allowedID := &domain.IdentityContext{OrgID: "org-mcp-p3b", TeamID: "team-sec", UserID: "alice-end-user"}
+	allowedID := &domain.IdentityContext{OrgID: "org-mcp-gov", TeamID: "team-sec", UserID: "alice-end-user"}
 	_, err = hub.CallTool(allowedCtx, allowedID, mcp.ToolCallInput{
 		ServerSlug: "tickets-mcp",
 		ToolName:   "bash",

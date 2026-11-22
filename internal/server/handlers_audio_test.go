@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPhase3_AudioEndpoints(t *testing.T) {
+func TestHandlers_AudioEndpoints(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()

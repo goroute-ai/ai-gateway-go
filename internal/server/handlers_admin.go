@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -811,15 +812,13 @@ func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Requ
 
 func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		OrgID               string              `json:"org_id"`
-		Provider            domain.ProviderType `json:"provider"`
-		Name                string              `json:"name"`
-		BaseURL             string              `json:"base_url"`
-		AzureDeploymentName string              `json:"azure_deployment_name,omitempty"`
-		APIVersion          string              `json:"api_version,omitempty"`
-		APIKey              string              `json:"api_key"`
-		Headers             map[string]string   `json:"headers,omitempty"`
-		ExpiresAt           *time.Time          `json:"expires_at,omitempty"`
+		OrgID     string              `json:"org_id"`
+		Provider  domain.ProviderType `json:"provider"`
+		Name      string              `json:"name"`
+		BaseURL   string              `json:"base_url"`
+		APIKey    string              `json:"api_key"`
+		Headers   map[string]string   `json:"headers,omitempty"`
+		ExpiresAt *time.Time          `json:"expires_at,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -845,15 +844,13 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		return
 	}
 	cred := &domain.ProviderCredential{
-		OrgID:               req.OrgID,
-		Provider:            req.Provider,
-		Name:                req.Name,
-		BaseURL:             cleanBaseURL,
-		AzureDeploymentName: req.AzureDeploymentName,
-		APIVersion:          req.APIVersion,
-		Headers:             req.Headers,
-		IsActive:            true,
-		ExpiresAt:           req.ExpiresAt,
+		OrgID:     req.OrgID,
+		Provider:  req.Provider,
+		Name:      req.Name,
+		BaseURL:   cleanBaseURL,
+		Headers:   req.Headers,
+		IsActive:  true,
+		ExpiresAt: req.ExpiresAt,
 	}
 	if err := s.vault.EncryptCredential(cred, req.APIKey); err != nil {
 		domain.WriteHTTPError(w, err)
@@ -1032,13 +1029,11 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 
 func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		OrgID               string              `json:"org_id,omitempty"`
-		Provider            domain.ProviderType `json:"provider"`
-		APIKey              string              `json:"api_key"`
-		BaseURL             string              `json:"base_url,omitempty"`
-		AzureDeploymentName string              `json:"azure_deployment_name,omitempty"`
-		APIVersion          string              `json:"api_version,omitempty"`
-		Headers             map[string]string   `json:"headers,omitempty"`
+		OrgID    string              `json:"org_id,omitempty"`
+		Provider domain.ProviderType `json:"provider"`
+		APIKey   string              `json:"api_key"`
+		BaseURL  string              `json:"base_url,omitempty"`
+		Headers  map[string]string   `json:"headers,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
@@ -1066,7 +1061,7 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "provider is required"})
 		return
 	}
-	if req.APIKey == "" && req.Provider != domain.ProviderOllama {
+	if req.APIKey == "" {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "api_key is required"})
 		return
 	}
@@ -1078,12 +1073,10 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 	}
 
 	credCopy := domain.ProviderCredential{
-		Provider:            req.Provider,
-		DecryptedAPIKey:     req.APIKey,
-		BaseURL:             cleanBaseURL,
-		AzureDeploymentName: req.AzureDeploymentName,
-		APIVersion:          req.APIVersion,
-		Headers:             req.Headers,
+		Provider:        req.Provider,
+		DecryptedAPIKey: req.APIKey,
+		BaseURL:         cleanBaseURL,
+		Headers:         req.Headers,
 	}
 
 	start := time.Now()
@@ -2034,7 +2027,14 @@ func (s *GatewayServer) handleAdminGetConfig(w http.ResponseWriter, r *http.Requ
 	if _, ok := s.authorizeAdmin(w, r, "", false); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, sanitizeRuntimeConfig(s.cfg))
+	out := sanitizeRuntimeConfig(s.cfg)
+	if mcpMap, ok := out["mcp"].(map[string]any); ok && s.mcpHub != nil {
+		rs := s.mcpHub.RuntimeSettings()
+		mcpMap["active_protocol_version"] = rs.ActiveProtocolVersion
+		mcpMap["strict_schema_validation"] = rs.StrictSchemaValidation
+		mcpMap["supported_versions"] = spec.SupportedVersions()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func redactSecret(val string) string {
@@ -2087,23 +2087,6 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 		})
 	}
 
-	customProviders := make([]map[string]any, 0, len(cfg.Providers.CustomOpenAICompatible))
-	for _, cp := range cfg.Providers.CustomOpenAICompatible {
-		customProviders = append(customProviders, map[string]any{
-			"id":                          cp.ID,
-			"display_name":                cp.DisplayName,
-			"base_url":                    redactURLPassword(cp.BaseURL),
-			"supports_streaming":          cp.SupportsStreaming,
-			"supports_tools":              cp.SupportsTools,
-			"supports_structured_outputs": cp.SupportsStructuredOutputs,
-			"supports_list_models":        cp.SupportsListModels,
-			"supported_operations":        cp.SupportedOperations,
-			"param_mappings":              cp.ParamMappings,
-			"reasoning_mapping":           cp.ReasoningMapping,
-			"default_headers":             redactHeaders(cp.DefaultHeaders),
-		})
-	}
-
 	modelList := make([]map[string]any, 0, len(cfg.ModelList))
 	for _, m := range cfg.ModelList {
 		modelList = append(modelList, map[string]any{
@@ -2128,8 +2111,6 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"tags":                  m.ModelParams.Tags,
 				"max_budget_micros":     m.ModelParams.MaxBudgetMicros,
 				"budget_reset_period":   m.ModelParams.BudgetResetPeriod,
-				"azure_deployment_name": m.ModelParams.AzureDeploymentName,
-				"api_version":           m.ModelParams.APIVersion,
 				"headers":               redactHeaders(m.ModelParams.Headers),
 			},
 		})
@@ -2231,16 +2212,12 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"key_rotation_delivery_url":           redactURLPassword(cfg.Auth.KeyRotationDeliveryURL),
 			"key_rotation_delivery_token":         redactSecret(cfg.Auth.KeyRotationDeliveryToken),
 			"key_rotation_sink": map[string]any{
-				"driver":                cfg.Auth.KeyRotationSink.Driver,
-				"address":               redactURLPassword(cfg.Auth.KeyRotationSink.Address),
-				"mount":                 cfg.Auth.KeyRotationSink.Mount,
-				"path_prefix":           cfg.Auth.KeyRotationSink.PathPrefix,
-				"namespace":             cfg.Auth.KeyRotationSink.Namespace,
-				"region":                cfg.Auth.KeyRotationSink.Region,
-				"token":                 redactSecret(cfg.Auth.KeyRotationSink.Token),
-				"aws_access_key_id":     redactSecret(cfg.Auth.KeyRotationSink.AWSAccessKeyID),
-				"aws_secret_access_key": redactSecret(cfg.Auth.KeyRotationSink.AWSSecretAccessKey),
-				"aws_session_token":     redactSecret(cfg.Auth.KeyRotationSink.AWSSessionToken),
+				"driver":      cfg.Auth.KeyRotationSink.Driver,
+				"address":     redactURLPassword(cfg.Auth.KeyRotationSink.Address),
+				"mount":       cfg.Auth.KeyRotationSink.Mount,
+				"path_prefix": cfg.Auth.KeyRotationSink.PathPrefix,
+				"namespace":   cfg.Auth.KeyRotationSink.Namespace,
+				"token":       redactSecret(cfg.Auth.KeyRotationSink.Token),
 			},
 			"key_rotation_poll_interval":     cfg.Auth.KeyRotationPollInterval.String(),
 			"key_rotation_grace_period":      cfg.Auth.KeyRotationGracePeriod.String(),
@@ -2353,6 +2330,8 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 		},
 		"mcp": map[string]any{
 			"enabled":                     cfg.MCP.Enabled,
+			"default_protocol_version":    cfg.MCP.DefaultProtocolVersion,
+			"strict_schema_validation":    cfg.MCP.StrictSchemaValidation,
 			"allow_stdio_servers":         cfg.MCP.AllowStdioServers,
 			"allowed_stdio_binaries":      cfg.MCP.AllowedStdioBinaries,
 			"enable_session_compat_2025":  cfg.MCP.EnableSessionCompat2025,
@@ -2377,12 +2356,11 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"trusted_card_jwks":            cfg.A2A.TrustedCardJWKS,
 		},
 		"providers": map[string]any{
-			"request_timeout":          cfg.Providers.RequestTimeout.String(),
-			"response_header_timeout":  cfg.Providers.ResponseHeaderTimeout.String(),
-			"stream_idle_timeout":      cfg.Providers.StreamIdleTimeout.String(),
-			"max_idle_conns":           cfg.Providers.MaxIdleConns,
-			"max_idle_conns_per_host":  cfg.Providers.MaxIdleConnsPerHost,
-			"custom_openai_compatible": customProviders,
+			"request_timeout":         cfg.Providers.RequestTimeout.String(),
+			"response_header_timeout": cfg.Providers.ResponseHeaderTimeout.String(),
+			"stream_idle_timeout":     cfg.Providers.StreamIdleTimeout.String(),
+			"max_idle_conns":          cfg.Providers.MaxIdleConns,
+			"max_idle_conns_per_host": cfg.Providers.MaxIdleConnsPerHost,
 		},
 		"model_list": modelList,
 	}

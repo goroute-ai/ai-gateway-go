@@ -27,7 +27,7 @@ type familyRule struct {
 
 var familyRules = []familyRule{
 	{
-		pattern: regexp.MustCompile(`(?i)^(?:us\.|eu\.|apac\.|global\.)?(?:anthropic\.)?claude-(?:opus-4-[67]|sonnet-4-[67]|4-[67]|5)`),
+		pattern: regexp.MustCompile(`(?i)^claude-(?:opus-4-[6-9]|sonnet-4-[6-9]|4-[6-9]|(?:haiku|sonnet|opus|fable)-5)`),
 		in:      200000,
 		out:     32000,
 		caps: domain.ModelCapabilities{
@@ -39,7 +39,7 @@ var familyRules = []familyRule{
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)^(?:us\.|eu\.|apac\.|global\.)?(?:anthropic\.)?claude-(?:3-[57]|4|sonnet-4|opus-4|haiku-4)`),
+		pattern: regexp.MustCompile(`(?i)^claude-(?:3-[57]|4|sonnet-4|opus-4|haiku-4)`),
 		in:      200000,
 		out:     8192,
 		caps: domain.ModelCapabilities{
@@ -49,7 +49,7 @@ var familyRules = []familyRule{
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)^(?:o[134](?:-mini|-pro|-preview)?|gpt-5)`),
+		pattern: regexp.MustCompile(`(?i)^(?:o[134](?:-mini|-pro|-preview)?|gpt-[56])`),
 		in:      200000,
 		out:     32768,
 		caps: domain.ModelCapabilities{
@@ -72,41 +72,28 @@ var familyRules = []familyRule{
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)^gemini-(?:2\.5|3)`),
-		in:      1048576,
-		out:     65536,
+		pattern: regexp.MustCompile(`(?i)^(?:openai/gpt-oss-|qwen/)`),
+		in:      131072,
+		out:     16384,
 		caps: domain.ModelCapabilities{
-			Tools:             domain.CapabilitySupported,
-			Streaming:         domain.CapabilitySupported,
-			Vision:            domain.CapabilitySupported,
-			Reasoning:         domain.CapabilitySupported,
-			StructuredOutputs: domain.CapabilitySupported,
-		},
-	},
-	{
-		pattern: regexp.MustCompile(`(?i)^gemini-`),
-		in:      1048576,
-		out:     8192,
-		caps: domain.ModelCapabilities{
-			Tools:             domain.CapabilitySupported,
-			Streaming:         domain.CapabilitySupported,
-			Vision:            domain.CapabilitySupported,
-			StructuredOutputs: domain.CapabilitySupported,
-		},
-	},
-	{
-		pattern: regexp.MustCompile(`(?i)deepseek-(?:r1|reasoner)`),
-		in:      64000,
-		out:     8192,
-		caps: domain.ModelCapabilities{
+			Tools:     domain.CapabilitySupported,
 			Streaming: domain.CapabilitySupported,
 			Reasoning: domain.CapabilitySupported,
 		},
 	},
+	{
+		pattern: regexp.MustCompile(`(?i)^llama-3\.[13]`),
+		in:      131072,
+		out:     8192,
+		caps: domain.ModelCapabilities{
+			Tools:     domain.CapabilitySupported,
+			Streaming: domain.CapabilitySupported,
+		},
+	},
 }
 
-// StripRegionalModelPrefix removes cloud-provider region prefixes (e.g. "us.", "eu.", "apac.", "global.")
-// and trailing Bedrock version suffixes (e.g. ":0") for catalog lookup matching.
+// StripRegionalModelPrefix trims surrounding whitespace and optional regional prefixes
+// for catalog lookup matching.
 func StripRegionalModelPrefix(modelName string) string {
 	clean := strings.TrimSpace(modelName)
 	for _, pfx := range []string{"us.", "eu.", "apac.", "global."} {
@@ -114,9 +101,6 @@ func StripRegionalModelPrefix(modelName string) string {
 			clean = clean[len(pfx):]
 			break
 		}
-	}
-	if strings.HasSuffix(clean, ":0") && strings.Contains(clean, ".") {
-		clean = strings.TrimSuffix(clean, ":0")
 	}
 	return clean
 }

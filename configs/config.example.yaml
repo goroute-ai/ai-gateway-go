@@ -5,7 +5,7 @@
 #   /app/ai-gateway -config /etc/goroute/config.yaml
 #
 # Environment variables override YAML values. Use os.environ/VAR syntax for
-# secret substitution (e.g. os.environ/GEMINI_API_KEY).
+# secret substitution (e.g. os.environ/OPENAI_API_KEY).
 # ==============================================================================
 
 server:
@@ -64,7 +64,7 @@ auth:
   # Secure delivery or an in-process KeySecretSink is required to activate scheduled replacement keys.
   # key_rotation_delivery_url: "https://secrets.example.com/goroute/key-rotation"
   # key_rotation_delivery_token: "os.environ/GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"
-  # Declarative secret-manager sink ("webhook" | "vault_kv2" | "aws_secrets_manager"):
+  # Declarative secret-manager sink ("webhook" | "vault_kv2"):
   # key_rotation_sink:
   #   driver: "vault_kv2"
   #   address: "https://vault.example.com:8200"
@@ -72,8 +72,6 @@ auth:
   #   path_prefix: "goroute/virtual-keys"
   #   namespace: ""
   #   token: "os.environ/VAULT_TOKEN"
-  #   # For aws_secrets_manager: region + optional aws_access_key_id/aws_secret_access_key (or allow_ambient_cloud_iam: true)
-  #   region: "us-east-1"
   key_rotation_poll_interval: 1m
   key_rotation_grace_period: 24h
   key_expiry_alert_poll_interval: 15m
@@ -367,25 +365,12 @@ a2a:
 # Certified Custom OpenAI-Compatible Upstream Providers
 # ------------------------------------------------------------------------------
 providers:
+providers:
   request_timeout: 2m          # Total deadline for non-streaming upstream requests
   response_header_timeout: 2m  # Maximum wait for upstream response headers / TTFT
   stream_idle_timeout: 2m      # Maximum gap between upstream stream chunks
   max_idle_conns: 256          # Retained idle provider connections across all hosts
   max_idle_conns_per_host: 16  # Retained idle connections per provider host
-  custom_openai_compatible:
-    - id: "custom-vllm"
-      display_name: "Self-Hosted vLLM In-House Cluster"
-      base_url: "http://vllm.internal.corp:8000/v1"
-      supports_streaming: "true"
-      supports_tools: "true"
-      supports_structured_outputs: "true"
-      supports_list_models: true
-      # supported_operations: ["chat", "embeddings"]
-      # param_mappings:
-      #   max_completion_tokens: "max_tokens"
-      # reasoning_mapping: "passthrough"
-      default_headers:
-        X-Internal-Gateway: "goroute"
 
 # ------------------------------------------------------------------------------
 # Declarative Model List & Fallback Topologies
@@ -407,8 +392,8 @@ model_list:
     # drop_unsupported_params: false
     # disable_cooldowns: false
     model_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
       weight: 100
       rpm: 1000
       tpm: 1000000
@@ -441,26 +426,11 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
       weight: 100
 
-  - model_name: enterprise-azure
-    model_params:
-      model: azure/gpt-4o
-      api_key: os.environ/AZURE_OPENAI_API_KEY
-      api_base: "https://my-enterprise-resource.openai.azure.com"
-      azure_deployment_name: "gpt-4o-prod"
-      api_version: "2024-08-01-preview"
-      headers:
-        X-Custom-Enterprise-Tag: "production-finance"
-
-  # Example OpenAI-compatible extended cloud provider
   - model_name: openrouter-sonnet
     model_params:
       model: openrouter/anthropic/claude-sonnet-4-5
       api_key: os.environ/OPENROUTER_API_KEY
-      weight: 100
-
-  # Example local runtime (ensure security.network permits your local host/port)
-  - model_name: local-lm-studio
-    model_params:
-      model: lm_studio/qwen2.5-coder-32b-instruct
-      api_base: "http://127.0.0.1:1234/v1"
+      headers:
+        HTTP-Referer: "https://goroute.example.com"
+        X-Title: "GoRoute AI Gateway"
       weight: 100

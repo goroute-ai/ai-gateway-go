@@ -446,6 +446,32 @@ async function run() {
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.getByText(/Database DEKs rotated atomically/i).waitFor({ state: 'visible' });
 
+    // Check 5c: Agentic Hub -> MCP Multi-Release Specification Selector & Server Spec Auto-Transport
+    await page.locator('aside button', { hasText: /MCP|Agentic/i }).click();
+    await page.getByText('Gateway MCP Specification').waitFor({ state: 'visible' });
+    for (const ver of ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25', '2026-07-28']) {
+      await page.getByRole('button', { name: new RegExp(ver) }).waitFor({ state: 'visible' });
+    }
+    await page.getByRole('button', { name: /2025-03-26/ }).click();
+    await page.getByRole('button', { name: 'Apply Spec' }).click();
+    await page.getByText('Active: 2025-03-26').waitFor({ state: 'visible' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('aside button', { hasText: /MCP|Agentic/i }).click();
+    await page.getByText('Active: 2025-03-26').waitFor({ state: 'visible' });
+
+    await page.getByRole('button', { name: /2026-07-28/ }).click();
+    await page.getByRole('button', { name: 'Apply Spec' }).click();
+    await page.getByText('Active: 2026-07-28').waitFor({ state: 'visible' });
+
+    await page.getByRole('button', { name: /Register MCP Server/i }).click();
+    const regSrvModal = modalByTitle(page, /Register Upstream MCP Server/i);
+    await regSrvModal.waitFor({ state: 'visible' });
+    await fieldControl(regSrvModal, 'Protocol Version').selectOption('2024-11-05');
+    assert.equal(await fieldControl(regSrvModal, 'Transport').inputValue(), 'http_sse_2024');
+    await fieldControl(regSrvModal, 'Protocol Version').selectOption('2026-07-28');
+    assert.equal(await fieldControl(regSrvModal, 'Transport').inputValue(), 'streamable_http');
+    await regSrvModal.getByRole('button', { name: 'Cancel' }).click();
+
     // Check 6: Sign Out & Session Revocation
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });

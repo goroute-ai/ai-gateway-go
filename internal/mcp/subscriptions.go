@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -167,4 +168,122 @@ func (sm *SubscriptionManager) ServeSSEStream(w http.ResponseWriter, r *http.Req
 			flusher.Flush()
 		}
 	}
+}
+
+// Serve2026SubscriptionStream handles MCP 2026-07-28 `subscriptions/listen` over POST SSE,
+// emitting `notifications/subscriptions/acknowledged` with `io.modelcontextprotocol/subscriptionId` first.
+func (sm *SubscriptionManager) Serve2026SubscriptionStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	rpcReq *JSONRPCRequest,
+) {
+	if idCtx == nil || idCtx.OrgID == "" {
+		http.Error(w, "Unauthorized: organization context required", http.StatusUnauthorized)
+		return
+	}
+	if rpcReq == nil {
+		http.Error(w, "Invalid subscriptions/listen request", http.StatusBadRequest)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	var params struct {
+		Notifications map[string]any `json:"notifications"`
+	}
+	if len(rpcReq.Params) > 0 {
+		_ = json.Unmarshal(rpcReq.Params, &params)
+	}
+	if params.Notifications == nil {
+		params.Notifications = map[string]any{}
+	}
+
+	subID := rpcReq.ID
+	if subID == nil {
+		subID = uuid.NewString()
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	// MCP 2026-07-28 requires `notifications/subscriptions/acknowledged` as the first event.
+	ackNotif := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/subscriptions/acknowledged",
+		"params": map[string]any{
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/subscriptionId": subID,
+			},
+			"notifications": params.Notifications,
+		},
+	}
+	ackBytes, _ := json.Marshal(ackNotif)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", string(ackBytes))
+	flusher.Flush()
+
+	orgID := idCtx.OrgID
+	clientID, msgCh := sm.Subscribe(orgID)
+	defer sm.Unsubscribe(orgID, clientID)
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg, ok := <-msgCh:
+			if !ok {
+				endResp, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      subID,
+					"result": map[string]any{
+						"resultType": "complete",
+						"_meta": map[string]any{
+							"io.modelcontextprotocol/subscriptionId": subID,
+						},
+					},
+				})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(endResp))
+				flusher.Flush()
+				return
+			}
+			stamped := stampSubscriptionNotification(msg, subID)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(stamped))
+			flusher.Flush()
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func stampSubscriptionNotification(raw []byte, subID any) []byte {
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return raw
+	}
+	params, ok := msg["params"].(map[string]any)
+	if !ok || params == nil {
+		params = make(map[string]any)
+		msg["params"] = params
+	}
+	meta, ok := params["_meta"].(map[string]any)
+	if !ok || meta == nil {
+		meta = make(map[string]any)
+		params["_meta"] = meta
+	}
+	meta["io.modelcontextprotocol/subscriptionId"] = subID
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return raw
+	}
+	return out
 }

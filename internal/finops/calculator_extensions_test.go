@@ -33,13 +33,9 @@ func TestCalculateCostMicros_CacheCreationTokens(t *testing.T) {
 
 func TestModalityBudgetUpperBounds_FailClosedOnUnknown(t *testing.T) {
 	unverified := &domain.GlobalModel{
-		PricingStatus:                 domain.PricingStatusUnknown,
-		RerankCostMicrosPerSearchUnit: 2000,
-		ImageCostMicrosBase:           40000,
-		AudioTTSCostMicrosPer1KChars:  15000,
-	}
-	if _, ok := EstimateRerankCostUpperBound(unverified, 1); ok {
-		t.Errorf("expected EstimateRerankCostUpperBound to fail closed on PricingStatusUnknown")
+		PricingStatus:                domain.PricingStatusUnknown,
+		ImageCostMicrosBase:          40000,
+		AudioTTSCostMicrosPer1KChars: 15000,
 	}
 	if _, ok := EstimateImageCostUpperBound(unverified, "standard", "1024x1024", 1); ok {
 		t.Errorf("expected EstimateImageCostUpperBound to fail closed on PricingStatusUnknown")
@@ -49,14 +45,10 @@ func TestModalityBudgetUpperBounds_FailClosedOnUnknown(t *testing.T) {
 	}
 
 	verified := &domain.GlobalModel{
-		PricingStatus:                 domain.PricingStatusVerified,
-		RerankCostMicrosPerSearchUnit: 2000,
-		ImageCostMicrosBase:           40000,
-		ImageCostMicrosHD:             80000,
-		AudioTTSCostMicrosPer1KChars:  15000,
-	}
-	if cost, ok := EstimateRerankCostUpperBound(verified, 2); !ok || cost != 4000 {
-		t.Errorf("EstimateRerankCostUpperBound = (%d, %v), want (4000, true)", cost, ok)
+		PricingStatus:                domain.PricingStatusVerified,
+		ImageCostMicrosBase:          40000,
+		ImageCostMicrosHD:            80000,
+		AudioTTSCostMicrosPer1KChars: 15000,
 	}
 	if cost, ok := EstimateImageCostUpperBound(verified, "hd", "1024x1024", 2); !ok || cost != 160000 {
 		t.Errorf("EstimateImageCostUpperBound = (%d, %v), want (160000, true)", cost, ok)
@@ -98,17 +90,13 @@ func TestImageBudgetUpperBoundRequiresExactVariantWhenVariantsExist(t *testing.T
 
 func TestSettlementCalculatorsSaturateOnOverflow(t *testing.T) {
 	gm := &domain.GlobalModel{
-		InputCostMicrosPer1M:          maxInt64,
-		OutputCostMicrosPer1M:         maxInt64,
-		RerankCostMicrosPerSearchUnit: maxInt64,
-		AudioSTTCostMicrosPerSecond:   maxInt64,
-		AudioTTSCostMicrosPer1KChars:  maxInt64,
+		InputCostMicrosPer1M:         maxInt64,
+		OutputCostMicrosPer1M:        maxInt64,
+		AudioSTTCostMicrosPerSecond:  maxInt64,
+		AudioTTSCostMicrosPer1KChars: maxInt64,
 	}
 	if got := CalculateCostMicros(gm, domain.TokenUsage{PromptTokens: 2}); got != maxInt64 {
 		t.Fatalf("token cost = %d, want saturated MaxInt64", got)
-	}
-	if got := CalculateRerankCostMicros(gm, 2); got != maxInt64 {
-		t.Fatalf("rerank cost = %d, want saturated MaxInt64", got)
 	}
 	if got := CalculateAudioSTTCostMicros(gm, maxInt64); got != maxInt64 {
 		t.Fatalf("STT cost = %d, want saturated MaxInt64", got)

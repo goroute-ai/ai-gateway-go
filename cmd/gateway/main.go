@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -24,7 +25,7 @@ import (
 )
 
 var (
-	version = "v1.23.0"
+	version = "v1.24.0"
 	commit  = "dev"
 	date    = "2026-11-19T00:00:00Z"
 )
@@ -85,7 +86,12 @@ func main() {
 		}
 		defer pool.Close()
 		if err := storage.RunMigrationsDir(ctx, pool, "migrations"); err != nil {
-			logger.Warn("Database migration notice", slog.String("error", err.Error()))
+			if errors.Is(err, os.ErrNotExist) {
+				logger.Warn("Database migration notice", slog.String("error", err.Error()))
+			} else {
+				logger.Error("Failed to run PostgreSQL migrations", slog.String("error", err.Error()))
+				os.Exit(1)
+			}
 		}
 		pgRepo, err := storage.NewPostgresRepository(ctx, pool)
 		if err != nil {

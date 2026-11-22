@@ -141,22 +141,6 @@ func maxInt64SafeUsage(value int) int64 {
 	return int64(value)
 }
 
-// CalculateRerankCostMicros calculates rerank cost using explicit per-search-unit integer rate.
-func CalculateRerankCostMicros(gm *domain.GlobalModel, searchUnits int) int64 {
-	if gm == nil || searchUnits <= 0 {
-		return 0
-	}
-	rate := gm.RerankCostMicrosPerSearchUnit
-	if rate <= 0 {
-		return 0
-	}
-	amount := int64(searchUnits)
-	if amount > maxInt64/rate {
-		return maxInt64
-	}
-	return amount * rate
-}
-
 // CalculateImageCostMicros calculates image cost strictly according to model, resolution, and quality.
 func CalculateImageCostMicros(gm *domain.GlobalModel, quality string, size string, count int) int64 {
 	if gm == nil || count <= 0 {
@@ -242,22 +226,6 @@ func CalculateAudioTTSCostMicros(gm *domain.GlobalModel, charCount int) int64 {
 		return maxInt64
 	}
 	return ceilDivPositive(amount*ratePer1K, 1000)
-}
-
-// EstimateRerankCostUpperBound computes a deterministic pre-dispatch budget bound for rerank requests.
-// Returns false when pricing is unverified or the rerank rate is non-positive.
-func EstimateRerankCostUpperBound(gm *domain.GlobalModel, searchUnits int) (int64, bool) {
-	status := domain.ResolvePricingStatus(gm)
-	if gm == nil || status == domain.PricingStatusUnknown || status == domain.PricingStatusUnrecorded {
-		return 0, false
-	}
-	if searchUnits <= 0 || gm.RerankCostMicrosPerSearchUnit <= 0 {
-		return 0, false
-	}
-	if int64(searchUnits) > (int64(^uint64(0)>>1))/gm.RerankCostMicrosPerSearchUnit {
-		return 0, false
-	}
-	return int64(searchUnits) * gm.RerankCostMicrosPerSearchUnit, true
 }
 
 // EstimateImageCostUpperBound computes a deterministic pre-dispatch budget bound for image generation.

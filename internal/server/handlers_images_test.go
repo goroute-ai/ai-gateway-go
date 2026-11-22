@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPhase4_ImageEndpoints(t *testing.T) {
+func TestHandlers_ImageEndpoints(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	cfg := config.Default()

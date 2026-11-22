@@ -5,7 +5,7 @@
 //     token length heuristics, code fence detection, reasoning keywords, and constraint counting.
 //   - Logical Model Aliases: Resolves high-level aliases such as "fast", "reasoning", "coding",
 //     or "auto" into physical model groups.
-//   - Provider Wildcards: Resolves explicit names (e.g. "gemini-2.5-flash") or wildcard identifiers
+//   - Provider Wildcards: Resolves explicit names (e.g. "gpt-4o-mini") or wildcard identifiers
 //     (e.g. "anthropic/*") across registered provider credentials.
 //
 // Stage 2 (Load Balancer & Reliability Manager):

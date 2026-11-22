@@ -305,21 +305,105 @@ func (e AdminEndUserUpsertRequestBudgetResetPeriod) Valid() bool {
 	}
 }
 
+// Defines values for AdminMCPServerCreateRequestProtocolVersion.
+const (
+	AdminMCPServerCreateRequestProtocolVersionN20241105 AdminMCPServerCreateRequestProtocolVersion = "2024-11-05"
+	AdminMCPServerCreateRequestProtocolVersionN20250326 AdminMCPServerCreateRequestProtocolVersion = "2025-03-26"
+	AdminMCPServerCreateRequestProtocolVersionN20250618 AdminMCPServerCreateRequestProtocolVersion = "2025-06-18"
+	AdminMCPServerCreateRequestProtocolVersionN20251125 AdminMCPServerCreateRequestProtocolVersion = "2025-11-25"
+	AdminMCPServerCreateRequestProtocolVersionN20260728 AdminMCPServerCreateRequestProtocolVersion = "2026-07-28"
+)
+
+// Valid indicates whether the value is a known member of the AdminMCPServerCreateRequestProtocolVersion enum.
+func (e AdminMCPServerCreateRequestProtocolVersion) Valid() bool {
+	switch e {
+	case AdminMCPServerCreateRequestProtocolVersionN20241105:
+		return true
+	case AdminMCPServerCreateRequestProtocolVersionN20250326:
+		return true
+	case AdminMCPServerCreateRequestProtocolVersionN20250618:
+		return true
+	case AdminMCPServerCreateRequestProtocolVersionN20251125:
+		return true
+	case AdminMCPServerCreateRequestProtocolVersionN20260728:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminMCPServerCreateRequestTransport.
 const (
-	Sse            AdminMCPServerCreateRequestTransport = "sse"
-	Stdio          AdminMCPServerCreateRequestTransport = "stdio"
-	StreamableHttp AdminMCPServerCreateRequestTransport = "streamable_http"
+	AdminMCPServerCreateRequestTransportHttpSse2024    AdminMCPServerCreateRequestTransport = "http_sse_2024"
+	AdminMCPServerCreateRequestTransportOpenapi        AdminMCPServerCreateRequestTransport = "openapi"
+	AdminMCPServerCreateRequestTransportSse            AdminMCPServerCreateRequestTransport = "sse"
+	AdminMCPServerCreateRequestTransportStdio          AdminMCPServerCreateRequestTransport = "stdio"
+	AdminMCPServerCreateRequestTransportStreamableHttp AdminMCPServerCreateRequestTransport = "streamable_http"
 )
 
 // Valid indicates whether the value is a known member of the AdminMCPServerCreateRequestTransport enum.
 func (e AdminMCPServerCreateRequestTransport) Valid() bool {
 	switch e {
-	case Sse:
+	case AdminMCPServerCreateRequestTransportHttpSse2024:
 		return true
-	case Stdio:
+	case AdminMCPServerCreateRequestTransportOpenapi:
 		return true
-	case StreamableHttp:
+	case AdminMCPServerCreateRequestTransportSse:
+		return true
+	case AdminMCPServerCreateRequestTransportStdio:
+		return true
+	case AdminMCPServerCreateRequestTransportStreamableHttp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminMCPServerCreateRequestTransportType.
+const (
+	AdminMCPServerCreateRequestTransportTypeHttpSse2024    AdminMCPServerCreateRequestTransportType = "http_sse_2024"
+	AdminMCPServerCreateRequestTransportTypeOpenapi        AdminMCPServerCreateRequestTransportType = "openapi"
+	AdminMCPServerCreateRequestTransportTypeStdio          AdminMCPServerCreateRequestTransportType = "stdio"
+	AdminMCPServerCreateRequestTransportTypeStreamableHttp AdminMCPServerCreateRequestTransportType = "streamable_http"
+)
+
+// Valid indicates whether the value is a known member of the AdminMCPServerCreateRequestTransportType enum.
+func (e AdminMCPServerCreateRequestTransportType) Valid() bool {
+	switch e {
+	case AdminMCPServerCreateRequestTransportTypeHttpSse2024:
+		return true
+	case AdminMCPServerCreateRequestTransportTypeOpenapi:
+		return true
+	case AdminMCPServerCreateRequestTransportTypeStdio:
+		return true
+	case AdminMCPServerCreateRequestTransportTypeStreamableHttp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminMCPSpecUpdateRequestProtocolVersion.
+const (
+	AdminMCPSpecUpdateRequestProtocolVersionN20241105 AdminMCPSpecUpdateRequestProtocolVersion = "2024-11-05"
+	AdminMCPSpecUpdateRequestProtocolVersionN20250326 AdminMCPSpecUpdateRequestProtocolVersion = "2025-03-26"
+	AdminMCPSpecUpdateRequestProtocolVersionN20250618 AdminMCPSpecUpdateRequestProtocolVersion = "2025-06-18"
+	AdminMCPSpecUpdateRequestProtocolVersionN20251125 AdminMCPSpecUpdateRequestProtocolVersion = "2025-11-25"
+	AdminMCPSpecUpdateRequestProtocolVersionN20260728 AdminMCPSpecUpdateRequestProtocolVersion = "2026-07-28"
+)
+
+// Valid indicates whether the value is a known member of the AdminMCPSpecUpdateRequestProtocolVersion enum.
+func (e AdminMCPSpecUpdateRequestProtocolVersion) Valid() bool {
+	switch e {
+	case AdminMCPSpecUpdateRequestProtocolVersionN20241105:
+		return true
+	case AdminMCPSpecUpdateRequestProtocolVersionN20250326:
+		return true
+	case AdminMCPSpecUpdateRequestProtocolVersionN20250618:
+		return true
+	case AdminMCPSpecUpdateRequestProtocolVersionN20251125:
+		return true
+	case AdminMCPSpecUpdateRequestProtocolVersionN20260728:
 		return true
 	default:
 		return false
@@ -815,6 +899,54 @@ func (e AdminVirtualKeyRole) Valid() bool {
 	}
 }
 
+// Defines values for AnthropicMessagesResponseContentType.
+const (
+	AnthropicMessagesResponseContentTypeText    AnthropicMessagesResponseContentType = "text"
+	AnthropicMessagesResponseContentTypeToolUse AnthropicMessagesResponseContentType = "tool_use"
+)
+
+// Valid indicates whether the value is a known member of the AnthropicMessagesResponseContentType enum.
+func (e AnthropicMessagesResponseContentType) Valid() bool {
+	switch e {
+	case AnthropicMessagesResponseContentTypeText:
+		return true
+	case AnthropicMessagesResponseContentTypeToolUse:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AnthropicMessagesResponseRole.
+const (
+	AnthropicMessagesResponseRoleAssistant AnthropicMessagesResponseRole = "assistant"
+)
+
+// Valid indicates whether the value is a known member of the AnthropicMessagesResponseRole enum.
+func (e AnthropicMessagesResponseRole) Valid() bool {
+	switch e {
+	case AnthropicMessagesResponseRoleAssistant:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AnthropicMessagesResponseType.
+const (
+	AnthropicMessagesResponseTypeMessage AnthropicMessagesResponseType = "message"
+)
+
+// Valid indicates whether the value is a known member of the AnthropicMessagesResponseType enum.
+func (e AnthropicMessagesResponseType) Valid() bool {
+	switch e {
+	case AnthropicMessagesResponseTypeMessage:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AudioSpeechRequestResponseFormat.
 const (
 	Aac  AudioSpeechRequestResponseFormat = "aac"
@@ -836,6 +968,21 @@ func (e AudioSpeechRequestResponseFormat) Valid() bool {
 	case Opus:
 		return true
 	case Wav:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BatchListResponseObject.
+const (
+	BatchListResponseObjectList BatchListResponseObject = "list"
+)
+
+// Valid indicates whether the value is a known member of the BatchListResponseObject enum.
+func (e BatchListResponseObject) Valid() bool {
+	switch e {
+	case BatchListResponseObjectList:
 		return true
 	default:
 		return false
@@ -1000,13 +1147,43 @@ func (e EmbeddingRequestEncodingFormat) Valid() bool {
 
 // Defines values for EmbeddingResponseObject.
 const (
-	List EmbeddingResponseObject = "list"
+	EmbeddingResponseObjectList EmbeddingResponseObject = "list"
 )
 
 // Valid indicates whether the value is a known member of the EmbeddingResponseObject enum.
 func (e EmbeddingResponseObject) Valid() bool {
 	switch e {
-	case List:
+	case EmbeddingResponseObjectList:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileDeleteResponseObject.
+const (
+	File FileDeleteResponseObject = "file"
+)
+
+// Valid indicates whether the value is a known member of the FileDeleteResponseObject enum.
+func (e FileDeleteResponseObject) Valid() bool {
+	switch e {
+	case File:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileListResponseObject.
+const (
+	FileListResponseObjectList FileListResponseObject = "list"
+)
+
+// Valid indicates whether the value is a known member of the FileListResponseObject enum.
+func (e FileListResponseObject) Valid() bool {
+	switch e {
+	case FileListResponseObjectList:
 		return true
 	default:
 		return false
@@ -1300,16 +1477,28 @@ func (e GuardrailStatusUpdateRequestStatus) Valid() bool {
 
 // Defines values for ImageGenerationRequestQuality.
 const (
-	Hd       ImageGenerationRequestQuality = "hd"
-	Standard ImageGenerationRequestQuality = "standard"
+	ImageGenerationRequestQualityAuto     ImageGenerationRequestQuality = "auto"
+	ImageGenerationRequestQualityHd       ImageGenerationRequestQuality = "hd"
+	ImageGenerationRequestQualityHigh     ImageGenerationRequestQuality = "high"
+	ImageGenerationRequestQualityLow      ImageGenerationRequestQuality = "low"
+	ImageGenerationRequestQualityMedium   ImageGenerationRequestQuality = "medium"
+	ImageGenerationRequestQualityStandard ImageGenerationRequestQuality = "standard"
 )
 
 // Valid indicates whether the value is a known member of the ImageGenerationRequestQuality enum.
 func (e ImageGenerationRequestQuality) Valid() bool {
 	switch e {
-	case Hd:
+	case ImageGenerationRequestQualityAuto:
 		return true
-	case Standard:
+	case ImageGenerationRequestQualityHd:
+		return true
+	case ImageGenerationRequestQualityHigh:
+		return true
+	case ImageGenerationRequestQualityLow:
+		return true
+	case ImageGenerationRequestQualityMedium:
+		return true
+	case ImageGenerationRequestQualityStandard:
 		return true
 	default:
 		return false
@@ -1328,6 +1517,36 @@ func (e ImageGenerationRequestResponseFormat) Valid() bool {
 	case B64Json:
 		return true
 	case Url:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelCardObject.
+const (
+	ModelCardObjectModel ModelCardObject = "model"
+)
+
+// Valid indicates whether the value is a known member of the ModelCardObject enum.
+func (e ModelCardObject) Valid() bool {
+	switch e {
+	case ModelCardObjectModel:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelsListResponseObject.
+const (
+	ModelsListResponseObjectList ModelsListResponseObject = "list"
+)
+
+// Valid indicates whether the value is a known member of the ModelsListResponseObject enum.
+func (e ModelsListResponseObject) Valid() bool {
+	switch e {
+	case ModelsListResponseObjectList:
 		return true
 	default:
 		return false
@@ -1382,6 +1601,21 @@ func (e ResponsesAPIRequestTextFormatType) Valid() bool {
 	case ResponsesAPIRequestTextFormatTypeJsonSchema:
 		return true
 	case ResponsesAPIRequestTextFormatTypeText:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesAPIResponseObject.
+const (
+	ResponsesAPIResponseObjectResponse ResponsesAPIResponseObject = "response"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesAPIResponseObject enum.
+func (e ResponsesAPIResponseObject) Valid() bool {
+	switch e {
+	case ResponsesAPIResponseObjectResponse:
 		return true
 	default:
 		return false
@@ -1447,13 +1681,13 @@ func (e ResponsesMessageInputItemRole) Valid() bool {
 
 // Defines values for ResponsesMessageInputItemType.
 const (
-	Message ResponsesMessageInputItemType = "message"
+	ResponsesMessageInputItemTypeMessage ResponsesMessageInputItemType = "message"
 )
 
 // Valid indicates whether the value is a known member of the ResponsesMessageInputItemType enum.
 func (e ResponsesMessageInputItemType) Valid() bool {
 	switch e {
-	case Message:
+	case ResponsesMessageInputItemTypeMessage:
 		return true
 	default:
 		return false
@@ -1613,6 +1847,33 @@ func (e RemoveModelAccessGroupMemberParamsMemberType) Valid() bool {
 	case RemoveModelAccessGroupMemberParamsMemberTypeTeam:
 		return true
 	case RemoveModelAccessGroupMemberParamsMemberTypeUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CreateSelfServiceKeyJSONBodyKeyType.
+const (
+	CreateSelfServiceKeyJSONBodyKeyTypeDefault        CreateSelfServiceKeyJSONBodyKeyType = "default"
+	CreateSelfServiceKeyJSONBodyKeyTypeLlmApi         CreateSelfServiceKeyJSONBodyKeyType = "llm_api"
+	CreateSelfServiceKeyJSONBodyKeyTypeManagement     CreateSelfServiceKeyJSONBodyKeyType = "management"
+	CreateSelfServiceKeyJSONBodyKeyTypeReadOnly       CreateSelfServiceKeyJSONBodyKeyType = "read_only"
+	CreateSelfServiceKeyJSONBodyKeyTypeServiceAccount CreateSelfServiceKeyJSONBodyKeyType = "service_account"
+)
+
+// Valid indicates whether the value is a known member of the CreateSelfServiceKeyJSONBodyKeyType enum.
+func (e CreateSelfServiceKeyJSONBodyKeyType) Valid() bool {
+	switch e {
+	case CreateSelfServiceKeyJSONBodyKeyTypeDefault:
+		return true
+	case CreateSelfServiceKeyJSONBodyKeyTypeLlmApi:
+		return true
+	case CreateSelfServiceKeyJSONBodyKeyTypeManagement:
+		return true
+	case CreateSelfServiceKeyJSONBodyKeyTypeReadOnly:
+		return true
+	case CreateSelfServiceKeyJSONBodyKeyTypeServiceAccount:
 		return true
 	default:
 		return false
@@ -1893,21 +2154,49 @@ type AdminJWTKeyMappingCreateRequest struct {
 
 // AdminMCPServerCreateRequest defines model for AdminMCPServerCreateRequest.
 type AdminMCPServerCreateRequest struct {
-	Args        *[]string                            `json:"args,omitempty"`
-	AuthToken   *string                              `json:"auth_token,omitempty"`
-	AuthType    *string                              `json:"auth_type,omitempty"`
-	Command     *string                              `json:"command,omitempty"`
-	EndpointUrl *string                              `json:"endpoint_url,omitempty"`
-	Env         *map[string]string                   `json:"env,omitempty"`
-	Headers     *map[string]string                   `json:"headers,omitempty"`
-	Name        string                               `json:"name"`
-	OrgId       *string                              `json:"org_id,omitempty"`
-	Slug        string                               `json:"slug"`
-	Transport   AdminMCPServerCreateRequestTransport `json:"transport"`
+	Args            *[]string                                   `json:"args,omitempty"`
+	AuthToken       *string                                     `json:"auth_token,omitempty"`
+	AuthType        *string                                     `json:"auth_type,omitempty"`
+	Command         *string                                     `json:"command,omitempty"`
+	EndpointUrl     *string                                     `json:"endpoint_url,omitempty"`
+	Env             *map[string]string                          `json:"env,omitempty"`
+	Headers         *map[string]string                          `json:"headers,omitempty"`
+	Name            string                                      `json:"name"`
+	OrgId           *string                                     `json:"org_id,omitempty"`
+	ProtocolVersion *AdminMCPServerCreateRequestProtocolVersion `json:"protocol_version,omitempty"`
+	Slug            string                                      `json:"slug"`
+	Transport       *AdminMCPServerCreateRequestTransport       `json:"transport,omitempty"`
+	TransportType   *AdminMCPServerCreateRequestTransportType   `json:"transport_type,omitempty"`
 }
+
+// AdminMCPServerCreateRequestProtocolVersion defines model for AdminMCPServerCreateRequest.ProtocolVersion.
+type AdminMCPServerCreateRequestProtocolVersion string
 
 // AdminMCPServerCreateRequestTransport defines model for AdminMCPServerCreateRequest.Transport.
 type AdminMCPServerCreateRequestTransport string
+
+// AdminMCPServerCreateRequestTransportType defines model for AdminMCPServerCreateRequest.TransportType.
+type AdminMCPServerCreateRequestTransportType string
+
+// AdminMCPSpecResponse defines model for AdminMCPSpecResponse.
+type AdminMCPSpecResponse struct {
+	ActiveProtocolVersion  *string                   `json:"active_protocol_version,omitempty"`
+	AvailableSpecs         *[]map[string]interface{} `json:"available_specs,omitempty"`
+	Status                 *string                   `json:"status,omitempty"`
+	StrictSchemaValidation *bool                     `json:"strict_schema_validation,omitempty"`
+	UpdatedAt              *time.Time                `json:"updated_at,omitempty"`
+	UpdatedBy              *string                   `json:"updated_by,omitempty"`
+	AdditionalProperties   map[string]interface{}    `json:"-"`
+}
+
+// AdminMCPSpecUpdateRequest defines model for AdminMCPSpecUpdateRequest.
+type AdminMCPSpecUpdateRequest struct {
+	ProtocolVersion        AdminMCPSpecUpdateRequestProtocolVersion `json:"protocol_version"`
+	StrictSchemaValidation *bool                                    `json:"strict_schema_validation,omitempty"`
+}
+
+// AdminMCPSpecUpdateRequestProtocolVersion defines model for AdminMCPSpecUpdateRequest.ProtocolVersion.
+type AdminMCPSpecUpdateRequestProtocolVersion string
 
 // AdminMCPToolsetCreateRequest defines model for AdminMCPToolsetCreateRequest.
 type AdminMCPToolsetCreateRequest struct {
@@ -2461,6 +2750,30 @@ type Annotation struct {
 	} `json:"url_citation,omitempty"`
 }
 
+// AnthropicCountTokensRequest defines model for AnthropicCountTokensRequest.
+type AnthropicCountTokensRequest struct {
+	Messages []map[string]interface{}            `json:"messages"`
+	Model    *string                             `json:"model,omitempty"`
+	System   *AnthropicCountTokensRequest_System `json:"system,omitempty"`
+	Tools    *[]map[string]interface{}           `json:"tools,omitempty"`
+}
+
+// AnthropicCountTokensRequestSystem0 defines model for AnthropicCountTokensRequest.System.0.
+type AnthropicCountTokensRequestSystem0 = string
+
+// AnthropicCountTokensRequestSystem1 defines model for AnthropicCountTokensRequest.System.1.
+type AnthropicCountTokensRequestSystem1 = []map[string]interface{}
+
+// AnthropicCountTokensRequest_System defines model for AnthropicCountTokensRequest.System.
+type AnthropicCountTokensRequest_System struct {
+	union json.RawMessage
+}
+
+// AnthropicCountTokensResponse defines model for AnthropicCountTokensResponse.
+type AnthropicCountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}
+
 // AnthropicMessagesRequest defines model for AnthropicMessagesRequest.
 type AnthropicMessagesRequest struct {
 	GorouteExtensions *GoRouteExtensions               `json:"goroute_extensions,omitempty"`
@@ -2488,6 +2801,36 @@ type AnthropicMessagesRequest_System struct {
 	union json.RawMessage
 }
 
+// AnthropicMessagesResponse defines model for AnthropicMessagesResponse.
+type AnthropicMessagesResponse struct {
+	Content []struct {
+		Id    *string                              `json:"id,omitempty"`
+		Input *map[string]interface{}              `json:"input,omitempty"`
+		Name  *string                              `json:"name,omitempty"`
+		Text  *string                              `json:"text,omitempty"`
+		Type  AnthropicMessagesResponseContentType `json:"type"`
+	} `json:"content"`
+	Id           string                        `json:"id"`
+	Model        string                        `json:"model"`
+	Role         AnthropicMessagesResponseRole `json:"role"`
+	StopReason   *string                       `json:"stop_reason,omitempty"`
+	StopSequence *string                       `json:"stop_sequence,omitempty"`
+	Type         AnthropicMessagesResponseType `json:"type"`
+	Usage        struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+// AnthropicMessagesResponseContentType defines model for AnthropicMessagesResponse.Content.Type.
+type AnthropicMessagesResponseContentType string
+
+// AnthropicMessagesResponseRole defines model for AnthropicMessagesResponse.Role.
+type AnthropicMessagesResponseRole string
+
+// AnthropicMessagesResponseType defines model for AnthropicMessagesResponse.Type.
+type AnthropicMessagesResponseType string
+
 // AudioSpeechRequest defines model for AudioSpeechRequest.
 type AudioSpeechRequest struct {
 	GorouteExtensions *GoRouteExtensions                `json:"goroute_extensions,omitempty"`
@@ -2501,18 +2844,53 @@ type AudioSpeechRequest struct {
 // AudioSpeechRequestResponseFormat defines model for AudioSpeechRequest.ResponseFormat.
 type AudioSpeechRequestResponseFormat string
 
+// AudioTranscriptionResponse defines model for AudioTranscriptionResponse.
+type AudioTranscriptionResponse struct {
+	DurationMs           *int64                 `json:"duration_ms,omitempty"`
+	Text                 string                 `json:"text"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// BatchCreateRequest defines model for BatchCreateRequest.
+type BatchCreateRequest struct {
+	CompletionWindow *string                 `json:"completion_window,omitempty"`
+	Endpoint         *string                 `json:"endpoint,omitempty"`
+	InputFileId      string                  `json:"input_file_id"`
+	Metadata         *map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// BatchListResponse defines model for BatchListResponse.
+type BatchListResponse struct {
+	Data   []BatchObject           `json:"data"`
+	Object BatchListResponseObject `json:"object"`
+}
+
+// BatchListResponseObject defines model for BatchListResponse.Object.
+type BatchListResponseObject string
+
 // BatchObject defines model for BatchObject.
 type BatchObject struct {
-	Endpoint      string  `json:"endpoint"`
-	Id            string  `json:"id"`
-	InputFileId   string  `json:"input_file_id"`
-	OutputFileId  *string `json:"output_file_id,omitempty"`
-	RequestCounts *struct {
-		Completed *int `json:"completed,omitempty"`
-		Failed    *int `json:"failed,omitempty"`
-		Total     *int `json:"total,omitempty"`
-	} `json:"request_counts,omitempty"`
-	Status string `json:"status"`
+	CompletedAt      *time.Time              `json:"completed_at,omitempty"`
+	CompletionWindow string                  `json:"completion_window"`
+	CreatedAt        time.Time               `json:"created_at"`
+	Endpoint         string                  `json:"endpoint"`
+	ErrorFileId      *string                 `json:"error_file_id,omitempty"`
+	EstimatedTokens  *int64                  `json:"estimated_tokens,omitempty"`
+	Id               string                  `json:"id"`
+	InputFileId      string                  `json:"input_file_id"`
+	Metadata         *map[string]interface{} `json:"metadata,omitempty"`
+	OrgId            string                  `json:"org_id"`
+	OutputFileId     *string                 `json:"output_file_id,omitempty"`
+	RequestCounts    struct {
+		Completed int `json:"completed"`
+		Failed    int `json:"failed"`
+		Total     int `json:"total"`
+	} `json:"request_counts"`
+	ReservedCostMicros *int64  `json:"reserved_cost_micros,omitempty"`
+	Status             string  `json:"status"`
+	TeamId             *string `json:"team_id,omitempty"`
+	UpstreamId         *string `json:"upstream_id,omitempty"`
+	UpstreamProvider   *string `json:"upstream_provider,omitempty"`
 }
 
 // CacheControl defines model for CacheControl.
@@ -2531,7 +2909,7 @@ type ChatCompletionRequest struct {
 	Messages          []ChatMessage      `json:"messages"`
 	Metadata          *map[string]string `json:"metadata,omitempty"`
 
-	// Model Explicit model name (`gpt-4.1`, `claude-sonnet-4-20250514`, `gemini-2.5-pro`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
+	// Model Explicit model name (`gpt-4o-mini`, `claude-haiku-4-5-20251001`, `openai/gpt-oss-20b`, `openai/gpt-4o-mini`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
 	Model           string                                `json:"model"`
 	ReasoningEffort *ChatCompletionRequestReasoningEffort `json:"reasoning_effort,omitempty"`
 	ResponseFormat  *struct {
@@ -2560,15 +2938,18 @@ type ChatCompletionRequestResponseFormatType string
 // ChatCompletionResponse defines model for ChatCompletionResponse.
 type ChatCompletionResponse struct {
 	Choices []struct {
-		FinishReason *string      `json:"finish_reason,omitempty"`
-		Index        *int         `json:"index,omitempty"`
-		Message      *ChatMessage `json:"message,omitempty"`
+		FinishReason string      `json:"finish_reason"`
+		Index        int         `json:"index"`
+		Message      ChatMessage `json:"message"`
 	} `json:"choices"`
-	Created int64                        `json:"created"`
-	Id      string                       `json:"id"`
-	Model   string                       `json:"model"`
-	Object  ChatCompletionResponseObject `json:"object"`
-	Usage   TokenUsage                   `json:"usage"`
+	Created           int64                        `json:"created"`
+	Id                string                       `json:"id"`
+	Metadata          *map[string]string           `json:"metadata,omitempty"`
+	Model             string                       `json:"model"`
+	Object            ChatCompletionResponseObject `json:"object"`
+	Provider          *string                      `json:"provider,omitempty"`
+	SystemFingerprint *string                      `json:"system_fingerprint,omitempty"`
+	Usage             TokenUsage                   `json:"usage"`
 }
 
 // ChatCompletionResponseObject defines model for ChatCompletionResponse.Object.
@@ -2645,13 +3026,13 @@ type CooldownPolicy struct {
 
 // CredentialValidateRequest defines model for CredentialValidateRequest.
 type CredentialValidateRequest struct {
-	// ApiKey Required for providers that use API keys; may be omitted for Ollama.
-	ApiKey              *string            `json:"api_key,omitempty"`
-	ApiVersion          *string            `json:"api_version,omitempty"`
-	AzureDeploymentName *string            `json:"azure_deployment_name,omitempty"`
-	BaseUrl             *string            `json:"base_url,omitempty"`
-	Headers             *map[string]string `json:"headers,omitempty"`
-	Provider            string             `json:"provider"`
+	// ApiKey Upstream provider API key.
+	ApiKey  *string            `json:"api_key,omitempty"`
+	BaseUrl *string            `json:"base_url,omitempty"`
+	Headers *map[string]string `json:"headers,omitempty"`
+
+	// Provider Provider identifier (openai, anthropic, groq, openrouter)
+	Provider string `json:"provider"`
 }
 
 // CredentialValidateResponse defines model for CredentialValidateResponse.
@@ -2671,7 +3052,7 @@ type DocumentPart struct {
 	Filename *string `json:"filename,omitempty"`
 	MimeType *string `json:"mime_type,omitempty"`
 
-	// Url HTTPS or gs:// document URI.
+	// Url HTTPS document URI.
 	Url *string `json:"url,omitempty"`
 }
 
@@ -2722,14 +3103,41 @@ type FallbackTarget struct {
 	Target    string                  `json:"target"`
 }
 
+// FileDeleteResponse defines model for FileDeleteResponse.
+type FileDeleteResponse struct {
+	Deleted bool                     `json:"deleted"`
+	Id      string                   `json:"id"`
+	Object  FileDeleteResponseObject `json:"object"`
+}
+
+// FileDeleteResponseObject defines model for FileDeleteResponse.Object.
+type FileDeleteResponseObject string
+
+// FileListResponse defines model for FileListResponse.
+type FileListResponse struct {
+	Data   []FileObject           `json:"data"`
+	Object FileListResponseObject `json:"object"`
+}
+
+// FileListResponseObject defines model for FileListResponse.Object.
+type FileListResponseObject string
+
 // FileObject defines model for FileObject.
 type FileObject struct {
-	Bytes     int    `json:"bytes"`
-	CreatedAt int    `json:"created_at"`
-	Filename  string `json:"filename"`
-	Id        string `json:"id"`
-	Purpose   string `json:"purpose"`
-	Status    string `json:"status"`
+	Bytes            int64      `json:"bytes"`
+	ContentSha256    *string    `json:"content_sha256,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Filename         string     `json:"filename"`
+	Id               string     `json:"id"`
+	OrgId            string     `json:"org_id"`
+	Purpose          string     `json:"purpose"`
+	Status           string     `json:"status"`
+	StoragePath      *string    `json:"storage_path,omitempty"`
+	TeamId           *string    `json:"team_id,omitempty"`
+	UpstreamId       *string    `json:"upstream_id,omitempty"`
+	UpstreamProvider *string    `json:"upstream_provider,omitempty"`
+	UserId           *string    `json:"user_id,omitempty"`
 }
 
 // GoRouteExtensions defines model for GoRouteExtensions.
@@ -3121,10 +3529,38 @@ type LegacyCompletionResponse struct {
 		Index        *int    `json:"index,omitempty"`
 		Text         *string `json:"text,omitempty"`
 	} `json:"choices"`
-	Id     string `json:"id"`
-	Model  string `json:"model"`
-	Object string `json:"object"`
+	Id       string     `json:"id"`
+	Model    string     `json:"model"`
+	Object   *string    `json:"object,omitempty"`
+	Provider *string    `json:"provider,omitempty"`
+	Usage    TokenUsage `json:"usage"`
 }
+
+// ModelCard defines model for ModelCard.
+type ModelCard struct {
+	Capabilities          *[]string       `json:"capabilities,omitempty"`
+	Created               int64           `json:"created"`
+	Id                    string          `json:"id"`
+	InputCostMicrosPer1m  *int64          `json:"input_cost_micros_per_1m,omitempty"`
+	MaxInputTokens        *int            `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens       *int            `json:"max_output_tokens,omitempty"`
+	Object                ModelCardObject `json:"object"`
+	OutputCostMicrosPer1m *int64          `json:"output_cost_micros_per_1m,omitempty"`
+	OwnedBy               string          `json:"owned_by"`
+	Provider              *string         `json:"provider,omitempty"`
+}
+
+// ModelCardObject defines model for ModelCard.Object.
+type ModelCardObject string
+
+// ModelsListResponse defines model for ModelsListResponse.
+type ModelsListResponse struct {
+	Data   []ModelCard              `json:"data"`
+	Object ModelsListResponseObject `json:"object"`
+}
+
+// ModelsListResponseObject defines model for ModelsListResponse.Object.
+type ModelsListResponseObject string
 
 // ModerationRequest defines model for ModerationRequest.
 type ModerationRequest struct {
@@ -3218,39 +3654,9 @@ type OrgProviderSubscription struct {
 	IsEnabled bool   `json:"is_enabled"`
 	OrgId     string `json:"org_id"`
 
-	// Provider Provider identifier (e.g. openai, anthropic, gemini)
+	// Provider Provider identifier (openai, anthropic, groq, openrouter)
 	Provider     string    `json:"provider"`
 	SubscribedAt time.Time `json:"subscribed_at"`
-}
-
-// RerankRequest defines model for RerankRequest.
-type RerankRequest struct {
-	Documents         []RerankRequest_Documents_Item `json:"documents"`
-	GorouteExtensions *GoRouteExtensions             `json:"goroute_extensions,omitempty"`
-	Model             string                         `json:"model"`
-	Query             string                         `json:"query"`
-	ReturnDocuments   *bool                          `json:"return_documents,omitempty"`
-	TopN              *int                           `json:"top_n,omitempty"`
-}
-
-// RerankRequestDocuments0 defines model for RerankRequest.Documents.0.
-type RerankRequestDocuments0 = string
-
-// RerankRequestDocuments1 defines model for RerankRequest.Documents.1.
-type RerankRequestDocuments1 = map[string]interface{}
-
-// RerankRequest_Documents_Item defines model for RerankRequest.documents.Item.
-type RerankRequest_Documents_Item struct {
-	union json.RawMessage
-}
-
-// RerankResponse defines model for RerankResponse.
-type RerankResponse struct {
-	Id      string `json:"id"`
-	Results []struct {
-		Index          *int     `json:"index,omitempty"`
-		RelevanceScore *float32 `json:"relevance_score,omitempty"`
-	} `json:"results"`
 }
 
 // ResponsesAPIRequest defines model for ResponsesAPIRequest.
@@ -3304,12 +3710,29 @@ type ResponsesAPIRequestTextFormatType string
 
 // ResponsesAPIResponse defines model for ResponsesAPIResponse.
 type ResponsesAPIResponse struct {
-	Id     string                   `json:"id"`
-	Model  string                   `json:"model"`
-	Object string                   `json:"object"`
-	Output []map[string]interface{} `json:"output"`
-	Status string                   `json:"status"`
+	CreatedAt int64                      `json:"created_at"`
+	Id        string                     `json:"id"`
+	Model     string                     `json:"model"`
+	Object    ResponsesAPIResponseObject `json:"object"`
+	Output    []struct {
+		Arguments *string `json:"arguments,omitempty"`
+		CallId    *string `json:"call_id,omitempty"`
+		Content   *[]struct {
+			Text *string `json:"text,omitempty"`
+			Type *string `json:"type,omitempty"`
+		} `json:"content,omitempty"`
+		Id     string  `json:"id"`
+		Name   *string `json:"name,omitempty"`
+		Role   *string `json:"role,omitempty"`
+		Status string  `json:"status"`
+		Type   string  `json:"type"`
+	} `json:"output"`
+	Status string      `json:"status"`
+	Usage  *TokenUsage `json:"usage,omitempty"`
 }
+
+// ResponsesAPIResponseObject defines model for ResponsesAPIResponse.Object.
+type ResponsesAPIResponseObject string
 
 // ResponsesFunctionCallInputItem defines model for ResponsesFunctionCallInputItem.
 type ResponsesFunctionCallInputItem struct {
@@ -3385,25 +3808,39 @@ type RetryPolicy struct {
 
 // TokenUsage defines model for TokenUsage.
 type TokenUsage struct {
-	CachedPromptTokens *int `json:"cached_prompt_tokens,omitempty"`
-	CompletionTokens   *int `json:"completion_tokens,omitempty"`
-	PromptTokens       *int `json:"prompt_tokens,omitempty"`
-	ReasoningTokens    *int `json:"reasoning_tokens,omitempty"`
-	TotalTokens        *int `json:"total_tokens,omitempty"`
+	CacheCreationTokens *int `json:"cache_creation_tokens,omitempty"`
+	CachedPromptTokens  *int `json:"cached_prompt_tokens,omitempty"`
+	CompletionTokens    *int `json:"completion_tokens,omitempty"`
+	PromptTokens        *int `json:"prompt_tokens,omitempty"`
+	ReasoningTokens     *int `json:"reasoning_tokens,omitempty"`
+	TotalTokens         *int `json:"total_tokens,omitempty"`
 }
 
 // TokenizeRequest defines model for TokenizeRequest.
 type TokenizeRequest struct {
-	Input    *string        `json:"input,omitempty"`
-	Messages *[]ChatMessage `json:"messages,omitempty"`
-	Model    string         `json:"model"`
+	Messages *[]ChatMessage          `json:"messages,omitempty"`
+	Model    *string                 `json:"model,omitempty"`
+	Prompt   *TokenizeRequest_Prompt `json:"prompt,omitempty"`
+	Tools    *[]Tool                 `json:"tools,omitempty"`
+}
+
+// TokenizeRequestPrompt0 defines model for TokenizeRequest.Prompt.0.
+type TokenizeRequestPrompt0 = string
+
+// TokenizeRequestPrompt1 defines model for TokenizeRequest.Prompt.1.
+type TokenizeRequestPrompt1 = []string
+
+// TokenizeRequest_Prompt defines model for TokenizeRequest.Prompt.
+type TokenizeRequest_Prompt struct {
+	union json.RawMessage
 }
 
 // TokenizeResponse defines model for TokenizeResponse.
 type TokenizeResponse struct {
-	Count  int    `json:"count"`
-	Model  string `json:"model"`
-	Tokens *[]int `json:"tokens,omitempty"`
+	Count       int    `json:"count"`
+	Model       string `json:"model"`
+	Profile     string `json:"profile"`
+	TotalTokens int    `json:"total_tokens"`
 }
 
 // Tool defines model for Tool.
@@ -3427,8 +3864,9 @@ type ToolCall struct {
 		Arguments string `json:"arguments"`
 		Name      string `json:"name"`
 	} `json:"function"`
-	Id   string       `json:"id"`
-	Type ToolCallType `json:"type"`
+	Id    string       `json:"id"`
+	Index *int         `json:"index,omitempty"`
+	Type  ToolCallType `json:"type"`
 }
 
 // ToolCallType defines model for ToolCall.Type.
@@ -3587,6 +4025,9 @@ type BlockVirtualKeyJSONBody struct {
 type ListMCPServersParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
+
+// UpdateMCPServerJSONBody defines parameters for UpdateMCPServer.
+type UpdateMCPServerJSONBody map[string]interface{}
 
 // ListMCPToolsParams defines parameters for ListMCPTools.
 type ListMCPToolsParams struct {
@@ -3781,8 +4222,51 @@ type CreateAudioTranslationMultipartBody struct {
 	Model *string             `json:"model,omitempty"`
 }
 
-// CountAnthropicMessageTokensJSONBody defines parameters for CountAnthropicMessageTokens.
-type CountAnthropicMessageTokensJSONBody = map[string]interface{}
+// UploadFileMultipartBody defines parameters for UploadFile.
+type UploadFileMultipartBody struct {
+	File    openapi_types.File `json:"file"`
+	Purpose string             `json:"purpose"`
+}
+
+// CreateImageEditMultipartBody defines parameters for CreateImageEdit.
+type CreateImageEditMultipartBody struct {
+	Image          openapi_types.File  `json:"image"`
+	Mask           *openapi_types.File `json:"mask,omitempty"`
+	Model          *string             `json:"model,omitempty"`
+	N              *int                `json:"n,omitempty"`
+	Prompt         string              `json:"prompt"`
+	ResponseFormat *string             `json:"response_format,omitempty"`
+	Size           *string             `json:"size,omitempty"`
+}
+
+// CreateImageVariationMultipartBody defines parameters for CreateImageVariation.
+type CreateImageVariationMultipartBody struct {
+	Image          openapi_types.File `json:"image"`
+	Model          *string            `json:"model,omitempty"`
+	N              *int               `json:"n,omitempty"`
+	ResponseFormat *string            `json:"response_format,omitempty"`
+	Size           *string            `json:"size,omitempty"`
+}
+
+// CreateSelfServiceKeyJSONBody defines parameters for CreateSelfServiceKey.
+type CreateSelfServiceKeyJSONBody struct {
+	AllowedEndpoints    *[]string                            `json:"allowed_endpoints,omitempty"`
+	AllowedModels       *[]string                            `json:"allowed_models,omitempty"`
+	ExpiresAt           *time.Time                           `json:"expires_at,omitempty"`
+	KeyType             *CreateSelfServiceKeyJSONBodyKeyType `json:"key_type,omitempty"`
+	MaxBudgetMicros     *int64                               `json:"max_budget_micros,omitempty"`
+	Metadata            *map[string]string                   `json:"metadata,omitempty"`
+	Name                string                               `json:"name"`
+	RotationIntervalSec *int64                               `json:"rotation_interval_sec,omitempty"`
+	RpmLimit            *int                                 `json:"rpm_limit,omitempty"`
+	SoftBudgetMicros    *int64                               `json:"soft_budget_micros,omitempty"`
+	Tags                *[]string                            `json:"tags,omitempty"`
+	TeamId              *string                              `json:"team_id,omitempty"`
+	TpmLimit            *int                                 `json:"tpm_limit,omitempty"`
+}
+
+// CreateSelfServiceKeyJSONBodyKeyType defines parameters for CreateSelfServiceKey.
+type CreateSelfServiceKeyJSONBodyKeyType string
 
 // CreateA2AAgentJSONRequestBody defines body for CreateA2AAgent for application/json ContentType.
 type CreateA2AAgentJSONRequestBody = AdminA2AAgentCreateRequest
@@ -3868,6 +4352,12 @@ type SetMCPUserCredentialJSONRequestBody = AdminMCPUserCredentialRequest
 // CreateMCPServerJSONRequestBody defines body for CreateMCPServer for application/json ContentType.
 type CreateMCPServerJSONRequestBody = AdminMCPServerCreateRequest
 
+// UpdateMCPServerJSONRequestBody defines body for UpdateMCPServer for application/json ContentType.
+type UpdateMCPServerJSONRequestBody UpdateMCPServerJSONBody
+
+// UpdateMCPSpecJSONRequestBody defines body for UpdateMCPSpec for application/json ContentType.
+type UpdateMCPSpecJSONRequestBody = AdminMCPSpecUpdateRequest
+
 // CreateMCPToolsetJSONRequestBody defines body for CreateMCPToolset for application/json ContentType.
 type CreateMCPToolsetJSONRequestBody = AdminMCPToolsetCreateRequest
 
@@ -3949,11 +4439,20 @@ type CreateUserJSONRequestBody = AdminUser
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = AdminUser
 
+// CreateAnthropicDirectMessageJSONRequestBody defines body for CreateAnthropicDirectMessage for application/json ContentType.
+type CreateAnthropicDirectMessageJSONRequestBody = AnthropicMessagesRequest
+
+// CountAnthropicDirectMessageTokensJSONRequestBody defines body for CountAnthropicDirectMessageTokens for application/json ContentType.
+type CountAnthropicDirectMessageTokensJSONRequestBody = AnthropicCountTokensRequest
+
 // OperatorLoginJSONRequestBody defines body for OperatorLogin for application/json ContentType.
 type OperatorLoginJSONRequestBody = OperatorLoginRequest
 
 // OperatorPasswordUpdateJSONRequestBody defines body for OperatorPasswordUpdate for application/json ContentType.
 type OperatorPasswordUpdateJSONRequestBody = OperatorPasswordRequest
+
+// CreateOpenAIDirectResponseJSONRequestBody defines body for CreateOpenAIDirectResponse for application/json ContentType.
+type CreateOpenAIDirectResponseJSONRequestBody = ResponsesAPIRequest
 
 // CreateAudioSpeechJSONRequestBody defines body for CreateAudioSpeech for application/json ContentType.
 type CreateAudioSpeechJSONRequestBody = AudioSpeechRequest
@@ -3964,6 +4463,9 @@ type CreateAudioTranscriptionMultipartRequestBody CreateAudioTranscriptionMultip
 // CreateAudioTranslationMultipartRequestBody defines body for CreateAudioTranslation for multipart/form-data ContentType.
 type CreateAudioTranslationMultipartRequestBody CreateAudioTranslationMultipartBody
 
+// CreateBatchJSONRequestBody defines body for CreateBatch for application/json ContentType.
+type CreateBatchJSONRequestBody = BatchCreateRequest
+
 // CreateChatCompletionJSONRequestBody defines body for CreateChatCompletion for application/json ContentType.
 type CreateChatCompletionJSONRequestBody = ChatCompletionRequest
 
@@ -3973,32 +4475,324 @@ type CreateCompletionJSONRequestBody = LegacyCompletionRequest
 // CreateEmbeddingJSONRequestBody defines body for CreateEmbedding for application/json ContentType.
 type CreateEmbeddingJSONRequestBody = EmbeddingRequest
 
+// UploadFileMultipartRequestBody defines body for UploadFile for multipart/form-data ContentType.
+type UploadFileMultipartRequestBody UploadFileMultipartBody
+
 // ApplyGuardrailsJSONRequestBody defines body for ApplyGuardrails for application/json ContentType.
 type ApplyGuardrailsJSONRequestBody = GuardrailApplyRequest
 
+// CreateImageEditMultipartRequestBody defines body for CreateImageEdit for multipart/form-data ContentType.
+type CreateImageEditMultipartRequestBody CreateImageEditMultipartBody
+
 // CreateImageGenerationJSONRequestBody defines body for CreateImageGeneration for application/json ContentType.
 type CreateImageGenerationJSONRequestBody = ImageGenerationRequest
+
+// CreateImageVariationMultipartRequestBody defines body for CreateImageVariation for multipart/form-data ContentType.
+type CreateImageVariationMultipartRequestBody CreateImageVariationMultipartBody
 
 // CreateAnthropicMessageJSONRequestBody defines body for CreateAnthropicMessage for application/json ContentType.
 type CreateAnthropicMessageJSONRequestBody = AnthropicMessagesRequest
 
 // CountAnthropicMessageTokensJSONRequestBody defines body for CountAnthropicMessageTokens for application/json ContentType.
-type CountAnthropicMessageTokensJSONRequestBody = CountAnthropicMessageTokensJSONBody
+type CountAnthropicMessageTokensJSONRequestBody = AnthropicCountTokensRequest
 
 // CreateModerationJSONRequestBody defines body for CreateModeration for application/json ContentType.
 type CreateModerationJSONRequestBody = ModerationRequest
-
-// CreateRerankJSONRequestBody defines body for CreateRerank for application/json ContentType.
-type CreateRerankJSONRequestBody = RerankRequest
 
 // CreateResponseJSONRequestBody defines body for CreateResponse for application/json ContentType.
 type CreateResponseJSONRequestBody = ResponsesAPIRequest
 
 // CreateSelfServiceKeyJSONRequestBody defines body for CreateSelfServiceKey for application/json ContentType.
-type CreateSelfServiceKeyJSONRequestBody = AdminVirtualKey
+type CreateSelfServiceKeyJSONRequestBody CreateSelfServiceKeyJSONBody
 
 // CountTokensJSONRequestBody defines body for CountTokens for application/json ContentType.
 type CountTokensJSONRequestBody = TokenizeRequest
+
+// Getter for additional properties for AdminMCPSpecResponse. Returns the specified
+// element and whether it was found
+func (a AdminMCPSpecResponse) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for AdminMCPSpecResponse
+func (a *AdminMCPSpecResponse) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for AdminMCPSpecResponse to handle AdditionalProperties
+func (a *AdminMCPSpecResponse) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["active_protocol_version"]; found {
+		err = json.Unmarshal(raw, &a.ActiveProtocolVersion)
+		if err != nil {
+			return fmt.Errorf("error reading 'active_protocol_version': %w", err)
+		}
+		delete(object, "active_protocol_version")
+	}
+
+	if raw, found := object["available_specs"]; found {
+		err = json.Unmarshal(raw, &a.AvailableSpecs)
+		if err != nil {
+			return fmt.Errorf("error reading 'available_specs': %w", err)
+		}
+		delete(object, "available_specs")
+	}
+
+	if raw, found := object["status"]; found {
+		err = json.Unmarshal(raw, &a.Status)
+		if err != nil {
+			return fmt.Errorf("error reading 'status': %w", err)
+		}
+		delete(object, "status")
+	}
+
+	if raw, found := object["strict_schema_validation"]; found {
+		err = json.Unmarshal(raw, &a.StrictSchemaValidation)
+		if err != nil {
+			return fmt.Errorf("error reading 'strict_schema_validation': %w", err)
+		}
+		delete(object, "strict_schema_validation")
+	}
+
+	if raw, found := object["updated_at"]; found {
+		err = json.Unmarshal(raw, &a.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("error reading 'updated_at': %w", err)
+		}
+		delete(object, "updated_at")
+	}
+
+	if raw, found := object["updated_by"]; found {
+		err = json.Unmarshal(raw, &a.UpdatedBy)
+		if err != nil {
+			return fmt.Errorf("error reading 'updated_by': %w", err)
+		}
+		delete(object, "updated_by")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for AdminMCPSpecResponse to handle AdditionalProperties
+func (a AdminMCPSpecResponse) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.ActiveProtocolVersion != nil {
+		object["active_protocol_version"], err = json.Marshal(a.ActiveProtocolVersion)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'active_protocol_version': %w", err)
+		}
+	}
+
+	if a.AvailableSpecs != nil {
+		object["available_specs"], err = json.Marshal(a.AvailableSpecs)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'available_specs': %w", err)
+		}
+	}
+
+	if a.Status != nil {
+		object["status"], err = json.Marshal(a.Status)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'status': %w", err)
+		}
+	}
+
+	if a.StrictSchemaValidation != nil {
+		object["strict_schema_validation"], err = json.Marshal(a.StrictSchemaValidation)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'strict_schema_validation': %w", err)
+		}
+	}
+
+	if a.UpdatedAt != nil {
+		object["updated_at"], err = json.Marshal(a.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'updated_at': %w", err)
+		}
+	}
+
+	if a.UpdatedBy != nil {
+		object["updated_by"], err = json.Marshal(a.UpdatedBy)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'updated_by': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for AudioTranscriptionResponse. Returns the specified
+// element and whether it was found
+func (a AudioTranscriptionResponse) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for AudioTranscriptionResponse
+func (a *AudioTranscriptionResponse) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for AudioTranscriptionResponse to handle AdditionalProperties
+func (a *AudioTranscriptionResponse) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["duration_ms"]; found {
+		err = json.Unmarshal(raw, &a.DurationMs)
+		if err != nil {
+			return fmt.Errorf("error reading 'duration_ms': %w", err)
+		}
+		delete(object, "duration_ms")
+	}
+
+	if raw, found := object["text"]; found {
+		err = json.Unmarshal(raw, &a.Text)
+		if err != nil {
+			return fmt.Errorf("error reading 'text': %w", err)
+		}
+		delete(object, "text")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for AudioTranscriptionResponse to handle AdditionalProperties
+func (a AudioTranscriptionResponse) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.DurationMs != nil {
+		object["duration_ms"], err = json.Marshal(a.DurationMs)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'duration_ms': %w", err)
+		}
+	}
+
+	object["text"], err = json.Marshal(a.Text)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'text': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// AsAnthropicCountTokensRequestSystem0 returns the union data inside the AnthropicCountTokensRequest_System as a AnthropicCountTokensRequestSystem0
+func (t AnthropicCountTokensRequest_System) AsAnthropicCountTokensRequestSystem0() (AnthropicCountTokensRequestSystem0, error) {
+	var body AnthropicCountTokensRequestSystem0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnthropicCountTokensRequestSystem0 overwrites any union data inside the AnthropicCountTokensRequest_System as the provided AnthropicCountTokensRequestSystem0
+func (t *AnthropicCountTokensRequest_System) FromAnthropicCountTokensRequestSystem0(v AnthropicCountTokensRequestSystem0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnthropicCountTokensRequestSystem0 performs a merge with any union data inside the AnthropicCountTokensRequest_System, using the provided AnthropicCountTokensRequestSystem0
+func (t *AnthropicCountTokensRequest_System) MergeAnthropicCountTokensRequestSystem0(v AnthropicCountTokensRequestSystem0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAnthropicCountTokensRequestSystem1 returns the union data inside the AnthropicCountTokensRequest_System as a AnthropicCountTokensRequestSystem1
+func (t AnthropicCountTokensRequest_System) AsAnthropicCountTokensRequestSystem1() (AnthropicCountTokensRequestSystem1, error) {
+	var body AnthropicCountTokensRequestSystem1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnthropicCountTokensRequestSystem1 overwrites any union data inside the AnthropicCountTokensRequest_System as the provided AnthropicCountTokensRequestSystem1
+func (t *AnthropicCountTokensRequest_System) FromAnthropicCountTokensRequestSystem1(v AnthropicCountTokensRequestSystem1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnthropicCountTokensRequestSystem1 performs a merge with any union data inside the AnthropicCountTokensRequest_System, using the provided AnthropicCountTokensRequestSystem1
+func (t *AnthropicCountTokensRequest_System) MergeAnthropicCountTokensRequestSystem1(v AnthropicCountTokensRequestSystem1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t AnthropicCountTokensRequest_System) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *AnthropicCountTokensRequest_System) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // AsAnthropicMessagesRequestSystem0 returns the union data inside the AnthropicMessagesRequest_System as a AnthropicMessagesRequestSystem0
 func (t AnthropicMessagesRequest_System) AsAnthropicMessagesRequestSystem0() (AnthropicMessagesRequestSystem0, error) {
@@ -4372,68 +5166,6 @@ func (t *ModerationRequest_Input) UnmarshalJSON(b []byte) error {
 	return err
 }
 
-// AsRerankRequestDocuments0 returns the union data inside the RerankRequest_Documents_Item as a RerankRequestDocuments0
-func (t RerankRequest_Documents_Item) AsRerankRequestDocuments0() (RerankRequestDocuments0, error) {
-	var body RerankRequestDocuments0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromRerankRequestDocuments0 overwrites any union data inside the RerankRequest_Documents_Item as the provided RerankRequestDocuments0
-func (t *RerankRequest_Documents_Item) FromRerankRequestDocuments0(v RerankRequestDocuments0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeRerankRequestDocuments0 performs a merge with any union data inside the RerankRequest_Documents_Item, using the provided RerankRequestDocuments0
-func (t *RerankRequest_Documents_Item) MergeRerankRequestDocuments0(v RerankRequestDocuments0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsRerankRequestDocuments1 returns the union data inside the RerankRequest_Documents_Item as a RerankRequestDocuments1
-func (t RerankRequest_Documents_Item) AsRerankRequestDocuments1() (RerankRequestDocuments1, error) {
-	var body RerankRequestDocuments1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromRerankRequestDocuments1 overwrites any union data inside the RerankRequest_Documents_Item as the provided RerankRequestDocuments1
-func (t *RerankRequest_Documents_Item) FromRerankRequestDocuments1(v RerankRequestDocuments1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeRerankRequestDocuments1 performs a merge with any union data inside the RerankRequest_Documents_Item, using the provided RerankRequestDocuments1
-func (t *RerankRequest_Documents_Item) MergeRerankRequestDocuments1(v RerankRequestDocuments1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t RerankRequest_Documents_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *RerankRequest_Documents_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
 // AsResponsesMessageInputItem returns the union data inside the ResponsesAPIRequest_Input_1_Item as a ResponsesMessageInputItem
 func (t ResponsesAPIRequest_Input_1_Item) AsResponsesMessageInputItem() (ResponsesMessageInputItem, error) {
 	var body ResponsesMessageInputItem
@@ -4708,6 +5440,68 @@ func (t *ResponsesMessageInputItem_Content) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsTokenizeRequestPrompt0 returns the union data inside the TokenizeRequest_Prompt as a TokenizeRequestPrompt0
+func (t TokenizeRequest_Prompt) AsTokenizeRequestPrompt0() (TokenizeRequestPrompt0, error) {
+	var body TokenizeRequestPrompt0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTokenizeRequestPrompt0 overwrites any union data inside the TokenizeRequest_Prompt as the provided TokenizeRequestPrompt0
+func (t *TokenizeRequest_Prompt) FromTokenizeRequestPrompt0(v TokenizeRequestPrompt0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTokenizeRequestPrompt0 performs a merge with any union data inside the TokenizeRequest_Prompt, using the provided TokenizeRequestPrompt0
+func (t *TokenizeRequest_Prompt) MergeTokenizeRequestPrompt0(v TokenizeRequestPrompt0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTokenizeRequestPrompt1 returns the union data inside the TokenizeRequest_Prompt as a TokenizeRequestPrompt1
+func (t TokenizeRequest_Prompt) AsTokenizeRequestPrompt1() (TokenizeRequestPrompt1, error) {
+	var body TokenizeRequestPrompt1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTokenizeRequestPrompt1 overwrites any union data inside the TokenizeRequest_Prompt as the provided TokenizeRequestPrompt1
+func (t *TokenizeRequest_Prompt) FromTokenizeRequestPrompt1(v TokenizeRequestPrompt1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTokenizeRequestPrompt1 performs a merge with any union data inside the TokenizeRequest_Prompt, using the provided TokenizeRequestPrompt1
+func (t *TokenizeRequest_Prompt) MergeTokenizeRequestPrompt1(v TokenizeRequestPrompt1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t TokenizeRequest_Prompt) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *TokenizeRequest_Prompt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// ListA2AAgents List registered A2A agents for an organization
@@ -4899,9 +5693,18 @@ type ServerInterface interface {
 	// CreateMCPServer Register a downstream MCP server
 	// (POST /admin/v1/mcp/servers)
 	CreateMCPServer(w http.ResponseWriter, r *http.Request)
+	// UpdateMCPServer Update an existing downstream MCP server configuration and protocol specification
+	// (PUT /admin/v1/mcp/servers/{serverID})
+	UpdateMCPServer(w http.ResponseWriter, r *http.Request, serverID string)
 	// SyncMCPServer Discover and synchronize tools from an MCP server
 	// (POST /admin/v1/mcp/servers/{serverID}/sync)
 	SyncMCPServer(w http.ResponseWriter, r *http.Request, serverID string)
+	// GetMCPSpec Get active gateway-wide MCP API specification and supported releases
+	// (GET /admin/v1/mcp/spec)
+	GetMCPSpec(w http.ResponseWriter, r *http.Request)
+	// UpdateMCPSpec Switch the active gateway-wide MCP API specification release from Web UI
+	// (PUT /admin/v1/mcp/spec)
+	UpdateMCPSpec(w http.ResponseWriter, r *http.Request)
 	// ListMCPTools List discovered MCP tools for an organization or server
 	// (GET /admin/v1/mcp/tools)
 	ListMCPTools(w http.ResponseWriter, r *http.Request, params ListMCPToolsParams)
@@ -5094,6 +5897,12 @@ type ServerInterface interface {
 	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
 	// (PUT /admin/v1/users/{userID})
 	UpdateUser(w http.ResponseWriter, r *http.Request, userID string)
+	// CreateAnthropicDirectMessage Direct Anthropic wire-path Messages API ingress
+	// (POST /anthropic/v1/messages)
+	CreateAnthropicDirectMessage(w http.ResponseWriter, r *http.Request)
+	// CountAnthropicDirectMessageTokens Direct Anthropic wire-path token counting ingress
+	// (POST /anthropic/v1/messages/count_tokens)
+	CountAnthropicDirectMessageTokens(w http.ResponseWriter, r *http.Request)
 	// CompleteAuthCLILogin Authorize a pending CLI login from an authenticated Control Plane session
 	// (POST /auth/cli/complete/{login_id})
 	CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string, params CompleteAuthCLILoginParams)
@@ -5124,6 +5933,12 @@ type ServerInterface interface {
 	// StartAuthSSOLogin Initiate Control Plane OIDC/SSO PKCE login
 	// (GET /auth/sso/{provider}/login)
 	StartAuthSSOLogin(w http.ResponseWriter, r *http.Request, provider string)
+	// OpenaiDirectRealtimeSession Direct OpenAI wire-path Realtime WebSocket session
+	// (GET /openai/v1/realtime)
+	OpenaiDirectRealtimeSession(w http.ResponseWriter, r *http.Request)
+	// CreateOpenAIDirectResponse Direct OpenAI wire-path Responses API ingress
+	// (POST /openai/v1/responses)
+	CreateOpenAIDirectResponse(w http.ResponseWriter, r *http.Request)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(w http.ResponseWriter, r *http.Request)
@@ -5145,7 +5960,7 @@ type ServerInterface interface {
 	// CancelBatch Cancel in-progress batch
 	// (POST /v1/batches/{batch_id}/cancel)
 	CancelBatch(w http.ResponseWriter, r *http.Request, batchId BatchID)
-	// CreateChatCompletion Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
+	// CreateChatCompletion Create a unified chat completion across verified spec-first model providers (OpenAI, Anthropic, Groq, OpenRouter)
 	// (POST /v1/chat/completions)
 	CreateChatCompletion(w http.ResponseWriter, r *http.Request)
 	// CreateCompletion Legacy text completions with transparent modern chat fallback
@@ -5199,9 +6014,6 @@ type ServerInterface interface {
 	// RealtimeSession Text-only Realtime-compatible WebSocket session
 	// (GET /v1/realtime)
 	RealtimeSession(w http.ResponseWriter, r *http.Request)
-	// CreateRerank Cross-encoder document reranking via Cohere, Jina, or Voyage
-	// (POST /v1/rerank)
-	CreateRerank(w http.ResponseWriter, r *http.Request)
 	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(w http.ResponseWriter, r *http.Request)
@@ -6944,6 +7756,32 @@ func (siw *ServerInterfaceWrapper) CreateMCPServer(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateMCPServer operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMCPServer(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "serverID" -------------
+	var serverID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serverID", r.PathValue("serverID"), &serverID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serverID", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMCPServer(w, r, serverID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SyncMCPServer operation middleware
 func (siw *ServerInterfaceWrapper) SyncMCPServer(w http.ResponseWriter, r *http.Request) {
 
@@ -6961,6 +7799,34 @@ func (siw *ServerInterfaceWrapper) SyncMCPServer(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SyncMCPServer(w, r, serverID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMCPSpec operation middleware
+func (siw *ServerInterfaceWrapper) GetMCPSpec(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMCPSpec(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateMCPSpec operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMCPSpec(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMCPSpec(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9094,6 +9960,34 @@ func (siw *ServerInterfaceWrapper) UpdateUser(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// CreateAnthropicDirectMessage operation middleware
+func (siw *ServerInterfaceWrapper) CreateAnthropicDirectMessage(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateAnthropicDirectMessage(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CountAnthropicDirectMessageTokens operation middleware
+func (siw *ServerInterfaceWrapper) CountAnthropicDirectMessageTokens(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CountAnthropicDirectMessageTokens(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CompleteAuthCLILogin operation middleware
 func (siw *ServerInterfaceWrapper) CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request) {
 
@@ -9351,6 +10245,34 @@ func (siw *ServerInterfaceWrapper) StartAuthSSOLogin(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.StartAuthSSOLogin(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OpenaiDirectRealtimeSession operation middleware
+func (siw *ServerInterfaceWrapper) OpenaiDirectRealtimeSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OpenaiDirectRealtimeSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateOpenAIDirectResponse operation middleware
+func (siw *ServerInterfaceWrapper) CreateOpenAIDirectResponse(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateOpenAIDirectResponse(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9770,20 +10692,6 @@ func (siw *ServerInterfaceWrapper) RealtimeSession(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
-// CreateRerank operation middleware
-func (siw *ServerInterfaceWrapper) CreateRerank(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateRerank(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // CreateResponse operation middleware
 func (siw *ServerInterfaceWrapper) CreateResponse(w http.ResponseWriter, r *http.Request) {
 
@@ -10025,7 +10933,6 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/chat/completions", wrapper.CreateChatCompletion)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/embeddings", wrapper.CreateEmbedding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/models", wrapper.ListModels)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/rerank", wrapper.CreateRerank)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/moderations", wrapper.CreateModeration)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/completions", wrapper.CreateCompletion)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/messages", wrapper.CreateAnthropicMessage)
@@ -10048,6 +10955,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/batches/{batch_id}/cancel", wrapper.CancelBatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/responses", wrapper.CreateResponse)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/realtime", wrapper.RealtimeSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/openai/v1/responses", wrapper.CreateOpenAIDirectResponse)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openai/v1/realtime", wrapper.OpenaiDirectRealtimeSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/anthropic/v1/messages", wrapper.CreateAnthropicDirectMessage)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/anthropic/v1/messages/count_tokens", wrapper.CountAnthropicDirectMessageTokens)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/users", wrapper.ListUsers)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/users", wrapper.CreateUser)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/subscriptions", wrapper.GetOrgSubscriptions)
@@ -10142,8 +11053,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/summary", wrapper.GetSpendSummary)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/spend/logs", wrapper.ListSpendLogs)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/audit/logs", wrapper.ListAuditLogs)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/spec", wrapper.GetMCPSpec)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/mcp/spec", wrapper.UpdateMCPSpec)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.ListMCPServers)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers", wrapper.CreateMCPServer)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}", wrapper.UpdateMCPServer)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/servers/{serverID}/sync", wrapper.SyncMCPServer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/mcp/toolsets", wrapper.ListMCPToolsets)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/mcp/toolsets", wrapper.CreateMCPToolset)
@@ -11851,6 +12765,32 @@ func (response CreateMCPServer201JSONResponse) VisitCreateMCPServerResponse(w ht
 	return err
 }
 
+type UpdateMCPServerRequestObject struct {
+	ServerID string `json:"serverID"`
+	Body     *UpdateMCPServerJSONRequestBody
+}
+
+type UpdateMCPServerResponseObject interface {
+	VisitUpdateMCPServerResponse(w http.ResponseWriter) error
+}
+
+type UpdateMCPServer200JSONResponse struct {
+	Server *map[string]interface{} `json:"server,omitempty"`
+	Status *string                 `json:"status,omitempty"`
+}
+
+func (response UpdateMCPServer200JSONResponse) VisitUpdateMCPServerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SyncMCPServerRequestObject struct {
 	ServerID string `json:"serverID"`
 }
@@ -11868,6 +12808,49 @@ type SyncMCPServer200JSONResponse struct {
 }
 
 func (response SyncMCPServer200JSONResponse) VisitSyncMCPServerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMCPSpecRequestObject struct {
+}
+
+type GetMCPSpecResponseObject interface {
+	VisitGetMCPSpecResponse(w http.ResponseWriter) error
+}
+
+type GetMCPSpec200JSONResponse AdminMCPSpecResponse
+
+func (response GetMCPSpec200JSONResponse) VisitGetMCPSpecResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMCPSpecRequestObject struct {
+	Body *UpdateMCPSpecJSONRequestBody
+}
+
+type UpdateMCPSpecResponseObject interface {
+	VisitUpdateMCPSpecResponse(w http.ResponseWriter) error
+}
+
+type UpdateMCPSpec200JSONResponse AdminMCPSpecResponse
+
+func (response UpdateMCPSpec200JSONResponse) VisitUpdateMCPSpecResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -13600,6 +14583,93 @@ func (response UpdateUser200JSONResponse) VisitUpdateUserResponse(w http.Respons
 	return err
 }
 
+type CreateAnthropicDirectMessageRequestObject struct {
+	Body *CreateAnthropicDirectMessageJSONRequestBody
+}
+
+type CreateAnthropicDirectMessageResponseObject interface {
+	VisitCreateAnthropicDirectMessageResponse(w http.ResponseWriter) error
+}
+
+type CreateAnthropicDirectMessage200JSONResponse AnthropicMessagesResponse
+
+func (response CreateAnthropicDirectMessage200JSONResponse) VisitCreateAnthropicDirectMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateAnthropicDirectMessage200TexteventStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAnthropicDirectMessage200TexteventStreamResponse) VisitCreateAnthropicDirectMessageResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// If w doesn't support flushing, fall back to io.Copy.
+		_, err := io.Copy(w, response.Body)
+		return err
+	}
+	// text/event-stream messages are typically small; use a
+	// modest buffer and flush after each chunk so clients see
+	// events immediately instead of waiting on OS buffering.
+	buf := make([]byte, 4096)
+	for {
+		n, err := response.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+type CountAnthropicDirectMessageTokensRequestObject struct {
+	Body *CountAnthropicDirectMessageTokensJSONRequestBody
+}
+
+type CountAnthropicDirectMessageTokensResponseObject interface {
+	VisitCountAnthropicDirectMessageTokensResponse(w http.ResponseWriter) error
+}
+
+type CountAnthropicDirectMessageTokens200JSONResponse AnthropicCountTokensResponse
+
+func (response CountAnthropicDirectMessageTokens200JSONResponse) VisitCountAnthropicDirectMessageTokensResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CompleteAuthCLILoginRequestObject struct {
 	LoginId string `json:"login_id"`
 	Params  CompleteAuthCLILoginParams
@@ -13901,6 +14971,43 @@ func (response StartAuthSSOLogin302Response) VisitStartAuthSSOLoginResponse(w ht
 	return nil
 }
 
+type OpenaiDirectRealtimeSessionRequestObject struct {
+}
+
+type OpenaiDirectRealtimeSessionResponseObject interface {
+	VisitOpenaiDirectRealtimeSessionResponse(w http.ResponseWriter) error
+}
+
+type OpenaiDirectRealtimeSession101Response struct {
+}
+
+func (response OpenaiDirectRealtimeSession101Response) VisitOpenaiDirectRealtimeSessionResponse(w http.ResponseWriter) error {
+	w.WriteHeader(101)
+	return nil
+}
+
+type CreateOpenAIDirectResponseRequestObject struct {
+	Body *CreateOpenAIDirectResponseJSONRequestBody
+}
+
+type CreateOpenAIDirectResponseResponseObject interface {
+	VisitCreateOpenAIDirectResponseResponse(w http.ResponseWriter) error
+}
+
+type CreateOpenAIDirectResponse200JSONResponse ResponsesAPIResponse
+
+func (response CreateOpenAIDirectResponse200JSONResponse) VisitCreateOpenAIDirectResponseResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateAudioSpeechRequestObject struct {
 	Body *CreateAudioSpeechJSONRequestBody
 }
@@ -13909,12 +15016,104 @@ type CreateAudioSpeechResponseObject interface {
 	VisitCreateAudioSpeechResponse(w http.ResponseWriter) error
 }
 
-type CreateAudioSpeech200Response struct {
+type CreateAudioSpeech200AudioaacResponse struct {
+	Body          io.Reader
+	ContentLength int64
 }
 
-func (response CreateAudioSpeech200Response) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+func (response CreateAudioSpeech200AudioaacResponse) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "audio/aac")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
 	w.WriteHeader(200)
-	return nil
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type CreateAudioSpeech200AudioflacResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAudioSpeech200AudioflacResponse) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "audio/flac")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type CreateAudioSpeech200AudiompegResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAudioSpeech200AudiompegResponse) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type CreateAudioSpeech200AudioopusResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAudioSpeech200AudioopusResponse) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "audio/opus")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type CreateAudioSpeech200AudiowavResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAudioSpeech200AudiowavResponse) VisitCreateAudioSpeechResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "audio/wav")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
 }
 
 type CreateAudioTranscriptionRequestObject struct {
@@ -13925,12 +15124,29 @@ type CreateAudioTranscriptionResponseObject interface {
 	VisitCreateAudioTranscriptionResponse(w http.ResponseWriter) error
 }
 
-type CreateAudioTranscription200Response struct {
+type CreateAudioTranscription200JSONResponse AudioTranscriptionResponse
+
+func (response CreateAudioTranscription200JSONResponse) VisitCreateAudioTranscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
-func (response CreateAudioTranscription200Response) VisitCreateAudioTranscriptionResponse(w http.ResponseWriter) error {
+type CreateAudioTranscription200TextResponse string
+
+func (response CreateAudioTranscription200TextResponse) VisitCreateAudioTranscriptionResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(200)
-	return nil
+
+	_, err := w.Write([]byte(fmt.Sprint(response)))
+	return err
 }
 
 type CreateAudioTranslationRequestObject struct {
@@ -13941,12 +15157,29 @@ type CreateAudioTranslationResponseObject interface {
 	VisitCreateAudioTranslationResponse(w http.ResponseWriter) error
 }
 
-type CreateAudioTranslation200Response struct {
+type CreateAudioTranslation200JSONResponse AudioTranscriptionResponse
+
+func (response CreateAudioTranslation200JSONResponse) VisitCreateAudioTranslationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
-func (response CreateAudioTranslation200Response) VisitCreateAudioTranslationResponse(w http.ResponseWriter) error {
+type CreateAudioTranslation200TextResponse string
+
+func (response CreateAudioTranslation200TextResponse) VisitCreateAudioTranslationResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(200)
-	return nil
+
+	_, err := w.Write([]byte(fmt.Sprint(response)))
+	return err
 }
 
 type ListBatchesRequestObject struct {
@@ -13956,15 +15189,22 @@ type ListBatchesResponseObject interface {
 	VisitListBatchesResponse(w http.ResponseWriter) error
 }
 
-type ListBatches200Response struct {
-}
+type ListBatches200JSONResponse BatchListResponse
 
-func (response ListBatches200Response) VisitListBatchesResponse(w http.ResponseWriter) error {
+func (response ListBatches200JSONResponse) VisitListBatchesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CreateBatchRequestObject struct {
+	Body *CreateBatchJSONRequestBody
 }
 
 type CreateBatchResponseObject interface {
@@ -13993,12 +15233,18 @@ type GetBatchResponseObject interface {
 	VisitGetBatchResponse(w http.ResponseWriter) error
 }
 
-type GetBatch200Response struct {
-}
+type GetBatch200JSONResponse BatchObject
 
-func (response GetBatch200Response) VisitGetBatchResponse(w http.ResponseWriter) error {
+func (response GetBatch200JSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CancelBatchRequestObject struct {
@@ -14009,12 +15255,18 @@ type CancelBatchResponseObject interface {
 	VisitCancelBatchResponse(w http.ResponseWriter) error
 }
 
-type CancelBatch200Response struct {
-}
+type CancelBatch200JSONResponse BatchObject
 
-func (response CancelBatch200Response) VisitCancelBatchResponse(w http.ResponseWriter) error {
+func (response CancelBatch200JSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CreateChatCompletionRequestObject struct {
@@ -14133,15 +15385,22 @@ type ListFilesResponseObject interface {
 	VisitListFilesResponse(w http.ResponseWriter) error
 }
 
-type ListFiles200Response struct {
-}
+type ListFiles200JSONResponse FileListResponse
 
-func (response ListFiles200Response) VisitListFilesResponse(w http.ResponseWriter) error {
+func (response ListFiles200JSONResponse) VisitListFilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type UploadFileRequestObject struct {
+	Body *multipart.Reader
 }
 
 type UploadFileResponseObject interface {
@@ -14170,12 +15429,18 @@ type DeleteFileResponseObject interface {
 	VisitDeleteFileResponse(w http.ResponseWriter) error
 }
 
-type DeleteFile200Response struct {
-}
+type DeleteFile200JSONResponse FileDeleteResponse
 
-func (response DeleteFile200Response) VisitDeleteFileResponse(w http.ResponseWriter) error {
+func (response DeleteFile200JSONResponse) VisitDeleteFileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetFileRequestObject struct {
@@ -14186,12 +15451,18 @@ type GetFileResponseObject interface {
 	VisitGetFileResponse(w http.ResponseWriter) error
 }
 
-type GetFile200Response struct {
-}
+type GetFile200JSONResponse FileObject
 
-func (response GetFile200Response) VisitGetFileResponse(w http.ResponseWriter) error {
+func (response GetFile200JSONResponse) VisitGetFileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetFileContentRequestObject struct {
@@ -14202,12 +15473,24 @@ type GetFileContentResponseObject interface {
 	VisitGetFileContentResponse(w http.ResponseWriter) error
 }
 
-type GetFileContent200Response struct {
+type GetFileContent200ApplicationoctetStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
 }
 
-func (response GetFileContent200Response) VisitGetFileContentResponse(w http.ResponseWriter) error {
+func (response GetFileContent200ApplicationoctetStreamResponse) VisitGetFileContentResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
 	w.WriteHeader(200)
-	return nil
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
 }
 
 type ApplyGuardrailsRequestObject struct {
@@ -14233,18 +15516,25 @@ func (response ApplyGuardrails200JSONResponse) VisitApplyGuardrailsResponse(w ht
 }
 
 type CreateImageEditRequestObject struct {
+	Body *multipart.Reader
 }
 
 type CreateImageEditResponseObject interface {
 	VisitCreateImageEditResponse(w http.ResponseWriter) error
 }
 
-type CreateImageEdit200Response struct {
-}
+type CreateImageEdit200JSONResponse ImageGenerationResponse
 
-func (response CreateImageEdit200Response) VisitCreateImageEditResponse(w http.ResponseWriter) error {
+func (response CreateImageEdit200JSONResponse) VisitCreateImageEditResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CreateImageGenerationRequestObject struct {
@@ -14270,18 +15560,25 @@ func (response CreateImageGeneration200JSONResponse) VisitCreateImageGenerationR
 }
 
 type CreateImageVariationRequestObject struct {
+	Body *multipart.Reader
 }
 
 type CreateImageVariationResponseObject interface {
 	VisitCreateImageVariationResponse(w http.ResponseWriter) error
 }
 
-type CreateImageVariation200Response struct {
-}
+type CreateImageVariation200JSONResponse ImageGenerationResponse
 
-func (response CreateImageVariation200Response) VisitCreateImageVariationResponse(w http.ResponseWriter) error {
+func (response CreateImageVariation200JSONResponse) VisitCreateImageVariationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetVirtualKeySelfInfoRequestObject struct {
@@ -14313,12 +15610,61 @@ type CreateAnthropicMessageResponseObject interface {
 	VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error
 }
 
-type CreateAnthropicMessage200Response struct {
+type CreateAnthropicMessage200JSONResponse AnthropicMessagesResponse
+
+func (response CreateAnthropicMessage200JSONResponse) VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
-func (response CreateAnthropicMessage200Response) VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error {
+type CreateAnthropicMessage200TexteventStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CreateAnthropicMessage200TexteventStreamResponse) VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
 	w.WriteHeader(200)
-	return nil
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// If w doesn't support flushing, fall back to io.Copy.
+		_, err := io.Copy(w, response.Body)
+		return err
+	}
+	// text/event-stream messages are typically small; use a
+	// modest buffer and flush after each chunk so clients see
+	// events immediately instead of waiting on OS buffering.
+	buf := make([]byte, 4096)
+	for {
+		n, err := response.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 type CountAnthropicMessageTokensRequestObject struct {
@@ -14329,12 +15675,18 @@ type CountAnthropicMessageTokensResponseObject interface {
 	VisitCountAnthropicMessageTokensResponse(w http.ResponseWriter) error
 }
 
-type CountAnthropicMessageTokens200Response struct {
-}
+type CountAnthropicMessageTokens200JSONResponse AnthropicCountTokensResponse
 
-func (response CountAnthropicMessageTokens200Response) VisitCountAnthropicMessageTokensResponse(w http.ResponseWriter) error {
+func (response CountAnthropicMessageTokens200JSONResponse) VisitCountAnthropicMessageTokensResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ListModelsRequestObject struct {
@@ -14344,12 +15696,18 @@ type ListModelsResponseObject interface {
 	VisitListModelsResponse(w http.ResponseWriter) error
 }
 
-type ListModels200Response struct {
-}
+type ListModels200JSONResponse ModelsListResponse
 
-func (response ListModels200Response) VisitListModelsResponse(w http.ResponseWriter) error {
+func (response ListModels200JSONResponse) VisitListModelsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CreateModerationRequestObject struct {
@@ -14387,28 +15745,6 @@ type RealtimeSession101Response struct {
 func (response RealtimeSession101Response) VisitRealtimeSessionResponse(w http.ResponseWriter) error {
 	w.WriteHeader(101)
 	return nil
-}
-
-type CreateRerankRequestObject struct {
-	Body *CreateRerankJSONRequestBody
-}
-
-type CreateRerankResponseObject interface {
-	VisitCreateRerankResponse(w http.ResponseWriter) error
-}
-
-type CreateRerank200JSONResponse RerankResponse
-
-func (response CreateRerank200JSONResponse) VisitCreateRerankResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
 }
 
 type CreateResponseRequestObject struct {
@@ -14735,9 +16071,18 @@ type StrictServerInterface interface {
 	// CreateMCPServer Register a downstream MCP server
 	// (POST /admin/v1/mcp/servers)
 	CreateMCPServer(ctx context.Context, request CreateMCPServerRequestObject) (CreateMCPServerResponseObject, error)
+	// UpdateMCPServer Update an existing downstream MCP server configuration and protocol specification
+	// (PUT /admin/v1/mcp/servers/{serverID})
+	UpdateMCPServer(ctx context.Context, request UpdateMCPServerRequestObject) (UpdateMCPServerResponseObject, error)
 	// SyncMCPServer Discover and synchronize tools from an MCP server
 	// (POST /admin/v1/mcp/servers/{serverID}/sync)
 	SyncMCPServer(ctx context.Context, request SyncMCPServerRequestObject) (SyncMCPServerResponseObject, error)
+	// GetMCPSpec Get active gateway-wide MCP API specification and supported releases
+	// (GET /admin/v1/mcp/spec)
+	GetMCPSpec(ctx context.Context, request GetMCPSpecRequestObject) (GetMCPSpecResponseObject, error)
+	// UpdateMCPSpec Switch the active gateway-wide MCP API specification release from Web UI
+	// (PUT /admin/v1/mcp/spec)
+	UpdateMCPSpec(ctx context.Context, request UpdateMCPSpecRequestObject) (UpdateMCPSpecResponseObject, error)
 	// ListMCPTools List discovered MCP tools for an organization or server
 	// (GET /admin/v1/mcp/tools)
 	ListMCPTools(ctx context.Context, request ListMCPToolsRequestObject) (ListMCPToolsResponseObject, error)
@@ -14930,6 +16275,12 @@ type StrictServerInterface interface {
 	// UpdateUser Update an existing user's role, team membership, budgets, and rate limits
 	// (PUT /admin/v1/users/{userID})
 	UpdateUser(ctx context.Context, request UpdateUserRequestObject) (UpdateUserResponseObject, error)
+	// CreateAnthropicDirectMessage Direct Anthropic wire-path Messages API ingress
+	// (POST /anthropic/v1/messages)
+	CreateAnthropicDirectMessage(ctx context.Context, request CreateAnthropicDirectMessageRequestObject) (CreateAnthropicDirectMessageResponseObject, error)
+	// CountAnthropicDirectMessageTokens Direct Anthropic wire-path token counting ingress
+	// (POST /anthropic/v1/messages/count_tokens)
+	CountAnthropicDirectMessageTokens(ctx context.Context, request CountAnthropicDirectMessageTokensRequestObject) (CountAnthropicDirectMessageTokensResponseObject, error)
 	// CompleteAuthCLILogin Authorize a pending CLI login from an authenticated Control Plane session
 	// (POST /auth/cli/complete/{login_id})
 	CompleteAuthCLILogin(ctx context.Context, request CompleteAuthCLILoginRequestObject) (CompleteAuthCLILoginResponseObject, error)
@@ -14960,6 +16311,12 @@ type StrictServerInterface interface {
 	// StartAuthSSOLogin Initiate Control Plane OIDC/SSO PKCE login
 	// (GET /auth/sso/{provider}/login)
 	StartAuthSSOLogin(ctx context.Context, request StartAuthSSOLoginRequestObject) (StartAuthSSOLoginResponseObject, error)
+	// OpenaiDirectRealtimeSession Direct OpenAI wire-path Realtime WebSocket session
+	// (GET /openai/v1/realtime)
+	OpenaiDirectRealtimeSession(ctx context.Context, request OpenaiDirectRealtimeSessionRequestObject) (OpenaiDirectRealtimeSessionResponseObject, error)
+	// CreateOpenAIDirectResponse Direct OpenAI wire-path Responses API ingress
+	// (POST /openai/v1/responses)
+	CreateOpenAIDirectResponse(ctx context.Context, request CreateOpenAIDirectResponseRequestObject) (CreateOpenAIDirectResponseResponseObject, error)
 	// CreateAudioSpeech Text-to-speech audio synthesis streaming
 	// (POST /v1/audio/speech)
 	CreateAudioSpeech(ctx context.Context, request CreateAudioSpeechRequestObject) (CreateAudioSpeechResponseObject, error)
@@ -14981,7 +16338,7 @@ type StrictServerInterface interface {
 	// CancelBatch Cancel in-progress batch
 	// (POST /v1/batches/{batch_id}/cancel)
 	CancelBatch(ctx context.Context, request CancelBatchRequestObject) (CancelBatchResponseObject, error)
-	// CreateChatCompletion Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
+	// CreateChatCompletion Create a unified chat completion across verified spec-first model providers (OpenAI, Anthropic, Groq, OpenRouter)
 	// (POST /v1/chat/completions)
 	CreateChatCompletion(ctx context.Context, request CreateChatCompletionRequestObject) (CreateChatCompletionResponseObject, error)
 	// CreateCompletion Legacy text completions with transparent modern chat fallback
@@ -15035,9 +16392,6 @@ type StrictServerInterface interface {
 	// RealtimeSession Text-only Realtime-compatible WebSocket session
 	// (GET /v1/realtime)
 	RealtimeSession(ctx context.Context, request RealtimeSessionRequestObject) (RealtimeSessionResponseObject, error)
-	// CreateRerank Cross-encoder document reranking via Cohere, Jina, or Voyage
-	// (POST /v1/rerank)
-	CreateRerank(ctx context.Context, request CreateRerankRequestObject) (CreateRerankResponseObject, error)
 	// CreateResponse Create a text or tool-calling response
 	// (POST /v1/responses)
 	CreateResponse(ctx context.Context, request CreateResponseRequestObject) (CreateResponseResponseObject, error)
@@ -16901,6 +18255,39 @@ func (sh *strictHandler) CreateMCPServer(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// UpdateMCPServer operation middleware
+func (sh *strictHandler) UpdateMCPServer(w http.ResponseWriter, r *http.Request, serverID string) {
+	var request UpdateMCPServerRequestObject
+
+	request.ServerID = serverID
+
+	var body UpdateMCPServerJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateMCPServer(ctx, request.(UpdateMCPServerRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateMCPServer")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateMCPServerResponseObject); ok {
+		if err := validResponse.VisitUpdateMCPServerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // SyncMCPServer operation middleware
 func (sh *strictHandler) SyncMCPServer(w http.ResponseWriter, r *http.Request, serverID string) {
 	var request SyncMCPServerRequestObject
@@ -16920,6 +18307,61 @@ func (sh *strictHandler) SyncMCPServer(w http.ResponseWriter, r *http.Request, s
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SyncMCPServerResponseObject); ok {
 		if err := validResponse.VisitSyncMCPServerResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMCPSpec operation middleware
+func (sh *strictHandler) GetMCPSpec(w http.ResponseWriter, r *http.Request) {
+	var request GetMCPSpecRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMCPSpec(ctx, request.(GetMCPSpecRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMCPSpec")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMCPSpecResponseObject); ok {
+		if err := validResponse.VisitGetMCPSpecResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateMCPSpec operation middleware
+func (sh *strictHandler) UpdateMCPSpec(w http.ResponseWriter, r *http.Request) {
+	var request UpdateMCPSpecRequestObject
+
+	var body UpdateMCPSpecJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateMCPSpec(ctx, request.(UpdateMCPSpecRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateMCPSpec")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateMCPSpecResponseObject); ok {
+		if err := validResponse.VisitUpdateMCPSpecResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -18767,6 +20209,68 @@ func (sh *strictHandler) UpdateUser(w http.ResponseWriter, r *http.Request, user
 	}
 }
 
+// CreateAnthropicDirectMessage operation middleware
+func (sh *strictHandler) CreateAnthropicDirectMessage(w http.ResponseWriter, r *http.Request) {
+	var request CreateAnthropicDirectMessageRequestObject
+
+	var body CreateAnthropicDirectMessageJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateAnthropicDirectMessage(ctx, request.(CreateAnthropicDirectMessageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateAnthropicDirectMessage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateAnthropicDirectMessageResponseObject); ok {
+		if err := validResponse.VisitCreateAnthropicDirectMessageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CountAnthropicDirectMessageTokens operation middleware
+func (sh *strictHandler) CountAnthropicDirectMessageTokens(w http.ResponseWriter, r *http.Request) {
+	var request CountAnthropicDirectMessageTokensRequestObject
+
+	var body CountAnthropicDirectMessageTokensJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CountAnthropicDirectMessageTokens(ctx, request.(CountAnthropicDirectMessageTokensRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CountAnthropicDirectMessageTokens")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CountAnthropicDirectMessageTokensResponseObject); ok {
+		if err := validResponse.VisitCountAnthropicDirectMessageTokensResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CompleteAuthCLILogin operation middleware
 func (sh *strictHandler) CompleteAuthCLILogin(w http.ResponseWriter, r *http.Request, loginId string, params CompleteAuthCLILoginParams) {
 	var request CompleteAuthCLILoginRequestObject
@@ -19034,6 +20538,61 @@ func (sh *strictHandler) StartAuthSSOLogin(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// OpenaiDirectRealtimeSession operation middleware
+func (sh *strictHandler) OpenaiDirectRealtimeSession(w http.ResponseWriter, r *http.Request) {
+	var request OpenaiDirectRealtimeSessionRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OpenaiDirectRealtimeSession(ctx, request.(OpenaiDirectRealtimeSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OpenaiDirectRealtimeSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OpenaiDirectRealtimeSessionResponseObject); ok {
+		if err := validResponse.VisitOpenaiDirectRealtimeSessionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateOpenAIDirectResponse operation middleware
+func (sh *strictHandler) CreateOpenAIDirectResponse(w http.ResponseWriter, r *http.Request) {
+	var request CreateOpenAIDirectResponseRequestObject
+
+	var body CreateOpenAIDirectResponseJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateOpenAIDirectResponse(ctx, request.(CreateOpenAIDirectResponseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateOpenAIDirectResponse")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateOpenAIDirectResponseResponseObject); ok {
+		if err := validResponse.VisitCreateOpenAIDirectResponseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateAudioSpeech operation middleware
 func (sh *strictHandler) CreateAudioSpeech(w http.ResponseWriter, r *http.Request) {
 	var request CreateAudioSpeechRequestObject
@@ -19154,6 +20713,13 @@ func (sh *strictHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 // CreateBatch operation middleware
 func (sh *strictHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	var request CreateBatchRequestObject
+
+	var body CreateBatchJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.CreateBatch(ctx, request.(CreateBatchRequestObject))
@@ -19348,6 +20914,13 @@ func (sh *strictHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 func (sh *strictHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	var request UploadFileRequestObject
 
+	if reader, err := r.MultipartReader(); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode multipart body: %w", err))
+		return
+	} else {
+		request.Body = reader
+	}
+
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.UploadFile(ctx, request.(UploadFileRequestObject))
 	}
@@ -19481,6 +21054,13 @@ func (sh *strictHandler) ApplyGuardrails(w http.ResponseWriter, r *http.Request)
 func (sh *strictHandler) CreateImageEdit(w http.ResponseWriter, r *http.Request) {
 	var request CreateImageEditRequestObject
 
+	if reader, err := r.MultipartReader(); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode multipart body: %w", err))
+		return
+	} else {
+		request.Body = reader
+	}
+
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.CreateImageEdit(ctx, request.(CreateImageEditRequestObject))
 	}
@@ -19535,6 +21115,13 @@ func (sh *strictHandler) CreateImageGeneration(w http.ResponseWriter, r *http.Re
 // CreateImageVariation operation middleware
 func (sh *strictHandler) CreateImageVariation(w http.ResponseWriter, r *http.Request) {
 	var request CreateImageVariationRequestObject
+
+	if reader, err := r.MultipartReader(); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode multipart body: %w", err))
+		return
+	} else {
+		request.Body = reader
+	}
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.CreateImageVariation(ctx, request.(CreateImageVariationRequestObject))
@@ -19714,37 +21301,6 @@ func (sh *strictHandler) RealtimeSession(w http.ResponseWriter, r *http.Request)
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RealtimeSessionResponseObject); ok {
 		if err := validResponse.VisitRealtimeSessionResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// CreateRerank operation middleware
-func (sh *strictHandler) CreateRerank(w http.ResponseWriter, r *http.Request) {
-	var request CreateRerankRequestObject
-
-	var body CreateRerankJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.CreateRerank(ctx, request.(CreateRerankRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "CreateRerank")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(CreateRerankResponseObject); ok {
-		if err := validResponse.VisitCreateRerankResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

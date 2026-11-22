@@ -249,51 +249,51 @@ func TestIntelligentRouter_DynamicRoutingAuthorization(t *testing.T) {
 		t.Fatalf("expected lifecycle status to be active, got %s", gm.LifecycleStatus)
 	}
 
-	// 5. Test direct catalogue import for a model defined in embedded catalog: "cerebras/llama-3.3-70b"
-	cerebrasCred := &domain.ProviderCredential{
-		ID:              "cred-cerebras-a",
+	// 5. Test direct catalogue import for a model defined in embedded catalog: "groq/openai/gpt-oss-20b"
+	groqCred2 := &domain.ProviderCredential{
+		ID:              "cred-groq-a2",
 		OrgID:           orgA.ID,
-		Provider:        domain.ProviderCerebras,
-		Name:            "cerebras-a",
-		DecryptedAPIKey: "csk_test",
+		Provider:        domain.ProviderGroq,
+		Name:            "groq-a2",
+		DecryptedAPIKey: "gsk_test",
 		IsActive:        true,
 	}
-	_ = repo.CreateProviderCredential(ctx, cerebrasCred)
+	_ = repo.CreateProviderCredential(ctx, groqCred2)
 	_ = repo.SetOrgProviderSubscription(ctx, &domain.OrgProviderSubscription{
 		OrgID:     orgA.ID,
-		Provider:  domain.ProviderCerebras,
+		Provider:  domain.ProviderGroq,
 		IsEnabled: true,
 	})
 
-	cerebrasReq := &domain.CanonicalChatRequest{
-		Model: "cerebras/llama-3.3-70b",
+	groqReq := &domain.CanonicalChatRequest{
+		Model: "groq/openai/gpt-oss-20b",
 		Messages: []domain.CanonicalMessage{
-			{Role: "user", Content: "Hello Cerebras"},
+			{Role: "user", Content: "Hello Groq"},
 		},
 	}
-	decCerebras, err := ir.ResolveGroup(ctx, orgA.ID, cerebrasReq)
+	decGroq, err := ir.ResolveGroup(ctx, orgA.ID, groqReq)
 	if err != nil {
-		t.Fatalf("expected successful dynamic routing for Cerebras, got %v", err)
+		t.Fatalf("expected successful dynamic routing for Groq, got %v", err)
 	}
-	if decCerebras.TargetGroupAlias != "llama-3.3-70b" {
-		t.Fatalf("expected alias llama-3.3-70b, got %s", decCerebras.TargetGroupAlias)
+	if decGroq.TargetGroupAlias != "openai/gpt-oss-20b" {
+		t.Fatalf("expected alias openai/gpt-oss-20b, got %s", decGroq.TargetGroupAlias)
 	}
 
-	gmCerebras, err := repo.GetGlobalModel(ctx, "cerebras/llama-3.3-70b")
-	if err != nil || gmCerebras == nil {
-		t.Fatalf("expected Cerebras model in repo, got %v", err)
+	gmGroq, err := repo.GetGlobalModel(ctx, "groq/openai/gpt-oss-20b")
+	if err != nil || gmGroq == nil {
+		t.Fatalf("expected Groq model in repo, got %v", err)
 	}
-	if gmCerebras.LifecycleStatus != domain.ModelStatusActive {
-		t.Fatalf("expected active lifecycle status, got %s", gmCerebras.LifecycleStatus)
+	if gmGroq.LifecycleStatus != domain.ModelStatusActive {
+		t.Fatalf("expected active lifecycle status, got %s", gmGroq.LifecycleStatus)
 	}
-	if gmCerebras.PricingProvenanceSource != "upstream-model-catalog-v1.1" {
-		t.Fatalf("expected provenance upstream-model-catalog-v1.1, got %s", gmCerebras.PricingProvenanceSource)
+	if gmGroq.PricingProvenanceSource != "upstream-model-catalog-v1.1" {
+		t.Fatalf("expected provenance upstream-model-catalog-v1.1, got %s", gmGroq.PricingProvenanceSource)
 	}
-	if gmCerebras.PricingStatus != domain.PricingStatusUnknown {
-		t.Fatalf("expected pricing status unknown, got %s", gmCerebras.PricingStatus)
+	if gmGroq.PricingStatus != domain.PricingStatusUnknown {
+		t.Fatalf("expected pricing status unknown, got %s", gmGroq.PricingStatus)
 	}
-	if gmCerebras.InputCostMicrosPer1M <= 0 {
-		t.Fatalf("expected non-zero input cost from catalog, got %d", gmCerebras.InputCostMicrosPer1M)
+	if gmGroq.InputCostMicrosPer1M <= 0 {
+		t.Fatalf("expected non-zero input cost from catalog, got %d", gmGroq.InputCostMicrosPer1M)
 	}
 }
 

@@ -6,11 +6,20 @@ import (
 
 // MCP protocol versions, transport drivers, and authentication modes.
 const (
-	MCPProtocolVersion2026 = "2026-07-28"
-	MCPProtocolVersion2025 = "2025-11-25"
+	MCPProtocolVersion20241105 = "2024-11-05"
+	MCPProtocolVersion20250326 = "2025-03-26"
+	MCPProtocolVersion20250618 = "2025-06-18"
+	MCPProtocolVersion20251125 = "2025-11-25"
+	MCPProtocolVersion20260728 = "2026-07-28"
+
+	// Legacy short aliases kept for internal callers.
+	MCPProtocolVersion2026 = MCPProtocolVersion20260728
+	MCPProtocolVersion2025 = MCPProtocolVersion20251125
 
 	MCPTransportStreamableHTTP = "streamable_http"
-	MCPTransportStdio          = "stdio" // Deferred to BL-02 sandbox
+	MCPTransportHTTPSSE2024    = "http_sse_2024"
+	MCPTransportStdio          = "stdio"
+	MCPTransportOpenAPI        = "openapi"
 
 	MCPAuthNone       = "none"
 	MCPAuthStatic     = "static"
@@ -18,6 +27,24 @@ const (
 	MCPAuthDelegation = "delegation"
 	MCPAuthVaultJWT   = "vault_jwt"
 )
+
+// MCPRuntimeSettings holds the gateway-wide active MCP API specification configured via Web UI/Control Plane.
+type MCPRuntimeSettings struct {
+	ActiveProtocolVersion  string    `json:"active_protocol_version"`
+	StrictSchemaValidation bool      `json:"strict_schema_validation"`
+	UpdatedBy              string    `json:"updated_by,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+// IsSupportedMCPTransportType reports whether transportType is a valid MCP upstream transport identifier.
+func IsSupportedMCPTransportType(transportType string) bool {
+	switch transportType {
+	case MCPTransportStreamableHTTP, MCPTransportHTTPSSE2024, MCPTransportStdio, MCPTransportOpenAPI:
+		return true
+	default:
+		return false
+	}
+}
 
 // MCPServer defines an upstream Model Context Protocol server definition and connection parameters.
 type MCPServer struct {

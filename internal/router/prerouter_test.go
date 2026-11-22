@@ -392,9 +392,9 @@ func TestPreRouterQualityTierSelectionAndCacheAwareMode(t *testing.T) {
 		LifecycleStatus:       domain.ModelStatusActive,
 	}
 	standardModel := &domain.GlobalModel{
-		ID:                    "google/gemini-2.5-flash",
-		Provider:              domain.ProviderGemini,
-		ModelName:             "gemini-2.5-flash",
+		ID:                    "openrouter/openai/gpt-4o-mini",
+		Provider:              domain.ProviderOpenRouter,
+		ModelName:             "openai/gpt-4o-mini",
 		SupportsInference:     true,
 		SupportsStreaming:     true,
 		SupportsTools:         true,

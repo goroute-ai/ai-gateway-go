@@ -1,13 +1,13 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
+	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -39,19 +40,20 @@ func WithLimiter(l *ratelimit.Limiter) HubOption {
 
 // Hub orchestrates multi-server MCP routing, tool aggregation, toolsets, and security enforcement.
 type Hub struct {
-	repo          storage.Repository
-	vault         *auth.Vault
-	rbac          *auth.RBACEngine
-	dispatcher    *TransportDispatcher
-	authResolver  *AuthResolver
-	cache         *MCPCache
-	mrtr          *MRTRManager
-	subs          *SubscriptionManager
-	guardrails    *guardrails.Engine
-	pipeline      *guardrails.Pipeline
-	limiter       *ratelimit.Limiter
-	spendRecorder SpendRecorder
-	progressive   *ProgressiveDiscoveryManager
+	repo            storage.Repository
+	vault           *auth.Vault
+	rbac            *auth.RBACEngine
+	dispatcher      *TransportDispatcher
+	authResolver    *AuthResolver
+	cache           *MCPCache
+	mrtr            *MRTRManager
+	subs            *SubscriptionManager
+	guardrails      *guardrails.Engine
+	pipeline        *guardrails.Pipeline
+	limiter         *ratelimit.Limiter
+	spendRecorder   SpendRecorder
+	progressive     *ProgressiveDiscoveryManager
+	runtimeSettings atomic.Pointer[domain.MCPRuntimeSettings]
 }
 
 // SetCache attaches the response cache used for cacheable MCP tool calls and listings.
@@ -134,7 +136,7 @@ func NewHub(
 ) *Hub {
 	pdm := NewProgressiveDiscoveryManager(repo, nil, HandleTTL)
 	pdm.SetRBAC(rbac)
-	return &Hub{
+	h := &Hub{
 		repo:         repo,
 		vault:        vault,
 		rbac:         rbac,
@@ -142,6 +144,48 @@ func NewHub(
 		authResolver: authResolver,
 		progressive:  pdm,
 	}
+	h.SetRuntimeSettings(domain.MCPRuntimeSettings{
+		ActiveProtocolVersion: spec.DefaultVersion,
+	})
+	return h
+}
+
+// SetRuntimeSettings updates the active gateway-wide MCP API specification selected via Web UI.
+func (h *Hub) SetRuntimeSettings(settings domain.MCPRuntimeSettings) {
+	if h == nil {
+		return
+	}
+	if !spec.IsSupported(settings.ActiveProtocolVersion) {
+		settings.ActiveProtocolVersion = spec.DefaultVersion
+	}
+	cp := settings
+	h.runtimeSettings.Store(&cp)
+}
+
+// RuntimeSettings returns the active gateway-wide MCP specification settings.
+func (h *Hub) RuntimeSettings() domain.MCPRuntimeSettings {
+	if h == nil {
+		return domain.MCPRuntimeSettings{ActiveProtocolVersion: spec.DefaultVersion}
+	}
+	if ptr := h.runtimeSettings.Load(); ptr != nil {
+		return *ptr
+	}
+	return domain.MCPRuntimeSettings{ActiveProtocolVersion: spec.DefaultVersion}
+}
+
+// ActiveSpec returns the currently active official MCP release version string.
+func (h *Hub) ActiveSpec() string {
+	return h.RuntimeSettings().ActiveProtocolVersion
+}
+
+// ActiveProfile returns the compiled SpecProfile driver matching the active UI-selected MCP release.
+func (h *Hub) ActiveProfile() SpecProfile {
+	ver := h.ActiveSpec()
+	prof, err := ProfileForVersion(ver)
+	if err != nil {
+		prof, _ = ProfileForVersion(spec.DefaultVersion)
+	}
+	return prof
 }
 
 // ListTools returns the list of MCP tools available to the caller under their authorized scope.
@@ -703,6 +747,110 @@ func (h *Hub) recordMCPToolSpend(
 	return nil
 }
 
+// HTTPDispatchResult holds the structured output of an HTTP MCP dispatch across all official specs.
+type HTTPDispatchResult struct {
+	HTTPStatus      int
+	ExtraHeaders    http.Header
+	IsBatch         bool
+	IsNotification  bool
+	SingleResponse  *JSONRPCResponse
+	BatchResponses  []*JSONRPCResponse
+	SubscriptionReq *JSONRPCRequest // non-nil when `subscriptions/listen` SSE stream should be opened
+}
+
+// DispatchHTTP executes an incoming HTTP MCP JSON-RPC request (single, batch, or notification)
+// enforcing the gateway's active UI-selected MCP specification profile.
+func (h *Hub) DispatchHTTP(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	routeKind string, // "hub", "scoped", "toolset"
+	targetSlug string,
+	r *http.Request,
+	reqBody []byte,
+) (*HTTPDispatchResult, error) {
+	profile := h.ActiveProfile()
+	settings := h.RuntimeSettings()
+
+	msgs, isBatch, rpcErr := profile.ParseAndValidateBody(r, reqBody, settings.StrictSchemaValidation)
+	if rpcErr != nil {
+		resp := &JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   rpcErr,
+		}
+		return &HTTPDispatchResult{
+			HTTPStatus:     profile.HTTPStatusForResponse(false, resp),
+			SingleResponse: resp,
+		}, nil
+	}
+
+	dispatchSingle := func(parsed ParsedRPCMessage) (*JSONRPCResponse, http.Header, error) {
+		switch routeKind {
+		case "scoped":
+			return h.dispatchScopedRequest(ctx, idCtx, targetSlug, &parsed.Request, parsed.Raw, r.Header, profile)
+		case "toolset":
+			return h.dispatchToolsetRequest(ctx, idCtx, targetSlug, &parsed.Request, r.Header, profile)
+		default:
+			return h.dispatchVirtualRequest(ctx, idCtx, &parsed.Request, r.Header, profile)
+		}
+	}
+
+	if !isBatch {
+		msg := msgs[0]
+		if msg.Request.Method == "subscriptions/listen" && profile.Info().SupportsSubscriptionsPost {
+			return &HTTPDispatchResult{
+				HTTPStatus:      http.StatusOK,
+				SubscriptionReq: &msg.Request,
+			}, nil
+		}
+
+		resp, extraHdrs, err := dispatchSingle(msg)
+		if err != nil {
+			return nil, err
+		}
+		if msg.IsNotification && (resp == nil || resp.Error == nil) && profile.Version() != domain.MCPProtocolVersion20241105 {
+			return &HTTPDispatchResult{
+				HTTPStatus:     http.StatusAccepted,
+				ExtraHeaders:   extraHdrs,
+				IsNotification: true,
+			}, nil
+		}
+		return &HTTPDispatchResult{
+			HTTPStatus:     profile.HTTPStatusForResponse(msg.IsNotification, resp),
+			ExtraHeaders:   extraHdrs,
+			SingleResponse: resp,
+		}, nil
+	}
+
+	batchOut := make([]*JSONRPCResponse, 0, len(msgs))
+	var combinedHeaders http.Header
+	for _, msg := range msgs {
+		resp, extraHdrs, err := dispatchSingle(msg)
+		if err != nil {
+			return nil, err
+		}
+		if combinedHeaders == nil && len(extraHdrs) > 0 {
+			combinedHeaders = extraHdrs
+		}
+		if !msg.IsNotification && resp != nil {
+			batchOut = append(batchOut, resp)
+		}
+	}
+	if len(batchOut) == 0 {
+		return &HTTPDispatchResult{
+			HTTPStatus:     http.StatusAccepted,
+			ExtraHeaders:   combinedHeaders,
+			IsBatch:        true,
+			IsNotification: true,
+		}, nil
+	}
+	return &HTTPDispatchResult{
+		HTTPStatus:     http.StatusOK,
+		ExtraHeaders:   combinedHeaders,
+		IsBatch:        true,
+		BatchResponses: batchOut,
+	}, nil
+}
+
 // DispatchVirtualHub routes calls to the multi-server virtual hub (`POST /mcp`).
 func (h *Hub) DispatchVirtualHub(
 	ctx context.Context,
@@ -710,39 +858,69 @@ func (h *Hub) DispatchVirtualHub(
 	reqBody []byte,
 	reqHeaders http.Header,
 ) (*JSONRPCResponse, http.Header, error) {
-	var jsonReq JSONRPCRequest
-	dec := json.NewDecoder(bytes.NewReader(reqBody))
-	dec.UseNumber()
-	if err := dec.Decode(&jsonReq); err != nil {
+	profile := h.ActiveProfile()
+	req := &http.Request{Header: reqHeaders}
+	msgs, _, rpcErr := profile.ParseAndValidateBody(req, reqBody, false)
+	if rpcErr != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
-			Error: &JSONRPCError{
-				Code:    CodeParseError,
-				Message: fmt.Sprintf("invalid json-rpc: %v", err),
+			Error:   rpcErr,
+		}, nil, nil
+	}
+	return h.dispatchVirtualRequest(ctx, idCtx, &msgs[0].Request, reqHeaders, profile)
+}
+
+func (h *Hub) dispatchVirtualRequest(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	jsonReq *JSONRPCRequest,
+	reqHeaders http.Header,
+	profile SpecProfile,
+) (*JSONRPCResponse, http.Header, error) {
+	switch jsonReq.Method {
+	case "server/discover":
+		if !profile.Info().SupportsServerDiscover {
+			return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
+		}
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      jsonReq.ID,
+			Result: profile.ShapeResult("server/discover", map[string]any{
+				"supportedVersions": []string{profile.Version()},
+				"capabilities":      gatewayServerCapabilities(profile),
+				"instructions":      "GoRoute AI Gateway MCP Virtual Hub",
+			}),
+		}, nil, nil
+	case "initialize":
+		if !profile.Info().RequiresInitialize {
+			return methodNotFoundRPC(jsonReq.ID, "initialize (removed in "+profile.Version()+"; use server/discover or _meta)", profile.Version()), nil, nil
+		}
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      jsonReq.ID,
+			Result: map[string]any{
+				"protocolVersion": profile.Version(),
+				"capabilities":    gatewayServerCapabilities(profile),
+				"serverInfo": map[string]any{
+					"name":    "GoRoute AI Gateway MCP Hub",
+					"version": profile.Version(),
+				},
 			},
 		}, nil, nil
-	}
-
-	// Validate mirrored header parameters for tools/call
-	if err := ValidateMirroredHeaderParameters(&http.Request{Header: reqHeaders}, &jsonReq); err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      jsonReq.ID,
-			Error:   err,
-		}, nil, nil
-	}
-
-	switch jsonReq.Method {
-	case "tools/list":
-		return h.handleVirtualToolsList(ctx, idCtx, jsonReq.ID)
-	case "tools/call":
-		return h.handleVirtualToolsCall(ctx, idCtx, &jsonReq, reqBody, reqHeaders)
+	case "notifications/initialized":
+		if !profile.Info().RequiresInitialize {
+			return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
+		}
+		return &JSONRPCResponse{JSONRPC: "2.0", ID: jsonReq.ID, Result: map[string]any{}}, nil, nil
 	case "ping":
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      jsonReq.ID,
-			Result:  map[string]any{},
-		}, nil, nil
+		if !profile.SupportsMethod("ping") {
+			return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
+		}
+		return &JSONRPCResponse{JSONRPC: "2.0", ID: jsonReq.ID, Result: map[string]any{}}, nil, nil
+	case "tools/list":
+		return h.handleVirtualToolsList(ctx, idCtx, jsonReq.ID, profile)
+	case "tools/call":
+		return h.handleVirtualToolsCall(ctx, idCtx, jsonReq, reqHeaders, profile)
 	default:
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -755,6 +933,28 @@ func (h *Hub) DispatchVirtualHub(
 	}
 }
 
+func gatewayServerCapabilities(profile SpecProfile) map[string]any {
+	caps := map[string]any{
+		"tools": map[string]any{"listChanged": true},
+	}
+	if !profile.SupportsMethod("ping") {
+		caps["resources"] = map[string]any{"subscribe": true, "listChanged": true}
+		caps["prompts"] = map[string]any{"listChanged": true}
+	}
+	return caps
+}
+
+func methodNotFoundRPC(id any, method, version string) *JSONRPCResponse {
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    CodeMethodNotFound,
+			Message: fmt.Sprintf("method %q not supported in MCP specification %s", method, version),
+		},
+	}
+}
+
 // DispatchScopedServer routes calls directly to a specific MCP server (`POST /mcp/{serverSlug}`).
 func (h *Hub) DispatchScopedServer(
 	ctx context.Context,
@@ -762,6 +962,26 @@ func (h *Hub) DispatchScopedServer(
 	serverSlug string,
 	reqBody []byte,
 	reqHeaders http.Header,
+) (*JSONRPCResponse, http.Header, error) {
+	profile := h.ActiveProfile()
+	msgs, _, rpcErr := profile.ParseAndValidateBody(&http.Request{Header: reqHeaders}, reqBody, false)
+	if rpcErr != nil {
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   rpcErr,
+		}, nil, nil
+	}
+	return h.dispatchScopedRequest(ctx, idCtx, serverSlug, &msgs[0].Request, msgs[0].Raw, reqHeaders, profile)
+}
+
+func (h *Hub) dispatchScopedRequest(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	serverSlug string,
+	jsonReq *JSONRPCRequest,
+	reqBody []byte,
+	reqHeaders http.Header,
+	profile SpecProfile,
 ) (*JSONRPCResponse, http.Header, error) {
 	serverSlug = strings.TrimSpace(serverSlug)
 	orgID := ""
@@ -773,6 +993,7 @@ func (h *Hub) DispatchScopedServer(
 	if err != nil || !server.IsActive {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
+			ID:      jsonReq.ID,
 			Error: &JSONRPCError{
 				Code:    CodeInvalidRequest,
 				Message: fmt.Sprintf("mcp server %q not found or inactive", serverSlug),
@@ -788,6 +1009,7 @@ func (h *Hub) DispatchScopedServer(
 			})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
+				ID:      jsonReq.ID,
 				Error: &JSONRPCError{
 					Code:    CodeInvalidRequest,
 					Message: fmt.Sprintf("Forbidden: %v", err),
@@ -796,29 +1018,12 @@ func (h *Hub) DispatchScopedServer(
 		}
 	}
 
-	var jsonReq JSONRPCRequest
-	dec := json.NewDecoder(bytes.NewReader(reqBody))
-	dec.UseNumber()
-	if err := dec.Decode(&jsonReq); err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error: &JSONRPCError{
-				Code:    CodeParseError,
-				Message: fmt.Sprintf("invalid json-rpc: %v", err),
-			},
-		}, nil, nil
-	}
-
-	if err := ValidateMirroredHeaderParameters(&http.Request{Header: reqHeaders}, &jsonReq); err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      jsonReq.ID,
-			Error:   err,
-		}, nil, nil
+	if !profile.SupportsMethod(jsonReq.Method) {
+		return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
 	}
 
 	if jsonReq.Method == "tools/call" {
-		return h.dispatchScopedToolsCall(ctx, idCtx, serverSlug, &jsonReq, reqHeaders)
+		return h.dispatchScopedToolsCall(ctx, idCtx, serverSlug, jsonReq, reqHeaders, profile)
 	}
 
 	var cacheKey string
@@ -829,11 +1034,13 @@ func (h *Hub) DispatchScopedServer(
 		}
 		cacheKey = h.cache.ComputeCacheKey(orgID, keyPrefix, serverSlug, "tools/list", nil, server.ConfigVersion)
 		if cachedResp, ok := h.cache.Get(ctx, cacheKey); ok {
-			if errResp := h.verifyCachedListPinning(ctx, server, &jsonReq); errResp != nil {
+			if errResp := h.verifyCachedListPinning(ctx, server, jsonReq); errResp != nil {
 				return errResp, nil, nil
 			}
-			cachedResp.ID = jsonReq.ID
-			return cachedResp, nil, nil
+			shapedCopy := *cachedResp
+			shapedCopy.ID = jsonReq.ID
+			shapedCopy.Result = profile.ShapeResult(jsonReq.Method, shapedCopy.Result)
+			return &shapedCopy, nil, nil
 		}
 	}
 
@@ -882,6 +1089,9 @@ func (h *Hub) DispatchScopedServer(
 		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
 	}
 
+	if resp.Result != nil {
+		resp.Result = profile.ShapeResult(jsonReq.Method, resp.Result)
+	}
 	return resp, respHeaders, nil
 }
 
@@ -902,6 +1112,7 @@ func (h *Hub) dispatchScopedToolsCall(
 	serverSlug string,
 	jsonReq *JSONRPCRequest,
 	reqHeaders http.Header,
+	profile SpecProfile,
 ) (*JSONRPCResponse, http.Header, error) {
 	var toolCallParams struct {
 		Name      string         `json:"name"`
@@ -921,7 +1132,7 @@ func (h *Hub) dispatchScopedToolsCall(
 		ToolName:   toolCallParams.Name,
 		Arguments:  toolCallParams.Arguments,
 	}, CallMetadata{
-		ProtocolVersion: domain.MCPProtocolVersion2026,
+		ProtocolVersion: profile.Version(),
 		RequestID:       fmt.Sprint(jsonReq.ID),
 		CallerMetadata:  callerMeta,
 	})
@@ -929,19 +1140,10 @@ func (h *Hub) dispatchScopedToolsCall(
 		return scopedJSONRPCError(jsonReq.ID, err.Error()), nil, nil
 	}
 
-	resMap := map[string]any{
-		"content": callResp.Content,
-	}
-	if callResp.IsError {
-		resMap["isError"] = true
-	}
-	if len(callResp.Meta) > 0 {
-		resMap["_meta"] = callResp.Meta
-	}
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      jsonReq.ID,
-		Result:  resMap,
+		Result:  buildCallToolResultMap(callResp, profile),
 	}, nil, nil
 }
 
@@ -966,6 +1168,25 @@ func (h *Hub) DispatchToolset(
 	reqBody []byte,
 	reqHeaders http.Header,
 ) (*JSONRPCResponse, http.Header, error) {
+	profile := h.ActiveProfile()
+	msgs, _, rpcErr := profile.ParseAndValidateBody(&http.Request{Header: reqHeaders}, reqBody, false)
+	if rpcErr != nil {
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   rpcErr,
+		}, nil, nil
+	}
+	return h.dispatchToolsetRequest(ctx, idCtx, toolsetSlug, &msgs[0].Request, reqHeaders, profile)
+}
+
+func (h *Hub) dispatchToolsetRequest(
+	ctx context.Context,
+	idCtx *domain.IdentityContext,
+	toolsetSlug string,
+	jsonReq *JSONRPCRequest,
+	reqHeaders http.Header,
+	profile SpecProfile,
+) (*JSONRPCResponse, http.Header, error) {
 	toolsetSlug = strings.TrimSpace(toolsetSlug)
 	orgID := ""
 	if idCtx != nil {
@@ -976,6 +1197,7 @@ func (h *Hub) DispatchToolset(
 	if err != nil || !toolset.IsActive {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
+			ID:      jsonReq.ID,
 			Error: &JSONRPCError{
 				Code:    CodeInvalidRequest,
 				Message: fmt.Sprintf("toolset %q not found or inactive", toolsetSlug),
@@ -983,22 +1205,34 @@ func (h *Hub) DispatchToolset(
 		}, nil, nil
 	}
 
-	var jsonReq JSONRPCRequest
-	dec := json.NewDecoder(bytes.NewReader(reqBody))
-	dec.UseNumber()
-	if err := dec.Decode(&jsonReq); err != nil {
+	switch jsonReq.Method {
+	case "server/discover":
+		if !profile.Info().SupportsServerDiscover {
+			return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
+		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
-			Error: &JSONRPCError{
-				Code:    CodeParseError,
-				Message: fmt.Sprintf("invalid json-rpc: %v", err),
+			ID:      jsonReq.ID,
+			Result: profile.ShapeResult("server/discover", map[string]any{
+				"supportedVersions": []string{profile.Version()},
+				"capabilities":      map[string]any{"tools": map[string]any{"listChanged": false}},
+			}),
+		}, nil, nil
+	case "initialize":
+		if !profile.Info().RequiresInitialize {
+			return methodNotFoundRPC(jsonReq.ID, jsonReq.Method, profile.Version()), nil, nil
+		}
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      jsonReq.ID,
+			Result: map[string]any{
+				"protocolVersion": profile.Version(),
+				"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+				"serverInfo":      map[string]any{"name": "GoRoute Toolset " + toolsetSlug, "version": profile.Version()},
 			},
 		}, nil, nil
-	}
-
-	switch jsonReq.Method {
 	case "tools/list":
-		var allowedTools []map[string]any
+		allowedTools := make([]map[string]any, 0, len(toolset.ToolIDs))
 		for _, toolID := range toolset.ToolIDs {
 			tool, err := h.repo.GetMCPTool(ctx, toolID)
 			if err != nil || !tool.IsActive {
@@ -1011,18 +1245,22 @@ func (h *Hub) DispatchToolset(
 			if h.rbac != nil && h.rbac.AuthorizeMCPServer(idCtx, server.Slug) != nil {
 				continue
 			}
+			inSchema := tool.InputSchema
+			if inSchema == nil {
+				inSchema = map[string]any{"type": "object"}
+			}
 			allowedTools = append(allowedTools, map[string]any{
 				"name":        tool.Name,
 				"description": tool.Description,
-				"inputSchema": tool.InputSchema,
+				"inputSchema": inSchema,
 			})
 		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      jsonReq.ID,
-			Result: map[string]any{
+			Result: profile.ShapeResult("tools/list", map[string]any{
 				"tools": allowedTools,
-			},
+			}),
 		}, nil, nil
 
 	case "tools/call":
@@ -1076,7 +1314,7 @@ func (h *Hub) DispatchToolset(
 			ToolName:   params.Name,
 			Arguments:  params.Arguments,
 		}, CallMetadata{
-			ProtocolVersion: domain.MCPProtocolVersion2026,
+			ProtocolVersion: profile.Version(),
 			RequestID:       fmt.Sprint(jsonReq.ID),
 			CallerMetadata:  callerMeta,
 		})
@@ -1091,20 +1329,10 @@ func (h *Hub) DispatchToolset(
 			}, nil, nil
 		}
 
-		resMap := map[string]any{
-			"content": callResp.Content,
-		}
-		if callResp.IsError {
-			resMap["isError"] = true
-		}
-		if len(callResp.Meta) > 0 {
-			resMap["_meta"] = callResp.Meta
-		}
-
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      jsonReq.ID,
-			Result:  resMap,
+			Result:  buildCallToolResultMap(callResp, profile),
 		}, nil, nil
 
 	default:
@@ -1119,7 +1347,7 @@ func (h *Hub) DispatchToolset(
 	}
 }
 
-func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.IdentityContext, id any) (*JSONRPCResponse, http.Header, error) {
+func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.IdentityContext, id any, profile SpecProfile) (*JSONRPCResponse, http.Header, error) {
 	orgID := ""
 	if idCtx != nil {
 		orgID = idCtx.OrgID
@@ -1130,7 +1358,7 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 		return nil, nil, err
 	}
 
-	var aggregatedTools []map[string]any
+	aggregatedTools := make([]map[string]any, 0)
 	serverOutcomes := make(map[string]string)
 
 	for _, s := range servers {
@@ -1149,10 +1377,14 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 
 		for _, t := range tools {
 			if t != nil && t.IsActive {
+				inSchema := t.InputSchema
+				if inSchema == nil {
+					inSchema = map[string]any{"type": "object"}
+				}
 				aggregatedTools = append(aggregatedTools, map[string]any{
 					"name":        t.Name,
 					"description": t.Description,
-					"inputSchema": t.InputSchema,
+					"inputSchema": inSchema,
 				})
 			}
 		}
@@ -1162,12 +1394,12 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
-		Result: map[string]any{
+		Result: profile.ShapeResult("tools/list", map[string]any{
 			"tools": aggregatedTools,
 			"_meta": map[string]any{
 				"goroute.ai/server_outcomes": serverOutcomes,
 			},
-		},
+		}),
 	}, nil, nil
 }
 
@@ -1175,8 +1407,8 @@ func (h *Hub) handleVirtualToolsCall(
 	ctx context.Context,
 	idCtx *domain.IdentityContext,
 	req *JSONRPCRequest,
-	reqBody []byte,
 	reqHeaders http.Header,
+	profile SpecProfile,
 ) (*JSONRPCResponse, http.Header, error) {
 	var params struct {
 		Name      string         `json:"name"`
@@ -1204,7 +1436,7 @@ func (h *Hub) handleVirtualToolsCall(
 		ToolName:   params.Name,
 		Arguments:  params.Arguments,
 	}, CallMetadata{
-		ProtocolVersion: domain.MCPProtocolVersion2026,
+		ProtocolVersion: profile.Version(),
 		RequestID:       fmt.Sprint(req.ID),
 		CallerMetadata:  callerMeta,
 	})
@@ -1227,21 +1459,37 @@ func (h *Hub) handleVirtualToolsCall(
 		}, nil, nil
 	}
 
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  buildCallToolResultMap(callResp, profile),
+	}, nil, nil
+}
+
+func buildCallToolResultMap(callResp *CallToolResponse, profile SpecProfile) map[string]any {
+	content := callResp.Content
+	if content == nil {
+		content = []ToolContent{}
+	}
 	resMap := map[string]any{
-		"content": callResp.Content,
+		"content": content,
 	}
 	if callResp.IsError {
 		resMap["isError"] = true
 	}
+	if callResp.StructuredContent != nil && profile.Info().SupportsStructuredContent {
+		resMap["structuredContent"] = callResp.StructuredContent
+	}
+	if callResp.ResultType != "" {
+		resMap["resultType"] = callResp.ResultType
+	}
 	if len(callResp.Meta) > 0 {
 		resMap["_meta"] = callResp.Meta
 	}
-
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result:  resMap,
-	}, nil, nil
+	if shaped, ok := profile.ShapeResult("tools/call", resMap).(map[string]any); ok {
+		return shaped
+	}
+	return resMap
 }
 
 func extractCallToolResponse(result any) (*CallToolResponse, error) {
@@ -1280,6 +1528,51 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 			callResp.Meta = metaMap
 		}
 	}
+	if sc, exists := resMap["structuredContent"]; exists {
+		callResp.StructuredContent = sc
+	}
+	if rt, exists := resMap["resultType"]; exists {
+		if rts, ok := rt.(string); ok {
+			callResp.ResultType = rts
+		}
+	}
+
+	decodeContentItem := func(itemMap map[string]any) ToolContent {
+		tc := ToolContent{
+			Type: fmt.Sprint(itemMap["type"]),
+		}
+		if txt, ok := itemMap["text"].(string); ok {
+			tc.Text = txt
+		}
+		if data, ok := itemMap["data"].(string); ok {
+			tc.Data = data
+		}
+		if mime, ok := itemMap["mimeType"].(string); ok {
+			tc.MimeType = mime
+		}
+		if uri, ok := itemMap["uri"].(string); ok {
+			tc.URI = uri
+		}
+		if name, ok := itemMap["name"].(string); ok {
+			tc.Name = name
+		}
+		if title, ok := itemMap["title"].(string); ok {
+			tc.Title = title
+		}
+		if desc, ok := itemMap["description"].(string); ok {
+			tc.Description = desc
+		}
+		if res, ok := itemMap["resource"].(map[string]any); ok {
+			tc.Resource = res
+		}
+		if ann, ok := itemMap["annotations"].(map[string]any); ok {
+			tc.Annotations = ann
+		}
+		if m, ok := itemMap["_meta"].(map[string]any); ok {
+			tc.Meta = m
+		}
+		return tc
+	}
 
 	// content
 	if rawContent, exists := resMap["content"]; exists {
@@ -1289,42 +1582,12 @@ func extractCallToolResponse(result any) (*CallToolResponse, error) {
 		case []any:
 			for _, item := range c {
 				if itemMap, ok := item.(map[string]any); ok {
-					tc := ToolContent{
-						Type: fmt.Sprint(itemMap["type"]),
-					}
-					if txt, ok := itemMap["text"].(string); ok {
-						tc.Text = txt
-					}
-					if data, ok := itemMap["data"].(string); ok {
-						tc.Data = data
-					}
-					if mime, ok := itemMap["mimeType"].(string); ok {
-						tc.MimeType = mime
-					}
-					if res, ok := itemMap["resource"].(map[string]any); ok {
-						tc.Resource = res
-					}
-					callResp.Content = append(callResp.Content, tc)
+					callResp.Content = append(callResp.Content, decodeContentItem(itemMap))
 				}
 			}
 		case []map[string]any:
 			for _, itemMap := range c {
-				tc := ToolContent{
-					Type: fmt.Sprint(itemMap["type"]),
-				}
-				if txt, ok := itemMap["text"].(string); ok {
-					tc.Text = txt
-				}
-				if data, ok := itemMap["data"].(string); ok {
-					tc.Data = data
-				}
-				if mime, ok := itemMap["mimeType"].(string); ok {
-					tc.MimeType = mime
-				}
-				if res, ok := itemMap["resource"].(map[string]any); ok {
-					tc.Resource = res
-				}
-				callResp.Content = append(callResp.Content, tc)
+				callResp.Content = append(callResp.Content, decodeContentItem(itemMap))
 			}
 		}
 	}

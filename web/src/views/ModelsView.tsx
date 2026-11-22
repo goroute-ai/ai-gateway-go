@@ -495,14 +495,8 @@ export const ModelsView: React.FC = () => {
               <option value="">All Providers</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
-              <option value="gemini">Google Gemini</option>
-              <option value="bedrock">AWS Bedrock</option>
-              <option value="vertex">Google Vertex AI</option>
-              <option value="azure">Azure OpenAI</option>
-              <option value="cohere">Cohere</option>
               <option value="groq">Groq</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="ollama">Ollama</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
 

@@ -78,7 +78,6 @@ const (
 	OperationCompletion      OperationType = "completion"
 	OperationResponses       OperationType = "responses"
 	OperationEmbedding       OperationType = "embedding"
-	OperationRerank          OperationType = "rerank"
 	OperationModeration      OperationType = "moderation"
 	OperationImageGeneration OperationType = "image_generation"
 	OperationImageEdit       OperationType = "image_edit"
@@ -90,40 +89,39 @@ const (
 
 // GlobalModel represents Layer 1 of Model Management: the Global Model Catalogue.
 type GlobalModel struct {
-	ID                            string               `json:"id"` // e.g. "openai/gpt-4.1"
-	Provider                      ProviderType         `json:"provider"`
-	ModelName                     string               `json:"model_name"` // e.g. "gpt-4.1"
-	DisplayName                   string               `json:"display_name"`
-	MaxInputTokens                int                  `json:"max_input_tokens"`
-	MaxOutputTokens               int                  `json:"max_output_tokens"`
-	Capabilities                  ModelCapabilities    `json:"capabilities"`
-	SupportedOperations           []OperationType      `json:"supported_operations,omitempty"`
-	SupportsStreaming             bool                 `json:"supports_streaming"`
-	SupportsTools                 bool                 `json:"supports_tools"`
-	SupportsVision                bool                 `json:"supports_vision"`
-	SupportsReasoning             bool                 `json:"supports_reasoning"`
-	SupportsEmbeddings            bool                 `json:"supports_embeddings"`
-	SupportsInference             bool                 `json:"supports_inference"`
-	InputCostMicrosPer1M          int64                `json:"input_cost_micros_per_1m"`
-	OutputCostMicrosPer1M         int64                `json:"output_cost_micros_per_1m"`
-	CachedInputCostMicrosPer1M    int64                `json:"cached_input_cost_micros_per_1m"`
-	CacheWriteCostMicrosPer1M     int64                `json:"cache_write_cost_micros_per_1m,omitempty"`
-	ReasoningCostMicrosPer1M      int64                `json:"reasoning_cost_micros_per_1m"`
-	RerankCostMicrosPerSearchUnit int64                `json:"rerank_cost_micros_per_search_unit,omitempty"`
-	ImageCostMicrosBase           int64                `json:"image_cost_micros_base,omitempty"`
-	ImageCostMicrosHD             int64                `json:"image_cost_micros_hd,omitempty"`
-	AudioSTTCostMicrosPerSecond   int64                `json:"audio_stt_cost_micros_per_second,omitempty"`
-	AudioTTSCostMicrosPer1KChars  int64                `json:"audio_tts_cost_micros_per_1k_chars,omitempty"`
-	ModalityPricingJSON           map[string]any       `json:"modality_pricing_json,omitempty"`
-	PricingVersion                int                  `json:"pricing_version"`
-	PricingStatus                 PricingStatus        `json:"pricing_status"`
-	PricingProvenanceSource       string               `json:"pricing_provenance_source,omitempty"`
-	PricingEffectiveDate          string               `json:"pricing_effective_date,omitempty"`
-	QualityTier                   int                  `json:"quality_tier,omitempty"`
-	LifecycleStatus               ModelLifecycleStatus `json:"lifecycle_status"`
-	DeprecationDate               *time.Time           `json:"deprecation_date,omitempty"`
-	DiscoveredAt                  time.Time            `json:"discovered_at"`
-	UpdatedAt                     time.Time            `json:"updated_at"`
+	ID                           string               `json:"id"` // e.g. "openai/gpt-4.1"
+	Provider                     ProviderType         `json:"provider"`
+	ModelName                    string               `json:"model_name"` // e.g. "gpt-4.1"
+	DisplayName                  string               `json:"display_name"`
+	MaxInputTokens               int                  `json:"max_input_tokens"`
+	MaxOutputTokens              int                  `json:"max_output_tokens"`
+	Capabilities                 ModelCapabilities    `json:"capabilities"`
+	SupportedOperations          []OperationType      `json:"supported_operations,omitempty"`
+	SupportsStreaming            bool                 `json:"supports_streaming"`
+	SupportsTools                bool                 `json:"supports_tools"`
+	SupportsVision               bool                 `json:"supports_vision"`
+	SupportsReasoning            bool                 `json:"supports_reasoning"`
+	SupportsEmbeddings           bool                 `json:"supports_embeddings"`
+	SupportsInference            bool                 `json:"supports_inference"`
+	InputCostMicrosPer1M         int64                `json:"input_cost_micros_per_1m"`
+	OutputCostMicrosPer1M        int64                `json:"output_cost_micros_per_1m"`
+	CachedInputCostMicrosPer1M   int64                `json:"cached_input_cost_micros_per_1m"`
+	CacheWriteCostMicrosPer1M    int64                `json:"cache_write_cost_micros_per_1m,omitempty"`
+	ReasoningCostMicrosPer1M     int64                `json:"reasoning_cost_micros_per_1m"`
+	ImageCostMicrosBase          int64                `json:"image_cost_micros_base,omitempty"`
+	ImageCostMicrosHD            int64                `json:"image_cost_micros_hd,omitempty"`
+	AudioSTTCostMicrosPerSecond  int64                `json:"audio_stt_cost_micros_per_second,omitempty"`
+	AudioTTSCostMicrosPer1KChars int64                `json:"audio_tts_cost_micros_per_1k_chars,omitempty"`
+	ModalityPricingJSON          map[string]any       `json:"modality_pricing_json,omitempty"`
+	PricingVersion               int                  `json:"pricing_version"`
+	PricingStatus                PricingStatus        `json:"pricing_status"`
+	PricingProvenanceSource      string               `json:"pricing_provenance_source,omitempty"`
+	PricingEffectiveDate         string               `json:"pricing_effective_date,omitempty"`
+	QualityTier                  int                  `json:"quality_tier,omitempty"`
+	LifecycleStatus              ModelLifecycleStatus `json:"lifecycle_status"`
+	DeprecationDate              *time.Time           `json:"deprecation_date,omitempty"`
+	DiscoveredAt                 time.Time            `json:"discovered_at"`
+	UpdatedAt                    time.Time            `json:"updated_at"`
 }
 
 // SupportsOperation reports whether the model supports the requested operation.
@@ -149,8 +147,6 @@ func (gm *GlobalModel) SupportsOperation(op OperationType) bool {
 		return false
 	case OperationEmbedding:
 		return gm.SupportsEmbeddings || caps.Embeddings == CapabilitySupported
-	case OperationRerank:
-		return caps.Rerank == CapabilitySupported
 	case OperationModeration:
 		return caps.Moderation == CapabilitySupported
 	case OperationImageGeneration:
@@ -236,9 +232,6 @@ func (gm *GlobalModel) ResolveCapabilities() ModelCapabilities {
 	if caps.StructuredOutputs == "" {
 		caps.StructuredOutputs = CapabilityUnknown
 	}
-	if caps.Rerank == "" {
-		caps.Rerank = CapabilityUnknown
-	}
 	if caps.Moderation == "" {
 		caps.Moderation = CapabilityUnknown
 	}
@@ -288,26 +281,24 @@ type OrgModelPolicy struct {
 
 // ProviderCredential represents Boundary 2 encrypted credentials in the Vault.
 type ProviderCredential struct {
-	ID                  string            `json:"id"`
-	OrgID               string            `json:"org_id"`
-	Provider            ProviderType      `json:"provider"`
-	Name                string            `json:"name"`
-	BaseURL             string            `json:"base_url"`
-	EncryptedAPIKey     []byte            `json:"-"`
-	DataNonce           []byte            `json:"-"`
-	EncryptedDEK        []byte            `json:"-"`
-	DEKNonce            []byte            `json:"-"`
-	DecryptedAPIKey     string            `json:"-"` // Populated in memory only when needed by adapter
-	KeyVersion          int               `json:"key_version"`
-	ExpiresAt           *time.Time        `json:"expires_at,omitempty"`
-	LastRotatedAt       *time.Time        `json:"last_rotated_at,omitempty"`
-	LastValidatedAt     *time.Time        `json:"last_validated_at,omitempty"`
-	AzureDeploymentName string            `json:"azure_deployment_name,omitempty"`
-	APIVersion          string            `json:"api_version,omitempty"`
-	Headers             map[string]string `json:"headers,omitempty"`
-	IsActive            bool              `json:"is_active"`
-	CreatedAt           time.Time         `json:"created_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
+	ID              string            `json:"id"`
+	OrgID           string            `json:"org_id"`
+	Provider        ProviderType      `json:"provider"`
+	Name            string            `json:"name"`
+	BaseURL         string            `json:"base_url"`
+	EncryptedAPIKey []byte            `json:"-"`
+	DataNonce       []byte            `json:"-"`
+	EncryptedDEK    []byte            `json:"-"`
+	DEKNonce        []byte            `json:"-"`
+	DecryptedAPIKey string            `json:"-"` // Populated in memory only when needed by adapter
+	KeyVersion      int               `json:"key_version"`
+	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
+	LastRotatedAt   *time.Time        `json:"last_rotated_at,omitempty"`
+	LastValidatedAt *time.Time        `json:"last_validated_at,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	IsActive        bool              `json:"is_active"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 // GuardrailAction specifies how the gateway responds when a security guardrail is triggered.

@@ -19,11 +19,10 @@ export const Badge: React.FC<BadgeProps> = ({
     const prov = provider.toLowerCase();
     let colorStyle = 'bg-surface-elevated text-brand-body border-border-subtle';
 
-    if (prov.includes('openai') || prov.includes('cohere')) colorStyle = 'status-success';
-    else if (prov.includes('anthropic') || prov.includes('bedrock') || prov.includes('amazon') || prov.includes('mistral')) colorStyle = 'status-warning';
-    else if (prov.includes('gemini') || prov.includes('google') || prov.includes('vertex')) colorStyle = 'status-info';
+    if (prov.includes('openai')) colorStyle = 'status-success';
+    else if (prov.includes('anthropic')) colorStyle = 'status-warning';
+    else if (prov.includes('openrouter')) colorStyle = 'status-info';
     else if (prov.includes('groq')) colorStyle = 'status-danger';
-    else if (prov.includes('deepseek')) colorStyle = 'status-indigo';
 
     return (
       <span className={`inline-flex items-center rounded-md border font-mono ${sizeClasses} ${colorStyle}`}>

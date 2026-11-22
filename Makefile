@@ -1,6 +1,6 @@
-.PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-load test-security test-docker-smoke test-k8s-smoke test-canary test-prod-containers test-prod-suite prod-stack-up prod-stack-down specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-postgres test-e2e-strict test-ui-e2e test-security specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
-VERSION ?= v1.23.0
+VERSION ?= v1.24.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -54,7 +54,8 @@ deadcode:
 	fi
 
 specgen:
-	@echo "==> Regenerating gateway OpenAPI types and validating contracts..."
+	@echo "==> Regenerating gateway OpenAPI + MCP spec types and validating contracts..."
+	@go generate ./internal/mcp/spec
 	@go generate ./internal/openapi
 
 catalog-sync:
@@ -107,51 +108,10 @@ test-ui-e2e:
 	@echo "==> Running headless Chromium Operator Web UI E2E suite (SSO, Virtual Keys & Multi-Window Quotas)..."
 	bash tests/ui-e2e/run_ui_e2e.sh
 
-test-load:
-	@echo "==> Running load benchmarks & concurrency stress tests..."
-	go test -bench=. -benchmem -run=^$$ ./internal/server ./internal/router
-	GATEWAY_RUN_SOAK=$${GATEWAY_RUN_SOAK:-0} go test -v -count=1 ./tests/load/...
-
 test-security:
 	@echo "==> Running security & vulnerability checks..."
 	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "govulncheck not installed; skipping"; fi
 	go test -race -v -count=1 ./internal/security/... ./internal/auth/... ./tests/e2e -run TestSecurity
-
-test-docker-smoke:
-	@echo "==> Running full-stack Docker Compose smoke verification..."
-	./tests/scripts/verify_docker_k8s.sh docker
-
-test-k8s-smoke:
-	@echo "==> Running Kubernetes multi-replica verification..."
-	./tests/scripts/verify_docker_k8s.sh k8s
-
-test-canary:
-	@echo "==> Running key-gated live provider canary tests..."
-	go test -tags=canary -v -count=1 ./tests/canary/...
-
-test-prod-containers:
-	@echo "==> Running containerized 8-phase production security, functional, HA, and k6 load suite..."
-	./tests/scripts/run_container_prod_suite.sh
-
-test-prod-suite:
-	@echo "==> Running production verification suite (PHASE=$${PHASE:-all})..."
-	./tests/scripts/run_container_prod_suite.sh $${PHASE:+--phase "$$PHASE"}
-
-prod-stack-up:
-	@echo "==> Starting production-like 2-replica Docker stack (HTTPS :28443, Prometheus :19090)..."
-	./tests/scripts/run_container_prod_suite.sh --phase 2 --keep-stack
-
-prod-stack-down:
-	@echo "==> Stopping production-like 2-replica Docker stack..."
-	POSTGRES_PASSWORD=$${POSTGRES_PASSWORD:-down} \
-	REDIS_PASSWORD=$${REDIS_PASSWORD:-down} \
-	GATEWAY_MASTER_ADMIN_KEY=$${GATEWAY_MASTER_ADMIN_KEY:-down-placeholder} \
-	GATEWAY_MASTER_ENCRYPTION_KEY=$${GATEWAY_MASTER_ENCRYPTION_KEY:-down-placeholder-down-placeholder} \
-	GATEWAY_JWT_SECRET=$${GATEWAY_JWT_SECRET:-down-placeholder} \
-	GATEWAY_UI_PASSWORD=$${GATEWAY_UI_PASSWORD:-down-placeholder} \
-	GATEWAY_SESSION_SECRET=$${GATEWAY_SESSION_SECRET:-down-placeholder-down-placeholder} \
-	GATEWAY_ROTATION_DELIVERY_TOKEN=$${GATEWAY_ROTATION_DELIVERY_TOKEN:-down-placeholder} \
-	docker compose -f deployments/docker-compose.prod-test.yml down -v --remove-orphans
 
 # ------------------------------------------------------------------------------
 # Docker & Deployment
@@ -196,7 +156,7 @@ ui-dev:
 
 clean:
 	@echo "==> Cleaning build and test artifacts..."
-	@rm -rf gateway bin/ dist/ *.test
+	@rm -rf gateway bin/ dist/ *.test tests/ui-e2e/node_modules
 
 release-assets:
 	@echo "==> Packaging multi-platform binaries, checksums, and Kubernetes/Helm artifacts ($(VERSION))..."
@@ -226,7 +186,7 @@ release-assets:
 	    helm package dist/helm-stage/goroute --app-version "$${CLEAN_VER}" -d dist/)) && \
 	  rm -rf dist/helm-stage; \
 	fi; \
-	(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum *; else shasum -a 256 *; fi > checksums.txt); \
+	(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum * > .checksums.txt.tmp; else shasum -a 256 * > .checksums.txt.tmp; fi && mv .checksums.txt.tmp checksums.txt); \
 	ls -lh dist/
 
 release-check: vet specgen ui-check-dist test-unit test-guardrails test-e2e

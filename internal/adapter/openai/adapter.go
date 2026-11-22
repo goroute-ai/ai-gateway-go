@@ -61,12 +61,23 @@ func (a *Adapter) resolveEndpoint(cred *domain.ProviderCredential, suffix string
 	return base + suffix, nil
 }
 
+func resolveModel(dep *domain.Deployment, resolved, requested string) string {
+	if resolved != "" {
+		return resolved
+	}
+	if dep != nil && dep.GlobalModel != nil && dep.GlobalModel.ModelName != "" {
+		return dep.GlobalModel.ModelName
+	}
+	return requested
+}
+
 func isReasoningModel(model string) bool {
 	m := strings.ToLower(model)
 	return strings.HasPrefix(m, "o1") ||
 		strings.HasPrefix(m, "o3") ||
 		strings.HasPrefix(m, "o4") ||
-		strings.HasPrefix(m, "gpt-5")
+		strings.HasPrefix(m, "gpt-5") ||
+		strings.HasPrefix(m, "gpt-6")
 }
 
 func mapOpenAIReasoningEffort(effort string) string {
@@ -187,13 +198,7 @@ func marshalOpenAIRequestWithExtras(payload providers.OpenAIChatCompletionReques
 }
 
 func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest) (*domain.CanonicalChatResponse, error) {
-	model := req.ResolvedModel
-	if model == "" && dep != nil && dep.GlobalModel != nil {
-		model = dep.GlobalModel.ModelName
-	}
-	if model == "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	payload := toOpenAIRequest(model, req, false)
 	bodyBytes, err := marshalOpenAIRequestWithExtras(payload, req.ExtraParams)
@@ -290,13 +295,7 @@ func (a *Adapter) ChatCompletion(ctx context.Context, dep *domain.Deployment, re
 
 func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalChatRequest, onChunk adapter.StreamChunkHandler) (*domain.TokenUsage, error) {
 	ctx = adapter.StreamingContext(ctx)
-	model := req.ResolvedModel
-	if model == "" && dep != nil && dep.GlobalModel != nil {
-		model = dep.GlobalModel.ModelName
-	}
-	if model == "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	payload := toOpenAIRequest(model, req, true)
 	bodyBytes, err := marshalOpenAIRequestWithExtras(payload, req.ExtraParams)
@@ -354,13 +353,7 @@ func (a *Adapter) StreamChatCompletion(ctx context.Context, dep *domain.Deployme
 }
 
 func (a *Adapter) Embeddings(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
-	model := req.ResolvedModel
-	if model == "" && dep != nil && dep.GlobalModel != nil {
-		model = dep.GlobalModel.ModelName
-	}
-	if model == "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	payload := providers.OpenAIEmbeddingRequest{
 		Model:          model,
@@ -480,10 +473,7 @@ func (a *Adapter) Moderate(ctx context.Context, dep *domain.Deployment, req *dom
 			Message:    "deployment cannot be nil",
 		}
 	}
-	model := dep.GlobalModel.ModelName
-	if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyMap := map[string]any{
 		"model": model,
@@ -567,12 +557,7 @@ func (a *Adapter) TextCompletion(ctx context.Context, dep *domain.Deployment, re
 		}
 	}
 
-	model := dep.GlobalModel.ModelName
-	if req.ResolvedModel != "" {
-		model = req.ResolvedModel
-	} else if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyMap := map[string]any{
 		"model": model,
@@ -687,12 +672,7 @@ func (a *Adapter) StreamTextCompletion(ctx context.Context, dep *domain.Deployme
 	}
 
 	ctx = adapter.StreamingContext(ctx)
-	model := dep.GlobalModel.ModelName
-	if req.ResolvedModel != "" {
-		model = req.ResolvedModel
-	} else if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyMap := map[string]any{
 		"model":  model,
@@ -832,12 +812,7 @@ func (a *Adapter) TranscribeAudio(ctx context.Context, dep *domain.Deployment, r
 		}
 	}
 
-	model := dep.GlobalModel.ModelName
-	if req.ResolvedModel != "" {
-		model = req.ResolvedModel
-	} else if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyBuf := &bytes.Buffer{}
 	mpWriter := multipart.NewWriter(bodyBuf)
@@ -972,12 +947,7 @@ func (a *Adapter) GenerateSpeech(ctx context.Context, dep *domain.Deployment, re
 		}
 	}
 
-	model := dep.GlobalModel.ModelName
-	if req.ResolvedModel != "" {
-		model = req.ResolvedModel
-	} else if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyMap := map[string]any{
 		"model": model,
@@ -1045,12 +1015,7 @@ func (a *Adapter) GenerateImage(ctx context.Context, dep *domain.Deployment, req
 		}
 	}
 
-	model := dep.GlobalModel.ModelName
-	if req.ResolvedModel != "" {
-		model = req.ResolvedModel
-	} else if req.Model != "" {
-		model = req.Model
-	}
+	model := resolveModel(dep, req.ResolvedModel, req.Model)
 
 	bodyMap := map[string]any{
 		"prompt": req.Prompt,

@@ -465,14 +465,14 @@ func TestAdminLifecycle_SoftBudgetFieldsRoundTrip(t *testing.T) {
 	rec = doReq(http.MethodPut, "/admin/v1/teams/team_sb_rt", map[string]any{
 		"soft_budget_micros":          2_000_000,
 		"throttle_on_budget_exceeded": true,
-		"budget_fallbacks":            map[string][]string{"gpt-4.1": {"gemini-2.5-flash"}},
+		"budget_fallbacks":            map[string][]string{"gpt-4.1": {"gpt-4o-mini"}},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update team status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var teamResp domain.Team
 	_ = json.Unmarshal(rec.Body.Bytes(), &teamResp)
-	if teamResp.SoftBudgetMicros != 2_000_000 || !teamResp.ThrottleOnBudgetExceeded || teamResp.BudgetFallbacks["gpt-4.1"][0] != "gemini-2.5-flash" {
+	if teamResp.SoftBudgetMicros != 2_000_000 || !teamResp.ThrottleOnBudgetExceeded || teamResp.BudgetFallbacks["gpt-4.1"][0] != "gpt-4o-mini" {
 		t.Fatalf("unexpected updated team: %+v", teamResp)
 	}
 

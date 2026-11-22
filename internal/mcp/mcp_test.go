@@ -189,13 +189,15 @@ func TestHTTPTransportConstraints(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status)
 	assert.Error(t, err)
 
-	// Protocol version check
-	assert.Nil(t, ValidateProtocolVersion("2026-07-28"))
-	assert.Nil(t, ValidateProtocolVersion("2025-11-25"))
-	assert.Nil(t, ValidateProtocolVersion(""))
-	badVer := ValidateProtocolVersion("2024-11-05")
+	// Protocol version check across all 5 generated official releases
+	for _, ver := range []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28", ""} {
+		assert.Nil(t, ValidateProtocolVersion(ver))
+	}
+	badVer := ValidateProtocolVersion("2023-01-01")
 	require.NotNil(t, badVer)
 	assert.Equal(t, CodeUnsupportedProtocolVersion, badVer.Code)
+	require.NotNil(t, badVer.Data)
+	assert.Equal(t, "2023-01-01", badVer.Data["requested"])
 
 	// Client capability check
 	capErr := ValidateClientCapabilities([]string{"sampling", "roots"}, map[string]any{"sampling": map[string]any{}})

@@ -15,7 +15,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func TestRegistryAll19ProvidersAndWave23Build(t *testing.T) {
+func TestRegistryAll15ProvidersAndWave23Build(t *testing.T) {
 	memRepo := storage.NewMemoryRepository()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -37,9 +37,6 @@ func TestRegistryAll19ProvidersAndWave23Build(t *testing.T) {
 	)
 
 	expected := []string{
-		ProviderAzurePromptShield,
-		ProviderAzureTextModerations,
-		ProviderBedrock,
 		ProviderCodeExecution,
 		CustomCodeProvider,
 		ProviderDecisionModel,
@@ -50,7 +47,6 @@ func TestRegistryAll19ProvidersAndWave23Build(t *testing.T) {
 		ProviderLocalContentFilter,
 		ProviderMCPEndUserPermission,
 		ProviderMCPSecurity,
-		ProviderModelArmor,
 		ProviderOpenAIModeration,
 		ProviderPangea,
 		ProviderPresidio,
@@ -60,8 +56,8 @@ func TestRegistryAll19ProvidersAndWave23Build(t *testing.T) {
 	slices.Sort(expected)
 
 	got := reg.Providers()
-	if len(got) != 19 {
-		t.Fatalf("expected 19 registered providers, got %d (%v)", len(got), got)
+	if len(got) != 15 {
+		t.Fatalf("expected 15 registered providers, got %d (%v)", len(got), got)
 	}
 	if !slices.Equal(got, expected) {
 		t.Fatalf("Providers() = %v, want %v", got, expected)

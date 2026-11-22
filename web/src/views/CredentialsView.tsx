@@ -25,8 +25,6 @@ export const CredentialsView: React.FC = () => {
   const [name, setName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [baseURL, setBaseURL] = useState('');
-  const [azureDeployment, setAzureDeployment] = useState('');
-  const [apiVersion, setApiVersion] = useState('');
   const [headersJSON, setHeadersJSON] = useState('');
   const [headersError, setHeadersError] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState('');
@@ -92,8 +90,6 @@ export const CredentialsView: React.FC = () => {
     setName('');
     setApiKey('');
     setBaseURL('');
-    setAzureDeployment('');
-    setApiVersion('');
     setHeadersJSON('');
     setHeadersError(null);
     setExpiresAt('');
@@ -123,7 +119,7 @@ export const CredentialsView: React.FC = () => {
   };
 
   const handlePreflightTest = async () => {
-    if (!apiKey.trim() && provider !== 'ollama') return;
+    if (!apiKey.trim()) return;
     const headers = parseHeaders();
     if (headers === false) return;
     setPreflightTesting(true);
@@ -134,8 +130,6 @@ export const CredentialsView: React.FC = () => {
         provider,
         api_key: apiKey.trim(),
         base_url: baseURL.trim() || undefined,
-        azure_deployment_name: azureDeployment.trim() || undefined,
-        api_version: apiVersion.trim() || undefined,
         headers,
       });
       setPreflightResult(res);
@@ -161,8 +155,6 @@ export const CredentialsView: React.FC = () => {
       name: name.trim(),
       api_key: apiKey.trim(),
       base_url: baseURL.trim() || undefined,
-      azure_deployment_name: azureDeployment.trim() || undefined,
-      api_version: apiVersion.trim() || undefined,
       headers,
     };
     if (expiresAt) {
@@ -175,21 +167,8 @@ export const CredentialsView: React.FC = () => {
   const providersList: { id: ProviderType; label: string }[] = [
     { id: 'openai', label: 'OpenAI' },
     { id: 'anthropic', label: 'Anthropic Claude' },
-    { id: 'gemini', label: 'Google Gemini' },
-    { id: 'bedrock', label: 'AWS Bedrock' },
-    { id: 'vertex', label: 'Google Cloud Vertex AI' },
-    { id: 'azure', label: 'Azure OpenAI' },
-    { id: 'cohere', label: 'Cohere' },
-    { id: 'mistral', label: 'Mistral AI' },
     { id: 'groq', label: 'Groq' },
-    { id: 'deepseek', label: 'DeepSeek' },
-    { id: 'together', label: 'Together AI' },
-    { id: 'sambanova', label: 'SambaNova' },
-    { id: 'fireworks', label: 'Fireworks AI' },
-    { id: 'perplexity', label: 'Perplexity' },
-    { id: 'ollama', label: 'Ollama (Local)' },
-    { id: 'cerebras', label: 'Cerebras' },
-    { id: 'xai', label: 'xAI Grok' },
+    { id: 'openrouter', label: 'OpenRouter' },
   ];
 
   return (
@@ -332,7 +311,7 @@ export const CredentialsView: React.FC = () => {
           ))
         ) : (
           <div className="col-span-full py-12 text-center text-brand-muted text-xs">
-            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Gemini, Bedrock, etc.
+            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Groq, or OpenRouter.
           </div>
         )}
       </div>
@@ -361,23 +340,12 @@ export const CredentialsView: React.FC = () => {
           </div>
 
           <Field label="API Key *">
-            <input type="password" required={provider !== 'ollama'} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder={provider === 'ollama' ? 'Optional for Ollama' : 'sk-...'} className={MONO_INPUT_CLS} />
+            <input type="password" required value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder="sk-..." className={MONO_INPUT_CLS} />
           </Field>
 
           <Field label="Custom Base URL (Optional)">
-            <input type="text" value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="e.g. https://my-vllm.internal:8000/v1 or http://localhost:11434" className={MONO_INPUT_CLS} />
+            <input type="text" value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="e.g. https://api.openai.com/v1 or https://openrouter.ai/api/v1" className={MONO_INPUT_CLS} />
           </Field>
-
-          {provider === 'azure' && (
-            <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
-              <Field label="Azure Deployment Name">
-                <input type="text" value={azureDeployment} onChange={(e) => setAzureDeployment(e.target.value)} placeholder="e.g. gpt-4o-deployment" className={`${MONO_INPUT_CLS} py-1.5`} />
-              </Field>
-              <Field label="API Version">
-                <input type="text" value={apiVersion} onChange={(e) => setApiVersion(e.target.value)} placeholder="2024-08-01-preview" className={`${MONO_INPUT_CLS} py-1.5`} />
-              </Field>
-            </div>
-          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Custom Headers JSON (Optional)">
@@ -420,7 +388,7 @@ export const CredentialsView: React.FC = () => {
             <button
               type="button"
               onClick={handlePreflightTest}
-              disabled={preflightTesting || (!apiKey.trim() && provider !== 'ollama')}
+              disabled={preflightTesting || !apiKey.trim()}
               className={BTN_ACC}
             >
               <Zap className={`w-3.5 h-3.5 ${preflightTesting ? 'animate-spin' : ''}`} />

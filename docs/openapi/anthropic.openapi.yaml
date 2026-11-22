@@ -1542,6 +1542,10 @@ components:
           description: Amount of randomness injected into the response. Defaults to 1.0. Use lower values for analytical tasks and higher values for creative tasks.
         thinking:
           $ref: '#/components/schemas/ThinkingRequest'
+        output_config:
+          $ref: '#/components/schemas/OutputConfig'
+        output_format:
+          $ref: '#/components/schemas/OutputFormat'
         tool_choice:
           $ref: '#/components/schemas/ToolChoiceRequest'
         tools:
@@ -1555,6 +1559,27 @@ components:
           minimum: 0
           maximum: 1
           description: Only sample from tokens with cumulative probability less than this value
+
+    OutputConfig:
+      type: object
+      properties:
+        effort:
+          type: string
+          enum: [low, medium, high, max]
+      description: Controls reasoning effort configuration for adaptive thinking models.
+
+    OutputFormat:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [json_schema]
+        schema:
+          type: object
+          additionalProperties: true
+      description: Constrains structured JSON outputs for Anthropic Messages API.
 
     MessageResponse:
       type: object

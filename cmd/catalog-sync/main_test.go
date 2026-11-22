@@ -49,13 +49,9 @@ func TestSeedModelEntry_ReadsImagePriceAndVariantKey(t *testing.T) {
 	if !ok || model != "gpt-image-1.5" || key != "standard_1024x1024" {
 		t.Fatalf("parsed image variant = (%q, %q, %v)", model, key, ok)
 	}
-	model, key, ok = parseImagePriceVariant("1024-x-1024/50-steps/bedrock/amazon.nova-canvas-v1:0", domain.ProviderBedrock)
-	if !ok || model != "amazon.nova-canvas-v1:0" || key != "standard_1024x1024" {
-		t.Fatalf("parsed Bedrock image variant = (%q, %q, %v)", model, key, ok)
-	}
-	model, key, ok = parseImagePriceVariant("fal_ai/low/1024-x-1024/openai/gpt-image-2", domain.ProviderFal)
-	if !ok || model != "openai/gpt-image-2" || key != "low_1024x1024" {
-		t.Fatalf("parsed Fal image variant = (%q, %q, %v)", model, key, ok)
+	model, key, ok = parseImagePriceVariant("hd/1024-x-1024/openai/dall-e-3", domain.ProviderOpenAI)
+	if !ok || model != "dall-e-3" || key != "hd_1024x1024" {
+		t.Fatalf("parsed OpenAI HD image variant = (%q, %q, %v)", model, key, ok)
 	}
 }
 

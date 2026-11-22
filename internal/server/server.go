@@ -16,14 +16,9 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/bedrock"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/cohere"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/mistral"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openaicompat"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openrouter"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/cache"
@@ -34,6 +29,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/health"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
+	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/modelmgmt"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/orchestrator"
@@ -129,6 +125,19 @@ func (s *GatewayServer) invalidateLocalRoutingCaches(ev storage.InvalidationEven
 	if s.priorityLimiter != nil {
 		s.priorityLimiter.InvalidateCache(ev)
 	}
+	if ev.EntityType == "mcp_spec" && s.mcpHub != nil {
+		if settingsRepo, ok := s.repo.(storage.MCPRuntimeSettingsRepository); ok && settingsRepo != nil {
+			if stored, err := settingsRepo.GetMCPRuntimeSettings(context.Background()); err == nil && stored != nil && stored.ActiveProtocolVersion != "" {
+				s.mcpHub.SetRuntimeSettings(*stored)
+				return
+			}
+		}
+		if spec.IsSupported(ev.EntityID) {
+			cur := s.mcpHub.RuntimeSettings()
+			cur.ActiveProtocolVersion = ev.EntityID
+			s.mcpHub.SetRuntimeSettings(cur)
+		}
+	}
 }
 
 func (s *GatewayServer) invalidateRoutingCaches(ctx context.Context, ev storage.InvalidationEvent) {
@@ -154,44 +163,6 @@ func (s *GatewayServer) SetNowFunc(fn func() time.Time) {
 	}
 }
 
-// parseCustomProviderOperations maps string operation names from CustomProviderConfig
-// into an openaicompat.ProviderOperations struct. Returns nil when ops is empty so
-// default capability behavior is preserved.
-func parseCustomProviderOperations(ops []string) *openaicompat.ProviderOperations {
-	if len(ops) == 0 {
-		return nil
-	}
-	out := &openaicompat.ProviderOperations{}
-	for _, raw := range ops {
-		switch strings.ToLower(strings.TrimSpace(raw)) {
-		case "chat":
-			out.Chat = true
-		case "completion", "completions":
-			out.Completion = true
-		case "embeddings":
-			out.Embeddings = true
-		case "rerank":
-			out.Rerank = true
-		case "moderations":
-			out.Moderations = true
-		case "image_gen":
-			out.ImageGen = true
-		case "image_edit":
-			out.ImageEdit = true
-		case "image_variation":
-			out.ImageVariation = true
-		case "audio_stt":
-			out.AudioSTT = true
-		case "audio_tts":
-			out.AudioTTS = true
-		case "responses":
-			out.Responses = true
-		}
-	}
-	return out
-}
-
-// New constructs a fully wired GatewayServer ready to serve requests.
 // New constructs and initializes a GatewayServer with all storage, security, routing, auth,
 // observability, MCP, and A2A subsystems wired according to cfg.
 func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.RedisFabric, httpClient *http.Client) (*GatewayServer, error) {
@@ -409,47 +380,21 @@ func buildOutboundClients(cfg *config.Config, netPolicy *network.Policy, httpCli
 	return adapterClient, network.NewHTTPClient(mediaPolicy), mediaPolicy, outboundMetrics, nil
 }
 
-func buildAdapterRegistry(cfg *config.Config, netPolicy *network.Policy, adapterClient, mediaClient *http.Client, mediaPolicy *network.Policy) (*adapter.Registry, error) {
+func buildAdapterRegistry(_ *config.Config, netPolicy *network.Policy, adapterClient, _ *http.Client, _ *network.Policy) (*adapter.Registry, error) {
 	openaiAdp := openai.NewAdapter(adapterClient)
 	openaiAdp.SetSSRFPolicy(netPolicy)
 	anthropicAdp := anthropic.NewAdapter(adapterClient)
 	anthropicAdp.SetSSRFPolicy(netPolicy)
-	geminiAdp := gemini.NewAdapter(adapterClient)
-	geminiAdp.SetSSRFPolicy(netPolicy)
-	mistralAdp := mistral.NewAdapter(adapterClient)
-	mistralAdp.SetSSRFPolicy(netPolicy)
-	ollamaAdp := ollama.NewAdapter(adapterClient)
-	ollamaAdp.SetSSRFPolicy(netPolicy)
-	ollamaAdp.SetMediaFetcher(mediaClient, mediaPolicy)
-	vertexAdp := vertex.NewAdapter(adapterClient, netPolicy)
-	vertexAdp.SetMediaFetcher(mediaClient, mediaPolicy)
-	vertexAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
-	bedrockAdp := bedrock.NewAdapter(adapterClient, netPolicy)
-	bedrockAdp.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
+	groqAdp := groq.NewAdapter(adapterClient)
+	groqAdp.SetSSRFPolicy(netPolicy)
+	openrouterAdp := openrouter.NewAdapter(adapterClient)
+	openrouterAdp.SetSSRFPolicy(netPolicy)
 
 	reg := adapter.NewRegistry()
 	reg.Register(openaiAdp)
 	reg.Register(anthropicAdp)
-	reg.Register(geminiAdp)
-	reg.Register(mistralAdp)
-	reg.Register(ollamaAdp)
-	reg.Register(bedrockAdp)
-	reg.Register(vertexAdp)
-	reg.Register(cohere.NewAdapter(adapterClient, netPolicy))
-
-	profileReg := openaicompat.NewProfileRegistry(adapterClient, netPolicy)
-	profileReg.SetAllowAmbientCloudIAM(cfg.Auth.AllowAmbientCloudIAM)
-	for _, custom := range cfg.Providers.CustomOpenAICompatible {
-		opts := openaicompat.CustomProfileOptions{
-			SupportedOperations: parseCustomProviderOperations(custom.SupportedOperations),
-			ParamMappings:       custom.ParamMappings,
-			ReasoningMapping:    custom.ReasoningMapping,
-		}
-		if err := profileReg.RegisterCustomWithOptions(custom, opts); err != nil {
-			return nil, fmt.Errorf("failed to register custom provider %q: %w", custom.ID, err)
-		}
-	}
-	reg.SetDynamicResolver(profileReg.DynamicResolver())
+	reg.Register(groqAdp)
+	reg.Register(openrouterAdp)
 	return reg, nil
 }
 
@@ -842,6 +787,22 @@ func buildMCPAndA2ASubsystem(
 	mcpHub.SetLimiter(limiter)
 	mcpHub.SetSpendRecorder(spendWorker)
 
+	initialMCPSpec := cfg.MCP.DefaultProtocolVersion
+	if !spec.IsSupported(initialMCPSpec) {
+		initialMCPSpec = spec.DefaultVersion
+	}
+	initialSettings := domain.MCPRuntimeSettings{
+		ActiveProtocolVersion:  initialMCPSpec,
+		StrictSchemaValidation: cfg.MCP.StrictSchemaValidation,
+		UpdatedBy:              "config",
+	}
+	if settingsRepo, ok := repo.(storage.MCPRuntimeSettingsRepository); ok && settingsRepo != nil {
+		if stored, err := settingsRepo.GetMCPRuntimeSettings(context.Background()); err == nil && stored != nil && !stored.UpdatedAt.IsZero() {
+			initialSettings = *stored
+		}
+	}
+	mcpHub.SetRuntimeSettings(initialSettings)
+
 	a2aSigner := a2a.NewGatewayCardSigner(cfg.A2A.SigningKeyID, "ES256", nil, vault)
 	a2aVerifier := a2a.NewUpstreamCardVerifier(nil)
 	a2aRouter := a2a.NewRouterService(repo, vault, rbac, netPolicy, redisFabric, a2aSigner, a2aVerifier)
@@ -947,7 +908,6 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 		v1.Post("/completions", s.handleLegacyCompletions)
 		v1.Post("/embeddings", s.handleEmbeddings)
 		v1.Get("/models", s.handleListModels)
-		v1.Post("/rerank", s.handleRerank)
 		v1.Post("/moderations", s.handleModerations)
 		v1.Post("/messages", s.handleAnthropicMessages)
 		v1.Post("/messages/count_tokens", s.handleAnthropicCountTokens)
@@ -996,7 +956,6 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 	r.Group(func(unv chi.Router) {
 		unv.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
 		s.registerCoreInferenceRoutes(unv)
-		unv.Post("/v2/rerank", s.handleRerank)
 	})
 
 	// OpenAI Direct Wire Spec (/openai/v1/*)
@@ -1019,7 +978,6 @@ func (s *GatewayServer) registerCoreInferenceRoutes(grp chi.Router) {
 	grp.Post("/completions", s.handleLegacyCompletions)
 	grp.Post("/embeddings", s.handleEmbeddings)
 	grp.Get("/models", s.handleListModels)
-	grp.Post("/rerank", s.handleRerank)
 	grp.Post("/moderations", s.handleModerations)
 	grp.Post("/messages", s.handleAnthropicMessages)
 	grp.Post("/tokenize", s.handleTokenize)
@@ -1252,8 +1210,11 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 		adm.Get("/config", s.handleAdminGetConfig)
 		adm.Post("/security/rotate-kek", s.handleAdminRotateKEK)
 
-		// MCP Enterprise Management: Servers, Toolsets, Tools, Tool Sync & BYOK Credentials
+		// MCP Enterprise Management: Spec Switching, Servers, Toolsets, Tools, Tool Sync & BYOK Credentials
+		adm.Get("/mcp/spec", s.handleAdminGetMCPSpec)
+		adm.Put("/mcp/spec", s.handleAdminUpdateMCPSpec)
 		adm.Post("/mcp/servers", s.handleAdminCreateMCPServer)
+		adm.Put("/mcp/servers/{serverID}", s.handleAdminUpdateMCPServer)
 		adm.Get("/mcp/servers", s.handleAdminListMCPServers)
 		adm.Post("/mcp/servers/{serverID}/sync", s.handleAdminSyncMCPServer)
 		adm.Post("/mcp/toolsets", s.handleAdminCreateMCPToolset)

@@ -1,8 +1,8 @@
 # GoRoute AI Gateway — Complete API Reference
 
-> **Version**: `v1.23.0`\
+> **Version**: `v1.24.0`\
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`120` OpenAPI paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`125` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---
@@ -44,8 +44,8 @@ Every response from GoRoute AI Gateway includes tracing, attribution, and lifecy
 | :--- | :--- | :--- |
 | `X-Gateway-Request-Id` | Unique UUID assigned to the request lifecycle | `req_991efda4-7fab-4b03` |
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
-| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `gemini`, `anthropic`, `openai` |
-| `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gemini-2.5-flash`, `claude-sonnet-4` |
+| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `openai`, `anthropic`, `groq`, `openrouter` |
+| `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gpt-4o-mini`, `claude-sonnet-4-20250514`, `llama-3.1-8b-instant` |
 | `X-Gateway-Original-Model` | Original requested model name before budget-downgrade model fallback | `reasoning` |
 | `X-Gateway-Cost-Micros` | Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
 | `X-Gateway-Routing-Micros` | Gateway Stage 0–4 routing decision overhead in microseconds | `12` |
@@ -92,7 +92,7 @@ Enterprise identity providers (Okta, Microsoft Entra ID, Ping) synchronize users
 ### 2.1 Chat Completions
 `POST /v1/chat/completions`
 
-Standardized endpoint supporting Google Gemini, Anthropic Claude, OpenAI, Mistral, and local Ollama models in synchronous JSON or real-time Server-Sent Events (SSE) streaming mode.
+Standardized endpoint supporting OpenAI, Anthropic Claude, Groq, and OpenRouter models in synchronous JSON or real-time Server-Sent Events (SSE) streaming mode.
 
 Chat request bodies are limited to 10 MiB; larger requests return `413 request_body_too_large`. The default outbound client allows two minutes for upstream response headers, applies a two-minute total deadline to non-streaming calls, and cancels a response body after two minutes without upstream data. Streaming calls have no total upstream deadline while chunks continue to arrive. These provider timeouts are configurable under `providers`; the HTTP server's configured write timeout still bounds the client connection.
 
@@ -144,7 +144,7 @@ Optional `goroute_extensions.tags` activates tag-scoped `mode_rule` routing, bin
   "id": "chatcmpl-req_991efda4-7fab-4b03",
   "object": "chat.completion",
   "created": 1731081600,
-  "model": "gemini-2.5-flash",
+  "model": "gpt-4o-mini",
   "choices": [
     {
       "index": 0,
@@ -170,11 +170,11 @@ Content-Type: text/event-stream
 Cache-Control: no-cache
 Connection: keep-alive
 
-data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"The"},"finish_reason":null}]}
+data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"The"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"content":" capital"},"finish_reason":null}]}
+data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" capital"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-req_1","object":"chat.completion.chunk","created":1731081600,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
@@ -184,16 +184,15 @@ GoRoute transparently normalizes requests targeting frontier reasoning models:
 - **Reasoning Effort**: When `reasoning_effort` (`"low"`, `"medium"`, `"high"`) is provided:
   - **OpenAI Reasoning (`o1`, `o3`, `o3-mini`)**: Converts `role: "system"` to `role: "developer"`, translates `max_tokens` to `max_completion_tokens`, and omits unsupported parameters (`temperature`, `top_p`).
   - **Anthropic Claude**: Enables extended thinking with token budgets (`1024`, `4096`, `16384`) and automatically omits `temperature` and `top_p` as mandated by Anthropic.
-  - **Google Gemini**: Sets `thinkingConfig.thinkingBudget` for Gemini 2.5 thinking models.
+  - **OpenRouter**: Maps `reasoning_effort` to OpenRouter's `reasoning` parameter object (`openrouter_reasoning`).
 - **Anthropic Role Alternation on Tools**: When returning multiple parallel tool outputs (`role: "tool"`), GoRoute automatically consolidates consecutive tool results into a single `user` message with multiple `tool_result` content blocks to satisfy Anthropic's strict alternating turn protocol.
 
 #### Upstream Error Handling & Safety Filters
-When an upstream provider blocks a prompt or candidate, GoRoute returns standard OpenAI-compatible error payloads:
-- **Gemini Safety Filter Blocks**: If a prompt is blocked by Google Gemini safety filters (`promptFeedback.blockReason`), GoRoute immediately intercepts the empty choice set and returns an explicit `HTTP 400 Bad Request`:
+When an upstream provider blocks or rejects a prompt, GoRoute maps upstream status codes and safety violations into standard OpenAI-compatible error payloads:
 ```json
 {
   "error": {
-    "message": "prompt blocked by safety filters (reason: SAFETY)",
+    "message": "prompt blocked by safety filters",
     "type": "safety_violation",
     "code": "prompt_blocked"
   }
@@ -254,59 +253,14 @@ Returns a 4-layer tenant-filtered inventory accessible to the caller's Virtual A
 ```
 
 ### 2.4 Direct Dynamic `provider/model` Routing
-GoRoute supports direct model execution using `provider/model` notation (e.g. `cerebras/llama-3.3-70b`, `bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0`, `vertex/gemini-2.5-pro`, `xai/grok-2`):
+GoRoute supports direct model execution using `provider/model` notation (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`):
 - **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
 - **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
 - **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
-- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute can import its metadata from the embedded 5,493-record catalogue and provision a route when a matching provider adapter/profile and tenant credential are available.
+- **Dynamic Catalogue Provisioning**: If the model is not yet in the organization's database catalogue, GoRoute can import its metadata from the embedded OpenAPI-verified catalogue and provision a route when a matching provider adapter and tenant credential are available.
 - **Fail-Closed Boundary**: If repository queries fail, or if the model is unconfigured/unauthorized, GoRoute fails closed and returns `HTTP 404 model_group_not_found` (explicit model requests never silently fall back to unrelated tenant model groups).
 
-### 2.5 Document Reranking
-`POST /v1/rerank`, `POST /rerank`, `POST /v2/rerank`
-
-Calculates semantic relevance scores between a search query and a list of text documents. Integrates with Cohere v2 API and rerank model deployments.
-
-#### Request Schema
-```json
-{
-  "model": "rerank-v3.5",
-  "query": "What is the capital of France?",
-  "documents": [
-    "Carson City is the capital city of Nevada.",
-    "The capital of France is Paris.",
-    "Tokyo is the capital of Japan."
-  ],
-  "top_n": 2,
-  "return_documents": true
-}
-```
-
-#### Response (HTTP 200 OK)
-```json
-{
-  "id": "rerank-req_4ebe7b01",
-  "model": "rerank-v3.5",
-  "provider": "cohere",
-  "results": [
-    {
-      "index": 1,
-      "relevance_score": 0.9984,
-      "document": { "text": "The capital of France is Paris." }
-    },
-    {
-      "index": 0,
-      "relevance_score": 0.1245,
-      "document": { "text": "Carson City is the capital city of Nevada." }
-    }
-  ],
-  "usage": {
-    "search_units": 1,
-    "total_tokens": 42
-  }
-}
-```
-
-### 2.6 Content Moderation
+### 2.5 Content Moderation
 `POST /v1/moderations`, `POST /moderations`
 
 Evaluates text against safety categories using upstream moderation models (e.g. OpenAI `omni-moderation-latest`).
@@ -479,7 +433,7 @@ Evaluates a specific active named guardrail (`guardrail_name`) or the caller's e
 
 ## 3. Model Context Protocol (MCP) APIs
 
-GoRoute AI Gateway implements the official **MCP 2026-07-28** stateless Streamable HTTP specification with backward-compatible support for **MCP 2025-11-25**.
+GoRoute AI Gateway exposes a spec-generated, UI-selectable MCP engine supporting all 5 official releases (**`2024-11-05`**, **`2025-03-26`**, **`2025-06-18`**, **`2025-11-25`**, and **`2026-07-28`** default, including `server/discover` and `subscriptions/listen`), switchable at runtime via `PUT /admin/v1/mcp/spec`.
 
 ### 3.1 Virtual Hub Multi-Server Aggregator
 `POST /mcp`
@@ -814,7 +768,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
     "org_id": "org_default",
     "name": "core-platform",
     "max_budget_micros": 100000000,
-    "allowed_models": ["fast", "reasoning", "gemini-2.5-flash"]
+    "allowed_models": ["fast", "reasoning", "gpt-4o-mini"]
   }
   ```
 - `POST /admin/v1/teams/{teamID}/members`, `POST /admin/v1/teams/{teamID}/members/bulk`, `GET /admin/v1/teams/{teamID}/members`, `POST /admin/v1/teams/{teamID}/members/{userID}/reset-spend`, `DELETE /admin/v1/teams/{teamID}/members/{userID}`: Manage explicit multi-team user memberships (with transactional `remove_user_ids` support on `/members/bulk`), per-team budgets/roles (`team_memberships`), and spend resets.
@@ -898,11 +852,11 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   ```json
   {
     "model_group_id": "mg_fast",
-    "global_model_id": "gemini/gemini-2.5-flash",
-    "credential_id": "cred_gemini",
+    "global_model_id": "groq/llama-3.1-8b-instant",
+    "credential_id": "cred_groq",
     "priority": 0,
     "weight": 80,
-    "region": "us-central1",
+    "region": "us-east",
     "tags": ["tier:fast", "low-cost"],
     "max_budget_micros": 50000000,
     "budget_reset_period": "daily",
@@ -917,11 +871,11 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 ### 5.7 Model Catalogue & Pricing Provenance
 - `GET /admin/v1/catalogue?provider={provider}&search={query}`: Queries the global model catalogue.
 - `POST /admin/v1/catalogue/sync`: Polls active upstream provider credentials for new models.
-- `POST /admin/v1/catalogue/import?provider={provider}`: Imports metadata from the embedded 5,493-record catalogue dataset.
+- `POST /admin/v1/catalogue/import?provider={provider}`: Imports metadata from the embedded OpenAPI-verified catalogue dataset.
 - `POST /admin/v1/catalogue/pricing`: Updates model pricing rates and promotes pricing status to `"verified"`.
   ```json
   {
-    "global_model_id": "gemini/gemini-2.5-flash",
+    "global_model_id": "openai/gpt-4o-mini",
     "input_cost_micros_per_1m": 150000,
     "output_cost_micros_per_1m": 600000,
     "cached_input_cost_micros_per_1m": 37500,
@@ -944,7 +898,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   - `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active baseline guardrail policies (prompt injection, PII, secrets, blocked keywords, output redaction, `mode`, `scan_all_roles`, plus PostgreSQL-persisted toxicity fields: `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions`).
   - `POST /admin/v1/organizations/{orgID}/guardrails`: Configures or updates the organization's baseline policy.
 - **Named Guardrails & Provider Registry (`guardrail_definitions`):**
-  - `POST /admin/v1/organizations/{orgID}/guardrail-definitions`: Creates a named guardrail backed by any of the 19 built-in drivers (`local_content_filter`, `custom_code`, `llm_as_a_judge`, `decision_model`, `openai_moderation`, `bedrock`, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `generic_http`, `tool_permission`, `tool_policy`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`) with Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, and load-balancing `weight`.
+  - `POST /admin/v1/organizations/{orgID}/guardrail-definitions`: Creates a named guardrail backed by any of the 15 built-in drivers (`local_content_filter`, `custom_code`, `llm_as_a_judge`, `decision_model`, `openai_moderation`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `generic_http`, `tool_permission`, `tool_policy`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`) with Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, and load-balancing `weight`.
   - `GET /admin/v1/organizations/{orgID}/guardrail-definitions`: Lists guardrail definitions (optional query filters: `status`, `name`; secrets remain redacted).
   - `GET /admin/v1/guardrail-definitions/{guardrailID}`, `PUT /admin/v1/guardrail-definitions/{guardrailID}`, `PATCH /admin/v1/guardrail-definitions/{guardrailID}`, `DELETE /admin/v1/guardrail-definitions/{guardrailID}`: Inspects, replaces, patches, or deletes a definition.
   - `POST /admin/v1/guardrail-definitions/{guardrailID}/status`: Transitions approval status (`active`, `pending_review`, `rejected`).
@@ -997,8 +951,11 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   ```
 
 ### 5.12 MCP & A2A Administration
-- `POST /admin/v1/mcp/servers`: Registers an upstream MCP server endpoint.
+- `GET /admin/v1/mcp/spec`: Returns the active Gateway MCP specification, `strict_schema_validation` flag, and metadata for all 5 code-generated releases.
+- `PUT /admin/v1/mcp/spec`: Hot-switches the active Gateway MCP specification (`protocol_version`, `strict_schema_validation`), persists to `mcp_runtime_settings`, and broadcasts invalidation across cluster pods.
+- `POST /admin/v1/mcp/servers`: Registers an upstream MCP server endpoint (validates `protocol_version` against supported official releases).
 - `GET /admin/v1/mcp/servers`: Lists registered MCP servers.
+- `PUT /admin/v1/mcp/servers/{serverID}`: Updates an existing upstream MCP server's `protocol_version`, `transport_type`, `is_active`, or connection settings.
 - `POST /admin/v1/mcp/servers/{serverID}/sync`: Synchronizes tools, runs anti-poisoning scans, and pins SHA-256 tool digests.
 - `GET /admin/v1/mcp/tools`: Lists synchronized MCP tools scoped to the operator's organization (used by the Operator Web UI).
 - `POST /admin/v1/mcp/toolsets`: Groups tools into curated, permissioned toolsets.
@@ -1091,13 +1048,13 @@ Performs active, deep dependency health verification. Executes a live `Ping(ctx)
 GoRoute AI Gateway strictly decouples caller credentials (incoming Virtual API Keys) from outbound upstream credentials. Configure outbound authentication strategies in provider or server configuration:
 
 ### 7.1 AWS Signature Version 4 (SigV4)
-Signs outbound requests to AWS Bedrock, SageMaker, or API Gateway endpoints using AWS SDK v2.
+Signs outbound requests to AWS API Gateway or SigV4-protected HTTPS endpoints (such as custom MCP or guardrail webhooks) using AWS SDK v2.
 ```yaml
 upstream_auth:
   type: "aws_sigv4"
   aws_sigv4:
     region: "us-east-1"
-    service: "bedrock"
+    service: "execute-api"
     access_key_id: "AKIA..."
     secret_access_key: "wJalr..."
 ```
@@ -1155,7 +1112,7 @@ The Operator UI (`LoginView`) supports three authentication mechanisms depending
 | Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, deployments, PTU shares, and priority classes. |
 | Sidebar: Virtual Keys | `KeysView` + `TempBudgetModal` | Virtual key creation (team/user scope, expiry, MCP/A2A allowlists, soft/hard budgets), rotation, temporary budget increases, and revocation. |
 | Sidebar: FinOps & Spend | `FinOpsView` + `QuotasTab` | Spend summaries (by provider, model, team, virtual key), spend logs, audit trail, multi-window budgets, end-users, tags, and model-access-group quotas. |
-| Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 19-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
+| Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 15-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP servers, toolsets, synchronized tools, and A2A agent management. |
 | Sidebar: Configuration | `ConfigView` | Read-only sanitized runtime configuration inspection (`/admin/v1/config`) and `platform_admin` Master KEK rotation (`POST /admin/v1/security/rotate-kek`). |
@@ -1165,15 +1122,16 @@ The Operator UI (`LoginView`) supports three authentication mechanisms depending
 
 GoRoute separates **operation-level adapter support** (`OperationSupportChecker`), **model-level operation/capability support** (`GlobalModel.SupportsOperation` and `CapabilityState`), and **pricing trust status** (`PricingStatusVerified` / `PricingStatusCustom` vs `PricingStatusUnknown` / `PricingStatusUnrecorded`). `ReliabilityManager` enforces both adapter-level `OperationSupportChecker` and model-level `SupportsOperation` across all inference dispatch paths.
 
-| Provider Group | Providers | Operations | Notes |
+| Provider | Specification | Supported Operations | Notes |
 | :--- | :--- | :--- | :--- |
-| **Native Protocol Adapters** | `openai`, `anthropic`, `gemini`, `bedrock`, `vertex`, `cohere`, `mistral`, `ollama` | Chat, Streaming, Tools, Vision/Documents (provider-dependent), Embeddings, Rerank (`cohere`/`bedrock`), Moderation (`openai`/`mistral`), Audio (`openai`/`mistral`) | Vertex supports regional + `global` endpoints and Partner Claude `:rawPredict` / `:streamRawPredict`; Anthropic supports adaptive thinking (4.6/4.7), prompt caching (`cache_control`), tool-name sanitization, and `output_format`. |
-| **OpenAI-Compatible Cloud Profiles** | `azure`, `groq`, `deepseek`, `together`, `cerebras`, `sambanova`, `xai`, `fireworks`, `perplexity`, `anyscale`, `deepinfra`, `novita`, `nebius`, `hyperbolic`, `lambda`, `friendli`, `openrouter`, `cloudflare`, `databricks`, `snowflake`, `dashscope`, `volcengine`, `bigmodel`, `moonshot`, `minimax`, `siliconflow`, `voyage`, `jina`, `replicate`, `ai21`, `baseten`, `nvidia`, `scaleway`, `github_copilot`, `vercel_ai_gateway`, `huggingface`, `featherless`, `fal`, `zai`, `poe`, `helicone`, `aihubmix`, `venice`, `chutes`, `gmi`, `llamagate`, `sarvam`, `crusoe`, `parasail`, `upstage`, `ovhcloud`, `wandb`, `nscale`, `publicai`, `synthetic`, `nano_gpt`, `xiaomi_mimo`, `reka`, `yi`, `baichuan`, `stepfun` | Declared per-profile via `ProviderOperations` (`chat`, `completion`, `embedding`, `rerank`, `moderation`, `image_generation`, `image_edit`, `image_variation`, `audio_stt`, `audio_tts`, `responses`); `openaicompat.Adapter` implements these endpoint adapters where declared | Azure uses its provider-specific endpoint and auth strategies within the OpenAI-compatible adapter. Parameter dropping (`DropUnsupportedParams`) is opt-in and observable; `ExtraBodyFields` never overrides canonical fields or `StrippedParams`. |
-| **Local / Self-Hosted** | `ollama`, `vllm`, `lm_studio`, `llamafile`, `xinference` | Chat, Streaming, Embeddings, Rerank (`xinference`) | All outbound HTTP calls remain subject to `internal/security/network` SSRF/egress policy. |
+| **`openai`** | `docs/openapi/openai.openapi.yaml` | Chat, Streaming, Completions, Embeddings, Moderation, Images, Audio (STT/TTS), Files, Batches, Responses, Realtime | Native canonical adapter using generated `providers.OpenAI*` DTOs; reasoning models (`o1`/`o3`/`o4`/`gpt-5`) map `system` -> `developer` and `max_tokens` -> `max_completion_tokens`. |
+| **`anthropic`** | `docs/openapi/anthropic.openapi.yaml` | Chat (`Messages` & OpenAI bridge), Streaming, Tools, Vision/Documents, Token Counting (`/v1/messages/count_tokens`), Batches | Native adapter using generated `providers.Anthropic*` DTOs; supports adaptive thinking, prompt caching (`cache_control`), tool-name sanitization, and structured `output_config`. |
+| **`groq`** | `docs/openapi/groq.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, Completions, Audio (STT/TTS), `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/groq`; strips unsupported params (`logprobs`, `logit_bias`, `service_tier`), maps `max_completion_tokens` -> `max_tokens`, and enforces distill tool/temperature rules. |
+| **`openrouter`** | `docs/openapi/openrouter.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/openrouter`; forwards attribution headers (`HTTP-Referer`, `X-Title`) and `openrouter_reasoning` mappings. |
 
 ### Budgeted Caller Modality Coverage
 
 For callers with active budgets, GoRoute requires a verified/custom price (`PricingStatusVerified` or `PricingStatusCustom`) and a deterministic pre-dispatch upper bound:
-- **Supported with pre-dispatch reservation & settlement when verified/custom rates and an estimator are available**: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`, and `/v1/audio/speech` (TTS billed by Unicode character/rune count `len([]rune(input))` for both reservation and settlement).
+- **Supported with pre-dispatch reservation & settlement when verified/custom rates and an estimator are available**: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`, and `/v1/audio/speech` (TTS billed by Unicode character/rune count `len([]rune(input))` for both reservation and settlement).
 - **Realtime and batch**: WebSocket turns and individual JSONL batch items check applicable descriptor quotas before provider dispatch. A denied batch item records its quota error in the batch output. Submission still reserves enqueued tokens and applicable legacy budgets for the batch.
 - **Fail-closed for budgeted callers (`503 budget_estimate_unavailable`)**: Audio transcription, audio translation, and moderation require a safe pre-dispatch cost estimator before they can accept requests subject to a spend cap.

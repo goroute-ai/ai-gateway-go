@@ -27,9 +27,9 @@ func TestLiveStack_ConcurrentBudgetNoOverspendAndSSEDisconnect(t *testing.T) {
 	// Mock upstream that charges deterministic tokens and supports slow SSE for disconnect test
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/rerank", "/rerank", "/v2/rerank":
+		case "/v1/images/generations", "/images/generations":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"rk","results":[{"index":0,"relevance_score":0.9}],"meta":{"billed_units":{"search_units":1}},"usage":{"total_tokens":1}}`)
+			fmt.Fprint(w, `{"created":1730000000,"data":[{"url":"https://example.com/gen.png"}]}`)
 		case "/v1/chat/completions", "/chat/completions":
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
@@ -59,7 +59,7 @@ func TestLiveStack_ConcurrentBudgetNoOverspendAndSSEDisconnect(t *testing.T) {
 	}
 	orgID := orgResp["id"].(string)
 
-	// Key budget = 5000 micros; each rerank search unit costs 1000 micros -> max 5 requests should succeed.
+	// Key budget = 5000 micros; each image generation costs 1000 micros -> max 5 requests should succeed.
 	const maxBudgetMicros = int64(5000)
 	var vkCreated domain.VirtualKey
 	resp, raw = h.doJSON(http.MethodPost, "/admin/v1/keys", adminHeaders, map[string]any{
@@ -72,10 +72,10 @@ func TestLiveStack_ConcurrentBudgetNoOverspendAndSSEDisconnect(t *testing.T) {
 	keyID := vkCreated.ID
 
 	_ = pgRepo.UpsertGlobalModel(ctx, &domain.GlobalModel{
-		ID: "cohere/tight-rerank", Provider: domain.ProviderCohere, ModelName: "tight-rerank",
+		ID: "openai/tight-image", Provider: domain.ProviderOpenAI, ModelName: "tight-image",
 		SupportsInference: true, LifecycleStatus: domain.ModelStatusActive, PricingStatus: domain.PricingStatusVerified,
-		RerankCostMicrosPerSearchUnit: 1000,
-		SupportedOperations:           []domain.OperationType{domain.OperationRerank},
+		ImageCostMicrosBase: 1000,
+		SupportedOperations: []domain.OperationType{domain.OperationImageGeneration},
 	})
 	_ = pgRepo.UpsertGlobalModel(ctx, &domain.GlobalModel{
 		ID: "openai/sse-leak-check", Provider: domain.ProviderOpenAI, ModelName: "sse-leak-check",
@@ -97,10 +97,10 @@ func TestLiveStack_ConcurrentBudgetNoOverspendAndSSEDisconnect(t *testing.T) {
 			"credential_id": credResp["id"], "deployment_name": alias + "-d", "weight": 1,
 		}, nil)
 	}
-	wire("cohere", "tight-rerank", "cohere/tight-rerank")
+	wire("openai", "tight-image", "openai/tight-image")
 	wire("openai", "sse-leak-check", "openai/sse-leak-check")
 
-	// 1. 40 concurrent rerank requests against 5000-micro budget (1000 micros each).
+	// 1. 40 concurrent image generation requests against 5000-micro budget (1000 micros each).
 	var okCount, rejectCount atomic.Int32
 	var sampleErrBody atomic.Value
 	var wg sync.WaitGroup
@@ -109,9 +109,9 @@ func TestLiveStack_ConcurrentBudgetNoOverspendAndSSEDisconnect(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			payload, _ := json.Marshal(map[string]any{
-				"model": "tight-rerank", "query": "q", "documents": []string{"d1"},
+				"model": "tight-image", "prompt": "icon", "n": 1,
 			})
-			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/rerank", bytes.NewReader(payload))
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/images/generations", bytes.NewReader(payload))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Set("Content-Type", "application/json")
 			r, err := http.DefaultClient.Do(req)

@@ -19,7 +19,7 @@
 9. [Deterministic Exact-Match Response Caching](#9-deterministic-exact-match-response-caching)
 10. [Cross-Cutting Platform Modules](#10-cross-cutting-platform-modules)
 11. [Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix](#11-storage-architecture-postgresql-schema--redis-keyspace-matrix)
-12. [Model Context Protocol (MCP 2026-07-28 & 2025-11-25) Subsystem Internals](#12-model-context-protocol-mcp-2026-07-28--2025-11-25-subsystem-internals)
+12. [Model Context Protocol (MCP Multi-Release Spec-Generated) Subsystem Internals](#12-model-context-protocol-mcp-multi-release-spec-generated-subsystem-internals)
 13. [Agent-to-Agent Protocol (A2A v1.0) Subsystem Internals](#13-agent-to-agent-protocol-a2a-v10-subsystem-internals)
 14. [Server-Side Autonomous Tool Loop Orchestration](#14-server-side-autonomous-tool-loop-orchestration)
 15. [Progressive Tool Discovery & Opaque Handles](#15-progressive-tool-discovery--opaque-handles)
@@ -64,7 +64,7 @@ flowchart TB
             Stage1["7. Stage 0-1: PreRouter & Intelligent Router\n(Heuristic / Semantic / Quality / Bandit + Affinity)"]
             Stage2["8. Stage 2-4: FilterChain, Tiers & Load Balancer\n(Plugins, Region/Tags, Budgets, 7 LB Strategies)"]
             RelMgr["9. Stage 5: PriorityScheduler & Reliability Manager\n(RetryPolicy, Adaptive CB, Specialized Fallbacks, SSE Continuation)"]
-            Adapters["10. Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Gemini · Mistral · Ollama)"]
+            Adapters["10. Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Groq · OpenRouter)"]
         end
 
         subgraph ControlPlane["Control Plane (/admin/v1/* & Background Daemons)"]
@@ -84,9 +84,8 @@ flowchart TB
     subgraph Upstreams["Upstream LLM Providers"]
         OpenAI["OpenAI API"]
         Anthropic["Anthropic Claude"]
-        Gemini["Google Gemini"]
-        Mistral["Mistral AI"]
-        Ollama["Ollama (Self-Hosted GPU)"]
+        Groq["Groq"]
+        OpenRouter["OpenRouter"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nBearer sk-gw-..."| LB
@@ -105,7 +104,7 @@ flowchart TB
     AdminAPI -.->|"PUBLISH gw:events:invalidation"| Redis
     PubSub <-->|"SUBSCRIBE"| Redis
 
-    Adapters --> OpenAI & Anthropic & Gemini & Mistral & Ollama
+    Adapters --> OpenAI & Anthropic & Groq & OpenRouter
 ```
 
 ---
@@ -163,9 +162,8 @@ sequenceDiagram
 When `stream: true` is requested:
 1. The gateway initializes `sse.NewWriter(w)`, setting `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `Connection: keep-alive`.
 2. As the upstream provider emits chunks:
+   - **OpenAI, Groq, and OpenRouter**: OpenAPI-first adapters normalize standard `data: {...}` `chat.completion.chunk` (and OpenAI Responses) SSE frames, extracting reasoning/content deltas and token usage.
    - **Anthropic Claude**: Typed events (`message_start`, `content_block_delta`, `message_delta`, `message_stop`) are parsed and synthesized into standard OpenAI `chat.completion.chunk` SSE frames in real time.
-   - **Ollama**: Newline-Delimited JSON (NDJSON) lines are scanned line-by-line via `bufio.Scanner` and immediately transformed into SSE `data: {...}\n\n` frames.
-   - **Google Gemini**: Server-sent events are normalized and candidates are mapped to completion choices.
 3. Every SSE frame is immediately dispatched to the client using `http.Flusher.Flush()` with zero intermediate buffer lag.
 4. **2MB High-Capacity Scanner Buffers**: All SSE line scanners (`pkg/gateway/sdk.go`, `internal/adapter/sse`, and MCP Stdio transports) allocate a custom 2MB line buffer (`scanner.Buffer(buf, 2*1024*1024)`) instead of Go's default 64KB `bufio.MaxScanTokenSize`. This prevents `bufio.ErrTooLong` truncation when processing long reasoning chains (e.g. OpenAI `o1`/`o3`, Claude thinking deltas), expanded tool arguments, or multi-kilobyte MCP responses.
 5. **Mid-Stream SSE Continuation (`StreamContinuationManager`, `internal/router/stream_continuation.go`)**: When `router.enable_mid_stream_continuation` is `true` and an upstream plain-text SSE stream fails mid-generation (without active tool-call deltas or non-text chunks), GoRoute captures emitted output text, adjusts `max_tokens` (`original_max - estimated_emitted_tokens`), appends an assistant prefill message, and seamlessly continues via an alternate deployment/fallback while setting `X-Gateway-Stream-Continued: true` (bounded by `max_stream_continuations`). If continuation is ineligible or exhausted, the gateway emits a structured error SSE event (`event: error\ndata: {"error":{"message":"..."}}\n\n`) followed by `data: [DONE]\n\n`, allowing client SDKs to fail gracefully without JSON decoding panics.
@@ -252,7 +250,7 @@ Stage 3 partitions surviving candidates into ascending **`Deployment.Priority` t
 
 | Strategy | Selection Algorithm & Mathematical Model | Primary Use Case |
 | :--- | :--- | :--- |
-| **`weighted-shuffle`** | Probability proportional to deployment weight:<br>$$P(d_i) = \frac{w_i}{\sum_{j} w_j}$$ | Traffic splitting across accounts or providers (e.g., 80% Gemini / 20% OpenAI). |
+| **`weighted-shuffle`** | Probability proportional to deployment weight:<br>$$P(d_i) = \frac{w_i}{\sum_{j} w_j}$$ | Traffic splitting across accounts or providers (e.g., 80% Groq / 20% OpenAI). |
 | **`round-robin`** | Atomic modular counter cycling evenly across healthy tier deployments. | Balanced traffic distribution across homogeneous nodes. |
 | **`least-busy`** | Selects deployment minimizing shared in-flight requests:<br>$$d^* = \arg\min_{d} (\text{InFlight}_d)$$ | Long-running streaming and deep reasoning workloads. |
 | **`latency-based`** | Selects the lowest shared time-to-first-token EWMA, using 250 ms for deployments without a sample. EWMA uses alpha 0.3:<br>$$\text{EWMA}_{\text{new}} = 0.3 \cdot L + 0.7 \cdot \text{EWMA}_{\text{old}}$$ | Interactive chat requiring minimum perceived latency. |
@@ -360,27 +358,16 @@ stateDiagram-v2
 - **Level 2 — Priority Tier Step-Down (`priority_tiers.go`)**: Exhausting tier `0` steps cleanly to tier `1`, `2`, etc., recording `X-Gateway-Tier-Stepdowns` and `X-Gateway-Route-Reason: priority_tier_stepdown`.
 - **Level 3 — Specialized & Generic Fallback Chains (`fallback_chains.go`)**: Classifies failures into `context_window_fallbacks`, `content_policy_fallbacks`, structured `fallback_targets` (applying per-target parameter `overrides`), legacy `fallback_group_ids`, or global `router.default_fallbacks`. Traversal is bounded by `max_fallback_depth` (default `16`), skips cycles and duplicate groups, re-translates across providers, repins session affinity when `session_affinity_repin_on_failover` is enabled, and sets `X-Gateway-Fallback-Attempted: true`.
 
-### 6.4 Pure Go Dedicated Protocol Engines
-GoRoute implements native protocol signers and binary decoders without external heavyweight AWS or GCP SDK dependencies:
-1. **AWS SigV4 Signer (`internal/adapter/bedrock/sigv4.go`)**:
-   - Standard AWS Signature Version 4 implementation in pure Go standard library (`crypto/hmac`, `crypto/sha256`).
-   - Generates canonical query, headers, and request strings; derives HMAC-SHA256 signing keys (`kDate`, `kRegion`, `kService`, `kSigning`).
-   - Supports static IAM credentials and temporary STS credentials (`X-Amz-Security-Token`).
-2. **AWS EventStream Binary Protocol Decoder (`internal/adapter/bedrock/eventstream.go`)**:
-   - Decodes AWS binary framed messages with big-endian 12-byte prelude (`total_length`, `headers_length`, `prelude_crc`).
-   - Validates CRC32 checksums over prelude and full payload frame.
-   - Extracts binary-encoded headers (`:message-type`, `:event-type`, `:content-type`) and unpacks raw JSON chunks into canonical SSE streaming deltas.
-3. **Google Cloud Vertex AI OAuth2 Engine (`internal/adapter/vertex/auth.go`)**:
-   - Parses Google Cloud Service Account JSON credentials without external GCP libraries.
-   - Generates RS256 signed JWT assertions using `crypto/rsa` and `crypto/sha256`.
-   - Exchanges assertions with `https://oauth2.googleapis.com/token` for short-lived OAuth2 Bearer tokens.
-   - Caches active access tokens with background automatic renewal prior to expiration.
-4. **Cohere v2 Adapter (`internal/adapter/cohere/adapter.go`)**:
-   - Implements native translation targeting `https://api.cohere.com/v2/chat` and `https://api.cohere.com/v2/embed`.
-   - Maps CanonicalChatRequest to Cohere v2 JSON schemas, unpacks SSE stream chunks (`content-delta`, `tool-call-delta`, `message-end`), and extracts input/output token usage.
-5. **Certified OpenAI-Compatible Profile Registry (`internal/adapter/openaicompat/`)**:
-   - Maintains explicit profiles for 30+ production providers (Cerebras, SambaNova, xAI, Together, Fireworks, Groq, DeepSeek, Perplexity, Anyscale, DeepInfra, Novita, Nebius, Hyperbolic, Lambda, Friendli, OpenRouter, vLLM, Cloudflare, Databricks, Snowflake, DashScope, Volcengine, BigModel, Moonshot, MiniMax, SiliconFlow, Voyage, Jina, Replicate, AI21, Baseten, Nvidia, Scaleway).
-   - Ingests reasoning content tokens across both standard non-streaming responses and real-time streaming deltas (`reasoning_content`, `thought`, `reasoning`).
+### 6.4 OpenAPI-First Adapter & Protocol Engines
+GoRoute implements OpenAPI-first provider adapters and pure-Go protocol helpers without heavyweight external cloud SDK dependencies:
+1. **OpenAI Adapter (`internal/adapter/openai/`)**:
+   - Supports OpenAI Chat Completions, Responses API, Embeddings, Audio, Images, Moderations, Batches, Files, and Realtime endpoints backed by generated OpenAPI wire contracts.
+2. **Anthropic Adapter (`internal/adapter/anthropic/`)**:
+   - Translates canonical requests to Anthropic Messages (`/v1/messages`, `/v1/messages/count_tokens`), normalizes typed SSE events into canonical completion chunks, and preserves prompt caching and thinking blocks.
+3. **Groq Adapter (`internal/adapter/groq/`)**:
+   - Spec-driven adapter targeting Groq OpenAI-compatible inference and audio endpoints (`groq_types.gen.go`), preserving reasoning content fields (`reasoning_content`, `reasoning`) across streaming and non-streaming responses.
+4. **OpenRouter Adapter (`internal/adapter/openrouter/`)**:
+   - Spec-driven adapter targeting OpenRouter chat/completions and model routing (`openrouter_types.gen.go`), propagating OpenRouter attribution headers and reasoning deltas.
 
 ### 6.5 Embedded Model Catalogue Engine (`internal/modelcatalog/`)
 - Curates 5,493 model/provider records derived from the upstream model catalog snapshot, compressed into a 216 KB embedded binary (`catalog.json.gz`).
@@ -434,7 +421,7 @@ CostMicros = floor((picos + 500000) / 1000000)
 Rate limiting and spend budgets are enforced atomically across **Virtual Key**, **Team**, **User**, **Organization**, **End User**, **Tag**, **Model Access Group**, and **Agent Session** scopes (plus per-model `quota_policies` patterns and simultaneous `budget_window_limits`) for RPM, TPM, ITPM, OTPM, TPD, Max Concurrent In-Flight Connections, Agent Session Iterations, and Integer Micro-Dollar Budgets.
 
 ### 8.1 Model-Specific Preflight Estimation
-Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, reranking, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings; rerank estimates also include structured document JSON. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 512)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
+Before dispatch, chat inputs are estimated with a model-family text heuristic and message/tool framing. Embeddings, moderation, TTS, legacy completions, and image prompts use the same text estimator over their actual input strings. Image generation adds a fixed work allowance per requested image. Audio transcription uses uploaded byte size (`ceil(bytes / 512)`) plus the optional prompt and a minimum allowance because provider-specific audio tokenization and duration are not reliably available before dispatch.
 
 These are quota-admission estimates, not provider billing tokenizers. Audio, image-generation, and provider-specific multimodal accounting remain approximate; returned provider usage is reconciled where the endpoint exposes it. Operators should size TPM limits with that limitation in mind.
 
@@ -485,7 +472,7 @@ GoRoute evaluates requests and tool calls through a deterministic two-layer pipe
 - **Layer 0 Baseline Policy (`Engine`)**: Zero-external-dependency regex, signature, and lexicon checks for prompt injection (`normalizeTextForSignatureCheck`), PII (email, SSN, Luhn-verified cards -> `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`), API key leaks (`[REDACTED_SECRET]`), blocked keywords, and 5-category toxicity (`toxicity.go`), plus configured `guardrails.Scanner` / `gateway.GuardrailScanner` hooks with independent per-scanner timeouts and fail-open policies.
 - **Layer 1 Multi-Hook Pipeline (`Pipeline`, `Resolver`, `RouterLB`)**: Resolves org-scoped `GuardrailDefinition` and hierarchical `GuardrailBinding` rows across **Org -> Team -> Key -> EndUser -> ModelGroup -> Request Tag** (`ModeRule`), preventing `goroute_extensions` request overrides from disabling `default_on` or admin `is_locked` guardrails. Definitions sharing a logical `Name` are load-balanced via weighted shuffle and circuit-breaker cooldowns (`RouterLB`).
 - **Execution Lifecycle**: Runs `pre_call`, concurrent `during_call` (via `StartDuringCall`, canceling upstream LLM dispatch immediately upon violation), `post_call` (`modify`, `block`, `flag`), async `logging_only`, and MCP hooks (`pre_mcp_call`, `during_mcp_call`, `post_mcp_call`).
-- **19 Built-In Drivers (`internal/guardrails/drivers`)**: Includes `local_content_filter`, sandboxed Starlark `custom_code` (deterministic `50,000` step cap, `ctx` cancellation deadline, zero `import`/FS, SSRF-enforced `http_get`/`http_post`), SSRF-safe `generic_http`, `llm_as_a_judge` & `decision_model` (with `_internal_guardrail_origin` loop guard), 9 external/cloud engines (`openai_moderation`, `bedrock` SigV4, `azure/prompt_shield`, `azure/text_moderations`, `model_armor`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`), and tool/MCP governance (`tool_permission`, `tool_policy` multi-turn taint chain tracking in `ToolLoopOrchestrator`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`).
+- **15 Built-In Drivers (`internal/guardrails/drivers`)**: Includes `local_content_filter`, sandboxed Starlark `custom_code` (deterministic `50,000` step cap, `ctx` cancellation deadline, zero `import`/FS, SSRF-enforced `http_get`/`http_post`), SSRF-safe `generic_http`, `llm_as_a_judge` & `decision_model` (with `_internal_guardrail_origin` loop guard), 5 external/moderation engines (`openai_moderation`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`), and tool/MCP governance (`tool_permission`, `tool_policy` multi-turn taint chain tracking in `ToolLoopOrchestrator`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`).
 - **Streaming Chunk & Tool-Call Windowing (`stream_filter.go`)**: `StreamRedactor` and `StreamWindowEvaluator` hold back bounded byte/rune/token overlap windows across SSE chunks so split PII/secrets/patterns are masked or aborted mid-stream before downstream flush, alongside incremental streamed `tool_calls` JSON delta scanning.
 
 ### 10.2 Pre-Flight Validator (`internal/validation`)
@@ -574,22 +561,21 @@ All entity operations across migrations `0001` through `0034` (`organizations`, 
 
 ---
 
-## 12. Model Context Protocol (MCP 2026-07-28 & 2025-11-25) Subsystem Internals
+## 12. Model Context Protocol (MCP Multi-Release Spec-Generated) Subsystem Internals
 
-### 12.1 Wire Flow: Modern Stateless (2026-07-28) vs. Compatibility (2025-11-25)
+### 12.1 Spec Generation (`cmd/mcpgen`), `SpecProfile`, & Cross-Release Wire Flow
 
-The gateway isolates transport generation differences inside `internal/mcp`:
+All 5 official MCP schemas (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, `2026-07-28`) are stored in YAML under `docs/specs/mcp/<version>/schema.yaml` and embedded/compiled by `cmd/mcpgen` into `internal/mcp/spec` (`internal/mcp/spec/schemas/<version>/schema.yaml`, compiled into Draft-07 and Draft 2020-12 `jsonschema/v6` validators + typed structs). `SpecProfile` (`internal/mcp/spec_profile.go`) drives ingress validation, batching (`2025-03-26` only), strict schema enforcement, and result shaping (`resultType`/`cacheScope`/`ttlMs`). Operators switch the active Gateway spec live via `PUT /admin/v1/mcp/spec` (`mcp_runtime_settings` table + atomic `Hub` reload + Redis Pub/Sub invalidation).
 
-1. **Modern Stateless Core (2026-07-28)**:
-   - Primary transport is pure Streamable HTTP via `POST`.
+1. **Modern Stateless Core (`2026-07-28`, default)**:
+   - Primary transport is pure Streamable HTTP via `POST` with `server/discover` and `subscriptions/listen` `POST` SSE.
    - Protocol-level sessions and `initialize` handshakes are abolished.
-   - Mirrored headers (`Mcp-Name` and `Mcp-Param-*`) communicate parameters to HTTP-level middleboxes and proxies.
+   - Mirrored headers (`Mcp-Method`, `Mcp-Name`, and `Mcp-Param-*`) communicate parameters to HTTP-level middleboxes and proxies.
    - Non-ASCII, multi-line, or special characters are framed using RFC 2047-inspired `=?base64?...?=` sentinels.
-   - Version negotiation returns `-32022` if caller version is unsupported.
-   - Capability negotiation returns `-32021` if an unadvertised capability is requested.
+   - Version negotiation returns `-32022` (HTTP `400`) if caller version is unsupported, and capability negotiation returns `-32021` (HTTP `400`).
 
-2. **Compatibility Adapter (2025-11-25)**:
-   - Manages stateful `initialize` handshakes and upstream `Mcp-Session-Id` headers.
+2. **Stateful Streamable Transport (`2025-03-26`, `2025-06-18`, `2025-11-25`)**:
+   - Implemented in `StatefulStreamableTransport` (`internal/mcp/transport_stateful_streamable.go`), managing stateful `initialize` handshakes and upstream `Mcp-Session-Id` headers.
    - Upstream sessions are stored in Redis (`gw:mcp25:sess:{sessionID}`).
    - To prevent session hijacking across tenants, each session record is cryptographically bound to a SHA-256 digest of the caller's principal (`OrgID:VirtualKeyID:UserID`). Calls with mismatching caller digests are rejected with `-32002` (Unauthorized).
    - If an upstream server returns `404 Not Found` or `410 Gone` on an existing session, the adapter translates this to JSON-RPC `-32025` (Session Expired).
@@ -668,7 +654,7 @@ sequenceDiagram
     actor Client as OpenAI / Agent Client
     participant Orch as ToolLoopOrchestrator
     participant Router as Inference Router
-    participant LLM as LLM Provider (Ollama / Gemini)
+    participant LLM as LLM Provider (OpenAI / Groq / Anthropic / OpenRouter)
     participant Hub as MCP Hub Engine
     participant FinOps as PostgreSQL Spend Ledger
 
@@ -755,7 +741,7 @@ The `internal/auth/upstream` package (alongside provider IAM adapters and `inter
 4. **RFC 8693 Token Exchange & `DistributedTokenCache` (`token_exchange.go`, `token_cache.go`)**:
    - Executes OAuth 2.0 token exchanges with SHA-256 digest keying and coalesced L1 + L2 Redis (`gw:upstream_token:{digest}`) token refresh across replicas (`DistributedTokenCache`).
 5. **Cloud IAM Token Acquisition (`auth.allow_ambient_cloud_iam` & `storage.rds_iam`)**:
-   - Supports explicit credentials and opt-in ambient IAM across AWS Bedrock, GCP Vertex AI, Azure MSI, and PostgreSQL AWS RDS IAM (refreshing short-lived tokens on new database connections and migration runs when `storage.rds_iam.enabled` is true).
+   - Supports explicit credentials and opt-in ambient IAM for PostgreSQL AWS RDS IAM (refreshing short-lived tokens on new database connections and migration runs when `storage.rds_iam.enabled` is true).
 
 ---
 

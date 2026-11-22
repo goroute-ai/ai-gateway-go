@@ -313,6 +313,60 @@ func (p *PostgresRepository) GetMCPUserCredential(ctx context.Context, serverID,
 	return &c, nil
 }
 
+// GetMCPRuntimeSettings returns the active gateway-wide MCP protocol specification settings.
+func (p *PostgresRepository) GetMCPRuntimeSettings(ctx context.Context) (*domain.MCPRuntimeSettings, error) {
+	if p.pool == nil {
+		return p.mem.GetMCPRuntimeSettings(ctx)
+	}
+	const q = `
+		SELECT active_protocol_version, strict_schema_validation, updated_by, updated_at
+		FROM mcp_runtime_settings
+		WHERE id = 'default'`
+	var s domain.MCPRuntimeSettings
+	if err := p.pool.QueryRow(ctx, q).Scan(
+		&s.ActiveProtocolVersion,
+		&s.StrictSchemaValidation,
+		&s.UpdatedBy,
+		&s.UpdatedAt,
+	); err != nil {
+		if err == pgx.ErrNoRows {
+			return p.mem.GetMCPRuntimeSettings(ctx)
+		}
+		return nil, fmt.Errorf("get mcp runtime settings: %w", err)
+	}
+	_ = p.mem.UpdateMCPRuntimeSettings(ctx, &s)
+	return &s, nil
+}
+
+// UpdateMCPRuntimeSettings persists the active gateway-wide MCP protocol specification settings.
+func (p *PostgresRepository) UpdateMCPRuntimeSettings(ctx context.Context, settings *domain.MCPRuntimeSettings) error {
+	if settings == nil {
+		return fmt.Errorf("mcp runtime settings cannot be nil")
+	}
+	if p.pool == nil {
+		return p.mem.UpdateMCPRuntimeSettings(ctx, settings)
+	}
+	const q = `
+		INSERT INTO mcp_runtime_settings (id, active_protocol_version, strict_schema_validation, updated_by, updated_at)
+		VALUES ('default', $1, $2, $3, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			active_protocol_version = EXCLUDED.active_protocol_version,
+			strict_schema_validation = EXCLUDED.strict_schema_validation,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = NOW()
+		RETURNING updated_at`
+	if err := p.pool.QueryRow(
+		ctx,
+		q,
+		settings.ActiveProtocolVersion,
+		settings.StrictSchemaValidation,
+		settings.UpdatedBy,
+	).Scan(&settings.UpdatedAt); err != nil {
+		return fmt.Errorf("update mcp runtime settings: %w", err)
+	}
+	return p.mem.UpdateMCPRuntimeSettings(ctx, settings)
+}
+
 // -----------------------------------------------------------------------------
 // A2A: Agents, Tasks, Events, Publications & Outbox
 // -----------------------------------------------------------------------------

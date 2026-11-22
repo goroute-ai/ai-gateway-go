@@ -2000,16 +2000,40 @@ func (s *GatewayServer) handleApplyGuardrails(w http.ResponseWriter, r *http.Req
 		usageUnits = int64(len(res.AppliedGuardrails))
 	}
 
+	if effectiveTexts == nil {
+		effectiveTexts = []string{}
+	}
+	modifiedTexts := res.ModifiedTexts
+	if modifiedTexts == nil {
+		modifiedTexts = []string{}
+	}
+	modifiedMessages := res.ModifiedMessages
+	if modifiedMessages == nil {
+		modifiedMessages = []domain.CanonicalMessage{}
+	}
+	modifiedToolCalls := res.ModifiedToolCalls
+	if modifiedToolCalls == nil {
+		modifiedToolCalls = []domain.CanonicalToolCall{}
+	}
+	violations := res.Violations
+	if violations == nil {
+		violations = []domain.GuardrailViolation{}
+	}
+	appliedGuardrails := res.AppliedGuardrails
+	if appliedGuardrails == nil {
+		appliedGuardrails = []string{}
+	}
+
 	resp := map[string]any{
 		"decision":            res.Decision,
 		"action":              action,
 		"blocked":             blocked,
 		"texts":               effectiveTexts,
-		"modified_texts":      res.ModifiedTexts,
-		"modified_messages":   res.ModifiedMessages,
-		"modified_tool_calls": res.ModifiedToolCalls,
-		"violations":          res.Violations,
-		"applied_guardrails":  res.AppliedGuardrails,
+		"modified_texts":      modifiedTexts,
+		"modified_messages":   modifiedMessages,
+		"modified_tool_calls": modifiedToolCalls,
+		"violations":          violations,
+		"applied_guardrails":  appliedGuardrails,
 		"usage_units":         usageUnits,
 		"latency_ms":          latencyMs,
 	}

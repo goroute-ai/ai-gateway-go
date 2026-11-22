@@ -227,8 +227,6 @@ var DefaultAllowedEndpoints = []string{
 	"/chat/*",
 	"/embeddings",
 	"/models",
-	"/rerank",
-	"/v2/rerank",
 	"/moderations",
 	"/completions",
 	"/messages",

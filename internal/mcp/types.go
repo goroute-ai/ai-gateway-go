@@ -13,13 +13,19 @@ type SpendRecorder interface {
 	Record(ctx context.Context, ev domain.SpendEvent) error
 }
 
-// ToolContent represents a single content item returned by an MCP tool.
+// ToolContent represents a single ContentBlock item returned by an MCP tool across all releases.
 type ToolContent struct {
-	Type     string         `json:"type"` // "text", "image", "resource"
-	Text     string         `json:"text,omitempty"`
-	Data     string         `json:"data,omitempty"`
-	MimeType string         `json:"mimeType,omitempty"`
-	Resource map[string]any `json:"resource,omitempty"`
+	Type        string         `json:"type"` // "text", "image", "audio", "resource", "resource_link"
+	Text        string         `json:"text,omitempty"`
+	Data        string         `json:"data,omitempty"`
+	MimeType    string         `json:"mimeType,omitempty"`
+	URI         string         `json:"uri,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Resource    map[string]any `json:"resource,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
+	Meta        map[string]any `json:"_meta,omitempty"`
 }
 
 // ToolCallInput specifies a tool call request without transport headers.
@@ -38,9 +44,11 @@ type CallMetadata struct {
 
 // CallToolResponse represents the unified application-level result of a tool execution.
 type CallToolResponse struct {
-	Content []ToolContent  `json:"content"`
-	IsError bool           `json:"is_error,omitempty"`
-	Meta    map[string]any `json:"_meta,omitempty"`
+	Content           []ToolContent  `json:"content"`
+	IsError           bool           `json:"is_error,omitempty"`
+	StructuredContent any            `json:"structured_content,omitempty"`
+	ResultType        string         `json:"result_type,omitempty"`
+	Meta              map[string]any `json:"_meta,omitempty"`
 }
 
 // AmbiguousToolError is returned when a tool call does not specify server_slug

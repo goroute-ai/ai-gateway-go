@@ -1,0 +1,367 @@
+openapi: 3.0.3
+info:
+  title: OpenRouter Unified Model API
+  version: 1.0.0
+  description: >
+    Authoritative OpenAPI specification for OpenRouter endpoints supported by GoRoute AI Gateway.
+servers:
+  - url: https://openrouter.ai/api/v1
+paths:
+  /chat/completions:
+    post:
+      operationId: createOpenRouterChatCompletion
+      summary: Create an OpenRouter chat completion (sync or SSE stream)
+      parameters:
+        - name: HTTP-Referer
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: X-Title
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenRouterChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenRouterChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/OpenRouterStreamChunk'
+  /models:
+    get:
+      operationId: listOpenRouterModels
+      summary: List OpenRouter models with live pricing and supported parameters
+      responses:
+        '200':
+          description: Available OpenRouter models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenRouterModelsResponse'
+components:
+  schemas:
+    OpenRouterStreamOptions:
+      type: object
+      required:
+        - include_usage
+      properties:
+        include_usage:
+          type: boolean
+    OpenRouterResponseFormat:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+        json_schema:
+          type: object
+          additionalProperties: true
+    OpenRouterReasoningConfig:
+      type: object
+      properties:
+        effort:
+          type: string
+        max_tokens:
+          type: integer
+        exclude:
+          type: boolean
+    OpenRouterFunctionCall:
+      type: object
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+    OpenRouterToolCall:
+      type: object
+      required:
+        - function
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/OpenRouterFunctionCall'
+    OpenRouterFunction:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        strict:
+          type: boolean
+    OpenRouterTool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/OpenRouterFunction'
+    OpenRouterMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+        content:
+          description: String message text or multimodal array of content parts
+        name:
+          type: string
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterToolCall'
+        reasoning:
+          type: string
+        reasoning_content:
+          type: string
+    OpenRouterChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterMessage'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterTool'
+        tool_choice: {}
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        max_tokens:
+          type: integer
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        stream_options:
+          $ref: '#/components/schemas/OpenRouterStreamOptions'
+        response_format:
+          $ref: '#/components/schemas/OpenRouterResponseFormat'
+        reasoning:
+          $ref: '#/components/schemas/OpenRouterReasoningConfig'
+        user:
+          type: string
+    OpenRouterChoice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/OpenRouterMessage'
+        finish_reason:
+          type: string
+    OpenRouterPromptTokensDetails:
+      type: object
+      properties:
+        cached_tokens:
+          type: integer
+    OpenRouterCompletionTokensDetails:
+      type: object
+      properties:
+        reasoning_tokens:
+          type: integer
+    OpenRouterUsage:
+      type: object
+      required:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        prompt_tokens_details:
+          $ref: '#/components/schemas/OpenRouterPromptTokensDetails'
+        completion_tokens_details:
+          $ref: '#/components/schemas/OpenRouterCompletionTokensDetails'
+    OpenRouterChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterChoice'
+        usage:
+          $ref: '#/components/schemas/OpenRouterUsage'
+        system_fingerprint:
+          type: string
+    OpenRouterStreamDelta:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        reasoning:
+          type: string
+        reasoning_content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterToolCall'
+    OpenRouterStreamChoice:
+      type: object
+      required:
+        - index
+        - delta
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/OpenRouterStreamDelta'
+        finish_reason:
+          type: string
+          nullable: true
+    OpenRouterStreamChunk:
+      type: object
+      required:
+        - id
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterStreamChoice'
+        usage:
+          $ref: '#/components/schemas/OpenRouterUsage'
+    OpenRouterModelPricing:
+      type: object
+      properties:
+        prompt:
+          type: string
+        completion:
+          type: string
+        request:
+          type: string
+        image:
+          type: string
+    OpenRouterTopProvider:
+      type: object
+      properties:
+        context_length:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        is_moderated:
+          type: boolean
+    OpenRouterModelArchitecture:
+      type: object
+      properties:
+        modality:
+          type: string
+        input_modalities:
+          type: array
+          items:
+            type: string
+        output_modalities:
+          type: array
+          items:
+            type: string
+    OpenRouterModel:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created:
+          type: integer
+          format: int64
+        context_length:
+          type: integer
+        pricing:
+          $ref: '#/components/schemas/OpenRouterModelPricing'
+        architecture:
+          $ref: '#/components/schemas/OpenRouterModelArchitecture'
+        top_provider:
+          $ref: '#/components/schemas/OpenRouterTopProvider'
+        supported_parameters:
+          type: array
+          items:
+            type: string
+    OpenRouterModelsResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenRouterModel'

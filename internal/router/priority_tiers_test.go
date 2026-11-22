@@ -225,13 +225,6 @@ func (a *priorityTierTestAdapter) StreamTextCompletion(_ context.Context, dep *d
 	return ch, nil
 }
 
-func (a *priorityTierTestAdapter) Rerank(_ context.Context, dep *domain.Deployment, _ *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
-	if err := a.checkErr(dep); err != nil {
-		return nil, err
-	}
-	return &domain.CanonicalRerankResponse{ID: "rerank-" + dep.ID, Usage: domain.RerankUsage{TotalTokens: 3}}, nil
-}
-
 func (a *priorityTierTestAdapter) Moderate(_ context.Context, dep *domain.Deployment, _ *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error) {
 	if err := a.checkErr(dep); err != nil {
 		return nil, err
@@ -317,7 +310,6 @@ func setupPriorityTierFixture(t *testing.T, maxRetries, failureThreshold int, be
 		Capabilities: domain.ModelCapabilities{
 			Streaming:  domain.CapabilitySupported,
 			Embeddings: domain.CapabilitySupported,
-			Rerank:     domain.CapabilitySupported,
 			Moderation: domain.CapabilitySupported,
 			ImageGen:   domain.CapabilitySupported,
 			AudioSTT:   domain.CapabilitySupported,
@@ -683,17 +675,6 @@ func TestPriorityTiers_AllExecutionLoops(t *testing.T) {
 					for range ch {
 					}
 				}
-				return meta, err
-			},
-		},
-		{
-			name: "ExecuteRerank",
-			run: func(ctx context.Context, rm *ReliabilityManager, idCtx *domain.IdentityContext, alias string) (*ExecutionMeta, error) {
-				_, meta, err := rm.ExecuteRerank(ctx, idCtx, &domain.CanonicalRerankRequest{
-					Model:     alias,
-					Query:     "q",
-					Documents: []domain.RerankDocument{{Text: "doc"}},
-				})
 				return meta, err
 			},
 		},

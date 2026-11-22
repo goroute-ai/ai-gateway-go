@@ -25,23 +25,22 @@ func TestAcquireModalityBudget_DeterministicAndFailClosed(t *testing.T) {
 	repo := storage.NewMemoryRepository()
 	ctx := context.Background()
 
-	// Verified rerank/image/TTS model
+	// Verified image/TTS model
 	_ = repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
-		ID:                            "cohere/rerank-v3.5",
-		Provider:                      domain.ProviderCohere,
-		ModelName:                     "rerank-v3.5",
-		PricingStatus:                 domain.PricingStatusVerified,
-		RerankCostMicrosPerSearchUnit: 2000,
-		ImageCostMicrosBase:           40000,
-		AudioTTSCostMicrosPer1KChars:  15000,
+		ID:                           "openai/gpt-image-1",
+		Provider:                     domain.ProviderOpenAI,
+		ModelName:                    "gpt-image-1",
+		PricingStatus:                domain.PricingStatusVerified,
+		ImageCostMicrosBase:          40000,
+		AudioTTSCostMicrosPer1KChars: 15000,
 	})
 	// Unverified model
 	_ = repo.UpsertGlobalModel(ctx, &domain.GlobalModel{
-		ID:                            "openrouter/unverified-rerank",
-		Provider:                      domain.ProviderOpenRouter,
-		ModelName:                     "unverified-rerank",
-		PricingStatus:                 domain.PricingStatusUnknown,
-		RerankCostMicrosPerSearchUnit: 2000,
+		ID:                  "openrouter/unverified-image",
+		Provider:            domain.ProviderOpenRouter,
+		ModelName:           "unverified-image",
+		PricingStatus:       domain.PricingStatusUnknown,
+		ImageCostMicrosBase: 40000,
 	})
 
 	s := &GatewayServer{
@@ -54,17 +53,17 @@ func TestAcquireModalityBudget_DeterministicAndFailClosed(t *testing.T) {
 		KeyMaxBudgetMicros: 1_000_000,
 	}
 
-	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, "org-1", "cohere/rerank-v3.5")
+	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, "org-1", "openai/gpt-image-1")
 	if err != nil || gm == nil || sawUnverified {
 		t.Fatalf("expected verified model match, got gm=%v sawUnverified=%v err=%v", gm, sawUnverified, err)
 	}
-	bound, ok := finops.EstimateRerankCostUpperBound(gm, 3)
-	if !ok || bound != 6000 {
-		t.Fatalf("expected rerank bound=6000, got bound=%d ok=%v", bound, ok)
+	bound, ok := finops.EstimateImageCostUpperBound(gm, "standard", "1024x1024", 3)
+	if !ok || bound != 120000 {
+		t.Fatalf("expected image bound=120000, got bound=%d ok=%v", bound, ok)
 	}
 
-	_, err = s.acquireModalityBudget(ctx, id, "openrouter/unverified-rerank", 10, "req-2", func(gm *domain.GlobalModel) (int64, bool) {
-		return finops.EstimateRerankCostUpperBound(gm, 3)
+	_, err = s.acquireModalityBudget(ctx, id, "openrouter/unverified-image", 10, "req-2", func(gm *domain.GlobalModel) (int64, bool) {
+		return finops.EstimateImageCostUpperBound(gm, "standard", "1024x1024", 3)
 	})
 	if err == nil {
 		t.Fatal("expected unverified model to fail closed for budgeted caller")
@@ -79,7 +78,7 @@ func TestResolveMatchedVerifiedModel_UsesProviderSpecificImageVariantRates(t *te
 	ctx := context.Background()
 	for _, gm := range []*domain.GlobalModel{
 		{
-			ID: "fal/openai/gpt-image-2", Provider: domain.ProviderFal, ModelName: "openai/gpt-image-2",
+			ID: "openai/gpt-image-2", Provider: domain.ProviderOpenAI, ModelName: "gpt-image-2",
 			PricingStatus: domain.PricingStatusVerified, ImageCostMicrosBase: 145000,
 			ModalityPricingJSON: map[string]any{"high_3840x2160": int64(401000)},
 		},
@@ -95,12 +94,12 @@ func TestResolveMatchedVerifiedModel_UsesProviderSpecificImageVariantRates(t *te
 	}
 
 	s := &GatewayServer{repo: repo}
-	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, "org-1", "fal/openai/gpt-image-2")
+	gm, sawUnverified, err := s.resolveMatchedVerifiedModel(ctx, "org-1", "openai/gpt-image-2")
 	if err != nil || gm == nil || sawUnverified {
 		t.Fatalf("resolve matched model: gm=%v sawUnverified=%v err=%v", gm, sawUnverified, err)
 	}
 	if got := gm.ModalityPricingJSON["high_3840x2160"]; got != int64(401000) {
-		t.Fatalf("variant rate = %#v, want 401000 micros from fal model", got)
+		t.Fatalf("variant rate = %#v, want 401000 micros from openai model", got)
 	}
 	bound, ok := finops.EstimateImageCostUpperBound(gm, "high", "3840x2160", 1)
 	if !ok || bound != 401000 {

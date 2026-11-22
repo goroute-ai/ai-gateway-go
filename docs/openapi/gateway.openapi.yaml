@@ -1,11 +1,10 @@
 openapi: 3.1.0
 info:
   title: Enterprise AI Gateway Unified API
-  version: 1.23.0
+  version: 1.24.0
   description: >
-    Production-grade OpenAI-compatible Unified AI Gateway API supporting universal model providers
-    (OpenAI, Anthropic Claude, Google Gemini, Google Vertex AI, AWS Bedrock, Cohere, Mistral AI, Ollama,
-    and 30+ certified OpenAI-compatible platforms) with intelligent routing, load balancing, retries/fallbacks,
+    Production-grade OpenAI-compatible Unified AI Gateway API supporting verified spec-first model providers
+    (OpenAI, Anthropic Claude, Groq, and OpenRouter) with intelligent routing, load balancing, retries/fallbacks,
     virtual keys, Redis Lua rate limiting, FinOps spend tracking, MCP 2026-07-28 tools, and Linux Foundation A2A v1.0.
 servers:
   - url: http://localhost:8080
@@ -111,7 +110,7 @@ components:
       properties:
         model:
           type: string
-          description: Explicit model name (`gpt-4.1`, `claude-sonnet-4-20250514`, `gemini-2.5-pro`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
+          description: Explicit model name (`gpt-4o-mini`, `claude-haiku-4-5-20251001`, `openai/gpt-oss-20b`, `openai/gpt-4o-mini`) or smart routing alias (`auto`, `fast`, `reasoning`, `coding`).
         messages:
           type: array
           items:
@@ -238,7 +237,7 @@ components:
           description: Base64-encoded document bytes.
         url:
           type: string
-          description: HTTPS or gs:// document URI.
+          description: HTTPS document URI.
         filename:
           type: string
     CacheControl:
@@ -296,6 +295,8 @@ components:
         - type
         - function
       properties:
+        index:
+          type: integer
         id:
           type: string
         type:
@@ -331,10 +332,16 @@ components:
           format: int64
         model:
           type: string
+        provider:
+          type: string
         choices:
           type: array
           items:
             type: object
+            required:
+              - index
+              - message
+              - finish_reason
             properties:
               index:
                 type: integer
@@ -344,6 +351,12 @@ components:
                 type: string
         usage:
           $ref: '#/components/schemas/TokenUsage'
+        system_fingerprint:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
     TokenUsage:
       type: object
       properties:
@@ -354,6 +367,8 @@ components:
         total_tokens:
           type: integer
         cached_prompt_tokens:
+          type: integer
+        cache_creation_tokens:
           type: integer
         reasoning_tokens:
           type: integer
@@ -454,46 +469,6 @@ components:
           type: string
         usage:
           $ref: '#/components/schemas/TokenUsage'
-    RerankRequest:
-      type: object
-      required:
-        - model
-        - query
-        - documents
-      properties:
-        model:
-          type: string
-        query:
-          type: string
-        documents:
-          type: array
-          items:
-            anyOf:
-              - type: string
-              - type: object
-        top_n:
-          type: integer
-        return_documents:
-          type: boolean
-        goroute_extensions:
-          $ref: '#/components/schemas/GoRouteExtensions'
-    RerankResponse:
-      type: object
-      required:
-        - id
-        - results
-      properties:
-        id:
-          type: string
-        results:
-          type: array
-          items:
-            type: object
-            properties:
-              index:
-                type: integer
-              relevance_score:
-                type: number
     ModerationRequest:
       type: object
       required:
@@ -557,15 +532,17 @@ components:
       type: object
       required:
         - id
-        - object
         - model
         - choices
+        - usage
       properties:
         id:
           type: string
         object:
           type: string
         model:
+          type: string
+        provider:
           type: string
         choices:
           type: array
@@ -578,33 +555,101 @@ components:
                 type: integer
               finish_reason:
                 type: string
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
     TokenizeRequest:
       type: object
-      required:
-        - model
       properties:
         model:
           type: string
-        input:
-          type: string
+        prompt:
+          anyOf:
+            - type: string
+            - type: array
+              items:
+                type: string
         messages:
           type: array
           items:
             $ref: '#/components/schemas/ChatMessage'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
     TokenizeResponse:
       type: object
       required:
-        - count
         - model
+        - profile
+        - count
+        - total_tokens
       properties:
-        count:
-          type: integer
         model:
           type: string
-        tokens:
+        profile:
+          type: string
+        count:
+          type: integer
+        total_tokens:
+          type: integer
+    ModelCard:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - owned_by
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          format: int64
+        owned_by:
+          type: string
+        provider:
+          type: string
+        max_input_tokens:
+          type: integer
+        max_output_tokens:
+          type: integer
+        capabilities:
           type: array
           items:
-            type: integer
+            type: string
+        input_cost_micros_per_1m:
+          type: integer
+          format: int64
+        output_cost_micros_per_1m:
+          type: integer
+          format: int64
+    ModelsListResponse:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelCard'
+    AudioTranscriptionResponse:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+        duration_ms:
+          type: integer
+          format: int64
+      additionalProperties: true
     AudioSpeechRequest:
       type: object
       required:
@@ -638,7 +683,7 @@ components:
           type: integer
         quality:
           type: string
-          enum: [standard, hd]
+          enum: [standard, hd, low, medium, high, auto]
         size:
           type: string
         response_format:
@@ -669,6 +714,7 @@ components:
       type: object
       required:
         - id
+        - org_id
         - bytes
         - created_at
         - filename
@@ -677,36 +723,121 @@ components:
       properties:
         id:
           type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        user_id:
+          type: string
         bytes:
           type: integer
+          format: int64
         created_at:
-          type: integer
+          type: string
+          format: date-time
         filename:
           type: string
         purpose:
           type: string
         status:
           type: string
+        content_sha256:
+          type: string
+        storage_path:
+          type: string
+        upstream_id:
+          type: string
+        upstream_provider:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    FileListResponse:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileObject'
+    FileDeleteResponse:
+      type: object
+      required:
+        - id
+        - object
+        - deleted
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [file]
+        deleted:
+          type: boolean
+    BatchCreateRequest:
+      type: object
+      required:
+        - input_file_id
+      properties:
+        input_file_id:
+          type: string
+        endpoint:
+          type: string
+        completion_window:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
     BatchObject:
       type: object
       required:
         - id
+        - org_id
         - input_file_id
         - endpoint
         - status
+        - completion_window
+        - created_at
+        - request_counts
       properties:
         id:
+          type: string
+        org_id:
+          type: string
+        team_id:
           type: string
         input_file_id:
           type: string
         output_file_id:
           type: string
+        error_file_id:
+          type: string
         endpoint:
           type: string
         status:
           type: string
+        completion_window:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
         request_counts:
           type: object
+          required:
+            - total
+            - completed
+            - failed
           properties:
             total:
               type: integer
@@ -714,6 +845,29 @@ components:
               type: integer
             failed:
               type: integer
+        estimated_tokens:
+          type: integer
+          format: int64
+        reserved_cost_micros:
+          type: integer
+          format: int64
+        upstream_id:
+          type: string
+        upstream_provider:
+          type: string
+    BatchListResponse:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchObject'
     ResponsesAPIRequest:
       type: object
       required:
@@ -814,6 +968,94 @@ components:
             type: string
         goroute_extensions:
           $ref: '#/components/schemas/GoRouteExtensions'
+    AnthropicMessagesResponse:
+      type: object
+      required:
+        - id
+        - type
+        - role
+        - model
+        - content
+        - usage
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [message]
+        role:
+          type: string
+          enum: [assistant]
+        model:
+          type: string
+        content:
+          type: array
+          items:
+            type: object
+            required:
+              - type
+            properties:
+              type:
+                type: string
+                enum: [text, tool_use]
+              text:
+                type: string
+              id:
+                type: string
+              name:
+                type: string
+              input:
+                type: object
+                additionalProperties: true
+        stop_reason:
+          oneOf:
+            - type: string
+            - type: 'null'
+        stop_sequence:
+          oneOf:
+            - type: string
+            - type: 'null'
+        usage:
+          type: object
+          required:
+            - input_tokens
+            - output_tokens
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+    AnthropicCountTokensRequest:
+      type: object
+      required:
+        - messages
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        system:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AnthropicCountTokensResponse:
+      type: object
+      required:
+        - input_tokens
+      properties:
+        input_tokens:
+          type: integer
     ResponsesMessageInputItem:
       type: object
       required: [role]
@@ -875,6 +1117,7 @@ components:
       required:
         - id
         - object
+        - created_at
         - status
         - model
         - output
@@ -883,6 +1126,10 @@ components:
           type: string
         object:
           type: string
+          enum: [response]
+        created_at:
+          type: integer
+          format: int64
         status:
           type: string
         model:
@@ -891,6 +1138,36 @@ components:
           type: array
           items:
             type: object
+            required:
+              - id
+              - type
+              - status
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+              status:
+                type: string
+              role:
+                type: string
+              content:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    text:
+                      type: string
+              call_id:
+                type: string
+              name:
+                type: string
+              arguments:
+                type: string
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
     AdminUser:
       type: object
       required:
@@ -979,7 +1256,7 @@ components:
           type: string
         provider:
           type: string
-          description: Provider identifier (e.g. openai, anthropic, gemini)
+          description: Provider identifier (openai, anthropic, groq, openrouter)
         is_enabled:
           type: boolean
           description: Whether the organization is entitled to route traffic to this provider
@@ -1262,14 +1539,11 @@ components:
       properties:
         provider:
           type: string
+          description: Provider identifier (openai, anthropic, groq, openrouter)
         api_key:
           type: string
-          description: Required for providers that use API keys; may be omitted for Ollama.
+          description: Upstream provider API key.
         base_url:
-          type: string
-        azure_deployment_name:
-          type: string
-        api_version:
           type: string
         headers:
           type: object
@@ -2221,12 +2495,46 @@ components:
     AdminSpendSummary:
       type: object
       additionalProperties: true
+    AdminMCPSpecUpdateRequest:
+      type: object
+      required:
+        - protocol_version
+      properties:
+        protocol_version:
+          type: string
+          enum:
+            - '2024-11-05'
+            - '2025-03-26'
+            - '2025-06-18'
+            - '2025-11-25'
+            - '2026-07-28'
+        strict_schema_validation:
+          type: boolean
+    AdminMCPSpecResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        status:
+          type: string
+        active_protocol_version:
+          type: string
+        strict_schema_validation:
+          type: boolean
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        available_specs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
     AdminMCPServerCreateRequest:
       type: object
       required:
         - slug
         - name
-        - transport
       properties:
         org_id:
           type: string
@@ -2234,12 +2542,29 @@ components:
           type: string
         name:
           type: string
+        protocol_version:
+          type: string
+          enum:
+            - '2024-11-05'
+            - '2025-03-26'
+            - '2025-06-18'
+            - '2025-11-25'
+            - '2026-07-28'
+        transport_type:
+          type: string
+          enum:
+            - streamable_http
+            - http_sse_2024
+            - stdio
+            - openapi
         transport:
           type: string
           enum:
             - stdio
             - sse
             - streamable_http
+            - http_sse_2024
+            - openapi
         endpoint_url:
           type: string
         command:
@@ -3593,7 +3918,7 @@ paths:
   /v1/chat/completions:
     post:
       operationId: createChatCompletion
-      summary: Create a unified chat completion across all 73 supported model providers (including OpenAI, Anthropic, Gemini, Bedrock, Vertex AI, Azure, Mistral, DeepSeek, Groq, and Ollama)
+      summary: Create a unified chat completion across verified spec-first model providers (OpenAI, Anthropic, Groq, OpenRouter)
       requestBody:
         required: true
         content:
@@ -3634,23 +3959,10 @@ paths:
       responses:
         '200':
           description: OpenAI-compatible model list
-  /v1/rerank:
-    post:
-      operationId: createRerank
-      summary: Cross-encoder document reranking via Cohere, Jina, or Voyage
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RerankRequest'
-      responses:
-        '200':
-          description: Ranked search results
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RerankResponse'
+                $ref: '#/components/schemas/ModelsListResponse'
   /v1/moderations:
     post:
       operationId: createModeration
@@ -3698,6 +4010,13 @@ paths:
       responses:
         '200':
           description: Anthropic message response or event-stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicMessagesResponse'
+            text/event-stream:
+              schema:
+                type: string
   /v1/messages/count_tokens:
     post:
       operationId: countAnthropicMessageTokens
@@ -3707,10 +4026,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/AnthropicCountTokensRequest'
       responses:
         '200':
           description: Anthropic token count response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicCountTokensResponse'
   /v1/tokenize:
     post:
       operationId: countTokens
@@ -3747,6 +4070,13 @@ paths:
       responses:
         '200':
           description: Transcribed text
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTranscriptionResponse'
+            text/plain:
+              schema:
+                type: string
   /v1/audio/translations:
     post:
       operationId: createAudioTranslation
@@ -3766,6 +4096,13 @@ paths:
       responses:
         '200':
           description: Translated text
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTranscriptionResponse'
+            text/plain:
+              schema:
+                type: string
   /v1/audio/speech:
     post:
       operationId: createAudioSpeech
@@ -3779,6 +4116,27 @@ paths:
       responses:
         '200':
           description: Raw audio stream
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/opus:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
   /v1/images/generations:
     post:
       operationId: createImageGeneration
@@ -3801,22 +4159,86 @@ paths:
       operationId: createImageEdit
       summary: Edit a PNG image with a prompt
       description: Currently supports PNG uploads up to 20 MiB for providers that implement image edits.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, prompt]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                mask:
+                  type: string
+                  format: binary
+                prompt:
+                  type: string
+                model:
+                  type: string
+                n:
+                  type: integer
+                size:
+                  type: string
+                response_format:
+                  type: string
       responses:
         '200':
           description: Edited image response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResponse'
   /v1/images/variations:
     post:
       operationId: createImageVariation
       summary: Generate variations from a PNG image
       description: Currently supports PNG uploads up to 20 MiB for providers that implement image variations.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                model:
+                  type: string
+                n:
+                  type: integer
+                size:
+                  type: string
+                response_format:
+                  type: string
       responses:
         '200':
           description: Image variation response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResponse'
   /v1/files:
     post:
       operationId: uploadFile
       summary: Upload a tenant-scoped file
       description: Files are stored on the gateway's configured local filesystem directory. Production deployments must mount shared durable storage at GOROUTE_FILES_DIR for multi-instance operation.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, purpose]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                purpose:
+                  type: string
       responses:
         '201':
           description: File object
@@ -3830,6 +4252,10 @@ paths:
       responses:
         '200':
           description: List of files
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileListResponse'
   /v1/files/{file_id}:
     get:
       operationId: getFile
@@ -3839,6 +4265,10 @@ paths:
       responses:
         '200':
           description: File object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileObject'
     delete:
       operationId: deleteFile
       summary: Delete file
@@ -3847,6 +4277,10 @@ paths:
       responses:
         '200':
           description: Deletion confirmation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileDeleteResponse'
   /v1/files/{file_id}/content:
     get:
       operationId: getFileContent
@@ -3856,10 +4290,21 @@ paths:
       responses:
         '200':
           description: Binary file stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
   /v1/batches:
     post:
       operationId: createBatch
       summary: Submit asynchronous batch job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchCreateRequest'
       responses:
         '201':
           description: Batch object
@@ -3873,6 +4318,10 @@ paths:
       responses:
         '200':
           description: List of batches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchListResponse'
   /v1/batches/{batch_id}:
     get:
       operationId: getBatch
@@ -3882,6 +4331,10 @@ paths:
       responses:
         '200':
           description: Batch object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchObject'
   /v1/batches/{batch_id}/cancel:
     post:
       operationId: cancelBatch
@@ -3891,6 +4344,10 @@ paths:
       responses:
         '200':
           description: Cancelled batch object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchObject'
   /v1/responses:
     post:
       operationId: createResponse
@@ -3917,6 +4374,67 @@ paths:
       responses:
         '101':
           description: Switching Protocols to WebSocket
+  /openai/v1/responses:
+    post:
+      operationId: createOpenAIDirectResponse
+      summary: Direct OpenAI wire-path Responses API ingress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResponsesAPIRequest'
+      responses:
+        '200':
+          description: Response output or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponsesAPIResponse'
+  /openai/v1/realtime:
+    get:
+      operationId: openaiDirectRealtimeSession
+      summary: Direct OpenAI wire-path Realtime WebSocket session
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket
+  /anthropic/v1/messages:
+    post:
+      operationId: createAnthropicDirectMessage
+      summary: Direct Anthropic wire-path Messages API ingress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicMessagesRequest'
+      responses:
+        '200':
+          description: Anthropic message response or event-stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicMessagesResponse'
+            text/event-stream:
+              schema:
+                type: string
+  /anthropic/v1/messages/count_tokens:
+    post:
+      operationId: countAnthropicDirectMessageTokens
+      summary: Direct Anthropic wire-path token counting ingress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicCountTokensRequest'
+      responses:
+        '200':
+          description: Anthropic token count response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicCountTokensResponse'
   /admin/v1/users:
     post:
       operationId: createUser
@@ -6030,6 +6548,33 @@ paths:
                     items:
                       type: object
                       additionalProperties: true
+  /admin/v1/mcp/spec:
+    get:
+      operationId: getMCPSpec
+      summary: Get active gateway-wide MCP API specification and supported releases
+      responses:
+        '200':
+          description: Active MCP API specification state and release matrix
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminMCPSpecResponse'
+    put:
+      operationId: updateMCPSpec
+      summary: Switch the active gateway-wide MCP API specification release from Web UI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMCPSpecUpdateRequest'
+      responses:
+        '200':
+          description: Updated MCP API specification state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminMCPSpecResponse'
   /admin/v1/mcp/servers:
     post:
       operationId: createMCPServer
@@ -6075,6 +6620,36 @@ paths:
                     items:
                       type: object
                       additionalProperties: true
+  /admin/v1/mcp/servers/{serverID}:
+    put:
+      operationId: updateMCPServer
+      summary: Update an existing downstream MCP server configuration and protocol specification
+      parameters:
+        - name: serverID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated MCP server
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  server:
+                    type: object
+                    additionalProperties: true
   /admin/v1/mcp/servers/{serverID}/sync:
     post:
       operationId: syncMCPServer
@@ -6715,7 +7290,48 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AdminVirtualKey'
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                team_id:
+                  type: string
+                key_type:
+                  type: string
+                  enum: [default, llm_api, management, read_only, service_account]
+                allowed_models:
+                  type: array
+                  items:
+                    type: string
+                allowed_endpoints:
+                  type: array
+                  items:
+                    type: string
+                max_budget_micros:
+                  type: integer
+                  format: int64
+                soft_budget_micros:
+                  type: integer
+                  format: int64
+                rpm_limit:
+                  type: integer
+                tpm_limit:
+                  type: integer
+                rotation_interval_sec:
+                  type: integer
+                  format: int64
+                expires_at:
+                  type: string
+                  format: date-time
+                tags:
+                  type: array
+                  items:
+                    type: string
+                metadata:
+                  type: object
+                  additionalProperties:
+                    type: string
       responses:
         '201':
           description: Issued self-service virtual API key with one-time raw_key secret

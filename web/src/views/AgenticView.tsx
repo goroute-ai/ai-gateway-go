@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
@@ -6,7 +6,7 @@ import { Badge } from '../components/common/Badge';
 import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_ELEV, CARD_CLS, EMPTY_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
-import type { MCPTool } from '../types';
+import type { MCPTool, MCPServer, MCPSpecInfo, MCPRuntimeSpecState } from '../types';
 import {
   Bot,
   Layers,
@@ -20,6 +20,42 @@ import {
   Plus,
 } from 'lucide-react';
 
+const MCP_TRANSPORTS = ['streamable_http', 'http_sse_2024', 'stdio', 'openapi'] as const;
+
+const SpecTransportFields: React.FC<{
+  specs: MCPSpecInfo[];
+  protocol: string;
+  onProtocolChange: (v: string) => void;
+  transport: string;
+  onTransportChange: (v: string) => void;
+}> = ({ specs, protocol, onProtocolChange, transport, onTransportChange }) => (
+  <>
+    <Field label="Protocol Version">
+      <select
+        value={protocol}
+        onChange={(e) => {
+          const ver = e.target.value;
+          onProtocolChange(ver);
+          const meta = specs.find((s) => s.version === ver);
+          if (meta?.default_transport && transport !== 'stdio' && transport !== 'openapi') {
+            onTransportChange(meta.default_transport);
+          }
+        }}
+        className={INPUT_CLS}
+      >
+        {(specs.length ? specs : [{ version: '2026-07-28', label: '2026-07-28' }]).map((s) => (
+          <option key={s.version} value={s.version}>{s.label}</option>
+        ))}
+      </select>
+    </Field>
+    <Field label="Transport">
+      <select value={transport} onChange={(e) => onTransportChange(e.target.value)} className={INPUT_CLS}>
+        {MCP_TRANSPORTS.map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+    </Field>
+  </>
+);
+
 export const AgenticView: React.FC = () => {
   const { adminKey, isUnlocked, activeOrgId } = useAuth();
   const queryClient = useQueryClient();
@@ -29,10 +65,18 @@ export const AgenticView: React.FC = () => {
 
   // Modal toggles
   const [showServerModal, setShowServerModal] = useState(false);
+  const [editingServer, setEditingServer] = useState<MCPServer | null>(null);
+  const [editSrvProtocol, setEditSrvProtocol] = useState('2026-07-28');
+  const [editSrvTransport, setEditSrvTransport] = useState('streamable_http');
+  const [editSrvActive, setEditSrvActive] = useState(true);
   const [showToolsetModal, setShowToolsetModal] = useState(false);
   const [showCredModal, setShowCredModal] = useState(false);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
+
+  // Active Gateway MCP Specification Selector state
+  const [gatewaySpecVersion, setGatewaySpecVersion] = useState('2026-07-28');
+  const [gatewayStrictSchema, setGatewayStrictSchema] = useState(false);
 
   // MCP User BYOK Credential form state
   const [credServerId, setCredServerId] = useState('');
@@ -75,6 +119,41 @@ export const AgenticView: React.FC = () => {
   const [agentAuthSecret, setAgentAuthSecret] = useState('');
   const [agentMaxIter, setAgentMaxIter] = useState('50');
   const [agentMaxBudgetMicros, setAgentMaxBudgetMicros] = useState('');
+
+  // Fetch Active Gateway MCP API Specification & Official Releases
+  const {
+    data: mcpSpecData,
+    isLoading: isSpecLoading,
+  } = useQuery<MCPRuntimeSpecState>({
+    queryKey: ['admin', 'mcp-spec', adminKey],
+    queryFn: () => adminApi.getMCPSpec(adminKey),
+    enabled: isUnlocked,
+  });
+
+  useEffect(() => {
+    if (mcpSpecData?.active_protocol_version) {
+      setGatewaySpecVersion(mcpSpecData.active_protocol_version);
+      setGatewayStrictSchema(Boolean(mcpSpecData.strict_schema_validation));
+    }
+  }, [mcpSpecData?.active_protocol_version, mcpSpecData?.strict_schema_validation]);
+
+  const updateSpecMutation = useMutation({
+    mutationFn: (payload: { protocol_version: string; strict_schema_validation?: boolean }) =>
+      adminApi.updateMCPSpec(adminKey, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-spec'] });
+      queryClient.invalidateQueries({ queryKey: ['admin', 'config'] });
+    },
+  });
+
+  const updateServerMutation = useMutation({
+    mutationFn: ({ serverId, payload }: { serverId: string; payload: Parameters<typeof adminApi.updateMCPServer>[2] }) =>
+      adminApi.updateMCPServer(adminKey, serverId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-servers'] });
+      setEditingServer(null);
+    },
+  });
 
   // Fetch MCP Servers
   const {
@@ -227,6 +306,8 @@ export const AgenticView: React.FC = () => {
   const mcpToolsets = mcpToolsetsData?.toolsets || mcpToolsetsData?.data || [];
   const mcpTools = mcpToolsData?.tools || [];
   const a2aAgents = a2aAgentsData?.agents || a2aAgentsData?.data || [];
+  const availableSpecs: MCPSpecInfo[] = mcpSpecData?.available_specs || [];
+  const selectedSpecMeta = availableSpecs.find((s) => s.version === gatewaySpecVersion);
 
   const toolCountByServer = useMemo(() => {
     const counts = new Map<string, number>();
@@ -406,6 +487,95 @@ export const AgenticView: React.FC = () => {
       {/* Tab 1: MCP Server Registry & Tools */}
       {activeTab === 'mcp' && (
         <div className="space-y-6">
+          {/* Active Gateway MCP API Specification Selector */}
+          <div className={`${CARD_CLS} p-4 space-y-3`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-accent-primary" />
+                  <h3 className="text-xs font-mono uppercase tracking-wider text-brand-title font-semibold">
+                    Gateway MCP Specification
+                  </h3>
+                  <Badge variant="info">
+                    Active: {mcpSpecData?.active_protocol_version || gatewaySpecVersion}
+                  </Badge>
+                  {selectedSpecMeta && (
+                    <span className="text-xs font-mono text-brand-muted">
+                      {selectedSpecMeta.schema_def_count} defs · {selectedSpecMeta.transport_mode} ·{' '}
+                      {[
+                        selectedSpecMeta.supports_sessions ? 'Sessions' : 'Stateless',
+                        selectedSpecMeta.supports_batching && 'Batch',
+                        selectedSpecMeta.supports_server_discover ? 'discover' : 'init',
+                        selectedSpecMeta.supports_tasks && 'Tasks',
+                        selectedSpecMeta.requires_protocol_version_header && 'ProtoHdr',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-brand-muted mt-1">
+                  {selectedSpecMeta?.summary || 'Select active MCP schema release.'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs font-mono text-brand-body cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={gatewayStrictSchema}
+                    onChange={(e) => setGatewayStrictSchema(e.target.checked)}
+                  />
+                  Strict schema.yaml
+                </label>
+                <button
+                  type="button"
+                  disabled={updateSpecMutation.isPending || isSpecLoading}
+                  onClick={() =>
+                    updateSpecMutation.mutate({
+                      protocol_version: gatewaySpecVersion,
+                      strict_schema_validation: gatewayStrictSchema,
+                    })
+                  }
+                  className={BTN_PRIMARY}
+                >
+                  {updateSpecMutation.isPending ? 'Applying...' : 'Apply Spec'}
+                </button>
+              </div>
+            </div>
+
+            {updateSpecMutation.isError && (
+              <ErrorAlert error={updateSpecMutation.error} title="Failed to switch MCP spec" />
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-2">
+              {availableSpecs.map((specItem) => {
+                const isSelected = specItem.version === gatewaySpecVersion;
+                const isLive = specItem.version === mcpSpecData?.active_protocol_version;
+                return (
+                  <button
+                    key={specItem.version}
+                    type="button"
+                    onClick={() => setGatewaySpecVersion(specItem.version)}
+                    className={`text-left p-2.5 rounded-lg border font-mono ${
+                      isSelected
+                        ? 'border-accent-primary bg-accent-primary/10 text-brand-title'
+                        : 'border-border-subtle bg-surface-elevated/40 text-brand-muted hover:text-brand-body'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs font-bold">{specItem.version}</span>
+                      {isLive && <Badge variant="success">Live</Badge>}
+                    </div>
+                    <div className="text-[10px] mt-1 truncate" title={specItem.label}>
+                      {specItem.transport_mode}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* MCP Servers Grid */}
           <div>
             <h3 className="text-xs font-mono uppercase tracking-wider text-brand-muted mb-3 flex items-center gap-2">
@@ -418,8 +588,8 @@ export const AgenticView: React.FC = () => {
                 Loading MCP servers...
               </div>
             ) : mcpServers.length === 0 ? (
-              <div className="p-6 bg-surface-base border border-border-subtle rounded-lg text-center text-xs text-brand-muted font-mono">
-                No MCP servers registered. Connect an MCP server to expose callable tools to agents.
+              <div className={EMPTY_CLS}>
+                No MCP servers registered.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -441,6 +611,10 @@ export const AgenticView: React.FC = () => {
 
                       <div className="space-y-1.5 text-xs font-mono my-3">
                         <div className="text-brand-muted flex justify-between">
+                          <span>Spec Release:</span>
+                          <span className="text-accent-primary font-semibold">{srv.protocol_version || '2026-07-28'}</span>
+                        </div>
+                        <div className="text-brand-muted flex justify-between">
                           <span>Transport:</span>
                           <span className="text-brand-body uppercase">{srv.transport_type}</span>
                         </div>
@@ -457,7 +631,19 @@ export const AgenticView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-border-subtle flex justify-end gap-2">
+                    <div className="pt-3 border-t border-border-subtle flex flex-wrap justify-end gap-2">
+                      <button
+                        onClick={() => {
+                          setEditingServer(srv);
+                          setEditSrvProtocol(srv.protocol_version || '2026-07-28');
+                          setEditSrvTransport(srv.transport_type || 'streamable_http');
+                          setEditSrvActive(srv.is_active);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
+                      >
+                        <Settings className="w-3 h-3" />
+                        Edit Spec
+                      </button>
                       <button
                         onClick={() => {
                           setCredServerId(srv.id);
@@ -730,18 +916,13 @@ export const AgenticView: React.FC = () => {
         </div>
         <Field label="Endpoint URL *"><input type="text" required value={srvEndpoint} onChange={(e) => setSrvEndpoint(e.target.value)} placeholder="https://mcp.internal.example.com/mcp" className={MONO_INPUT_CLS} /></Field>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Protocol Version">
-            <select value={srvProtocol} onChange={(e) => setSrvProtocol(e.target.value)} className={INPUT_CLS}>
-              <option value="2026-07-28">2026-07-28</option>
-              <option value="2025-11-25">2025-11-25</option>
-            </select>
-          </Field>
-          <Field label="Transport">
-            <select value={srvTransport} onChange={(e) => setSrvTransport(e.target.value)} className={INPUT_CLS}>
-              <option value="streamable_http">streamable_http</option>
-              <option value="stdio">stdio</option>
-            </select>
-          </Field>
+          <SpecTransportFields
+            specs={availableSpecs}
+            protocol={srvProtocol}
+            onProtocolChange={setSrvProtocol}
+            transport={srvTransport}
+            onTransportChange={setSrvTransport}
+          />
           <Field label="Auth Mode">
             <select value={srvAuthType} onChange={(e) => setSrvAuthType(e.target.value)} className={INPUT_CLS}>
               {['none', 'static', 'oauth2', 'delegation', 'vault_jwt'].map((m) => <option key={m} value={m}>{m}</option>)}
@@ -808,6 +989,46 @@ export const AgenticView: React.FC = () => {
           </Field>
         )}
         <Field label="Tool IDs (comma-separated, optional)"><input type="text" value={tsManualToolIds} onChange={(e) => setTsManualToolIds(e.target.value)} placeholder="mcp_tool_1, mcp_tool_2" className={MONO_INPUT_CLS} /></Field>
+      </FormModal>
+
+      {/* Edit MCP Server Specification Modal */}
+      <FormModal
+        open={!!editingServer}
+        onClose={() => setEditingServer(null)}
+        title={editingServer ? `Edit MCP Spec: ${editingServer.name}` : 'Edit MCP Server'}
+        description="Switch this upstream MCP server's protocol specification release and transport driver."
+        onSubmit={() => {
+          if (!editingServer) return;
+          updateServerMutation.mutate({
+            serverId: editingServer.id,
+            payload: {
+              protocol_version: editSrvProtocol,
+              transport_type: editSrvTransport,
+              is_active: editSrvActive,
+            },
+          });
+        }}
+        pending={updateServerMutation.isPending}
+        submitLabel={updateServerMutation.isPending ? 'Saving...' : 'Save Server Spec'}
+      >
+        {updateServerMutation.isError && (
+          <ErrorAlert error={updateServerMutation.error} title="Failed to update MCP server spec" />
+        )}
+        <SpecTransportFields
+          specs={availableSpecs}
+          protocol={editSrvProtocol}
+          onProtocolChange={setEditSrvProtocol}
+          transport={editSrvTransport}
+          onTransportChange={setEditSrvTransport}
+        />
+        <label className="flex items-center gap-2 text-xs font-mono text-brand-body cursor-pointer">
+          <input
+            type="checkbox"
+            checked={editSrvActive}
+            onChange={(e) => setEditSrvActive(e.target.checked)}
+          />
+          Server Active
+        </label>
       </FormModal>
 
       {/* Register A2A Agent Modal */}

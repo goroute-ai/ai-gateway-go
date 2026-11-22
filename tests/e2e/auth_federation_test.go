@@ -92,7 +92,7 @@ func TestE2E_Auth_CredentialExtractionAndConflictRejection(t *testing.T) {
 	}
 
 	basicCred := base64.StdEncoding.EncodeToString([]byte("user:" + vkA.RawKey))
-	sigV4Header := "AWS4-HMAC-SHA256 Credential=" + vkA.RawKey + "/20261119/us-east-1/bedrock/aws4_request, SignedHeaders=host, Signature=deadbeef"
+	sigV4Header := "AWS4-HMAC-SHA256 Credential=" + vkA.RawKey + "/20261119/us-east-1/execute-api/aws4_request, SignedHeaders=host, Signature=deadbeef"
 
 	cases := []struct {
 		name    string

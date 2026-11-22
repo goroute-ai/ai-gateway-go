@@ -91,7 +91,7 @@ func TestClassifyFailureCategory(t *testing.T) {
 		},
 		{
 			name: "upstream 400 token limit",
-			err:  domain.ClassifyUpstreamStatus(domain.ProviderGemini, http.StatusBadRequest, "Input exceeds token limit for model", 0),
+			err:  domain.ClassifyUpstreamStatus(domain.ProviderOpenAI, http.StatusBadRequest, "Input exceeds token limit for model", 0),
 			want: CategoryContextWindow,
 		},
 		{
@@ -106,17 +106,17 @@ func TestClassifyFailureCategory(t *testing.T) {
 		},
 		{
 			name: "upstream content_filter refusal",
-			err:  domain.ClassifyUpstreamStatus(domain.ProviderAzure, http.StatusBadRequest, "Prompt triggered content_filter", 0),
+			err:  domain.ClassifyUpstreamStatus(domain.ProviderGroq, http.StatusBadRequest, "Prompt triggered content_filter", 0),
 			want: CategoryContentPolicy,
 		},
 		{
 			name: "upstream safety_blocked refusal",
-			err:  domain.ClassifyUpstreamStatus(domain.ProviderBedrock, http.StatusBadRequest, "safety_blocked by upstream", 0),
+			err:  domain.ClassifyUpstreamStatus(domain.ProviderOpenRouter, http.StatusBadRequest, "safety_blocked by upstream", 0),
 			want: CategoryContentPolicy,
 		},
 		{
 			name: "upstream policy_violation refusal",
-			err:  domain.ClassifyUpstreamStatus(domain.ProviderVertex, http.StatusBadRequest, "policy_violation error", 0),
+			err:  domain.ClassifyUpstreamStatus(domain.ProviderAnthropic, http.StatusBadRequest, "policy_violation error", 0),
 			want: CategoryContentPolicy,
 		},
 		{

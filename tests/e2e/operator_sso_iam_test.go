@@ -3,7 +3,6 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,9 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/azure"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/bedrock"
-	"github.com/goroute-ai/ai-gateway-go/internal/adapter/vertex"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -147,9 +143,8 @@ func TestE2E_Operator_SessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
 func TestE2E_Operator_OIDCPKCEBrowserAndCLIDeviceSSO(t *testing.T) {
 	idp := newMockEnterpriseIdentityProvider(t)
 	var defaultOrgID string
-	var cluster *dualNodeTestCluster
 
-	cluster = setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
+	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.Auth.SSOProviders = []config.SSOProviderConfig{
 			{
 				ID:           "corp-sso-a",
@@ -459,20 +454,7 @@ func TestE2E_IAM_DistributedUpstreamTokenCacheRDSIAMAndOptInCloudIAM(t *testing.
 		t.Fatalf("expected encrypted upstream token entries stored in Redis under gw:upstream_token:*")
 	}
 
-	// 2. Ambient Cloud IAM fail-closed by default across Bedrock, Vertex, and Azure.
-	bedrockProv := bedrock.NewAmbientCredentialProvider(bedrock.AmbientIAMConfig{AllowAmbientCloudIAM: false})
-	if _, err := bedrockProv.GetCredentials(ctx); !errors.Is(err, bedrock.ErrAmbientIAMDisabled) {
-		t.Fatalf("expected Bedrock ErrAmbientIAMDisabled when opt-out, got %v", err)
-	}
-	if _, err := vertex.NewAmbientTokenSource(vertex.AmbientADCConfig{AllowAmbientCloudIAM: false}); !errors.Is(err, vertex.ErrAmbientIAMDisabled) {
-		t.Fatalf("expected Vertex ErrAmbientIAMDisabled when opt-out, got %v", err)
-	}
-	azTS := azure.NewManagedIdentityTokenSource(azure.ManagedIdentityConfig{AllowAmbientCloudIAM: false})
-	if _, err := azTS.GetToken(ctx); !errors.Is(err, azure.ErrAmbientIAMDisabled) {
-		t.Fatalf("expected Azure ErrAmbientIAMDisabled when opt-out, got %v", err)
-	}
-
-	// 3. RDS IAM token signer & TLS enforcement validation.
+	// 2. RDS IAM token signer & TLS enforcement validation.
 	netPol, _ := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
 	provider, err := storage.NewRDSIAMTokenProvider(storage.RDSIAMConfig{
 		Enabled:         true,

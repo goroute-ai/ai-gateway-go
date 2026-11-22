@@ -64,23 +64,6 @@ func ReadEvents(r io.Reader, fn func(ev Event) error) error {
 	return flush()
 }
 
-// ReadNDJSON reads newline-delimited JSON objects (used by Ollama /api/chat streaming).
-func ReadNDJSON(r io.Reader, fn func(line []byte) error) error {
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 2*1024*1024)
-	for scanner.Scan() {
-		raw := strings.TrimSpace(scanner.Text())
-		if raw == "" {
-			continue
-		}
-		if err := fn([]byte(raw)); err != nil {
-			return err
-		}
-	}
-	return scanner.Err()
-}
-
 // Writer wraps an http.ResponseWriter + http.Flusher to emit OpenAI-compatible SSE chunks.
 type Writer struct {
 	w       http.ResponseWriter

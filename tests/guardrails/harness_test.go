@@ -116,45 +116,55 @@ func newGuardrailLab(t *testing.T, opts ...labOption) *guardrailLab {
 
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
-			w.Header().Set("Content-Type", "text/event-stream")
-			for i, c := range chunks {
-				ev := map[string]any{
-					"candidates": []map[string]any{{
-						"index": 0,
-						"content": map[string]any{
-							"role":  "model",
-							"parts": []map[string]any{{"text": c}},
-						},
-					}},
-				}
-				if i == len(chunks)-1 {
-					ev["candidates"].([]map[string]any)[0]["finishReason"] = "STOP"
-					ev["usageMetadata"] = map[string]any{
-						"promptTokenCount":     6,
-						"candidatesTokenCount": 12,
-						"totalTokenCount":      18,
-					}
-				}
-				b, _ := json.Marshal(ev)
-				fmt.Fprintf(w, "data: %s\n\n", string(b))
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			var reqBody struct {
+				Stream bool `json:"stream"`
 			}
-
-		case strings.HasSuffix(r.URL.Path, ":generateContent"):
-			part := map[string]any{"text": reply}
+			_ = json.Unmarshal(rawBody, &reqBody)
+			if reqBody.Stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				for i, c := range chunks {
+					delta := map[string]any{"content": c}
+					if i == 0 {
+						delta["role"] = "assistant"
+					}
+					choice := map[string]any{"index": 0, "delta": delta}
+					ev := map[string]any{
+						"id":      "chatcmpl-lab-stream",
+						"object":  "chat.completion.chunk",
+						"model":   "llama-3.1-8b-instant",
+						"choices": []map[string]any{choice},
+					}
+					if i == len(chunks)-1 {
+						choice["finish_reason"] = "stop"
+						ev["usage"] = map[string]any{
+							"prompt_tokens":     6,
+							"completion_tokens": 12,
+							"total_tokens":      18,
+						}
+					}
+					b, _ := json.Marshal(ev)
+					fmt.Fprintf(w, "data: %s\n\n", string(b))
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"candidates": []map[string]any{{
+				"id":     "chatcmpl-lab-1",
+				"object": "chat.completion",
+				"model":  "llama-3.1-8b-instant",
+				"choices": []map[string]any{{
 					"index": 0,
-					"content": map[string]any{
-						"role":  "model",
-						"parts": []map[string]any{part},
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": reply,
 					},
-					"finishReason": "STOP",
+					"finish_reason": "stop",
 				}},
-				"usageMetadata": map[string]any{
-					"promptTokenCount":     5,
-					"candidatesTokenCount": 9,
-					"totalTokenCount":      14,
+				"usage": map[string]any{
+					"prompt_tokens":     5,
+					"completion_tokens": 9,
+					"total_tokens":      14,
 				},
 			})
 
@@ -179,16 +189,6 @@ func newGuardrailLab(t *testing.T, opts ...labOption) *guardrailLab {
 					"categories":      map[string]bool{"hate": false},
 					"category_scores": map[string]float64{"hate": 0.01},
 				}},
-			})
-
-		case r.URL.Path == "/v2/rerank":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "rerank-lab-1",
-				"results": []map[string]any{{
-					"index":           0,
-					"relevance_score": 0.95,
-				}},
-				"meta": map[string]any{"billed_units": map[string]any{"search_units": 1}},
 			})
 
 		default:
@@ -244,15 +244,15 @@ func (l *guardrailLab) provisionDefaultTenant(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode, "create org: %s", string(raw))
 	l.orgID = org.ID
 
-	// Enable gemini, openai, and cohere so all endpoint tests route through one tenant.
-	for _, prov := range []string{"gemini", "openai", "cohere"} {
+	// Enable groq and openai so all endpoint tests route through one tenant.
+	for _, prov := range []string{"groq", "openai"} {
 		r, body := l.doJSON(http.MethodPost, "/admin/v1/organizations/"+l.orgID+"/subscriptions", l.adminHeaders, map[string]any{
 			"provider": prov, "is_enabled": true,
 		}, nil)
 		require.Equal(t, http.StatusOK, r.StatusCode, "enable %s: %s", prov, string(body))
 	}
 
-	// Register GlobalModels for utility modalities (embeddings, moderations, rerank).
+	// Register GlobalModels for utility modalities (embeddings, moderations).
 	extraModels := []*domain.GlobalModel{
 		{
 			ID:                "openai/text-embedding-3-small",
@@ -274,27 +274,16 @@ func (l *guardrailLab) provisionDefaultTenant(t *testing.T) {
 			PricingStatus:     domain.PricingStatusVerified,
 			Capabilities:      domain.ModelCapabilities{Moderation: domain.CapabilitySupported},
 		},
-		{
-			ID:                "cohere/rerank-v3.5",
-			Provider:          domain.ProviderCohere,
-			ModelName:         "rerank-v3.5",
-			DisplayName:       "Cohere Rerank v3.5",
-			SupportsInference: true,
-			LifecycleStatus:   domain.ModelStatusActive,
-			PricingStatus:     domain.PricingStatusVerified,
-			Capabilities:      domain.ModelCapabilities{Rerank: domain.CapabilitySupported},
-		},
 	}
 	for _, gm := range extraModels {
 		require.NoError(t, l.repo.UpsertGlobalModel(ctx, gm))
 	}
 
-	// Credentials + model groups + deployments for fast (gemini), emb, modr, rerank.
+	// Credentials + model groups + deployments for fast (groq), emb, modr.
 	credIDs := map[string]string{}
 	for _, spec := range []struct{ prov, name, key string }{
-		{"gemini", "mock-gemini", "AIzaSyMockLabKey"},
+		{"groq", "mock-groq", "gsk_MockLabKey"},
 		{"openai", "mock-openai", "sk-mock-openai-lab-key"},
-		{"cohere", "mock-cohere", "cohere-mock-lab-key"},
 	} {
 		var cred domain.ProviderCredential
 		r, b := l.doJSON(http.MethodPost, "/admin/v1/credentials", l.adminHeaders, map[string]any{
@@ -306,10 +295,9 @@ func (l *guardrailLab) provisionDefaultTenant(t *testing.T) {
 	}
 
 	for _, mg := range []struct{ alias, globalModel, prov string }{
-		{"fast", "gemini/gemini-2.5-flash", "gemini"},
+		{"fast", "groq/llama-3.1-8b-instant", "groq"},
 		{"emb-small", "openai/text-embedding-3-small", "openai"},
 		{"modr", "openai/omni-moderation-latest", "openai"},
-		{"rerank", "cohere/rerank-v3.5", "cohere"},
 	} {
 		var grp domain.ModelGroup
 		r, b := l.doJSON(http.MethodPost, "/admin/v1/model-groups", l.adminHeaders, map[string]any{
@@ -338,7 +326,7 @@ func (l *guardrailLab) provisionDefaultTenant(t *testing.T) {
 		"org_id":              l.orgID,
 		"team_id":             l.teamID,
 		"name":                "guardrails-lab-key",
-		"allowed_models":      []string{"fast", "emb-small", "modr", "rerank"},
+		"allowed_models":      []string{"fast", "emb-small", "modr"},
 		"allowed_mcp_servers": []string{"*"},
 		"allowed_a2a_agents":  []string{"*"},
 	}, &keyResp)

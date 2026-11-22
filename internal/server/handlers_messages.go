@@ -914,7 +914,7 @@ func parseAnthropicMessage(m anthropicMsg) []domain.CanonicalMessage {
 }
 
 func toAnthropicResponse(resp *domain.CanonicalChatResponse, reqID string) map[string]any {
-	var contentBlocks []map[string]any
+	contentBlocks := make([]map[string]any, 0)
 	stopReason := "end_turn"
 
 	if len(resp.Choices) > 0 {

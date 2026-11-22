@@ -134,55 +134,6 @@ func TestPricingStatus_SpendLogsStatusPreservation(t *testing.T) {
 	}
 }
 
-func TestAzureCredential_PersistenceAndReload(t *testing.T) {
-	repo := NewMemoryRepository()
-	ctx := context.Background()
-
-	cred := &domain.ProviderCredential{
-		ID:                  "cred-azure-test-1",
-		OrgID:               "org-azure-1",
-		Provider:            domain.ProviderType("azure"),
-		Name:                "azure-eastus-prod",
-		BaseURL:             "https://my-resource.openai.azure.com",
-		AzureDeploymentName: "gpt-4o-resource-deployment",
-		APIVersion:          "2024-06-01",
-		IsActive:            true,
-	}
-
-	if err := repo.CreateProviderCredential(ctx, cred); err != nil {
-		t.Fatalf("failed to create azure credential: %v", err)
-	}
-
-	reloaded, err := repo.GetProviderCredential(ctx, cred.ID)
-	if err != nil {
-		t.Fatalf("failed to reload azure credential: %v", err)
-	}
-	if reloaded.AzureDeploymentName != "gpt-4o-resource-deployment" {
-		t.Fatalf("expected AzureDeploymentName 'gpt-4o-resource-deployment', got %q", reloaded.AzureDeploymentName)
-	}
-	if reloaded.APIVersion != "2024-06-01" {
-		t.Fatalf("expected APIVersion '2024-06-01', got %q", reloaded.APIVersion)
-	}
-
-	// Test update
-	reloaded.AzureDeploymentName = "gpt-4o-mini-resource-deployment"
-	reloaded.APIVersion = "2024-10-21"
-	if err := repo.UpdateProviderCredential(ctx, reloaded); err != nil {
-		t.Fatalf("failed to update azure credential: %v", err)
-	}
-
-	updated, err := repo.GetProviderCredential(ctx, cred.ID)
-	if err != nil {
-		t.Fatalf("failed to reload updated azure credential: %v", err)
-	}
-	if updated.AzureDeploymentName != "gpt-4o-mini-resource-deployment" {
-		t.Fatalf("expected updated AzureDeploymentName, got %q", updated.AzureDeploymentName)
-	}
-	if updated.APIVersion != "2024-10-21" {
-		t.Fatalf("expected updated APIVersion, got %q", updated.APIVersion)
-	}
-}
-
 func TestMigration0005_Syntax(t *testing.T) {
 	upSQLPath := filepath.Join("..", "..", "migrations", "0005_add_model_capabilities.up.sql")
 	upSQL, err := os.ReadFile(upSQLPath)

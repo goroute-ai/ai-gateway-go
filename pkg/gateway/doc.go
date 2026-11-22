@@ -6,11 +6,11 @@
 // standalone GoRoute proxy container.
 //
 // Key Features:
-//   - Unified OpenAI-compatible interface across Google Gemini, Anthropic Claude, OpenAI, Mistral, and Ollama.
+//   - Unified OpenAI-compatible interface across OpenAI, Anthropic, Groq, and OpenRouter.
 //   - In-process or remote Chat completion and zero-buffer Server-Sent Events (SSE) token streaming.
 //   - Declarative model aliasing (e.g. "fast", "reasoning", "auto") with automated heuristic complexity classification.
 //   - Enterprise resilience: automatic retries, cross-provider fallbacks, and 3-state circuit breakers.
-//   - Model Context Protocol (MCP 2026-07-28 & 2025-11-25) tool invocation, schema validation, and toolset execution.
+//   - Model Context Protocol (MCP 2024-11-05 through 2026-07-28 spec-generated releases) tool invocation, schema validation, and toolset execution.
 //   - Linux Foundation Agent-to-Agent (A2A v1.0) task dispatch, timeline streaming, and emergency kill-switch controls.
 //
 // Basic In-Process Embedded Example:
@@ -30,7 +30,7 @@
 //
 //		gw, err := gateway.New(
 //			gateway.WithModelList(
-//				gateway.ModelEntry{ModelName: "fast", Model: "gemini/gemini-2.5-flash", APIKey: "os.environ/GEMINI_API_KEY"},
+//				gateway.ModelEntry{ModelName: "fast", Model: "openai/gpt-4o-mini", APIKey: "os.environ/OPENAI_API_KEY"},
 //				gateway.ModelEntry{ModelName: "reasoning", Model: "anthropic/claude-sonnet-4-20250514", APIKey: "os.environ/ANTHROPIC_API_KEY"},
 //			),
 //			gateway.WithDemoMocksIfEnvMissing(),

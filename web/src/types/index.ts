@@ -1,21 +1,8 @@
 export type ProviderType =
   | 'openai'
   | 'anthropic'
-  | 'gemini'
-  | 'mistral'
-  | 'ollama'
   | 'groq'
-  | 'deepseek'
-  | 'together'
-  | 'azure'
-  | 'bedrock'
-  | 'vertex'
-  | 'cohere'
-  | 'cerebras'
-  | 'sambanova'
-  | 'xai'
-  | 'fireworks'
-  | 'perplexity'
+  | 'openrouter'
   | string;
 
 export type BudgetResetPeriod = 'daily' | 'monthly' | 'never';
@@ -212,8 +199,6 @@ export interface ProviderCredential {
   name: string;
   base_url?: string;
   key_version: number;
-  azure_deployment_name?: string;
-  api_version?: string;
   headers?: Record<string, string>;
   is_active: boolean;
   expires_at?: string;
@@ -498,10 +483,6 @@ export type GuardrailStatus = 'active' | 'pending_review' | 'rejected';
 
 export type GuardrailProviderType =
   | 'openai_moderation'
-  | 'bedrock'
-  | 'azure/prompt_shield'
-  | 'azure/text_moderations'
-  | 'model_armor'
   | 'presidio'
   | 'lakera_v2'
   | 'guardrails_ai'
@@ -756,6 +737,40 @@ export interface GuardrailApplyResponse {
   usage_units: number;
   latency_ms: number;
   error_message?: string;
+}
+
+export interface MCPSpecInfo {
+  version: string;
+  label: string;
+  summary: string;
+  schema_dialect: string;
+  schema_def_count: number;
+  transport_mode: string;
+  default_transport: string;
+  allowed_transports: string[];
+  supports_sessions: boolean;
+  requires_initialize: boolean;
+  supports_batching: boolean;
+  requires_protocol_version_header: boolean;
+  requires_mirrored_headers: boolean;
+  supports_server_discover: boolean;
+  supports_subscriptions_post: boolean;
+  supports_tasks: boolean;
+  supports_structured_content: boolean;
+  supports_elicitation: boolean;
+  supports_result_type: boolean;
+  client_request_methods: string[];
+  client_notification_methods: string[];
+  server_notification_methods: string[];
+}
+
+export interface MCPRuntimeSpecState {
+  status?: string;
+  active_protocol_version: string;
+  strict_schema_validation: boolean;
+  updated_by?: string;
+  updated_at?: string;
+  available_specs: MCPSpecInfo[];
 }
 
 export interface MCPServer {

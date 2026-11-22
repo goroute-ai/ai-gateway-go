@@ -23,21 +23,28 @@ import (
 func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Start mock upstream Gemini (fast group) and Anthropic (reasoning group) servers
-	gemUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 1. Start mock upstream OpenAI (fast group) and Anthropic (reasoning group) servers
+	openaiUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, ":generateContent"):
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Fast Gemini answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":50,"totalTokenCount":150}}`)
-		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
-			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Streamed Gemini chunk\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":10,\"totalTokenCount\":30}}\n\n")
-		case strings.HasSuffix(r.URL.Path, ":embedContent"):
-			fmt.Fprint(w, `{"embedding":{"values":[0.25,0.75]}}`)
-		case r.URL.Path == "/v1beta/models":
-			fmt.Fprint(w, `{"models":[{"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash"}]}`)
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			var req struct {
+				Stream bool `json:"stream"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"id\":\"chatcmpl_stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Streamed OpenAI chunk\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":10,\"total_tokens\":30}}\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				return
+			}
+			fmt.Fprint(w, `{"id":"chatcmpl_e2e","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"Fast OpenAI answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
+		case strings.HasSuffix(r.URL.Path, "/embeddings"):
+			fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.25,0.75]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
+		case strings.HasSuffix(r.URL.Path, "/models"):
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model"}]}`)
 		}
 	}))
-	defer gemUpstream.Close()
+	defer openaiUpstream.Close()
 
 	antUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -114,9 +121,9 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		t.Fatalf("create org failed (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// Subscribe Org ONLY to Gemini & Anthropic (Layer 2)
+	// Subscribe Org ONLY to OpenAI & Anthropic (Layer 2)
 	doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
-		"provider": "gemini", "is_enabled": true,
+		"provider": "openai", "is_enabled": true,
 	}, nil)
 	doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
 		"provider": "anthropic", "is_enabled": true,
@@ -141,14 +148,14 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	}, &team)
 
 	// 6. Store Encrypted Upstream Credentials in Vault + Test Rotation & Live Validation
-	var gemCred, antCred domain.ProviderCredential
+	var openaiCred, antCred domain.ProviderCredential
 	doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
 		"org_id":   org.ID,
-		"provider": "gemini",
-		"name":     "gemini-prod",
-		"base_url": gemUpstream.URL,
-		"api_key":  "AIzaSyDummyGeminiSecretKeyV1",
-	}, &gemCred)
+		"provider": "openai",
+		"name":     "openai-prod",
+		"base_url": openaiUpstream.URL,
+		"api_key":  "sk-DummyOpenAISecretKeyV1",
+	}, &openaiCred)
 	doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
 		"org_id":   org.ID,
 		"provider": "anthropic",
@@ -157,23 +164,23 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		"api_key":  "sk-ant-DummyClaudeSecretKey",
 	}, &antCred)
 
-	// Rotate Gemini Credential -> KeyVersion must increment to 2
+	// Rotate OpenAI Credential -> KeyVersion must increment to 2
 	var rotatedCred domain.ProviderCredential
-	resp, raw = doJSON(http.MethodPost, "/admin/v1/credentials/"+gemCred.ID+"/rotate", adminHeaders, map[string]any{
-		"api_key": "AIzaSyDummyGeminiSecretKeyV2",
+	resp, raw = doJSON(http.MethodPost, "/admin/v1/credentials/"+openaiCred.ID+"/rotate", adminHeaders, map[string]any{
+		"api_key": "sk-DummyOpenAISecretKeyV2",
 	}, &rotatedCred)
 	if resp.StatusCode != http.StatusOK || rotatedCred.KeyVersion != 2 {
 		t.Fatalf("credential rotation failed (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// Validate Gemini Credential live against upstream
+	// Validate OpenAI Credential live against upstream
 	var valOut map[string]any
-	resp, raw = doJSON(http.MethodPost, "/admin/v1/credentials/"+gemCred.ID+"/validate", adminHeaders, nil, &valOut)
+	resp, raw = doJSON(http.MethodPost, "/admin/v1/credentials/"+openaiCred.ID+"/validate", adminHeaders, nil, &valOut)
 	if resp.StatusCode != http.StatusOK || valOut["valid"] != true {
 		t.Fatalf("credential live validation failed (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// 7. Configure "fast", "reasoning", and "text-embedding-004" ModelGroups & Deployments
+	// 7. Configure "fast", "reasoning", and "text-embedding-3-small" ModelGroups & Deployments
 	var fastGroup, reasoningGroup, embedGroup domain.ModelGroup
 	doJSON(http.MethodPost, "/admin/v1/model-groups", adminHeaders, map[string]any{
 		"org_id":           org.ID,
@@ -182,9 +189,9 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	}, &fastGroup)
 	doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
 		"model_group_id":  fastGroup.ID,
-		"global_model_id": "gemini/gemini-2.5-flash",
-		"credential_id":   gemCred.ID,
-		"deployment_name": "gemini-flash-us",
+		"global_model_id": "openai/gpt-4.1-mini",
+		"credential_id":   openaiCred.ID,
+		"deployment_name": "openai-mini-us",
 		"weight":          100,
 	}, nil)
 
@@ -203,14 +210,14 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 
 	doJSON(http.MethodPost, "/admin/v1/model-groups", adminHeaders, map[string]any{
 		"org_id":           org.ID,
-		"alias":            "text-embedding-004",
+		"alias":            "text-embedding-3-small",
 		"routing_strategy": "lowest-cost",
 	}, &embedGroup)
 	doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
 		"model_group_id":  embedGroup.ID,
-		"global_model_id": "gemini/text-embedding-004",
-		"credential_id":   gemCred.ID,
-		"deployment_name": "gemini-embed-us",
+		"global_model_id": "openai/text-embedding-3-small",
+		"credential_id":   openaiCred.ID,
+		"deployment_name": "openai-embed-us",
 	}, nil)
 
 	// 8. Issue Virtual API Key (`sk-gw-...`) with RPM limit = 6
@@ -229,14 +236,14 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 
 	clientHeaders := map[string]string{"Authorization": "Bearer " + issuedKey.RawKey}
 
-	// 9. Test GET /v1/models (Must only return Gemini and Anthropic models for this Org)
+	// 9. Test GET /v1/models (Must only return OpenAI and Anthropic models for this Org)
 	var visibleModels openapi.GatewayModelList
 	resp, _ = doJSON(http.MethodGet, "/v1/models", clientHeaders, nil, &visibleModels)
 	if resp.StatusCode != http.StatusOK || len(visibleModels.Data) == 0 {
 		t.Fatalf("GET /v1/models failed: status=%d count=%d", resp.StatusCode, len(visibleModels.Data))
 	}
 	for _, m := range visibleModels.Data {
-		if m.Provider != "gemini" && m.Provider != "anthropic" {
+		if m.Provider != "openai" && m.Provider != "anthropic" {
 			t.Fatalf("GET /v1/models leaked unsubscribed provider %s", m.Provider)
 		}
 	}
@@ -260,7 +267,7 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		t.Fatalf("expected 400 Bad Request from prompt-injection guardrail, got %d", resp.StatusCode)
 	}
 
-	// 11. Test `POST /v1/chat/completions` with `model: "auto"` (Simple Greeting + PII Redaction -> Routes to "fast" Gemini) + Response Cache
+	// 11. Test `POST /v1/chat/completions` with `model: "auto"` (Simple Greeting + PII Redaction -> Routes to "fast" OpenAI) + Response Cache
 	zero := 0.0
 	var chatResp1 domain.CanonicalChatResponse
 	resp, raw = doJSON(http.MethodPost, "/v1/chat/completions", clientHeaders, domain.CanonicalChatRequest{
@@ -268,7 +275,7 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		Temperature: &zero,
 		Messages:    []domain.CanonicalMessage{{Role: "user", Content: "Hello! My email is alice@example.com"}},
 	}, &chatResp1)
-	if resp.StatusCode != http.StatusOK || chatResp1.Provider != domain.ProviderGemini {
+	if resp.StatusCode != http.StatusOK || chatResp1.Provider != domain.ProviderOpenAI {
 		t.Fatalf("auto simple chat failed (%d): %s", resp.StatusCode, string(raw))
 	}
 	if resp.Header.Get("X-Gateway-Cache") != "MISS" || resp.Header.Get("X-Gateway-Guardrail-Action") != "redact" {
@@ -303,14 +310,14 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		Stream:   true,
 		Messages: []domain.CanonicalMessage{{Role: "user", Content: "Stream please"}},
 	}, nil)
-	if !strings.Contains(string(streamRaw), "Streamed Gemini chunk") || !strings.Contains(string(streamRaw), "data: [DONE]") {
+	if !strings.Contains(string(streamRaw), "Streamed OpenAI chunk") || !strings.Contains(string(streamRaw), "data: [DONE]") {
 		t.Fatalf("unexpected SSE stream output: %s", string(streamRaw))
 	}
 
 	// 14. Test `POST /v1/embeddings`
 	var embResp domain.CanonicalEmbeddingResponse
 	resp, raw = doJSON(http.MethodPost, "/v1/embeddings", clientHeaders, map[string]any{
-		"model": "text-embedding-004",
+		"model": "text-embedding-3-small",
 		"input": []string{"Enterprise AI Gateway in Go"},
 	}, &embResp)
 	if resp.StatusCode != http.StatusOK || len(embResp.Data) != 1 {
@@ -343,7 +350,7 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 
 	// 16. Test Versioned Model Pricing Update (`POST /admin/v1/catalogue/pricing`) & Cache Invalidation (`POST /admin/v1/cache/invalidate`)
 	resp, raw = doJSON(http.MethodPost, "/admin/v1/catalogue/pricing", adminHeaders, map[string]any{
-		"global_model_id":           "gemini/gemini-2.5-flash",
+		"global_model_id":           "openai/gpt-4.1-mini",
 		"input_cost_micros_per_1m":  200_000,
 		"output_cost_micros_per_1m": 800_000,
 		"changed_by":                "finops-admin",

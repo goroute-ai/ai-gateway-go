@@ -1,9 +1,9 @@
 # Enterprise AI Gateway (Pure Go) — Complete High-Level & Low-Level Architecture Specification
 
-> **Document Status**: Production Reference Architecture (`v1.21.0`)  
+> **Document Status**: Production Reference Architecture (`v1.24.0`)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
-> **Provider Integrations**: Dedicated adapters and OpenAI-compatible dialect profiles under `internal/adapter/`; consult those packages for the current implementation set.  
-> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway DTOs/interfaces, validates contracts, and checks `/v1`, `/admin/v1`, and `/auth` route parity (`106` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
+> **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`); consult those packages for exact wire translation.  
+> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`125` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -29,7 +29,7 @@
    - [4.1 Entity-Relationship Diagram](#41-entity-relationship-diagram)
    - [4.2 PostgreSQL Table Definitions](#42-postgresql-table-definitions)
    - [4.3 Redis Keyspace & TTL Matrix](#43-redis-keyspace--ttl-matrix)
-5. [Model Context Protocol (MCP 2026-07-28 & 2025-11-25) Protocol Engine](#5-model-context-protocol-mcp-2026-07-28--2025-11-25-protocol-engine)
+5. [Model Context Protocol (MCP Multi-Release Spec-Generated Engine)](#5-model-context-protocol-mcp-multi-release-spec-generated-engine)
 6. [Agent-to-Agent Protocol (A2A v1.0) Service Engine](#6-agent-to-agent-protocol-a2a-v10-service-engine)
 7. [Codebase Structure & Operational Runbook](#7-codebase-structure--operational-runbook)
 
@@ -37,7 +37,7 @@
 
 ## 1. Executive Summary & Architectural Vision
 
-Modern production AI systems interact with multiple frontier and local LLM providers (OpenAI, Anthropic, Google Gemini, Mistral, Ollama). Directly coupling client applications to individual provider SDKs creates severe operational bottlenecks:
+Modern production AI systems interact with multiple frontier and high-throughput LLM providers (`OpenAI`, `Anthropic`, `Groq`, and `OpenRouter`). Directly coupling client applications to individual provider SDKs creates severe operational bottlenecks:
 - **Fragmented APIs**: Divergent request schemas, tool-calling formats, system prompt conventions, and streaming wire protocols (SSE vs. NDJSON).
 - **Reliability Risks**: Single-provider outages, regional `429 Too Many Requests` rate limits, and `529 Overloaded` errors directly impact end users without automated multi-region retries and cross-provider fallback chains.
 - **Security & Governance Gaps**: Distributing raw OpenAI or Anthropic master API keys across dozens of microservices makes rotation, revocation, and per-service model access control impossible.
@@ -94,14 +94,14 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`120` OpenAPI paths: `28` `/v1`, `82` `/admin/v1`, `10` `/auth`, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`125` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `10` `/auth`, `4` provider aliases, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login, SCIM v2 provisioning, HIBP screening, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
 | **5. AI Observability & Audit** | W3C distributed trace propagation (`traceparent`/`tracestate`), OpenMetrics Prometheus scraping, structured logs, immutable spend and governance audit ledgers. | `internal/observability`, `internal/finops`, `internal/server` |
-| **6. MCP Hub & Tool Registry** | MCP 2026-07-28 stateless hub, 2025/2024 compatibility adapters, Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `internal/mcp` |
+| **6. MCP Hub & Tool Registry** | Spec-generated 5-release MCP hub (`2024-11-05`–`2026-07-28`, UI-switchable via `PUT /admin/v1/mcp/spec`), Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `cmd/mcpgen`, `internal/mcp/spec`, `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
-| **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, `DistributedTokenCache` & opt-in Cloud IAM (Bedrock/Vertex/Azure/RDS IAM), AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream`, `internal/storage` |
+| **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, `DistributedTokenCache` & opt-in AWS RDS IAM, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream`, `internal/storage` |
 | **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), Master Key / Password / OIDC SSO sign-in (`LoginView`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog & PTU/priority explorer, FinOps & multi-window quota/scope controls (`QuotasTab`, `TempBudgetModal`), 4-tab Guardrails Console, upstream credentials preflight validator, and read-only `ConfigView`. | `internal/ui`, `web` |
 
 ---
@@ -130,7 +130,7 @@ flowchart TB
             Stage1Router["5. Stage 1-3: FilterChain & Priority Tiers\n(Plugins, Region, Tags, Budgets, Affinity, Priority)"]
             Stage2LB["6. Stage 4: Deployment Load Balancer\n(7 Strategies + Hedged Fastest-Response Racing)"]
             Reliability["7. Stage 5: Reliability & Scheduler\n(PriorityScheduler, RetryPolicy, Specialized Fallbacks, SSE Continuation)"]
-            AdapterLayer["8. OpenAPI Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Gemini · Mistral · Ollama)"]
+            AdapterLayer["8. OpenAPI Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Groq · OpenRouter)"]
         end
 
         subgraph ControlPlane["Control Plane (/admin/v1/* & Background Daemons)"]
@@ -146,11 +146,9 @@ flowchart TB
         Postgres[("PostgreSQL 16+\n- 4-Layer Model Catalogue & Policies\n- Multi-Tenant Orgs, Teams, Users, Keys\n- AES-256-GCM Encrypted Credentials\n- Partitioned Spend & Audit Logs")]
     end
 
-    subgraph Upstreams["Supported Upstream LLM Transports (4-Tier Provider Architecture)"]
-        Native["Dedicated Native Adapters\n- OpenAI & Azure OpenAI\n- Anthropic Claude (Messages API)\n- Google Gemini (AI Studio)\n- AWS Bedrock (Pure Go SigV4 + EventStream)\n- Google Cloud Vertex AI (OAuth2 JWT)\n- Cohere v2 (Chat & Embed v2)\n- Mistral AI & Ollama (Local/Self-Hosted)"]
-        CompatProfiles["Certified OpenAI-Compatible Profiles (30+ Engines)\n- Cerebras · SambaNova · xAI (Grok)\n- Fireworks AI · Together AI · Groq · DeepSeek\n- Perplexity · Cloudflare · Databricks · Snowflake\n- DashScope (Qwen) · Volcengine · BigModel · Moonshot\n- Voyage AI · Jina AI · Replicate · Nvidia NIM · Scaleway"]
-        CustomDialect["Custom Dialects & Self-Hosted\n- vLLM / TGI / Ollama / LocalAI\n- Custom base_url, headers, and query params"]
-        CatalogEngine["Embedded Model Catalogue Engine\n- 5,493 model/provider records\n- Tri-state capabilities & micro-dollar pricing\n- In-memory lookup"]
+    subgraph Upstreams["Supported OpenAPI-First Upstream Providers"]
+        Native["Certified OpenAPI-First Adapters\n- OpenAI (Chat, Responses, Realtime WS, Images, Audio, Files, Batches)\n- Anthropic Claude (Messages API, Thinking & Streaming)\n- Groq (Low-Latency Inference & Whisper/Audio)\n- OpenRouter (Multi-Model Unified Routing)"]
+        CatalogEngine["Embedded Model Catalogue Engine\n- Audited model/provider records\n- Tri-state capabilities & micro-dollar pricing\n- In-memory lookup (`internal/modelcatalog`)"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nAuthorization: Bearer sk-gw-..."| LB
@@ -273,23 +271,21 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `28` `/v1` paths, `82` `/admin/v1` paths, and `10` `/auth` paths (`120` total paths, verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `27` `/v1` paths, `84` `/admin/v1` paths, `10` `/auth` paths, `4` provider aliases (`125` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
-| `docs/openapi/gemini.openapi.yaml` | `3.0.3` | **Google Gemini** | `GenerateContent` (`/v1beta/models/{model}:generateContent`), `StreamGenerateContent`, `EmbedContent`, `ListModels` |
-| `docs/openapi/mistral.openapi.yaml` | `3.1.0` | **Mistral AI** | `chat_completion_v1_chat_completions_post`, `embeddings_v1_embeddings_post`, `list_models_v1_models_get` |
-| `docs/openapi/ollama.openapi.yaml` | `3.1.0` | **Ollama** | `POST /api/chat`, `POST /api/embed`, `GET /api/tags` |
+| `docs/openapi/groq.openapi.yaml` | `3.0.3` | **Groq** | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
+| `docs/openapi/openrouter.openapi.yaml` | `3.0.3` | **OpenRouter** | `POST /api/v1/chat/completions`, `GET /api/v1/models` |
 
-#### 3.1.2 Build-Time Code Generation (`cmd/specgen` + `go generate`)
-Executing `go generate ./...` generates the gateway types and interfaces from `docs/openapi/gateway.openapi.yaml`, then runs `cmd/specgen` to validate the other selected contracts and check generated A2A code. The generated gateway output is:
+#### 3.1.2 Build-Time Code Generation (`cmd/specgen`, `cmd/mcpgen` + `go generate`)
+Executing `make specgen` generates the gateway types/interfaces from `docs/openapi/gateway.openapi.yaml`, provider DTOs from `docs/openapi/*.openapi.yaml`, and all 5 MCP release packages from `docs/specs/mcp/*/schema.yaml`, then runs `cmd/specgen` to validate all OpenAPI contracts, MCP YAML schemas, and A2A protobuf descriptors. The generated gateway output is:
 - `internal/openapi/gateway.gen.go` (generated with pinned `oapi-codegen` v2.8.0)
 
-Selected provider data structures are checked in under:
+Checked-in provider wire DTO packages:
 - `internal/openapi/providers/openai_types.gen.go`
 - `internal/openapi/providers/anthropic_types.gen.go`
-- `internal/openapi/providers/gemini_types.gen.go`
-- `internal/openapi/providers/mistral_types.gen.go`
-- `internal/openapi/providers/ollama_types.gen.go`
+- `internal/openapi/providers/groq_types.gen.go`
+- `internal/openapi/providers/openrouter_types.gen.go`
 
 Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Runtime route registration, gateway request decoding, and response writing remain handwritten in `internal/server/`; the generated server interface is not yet wired to those handlers. The gateway contract also does not yet cover every registered admin, alias, MCP, or A2A route.
 
@@ -316,31 +312,11 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
      - `content_block_delta` (`input_json_delta`) $\rightarrow$ emits `delta.tool_calls[{index, function: {arguments: partial_json}}]`.
      - `message_delta` $\rightarrow$ captures `usage.output_tokens`, maps `stop_reason` (`end_turn` $\rightarrow$ `stop`, `max_tokens` $\rightarrow$ `length`, `tool_use` $\rightarrow$ `tool_calls`), and emits final chunk + `data: [DONE]\n\n`.
 
-##### B. Google Gemini (`gemini.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
-1. **Endpoint & Auth**:
-   - Sync: `POST /v1beta/models/{model}:generateContent` with `x-goog-api-key: <decrypted_key>`.
-   - Stream: `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` with `x-goog-api-key: <decrypted_key>`.
-   - Tuned HTTP client timeout aligned to **120s** (matching OpenAI/Anthropic/Mistral) to prevent premature cancellation during deep thinking or high-token generation.
-2. **Payload Mapping**:
-   - `system` messages $\rightarrow$ `systemInstruction: {parts: [{text: "..."}]}`.
-   - `user` / `assistant` messages $\rightarrow$ `contents: [{role: "user"|"model", parts: [...]}]`.
-   - `Temperature`, `TopP`, `MaxTokens`, `Stop`, `ResponseFormat` $\rightarrow$ `generationConfig: {temperature, topP, maxOutputTokens, stopSequences, responseMimeType, responseSchema}`.
-   - OpenAI `tools` $\rightarrow$ `tools: [{functionDeclarations: [...]}]`.
-   - Gemini `usageMetadata.{promptTokenCount, candidatesTokenCount, totalTokenCount, thoughtsTokenCount}` $\rightarrow$ `CanonicalChatResponse.Usage`.
-3. **Safety Block Interception**:
-   - If a prompt triggers Gemini content safety filters, Gemini returns zero candidates with `promptFeedback.blockReason`. The adapter intercepts this condition and translates it into a standard `GatewayError` (`type: "safety_violation"`, `code: "prompt_blocked"`, HTTP 400), preventing downstream client nil-pointer crashes.
+##### B. Groq & OpenRouter (`groq.openapi.yaml` & `openrouter.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
+- **Groq (`internal/adapter/groq`)**: Dispatches OpenAI-compatible chat, legacy completion, audio transcription/translation, and `/openai/v1/models` discovery using `groq_types.gen.go` DTOs and high-speed Bearer auth.
+- **OpenRouter (`internal/adapter/openrouter`)**: Dispatches unified multi-model requests via `/api/v1/chat/completions` and `/api/v1/models` using `openrouter_types.gen.go` DTOs, translating `reasoning_effort` hints (`openrouter_reasoning`) and extracting credit/usage metadata.
 
-##### C. Mistral AI (`mistral.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
-1. **Endpoint & Parameter Normalization**:
-   - Targets `POST /v1/chat/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
-   - Translates `MaxTokens` to Mistral's `max_tokens` (`ChatCompletionRequest` in `mistral.openapi.yaml`), normalizes `safe_prompt`, and maps SSE `data:` chunks to canonical chunks.
-
-##### D. Ollama (`ollama.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
-1. **Wire Protocol Conversion (NDJSON $\rightarrow$ SSE)**:
-   - Ollama's native `/api/chat` streams **Newline-Delimited JSON (NDJSON)** where each line is a complete JSON object `{"model":"...","message":{"role":"assistant","content":"..."},"done":false}` followed by a final object with `"done":true,"prompt_eval_count":X,"eval_count":Y`.
-   - The Ollama adapter reads the NDJSON stream line-by-line via `bufio.Scanner` (with 2MB buffer) and translates each line in real time into an OpenAI-compatible `chat.completion.chunk` SSE frame (`data: {...}\n\n`), extracting `prompt_eval_count` and `eval_count` from the final frame.
-
-##### E. OpenAI Reasoning Models (`o1`, `o3`, `o3-mini`)
+##### C. OpenAI Reasoning Models (`o1`, `o3`, `o3-mini`)
 1. **Developer Role Mapping**:
    - Reasoning models reject `role: "system"`. The adapter automatically normalizes `system` messages into `role: "developer"`.
 2. **Completion Token & Sampling Parameter Normalization**:
@@ -354,10 +330,10 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
 To serve multi-tenant enterprises cleanly, model governance is architected across **4 orthogonal layers**:
 
 1. **Layer 1 — Global Model Catalogue (`global_models`)**:
-   - The master inventory of all known models across OpenAI, Anthropic, Gemini, Mistral, and Ollama.
+   - The master inventory of known models across `openai`, `anthropic`, `groq`, and `openrouter`.
    - Tracks `provider`, `model_name`, `display_name`, `max_input_tokens`, `max_output_tokens`, capabilities (`supports_streaming`, `supports_tools`, `supports_vision`, `supports_reasoning`, `supports_embeddings`), default pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`, `cached_input_cost_micros_per_1m`), and `lifecycle_status` (`discovered`, `active`, `preview`, `deprecated`, `retired`).
 2. **Layer 2 — Organization Provider Subscriptions (`org_provider_subscriptions`)**:
-   - Defines which LLM vendors an organization is subscribed to (e.g., Org A is subscribed to `openai` and `anthropic`; Org B is subscribed to `gemini`, `mistral`, and `ollama`).
+   - Defines which LLM vendors an organization is subscribed to (e.g., Org A is subscribed to `openai` and `anthropic`; Org B enables `groq` and `openrouter`).
 3. **Layer 3 — Organization Model Availability Policies (`org_model_policies`)**:
    - Even if an organization subscribes to OpenAI and the Global Catalogue discovers a brand-new preview model, that model is **not** exposed to the organization's developers until enabled in `org_model_policies` (or matched by an org auto-approval policy).
    - `GET /v1/models` returns **strictly** the intersection of `Layer 1 (Active) ∩ Layer 2 (Org Subscribed Providers) ∩ Layer 3 (Org Enabled Models) ∩ VirtualKey/Team Allowed Models`.
@@ -417,13 +393,13 @@ The Reliability Manager wraps deployment execution with five coordinated recover
   - Embedded SDK callers can install `gateway.WithCustomAuthenticator` (`CustomAuthModeOff`/`On`/`Auto`, `AuthDecision`, `RunPostChecks`).
 
 #### Boundary 2: Gateway $\rightarrow$ Provider Credential Vault (`internal/auth/vault.go`) & Cloud IAM
-- Upstream API keys (`sk-proj-...`, `sk-ant-...`, `AIza...`) are never stored in plaintext in PostgreSQL.
+- Upstream API keys (`sk-proj-...`, `sk-ant-...`, `gsk_...`, `sk-or-...`) are never stored in plaintext in PostgreSQL.
 - **Envelope Encryption Scheme**:
   1. Generate a fresh 256-bit **Data Encryption Key (DEK)** via `crypto/rand`.
   2. Encrypt the raw provider API key with the DEK using **AES-256-GCM** (`nonce_data` + `ciphertext_data`).
   3. Encrypt the DEK itself with the gateway's 256-bit **Master Key Encryption Key (KEK)** using **AES-256-GCM** (`nonce_dek` + `ciphertext_dek`).
   4. Zero out the plaintext DEK in memory after encryption.
-- **Cloud IAM & `DistributedTokenCache`**: Opt-in `storage.rds_iam` and `auth.allow_ambient_cloud_iam` resolve short-lived AWS Bedrock/RDS, GCP Vertex, and Azure MSI credentials, coalesced and shared across replicas in `internal/auth/upstream.DistributedTokenCache` (`gw:upstream_token:*`).
+- **Cloud IAM & `DistributedTokenCache`**: Opt-in `storage.rds_iam` and `auth.allow_ambient_cloud_iam` resolve short-lived PostgreSQL AWS RDS IAM credentials, while `internal/auth/upstream.DistributedTokenCache` (`gw:upstream_token:*`) coalesces and shares upstream OAuth2 and token-exchange credentials across replicas.
 
 ---
 
@@ -507,8 +483,8 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
 5. **Interactive Operator Capabilities**:
    - **Streaming Chat Playground**: Real-time Server-Sent Events (SSE) streaming with multi-turn history, parameter tuning (temperature, max tokens), system instructions, escaped code export, and live token, cost (`costMicros`), guardrail action, and latency telemetry.
    - **Organizations, Teams, Users & Policies**: Multi-tenant management for organizations, teams, users, micro-dollar budgets, provider subscriptions, and org model allow/block policies.
-   - **Live Model Catalogue & Routing**: Filterable directory of 100+ AI models across 12+ providers, showing real-time capability tags, context window sizes, input/output micro-dollar pricing, model groups, and deployment attachment.
-   - **Guardrails Console & Simulator**: Configure baseline PII/secret/toxicity policies, manage the 19-driver registry and hierarchical bindings, define tool trust policies, simulate requests via `/guardrails/simulate` and `/v1/guardrails/apply`, and inspect micro-dollar guardrail usage metrics.
+   - **Live Model Catalogue & Routing**: Filterable directory of AI models across OpenAI, Anthropic, Groq, and OpenRouter, showing real-time capability tags, context window sizes, input/output micro-dollar pricing, model groups, and deployment attachment.
+   - **Guardrails Console & Simulator**: Configure baseline PII/secret/toxicity policies, manage the 15-driver registry and hierarchical bindings, define tool trust policies, simulate requests via `/guardrails/simulate` and `/v1/guardrails/apply`, and inspect micro-dollar guardrail usage metrics.
    - **Provider Credentials Vault & Preflight Validator**: Form-based credential management with live preflight validation against upstream provider endpoints and key rotation.
 
 ---
@@ -539,7 +515,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0036`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`.
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0038`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; and `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases.
 
 #### 1. Multi-Tenant Identity, Federation, SSO & RBAC
 - **`organizations` & `teams`** (`0001`, `0015`, `0022`, `0023`, `0030`, `0031`): Root tenant and departmental boundaries with integer micro-dollar budgets (`max_budget_micros`, `spent_micros`, `soft_budget_micros`, `budget_duration_seconds`, `budget_reset_at`), RPM/TPM/TPD/concurrency limits, and default fallback models.
@@ -551,7 +527,7 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 - **`org_provider_subscriptions` & `org_model_policies`** (`0001`): Layer 2 vendor enablement and Layer 3 model availability policies per organization.
 
 #### 2. Vault, Routing & Deployments
-- **`provider_credentials`** (`0001`): AES-256-GCM encrypted provider keys. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `encrypted_api_key` (TEXT), `base_url` (TEXT), `azure_deployment_name` (VARCHAR), `api_version` (VARCHAR), `headers_json` (TEXT), `created_at`, `updated_at`.
+- **`provider_credentials`** (`0001`, `0037`): AES-256-GCM encrypted provider keys. Columns: `id` (VARCHAR PK), `provider` (VARCHAR), `encrypted_api_key` (TEXT), `base_url` (TEXT), `headers_json` (TEXT), `created_at`, `updated_at`.
 - **`model_groups`** (`0001`, `0020`): Virtual model aliases (`fast`, `reasoning`). Columns: `id` (VARCHAR PK), `name` (UNIQUE), `routing_strategy` (VARCHAR), `fallback_group_ids` (TEXT[]), `context_window_fallbacks` (JSONB), `content_policy_fallbacks` (JSONB), `fallback_targets` (JSONB), `retry_policy` (JSONB), `cooldown_policy` (JSONB), timestamps.
 - **`model_deployments`** (`0001`, `0021`): Backing physical instances. Columns: `id` (VARCHAR PK), `model_group_id` (FK), `global_model_id` (VARCHAR), `provider_credential_id` (FK), `priority` (INT), `weight` (INT), `region` (VARCHAR), `tags` (TEXT[]), `max_budget_micros` (INT8), `budget_reset_period` (TEXT), `rpm_limit` (INT), `tpm_limit` (INT), `healthy` (BOOL), timestamps.
 
@@ -567,13 +543,13 @@ The persistent relational schema is managed through ordered SQL migrations (`mig
 - **`deployment_ptu_shares` & `priority_classes`** (`0032`): Provisioned Throughput Unit team capacity reservations and priority scheduling weights.
 - **`spend_logs`** (`0001`, `0007`, `0031`, `0034`): Append-only inference accounting ledger (`request_id`, `trace_id`, `protocol`, `org_id`, `team_id`, `user_id`, `virtual_key_id`, `end_user_id`, `tags`, `endpoint`, `modality`, `requested_model`, `resolved_model`, `provider`, `deployment_id`, `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`, `reasoning_tokens`, `cost_micros`, `latency_ms`, `ttft_ms`, `status_code`, `is_stream`, `cache_hit`, `fallback_attempted`, `retry_count`, `created_at`) plus covering `(org_id, created_at)` indexes (`0034`) for fast `rolling_24h` cold recovery.
 - **`guardrail_policies`** (`0002`, `0010`, `0016`): Prompt safety baseline policies. Columns: `id` (VARCHAR PK), `org_id` (FK UNIQUE), `mode` (`enforce`, `logging_only`), `scan_all_roles` (BOOL), `enable_prompt_injection` (BOOL), `prompt_injection_action`, `enable_pii_detection` (BOOL), `pii_action`, `enable_secret_detection` (BOOL), `secret_action`, `redact_output_pii` (BOOL), `enable_toxicity_filter` (BOOL), `toxicity_action`, `toxicity_threshold` (`low`, `medium`, `high`), `enabled_content_categories` (TEXT[]), `content_exceptions` (TEXT[]), timestamps.
-- **`guardrail_definitions` & `guardrail_bindings`** (`0017`): Multi-provider named guardrail registry (19 drivers, Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, `weight`) and hierarchical scope attachments (`team_id`, `virtual_key_id`, `end_user_id`, `model_group_id`, `tag`, `is_locked`).
+- **`guardrail_definitions` & `guardrail_bindings`** (`0017`, `0037`): Multi-provider named guardrail registry (15 drivers, Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, `weight`) and hierarchical scope attachments (`team_id`, `virtual_key_id`, `end_user_id`, `model_group_id`, `tag`, `is_locked`).
 - **`tool_policies`** (`0018`): Scoped cross-turn tool trust rules (`input_policy`: `blocked|untrusted|trusted`, `output_policy`: `untrusted|trusted`) driving `ToolLoopOrchestrator` taint-chain enforcement.
 - **`daily_guardrail_metrics`, `daily_guardrail_usage_units`, & `spend_log_guardrails`** (`0019`): Daily guardrail evaluation/block/redaction/flag/error counts, integer micro-dollar (`cost_micros BIGINT`) usage unit attribution, and spend-log guardrail join records.
 - **`audit_logs`** (`0002`): Administrative audit trails. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `user_id` (VARCHAR), `action` (VARCHAR), `resource_type` (VARCHAR), `resource_id` (VARCHAR), `details` (JSONB), `created_at`.
 
 #### 5. Protocols, Stateful Assets & Batch Processing
-- **`mcp_servers` & `mcp_tools`** (`0003`): MCP Hub registry, transport definitions, and SHA-256 tool digests.
+- **`mcp_servers` & `mcp_tools`** (`0003`) & **`mcp_runtime_settings`** (`0038`): MCP Hub registry, per-server protocol/transport definitions, SHA-256 tool digests, and UI-selected Gateway active MCP specification (`active_protocol_version`, `strict_schema_validation`).
 - **`a2a_agents`, `a2a_tasks`, `a2a_task_events`, `a2a_outbox`** (`0003`): Durable Agent-to-Agent state machines, task lifecycles, and transactional outbox for reliable webhook delivery.
 - **`files`** (`0007`): Stateful multi-tenant file assets. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `team_id` (VARCHAR), `user_id` (VARCHAR), `bytes` (INT8), `filename` (VARCHAR), `purpose` (VARCHAR), `status` (VARCHAR), `content_sha256` (VARCHAR), `storage_path` (TEXT), `upstream_id` (VARCHAR), `upstream_provider` (VARCHAR), `expires_at` (TIMESTAMPTZ), `created_at`.
 - **`batches`** (`0007`): Asynchronous batch processing jobs. Columns: `id` (VARCHAR PK), `org_id` (VARCHAR), `team_id` (VARCHAR), `input_file_id` (FK), `output_file_id` (VARCHAR), `error_file_id` (VARCHAR), `endpoint` (VARCHAR), `status` (`validating`, `in_progress`, `completed`, `failed`, `cancelled`), `completion_window` (VARCHAR), `request_counts` (JSONB), `metadata` (JSONB), `upstream_id` (VARCHAR), `upstream_provider` (VARCHAR), `created_at`, `completed_at`.
@@ -625,23 +601,26 @@ All multi-key Lua scripts use Redis Cluster hash tags so every key touched in an
 
 ---
 
-## 5. Model Context Protocol (MCP 2026-07-28 & 2025-11-25) Protocol Engine
+## 5. Model Context Protocol (MCP Multi-Release Spec-Generated Engine)
 
-### 5.1 Dual-Era Transport Architecture
+### 5.1 Spec-Generated Multi-Release Transport Architecture
 
 ```mermaid
 flowchart TD
-    Client["Client / Agent"] --> Ingress["GoRoute Data Plane (/mcp)"]
+    Client["Client / Agent"] --> Ingress["GoRoute Data Plane (/mcp) + Active SpecProfile"]
     Ingress --> SSRF["Outbound SSRF Policy Engine"]
     SSRF --> Dispatcher["Transport Dispatcher"]
-    Dispatcher -->|"2026-07-28 (Primary)"| Stateless["Stateless Streamable HTTP (Header-Based Routing)"]
-    Dispatcher -->|"2025-11-25 (Compat)"| Stateful["Stateful Compatibility Adapter (Redis Session Fabric)"]
+    Dispatcher -->|"2026-07-28 (Default)"| Stateless["Stateless Streamable HTTP (server/discover + Mirrored Headers)"]
+    Dispatcher -->|"2025-03-26 / 2025-06-18 / 2025-11-25"| Stateful["StatefulStreamableTransport (Redis Session Fabric)"]
+    Dispatcher -->|"2024-11-05"| LegacySSE["HTTP+SSE Adapter (GET /sse + POST /message)"]
     Stateless --> Upstream1["Modern MCP Server (2026-07-28)"]
-    Stateful --> Upstream2["Legacy MCP Server (2025-11-25)"]
+    Stateful --> Upstream2["Streamable MCP Server (2025-*)"]
+    LegacySSE --> Upstream3["Legacy SSE MCP Server (2024-11-05)"]
 ```
 
-1. **Modern Primary (2026-07-28)**: Stateless Streamable HTTP over `POST`. Does not issue `initialize` handshakes or track `Mcp-Session-Id`. Carries `Mcp-Name` and `Mcp-Param-*` mirrored headers with base64 sentinel framing (`=?base64?...?=`).
-2. **Compatibility Adapter (2025-11-25)**: Manages upstream session lifecycle. Authenticates upstream sessions, caches session IDs in Redis, and enforces caller principal digest isolation to prevent session hijacking. Translates upstream 404/410 into JSON-RPC `-32025` session expiry.
+1. **Code-Generated Official Schemas (`cmd/mcpgen` -> `internal/mcp/spec`)**: Vendors all 5 official MCP JSON Schemas (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, `2026-07-28`) and compiles typed Go structs + embedded `jsonschema/v6` validators. Operators switch the active Gateway spec live in the Web UI (`PUT /admin/v1/mcp/spec`), persisted in `mcp_runtime_settings` (`0038`) and broadcast across pods via Redis Pub/Sub.
+2. **Modern Default (`2026-07-28`)**: Stateless Streamable HTTP over `POST` with `server/discover`, `subscriptions/listen` SSE, `resultType`/`cacheScope`/`ttlMs`, and mirrored `Mcp-Method`/`Mcp-Name`/`Mcp-Param-*` headers with base64 sentinel framing (`=?base64?...?=`).
+3. **Stateful Streamable Transport (`2025-03-26`, `2025-06-18`, `2025-11-25`)**: `StatefulStreamableTransport` manages upstream `initialize` + `Mcp-Session-Id` lifecycles in Redis with caller principal digest isolation, enforces release-specific batching (`2025-03-26` allowed, `2025-06-18+` rejected with `-32600`), and translates upstream 404/410 into `-32025`. Cross-version `Hub` shaping automatically bridges between the active Gateway spec and each server's configured `protocol_version`.
 3. **Virtual Hub Aggregation (`POST /mcp`)**: Fan-out discovery across all registered upstream servers. Merges tools, resources, and prompts, attaching `_meta["goroute.ai/server_outcomes"]` detailing success and per-server partial failure status without aborting overall aggregation.
 4. **AEAD Model Resumption Tokens (MRTR)**: Encrypts execution resumption tokens using AES-256-GCM authenticated encryption with key rotation (`kid`), caller identity binding, and single-use `jti` anti-replay protection.
 5. **Security & Guardrails**:
@@ -709,13 +688,12 @@ ai-gateway-go/
 │   ├── INTERNALS.md                  # Subsystem internals, algorithms, and sequence diagrams
 │   ├── CONFIGURATION_GUIDE.md        # Comprehensive YAML, Go SDK & environment configuration guide
 │   ├── UPGRADING.md                  # Zero-downtime upgrade guide & migration 0034 rollback safety runbook
-│   ├── TESTING.md                    # 5-tier verification manual (unit, live Postgres/Redis E2E, Chromium UI, HA containers)
-│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 120 paths + MCP + A2A + 5 Providers)
-│   └── specs/                        # Pinned vendor specifications (MCP 2026-07-28 & A2A v1.0 protobuf)
+│   ├── TESTING.md                    # 3-tier verification manual (static/contracts, unit & Postgres/Redis E2E, Chromium UI)
+│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 125 paths + MCP + A2A + 4 Providers)
+│   └── specs/                        # Pinned vendor specifications (MCP 2024-11-05..2026-07-28 & A2A v1.0 protobuf)
 ├── migrations/
-│   └── 0001..0036_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0036_production_routing_hardening)
+│   └── 0001..0038_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0038_mcp_runtime_spec)
 ├── tests/
-│   ├── canary/                       # Opt-in live cloud/IdP canary smoke checks (-tags=canary)
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
 │   └── ui-e2e/                       # Playwright headless Chromium Operator Web UI E2E suite
@@ -724,12 +702,12 @@ ai-gateway-go/
 │   ├── config/                       # YAML + Env configuration & declarative model_list parser
 │   ├── domain/                       # Canonical structs, identity models, quotas, 4-layer model structures, errors
 │   ├── openapi/                      # Generated Go types from OpenAPI specs
-│   ├── adapter/                      # OpenAI, Anthropic, Gemini, Bedrock, Vertex, Cohere, Mistral, Ollama + openaicompat
+│   ├── adapter/                      # OpenAI, Anthropic, Groq, and OpenRouter (OpenAPI-first adapters)
 │   ├── auth/                         # Virtual keys, OIDC/SSO, SCIM, HIBP, rotation, L1/L2 cache, RBAC, Credential Vault & upstream IAM
-│   ├── mcp/                          # MCP 2026-07-28 stateless core, 2025-11-25 adapter, MRTR, Cache & Hub
+│   ├── mcp/                          # Multi-release MCP engine (2024-11-05..2026-07-28), spec_profile, MRTR, Cache & Hub
 │   ├── a2a/                          # A2A v1.0 engine, Card signer/verifier, RouterService, Streams & Outbox
 │   ├── security/                     # Centralized outbound SSRF network policy engine & safe HTTP client
-│   ├── guardrails/                   # Two-layer guardrail pipeline, 19 drivers, Starlark custom_code, tool/MCP governance & stream windowing
+│   ├── guardrails/                   # Two-layer guardrail pipeline, 15 drivers, Starlark custom_code, tool/MCP governance & stream windowing
 │   ├── ratelimit/                    # Redis Lua multi-descriptor atomic rate limiter, rolling_24h recovery + tokenizer
 │   ├── cache/                        # Exact-match deterministic response cache
 │   ├── modelmgmt/                    # 4-Layer model catalogue, org policies & automated discovery worker
@@ -745,7 +723,6 @@ ai-gateway-go/
 │   ├── Dockerfile                    # Multi-stage distroless container build
 │   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 7 + Prometheus
 │   ├── docker-compose.test.yml       # Integration test stack
-│   ├── docker-compose.prod-test.yml  # Multi-node HA Nginx + PostgreSQL + Redis + k6 container test stack
 │   ├── helm/goroute/                 # Production Helm chart (Deployment, HPA, PDB, NetworkPolicy, Migration Job)
 │   ├── k8s/                          # Raw Kubernetes manifests & Kustomize overlay
 │   └── prometheus/prometheus.yml     # Prometheus scrape configuration

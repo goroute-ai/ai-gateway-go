@@ -33,17 +33,12 @@ type ProviderAdapter interface {
 	ListModels(ctx context.Context, cred *domain.ProviderCredential) ([]domain.DiscoveredModel, error)
 }
 
-// RerankAdapter is implemented by providers supporting document reranking (e.g. Cohere, Jina, Voyage, Bedrock).
-type RerankAdapter interface {
-	Rerank(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error)
-}
-
-// ModerationAdapter is implemented by providers supporting content safety moderation (e.g. OpenAI, Azure).
+// ModerationAdapter is implemented by providers supporting content safety moderation (e.g. OpenAI).
 type ModerationAdapter interface {
 	Moderate(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalModerationRequest) (*domain.CanonicalModerationResponse, error)
 }
 
-// ImageAdapter is implemented by providers supporting image generation and editing (e.g. OpenAI DALL-E, Azure, Vertex Imagen).
+// ImageAdapter is implemented by providers supporting image generation and editing (e.g. OpenAI).
 type ImageAdapter interface {
 	GenerateImage(ctx context.Context, dep *domain.Deployment, req *domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error)
 }

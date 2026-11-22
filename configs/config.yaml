@@ -105,15 +105,11 @@ a2a:
 
 # Declarative Model List
 model_list:
-  - model_name: llama3.2:1b
-    model_params:
-      model: ollama/llama3.2:1b
-      api_base: http://localhost:11434
   - model_name: fast
     routing_strategy: weighted-shuffle
     model_params:
-      model: ollama/llama3.2:1b
-      api_base: http://localhost:11434
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
       weight: 100
   - model_name: gpt-4o-mini
     model_params:
@@ -123,10 +119,10 @@ model_list:
     model_params:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
-  - model_name: gemini-flash
+  - model_name: openrouter-gpt-4o-mini
     model_params:
-      model: gemini/gemini-2.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY
+      model: openrouter/openai/gpt-4o-mini
+      api_key: os.environ/OPENROUTER_API_KEY
   - model_name: reasoning
     routing_strategy: least-busy
     model_params:

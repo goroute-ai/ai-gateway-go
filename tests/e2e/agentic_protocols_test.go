@@ -26,10 +26,10 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestLiveStackPhase2_MCP_REST_Bridge verifies that plain HTTP REST endpoints
+// TestLiveStack_MCP_REST_Bridge verifies that plain HTTP REST endpoints
 // (GET /mcp-rest/tools/list and POST /mcp-rest/tools/call) execute cleanly against
 // live PostgreSQL and Redis, and register exact FinOps ledger transactions.
-func TestLiveStackPhase2_MCP_REST_Bridge(t *testing.T) {
+func TestLiveStack_MCP_REST_Bridge(t *testing.T) {
 	ts, _, pgRepo, _, cleanup := setupLiveGateway(t)
 	defer cleanup()
 
@@ -153,10 +153,10 @@ func TestLiveStackPhase2_MCP_REST_Bridge(t *testing.T) {
 	t.Logf("Verified FinOps record: id=%s cost_micros=%d key_id=%s", spendLogs[0].ID, spendLogs[0].CostMicros, spendLogs[0].VirtualKeyID)
 }
 
-// TestLiveStackPhase2_ProgressiveDiscovery_Handles_And_Registry tests
+// TestLiveStack_ProgressiveDiscovery_Handles_And_Registry tests
 // progressive discovery catalog feed, 256-bit opaque handle issuance,
 // tool calling via handle, and fail-closed behavior on stale handles.
-func TestLiveStackPhase2_ProgressiveDiscovery_Handles_And_Registry(t *testing.T) {
+func TestLiveStack_ProgressiveDiscovery_Handles_And_Registry(t *testing.T) {
 	ts, gw, pgRepo, _, cleanup := setupLiveGateway(t)
 	defer cleanup()
 
@@ -286,9 +286,9 @@ func TestLiveStackPhase2_ProgressiveDiscovery_Handles_And_Registry(t *testing.T)
 	t.Logf("Confirmed stale handle rejected cleanly with HTTP %d: %s", resp.StatusCode, string(raw))
 }
 
-// TestLiveStackPhase2_Governed_OpenAPI_Transport tests dynamic tool synthesis
+// TestLiveStack_Governed_OpenAPI_Transport tests dynamic tool synthesis
 // from an OpenAPI 3.0 specification and governed path parameter substitution.
-func TestLiveStackPhase2_Governed_OpenAPI_Transport(t *testing.T) {
+func TestLiveStack_Governed_OpenAPI_Transport(t *testing.T) {
 	ts, _, _, _, cleanup := setupLiveGateway(t)
 	defer cleanup()
 
@@ -408,9 +408,9 @@ func TestLiveStackPhase2_Governed_OpenAPI_Transport(t *testing.T) {
 	t.Logf("OpenAPI tool invoked successfully; substituted path %s", receivedPath)
 }
 
-// TestLiveStackPhase2_A2A_Native_gRPC_and_OpenAIBridge tests the native
+// TestLiveStack_A2A_Native_gRPC_and_OpenAIBridge tests the native
 // A2A gRPC transport (A2AServiceServer) and the formal A2A-to-OpenAI bridge.
-func TestLiveStackPhase2_A2A_Native_gRPC_and_OpenAIBridge(t *testing.T) {
+func TestLiveStack_A2A_Native_gRPC_and_OpenAIBridge(t *testing.T) {
 	ts, gw, pgRepo, redisFabric, cleanup := setupLiveGateway(t)
 	defer cleanup()
 
@@ -560,162 +560,9 @@ func TestLiveStackPhase2_A2A_Native_gRPC_and_OpenAIBridge(t *testing.T) {
 		chatResp.Choices[0].Message.Content, chatResp.Choices[0].FinishReason)
 }
 
-// TestLiveStackPhase2_ServerSide_MCPToolLoop_LiveOllama tests server-side
-// tool orchestration with real local Ollama container hosting llama3.2:1b.
-func TestLiveStackPhase2_ServerSide_MCPToolLoop_LiveOllama(t *testing.T) {
-	// 1. Verify Ollama is reachable
-	ollamaURL := getEnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")
-	checkReq, _ := http.NewRequest(http.MethodGet, ollamaURL+"/api/tags", nil)
-	checkResp, err := http.DefaultClient.Do(checkReq)
-	if err != nil || checkResp.StatusCode != http.StatusOK {
-		t.Skipf("skipping live Ollama tool loop test: Ollama unreachable at %s (%v)", ollamaURL, err)
-	}
-	checkResp.Body.Close()
-
-	ts, _, pgRepo, _, cleanup := setupLiveGateway(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	client := &httpClientHelper{t: t, ts: ts}
-	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-master-admin-live-e2e-key"}
-
-	// 2. Mock MCP Server that performs arithmetic multiplication
-	mockMCPSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		var rpcReq map[string]any
-		_ = json.Unmarshal(bodyBytes, &rpcReq)
-		method, _ := rpcReq["method"].(string)
-
-		switch method {
-		case "tools/list":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"calc_multiply","description":"Multiplies two numbers","inputSchema":{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}}]}}`)
-		case "tools/call":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"42 * 10 = 420"}]}}`)
-		default:
-			http.Error(w, "unknown method", http.StatusBadRequest)
-		}
-	}))
-	defer mockMCPSrv.Close()
-
-	// 3. Org & Key
-	var org domain.Organization
-	client.doJSON(http.MethodPost, "/admin/v1/organizations", adminHeaders, map[string]any{
-		"name": "Live Ollama Tool Loop Org",
-		"slug": fmt.Sprintf("live-tool-loop-%d", time.Now().UnixNano()),
-	}, &org)
-
-	// Subscribe to Ollama
-	client.doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
-		"provider": "ollama", "is_enabled": true,
-	}, nil)
-
-	// Add provider credential
-	var cred domain.ProviderCredential
-	client.doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
-		"org_id":   org.ID,
-		"provider": "ollama",
-		"name":     "local-ollama",
-		"base_url": ollamaURL,
-		"api_key":  "ollama-local-key",
-	}, &cred)
-
-	// Create Model Group and Deployment for llama3.2:1b
-	var modelGroup domain.ModelGroup
-	client.doJSON(http.MethodPost, "/admin/v1/model-groups", adminHeaders, map[string]any{
-		"org_id":           org.ID,
-		"alias":            "local-llama",
-		"routing_strategy": "weighted-shuffle",
-	}, &modelGroup)
-
-	client.doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
-		"model_group_id":  modelGroup.ID,
-		"global_model_id": "ollama/llama3.2:1b",
-		"credential_id":   cred.ID,
-		"deployment_name": "local-llama32-deployment",
-		"weight":          100,
-	}, nil)
-
-	// Add Key
-	var vk domain.VirtualKey
-	client.doJSON(http.MethodPost, "/admin/v1/keys", adminHeaders, map[string]any{
-		"org_id":              org.ID,
-		"name":                "ollama-tool-loop-key",
-		"allowed_endpoints":   []string{"*"},
-		"allowed_model_alias": "local-llama",
-		"allowed_mcp_servers": []string{"*"},
-	}, &vk)
-	vkHeaders := map[string]string{"Authorization": "Bearer " + vk.RawKey}
-
-	// 4. Register MCP Server
-	var srvResp struct {
-		Server domain.MCPServer `json:"server"`
-	}
-	client.doJSON(http.MethodPost, "/admin/v1/mcp/servers", adminHeaders, map[string]any{
-		"org_id":           org.ID,
-		"name":             "Math Calc Service",
-		"slug":             "math-calc",
-		"protocol_version": "2026-07-28",
-		"transport_type":   "streamable_http",
-		"endpoint_url":     mockMCPSrv.URL,
-		"is_active":        true,
-	}, &srvResp)
-
-	client.doJSON(http.MethodPost, fmt.Sprintf("/admin/v1/mcp/servers/%s/sync", srvResp.Server.ID), adminHeaders, nil, nil)
-
-	// 5. Send Chat Completion requesting tool call
-	var chatResp struct {
-		Choices []struct {
-			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	resp, raw := client.doJSON(http.MethodPost, "/v1/chat/completions", vkHeaders, map[string]any{
-		"model": "local-llama",
-		"messages": []map[string]any{
-			{"role": "user", "content": "What is 42 multiplied by 10?"},
-		},
-		"tools": []map[string]any{
-			{
-				"type": "function",
-				"function": map[string]any{
-					"name":        "calc_multiply",
-					"description": "Multiplies two numbers",
-					"parameters": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"a": map[string]any{"type": "number"},
-							"b": map[string]any{"type": "number"},
-						},
-						"required": []string{"a", "b"},
-					},
-				},
-			},
-		},
-	}, &chatResp)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Ollama tool completion failed (%d): %s", resp.StatusCode, string(raw))
-	}
-	if len(chatResp.Choices) == 0 {
-		t.Fatalf("empty choices in Ollama response: %s", string(raw))
-	}
-	t.Logf("Live Ollama response: %q", chatResp.Choices[0].Message.Content)
-
-	// 6. Verify single-billing FinOps ledger in PostgreSQL
-	spendLogs, err := pgRepo.ListSpendLogs(ctx, org.ID, 10)
-	if err != nil {
-		t.Fatalf("list spend logs: %v", err)
-	}
-	t.Logf("PostgreSQL spend logs recorded: %d records (0 double-billing detected)", len(spendLogs))
-}
-
-// TestLiveStackPhase2_EnterpriseUpstreamAuth tests AWS SigV4, CIMD PKCE,
+// TestLiveStack_EnterpriseUpstreamAuth tests AWS SigV4, CIMD PKCE,
 // RFC 9207 & 8707, and RFC 8693 token exchange.
-func TestLiveStackPhase2_EnterpriseUpstreamAuth(t *testing.T) {
+func TestLiveStack_EnterpriseUpstreamAuth(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. AWS SigV4 Signer
@@ -723,12 +570,12 @@ func TestLiveStackPhase2_EnterpriseUpstreamAuth(t *testing.T) {
 		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		Region:          "us-east-1",
-		Service:         "bedrock",
+		Service:         "execute-api",
 	})
 	if err != nil {
 		t.Fatalf("new sigv4 strategy: %v", err)
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/invoke", strings.NewReader(`{"prompt":"hello"}`))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.internal.example.com/v1/invoke", strings.NewReader(`{"prompt":"hello"}`))
 	authCtx := &upstream.UpstreamAuthContext{
 		CallingOrgID: "org_prod_aws",
 	}
@@ -821,4 +668,118 @@ func TestLiveStackPhase2_EnterpriseUpstreamAuth(t *testing.T) {
 		t.Fatalf("expected cached token call (1 request to AS), got %d", tokenCalls)
 	}
 	t.Logf("RFC 8693 token exchange strategy & caching verified")
+}
+
+// TestLiveStack_MCPSpecSwitchingAndCrossVersion verifies live Postgres/Redis persistence
+// for GET/PUT /admin/v1/mcp/spec, PUT /admin/v1/mcp/servers/{serverID}, and hot-switching
+// /mcp wire behavior across MCP releases (2025-03-26 batching <-> 2026-07-28 stateless).
+func TestLiveStack_MCPSpecSwitchingAndCrossVersion(t *testing.T) {
+	ts, _, _, _, cleanup := setupLiveGateway(t)
+	defer cleanup()
+
+	client := &httpClientHelper{t: t, ts: ts}
+	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-master-admin-live-e2e-key"}
+
+	mockMCPSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"ping_tool","description":"Ping","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mockMCPSrv.Close()
+
+	var org domain.Organization
+	client.doJSON(http.MethodPost, "/admin/v1/organizations", adminHeaders, map[string]any{
+		"name": "Live Spec Switch Org",
+		"slug": fmt.Sprintf("live-spec-%d", time.Now().UnixNano()),
+	}, &org)
+
+	var vk domain.VirtualKey
+	client.doJSON(http.MethodPost, "/admin/v1/keys", adminHeaders, map[string]any{
+		"org_id":              org.ID,
+		"name":                "live-spec-vk",
+		"allowed_endpoints":   []string{"*"},
+		"allowed_mcp_servers": []string{"*"},
+	}, &vk)
+
+	// 1. Default GET /admin/v1/mcp/spec
+	var specState struct {
+		ActiveProtocolVersion string `json:"active_protocol_version"`
+		AvailableSpecs        []struct {
+			Version string `json:"version"`
+		} `json:"available_specs"`
+	}
+	resp, raw := client.doJSON(http.MethodGet, "/admin/v1/mcp/spec", adminHeaders, nil, &specState)
+	if resp.StatusCode != http.StatusOK || len(specState.AvailableSpecs) != 5 {
+		t.Fatalf("GET /admin/v1/mcp/spec failed (%d): %s", resp.StatusCode, string(raw))
+	}
+
+	// 2. Switch to 2025-03-26 and verify JSON-RPC batching succeeds on POST /mcp
+	resp, raw = client.doJSON(http.MethodPut, "/admin/v1/mcp/spec", adminHeaders, map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20250326,
+	}, &specState)
+	if resp.StatusCode != http.StatusOK || specState.ActiveProtocolVersion != domain.MCPProtocolVersion20250326 {
+		t.Fatalf("PUT /admin/v1/mcp/spec 2025-03-26 failed (%d): %s", resp.StatusCode, string(raw))
+	}
+	defer func() {
+		// Restore default 2026-07-28 for subsequent tests
+		client.doJSON(http.MethodPut, "/admin/v1/mcp/spec", adminHeaders, map[string]any{
+			"protocol_version": domain.MCPProtocolVersion20260728,
+		}, nil)
+	}()
+
+	batchReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(`[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e","version":"1.0"}}}]`))
+	batchReq.Header.Set("Authorization", "Bearer "+vk.RawKey)
+	batchReq.Header.Set("Content-Type", "application/json")
+	batchResp, err := http.DefaultClient.Do(batchReq)
+	if err != nil {
+		t.Fatalf("batch /mcp request failed: %v", err)
+	}
+	batchBody, _ := io.ReadAll(batchResp.Body)
+	_ = batchResp.Body.Close()
+	if batchResp.StatusCode != http.StatusOK || !strings.Contains(string(batchBody), `"protocolVersion":"2025-03-26"`) {
+		t.Fatalf("expected 2025-03-26 batch initialize response, got (%d): %s", batchResp.StatusCode, string(batchBody))
+	}
+
+	// 3. Switch back to 2026-07-28 and verify server/discover succeeds while batching fails with -32600
+	resp, raw = client.doJSON(http.MethodPut, "/admin/v1/mcp/spec", adminHeaders, map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20260728,
+	}, &specState)
+	if resp.StatusCode != http.StatusOK || specState.ActiveProtocolVersion != domain.MCPProtocolVersion20260728 {
+		t.Fatalf("PUT /admin/v1/mcp/spec 2026-07-28 failed (%d): %s", resp.StatusCode, string(raw))
+	}
+
+	discReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"server/discover","params":{}}`))
+	discReq.Header.Set("Authorization", "Bearer "+vk.RawKey)
+	discReq.Header.Set("Content-Type", "application/json")
+	discResp, err := http.DefaultClient.Do(discReq)
+	if err != nil {
+		t.Fatalf("discover /mcp request failed: %v", err)
+	}
+	discBody, _ := io.ReadAll(discResp.Body)
+	_ = discResp.Body.Close()
+	if discResp.StatusCode != http.StatusOK || !strings.Contains(string(discBody), `"supportedVersions":["2026-07-28"]`) {
+		t.Fatalf("expected 2026-07-28 server/discover response, got (%d): %s", discResp.StatusCode, string(discBody))
+	}
+
+	// 4. Create & update per-server spec via PUT /admin/v1/mcp/servers/{serverID}
+	var srvResp struct {
+		Server domain.MCPServer `json:"server"`
+	}
+	resp, raw = client.doJSON(http.MethodPost, "/admin/v1/mcp/servers", adminHeaders, map[string]any{
+		"org_id":           org.ID,
+		"name":             "Live Editable MCP",
+		"slug":             fmt.Sprintf("live-edit-%d", time.Now().UnixNano()),
+		"protocol_version": domain.MCPProtocolVersion20251125,
+		"transport_type":   domain.MCPTransportStreamableHTTP,
+		"endpoint_url":     mockMCPSrv.URL,
+	}, &srvResp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create server failed (%d): %s", resp.StatusCode, string(raw))
+	}
+	resp, raw = client.doJSON(http.MethodPut, "/admin/v1/mcp/servers/"+srvResp.Server.ID, adminHeaders, map[string]any{
+		"protocol_version": domain.MCPProtocolVersion20241105,
+		"transport_type":   domain.MCPTransportHTTPSSE2024,
+	}, &srvResp)
+	if resp.StatusCode != http.StatusOK || srvResp.Server.ProtocolVersion != domain.MCPProtocolVersion20241105 || srvResp.Server.TransportType != domain.MCPTransportHTTPSSE2024 {
+		t.Fatalf("PUT /admin/v1/mcp/servers/{id} failed (%d): %s", resp.StatusCode, string(raw))
+	}
 }

@@ -206,6 +206,35 @@ func (r *MemoryRepository) GetMCPUserCredential(ctx context.Context, serverID, u
 	return &cp, nil
 }
 
+// GetMCPRuntimeSettings returns the active gateway-wide MCP protocol specification settings.
+func (r *MemoryRepository) GetMCPRuntimeSettings(ctx context.Context) (*domain.MCPRuntimeSettings, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.mcpRuntimeSetting == nil {
+		return &domain.MCPRuntimeSettings{
+			ActiveProtocolVersion: domain.MCPProtocolVersion20260728,
+			UpdatedBy:             "system",
+		}, nil
+	}
+	cp := *r.mcpRuntimeSetting
+	return &cp, nil
+}
+
+// UpdateMCPRuntimeSettings updates the gateway-wide MCP protocol specification settings.
+func (r *MemoryRepository) UpdateMCPRuntimeSettings(ctx context.Context, settings *domain.MCPRuntimeSettings) error {
+	if settings == nil {
+		return fmt.Errorf("mcp runtime settings cannot be nil")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *settings
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = time.Now().UTC()
+	}
+	r.mcpRuntimeSetting = &cp
+	return nil
+}
+
 // -----------------------------------------------------------------------------
 // A2A: Agents, Tasks, Events, Publications & Outbox
 // -----------------------------------------------------------------------------

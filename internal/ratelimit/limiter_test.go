@@ -102,7 +102,7 @@ func TestTokenizerProfilesAndRequestEstimate(t *testing.T) {
 	profiles := map[string]ratelimit.TokenizerProfile{
 		"gpt-4.1":                  ratelimit.ProfileO200K,
 		"claude-sonnet-4-20250514": ratelimit.ProfileClaudeBPE,
-		"gemini-2.5-flash":         ratelimit.ProfileGeminiSP,
+		"llama-3.1-8b-instant":     ratelimit.ProfileLlamaBPE,
 	}
 	for model, want := range profiles {
 		if got := ratelimit.ResolveTokenizerProfile(model); got != want {
@@ -122,12 +122,6 @@ func TestModalityTokenEstimatesScaleWithRequestSizeAndTPMBoundary(t *testing.T) 
 	largeAudio := ratelimit.EstimateAudioUploadTokens("whisper-1", 1024*1024, "")
 	if largeAudio <= smallAudio {
 		t.Fatalf("expected large audio estimate %d to exceed small upload %d", largeAudio, smallAudio)
-	}
-
-	smallRerank := ratelimit.EstimateRerankTokens("rerank-model", "q", []domain.RerankDocument{{Text: "short"}})
-	largeRerank := ratelimit.EstimateRerankTokens("rerank-model", "q", []domain.RerankDocument{{Text: strings.Repeat("x", 12000)}})
-	if largeRerank <= smallRerank {
-		t.Fatalf("expected large rerank estimate %d to exceed small request %d", largeRerank, smallRerank)
 	}
 
 	shortImage := ratelimit.EstimateImageGenerationTokens("dall-e-3", "a cat", 1)

@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.24.0] - 2026-11-22
+
+### OpenAPI-First 4-Provider Consolidation, Multi-Release MCP YAML Engine & Release Cleanup
+
+#### Added
+- **Spec-Generated Multi-Release MCP Engine (`cmd/mcpgen`, `internal/mcp/spec/`, `internal/mcp/spec_profile.go`)**: Vendored all 5 official MCP schema releases (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, and `2026-07-28`) as YAML (`docs/specs/mcp/*/schema.yaml` & `internal/mcp/spec/schemas/*/schema.yaml`), generated typed Go packages and embedded `jsonschema/v6` validators under `internal/mcp/spec`, consolidated `2025-*` transports into `StatefulStreamableTransport`, and added live Gateway MCP runtime spec switching (`GET`/`PUT /admin/v1/mcp/spec`, `PUT /admin/v1/mcp/servers/{serverID}`, migration `0038_mcp_runtime_spec`, and Agentic Hub UI selector + auto-transport selection).
+- **OpenAPI-First `groq` & `openrouter` Adapters (`docs/openapi/{groq,openrouter}.openapi.yaml`, `internal/adapter/{groq,openrouter}/`)**: Added OpenAPI-generated DTOs and native adapters.
+
+#### Changed & Removed
+- **Strict 4-Provider Surface & Migration `0037` (`migrations/0037_prune_unsupported_providers`, `docs/openapi/gateway.openapi.yaml`)**: Consolidated inference adapters strictly to `openai`, `anthropic`, `groq`, and `openrouter`; removed `/v1/rerank`, legacy adapters (`bedrock`, `vertex`, `gemini`, `cohere`, `mistral`, `ollama`, `azure`, `openaicompat`), and the 4 cloud guardrail drivers (`15` built-in guardrail drivers remaining; `125` unified OpenAPI paths).
+- **Release Repository & Test Suite Cleanup**: Renamed `phase*` test files and `TestPhase*` symbols to domain-specific names; removed dev/manual-only `tests/{load,canary,scripts,fixtures}` harnesses, `deployments/docker-compose.prod-test.yml`, and `configs/config.prod-test.yaml`, retaining CI/release suites (`tests/e2e/`, `tests/guardrails/`, `tests/ui-e2e/`).
+- **Release Readiness & Contract Verification (`v1.24.0`)**: Fixed migration `0037` `model_deployments` target and FK cleanup, failed fast on PostgreSQL SQL migration errors during startup, added MCP spec validation to CI & release workflows, bumped Operator UI / Helm (`0.8.0`) / release documentation to `v1.24.0`, and verified PostgreSQL 16 + Redis 7 E2E and Playwright Chromium UI E2E suites.
+
+---
+
 ## [1.23.0] - 2026-11-19
 
 ### Production Routing & Guardrail Hardening, Rolling KEK Sinks & Codebase Quality Modernization

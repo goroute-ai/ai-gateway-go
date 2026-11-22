@@ -20,18 +20,23 @@ import (
 func TestSDKDeclarativeRouterAndOneLineChat(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Mock upstream Gemini and Anthropic servers
-	mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, ":generateContent"):
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Gemini Flash SDK response"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":12,"totalTokenCount":22}}`)
-		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
-			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello \"}]}}]}\n\n")
-			fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"from Stream!\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":5,\"totalTokenCount\":10}}\n\n")
+	// 1. Mock upstream OpenAI and Anthropic servers
+	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream bool `json:"stream"`
 		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"id\":\"chatcmpl_s1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello \"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"id\":\"chatcmpl_s1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"from Stream!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":5,\"total_tokens\":10}}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl_sdk","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"OpenAI Mini SDK response"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":12,"total_tokens":22}}`)
 	}))
-	defer mockGemini.Close()
+	defer mockOpenAI.Close()
 
 	mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/messages" {
@@ -45,9 +50,9 @@ func TestSDKDeclarativeRouterAndOneLineChat(t *testing.T) {
 		gateway.WithModelList(
 			gateway.ModelEntry{
 				ModelName: "fast",
-				Model:     "gemini/gemini-2.5-flash",
-				APIKey:    "dummy-gemini-key",
-				APIBase:   mockGemini.URL,
+				Model:     "openai/gpt-4o-mini",
+				APIKey:    "dummy-openai-key",
+				APIBase:   mockOpenAI.URL,
 			},
 			gateway.ModelEntry{
 				ModelName: "reasoning",
@@ -62,12 +67,12 @@ func TestSDKDeclarativeRouterAndOneLineChat(t *testing.T) {
 	}
 	defer gw.Close()
 
-	// 3. Mode 1: Explicit Model Name ("gemini-2.5-flash") - resolved dynamically from the catalogue!
-	res1, err := gw.Chat(ctx, "gemini-2.5-flash", "Explain Pure Go in one sentence.")
+	// 3. Mode 1: Explicit Model Name ("gpt-4o-mini") - resolved dynamically from the catalogue!
+	res1, err := gw.Chat(ctx, "gpt-4o-mini", "Explain Pure Go in one sentence.")
 	if err != nil {
 		t.Fatalf("Mode 1 (explicit model) failed: %v", err)
 	}
-	if res1.Provider != "gemini" || res1.Model != "gemini-2.5-flash" || res1.Content != "Gemini Flash SDK response" {
+	if res1.Provider != "openai" || res1.Model != "gpt-4o-mini" || res1.Content != "OpenAI Mini SDK response" {
 		t.Fatalf("unexpected Mode 1 result: %+v", res1)
 	}
 
@@ -76,7 +81,7 @@ func TestSDKDeclarativeRouterAndOneLineChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mode 2 (logical alias) failed: %v", err)
 	}
-	if res2.Provider != "gemini" || res2.Model != "gemini-2.5-flash" {
+	if res2.Provider != "openai" || res2.Model != "gpt-4o-mini" {
 		t.Fatalf("unexpected Mode 2 result: %+v", res2)
 	}
 
@@ -110,7 +115,7 @@ func TestSDKHelpersAndFailover(t *testing.T) {
 		gateway.WithModelList(
 			gateway.ModelEntry{
 				ModelName:      "primary-chat",
-				Model:          "gemini/gemini-2.5-flash",
+				Model:          "groq/llama-3.1-8b-instant",
 				Fallbacks:      []string{"backup-claude"},
 				SimulateStatus: 503,
 			},
@@ -178,7 +183,7 @@ func TestSDK_PublicTypesAndLoggingOptions(t *testing.T) {
 		gateway.WithModelList(
 			gateway.ModelEntry{
 				ModelName: "test-fast",
-				Model:     "gemini/gemini-2.5-flash",
+				Model:     "openai/gpt-4o-mini",
 			},
 		),
 	)
@@ -231,9 +236,6 @@ func TestSDKDataPlaneParityMethods(t *testing.T) {
 		case "/v1/embeddings":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"object":"list","model":"text-embedding-3-small","data":[{"index":0,"embedding":[0.1,0.2]}]}`))
-		case "/v1/rerank":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"rr_1","results":[{"index":0,"relevance_score":0.95}]}`))
 		case "/v1/moderations":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"modr_1","model":"omni-moderation-latest","results":[{"flagged":false}]}`))
@@ -276,11 +278,6 @@ func TestSDKDataPlaneParityMethods(t *testing.T) {
 	emb, err := client.Embeddings(ctx, domain.CanonicalEmbeddingRequest{Model: "text-embedding-3-small", Input: []string{"hello"}})
 	if err != nil || len(emb.Data) != 1 {
 		t.Fatalf("Embeddings failed: res=%+v err=%v", emb, err)
-	}
-
-	rr, err := client.Rerank(ctx, domain.CanonicalRerankRequest{Model: "rerank-1", Query: "q", Documents: []domain.RerankDocument{{Text: "doc1"}}})
-	if err != nil || len(rr.Results) != 1 {
-		t.Fatalf("Rerank failed: res=%+v err=%v", rr, err)
 	}
 
 	mod, err := client.Moderations(ctx, domain.CanonicalModerationRequest{Model: "omni-moderation-latest", Input: []string{"safe"}})
@@ -374,12 +371,13 @@ func TestSDKStreamingParityAndWithConfigFileRedisAndWithKey(t *testing.T) {
 	}
 	defer mr.Close()
 
-	mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockGroq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Stream \"}]}}]}\n\n")
-		fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"parity ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":3,\"totalTokenCount\":7}}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"chatcmpl_p1\",\"object\":\"chat.completion.chunk\",\"model\":\"llama-3.1-8b-instant\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Stream \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"chatcmpl_p1\",\"object\":\"chat.completion.chunk\",\"model\":\"llama-3.1-8b-instant\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"parity ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
-	defer mockGemini.Close()
+	defer mockGroq.Close()
 
 	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -409,9 +407,9 @@ redis:
 		gateway.WithModelList(
 			gateway.ModelEntry{
 				ModelName: "fast",
-				Model:     "gemini/gemini-2.5-flash",
+				Model:     "groq/llama-3.1-8b-instant",
 				APIKey:    "test-key",
-				APIBase:   mockGemini.URL,
+				APIBase:   mockGroq.URL,
 			},
 			gateway.ModelEntry{
 				ModelName: "instruct",
@@ -498,7 +496,7 @@ func TestWithKeyCloseDoesNotShutDownParent(t *testing.T) {
 		gateway.WithModelList(
 			gateway.ModelEntry{
 				ModelName: "fast",
-				Model:     "gemini/gemini-2.5-flash",
+				Model:     "groq/llama-3.1-8b-instant",
 			},
 		),
 	)
@@ -992,16 +990,6 @@ func TestSDK_PureSDKModalityAndFinOpsWrappers(t *testing.T) {
 	}))
 	defer mockOpenAI.Close()
 
-	mockCohere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/rerank" {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"rerank_1","results":[{"index":1,"relevance_score":0.95},{"index":0,"relevance_score":0.25}],"meta":{"billed_units":{"search_units":1}}}`)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer mockCohere.Close()
-
 	gw, err := gateway.New(
 		gateway.WithSilentLogs(),
 		gateway.WithAllowPrivateNetworks(),
@@ -1012,7 +1000,6 @@ func TestSDK_PureSDKModalityAndFinOpsWrappers(t *testing.T) {
 			gateway.ModelEntry{ModelName: "gpt-image-1", Model: "openai/gpt-image-1", APIKey: "sk-test", APIBase: mockOpenAI.URL},
 			gateway.ModelEntry{ModelName: "tts-1", Model: "openai/tts-1", APIKey: "sk-test", APIBase: mockOpenAI.URL},
 			gateway.ModelEntry{ModelName: "whisper-1", Model: "openai/whisper-1", APIKey: "sk-test", APIBase: mockOpenAI.URL},
-			gateway.ModelEntry{ModelName: "rerank-v3.5", Model: "cohere/rerank-v3.5", APIKey: "co-test", APIBase: mockCohere.URL},
 		),
 	)
 	if err != nil {
@@ -1037,15 +1024,6 @@ func TestSDK_PureSDKModalityAndFinOpsWrappers(t *testing.T) {
 	})
 	if err != nil || len(emb.Data) != 1 {
 		t.Fatalf("CreateEmbedding failed: emb=%+v err=%v", emb, err)
-	}
-
-	rerank, err := client.CreateRerank(ctx, gateway.RerankRequest{
-		Model:     "rerank-v3.5",
-		Query:     "go gateway",
-		Documents: []any{"doc zero", "doc one"},
-	})
-	if err != nil || len(rerank.Results) != 2 || rerank.Results[0].Index != 1 {
-		t.Fatalf("CreateRerank failed: rerank=%+v err=%v", rerank, err)
 	}
 
 	mod, err := client.CreateModeration(ctx, gateway.ModerationRequest{

@@ -32,10 +32,7 @@ func (a *opCheckedMockAdapter) StreamChatCompletion(context.Context, *domain.Dep
 	return &domain.TokenUsage{}, nil
 }
 func (a *opCheckedMockAdapter) Embeddings(context.Context, *domain.Deployment, *domain.CanonicalEmbeddingRequest) (*domain.CanonicalEmbeddingResponse, error) {
-	return &domain.CanonicalEmbeddingResponse{}, nil
-}
-func (a *opCheckedMockAdapter) Rerank(context.Context, *domain.Deployment, *domain.CanonicalRerankRequest) (*domain.CanonicalRerankResponse, error) {
-	return &domain.CanonicalRerankResponse{ID: "rerank-ok"}, nil
+	return &domain.CanonicalEmbeddingResponse{Object: "list", Model: "embed-only"}, nil
 }
 func (a *opCheckedMockAdapter) GenerateImage(context.Context, *domain.Deployment, *domain.CanonicalImageRequest) (*domain.CanonicalImageResponse, error) {
 	return &domain.CanonicalImageResponse{}, nil
@@ -62,7 +59,7 @@ func TestReliabilityManager_EnforcesModelAndAdapterOperationSupport(t *testing.T
 
 	cred := &domain.ProviderCredential{
 		OrgID:    org.ID,
-		Provider: domain.ProviderCohere,
+		Provider: domain.ProviderOpenAI,
 		Name:     "op-cred",
 		BaseURL:  "https://api.example.com",
 		IsActive: true,
@@ -70,23 +67,23 @@ func TestReliabilityManager_EnforcesModelAndAdapterOperationSupport(t *testing.T
 	require.NoError(t, vault.EncryptCredential(cred, "test-api-key"))
 	require.NoError(t, repo.CreateProviderCredential(ctx, cred))
 
-	// Model only supports rerank (not chat), while adapter supports chat + rerank, not images.
+	// Model only supports embeddings (not chat), while adapter supports chat + embedding, not images.
 	gm := &domain.GlobalModel{
-		ID:                "cohere/rerank-only",
-		Provider:          domain.ProviderCohere,
-		ModelName:         "rerank-only",
-		DisplayName:       "Rerank Only",
+		ID:                "openai/embed-only",
+		Provider:          domain.ProviderOpenAI,
+		ModelName:         "embed-only",
+		DisplayName:       "Embed Only",
 		SupportsInference: true,
 		LifecycleStatus:   domain.ModelStatusActive,
 		SupportedOperations: []domain.OperationType{
-			domain.OperationRerank,
+			domain.OperationEmbedding,
 		},
 	}
 	require.NoError(t, repo.UpsertGlobalModel(ctx, gm))
 
 	group := &domain.ModelGroup{
 		OrgID:           org.ID,
-		Alias:           "rerank-only",
+		Alias:           "embed-only",
 		RoutingStrategy: domain.StrategyWeightedShuffle,
 		IsActive:        true,
 	}
@@ -104,8 +101,8 @@ func TestReliabilityManager_EnforcesModelAndAdapterOperationSupport(t *testing.T
 
 	// Model that declares images, so we can test adapter-level OperationSupportChecker rejection.
 	gmImg := &domain.GlobalModel{
-		ID:                "cohere/img-declared",
-		Provider:          domain.ProviderCohere,
+		ID:                "openai/img-declared",
+		Provider:          domain.ProviderOpenAI,
 		ModelName:         "img-declared",
 		DisplayName:       "Image Declared",
 		SupportsInference: true,
@@ -133,10 +130,10 @@ func TestReliabilityManager_EnforcesModelAndAdapterOperationSupport(t *testing.T
 
 	reg := adapter.NewRegistry()
 	reg.Register(&opCheckedMockAdapter{
-		provider: domain.ProviderCohere,
+		provider: domain.ProviderOpenAI,
 		supported: map[domain.OperationType]bool{
 			domain.OperationChat:            true,
-			domain.OperationRerank:          true,
+			domain.OperationEmbedding:       true,
 			domain.OperationImageGeneration: false,
 		},
 	})
@@ -158,21 +155,20 @@ func TestReliabilityManager_EnforcesModelAndAdapterOperationSupport(t *testing.T
 
 	idCtx := &domain.IdentityContext{OrgID: org.ID}
 
-	// 1. Model rejects ExecuteChat because SupportedOperations only allows rerank.
+	// 1. Model rejects ExecuteChat because SupportedOperations only allows embedding.
 	_, _, err = rm.ExecuteChat(ctx, idCtx, &domain.CanonicalChatRequest{
-		Model:    "rerank-only",
+		Model:    "embed-only",
 		Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}},
 	})
 	require.Error(t, err)
 
-	// 2. ExecuteRerank succeeds because both model and adapter support rerank.
-	rerankResp, _, err := rm.ExecuteRerank(ctx, idCtx, &domain.CanonicalRerankRequest{
-		Model:     "rerank-only",
-		Query:     "q",
-		Documents: []domain.RerankDocument{{Text: "doc"}},
+	// 2. ExecuteEmbeddings succeeds because both model and adapter support embedding.
+	embResp, _, err := rm.ExecuteEmbeddings(ctx, idCtx, &domain.CanonicalEmbeddingRequest{
+		Model: "embed-only",
+		Input: []string{"doc"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "rerank-ok", rerankResp.ID)
+	require.Equal(t, "embed-only", embResp.Model)
 
 	// 3. Adapter OperationSupportChecker rejects ExecuteImage even when model declares images.
 	_, _, err = rm.ExecuteImage(ctx, idCtx, &domain.CanonicalImageRequest{

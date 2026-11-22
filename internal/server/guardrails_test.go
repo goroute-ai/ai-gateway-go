@@ -81,9 +81,9 @@ func TestGuardrailTextInputAndOutputHelpers(t *testing.T) {
 func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {
 	ctx := context.Background()
 
-	// Mock Gemini-compatible upstream returning split-chunk PII and secret.
+	// Mock Groq-compatible upstream returning split-chunk PII and secret.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			http.NotFound(w, r)
 			return
 		}
@@ -94,24 +94,28 @@ func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {
 			"7890abcdef.",
 		}
 		for i, c := range chunks {
+			delta := map[string]any{"content": c}
+			if i == 0 {
+				delta["role"] = "assistant"
+			}
+			choice := map[string]any{
+				"index": 0,
+				"delta": delta,
+			}
 			ev := map[string]any{
-				"candidates": []map[string]any{
-					{
-						"index": 0,
-						"content": map[string]any{
-							"role":  "model",
-							"parts": []map[string]any{{"text": c}},
-						},
-					},
-				},
+				"id":      "chatcmpl-stream-redact",
+				"object":  "chat.completion.chunk",
+				"model":   "llama-3.1-8b-instant",
+				"choices": []map[string]any{choice},
 			}
 			if i == len(chunks)-1 {
-				ev["candidates"].([]map[string]any)[0]["finishReason"] = "STOP"
-				ev["usageMetadata"] = map[string]any{"promptTokenCount": 5, "candidatesTokenCount": 10, "totalTokenCount": 15}
+				choice["finish_reason"] = "stop"
+				ev["usage"] = map[string]any{"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}
 			}
 			b, _ := json.Marshal(ev)
 			fmt.Fprintf(w, "data: %s\n\n", string(b))
 		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer upstream.Close()
 
@@ -171,7 +175,7 @@ func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {
 	}
 
 	doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/subscriptions", adminHeaders, map[string]any{
-		"provider": "gemini", "is_enabled": true,
+		"provider": "groq", "is_enabled": true,
 	}, nil)
 
 	// Set guardrail policy omitting mode and scan_all_roles to verify defaults too.
@@ -188,7 +192,7 @@ func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {
 
 	var cred domain.ProviderCredential
 	doJSON(http.MethodPost, "/admin/v1/credentials", adminHeaders, map[string]any{
-		"org_id": org.ID, "provider": "gemini", "name": "gemini-mock", "base_url": upstream.URL, "api_key": "AIzaSyDummyTestKey",
+		"org_id": org.ID, "provider": "groq", "name": "groq-mock", "base_url": upstream.URL, "api_key": "gsk_DummyTestKey",
 	}, &cred)
 
 	var grp domain.ModelGroup
@@ -196,7 +200,7 @@ func TestStreamingOutputRedactionAcrossEndpoints(t *testing.T) {
 		"org_id": org.ID, "alias": "fast", "routing_strategy": "weighted-shuffle",
 	}, &grp)
 	doJSON(http.MethodPost, "/admin/v1/deployments", adminHeaders, map[string]any{
-		"model_group_id": grp.ID, "global_model_id": "gemini/gemini-2.5-flash", "credential_id": cred.ID, "deployment_name": "gemini-mock-dep", "weight": 100,
+		"model_group_id": grp.ID, "global_model_id": "groq/llama-3.1-8b-instant", "credential_id": cred.ID, "deployment_name": "groq-mock-dep", "weight": 100,
 	}, nil)
 
 	var team domain.Team

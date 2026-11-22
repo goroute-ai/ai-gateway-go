@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,20 +70,21 @@ type MemoryRepository struct {
 	budgetResetOutbox              map[string]BudgetResetEvent
 	auditLogs                      []*domain.AuditLog
 
-	mcpServers       map[string]*domain.MCPServer
-	mcpTools         map[string]*domain.MCPTool
-	mcpToolsets      map[string]*domain.MCPToolset
-	mcpUserCreds     map[string]*domain.MCPUserCredential
-	a2aAgents        map[string]*domain.A2AAgent
-	a2aTasks         map[string]*domain.A2ATask
-	a2aTaskEvents    map[string][]*domain.A2ATaskEvent
-	a2aStreamPubs    []*domain.A2AStreamPublication
-	a2aOutbox        []*domain.A2AOutboxEvent
-	a2aPushConfigs   map[string]*domain.A2APushNotificationConfig
-	files            map[string]*domain.CanonicalFile
-	batches          map[string]*domain.CanonicalBatch
-	userCredentials  map[string]*domain.UserCredential
-	operatorSessions map[string]*domain.OperatorSession
+	mcpServers        map[string]*domain.MCPServer
+	mcpTools          map[string]*domain.MCPTool
+	mcpToolsets       map[string]*domain.MCPToolset
+	mcpUserCreds      map[string]*domain.MCPUserCredential
+	mcpRuntimeSetting *domain.MCPRuntimeSettings
+	a2aAgents         map[string]*domain.A2AAgent
+	a2aTasks          map[string]*domain.A2ATask
+	a2aTaskEvents     map[string][]*domain.A2ATaskEvent
+	a2aStreamPubs     []*domain.A2AStreamPublication
+	a2aOutbox         []*domain.A2AOutboxEvent
+	a2aPushConfigs    map[string]*domain.A2APushNotificationConfig
+	files             map[string]*domain.CanonicalFile
+	batches           map[string]*domain.CanonicalBatch
+	userCredentials   map[string]*domain.UserCredential
+	operatorSessions  map[string]*domain.OperatorSession
 }
 
 // RoutingRevision returns the monotonically increasing routing topology revision for MemoryRepository.
@@ -228,49 +230,23 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
 		{
-			ID: "gemini/gemini-2.5-pro", Provider: domain.ProviderGemini, ModelName: "gemini-2.5-pro", DisplayName: "Google Gemini 2.5 Pro",
-			MaxInputTokens: 1048576, MaxOutputTokens: 65536, SupportsStreaming: true, SupportsTools: true, SupportsVision: true, SupportsReasoning: true,
-			InputCostMicrosPer1M: 1250000, OutputCostMicrosPer1M: 10000000, CachedInputCostMicrosPer1M: 312500, ReasoningCostMicrosPer1M: 10000000,
+			ID: "groq/llama-3.1-8b-instant", Provider: domain.ProviderGroq, ModelName: "llama-3.1-8b-instant", DisplayName: "Groq Llama 3.1 8B Instant",
+			MaxInputTokens: 131072, MaxOutputTokens: 8192, SupportsStreaming: true, SupportsTools: true,
+			InputCostMicrosPer1M: 50000, OutputCostMicrosPer1M: 80000,
 			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
 		{
-			ID: "gemini/gemini-2.5-flash", Provider: domain.ProviderGemini, ModelName: "gemini-2.5-flash", DisplayName: "Google Gemini 2.5 Flash",
-			MaxInputTokens: 1048576, MaxOutputTokens: 65536, SupportsStreaming: true, SupportsTools: true, SupportsVision: true,
-			InputCostMicrosPer1M: 150000, OutputCostMicrosPer1M: 600000, CachedInputCostMicrosPer1M: 37500,
-			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
+			ID: "groq/whisper-large-v3-turbo", Provider: domain.ProviderGroq, ModelName: "whisper-large-v3-turbo", DisplayName: "Groq Whisper Large v3 Turbo",
+			MaxInputTokens: 448, MaxOutputTokens: 448,
+			Capabilities:                domain.ModelCapabilities{AudioSTT: domain.CapabilitySupported},
+			SupportedOperations:         []domain.OperationType{domain.OperationAudioSTT},
+			AudioSTTCostMicrosPerSecond: 11,
+			LifecycleStatus:             domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
 		{
-			ID: "gemini/gemini-2.5-flash-lite", Provider: domain.ProviderGemini, ModelName: "gemini-2.5-flash-lite", DisplayName: "Google Gemini 2.5 Flash Lite",
-			MaxInputTokens: 1048576, MaxOutputTokens: 65536, SupportsStreaming: true, SupportsTools: true, SupportsVision: true,
-			InputCostMicrosPer1M: 75000, OutputCostMicrosPer1M: 300000, CachedInputCostMicrosPer1M: 18750,
-			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "gemini/text-embedding-004", Provider: domain.ProviderGemini, ModelName: "text-embedding-004", DisplayName: "Google Gemini Text Embedding 004",
-			MaxInputTokens: 2048, MaxOutputTokens: 768, SupportsEmbeddings: true,
-			InputCostMicrosPer1M: 10000, LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "mistral/mistral-large-latest", Provider: domain.ProviderMistral, ModelName: "mistral-large-latest", DisplayName: "Mistral Large",
-			MaxInputTokens: 128000, MaxOutputTokens: 32768, SupportsStreaming: true, SupportsTools: true,
-			InputCostMicrosPer1M: 2000000, OutputCostMicrosPer1M: 6000000,
-			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "mistral/mistral-embed", Provider: domain.ProviderMistral, ModelName: "mistral-embed", DisplayName: "Mistral Embed",
-			MaxInputTokens: 8192, MaxOutputTokens: 1024, SupportsEmbeddings: true,
-			InputCostMicrosPer1M: 100000, LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "ollama/llama3.3", Provider: domain.ProviderOllama, ModelName: "llama3.3", DisplayName: "Ollama Llama 3.3 (Local)",
-			MaxInputTokens: 128000, MaxOutputTokens: 8192, SupportsStreaming: true, SupportsTools: true,
-			InputCostMicrosPer1M: 0, OutputCostMicrosPer1M: 0,
-			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "ollama/llama3.2:1b", Provider: domain.ProviderOllama, ModelName: "llama3.2:1b", DisplayName: "Ollama Llama 3.2 1B (Local)",
-			MaxInputTokens: 128000, MaxOutputTokens: 4096, SupportsStreaming: true, SupportsTools: true,
-			InputCostMicrosPer1M: 0, OutputCostMicrosPer1M: 0,
+			ID: "openrouter/openai/gpt-4o-mini", Provider: domain.ProviderOpenRouter, ModelName: "openai/gpt-4o-mini", DisplayName: "OpenRouter OpenAI GPT-4o Mini",
+			MaxInputTokens: 128000, MaxOutputTokens: 16384, SupportsStreaming: true, SupportsTools: true, SupportsVision: true,
+			InputCostMicrosPer1M: 150000, OutputCostMicrosPer1M: 600000,
 			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
 	}
@@ -487,10 +463,14 @@ func (r *MemoryRepository) GetGlobalModel(ctx context.Context, id string) (*doma
 	if m, ok := r.globalModels[id]; ok {
 		return cloneGlobalModel(m), nil
 	}
-	// Also allow lookup by raw model_name
-	for _, m := range r.globalModels {
-		if m.ModelName == id {
-			return cloneGlobalModel(m), nil
+	// Also allow lookup by raw model_name for bare single-segment names.
+	// Guard against slash-delimited canonical IDs (e.g. "openai/gpt-4o-mini")
+	// matching OpenRouter entries whose ModelName is also "openai/gpt-4o-mini".
+	if !strings.Contains(id, "/") {
+		for _, m := range r.globalModels {
+			if m.ModelName == id {
+				return cloneGlobalModel(m), nil
+			}
 		}
 	}
 	return nil, fmt.Errorf("global model %q not found", id)

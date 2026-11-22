@@ -6,11 +6,11 @@
 
 *The ultra-fast, lightweight AI Gateway, MCP Hub, and Agent-to-Agent Router in 100% Pure Go with Embedded Operator Web UI.*
 
-Call 30+ hosted and local model providers through a unified OpenAI-compatible API with sub-millisecond routing, distributed Redis rate limiting, 3-state circuit breakers, strict micro-dollar FinOps, and an embedded modern streaming playground.
+Call OpenAI, Anthropic, Groq, and OpenRouter through a unified OpenAI-compatible API with sub-millisecond routing, distributed Redis rate limiting, 3-state circuit breakers, strict micro-dollar FinOps, UI-selectable multi-release MCP routing, and an embedded modern streaming playground.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.23.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.23.0)
+[![Release](https://img.shields.io/badge/Release-v1.24.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-qaadir%2Fai--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/qaadir/ai-gateway)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
@@ -22,7 +22,7 @@ Call 30+ hosted and local model providers through a unified OpenAI-compatible AP
 
 ## What is GoRoute AI Gateway?
 
-**GoRoute AI Gateway** is a fast, lightweight enterprise control plane and high-throughput data plane for AI applications. It sits between your client applications and frontier AI providers (OpenAI, Anthropic, Google Gemini, AWS Bedrock, GCP Vertex AI, Azure OpenAI, Cohere, Groq, Mistral, Ollama), giving you **one single, standardized API** to call any model.
+**GoRoute AI Gateway** is a fast, lightweight enterprise control plane and high-throughput data plane for AI applications. It sits between your client applications and frontier AI providers (OpenAI, Anthropic, Groq, OpenRouter), giving you **one single, standardized OpenAPI-first API** to call any model.
 
 Instead of writing fragmented provider code, managing disparate API keys, or suffering downtime during provider rate limits, you connect to GoRoute once. GoRoute handles **dynamic load balancing**, **sliding-window rate limiting**, **automatic circuit-breaker failovers**, **exact integer micro-dollar token accounting**, and provides a **zero-dependency embedded Operator Web UI & Streaming Chat Playground** out of the box.
 
@@ -39,7 +39,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.23.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.0
 ```
 
 ```go
@@ -59,7 +59,7 @@ func main() {
 	// Initialize embedded gateway with model aliases and environment variables
 	gw, err := gateway.New(
 		gateway.WithModelList(
-			gateway.ModelEntry{ModelName: "fast", Model: "gemini/gemini-2.5-flash", APIKey: "os.environ/GEMINI_API_KEY"},
+			gateway.ModelEntry{ModelName: "fast", Model: "openai/gpt-4o-mini", APIKey: "os.environ/OPENAI_API_KEY"},
 			gateway.ModelEntry{ModelName: "reasoning", Model: "anthropic/claude-sonnet-4-20250514", APIKey: "os.environ/ANTHROPIC_API_KEY"},
 		),
 		gateway.WithDemoMocksIfEnvMissing(), // Instant zero-config local testing
@@ -92,14 +92,14 @@ curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/insta
 Run instantly with local mock fallback and launch the Operator UI:
 
 ```bash
-export GEMINI_API_KEY="your-gemini-key"
+export OPENAI_API_KEY="your-openai-key"
 export GATEWAY_DEFAULT_KEY="sk-gw-local-client-key"
 export GATEWAY_MASTER_ADMIN_KEY="sk-gw-local-admin-key-change-me"
 ai-gateway --config configs/config.yaml
 # Open http://localhost:8080/ui/ in your browser
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.23.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.0).*
 
 ### Path 3: Container Images (Docker Hub / GHCR), Docker Compose & Helm OCI
 
@@ -107,17 +107,17 @@ Run the published multi-arch (`linux/amd64`, `linux/arm64`) Distroless nonroot c
 
 ```bash
 # Docker Hub
-docker pull qaadir/ai-gateway:1.23.0
+docker pull qaadir/ai-gateway:1.24.0
 
-# GitHub Container Registry (supports both bare 1.23.0 and v1.23.0 tags)
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.23.0
+# GitHub Container Registry (supports both bare 1.24.0 and v1.24.0 tags)
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.24.0
 # Or track latest stable: docker pull qaadir/ai-gateway:latest
 ```
 
 Deploy directly to Kubernetes via OCI Helm Registry:
 
 ```bash
-helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.7.0
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.8.0
 ```
 
 Or spin up GoRoute (with embedded UI), PostgreSQL 16 (for migrations and spend logs), Redis 7 (for rate limiting and cache), and Prometheus:
@@ -172,9 +172,9 @@ model_list:
       - target: "long-context"
         overrides: { max_tokens: 4096 }
     model_params:
-      model: "gemini/gemini-2.5-flash"
-      api_key: "os.environ/GEMINI_API_KEY"
-      region: "us-central1"
+      model: "groq/llama-3.1-8b-instant"
+      api_key: "os.environ/GROQ_API_KEY"
+      region: "us-east"
       priority: 0
       tags: ["tier:fast", "low-cost"]
       weight: 80
@@ -205,8 +205,8 @@ Every response includes detailed routing attribution headers:
 
 ```http
 HTTP/1.1 200 OK
-X-Gateway-Provider: gemini
-X-Gateway-Model: gemini-2.5-flash
+X-Gateway-Provider: groq
+X-Gateway-Model: llama-3.1-8b-instant
 X-Gateway-Routing-Micros: 14
 X-Gateway-Latency-Ms: 112
 X-Gateway-Route-Reason: priority_tier_0
@@ -248,7 +248,7 @@ curl -X POST http://localhost:8080/admin/v1/keys \
     "tpm_limit": 30000,
     "max_concurrent_requests": 5,
     "max_budget_micros": 10000000,
-    "allowed_models": ["fast", "gemini-2.5-flash"]
+    "allowed_models": ["fast", "gpt-4o-mini"]
   }'
 ```
 
@@ -297,12 +297,12 @@ router:
   failure_threshold: 3
 
 model_list:
-  # Primary: Google Gemini
+  # Primary: Groq
   - model_name: "production-chat"
     fallbacks: ["backup-openai", "backup-anthropic"]
     model_params:
-      model: "gemini/gemini-2.5-flash"
-      api_key: "os.environ/GEMINI_API_KEY"
+      model: "groq/llama-3.1-8b-instant"
+      api_key: "os.environ/GROQ_API_KEY"
 
   # Fallback 1: OpenAI
   - model_name: "backup-openai"
@@ -370,7 +370,7 @@ Authenticates human operators, workload JWTs, reverse-proxy identities, and serv
    - *Identity Governance & Key Lifecycle*: Supports `key_type` capability presets (`llm_api`, `management`, `read_only`, `service_account`), manual grace-period rotation and scheduled HTTPS key-rotation webhooks, SCIM v2 `/scim/v2/{Users,Groups}` provisioning, `team_admin` delegation, dynamic access rules, M:N `team_memberships` + `projects`, and audited operator impersonation.
 2. **Outbound Credentials, Opt-In Cloud IAM & Vault**:
    - Upstream provider secrets are envelope-encrypted in PostgreSQL with AES-256-GCM (KEK/DEK), while upstream OAuth `client_credentials` and RFC 8693 token exchanges are cached encrypted in Redis (`DistributedTokenCache`).
-   - Ambient cloud credentials (AWS Bedrock IMDS/ECS/IRSA, GCP Vertex ADC, Azure Managed Identity, and AWS RDS IAM) are **disabled by default** (`auth.allow_ambient_cloud_iam: false`) and must be explicitly enabled.
+   - Ambient cloud credentials (`storage.rds_iam` / `auth.allow_ambient_cloud_iam: false`) are **disabled by default** and must be explicitly enabled.
 3. **Outbound SSRF Protection Engine**: Centralized in `internal/security/network`:
    - Enforces DNS resolution IP pinning at connect time to prevent DNS rebinding attacks.
    - Automatically blocks RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.1`), and link-local/metadata endpoints (`169.254.169.254`, `fd00:ec2::254`).
@@ -404,9 +404,9 @@ Returns:
 
 ---
 
-### 6. Unified Multi-Modal Data Plane (`28` `/v1` OpenAPI Paths)
+### 6. Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`28` paths), `/admin/v1` (`82` paths), and `/auth` (`10` paths) is enforced by `make specgen` (`120` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`27` paths), `/admin/v1` (`84` paths), `/auth` (`10` paths), and `4` provider aliases is enforced by `make specgen` (`125` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -415,7 +415,7 @@ The gateway registers the following primary `/v1` operations. Contract parity ac
 | Anthropic Messages ingress | `POST /v1/messages`, `POST /v1/messages/count_tokens` |
 | Audio | `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`, `POST /v1/audio/speech` |
 | Images | `POST /v1/images/generations`, `POST /v1/images/edits`, `POST /v1/images/variations` |
-| Rerank, moderation, and tokenization | `POST /v1/rerank`, `POST /v1/moderations`, `POST /v1/tokenize` |
+| Moderation and tokenization | `POST /v1/moderations`, `POST /v1/tokenize` |
 | Files | `POST /v1/files`, `GET /v1/files`, `GET /v1/files/{file_id}`, `GET /v1/files/{file_id}/content`, `DELETE /v1/files/{file_id}` |
 | Batches | `POST /v1/batches`, `GET /v1/batches`, `GET /v1/batches/{batch_id}`, `POST /v1/batches/{batch_id}/cancel` |
 | Responses and realtime | `POST /v1/responses`, `GET /v1/realtime` (WebSocket upgrade) |
@@ -434,26 +434,6 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "language=en"
 ```
 
-#### Document Reranking (Cohere v2 Bridge)
-
-Enables semantic search reranking over document sets:
-
-```bash
-curl -X POST http://localhost:8080/v1/rerank \
-  -H "Authorization: Bearer $GATEWAY_DEFAULT_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "rerank-v3.5",
-    "query": "How does GoRoute prevent SSRF?",
-    "documents": [
-      "GoRoute uses IP pinning and blocks RFC 1918 subnets.",
-      "GoRoute is written in pure Python.",
-      "GoRoute supports Docker Compose."
-    ],
-    "top_n": 2
-  }'
-```
-
 #### Realtime Bidirectional WebSocket Protocol
 
 Connects full-duplex speech and text sessions with `nhooyr.io/websocket` connection hijacking:
@@ -468,9 +448,9 @@ wscat -c "ws://localhost:8080/v1/realtime?model=gpt-4o-realtime-preview" \
 
 ### 7. Agentic Protocol Hub (MCP & A2A)
 
-#### Model Context Protocol (MCP 2026-07-28 Hub)
+#### Model Context Protocol (Spec-Generated Multi-Release MCP Hub)
 
-GoRoute functions as a production MCP Virtual Hub aggregating multiple upstream Streamable HTTP (`2026-07-28`) and SSE (`2025-11-25`) MCP tool servers, encrypting Model Resumption Tokens (AEAD), pinning SHA-256 tool schemas, and bridging tools into plain REST (`mcp.allow_stdio_servers` remains fail-closed by default in Release 1):
+GoRoute functions as a spec-generated, UI-selectable MCP Virtual Hub (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, and `2026-07-28` default, hot-switchable via `PUT /admin/v1/mcp/spec`), aggregating Streamable HTTP, stateful session, and HTTP+SSE servers, encrypting Model Resumption Tokens (AEAD), pinning SHA-256 tool schemas, and bridging tools into plain REST (`mcp.allow_stdio_servers` remains fail-closed by default):
 
 ```bash
 # 1. List aggregated tools across all registered MCP servers
@@ -521,9 +501,9 @@ GoRoute embeds a production React 18 + TypeScript + Tailwind single-page applica
 │  📦 Catalogue    │  • Model Directory, Priority Tiers, Specialized Fallbacks & Budgets  │
 │  🔑 Virtual Keys │  • key_type Presets, Grace-Period Rotation, Soft Caps & Temp Boosts  │
 │  💰 FinOps       │  • Spend Breakdowns, Per-Model Quotas (ITPM/OTPM/TPD) & Multi-Window │
-│  🛡️ Guardrails   │  • Baseline Policy, 19-Driver Registry, Tool Policies & Simulator │
+│  🛡️ Guardrails   │  • Baseline Policy, 15-Driver Registry, Tool Policies & Simulator │
 │  🔐 Credentials  │  • AES-256-GCM Vault with Live Preflight Provider Validation         │
-│  🤖 Agentic      │  • MCP Tool Hub Explorer & A2A Agent Card Discovery                  │
+│  🤖 Agentic      │  • Gateway MCP Spec Switcher, Tool Hub Explorer & A2A Discovery   │
 └─────────────────┴──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -600,13 +580,13 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`120` OpenAPI paths). |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`125` OpenAPI paths). |
 | **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, `WithKeyRotationSecretSink`, routing hooks), and env vars. |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0036`) and Redis cluster keyspace. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0038`) and Redis cluster keyspace. |
 | **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for identity federation, quota descriptors, and routing engines. |
-| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0036`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
-| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 5-tier verification workflow: race unit tests, live Postgres/Redis E2E, Playwright UI E2E, 2-replica HA chaos/k6 containers, and canaries. |
-| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `120` paths) and vendor protocol specifications. |
+| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0038`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
+| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 3-tier verification workflow: static/contract parity, race unit & guardrail tests + live Postgres/Redis E2E, and Playwright Chromium Web UI E2E. |
+| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `125` paths) and vendor protocol specifications. |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 
 ---

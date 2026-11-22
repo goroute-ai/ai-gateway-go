@@ -35,16 +35,16 @@ func TestLiveStack_ModalityCompatAndOperationEnforcement(t *testing.T) {
 	}))
 	defer anthropicSrv.Close()
 
-	// Mock OpenAI-compatible upstream (chat SSE tool-only, rerank, audio/speech)
+	// Mock OpenAI-compatible upstream (chat SSE tool-only, images, audio/speech)
 	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/chat/completions", "/chat/completions":
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"k\\\":\\\"v\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
 			fmt.Fprint(w, "data: [DONE]\n\n")
-		case "/v1/rerank", "/rerank", "/v2/rerank":
+		case "/v1/images/generations", "/images/generations":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"rk_1","results":[{"index":0,"relevance_score":0.99}],"meta":{"billed_units":{"search_units":1}},"usage":{"total_tokens":5}}`)
+			fmt.Fprint(w, `{"created":1730000000,"data":[{"url":"https://example.com/gen.png"}]}`)
 		case "/v1/audio/speech", "/audio/speech":
 			w.Header().Set("Content-Type", "audio/mpeg")
 			_, _ = w.Write([]byte("MP3DATA"))
@@ -92,10 +92,10 @@ func TestLiveStack_ModalityCompatAndOperationEnforcement(t *testing.T) {
 			SupportedOperations: []domain.OperationType{domain.OperationChat, domain.OperationResponses},
 		},
 		{
-			ID: "cohere/rerank-v3.5", Provider: domain.ProviderCohere, ModelName: "rerank-v3.5",
+			ID: "openai/gpt-image-1", Provider: domain.ProviderOpenAI, ModelName: "gpt-image-1",
 			SupportsInference: true, LifecycleStatus: domain.ModelStatusActive, PricingStatus: domain.PricingStatusVerified,
-			RerankCostMicrosPerSearchUnit: 2000,
-			SupportedOperations:           []domain.OperationType{domain.OperationRerank},
+			ImageCostMicrosBase: 40000,
+			SupportedOperations: []domain.OperationType{domain.OperationImageGeneration},
 		},
 		{
 			ID: "openai/tts-1", Provider: domain.ProviderOpenAI, ModelName: "tts-1",
@@ -143,7 +143,7 @@ func TestLiveStack_ModalityCompatAndOperationEnforcement(t *testing.T) {
 
 	wire("anthropic", anthropicSrv.URL, "claude-doc", "anthropic/claude-doc")
 	wire("openai", openaiSrv.URL, "gpt-4o-mini", "openai/gpt-4o-mini")
-	wire("cohere", openaiSrv.URL, "rerank-v3.5", "cohere/rerank-v3.5")
+	wire("openai", openaiSrv.URL, "gpt-image-1", "openai/gpt-image-1")
 	wire("openai", openaiSrv.URL, "tts-1", "openai/tts-1")
 	wire("openai", openaiSrv.URL, "unverified-chat", "openai/unverified-chat")
 
@@ -193,24 +193,23 @@ func TestLiveStack_ModalityCompatAndOperationEnforcement(t *testing.T) {
 		t.Fatalf("expected no empty message item or output_text.done in tool-only stream:\n%s", joined)
 	}
 
-	// C. /v1/rerank via native cohere adapter
-	var rkOut map[string]any
-	resp, raw = h.doJSON(http.MethodPost, "/v1/rerank", apiHeaders, map[string]any{
-		"model":     "rerank-v3.5",
-		"query":     "hello",
-		"documents": []string{"hello world"},
-	}, &rkOut)
+	// C. /v1/images/generations via OpenAI adapter
+	var imgOut map[string]any
+	resp, raw = h.doJSON(http.MethodPost, "/v1/images/generations", apiHeaders, map[string]any{
+		"model":  "gpt-image-1",
+		"prompt": "a simple geometric icon",
+	}, &imgOut)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected /v1/rerank 200, got %d: %s", resp.StatusCode, string(raw))
+		t.Fatalf("expected /v1/images/generations 200, got %d: %s", resp.StatusCode, string(raw))
 	}
 
-	// D. Operation enforcement: chat on rerank-only model must fail
+	// D. Operation enforcement: chat on image-only model must fail
 	resp, raw = h.doJSON(http.MethodPost, "/v1/chat/completions", apiHeaders, map[string]any{
-		"model":    "rerank-v3.5",
+		"model":    "gpt-image-1",
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	}, nil)
 	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("expected chat on rerank-only model to fail, got 200: %s", string(raw))
+		t.Fatalf("expected chat on image-only model to fail, got 200: %s", string(raw))
 	}
 
 	// E. /v1/audio/speech with non-ASCII runes ("こんにちは")

@@ -20,13 +20,20 @@ import (
 func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Mock upstream Gemini and Anthropic servers
-	gemUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ":generateContent") {
-			fmt.Fprint(w, `{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Declarative Gemini reply"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":6,"totalTokenCount":16}}`)
+	// 1. Mock upstream OpenAI and Anthropic servers
+	openaiUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			var reqBody struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&reqBody)
+			if reqBody.Model == "" {
+				reqBody.Model = "gpt-4o-mini"
+			}
+			fmt.Fprintf(w, `{"id":"chatcmpl_boot","object":"chat.completion","model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":"Declarative OpenAI reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16}}`, reqBody.Model)
 		}
 	}))
-	defer gemUpstream.Close()
+	defer openaiUpstream.Close()
 
 	antUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/messages" {
@@ -36,7 +43,7 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 	defer antUpstream.Close()
 
 	// 2. Set environment variables referenced via "os.environ/..." syntax
-	t.Setenv("TEST_BOOT_GEMINI_KEY", "AIzaSyDeclarativeBootKey")
+	t.Setenv("TEST_BOOT_OPENAI_KEY", "sk-DeclarativeBootKey")
 	t.Setenv("TEST_BOOT_ANTHROPIC_KEY", "sk-ant-DeclarativeBootKey")
 
 	// 3. Configure Gateway purely via declarative `ModelList` (ZERO /admin/v1/* calls!)
@@ -49,9 +56,9 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 		{
 			ModelName: "fast",
 			ModelParams: config.ModelParams{
-				Model:   "gemini/gemini-2.5-flash",
-				APIKey:  "os.environ/TEST_BOOT_GEMINI_KEY",
-				APIBase: gemUpstream.URL,
+				Model:   "openai/gpt-4o-mini",
+				APIKey:  "os.environ/TEST_BOOT_OPENAI_KEY",
+				APIBase: openaiUpstream.URL,
 			},
 		},
 		{
@@ -94,20 +101,20 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 
 	// Test A: Logical alias ("fast") works immediately without any /admin/v1/* setup
 	resp, out := callChat("fast", "Hello!")
-	if resp.StatusCode != http.StatusOK || out.Provider != domain.ProviderGemini {
-		t.Fatalf("expected 200 OK from Gemini on 'fast', got status=%d provider=%s", resp.StatusCode, out.Provider)
+	if resp.StatusCode != http.StatusOK || out.Provider != domain.ProviderOpenAI {
+		t.Fatalf("expected 200 OK from OpenAI on 'fast', got status=%d provider=%s", resp.StatusCode, out.Provider)
 	}
 
-	// Test B: Dynamic Catalogue Model ("gemini-2.5-flash" and "gemini/gemini-2.5-pro") resolves on the fly
+	// Test B: Dynamic Catalogue Model ("gpt-4o-mini" and "openai/gpt-4o") resolves on the fly
 	// even though only "fast" and "reasoning" were declared in ModelList!
-	resp, out = callChat("gemini-2.5-flash", "Explain Go")
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Gateway-Model") != "gemini-2.5-flash" {
-		t.Fatalf("expected dynamic resolution for 'gemini-2.5-flash', got status=%d model=%s", resp.StatusCode, resp.Header.Get("X-Gateway-Model"))
+	resp, out = callChat("gpt-4o-mini", "Explain Go")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Gateway-Model") != "gpt-4o-mini" {
+		t.Fatalf("expected dynamic resolution for 'gpt-4o-mini', got status=%d model=%s", resp.StatusCode, resp.Header.Get("X-Gateway-Model"))
 	}
 
-	resp, out = callChat("gemini/gemini-2.5-pro", "Explain Go deeply")
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Gateway-Model") != "gemini-2.5-pro" {
-		t.Fatalf("expected dynamic resolution for 'gemini/gemini-2.5-pro', got status=%d model=%s", resp.StatusCode, resp.Header.Get("X-Gateway-Model"))
+	resp, out = callChat("openai/gpt-4o", "Explain Go deeply")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Gateway-Model") != "gpt-4o" {
+		t.Fatalf("expected dynamic resolution for 'openai/gpt-4o', got status=%d model=%s", resp.StatusCode, resp.Header.Get("X-Gateway-Model"))
 	}
 
 	// Test C: Smart Routing ("auto") routes complex prompt to Anthropic Claude ("reasoning")
