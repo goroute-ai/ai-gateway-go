@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-validate:
+    name: Lint & Schema Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Formatting (gofmt)
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files detected:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Static Analysis (go vet)
+        run: go vet ./...
+
+      - name: Validate OpenAPI, MCP YAML & Protobuf Contracts (cmd/specgen + cmd/mcpgen)
+        run: |
+          go generate ./internal/mcp/spec
+          go generate ./internal/openapi
+          git diff --exit-code -- internal/openapi/gateway.gen.go internal/mcp/spec/
+
+  test:
+    name: Test Suite (Race Detector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: aigateway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run Unit & Guardrails Tests with Race Detector
+        run: go test -race -v -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
+
+      - name: Run Live Stack E2E Tests
+        env:
+          GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable"
+          GATEWAY_REDIS_ADDR: "localhost:6379"
+        run: go test -race -v -count=1 ./tests/e2e
+
+  docker-build:
+    name: Docker Container Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build Distroless Image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: deployments/Dockerfile
+          push: false
+          tags: goroute/ai-gateway:ci
+
+  ui-verify:
+    name: Web UI Build, Budget & Dist Parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
+
+      - name: Install UI Dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck UI (tsc --noEmit)
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Build UI & Check Bundle Budget
+        working-directory: web
+        run: |
+          npm run build
+          node scripts/check-budget.mjs
+
+      - name: Verify internal/ui/dist Parity
+        run: |
+          if ! diff -rq web/dist internal/ui/dist; then
+            echo "❌ internal/ui/dist is out of sync with web/dist. Run 'make ui-build' to synchronize."
+            exit 1
+          fi
