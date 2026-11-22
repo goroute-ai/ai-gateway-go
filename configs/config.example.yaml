@@ -135,12 +135,6 @@ auth:
   default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
-  key_rotation_poll_interval: 1m
-  key_rotation_grace_period: 24h
-  key_expiry_alert_poll_interval: 1h
-  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
-  session_ttl: 12h
-  enable_hibp_check: false
 
 router:
   default_fast_alias: "fast"
@@ -315,6 +309,7 @@ security:
       allow_private_networks: false
       allowed_private_cidrs: []
       allow_insecure_http: false   # Strict HTTPS enforcement
+      allow_loopback_http: false   # Keep false unless local loopback HTTP bridges are explicitly allowlisted
       allowed_schemes: ["https"]
       blocked_ips:
         - "169.254.169.254"       # Cloud metadata service protection
@@ -364,7 +359,6 @@ a2a:
 # ------------------------------------------------------------------------------
 # Certified Custom OpenAI-Compatible Upstream Providers
 # ------------------------------------------------------------------------------
-providers:
 providers:
   request_timeout: 2m          # Total deadline for non-streaming upstream requests
   response_header_timeout: 2m  # Maximum wait for upstream response headers / TTFT

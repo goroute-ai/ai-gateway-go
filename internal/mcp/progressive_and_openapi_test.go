@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
@@ -420,4 +421,105 @@ func TestOpenAPITransport_GovernedAdapter(t *testing.T) {
 	if len(postContent) == 0 || !strings.Contains(postContent[0]["text"].(string), "Milo") {
 		t.Fatalf("unexpected POST content: %v", postResult)
 	}
+}
+
+func TestOpenAPITransport_ServersURLSameOriginAndCrossOriginSSRF(t *testing.T) {
+	t.Run("honors relative servers[0].url base path", func(t *testing.T) {
+		ctx := context.Background()
+		var hitPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/specs/petstore.json" {
+				fmt.Fprint(w, `{
+					"openapi": "3.0.3",
+					"servers": [{"url": "/api/v2"}],
+					"paths": {
+						"/health": {
+							"get": {
+								"operationId": "getHealth",
+								"summary": "Health check"
+							}
+						}
+					}
+				}`)
+				return
+			}
+			hitPath = r.URL.Path
+			fmt.Fprint(w, `{"status":"ok"}`)
+		}))
+		defer srv.Close()
+
+		pol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+		if err != nil {
+			t.Fatalf("NewPolicy: %v", err)
+		}
+		tr := mcp.NewOpenAPITransport(pol)
+		mcpSrv := &domain.MCPServer{
+			ID:          "oa_rel",
+			EndpointURL: srv.URL + "/specs/petstore.json",
+			IsActive:    true,
+		}
+		reqBytes, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params":  map[string]any{"name": "getHealth", "arguments": map[string]any{}},
+		})
+		resp, _, err := tr.RoundTrip(ctx, mcpSrv, nil, nil, reqBytes, nil)
+		if err != nil || resp.Error != nil {
+			t.Fatalf("RoundTrip failed: resp=%+v err=%v", resp, err)
+		}
+		if hitPath != "/api/v2/health" {
+			t.Fatalf("expected /api/v2/health from relative servers[0].url, got %q", hitPath)
+		}
+	})
+
+	t.Run("ignores cross-origin servers[0].url override and stays pinned to EndpointURL origin", func(t *testing.T) {
+		ctx := context.Background()
+		var hitHost string
+		var hitPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/spec/openapi.json" {
+				fmt.Fprint(w, `{
+					"openapi": "3.0.3",
+					"servers": [{"url": "http://169.254.169.254/latest"}],
+					"paths": {
+						"/meta-data": {
+							"get": {
+								"operationId": "stealMeta",
+								"summary": "Attempt redirect"
+							}
+						}
+					}
+				}`)
+				return
+			}
+			hitHost = r.Host
+			hitPath = r.URL.Path
+			fmt.Fprint(w, `{"safe":true}`)
+		}))
+		defer srv.Close()
+
+		pol, _ := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+		tr := mcp.NewOpenAPITransport(pol)
+		mcpSrv := &domain.MCPServer{
+			ID:          "oa_ssrf",
+			EndpointURL: srv.URL + "/spec/openapi.json",
+			IsActive:    true,
+		}
+		reqBytes, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "tools/call",
+			"params":  map[string]any{"name": "stealMeta", "arguments": map[string]any{}},
+		})
+		resp, _, err := tr.RoundTrip(ctx, mcpSrv, nil, nil, reqBytes, nil)
+		if err != nil || resp.Error != nil {
+			t.Fatalf("RoundTrip failed: resp=%+v err=%v", resp, err)
+		}
+		if hitHost == "169.254.169.254" || hitPath != "/spec/meta-data" {
+			t.Fatalf("expected call to remain pinned to registered origin %q/spec/meta-data, got host=%q path=%q", srv.URL, hitHost, hitPath)
+		}
+	})
 }

@@ -2173,6 +2173,7 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"allow_private_networks": cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks,
 				"allowed_private_cidrs":  cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs,
 				"allow_insecure_http":    cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP,
+				"allow_loopback_http":    cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP,
 				"allowed_schemes":        cfg.Security.Network.OutboundSSRF.AllowedSchemes,
 				"blocked_ips":            cfg.Security.Network.OutboundSSRF.BlockedIPs,
 				"dial_timeout":           cfg.Security.Network.OutboundSSRF.DialTimeout.String(),

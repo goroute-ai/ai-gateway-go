@@ -132,6 +132,15 @@ func (b *RESTBridge) HandleCallTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if rpcErr, ok := errors.AsType[*JSONRPCError](err); ok {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(rpcErr.Message)), "forbidden") {
+				writeRESTError(w, http.StatusForbidden, "mcp_forbidden", rpcErr.Message)
+				return
+			}
+			writeRESTError(w, http.StatusBadRequest, "mcp_invalid_request", rpcErr.Message)
+			return
+		}
+
 		var gwErr *domain.GatewayError
 		if errors.As(err, &gwErr) {
 			writeRESTError(w, gwErr.StatusCode, gwErr.Code, gwErr.Message)

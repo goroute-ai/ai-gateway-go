@@ -26,8 +26,8 @@ services:
 
   gateway-migrate:
     # Prebuilt alternative (replace 'build:' with 'image:'):
-    # image: qaadir/ai-gateway:1.24.0
-    # image: ghcr.io/goroute-ai/ai-gateway-go:1.24.0
+    # image: qaadir/ai-gateway:1.24.1
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.24.1
     build:
       context: ..
       dockerfile: deployments/Dockerfile
@@ -35,10 +35,12 @@ services:
     environment:
       GATEWAY_ENV: "${GATEWAY_ENV:-development}"
       GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
+      GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET:-gateway-jwt-hmac-secret-change-me}"
       GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
       GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
       GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
       GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+      GATEWAY_DEFAULT_VIRTUAL_KEY: "${GATEWAY_DEFAULT_VIRTUAL_KEY:-sk-gw-master-admin-default-key-change-me}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,22 +48,31 @@ services:
 
   ai-gateway:
     # Prebuilt alternative (replace 'build:' with 'image:'):
-    # image: qaadir/ai-gateway:1.24.0
-    # image: ghcr.io/goroute-ai/ai-gateway-go:1.24.0
+    # image: qaadir/ai-gateway:1.24.1
+    # image: ghcr.io/goroute-ai/ai-gateway-go:1.24.1
     build:
       context: ..
       dockerfile: deployments/Dockerfile
     ports:
       - "8080:8080"
+    # Local development defaults (uses configs/config.yaml).
+    # For production deployments, combine with deployments/docker-compose.prod.yml:
+    #   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.prod.yml up -d
     environment:
       GATEWAY_ENV: "${GATEWAY_ENV:-development}"
       GATEWAY_PORT: "8080"
       GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
       GATEWAY_REDIS_ADDR: "redis:6379"
+      GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET:-gateway-jwt-hmac-secret-change-me}"
       GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
       GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
       GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
       GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+      GATEWAY_DEFAULT_VIRTUAL_KEY: "${GATEWAY_DEFAULT_VIRTUAL_KEY:-sk-gw-master-admin-default-key-change-me}"
+      GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE: "${GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE:-true}"
+      GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP: "${GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP:-true}"
+      GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP: "${GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP:-false}"
+      GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS: "${GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS:-127.0.0.1/32,10.0.0.0/8}"
     depends_on:
       gateway-migrate:
         condition: service_completed_successfully

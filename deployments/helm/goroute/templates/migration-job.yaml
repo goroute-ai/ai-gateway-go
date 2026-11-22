@@ -38,9 +38,11 @@ spec:
             - name: {{ $key }}
               value: {{ $val | quote }}
             {{- end }}
+          {{- if or .Values.secrets.create .Values.secrets.existingSecret }}
           envFrom:
             - secretRef:
                 name: {{ include "goroute.secretName" . }}
+          {{- end }}
           resources:
             {{- toYaml .Values.migration.resources | nindent 12 }}
 {{- end }}

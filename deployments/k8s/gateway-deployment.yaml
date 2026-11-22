@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gateway
-  namespace: goroute-test
+  namespace: goroute
 spec:
   replicas: 2
   selector:
@@ -19,8 +19,9 @@ spec:
         runAsUser: 65532
       containers:
         - name: gateway
-          image: goroute/ai-gateway:test
+          image: ghcr.io/goroute-ai/ai-gateway-go:v1.24.1
           imagePullPolicy: IfNotPresent
+          args: ["-config", "/app/configs/config.example.yaml"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -29,6 +30,8 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: GATEWAY_ENV
+              value: "production"
             - name: GATEWAY_PORT
               value: "8080"
             - name: GATEWAY_REDIS_ADDR

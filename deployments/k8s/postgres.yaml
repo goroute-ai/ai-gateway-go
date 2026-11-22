@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: goroute-test
+  namespace: goroute
 spec:
   replicas: 1
   selector:
@@ -22,12 +22,15 @@ spec:
             - name: POSTGRES_USER
               value: gateway
             - name: POSTGRES_PASSWORD
-              value: gateway
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
-              value: aigateway_test
+              value: aigateway
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "gateway", "-d", "aigateway_test"]
+              command: ["pg_isready", "-U", "gateway", "-d", "aigateway"]
             initialDelaySeconds: 3
             periodSeconds: 3
 ---
@@ -35,7 +38,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: goroute-test
+  namespace: goroute
 spec:
   selector:
     app: postgres

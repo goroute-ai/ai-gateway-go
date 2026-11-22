@@ -54,13 +54,18 @@ env:
   GATEWAY_STORAGE_MODE: "postgres"
   GATEWAY_REDIS_ADDR: "redis:6379"
 
+args:
+  - "-config"
+  - "/app/configs/config.example.yaml"
+
 secrets:
-  create: true
+  create: false
   existingSecret: ""
-  postgresDSN: "postgres://gateway:changeme@postgres:5432/aigateway?sslmode=require"
-  masterAdminKey: "changeme-master-admin-key"
-  masterEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  postgresDSN: ""
+  masterAdminKey: ""
+  masterEncryptionKey: ""
   jwtSecret: ""
+  sessionSecret: ""
   redisPassword: ""
 
 resources:
@@ -116,7 +121,7 @@ migration:
     repository: ghcr.io/goroute-ai/ai-gateway-go
     tag: ""
     pullPolicy: IfNotPresent
-  command: ["/app/ai-gateway", "-config", "/app/configs/config.yaml", "-migrate-only"]
+  command: ["/app/ai-gateway", "-config", "/app/configs/config.example.yaml", "-migrate-only"]
   backoffLimit: 3
   activeDeadlineSeconds: 300
   resources:

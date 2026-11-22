@@ -10,7 +10,7 @@ Call OpenAI, Anthropic, Groq, and OpenRouter through a unified OpenAI-compatible
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/goroute-ai/ai-gateway-go/pkg/gateway.svg)](https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
-[![Release](https://img.shields.io/badge/Release-v1.24.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.0)
+[![Release](https://img.shields.io/badge/Release-v1.24.1-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.1)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-qaadir%2Fai--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/qaadir/ai-gateway)
 [![Docker GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Operator UI](<https://img.shields.io/badge/Operator%20UI-Embedded%20SPA-00ADD8?logo=react>)](http://localhost:8080/ui/)
@@ -39,7 +39,7 @@ Instead of writing fragmented provider code, managing disparate API keys, or suf
 Embed GoRoute directly inside your Go microservices with zero proxy hops, full type safety, and sub-millisecond execution:
 
 ```bash
-go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.0
+go get github.com/goroute-ai/ai-gateway-go/pkg/gateway@v1.24.1
 ```
 
 ```go
@@ -62,7 +62,7 @@ func main() {
 			gateway.ModelEntry{ModelName: "fast", Model: "openai/gpt-4o-mini", APIKey: "os.environ/OPENAI_API_KEY"},
 			gateway.ModelEntry{ModelName: "reasoning", Model: "anthropic/claude-sonnet-4-20250514", APIKey: "os.environ/ANTHROPIC_API_KEY"},
 		),
-		gateway.WithDemoMocksIfEnvMissing(), // Instant zero-config local testing
+		gateway.WithDemoMocksIfEnvMissing(), // Local dev/test mock upstreams (fails closed in production)
 		gateway.WithSilentLogs(),             // Suppress internal logs in library mode
 	)
 	if err != nil {
@@ -89,17 +89,18 @@ Installs the standalone static binary with automatic OS/architecture detection a
 curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash
 ```
 
-Run instantly with local mock fallback and launch the Operator UI:
+Start a local gateway instance and open the Operator UI (`http://localhost:8080/ui/`):
 
 ```bash
 export OPENAI_API_KEY="your-openai-key"
 export GATEWAY_DEFAULT_KEY="sk-gw-local-client-key"
 export GATEWAY_MASTER_ADMIN_KEY="sk-gw-local-admin-key-change-me"
-ai-gateway --config configs/config.yaml
-# Open http://localhost:8080/ui/ in your browser
+ai-gateway -config configs/config.yaml
+# For production, copy configs/config.example.yaml, set strong random secrets, and run:
+# ai-gateway -config /etc/goroute/config.yaml
 ```
 
-*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.0).*
+*Precompiled static binaries (`darwin`, `linux`, `windows`), `checksums.txt`, and Helm chart packages are available on the [**GitHub Releases Page**](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v1.24.1).*
 
 ### Path 3: Container Images (Docker Hub / GHCR), Docker Compose & Helm OCI
 
@@ -107,24 +108,28 @@ Run the published multi-arch (`linux/amd64`, `linux/arm64`) Distroless nonroot c
 
 ```bash
 # Docker Hub
-docker pull qaadir/ai-gateway:1.24.0
+docker pull qaadir/ai-gateway:1.24.1
 
-# GitHub Container Registry (supports both bare 1.24.0 and v1.24.0 tags)
-docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.24.0
+# GitHub Container Registry (supports both bare 1.24.1 and v1.24.1 tags)
+docker pull ghcr.io/goroute-ai/ai-gateway-go:v1.24.1
 # Or track latest stable: docker pull qaadir/ai-gateway:latest
 ```
 
-Deploy directly to Kubernetes via OCI Helm Registry:
+Deploy directly to Kubernetes via OCI Helm Registry (supplying real credentials via an existing Secret or `--set secrets.*`):
 
 ```bash
-helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.8.0
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.8.1 \
+  --set secrets.existingSecret=goroute-secrets
 ```
 
-Or spin up GoRoute (with embedded UI), PostgreSQL 16 (for migrations and spend logs), Redis 7 (for rate limiting and cache), and Prometheus:
+Or spin up GoRoute (with embedded UI), PostgreSQL 16, and Redis 7 via Docker Compose (local dev or turnkey production overlay):
 
 ```bash
-curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
-docker compose up -d
+# Local development quickstart:
+docker compose -f deployments/docker-compose.yml up -d
+
+# Strict production overlay (uses configs/config.example.yaml + required secret env vars):
+docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.prod.yml up -d
 # Open http://localhost:8080/ui/
 ```
 

@@ -113,6 +113,11 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	if dsn, _ := storageSection["postgres_dsn"].(string); !strings.Contains(dsn, "REDACTED@db.internal:5432") {
 		t.Fatalf("expected redacted postgres_dsn password, got %q", dsn)
 	}
+	securitySection, _ := parsed["security"].(map[string]any)
+	outboundSSRF, _ := securitySection["outbound_ssrf"].(map[string]any)
+	if _, hasLoopback := outboundSSRF["allow_loopback_http"]; !hasLoopback {
+		t.Fatalf("expected security.outbound_ssrf.allow_loopback_http in /admin/v1/config, got %+v", outboundSSRF)
+	}
 }
 
 func TestResponsesAndMessagesCacheHit(t *testing.T) {

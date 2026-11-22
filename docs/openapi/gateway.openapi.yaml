@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Enterprise AI Gateway Unified API
-  version: 1.24.0
+  version: 1.24.1
   description: >
     Production-grade OpenAI-compatible Unified AI Gateway API supporting verified spec-first model providers
     (OpenAI, Anthropic Claude, Groq, and OpenRouter) with intelligent routing, load balancing, retries/fallbacks,
@@ -6650,6 +6650,33 @@ paths:
                   server:
                     type: object
                     additionalProperties: true
+    delete:
+      operationId: deleteMCPServer
+      summary: Delete a registered downstream MCP server and its synced tools
+      parameters:
+        - name: serverID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted MCP server
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  server_id:
+                    type: string
+        '401':
+          description: Missing or invalid authentication credentials
+        '403':
+          description: Caller lacks admin permissions or org scope for this MCP server
+        '404':
+          description: MCP server not found
   /admin/v1/mcp/servers/{serverID}/sync:
     post:
       operationId: syncMCPServer

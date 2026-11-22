@@ -207,6 +207,64 @@ func TestHub_VerifyToolPinning_FailClosedAndPerToolHash(t *testing.T) {
 	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{ServerSlug: "pinned-srv", ToolName: "my_tool"}, mcp.CallMetadata{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool pinning violation")
+
+	// 3. Direct PinnedToolHash updated post-sync must NOT be shadowed by stale tool.ToolDefHash
+	cleanHash := guardrails.ComputeToolDefinitionHash("clean_tool", "Safe description", map[string]any{"type": "object"})
+	syncedTool := &domain.MCPTool{
+		ID:          "t_pin_2",
+		ServerID:    srv.ID,
+		OrgID:       "org_pin",
+		Name:        "clean_tool",
+		Description: "Safe description",
+		InputSchema: map[string]any{"type": "object"},
+		ToolDefHash: cleanHash,
+		IsActive:    true,
+	}
+	require.NoError(t, repo.UpsertMCPTools(ctx, srv.ID, "org_pin", []*domain.MCPTool{syncedTool}))
+	srv.PinnedToolHash = strings.Repeat("a", 64) // Admin updates expected server pin after sync
+	require.NoError(t, repo.UpdateMCPServer(ctx, srv))
+
+	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{ServerSlug: "pinned-srv", ToolName: "clean_tool"}, mcp.CallMetadata{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool pinning violation")
+
+	// 4. Multi-tool manifest pinning passes when all active tools match manifest, fails on mutation
+	manifestToolA := &domain.MCPTool{
+		ID:          "t_m_a",
+		ServerID:    srv.ID,
+		OrgID:       "org_pin",
+		Name:        "alpha_op",
+		Description: "Alpha",
+		ToolDefHash: guardrails.ComputeToolDefinitionHash("alpha_op", "Alpha", nil),
+		IsActive:    true,
+	}
+	manifestToolB := &domain.MCPTool{
+		ID:          "t_m_b",
+		ServerID:    srv.ID,
+		OrgID:       "org_pin",
+		Name:        "beta_op",
+		Description: "Beta",
+		ToolDefHash: guardrails.ComputeToolDefinitionHash("beta_op", "Beta", nil),
+		IsActive:    true,
+	}
+	manifestRepo := storage.NewMemoryRepository()
+	manifestSrv := &domain.MCPServer{
+		ID:             "srv_manifest",
+		OrgID:          "org_pin",
+		Slug:           "manifest-srv",
+		TransportType:  domain.MCPTransportStreamableHTTP,
+		EndpointURL:    "http://127.0.0.1:9999/mcp",
+		PinnedToolHash: guardrails.ComputeToolManifestHash([]*domain.MCPTool{manifestToolA, manifestToolB}),
+		IsActive:       true,
+	}
+	require.NoError(t, manifestRepo.CreateMCPServer(ctx, manifestSrv))
+	require.NoError(t, manifestRepo.UpsertMCPTools(ctx, manifestSrv.ID, "org_pin", []*domain.MCPTool{manifestToolA, manifestToolB}))
+	manifestToolA.ServerID = manifestSrv.ID
+	manifestToolB.ServerID = manifestSrv.ID
+	require.NoError(t, eng.VerifyServerToolPinning(manifestSrv, manifestToolA, []*domain.MCPTool{manifestToolA, manifestToolB}))
+
+	manifestToolB.Description = "Mutated Beta"
+	require.Error(t, eng.VerifyServerToolPinning(manifestSrv, manifestToolA, []*domain.MCPTool{manifestToolA, manifestToolB}))
 }
 
 func TestHub_DispatchScopedServer_GuardrailsResourcesAndPrompts(t *testing.T) {
@@ -858,4 +916,61 @@ func TestHub_CallTool_RateLimitsPerServerKeyAndTeam(t *testing.T) {
 	require.ErrorAs(t, err, &gwErr)
 	assert.Equal(t, http.StatusTooManyRequests, gwErr.StatusCode)
 	assert.Equal(t, "team_rpm_exceeded", gwErr.Code)
+}
+
+func TestCachedToolsListFailsClosedOnEmptyManifestMismatch(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryRepository()
+	vault, err := auth.NewVault("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	rbac := auth.NewRBACEngine(repo)
+
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: true,
+		AllowInsecureHTTP:    true,
+	})
+	require.NoError(t, err)
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"good_tool","description":"Good","inputSchema":{"type":"object"}}]}}`))
+	}))
+	defer mockUpstream.Close()
+
+	srv := &domain.MCPServer{
+		ID:              "srv_empty_manifest",
+		OrgID:           "org_pin",
+		Name:            "Pinned Manifest Server",
+		Slug:            "pinned-manifest",
+		ProtocolVersion: domain.MCPProtocolVersion20260728,
+		TransportType:   domain.MCPTransportStreamableHTTP,
+		EndpointURL:     mockUpstream.URL,
+		AuthType:        domain.MCPAuthNone,
+		PinnedToolHash: guardrails.ComputeToolManifestHash([]*domain.MCPTool{{
+			Name:        "good_tool",
+			Description: "Good",
+			InputSchema: map[string]any{"type": "object"},
+			IsActive:    true,
+		}}),
+		IsActive: true,
+	}
+	require.NoError(t, repo.CreateMCPServer(ctx, srv))
+
+	hub := mcp.NewHub(repo, vault, rbac, mcp.NewTransportDispatcher(netPolicy, nil, false), mcp.NewAuthResolver(vault, netPolicy))
+	hub.SetCache(mcp.NewMCPCache([]byte("0123456789abcdef0123456789abcdef"), nil))
+	hub.SetGuardrails(guardrails.NewEngine(repo))
+
+	caller := &domain.IdentityContext{OrgID: "org_pin", KeyPrefix: "sk-gw-pin"}
+
+	// 1. Populate MCPCache with initial tools/list response under the same ConfigVersion.
+	resp1, _, err := hub.DispatchScopedServer(ctx, caller, "pinned-manifest", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`), http.Header{})
+	require.NoError(t, err)
+	require.Nil(t, resp1.Error)
+
+	// 2. Cached tools/list lookup MUST fail closed with Tool pinning violation when synced repo tools are empty ([]),
+	//    rather than skipping verification in an empty loop.
+	resp2, _, err := hub.DispatchScopedServer(ctx, caller, "pinned-manifest", []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`), http.Header{})
+	require.NoError(t, err)
+	require.NotNil(t, resp2.Error)
+	assert.Contains(t, resp2.Error.Message, "Tool pinning violation")
 }

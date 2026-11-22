@@ -1,15 +1,20 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.24.0`**.
+This guide covers safe zero-downtime upgrades and rollback precautions when upgrading GoRoute AI Gateway to **`v1.24.1`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
 
-## Upgrading from v1.23.0 / v1.22.x / v1.21.x
+## Upgrading to v1.24.1 (from v1.24.0 / v1.23.x / v1.22.x / v1.21.x)
 
-`v1.24.0` delivers strict 4-provider OpenAPI-first consolidation (`0037_prune_unsupported_providers`, pruning legacy non-OpenAPI providers/rerank columns and removed cloud guardrail definitions) and the UI-selectable 5-release MCP YAML schema engine (`0038_mcp_runtime_spec`), building on `v1.23.0` production routing hardening (`0036`), rolling KEK decryption (`auth.previous_master_encryption_keys`), and transactional secret sinks (`webhook`, `vault_kv2`). Because `0036`/`0038` add nullable/defaulted columns or new tables cleanly, run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. When upgrading from `v1.21.0` or earlier, also review the `v1.21.1`/`v1.21.0` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
+`v1.24.1` strengthens production fail-closed defaults on top of `v1.24.0` (which delivered strict 4-provider OpenAPI consolidation in `0037` and UI-selectable 5-release MCP YAML schemas in `0038`):
+- **Production Auth Secret Guard (`auth.default_virtual_key`)**: Non-`development`/`test` deployments now reject default/weak `auth.default_virtual_key` values on startup (`GATEWAY_DEFAULT_VIRTUAL_KEY` / `GATEWAY_DEFAULT_KEY` overrides or clears this field cleanly).
+- **Turnkey Production Compose, Helm & K8s Manifests**: Use `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.prod.yml up -d` for strict production deployments. Helm `values.yaml` now sets `secrets.create: false` by default with `required` template checks when `secrets.create=true`, and `deployments/k8s` uses the `goroute` namespace without auto-applying example secrets.
+- **MCP Registration SSRF Checks & Catalog Pinning**: `POST`/`PUT /admin/v1/mcp/servers` reject disallowed or private/link-local URLs immediately when not permitted by `security.network.outbound_ssrf`, while `VerifyServerCatalogPinning` enforces `"manifest:"` pinning fail-closed even on empty tool catalogs.
+
+When upgrading from `v1.23.x` or earlier, run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. When upgrading from `v1.21.0` or earlier, also review the `v1.21.1`/`v1.21.0` precautions below: before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; after upgrading, image, speech, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
 ## 1. Summary of Breaking & Behavior Changes (`v1.21.0`+)
 

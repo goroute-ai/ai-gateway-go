@@ -260,7 +260,7 @@ func TestRBACEngine_PolicyCachesAndInvalidation(t *testing.T) {
 func TestKeyExpiryAlertManager_IdempotentAlertsAndWebhook(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
-	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 
 	var received []auth.KeyExpiryAlertPayload
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

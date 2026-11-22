@@ -436,4 +436,87 @@ func TestAdminMCPSpecSwitchingAndServerEdit(t *testing.T) {
 		"protocol_version": "invalid-version",
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(body))
+
+	// Unauthenticated DELETE must fail 401 (no existence oracle).
+	unauthReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/admin/v1/mcp/servers/nonexistent-srv", nil)
+	unauthResp, uErr := http.DefaultClient.Do(unauthReq)
+	require.NoError(t, uErr)
+	unauthResp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, unauthResp.StatusCode)
+
+	// 8. Delete registered server via DELETE /admin/v1/mcp/servers/{serverID}.
+	resp, body = doAdmin(http.MethodDelete, "/admin/v1/mcp/servers/"+createdSrv.ID, nil)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+	assert.Contains(t, string(body), `"status":"deleted"`)
+
+	// Second delete of same ID returns 404 Not Found.
+	resp, body = doAdmin(http.MethodDelete, "/admin/v1/mcp/servers/"+createdSrv.ID, nil)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(body))
+}
+
+func TestAdminMCPServerRegistration_RejectsSSRFEndpointURLs(t *testing.T) {
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "sk-gw-master-admin-ssrf-test"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = false
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = false
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = false
+
+	srv, err := server.New(cfg, repo, nil, nil)
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	doReq := func(method, path string, payload map[string]any) (int, string) {
+		t.Helper()
+		raw, _ := json.Marshal(payload)
+		req, reqErr := http.NewRequest(method, ts.URL+path, bytes.NewReader(raw))
+		require.NoError(t, reqErr)
+		req.Header.Set("Authorization", "Bearer "+cfg.Auth.MasterAdminKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, doErr := http.DefaultClient.Do(req)
+		require.NoError(t, doErr)
+		defer func() { _ = resp.Body.Close() }()
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(resp.Body)
+		return resp.StatusCode, buf.String()
+	}
+
+	for _, blocked := range []string{
+		"http://169.254.169.254/latest/meta-data",
+		"https://10.0.0.5:8443/mcp",
+		"http://127.0.0.1:8080/mcp",
+	} {
+		code, body := doReq(http.MethodPost, "/admin/v1/mcp/servers", map[string]any{
+			"name":             "Blocked SSRF",
+			"slug":             "blocked-ssrf",
+			"protocol_version": domain.MCPProtocolVersion20260728,
+			"transport_type":   domain.MCPTransportStreamableHTTP,
+			"endpoint_url":     blocked,
+		})
+		assert.Equal(t, http.StatusBadRequest, code, "expected 400 registering %s: %s", blocked, body)
+		assert.Contains(t, body, "invalid_endpoint_url")
+	}
+
+	// Valid public HTTPS URL succeeds, and updating it to a private URL via PUT fails 400.
+	code, body := doReq(http.MethodPost, "/admin/v1/mcp/servers", map[string]any{
+		"name":             "Valid HTTPS MCP",
+		"slug":             "valid-https-mcp",
+		"protocol_version": domain.MCPProtocolVersion20260728,
+		"transport_type":   domain.MCPTransportStreamableHTTP,
+		"endpoint_url":     "https://mcp.example.com/mcp",
+	})
+	require.Equal(t, http.StatusCreated, code, body)
+	var created struct {
+		Server domain.MCPServer `json:"server"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+
+	updCode, updBody := doReq(http.MethodPut, "/admin/v1/mcp/servers/"+created.Server.ID, map[string]any{
+		"endpoint_url": "https://10.0.0.5:8443/mcp",
+	})
+	assert.Equal(t, http.StatusBadRequest, updCode, updBody)
+	assert.Contains(t, updBody, "invalid_endpoint_url")
 }

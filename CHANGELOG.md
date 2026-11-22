@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.24.1] - 2026-11-22
+
+### Security Hardening, Demo/Dummy Cleanup, MCP Parity & Release Readiness
+
+#### Security & Hardening
+- **Production Auth Secret Guard & Env Overrides (`internal/config/config.go`, `configs/config.yaml`)**: Rejected default/weak `auth.default_virtual_key` values (`sk-gw-master-admin-default-key-change-me`, `sk-gw-demo-client-key`) in non-`development`/`test` environments, added `GATEWAY_DEFAULT_VIRTUAL_KEY` (with `GATEWAY_DEFAULT_KEY` fallback), and added `GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS` (`""` / `"none"` clears private CIDR allowlists to `[]`).
+- **SSRF Registration Validation & Loopback/Insecure HTTP Scheme Harmonization (`internal/server/handlers_admin_mcp.go`, `internal/security/network/policy.go`)**: Validated MCP server `endpoint_url` and `oauth2_endpoint` against the outbound `network.Policy` immediately on `POST` and `PUT /admin/v1/mcp/servers` (returning `HTTP 400`), added per-hop loopback IP isolation across redirects (`RequiresLoopbackIPForURL` / `ValidateLoopbackIP`), and auto-enabled `"http"` in `network.NewPolicy` when `AllowInsecureHTTP` or `AllowLoopbackHTTP` is enabled alongside `"https"`.
+- **Unified Catalog Pinning & MCP MRTR Edge-Case Hardening (`internal/guardrails/mcp.go`, `internal/mcp/hub.go`, `internal/mcp/rest_bridge.go`)**: Added `(*Engine).VerifyServerCatalogPinning` enforcing single-pass O(N) `"manifest:"` verification and fail-closed rejection on empty tool lists; wired MRTR across virtual hubs, toolsets, and scoped `prompts/get` / `resources/read`, normalized `nil` vs empty `map[string]any{}` arguments, failed closed on JSON marshal errors, ran MRTR unwrapping prior to discovery cache lookup, and mapped `*JSONRPCError` REST bridge failures to HTTP `403`/`400`.
+- **Embedded SDK Runtime Hygiene (`pkg/gateway/sdk.go`)**: Eliminated `net/http/httptest` (and implicit `testing` flags) from production SDK binaries via a stdlib loopback HTTP listener wrapper, restricted `WithDemoMocksIfEnvMissing()` and `ModelEntry.SimulateStatus >= 400` strictly to `development`/`test` environments (failing closed in `production`/`staging`), enabled env-driven Postgres/Redis parity, and skipped unnecessary Redis initialization on Postgres-only SDK configs (`shouldInitSDKRedis`).
+
+#### Changed, Deployment & Cleanup
+- **Turnkey Production Docker Compose Overlay (`deployments/docker-compose.prod.yml`)**: Isolated strict production deployment settings (`configs/config.example.yaml`, mandatory `${VAR:?...}` secrets, `GATEWAY_ENV=production`, and `GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS=none`) from zero-config local development (`deployments/docker-compose.yml`).
+- **Hardened Helm & Kubernetes Manifests (`deployments/helm/goroute/`, `deployments/k8s/`)**: Removed hardcoded dummy passwords and test fixture names (`changeme-master-admin-key`, `goroute-test`, `aigateway_test`) from default Helm values (`secrets.create: false` + `required` template guards) and Kustomize manifests (`namespace: goroute`, decoupled `secret.example.yaml` placeholders), and updated `deployments/Dockerfile` to bundle both `configs/config.yaml` and `configs/config.example.yaml`.
+- **CI/Release Reliability, Contract Sync & Linter Cleanups**: Fixed wall-clock date expiration in `TestKeyExpiryAlertManager_IdempotentAlertsAndWebhook` (`internal/auth/production_auth_test.go`), regenerated OpenAPI bindings (`docs/openapi/gateway.openapi.yaml`, `internal/openapi/gateway.gen.go`), synchronized Operator Web UI assets (`v1.24.1`), and resolved all `golangci-lint` findings across modified Go packages.
+
+---
+
 ## [1.24.0] - 2026-11-22
 
 ### OpenAPI-First 4-Provider Consolidation, Multi-Release MCP YAML Engine & Release Cleanup

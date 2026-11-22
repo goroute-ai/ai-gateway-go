@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,9 +43,10 @@ type openAPISpecKey struct {
 }
 
 type openAPISpecEntry struct {
-	key       openAPISpecKey
-	ops       []OpenAPIOperation
-	expiresAt time.Time
+	key           openAPISpecKey
+	ops           []OpenAPIOperation
+	serverBaseURL string
+	expiresAt     time.Time
 }
 
 // OpenAPITransport implements governed OpenAPI-to-MCP translation.
@@ -70,12 +72,38 @@ func NewOpenAPITransport(netPolicy *network.Policy) *OpenAPITransport {
 	}
 }
 
-// ParseOpenAPISpec parses an OpenAPI 3.x document JSON into MCP tools.
-func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
+func extractFirstOpenAPIServerURL(root map[string]any) string {
+	serversRaw, ok := root["servers"].([]any)
+	if !ok || len(serversRaw) == 0 {
+		return ""
+	}
+	first, ok := serversRaw[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	u, _ := first["url"].(string)
+	return strings.TrimSpace(u)
+}
+
+func parseOpenAPISpecWithServer(specJSON []byte) ([]OpenAPIOperation, string, error) {
 	var root map[string]any
 	if err := json.Unmarshal(specJSON, &root); err != nil {
-		return nil, fmt.Errorf("openapi: parse spec json: %w", err)
+		return nil, "", fmt.Errorf("openapi: parse spec json: %w", err)
 	}
+	ops, err := parseOpenAPIOperationsMap(root)
+	if err != nil {
+		return nil, "", err
+	}
+	return ops, extractFirstOpenAPIServerURL(root), nil
+}
+
+// ParseOpenAPISpec parses an OpenAPI 3.x document JSON into MCP tools.
+func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
+	ops, _, err := parseOpenAPISpecWithServer(specJSON)
+	return ops, err
+}
+
+func parseOpenAPIOperationsMap(root map[string]any) ([]OpenAPIOperation, error) {
 
 	paths, ok := root["paths"].(map[string]any)
 	if !ok {
@@ -117,51 +145,11 @@ func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
 			}
 
 			// Extract path & query parameters
-			var pathParams []string
-			var queryParams []string
 			properties := make(map[string]any)
-			var requiredFields []string
-
-			if paramsList, ok := opMap["parameters"].([]any); ok {
-				for _, p := range paramsList {
-					pMap, ok := p.(map[string]any)
-					if !ok {
-						continue
-					}
-					pName, _ := pMap["name"].(string)
-					pIn, _ := pMap["in"].(string)
-					pReq, _ := pMap["required"].(bool)
-
-					if pIn == "path" {
-						pathParams = append(pathParams, pName)
-					} else if pIn == "query" {
-						queryParams = append(queryParams, pName)
-					}
-
-					pSchema, _ := pMap["schema"].(map[string]any)
-					if pSchema == nil {
-						pSchema = map[string]any{"type": "string"}
-					}
-					properties[pName] = pSchema
-					if pReq {
-						requiredFields = append(requiredFields, pName)
-					}
-				}
-			}
+			pathParams, queryParams, requiredFields := extractOpenAPIParams(opMap, properties)
 
 			// Request Body
-			if reqBody, ok := opMap["requestBody"].(map[string]any); ok {
-				if content, ok := reqBody["content"].(map[string]any); ok {
-					if appJSON, ok := content["application/json"].(map[string]any); ok {
-						if bSchema, ok := appJSON["schema"].(map[string]any); ok {
-							properties["body"] = bSchema
-							if req, _ := reqBody["required"].(bool); req {
-								requiredFields = append(requiredFields, "body")
-							}
-						}
-					}
-				}
-			}
+			extractOpenAPIRequestBody(opMap, properties, &requiredFields)
 
 			inputSchema := map[string]any{
 				"type":       "object",
@@ -187,12 +175,63 @@ func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
 	return operations, nil
 }
 
+func extractOpenAPIParams(opMap, properties map[string]any) ([]string, []string, []string) {
+	var pathParams, queryParams, requiredFields []string
+	paramsList, ok := opMap["parameters"].([]any)
+	if !ok {
+		return nil, nil, nil
+	}
+	for _, p := range paramsList {
+		pMap, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		pName, _ := pMap["name"].(string)
+		switch pIn, _ := pMap["in"].(string); pIn {
+		case "path":
+			pathParams = append(pathParams, pName)
+		case "query":
+			queryParams = append(queryParams, pName)
+		}
+		pSchema, _ := pMap["schema"].(map[string]any)
+		if pSchema == nil {
+			pSchema = map[string]any{"type": "string"}
+		}
+		properties[pName] = pSchema
+		if req, _ := pMap["required"].(bool); req {
+			requiredFields = append(requiredFields, pName)
+		}
+	}
+	return pathParams, queryParams, requiredFields
+}
+
+func extractOpenAPIRequestBody(opMap, properties map[string]any, requiredFields *[]string) {
+	reqBody, ok := opMap["requestBody"].(map[string]any)
+	if !ok {
+		return
+	}
+	content, ok := reqBody["content"].(map[string]any)
+	if !ok {
+		return
+	}
+	appJSON, ok := content["application/json"].(map[string]any)
+	if !ok {
+		return
+	}
+	if bSchema, ok := appJSON["schema"].(map[string]any); ok {
+		properties["body"] = bSchema
+		if req, _ := reqBody["required"].(bool); req {
+			*requiredFields = append(*requiredFields, "body")
+		}
+	}
+}
+
 func (t *OpenAPITransport) getOperations(
 	ctx context.Context,
 	server *domain.MCPServer,
 	authStrategy upstream.Strategy,
 	authCtx *upstream.UpstreamAuthContext,
-) ([]OpenAPIOperation, http.Header, error) {
+) ([]OpenAPIOperation, string, http.Header, error) {
 	key := openAPISpecKey{serverID: server.ID, configVersion: server.ConfigVersion}
 	now := time.Now()
 
@@ -202,8 +241,9 @@ func (t *OpenAPITransport) getOperations(
 		if now.Before(entry.expiresAt) {
 			t.specLRU.MoveToFront(elem)
 			ops := entry.ops
+			srvBase := entry.serverBaseURL
 			t.specMu.Unlock()
-			return ops, http.Header{}, nil
+			return ops, srvBase, http.Header{}, nil
 		}
 		t.specLRU.Remove(elem)
 		delete(t.specCache, key)
@@ -212,35 +252,36 @@ func (t *OpenAPITransport) getOperations(
 
 	specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.EndpointURL, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	specReq.Header.Set("Accept", "application/json")
 	if authStrategy != nil {
 		if err := authStrategy.Apply(ctx, specReq, authCtx); err != nil {
-			return nil, nil, fmt.Errorf("openapi: apply auth: %w", err)
+			return nil, "", nil, fmt.Errorf("openapi: apply auth: %w", err)
 		}
 	}
 
 	resp, err := t.httpClient.Do(specReq)
 	if err != nil {
-		return nil, nil, fmt.Errorf("openapi: fetch spec: %w", err)
+		return nil, "", nil, fmt.Errorf("openapi: fetch spec: %w", err)
 	}
 	defer resp.Body.Close()
 
 	specBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 
-	ops, err := ParseOpenAPISpec(specBody)
+	ops, specServerURL, err := parseOpenAPISpecWithServer(specBody)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 
 	t.specMu.Lock()
 	if elem, ok := t.specCache[key]; ok {
 		entry := elem.Value.(*openAPISpecEntry)
 		entry.ops = ops
+		entry.serverBaseURL = specServerURL
 		entry.expiresAt = time.Now().Add(t.specTTL)
 		t.specLRU.MoveToFront(elem)
 	} else {
@@ -254,15 +295,61 @@ func (t *OpenAPITransport) getOperations(
 			delete(t.specCache, tailEntry.key)
 		}
 		elem := t.specLRU.PushFront(&openAPISpecEntry{
-			key:       key,
-			ops:       ops,
-			expiresAt: time.Now().Add(t.specTTL),
+			key:           key,
+			ops:           ops,
+			serverBaseURL: specServerURL,
+			expiresAt:     time.Now().Add(t.specTTL),
 		})
 		t.specCache[key] = elem
 	}
 	t.specMu.Unlock()
 
-	return ops, resp.Header, nil
+	return ops, specServerURL, resp.Header, nil
+}
+
+func fallbackOpenAPIBaseURL(endpointURL string) string {
+	baseURL := strings.TrimRight(endpointURL, "/")
+	if strings.HasSuffix(baseURL, ".json") || strings.HasSuffix(baseURL, ".yaml") {
+		lastSlash := strings.LastIndex(baseURL, "/")
+		if lastSlash > 0 {
+			baseURL = baseURL[:lastSlash]
+		}
+	}
+	return baseURL
+}
+
+// resolveOpenAPIBaseURL honors relative and same-origin OpenAPI servers[0].url entries
+// while refusing cross-origin host overrides to prevent remote-spec SSRF redirection.
+func resolveOpenAPIBaseURL(endpointURL, specServerURL string) (baseURL string, crossOriginIgnored bool) {
+	fallback := fallbackOpenAPIBaseURL(endpointURL)
+	trimmedSpec := strings.TrimSpace(specServerURL)
+	if trimmedSpec == "" {
+		return fallback, false
+	}
+
+	epParsed, epErr := url.Parse(endpointURL)
+	srvParsed, srvErr := url.Parse(trimmedSpec)
+	if epErr != nil || srvErr != nil || epParsed.Host == "" {
+		return fallback, false
+	}
+
+	// Relative path (e.g. "/v2" or "v2") stays pinned to endpointURL's scheme://host.
+	if srvParsed.Scheme == "" && srvParsed.Host == "" {
+		relPath := "/" + strings.TrimLeft(srvParsed.Path, "/")
+		resolved := &url.URL{
+			Scheme: epParsed.Scheme,
+			Host:   epParsed.Host,
+			Path:   strings.TrimRight(relPath, "/"),
+		}
+		return strings.TrimRight(resolved.String(), "/"), false
+	}
+
+	// Reject cross-origin host or scheme redirects embedded inside untrusted OpenAPI specs.
+	if !strings.EqualFold(srvParsed.Scheme, epParsed.Scheme) || !strings.EqualFold(srvParsed.Host, epParsed.Host) {
+		return fallback, true
+	}
+
+	return strings.TrimRight(srvParsed.String(), "/"), false
 }
 
 func (t *OpenAPITransport) RoundTrip(
@@ -298,7 +385,7 @@ func (t *OpenAPITransport) RoundTrip(
 			},
 		}, nil, nil
 	case "tools/list":
-		ops, respHeaders, err := t.getOperations(ctx, server, authStrategy, authCtx)
+		ops, _, respHeaders, err := t.getOperations(ctx, server, authStrategy, authCtx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -330,7 +417,7 @@ func (t *OpenAPITransport) RoundTrip(
 			args = make(map[string]any)
 		}
 
-		ops, _, err := t.getOperations(ctx, server, authStrategy, authCtx)
+		ops, specServerURL, _, err := t.getOperations(ctx, server, authStrategy, authCtx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -354,14 +441,14 @@ func (t *OpenAPITransport) RoundTrip(
 			}, nil, nil
 		}
 
-		// Construct target URL with path parameters
-		baseURL := strings.TrimRight(server.EndpointURL, "/")
-		// If EndpointURL points to /openapi.json, strip filename to get base service path
-		if strings.HasSuffix(baseURL, ".json") || strings.HasSuffix(baseURL, ".yaml") {
-			lastSlash := strings.LastIndex(baseURL, "/")
-			if lastSlash > 0 {
-				baseURL = baseURL[:lastSlash]
-			}
+		baseURL, crossOriginIgnored := resolveOpenAPIBaseURL(server.EndpointURL, specServerURL)
+		if crossOriginIgnored {
+			slog.Warn(
+				"openapi transport ignored cross-origin servers[0].url override",
+				slog.String("server_id", server.ID),
+				slog.String("spec_server_url", specServerURL),
+				slog.String("endpoint_url", server.EndpointURL),
+			)
 		}
 
 		resolvedPath := targetOp.PathPattern

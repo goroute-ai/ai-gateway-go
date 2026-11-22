@@ -49,6 +49,7 @@ type OutboundSSRFConfig struct {
 	AllowPrivateNetworks bool          `yaml:"allow_private_networks"` // default false (or true in local test/dev)
 	AllowedPrivateCIDRs  []string      `yaml:"allowed_private_cidrs"`  // e.g. ["10.0.0.0/8"]
 	AllowInsecureHTTP    bool          `yaml:"allow_insecure_http"`    // default false (forces https:// upstream unless true)
+	AllowLoopbackHTTP    bool          `yaml:"allow_loopback_http"`    // permit plain http:// only for loopback hosts
 	AllowedSchemes       []string      `yaml:"allowed_schemes"`        // e.g. ["https", "http"]
 	BlockedIPs           []string      `yaml:"blocked_ips"`            // e.g. ["169.254.169.254"]
 	DialTimeout          time.Duration `yaml:"dial_timeout"`
@@ -819,6 +820,17 @@ func (c *Config) applyAuthEnvOverrides() {
 	envDuration("GATEWAY_SESSION_TTL", &c.Auth.SessionTTL)
 	envBool("GATEWAY_ENABLE_HIBP_CHECK", &c.Auth.EnableHIBPCheck)
 	envTrimStr("GATEWAY_HIBP_BASE_URL", &c.Auth.HIBPBaseURL)
+	defaultVK := os.Getenv("GATEWAY_DEFAULT_VIRTUAL_KEY")
+	if defaultVK == "" {
+		defaultVK = os.Getenv("GATEWAY_DEFAULT_KEY")
+	}
+	if defaultVK != "" {
+		if strings.EqualFold(strings.TrimSpace(defaultVK), "none") {
+			c.Auth.DefaultVirtualKey = ""
+		} else {
+			c.Auth.DefaultVirtualKey = defaultVK
+		}
+	}
 }
 
 func (c *Config) applyRouterEnvOverrides() {
@@ -854,6 +866,15 @@ func (c *Config) applyFinOpsAndProtocolEnvOverrides() {
 	envFloat("GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT", &c.FinOps.BudgetExceededThrottlePct)
 	envBool("GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE", &c.Security.Network.OutboundSSRF.AllowPrivateNetworks)
 	envBool("GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP", &c.Security.Network.OutboundSSRF.AllowInsecureHTTP)
+	envBool("GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP", &c.Security.Network.OutboundSSRF.AllowLoopbackHTTP)
+	if rawCIDRs, ok := os.LookupEnv("GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS"); ok {
+		trimmed := strings.TrimSpace(rawCIDRs)
+		if trimmed == "" || strings.EqualFold(trimmed, "none") {
+			c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{}
+		} else {
+			c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = splitTrimCSV(trimmed)
+		}
+	}
 	envBool("GATEWAY_MCP_ENABLED", &c.MCP.Enabled)
 	envBool("GATEWAY_MCP_ALLOW_STDIO", &c.MCP.AllowStdioServers)
 	envBool("GATEWAY_A2A_ENABLED", &c.A2A.Enabled)
@@ -864,6 +885,9 @@ func (c *Config) applyFinOpsAndProtocolEnvOverrides() {
 // providers, routing, FinOps, server limits, authentication, network policy,
 // MCP/A2A bindings, and guardrails.
 func (c *Config) Validate() error {
+	if err := c.resolveSecretAndStorageEnvRefs(); err != nil {
+		return err
+	}
 	c.applyProviderAndCacheDefaults()
 
 	validators := []func() error{
@@ -1079,19 +1103,31 @@ func (c *Config) validateAuth() error {
 	return validateProxyAuthConfig(c.Auth.ProxyAuth)
 }
 
+// EffectiveEnvironment returns the resolved lowercase runtime environment with ENV and GATEWAY_ENV applied.
+func EffectiveEnvironment(env string) string {
+	normalized := strings.ToLower(strings.TrimSpace(env))
+	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate != "" {
+			normalized = candidate
+		}
+	}
+	return normalized
+}
+
+// IsDevelopmentOrTestEnv reports whether the effective gateway environment allows local development convenience fallbacks.
+func IsDevelopmentOrTestEnv(env string) bool {
+	effective := EffectiveEnvironment(env)
+	return effective == "development" || effective == "test"
+}
+
 func (c *Config) validateProductionAuthSecrets() error {
 	const (
 		defaultMasterAdminKey      = "sk-gw-master-admin-default-key-change-me"
 		defaultMasterEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		defaultJWTSecret           = "gateway-jwt-hmac-secret-change-me"
 	)
-	env := strings.ToLower(strings.TrimSpace(c.Server.Environment))
-	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
-		candidate = strings.ToLower(strings.TrimSpace(candidate))
-		if candidate != "" {
-			env = candidate
-		}
-	}
+	env := EffectiveEnvironment(c.Server.Environment)
 	if env == "development" || env == "test" {
 		return nil
 	}
@@ -1103,6 +1139,9 @@ func (c *Config) validateProductionAuthSecrets() error {
 	}
 	if c.Auth.JWTSecret == defaultJWTSecret {
 		return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %q environment", env)
+	}
+	if c.Auth.DefaultVirtualKey == defaultMasterAdminKey || c.Auth.DefaultVirtualKey == "sk-gw-demo-client-key" {
+		return fmt.Errorf("security violation: auth.default_virtual_key cannot use a well-known default secret in %q environment", env)
 	}
 	return nil
 }
@@ -1274,9 +1313,6 @@ func (c *Config) validateMCPAndA2A() error {
 		if c.MCP.DefaultTimeout <= 0 {
 			c.MCP.DefaultTimeout = 30 * time.Second
 		}
-		if c.MCP.CacheKeySecret == "" {
-			c.MCP.CacheKeySecret = c.Auth.MasterEncryptionKey
-		}
 	}
 
 	if c.A2A.Enabled {
@@ -1364,6 +1400,102 @@ func (c *Config) validateGuardrails() error {
 	return nil
 }
 
+func isEnvVarNameChar(c byte, first bool) bool {
+	if c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+		return true
+	}
+	return !first && c >= '0' && c <= '9'
+}
+
+func parseEnvVarRef(val string) (string, bool) {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return "", false
+	}
+	if strings.HasPrefix(v, "os.environ/") {
+		envKey := strings.TrimSpace(strings.TrimPrefix(v, "os.environ/"))
+		return envKey, envKey != ""
+	}
+	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && len(v) > 3 {
+		envKey := strings.TrimSpace(v[2 : len(v)-1])
+		return envKey, envKey != ""
+	}
+	if strings.HasPrefix(v, "$") && len(v) > 1 && !strings.Contains(v, " ") {
+		envKey := strings.TrimSpace(v[1:])
+		for i := range len(envKey) {
+			if !isEnvVarNameChar(envKey[i], i == 0) {
+				return "", false
+			}
+		}
+		return envKey, true
+	}
+	return "", false
+}
+
+func resolveRequiredEnvField(fieldName string, dst *string) error {
+	if dst == nil {
+		return nil
+	}
+	envKey, isRef := parseEnvVarRef(*dst)
+	if !isRef {
+		return nil
+	}
+	resolved := strings.TrimSpace(os.Getenv(envKey))
+	if resolved == "" {
+		return fmt.Errorf("config field %s references unset or empty environment variable %q", fieldName, envKey)
+	}
+	*dst = resolved
+	return nil
+}
+
+func resolveOptionalEnvField(dst *string) {
+	if dst == nil {
+		return
+	}
+	if _, isRef := parseEnvVarRef(*dst); isRef {
+		*dst = ResolveEnvValue(*dst)
+	}
+}
+
+func (c *Config) resolveSecretAndStorageEnvRefs() error {
+	requiredFields := []struct {
+		name string
+		ptr  *string
+	}{
+		{name: "auth.master_admin_key", ptr: &c.Auth.MasterAdminKey},
+		{name: "auth.master_encryption_key", ptr: &c.Auth.MasterEncryptionKey},
+		{name: "auth.jwt_secret", ptr: &c.Auth.JWTSecret},
+		{name: "auth.session_secret", ptr: &c.Auth.SessionSecret},
+		{name: "auth.ui_password", ptr: &c.Auth.UIPassword},
+		{name: "mcp.cache_key_secret", ptr: &c.MCP.CacheKeySecret},
+		{name: "finops.soft_budget_webhook_url", ptr: &c.FinOps.SoftBudgetWebhookURL},
+	}
+	for _, field := range requiredFields {
+		if err := resolveRequiredEnvField(field.name, field.ptr); err != nil {
+			return err
+		}
+	}
+
+	resolveOptionalEnvField(&c.Auth.DefaultVirtualKey)
+	for i := range c.Auth.PreviousMasterEncryptionKeys {
+		resolveOptionalEnvField(&c.Auth.PreviousMasterEncryptionKeys[i])
+	}
+
+	if strings.EqualFold(strings.TrimSpace(c.Storage.Mode), "postgres") {
+		if err := resolveRequiredEnvField("storage.postgres_dsn", &c.Storage.PostgresDSN); err != nil {
+			return err
+		}
+	} else {
+		resolveOptionalEnvField(&c.Storage.PostgresDSN)
+	}
+	resolveOptionalEnvField(&c.Storage.RedisAddr)
+	resolveOptionalEnvField(&c.Storage.RedisPass)
+	for i := range c.Storage.RedisAddrs {
+		resolveOptionalEnvField(&c.Storage.RedisAddrs[i])
+	}
+	return nil
+}
+
 // ResolveEnvValue resolves environment variable references such as:
 //   - "os.environ/GEMINI_API_KEY" -> os.Getenv("GEMINI_API_KEY")
 //   - "${GEMINI_API_KEY}"         -> os.Getenv("GEMINI_API_KEY")
@@ -1375,16 +1507,7 @@ func ResolveEnvValue(val string) string {
 	if v == "" {
 		return ""
 	}
-	if strings.HasPrefix(v, "os.environ/") {
-		envKey := strings.TrimSpace(strings.TrimPrefix(v, "os.environ/"))
-		return strings.TrimSpace(os.Getenv(envKey))
-	}
-	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && len(v) > 3 {
-		envKey := strings.TrimSpace(v[2 : len(v)-1])
-		return strings.TrimSpace(os.Getenv(envKey))
-	}
-	if strings.HasPrefix(v, "$") && len(v) > 1 && !strings.Contains(v, " ") {
-		envKey := strings.TrimSpace(v[1:])
+	if envKey, ok := parseEnvVarRef(v); ok {
 		return strings.TrimSpace(os.Getenv(envKey))
 	}
 	return v

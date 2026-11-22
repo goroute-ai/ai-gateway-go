@@ -1,0 +1,55 @@
+# Production Docker Compose overlay for GoRoute AI Gateway.
+# Usage:
+#   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.prod.yml up -d
+#
+# Required environment variables (.env):
+#   POSTGRES_PASSWORD
+#   GATEWAY_MASTER_ADMIN_KEY
+#   GATEWAY_MASTER_ENCRYPTION_KEY  (64-char hex)
+#   GATEWAY_JWT_SECRET
+#   GATEWAY_SESSION_SECRET
+services:
+  postgres:
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-gateway}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:-aigateway}"
+
+  gateway-migrate:
+    command: ["-config", "/etc/goroute/config.yaml", "-migrate-only"]
+    volumes:
+      - ../configs/config.example.yaml:/etc/goroute/config.yaml:ro
+    environment:
+      GATEWAY_ENV: "production"
+      GATEWAY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aigateway}?sslmode=${POSTGRES_SSLMODE:-disable}"
+      GATEWAY_REDIS_ADDR: "${GATEWAY_REDIS_ADDR:-redis:6379}"
+      GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET:?set GATEWAY_JWT_SECRET}"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.example.com}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:?set GATEWAY_SESSION_SECRET}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:?set GATEWAY_MASTER_ADMIN_KEY}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:?set GATEWAY_MASTER_ENCRYPTION_KEY}"
+      GATEWAY_DEFAULT_KEY: "${GATEWAY_DEFAULT_KEY:-}"
+      GATEWAY_DEFAULT_VIRTUAL_KEY: "${GATEWAY_DEFAULT_VIRTUAL_KEY:-none}"
+
+  ai-gateway:
+    command: ["-config", "/etc/goroute/config.yaml"]
+    volumes:
+      - ../configs/config.example.yaml:/etc/goroute/config.yaml:ro
+    environment:
+      GATEWAY_ENV: "production"
+      GATEWAY_PORT: "${GATEWAY_PORT:-8080}"
+      GATEWAY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aigateway}?sslmode=${POSTGRES_SSLMODE:-disable}"
+      GATEWAY_REDIS_ADDR: "${GATEWAY_REDIS_ADDR:-redis:6379}"
+      GATEWAY_JWT_SECRET: "${GATEWAY_JWT_SECRET:?set GATEWAY_JWT_SECRET}"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.example.com}"
+      GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:?set GATEWAY_SESSION_SECRET}"
+      GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:?set GATEWAY_MASTER_ADMIN_KEY}"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:?set GATEWAY_MASTER_ENCRYPTION_KEY}"
+      GATEWAY_DEFAULT_KEY: "${GATEWAY_DEFAULT_KEY:-}"
+      GATEWAY_DEFAULT_VIRTUAL_KEY: "${GATEWAY_DEFAULT_VIRTUAL_KEY:-none}"
+      GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE: "${GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE:-false}"
+      GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP: "${GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP:-false}"
+      GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP: "${GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP:-false}"
+      GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS: "${GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS:-none}"

@@ -1,10 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: goroute-test
+namespace: goroute
+# Create the `gateway-secrets` Secret from `secret.example.yaml` (or an external secret manager)
+# before running `kubectl apply -k deployments/k8s`.
 resources:
   - namespace.yaml
   - postgres.yaml
   - redis.yaml
-  - secret.example.yaml
   - gateway-deployment.yaml
   - service.yaml

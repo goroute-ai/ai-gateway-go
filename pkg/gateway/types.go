@@ -60,7 +60,8 @@ type VirtualKeyRequest struct {
 	OrgID              string   `json:"org_id,omitempty"`
 	TeamID             string   `json:"team_id,omitempty"`
 	UserID             string   `json:"user_id,omitempty"`
-	Role               string   `json:"role,omitempty"` // "org_admin", "team_admin", "developer", "service_account"
+	Role               string   `json:"role,omitempty"`     // "org_admin", "team_admin", "developer", "service_account"
+	KeyType            string   `json:"key_type,omitempty"` // "default", "llm_api", "management", "read_only"
 	MaxBudgetMicros    int64    `json:"max_budget_micros,omitempty"`
 	RPMLimit           int      `json:"rpm_limit,omitempty"`
 	TPMLimit           int      `json:"tpm_limit,omitempty"`
@@ -76,6 +77,7 @@ type VirtualKeyInfo struct {
 	KeyPrefix          string   `json:"key_prefix"`
 	Name               string   `json:"name"`
 	Role               string   `json:"role"`
+	KeyType            string   `json:"key_type,omitempty"`
 	OrgID              string   `json:"org_id"`
 	MaxBudgetMicros    int64    `json:"max_budget_micros"`
 	RPMLimit           int      `json:"rpm_limit"`

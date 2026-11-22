@@ -30,9 +30,11 @@ type ToolContent struct {
 
 // ToolCallInput specifies a tool call request without transport headers.
 type ToolCallInput struct {
-	ServerSlug string         `json:"server_slug,omitempty"` // required unless tool name is globally unique across authorized servers
-	ToolName   string         `json:"tool_name"`
-	Arguments  map[string]any `json:"arguments"`
+	ServerSlug     string         `json:"server_slug,omitempty"` // required unless tool name is globally unique across authorized servers
+	ToolName       string         `json:"tool_name"`
+	Arguments      map[string]any `json:"arguments"`
+	RequestState   string         `json:"request_state,omitempty"`
+	InputResponses map[string]any `json:"input_responses,omitempty"`
 }
 
 // CallMetadata contains normalized request metadata decoupled from HTTP transport.
@@ -48,6 +50,8 @@ type CallToolResponse struct {
 	IsError           bool           `json:"is_error,omitempty"`
 	StructuredContent any            `json:"structured_content,omitempty"`
 	ResultType        string         `json:"result_type,omitempty"`
+	InputRequests     map[string]any `json:"input_requests,omitempty"`
+	RequestState      string         `json:"request_state,omitempty"`
 	Meta              map[string]any `json:"_meta,omitempty"`
 }
 

@@ -28,6 +28,7 @@ type MRTRClaims struct {
 	CallingAgentID string `json:"calling_agent_id,omitempty"`
 	Method         string `json:"method"`
 	ParamsSHA256   string `json:"params_sha256"`
+	UpstreamState  string `json:"upstream_state,omitempty"`
 	IssuedAt       int64  `json:"iat"`
 	ExpiresAt      int64  `json:"exp"`
 }
@@ -62,6 +63,19 @@ func (m *MRTRManager) IssueToken(
 	params []byte,
 	ttl time.Duration,
 ) (string, error) {
+	return m.IssueTokenWithState(ctx, idCtx, method, params, "", ttl)
+}
+
+// IssueTokenWithState mints an AEAD-encrypted single-use MRTR token bound to caller identity,
+// payload hash, and an opaque upstream continuation state sealed inside the ciphertext.
+func (m *MRTRManager) IssueTokenWithState(
+	_ context.Context,
+	idCtx *domain.IdentityContext,
+	method string,
+	params []byte,
+	upstreamState string,
+	ttl time.Duration,
+) (string, error) {
 	if idCtx == nil {
 		return "", errors.New("mrtr: identity context required")
 	}
@@ -77,14 +91,15 @@ func (m *MRTRManager) IssueToken(
 	}
 
 	claims := MRTRClaims{
-		JTI:          "mrtr_" + uuid.NewString(),
-		OrgID:        idCtx.OrgID,
-		KeyPrefix:    idCtx.KeyPrefix,
-		UserID:       idCtx.UserID,
-		Method:       method,
-		ParamsSHA256: paramsHash,
-		IssuedAt:     now.UnixMilli(),
-		ExpiresAt:    now.Add(ttl).UnixMilli(),
+		JTI:           "mrtr_" + uuid.NewString(),
+		OrgID:         idCtx.OrgID,
+		KeyPrefix:     idCtx.KeyPrefix,
+		UserID:        idCtx.UserID,
+		Method:        method,
+		ParamsSHA256:  paramsHash,
+		UpstreamState: upstreamState,
+		IssuedAt:      now.UnixMilli(),
+		ExpiresAt:     now.Add(ttl).UnixMilli(),
 	}
 
 	claimsBytes, err := json.Marshal(claims)
@@ -209,21 +224,30 @@ func (m *MRTRManager) VerifyAndConsumeToken(
 	ttl := time.Duration(ttlMs) * time.Millisecond
 
 	isReplay := false
+	redisRecorded := false
 	if m.redis != nil {
 		res, err := m.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.SetNX(ctx, "gw:mcp:mrtr:jti:"+claims.JTI, "used", ttl).Result()
 		})
 		if err == nil {
+			redisRecorded = true
 			if ok, _ := res.(bool); !ok {
 				isReplay = true
 			}
 		}
-	} else {
+	}
+	if !redisRecorded {
+		nowTime := time.Now()
 		m.memMu.Lock()
-		if exp, exists := m.memUsedJTIs[claims.JTI]; exists && time.Now().Before(exp) {
+		for k, exp := range m.memUsedJTIs {
+			if nowTime.After(exp) {
+				delete(m.memUsedJTIs, k)
+			}
+		}
+		if exp, exists := m.memUsedJTIs[claims.JTI]; exists && nowTime.Before(exp) {
 			isReplay = true
 		} else {
-			m.memUsedJTIs[claims.JTI] = time.Now().Add(ttl)
+			m.memUsedJTIs[claims.JTI] = nowTime.Add(ttl)
 		}
 		m.memMu.Unlock()
 	}
