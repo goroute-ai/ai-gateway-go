@@ -8,11 +8,11 @@ This directory follows the open **`.agents/` + `AGENTS.md` + Agent Skills (`agen
 .agents/
 ├── README.md                          # This orientation guide
 ├── rules/                             # Scoped invariants (loaded by trigger)
-│   ├── 00-core-invariants.md          # [always_on] Non-negotiable global guardrails
-│   ├── 10-go-backend.md               # [glob: **/*.go, go.mod] Go architecture & SDK rules
-│   ├── 20-security-and-auth.md        # [glob: auth, security, server, guardrails] OIDC, SSRF, Vault
-│   ├── 30-contracts-and-migrations.md # [glob: openapi, specs, migrations, storage, ratelimit]
-│   └── 40-operator-web-ui.md          # [glob: web/**, internal/ui/**, tests/ui-e2e/**]
+│   ├── core-invariants.md             # [always_on] Non-negotiable global guardrails
+│   ├── go-backend.md                  # [glob: **/*.go, go.mod] Go architecture & SDK rules
+│   ├── security-and-auth.md           # [glob: auth, security, server, guardrails] OIDC, SSRF, Vault
+│   ├── contracts-and-migrations.md    # [glob: openapi, specs, migrations, storage, ratelimit]
+│   └── operator-web-ui.md             # [glob: web/**, internal/ui/**, tests/ui-e2e/**]
 └── skills/                            # On-demand procedural runbooks (Agent Skills spec)
     ├── goroute-codebase-navigator/    # Fast subsystem routing + references/subsystem-map.md
     ├── goroute-openapi-contract/      # OpenAPI 3.1 + MCP/A2A contract generation runbook
@@ -24,6 +24,6 @@ This directory follows the open **`.agents/` + `AGENTS.md` + Agent Skills (`agen
 ## Progressive Disclosure Design
 
 1. **Root Routers (`AGENTS.md`, `CLAUDE.md`)**: Stay concise and point agents here and to [`docs/CODEBASE_MAP.md`](../docs/CODEBASE_MAP.md).
-2. **Scoped Rules (`.agents/rules/`)**: Only `00-core-invariants.md` is `always_on`. Domain rules load only when touching matching file globs, keeping context windows clean.
+2. **Scoped Rules (`.agents/rules/`)**: Only `core-invariants.md` is `always_on`. Domain rules load only when touching matching file globs, keeping context windows clean.
 3. **On-Demand Skills (`.agents/skills/`)**: Agents see only skill `name` and `description` at startup and read the full `SKILL.md` (plus `references/` or `scripts/`) only when performing that task.
 4. **Local-Only Overrides**: Put machine-local overrides in `.agents/local/` or `.agents/*.local.md` (gitignored via [`.gitignore`](../.gitignore)).
