@@ -6,7 +6,9 @@
 
 **One simple, secure hub for all your AI models, safety checks, and spending controls.**
 
-[![Version](https://img.shields.io/badge/Version-v0.1.0-00ADD8)](./CHANGELOG.md)
+[![Release](https://img.shields.io/badge/Release-v0.1.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v0.1.0)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-qaadir%2Fai--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/qaadir/ai-gateway)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
@@ -30,19 +32,20 @@ GoRoute sits between your apps and major AI providers (**OpenAI**, **Anthropic**
 
 ## Quick Start
 
-### Option A: Run with Docker (Recommended)
+### Option A: Run with Docker (Fastest)
 
 ```bash
-git clone https://github.com/goroute-ai/ai-gateway-go.git
-cd ai-gateway-go
-docker compose -f deployments/docker-compose.yml up -d --build
+docker run --rm -p 8080:8080 \
+  -e GATEWAY_MASTER_ADMIN_KEY="sk-gw-change-me" \
+  -e OPENAI_API_KEY="sk-..." \
+  qaadir/ai-gateway:0.1.0
 ```
 
-### Option B: Run the Go Binary Locally
+### Option B: Install the Standalone Binary
 
 ```bash
-make build
-./bin/ai-gateway -config configs/config.yaml
+curl -fsSL https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/install.sh | bash
+ai-gateway -config configs/config.yaml
 ```
 
 Once running, open the **Operator Web Dashboard** in your browser at **`http://localhost:8080/ui/`**.

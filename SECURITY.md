@@ -6,11 +6,11 @@ The GoRoute team takes the security of GoRoute AI Gateway seriously. We apprecia
 
 ## Supported Versions
 
-Only the active development branch (`main`, `v0.1.x` pre-release baseline) and the latest published release receive active security updates and vulnerability patches.
+Only the latest minor release branch (`0.1.x`) receives active security updates and vulnerability patches.
 
 | Version | Supported          | Status         |
 | :------ | :----------------- | :------------- |
-| `main` (`0.1.x`) | :white_check_mark: | Active Development |
+| `0.1.x` | :white_check_mark: | Active Support |
 
 ---
 

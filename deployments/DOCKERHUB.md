@@ -1,33 +1,42 @@
-# GoRoute AI Gateway Container & Deployment Guide
+# GoRoute AI Gateway
 
 Ultra-fast, lightweight AI Gateway, MCP Virtual Hub, and Agent-to-Agent (A2A) Router in 100% Pure Go with an embedded Operator Web UI.
 
-GoRoute sits between client applications and OpenAPI-first model providers (OpenAI, Anthropic, Groq, OpenRouter), exposing one unified OpenAI-compatible API (`/v1/*`), UI-selectable multi-release MCP (`2024-11-05` through `2026-07-28`) tool routing, Linux Foundation A2A v1.0 task execution, Redis Lua sliding-window rate limits, circuit breakers, and exact integer micro-dollar FinOps.
+GoRoute sits between your applications and major AI providers (OpenAI, Anthropic, Groq, and OpenRouter), exposing one unified OpenAI-compatible API (`/v1/*`) with intelligent routing, circuit breakers, distributed Redis rate limits, integer micro-dollar FinOps, vendor-neutral OIDC SSO, 15 built-in guardrail drivers, and a zero-dependency React Operator Console embedded directly in the Go binary.
 
 - **GitHub Repository**: https://github.com/goroute-ai/ai-gateway-go
+- **Go SDK (`pkg/gateway`)**: https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway
+- **GHCR Mirror**: `ghcr.io/goroute-ai/ai-gateway-go`
+- **Helm Chart (OCI)**: `oci://ghcr.io/goroute-ai/charts/goroute`
 - **License**: Apache-2.0
 
 ---
 
-## Supported Architectures
+## Supported Architectures & Tags
 
-The multi-stage [`Dockerfile`](./Dockerfile) builds a minimal Distroless non-root image (`gcr.io/distroless/static-debian12:nonroot`, supporting `linux/amd64` and `linux/arm64`) with zero Node.js runtime dependencies—the Operator Web UI is embedded directly inside the compiled Go binary.
+Multi-arch Distroless non-root images (`gcr.io/distroless/static-debian12:nonroot`, `linux/amd64` + `linux/arm64`) are published to Docker Hub (`docker.io/qaadir/ai-gateway`) and GitHub Container Registry (`ghcr.io/goroute-ai/ai-gateway-go`).
 
-> [!NOTE]
-> While GoRoute is in `v0.1.0` pre-release testing, public container registries (Docker Hub `qaadir/ai-gateway` and GHCR `ghcr.io/goroute-ai/ai-gateway-go`) do not host prebuilt tags yet. Build locally from source using the commands below.
+- `latest` — Latest stable release
+- `0.1.0` / `v0.1.0` — Pinned release (both bare and `v`-prefixed tags supported)
+- `0.1` — Minor rolling release channel
+
+```bash
+docker pull qaadir/ai-gateway:0.1.0
+# or
+docker pull qaadir/ai-gateway:latest
+```
 
 ---
 
 ## Quick Start
 
-### 1. Build & Run Locally with Docker
+### 1. Docker Run (Minimal Standalone Mode)
 
 ```bash
-docker build -f deployments/Dockerfile -t goroute-ai-gateway:0.1.0 .
 docker run --rm -p 8080:8080 \
   -e GATEWAY_MASTER_ADMIN_KEY="sk-gw-change-me" \
   -e OPENAI_API_KEY="sk-..." \
-  goroute-ai-gateway:0.1.0
+  qaadir/ai-gateway:0.1.0
 ```
 
 Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
@@ -35,13 +44,16 @@ Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
 ### 2. Full Production Stack (Docker Compose + PostgreSQL 16 + Redis 7)
 
 ```bash
-docker compose -f deployments/docker-compose.yml up -d --build
+curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml
+docker compose up -d
 ```
 
-### 3. Kubernetes (Helm Chart)
+To pull the prebuilt image instead of building from source, replace `build:` with `image: qaadir/ai-gateway:0.1.0` (or `ghcr.io/goroute-ai/ai-gateway-go:0.1.0`).
+
+### 3. Kubernetes (Helm OCI)
 
 ```bash
-helm install goroute ./deployments/helm/goroute
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.1.0
 ```
 
 ---
@@ -61,9 +73,9 @@ Health endpoints for container orchestrators: `GET /healthz`, `GET /readyz`, or 
 
 ---
 
-## Verifying Published Release Signatures
+## Verifying Supply-Chain Signatures
 
-Once official release images are published via the manual `docker-publish.yml` workflow, each image digest is signed with Sigstore Cosign keyless OIDC and backed by BuildKit provenance & SPDX SBOM attestations:
+Every release image digest is signed with Sigstore Cosign keyless OIDC and backed by BuildKit provenance & SPDX SBOM attestations:
 
 ```bash
 cosign verify docker.io/qaadir/ai-gateway:0.1.0 \
