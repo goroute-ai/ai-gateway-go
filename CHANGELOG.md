@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Added
 - **Unified OpenAPI-First Data Plane & 4-Provider Inference Engine (`docs/openapi/gateway.openapi.yaml`, `internal/adapter/`, `cmd/specgen`)**:
-  - OpenAI-compatible unified data plane (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/completions`, `/v1/embeddings`, `/v1/moderations`, `/v1/images/*`, `/v1/audio/*`, `/v1/files`, `/v1/batches`, `/v1/realtime` WebSocket) across `127` OpenAPI 3.1.0 endpoints (`28` `/v1`, `86` `/admin/v1`, `8` `/auth`, `5` provider aliases).
+  - OpenAI-compatible unified data plane (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/completions`, `/v1/embeddings`, `/v1/moderations`, `/v1/images/*`, `/v1/audio/*`, `/v1/files`, `/v1/batches`, `/v1/realtime` WebSocket) across `127` OpenAPI 3.1.0 endpoints (`27` `/v1`, `88` `/admin/v1`, `8` `/auth`, `4` provider aliases).
   - Spec-generated provider adapters for **OpenAI**, **Anthropic Claude**, **Groq**, and **OpenRouter** with zero-buffer Server-Sent Events (SSE) streaming, reasoning token normalization, and provider parameter sanitization (`X-Gateway-Dropped-Params`).
 - **6-Stage Intelligent Routing & Resilience Engine (`internal/router/`)**:
   - PreRouter model alias resolution, deployment candidate filter chain (health, region, tag, context window, modality, priority rank, deployment allowlist), priority-tier step-down, sliding-window health scoring, 3-state circuit breakers, UCB1 adaptive bandit routing, hedged request racing, session affinity pinning, distributed Redis slot leases, saturation fallbacks, and mid-stream SSE continuation.

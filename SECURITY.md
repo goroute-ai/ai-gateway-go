@@ -6,13 +6,11 @@ The GoRoute team takes the security of GoRoute AI Gateway seriously. We apprecia
 
 ## Supported Versions
 
-Only the latest minor release branch receives active security updates and vulnerability patches.
+Only the active development branch (`main`, `v0.1.x` pre-release baseline) and the latest published release receive active security updates and vulnerability patches.
 
 | Version | Supported          | Status         |
 | :------ | :----------------- | :------------- |
-| 1.24.x  | :white_check_mark: | Active Support |
-| 1.23.x  | :x:                | End of Life    |
-| <= 1.22 | :x:                | End of Life    |
+| `main` (`0.1.x`) | :white_check_mark: | Active Development |
 
 ---
 
@@ -40,14 +38,14 @@ To help us triage and resolve the issue quickly, please include:
 1. **Acknowledgment**: We will acknowledge receipt of your vulnerability report within **48 business hours**.
 2. **Investigation & Assessment**: Our engineering team will assess severity, verify exploitability, and determine affected versions.
 3. **Patch Development**: We will prepare and test an emergency patch cleanly against the supported release branch.
-4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v1.21.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
+4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v0.1.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
 
 ---
 
 ## Verifying Releases
 
-- **Binary & Bundle Checksums**: Every release from `v1.7.0` onward publishes `checksums.txt` on [GitHub Releases](https://github.com/goroute-ai/ai-gateway-go/releases). Verify downloaded archives (`tar.gz`, `zip`, Helm `.tgz`, Kubernetes manifests) with `sha256sum -c checksums.txt` (or `shasum -a 256 -c checksums.txt` on macOS).
-- **Container Images**: Official multi-architecture (`linux/amd64`, `linux/arm64`) non-root Distroless images are published to GitHub Container Registry at `ghcr.io/goroute-ai/ai-gateway-go`.
+- **Binary & Bundle Checksums**: Published releases include `checksums.txt` on [GitHub Releases](https://github.com/goroute-ai/ai-gateway-go/releases). Verify downloaded archives (`tar.gz`, `zip`, Helm `.tgz`, Kubernetes manifests) with `sha256sum -c checksums.txt` (or `shasum -a 256 -c checksums.txt` on macOS).
+- **Container Images**: When published, multi-architecture (`linux/amd64`, `linux/arm64`) non-root Distroless images are pushed to GitHub Container Registry (`ghcr.io/goroute-ai/ai-gateway-go`) and Docker Hub (`docker.io/qaadir/ai-gateway`) with Sigstore Cosign keyless signatures.
 
 ---
 

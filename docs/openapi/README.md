@@ -10,7 +10,7 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
 
 | Provider | Specification File | Format / Version | Upstream Origin / Fetch Command | Core Covered Endpoints |
 | :--- | :--- | :---: | :--- | :--- |
-| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain`, `internal/server`, and `internal/openapi` | Primary `/v1`, `/admin/v1`, `/auth`, `/openai/v1`, and `/anthropic/v1` paths |
+| **Gateway Unified Contract** | [`gateway.openapi.yaml`](./gateway.openapi.yaml) | OpenAPI 3.1.0 | `internal/domain`, `internal/server`, and `internal/openapi` | `127` paths across `/v1` (`27`), `/admin/v1` (`88`), `/auth` (`8`), `/openai/v1` (`2`), and `/anthropic/v1` (`2`) |
 | **OpenAI** | [`openai.openapi.yaml`](./openai.openapi.yaml) | OpenAPI 3.0.0 | Official OpenAI Repository (release `0c432eb`) | `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` |
 | **Anthropic Claude** | [`anthropic.openapi.yaml`](./anthropic.openapi.yaml) | OpenAPI 3.0.0 | Anthropic Messages REST API | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | **Groq** | [`groq.openapi.yaml`](./groq.openapi.yaml) | OpenAPI 3.0.3 | Groq OpenAI-Compatible Inference REST Spec | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
