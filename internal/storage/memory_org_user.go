@@ -536,6 +536,7 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 		Credentials:       make([]*domain.ProviderCredential, 0, len(r.credentials)),
 		MCPServers:        make([]*domain.MCPServer, 0, len(r.mcpServers)),
 		A2AAgents:         make([]*domain.A2AAgent, 0, len(r.a2aAgents)),
+		A2APushConfigs:    make([]*domain.A2APushNotificationConfig, 0, len(r.a2aPushConfigs)),
 		Guardrails:        make([]*domain.GuardrailDefinition, 0, len(r.guardrailDefs)),
 		StagedVirtualKeys: make([]*domain.VirtualKey, 0),
 	}
@@ -563,6 +564,13 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 		}
 		cp := *a
 		batch.A2AAgents = append(batch.A2AAgents, &cp)
+	}
+	for _, pc := range r.a2aPushConfigs {
+		if pc == nil || strings.TrimSpace(pc.EncryptedAuthDEK) == "" {
+			continue
+		}
+		cp := *pc
+		batch.A2APushConfigs = append(batch.A2APushConfigs, &cp)
 	}
 	for _, g := range r.guardrailDefs {
 		if g == nil || strings.TrimSpace(g.EncryptedDEK) == "" {
@@ -618,6 +626,18 @@ func (r *MemoryRepository) RotateKEKsTransactionally(_ context.Context, rewrap f
 			cp.UpdatedAt = now
 			r.a2aAgents[a.ID] = &cp
 			summary.A2AAgentsRewrapped++
+		}
+	}
+	for _, pc := range updated.A2APushConfigs {
+		if pc == nil || pc.ID == "" {
+			continue
+		}
+		if existing, ok := r.a2aPushConfigs[pc.ID]; ok {
+			cp := *existing
+			cp.EncryptedAuthDEK = pc.EncryptedAuthDEK
+			cp.UpdatedAt = now
+			r.a2aPushConfigs[pc.ID] = &cp
+			summary.A2APushConfigsRewrapped++
 		}
 	}
 	for _, g := range updated.Guardrails {

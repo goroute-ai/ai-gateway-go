@@ -1,294 +1,573 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 )
 
-// handleA2AWellKnownCard serves `GET /.well-known/agent-card.json`.
-func (s *GatewayServer) handleA2AWellKnownCard(w http.ResponseWriter, r *http.Request) {
-	orgID := ""
-	agentSlug := r.URL.Query().Get("agent")
-	if agentSlug == "" {
-		agentSlug = r.URL.Query().Get("slug")
-	}
+const maxA2ARequestBodyBytes int64 = 10 * 1024 * 1024
 
-	hasAuthHeader := r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != ""
-	if hasAuthHeader && s.authSvc != nil {
-		var (
-			idCtx *domain.IdentityContext
-			err   error
-		)
-		if s.authResolver != nil {
-			idCtx, err = s.authResolver.ResolveRequest(r.Context(), r)
-		} else if s.authSvc.DataPlaneResolver() != nil {
-			idCtx, err = s.authSvc.DataPlaneResolver().ResolveRequest(r.Context(), r)
-		} else {
-			cred, credErr := auth.ExtractCredentials(r, s.authSvc.ExtractorOptions())
-			if credErr != nil {
-				err = credErr
-			} else {
-				idCtx, err = s.authSvc.AuthenticateVirtualKey(r.Context(), cred.Token)
-			}
-		}
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
-		orgID = idCtx.OrgID
-		if agentSlug != "" && s.rbac != nil {
-			if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
-				domain.WriteHTTPError(w, err)
-				return
-			}
-		}
-	} else if !s.cfg.A2A.AllowLegacyCardDiscovery {
-		// When unauthenticated and legacy card discovery is not enabled,
-		// do not expose individual tenant agent cards or enumerate across organizations.
-		if agentSlug != "" {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "unauthenticated",
-				Message:    "Authentication is required to discover tenant A2A agent cards",
-			})
-			return
-		}
-		a2a.ServeWellKnownGatewayHubCard(w, s.serverBaseURL(r))
-		return
-	}
-
-	a2a.ServeWellKnownAgentCardForOrg(w, r, s.repo, s.a2aSigner, s.serverBaseURL(r), orgID, "")
+// a2aHTTPAdapter implements every operation generated from docs/openapi/a2a.openapi.yaml
+// (a2aspec.ServerInterface), translating OpenAPI parameters into a2a.RouterService calls.
+type a2aHTTPAdapter struct {
+	srv *GatewayServer
 }
 
-// handleA2AAgentMessage serves `POST /a2a/v1/agents/{agentSlug}`
-// (supporting both JSON-RPC 2.0 and HTTP+JSON SendMessage).
-func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Request) {
-	reqID := gatewayRequestID(r)
-	w.Header().Set("X-Gateway-Request-Id", reqID)
+var _ a2aspec.ServerInterface = (*a2aHTTPAdapter)(nil)
+
+func (s *GatewayServer) newA2AHTTPAdapter() *a2aHTTPAdapter {
+	return &a2aHTTPAdapter{srv: s}
+}
+
+// a2aDataPlaneAuthMiddleware enforces full DataPlaneMiddleware on all A2A execution routes
+// while allowing optional authentication on per-agent /.well-known/agent-card.json discovery
+// (where IsPublicCard agents remain discoverable and private agents fail closed).
+func (s *GatewayServer) a2aDataPlaneAuthMiddleware() func(http.Handler) http.Handler {
+	dp := auth.DataPlaneMiddleware(s.authSvc, s.rbac)
+	return func(next http.Handler) http.Handler {
+		protected := dp(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/.well-known/agent-card.json") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			protected.ServeHTTP(w, r)
+		})
+	}
+}
+
+// handleA2AWellKnownCard serves `GET /.well-known/agent-card.json` (and optional legacy discovery).
+func (s *GatewayServer) handleA2AWellKnownCard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Gateway-Request-Id", gatewayRequestID(r))
+	if !s.cfg.A2A.Enabled {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("A2A protocol is disabled"))
+		return
+	}
+	idCtx, err := s.resolveOptionalA2AIdentity(r)
+	if err != nil {
+		domain.WriteHTTPError(w, err)
+		return
+	}
+	defaultSlug := chi.URLParam(r, "agentSlug")
+	a2a.ServeWellKnownAgentCard(w, r, s.repo, s.a2aSigner, s.rbac, idCtx, s.serverBaseURL(r), defaultSlug)
+}
+
+func (s *GatewayServer) resolveOptionalA2AIdentity(r *http.Request) (*domain.IdentityContext, error) {
+	if s == nil || s.authSvc == nil {
+		return nil, nil
+	}
+	cred, err := auth.ExtractCredentials(r, s.authSvc.ExtractorOptions())
+	if err != nil {
+		return nil, err
+	}
+	if cred.Token == "" {
+		return nil, nil
+	}
+	var idCtx *domain.IdentityContext
+	if s.authSvc.DataPlaneResolver() != nil {
+		idCtx, err = s.authSvc.DataPlaneResolver().ResolveRequest(r.Context(), r)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		idCtx, err = s.authSvc.AuthenticateVirtualKey(r.Context(), cred.Token)
+		if err != nil {
+			return nil, err
+		}
+		if s.rbac != nil {
+			idCtx = s.rbac.EnrichIdentityWithAccessRules(r.Context(), idCtx)
+		}
+	}
+	if idCtx != nil {
+		idCtx, err = auth.ApplyDelegatedCallerNarrowing(r.Context(), s.repo, idCtx, r)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return idCtx, nil
+}
+
+func a2aChiErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
+	a2a.WriteHTTPError(w, a2a.ErrInvalidParams(err.Error()))
+}
+
+func (a *a2aHTTPAdapter) prepareCall(
+	w http.ResponseWriter,
+	r *http.Request,
+	tenant string,
+	requireBodyMediaType bool,
+	requireHTTPJSON bool,
+) (context.Context, *domain.IdentityContext, string, bool) {
+	w.Header().Set("X-Gateway-Request-Id", gatewayRequestID(r))
+	if !a.srv.cfg.A2A.Enabled {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("A2A protocol is disabled"))
+		return nil, nil, "", false
+	}
+	if requireHTTPJSON && !a.srv.cfg.A2A.EnableHTTPJSON {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("HTTP+JSON binding is disabled"))
+		return nil, nil, "", false
+	}
+
+	callOpts, err := a2a.ParseAndValidateHeaders(r, tenant, requireBodyMediaType)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return nil, nil, "", false
+	}
 
 	agentSlug := chi.URLParam(r, "agentSlug")
-	if agentSlug == "" {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "missing_agent_slug",
-			Message:    "agentSlug is required in URL path",
-		})
-		return
+	if strings.TrimSpace(agentSlug) == "" {
+		a2a.WriteHTTPError(w, a2a.ErrInvalidParams("agentSlug is required in URL path"))
+		return nil, nil, "", false
 	}
 
 	idCtx := auth.IdentityFromContext(r.Context())
 	if idCtx == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		a2a.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "unauthenticated",
 			Message:    "Identity context required for A2A communication",
 		})
+		return nil, nil, "", false
+	}
+
+	ctx := a2a.ContextWithCallOptions(r.Context(), callOpts)
+	return ctx, idCtx, agentSlug, true
+}
+
+func (a *a2aHTTPAdapter) GetWellKnownAgentCard(w http.ResponseWriter, r *http.Request) {
+	a.srv.handleA2AWellKnownCard(w, r)
+}
+
+func (a *a2aHTTPAdapter) DispatchJsonRpc(w http.ResponseWriter, r *http.Request, _ a2aspec.DispatchJsonRpcParams) {
+	a.dispatchJSONRPC(w, r, "")
+}
+
+func (a *a2aHTTPAdapter) DispatchTenantJsonRpc(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, _ a2aspec.DispatchTenantJsonRpcParams) {
+	a.dispatchJSONRPC(w, r, tenant)
+}
+
+func (a *a2aHTTPAdapter) dispatchJSONRPC(w http.ResponseWriter, r *http.Request, tenant string) {
+	w.Header().Set("X-Gateway-Request-Id", gatewayRequestID(r))
+	if !a.srv.cfg.A2A.Enabled {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("A2A protocol is disabled"))
+		return
+	}
+	if !a.srv.cfg.A2A.EnableJSONRPC {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("JSON-RPC 2.0 binding is disabled"))
 		return
 	}
 
-	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10*1024*1024))
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, true, false)
+	if !ok {
+		return
+	}
+	r = r.WithContext(ctx)
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxA2ARequestBodyBytes+1))
 	if err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusRequestEntityTooLarge,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "payload_too_large",
-			Message:    err.Error(),
+		a2a.WriteHTTPError(w, a2a.ErrInvalidRequest(fmt.Sprintf("read request body: %v", err)))
+		return
+	}
+	if int64(len(bodyBytes)) > maxA2ARequestBodyBytes {
+		a2a.WriteHTTPError(w, &a2a.A2AError{
+			HTTPStatus:  http.StatusRequestEntityTooLarge,
+			RPCStatus:   "INVALID_ARGUMENT",
+			JSONRPCCode: a2a.CodeInvalidParams,
+			Message:     fmt.Sprintf("request body exceeds %d bytes", maxA2ARequestBodyBytes),
 		})
 		return
 	}
 
-	// 1. JSON-RPC 2.0 Dispatch
-	if a2a.IsJSONRPC(bodyBytes) {
-		resp, err := s.a2aRouter.DispatchJSONRPC(r.Context(), idCtx, agentSlug, bodyBytes)
-		if err != nil {
-			writeJSONRPC(w, http.StatusOK, &mcp.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error: &mcp.JSONRPCError{
-					Code:    -32603,
-					Message: err.Error(),
-				},
-			}, nil)
+	a.srv.a2aRouter.DispatchJSONRPCHTTP(w, r, idCtx, agentSlug, bodyBytes, a.srv.a2aStreamSub, a.srv.serverBaseURL(r))
+}
+
+func (a *a2aHTTPAdapter) SendMessage(w http.ResponseWriter, r *http.Request, _ a2aspec.SendMessageParams) {
+	a.sendMessage(w, r, "")
+}
+
+func (a *a2aHTTPAdapter) SendTenantMessage(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, _ a2aspec.SendTenantMessageParams) {
+	a.sendMessage(w, r, tenant)
+}
+
+func (a *a2aHTTPAdapter) sendMessage(w http.ResponseWriter, r *http.Request, tenant string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, true, true)
+	if !ok {
+		return
+	}
+
+	req, err := a2a.ReadStrictJSONBody[a2aspec.SendMessageRequest](r, maxA2ARequestBodyBytes, "SendMessageRequest")
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := bindTenantToSendRequest(req, tenant); err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+
+	resp, err := a.srv.a2aRouter.SendMessage(ctx, idCtx, agentSlug, req)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, resp); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) SendStreamingMessage(w http.ResponseWriter, r *http.Request, _ a2aspec.SendStreamingMessageParams) {
+	a.sendStreamingMessage(w, r, "")
+}
+
+func (a *a2aHTTPAdapter) SendTenantStreamingMessage(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, _ a2aspec.SendTenantStreamingMessageParams) {
+	a.sendStreamingMessage(w, r, tenant)
+}
+
+func (a *a2aHTTPAdapter) sendStreamingMessage(w http.ResponseWriter, r *http.Request, tenant string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, true, true)
+	if !ok {
+		return
+	}
+
+	req, err := a2a.ReadStrictJSONBody[a2aspec.SendMessageRequest](r, maxA2ARequestBodyBytes, "SendMessageRequest")
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := bindTenantToSendRequest(req, tenant); err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		a2a.WriteHTTPError(w, a2a.ErrInternal("streaming unsupported by response writer"))
+		return
+	}
+
+	headersStarted := false
+	startSSE := func() {
+		if headersStarted {
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
+		headersStarted = true
+		w.Header().Set("Content-Type", a2a.MediaTypeSSE)
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set(a2a.HeaderA2AVersion, a2aspec.SupportedA2AVersion)
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
-		return
+		flusher.Flush()
 	}
 
-	// 2. HTTP+JSON REST SendMessage
-	var sendReq pb.SendMessageRequest
-	if err := a2a.StrictProtoJSONUnmarshaler.Unmarshal(bodyBytes, &sendReq); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_protojson",
-			Message:    fmt.Sprintf("Strict protobuf validation error: %v", err),
-		})
-		return
-	}
-
-	sendResp, err := s.a2aRouter.SendMessage(r.Context(), idCtx, agentSlug, &sendReq)
-	if err != nil {
-		s.writeA2AError(w, err)
-		return
-	}
-
-	respJSON, err := a2a.ProtoJSONMarshaler.Marshal(sendResp)
-	if err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusInternalServerError,
-			Type:       domain.ErrorTypeServer,
-			Code:       "marshal_error",
-			Message:    err.Error(),
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respJSON)
-}
-
-// handleA2AGetTask serves `GET /a2a/v1/agents/{agentSlug}/tasks/{taskID}`.
-func (s *GatewayServer) handleA2AGetTask(w http.ResponseWriter, r *http.Request) {
-	agentSlug := chi.URLParam(r, "agentSlug")
-	taskID := chi.URLParam(r, "taskID")
-	idCtx := auth.IdentityFromContext(r.Context())
-
-	task, err := s.a2aRouter.GetTask(r.Context(), idCtx, agentSlug, taskID)
-	if err != nil {
-		s.writeA2AError(w, err)
-		return
-	}
-
-	respJSON, _ := a2a.ProtoJSONMarshaler.Marshal(task)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respJSON)
-}
-
-// handleA2AListTasks serves `GET /a2a/v1/agents/{agentSlug}/tasks`.
-func (s *GatewayServer) handleA2AListTasks(w http.ResponseWriter, r *http.Request) {
-	agentSlug := chi.URLParam(r, "agentSlug")
-	idCtx := auth.IdentityFromContext(r.Context())
-
-	listResp, err := s.a2aRouter.ListTasks(r.Context(), idCtx, agentSlug, &pb.ListTasksRequest{})
-	if err != nil {
-		s.writeA2AError(w, err)
-		return
-	}
-
-	respJSON, _ := a2a.ProtoJSONMarshaler.Marshal(listResp)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respJSON)
-}
-
-// handleA2ACancelTask serves `POST /a2a/v1/agents/{agentSlug}/tasks/{taskID}:cancel`.
-func (s *GatewayServer) handleA2ACancelTask(w http.ResponseWriter, r *http.Request) {
-	agentSlug := chi.URLParam(r, "agentSlug")
-	taskID := chi.URLParam(r, "taskID")
-	idCtx := auth.IdentityFromContext(r.Context())
-
-	task, err := s.a2aRouter.CancelTask(r.Context(), idCtx, agentSlug, taskID)
-	if err != nil {
-		s.writeA2AError(w, err)
-		return
-	}
-
-	respJSON, _ := a2a.ProtoJSONMarshaler.Marshal(task)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respJSON)
-}
-
-// handleA2ASubscribeTask serves canonical `GET /a2a/v1/agents/{agentSlug}/tasks/{taskID}:subscribe` (and optional POST compat).
-func (s *GatewayServer) handleA2ASubscribeTask(w http.ResponseWriter, r *http.Request) {
-	agentSlug := chi.URLParam(r, "agentSlug")
-	taskID := chi.URLParam(r, "taskID")
-	idCtx := auth.IdentityFromContext(r.Context())
-
-	orgID := ""
-	if idCtx != nil {
-		orgID = idCtx.OrgID
-	}
-
-	agent, err := s.repo.GetA2AAgentBySlug(r.Context(), orgID, agentSlug)
-	if err != nil || agent == nil {
-		http.Error(w, fmt.Sprintf("Agent %q not found", agentSlug), http.StatusNotFound)
-		return
-	}
-
-	if s.a2aStreamSub != nil {
-		s.a2aStreamSub.SubscribeTaskStream(w, r, idCtx, agentSlug, taskID, agent.TaskVisibilityMode)
-		return
-	}
-
-	http.Error(w, "A2A Streaming unsupported", http.StatusServiceUnavailable)
-}
-
-func (s *GatewayServer) writeA2AError(w http.ResponseWriter, err error) {
-	var gwErr *domain.GatewayError
-	if errors.As(err, &gwErr) {
-		domain.WriteHTTPError(w, gwErr)
-		return
-	}
-
-	var a2aErr *a2a.A2AError
-	if errors.As(err, &a2aErr) {
-		var statusCode int
-		var errCode string
-		switch a2aErr.Code {
-		case a2a.CodeBudgetExceeded:
-			statusCode = http.StatusBadRequest
-			errCode = "budget_exceeded"
-		case a2a.CodeTaskNotFound:
-			statusCode = http.StatusNotFound
-			errCode = "task_not_found"
-		case a2a.CodeTaskAlreadyCompleted:
-			statusCode = http.StatusConflict
-			errCode = "task_already_completed"
-		case a2a.CodeTaskStateTransitionInvalid:
-			statusCode = http.StatusBadRequest
-			errCode = "invalid_state_transition"
-		case a2a.CodeAgentKilled:
-			statusCode = http.StatusServiceUnavailable
-			errCode = "agent_killed"
-		default:
-			statusCode = http.StatusBadRequest
-			errCode = "a2a_error"
+	streamErr := a.srv.a2aRouter.SendStreamingMessage(ctx, idCtx, agentSlug, req, func(frame *a2aspec.StreamResponse, seq int64) error {
+		startSSE()
+		payload, mErr := json.Marshal(frame)
+		if mErr != nil {
+			return mErr
 		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: statusCode,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       errCode,
-			Message:    a2aErr.Message,
-		})
+		if seq > 0 {
+			_, _ = fmt.Fprintf(w, "id: %d\n", seq)
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(payload))
+		flusher.Flush()
+		return nil
+	})
+	if streamErr != nil {
+		if !headersStarted {
+			a2a.WriteHTTPError(w, streamErr)
+			return
+		}
+		errBody := a2a.NormalizeA2AError(streamErr).MarshalHTTPBody()
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errBody))
+		flusher.Flush()
+	}
+}
+
+func (a *a2aHTTPAdapter) ListTasks(w http.ResponseWriter, r *http.Request, params a2aspec.ListTasksParams) {
+	a.listTasks(w, r, "", params)
+}
+
+func (a *a2aHTTPAdapter) ListTenantTasks(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, params a2aspec.ListTenantTasksParams) {
+	a.listTasks(w, r, tenant, a2aspec.ListTasksParams(params))
+}
+
+func (a *a2aHTTPAdapter) listTasks(w http.ResponseWriter, r *http.Request, tenant string, params a2aspec.ListTasksParams) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
 		return
 	}
 
-	domain.WriteHTTPError(w, &domain.GatewayError{
-		StatusCode: http.StatusInternalServerError,
-		Type:       domain.ErrorTypeServer,
-		Code:       "server_error",
-		Message:    err.Error(),
-	})
+	req := &a2aspec.ListTasksRequest{
+		ContextId:            params.ContextId,
+		Status:               params.Status,
+		PageSize:             params.PageSize,
+		PageToken:            params.PageToken,
+		HistoryLength:        params.HistoryLength,
+		StatusTimestampAfter: params.StatusTimestampAfter,
+		IncludeArtifacts:     params.IncludeArtifacts,
+	}
+	if tenant != "" {
+		req.Tenant = &tenant
+	}
+
+	resp, err := a.srv.a2aRouter.ListTasks(ctx, idCtx, agentSlug, req)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, resp); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) GetTask(w http.ResponseWriter, r *http.Request, id a2aspec.TaskIdParam, params a2aspec.GetTaskParams) {
+	a.getTask(w, r, "", id, params.HistoryLength)
+}
+
+func (a *a2aHTTPAdapter) GetTenantTask(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, id a2aspec.TaskIdParam, params a2aspec.GetTenantTaskParams) {
+	a.getTask(w, r, tenant, id, params.HistoryLength)
+}
+
+func (a *a2aHTTPAdapter) getTask(w http.ResponseWriter, r *http.Request, tenant, taskID string, historyLen *int32) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
+		return
+	}
+
+	task, err := a.srv.a2aRouter.GetTask(ctx, idCtx, agentSlug, taskID, historyLen)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, task); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) CancelTask(w http.ResponseWriter, r *http.Request, id a2aspec.TaskIdParam, _ a2aspec.CancelTaskParams) {
+	a.cancelTask(w, r, "", id)
+}
+
+func (a *a2aHTTPAdapter) CancelTenantTask(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, id a2aspec.TaskIdParam, _ a2aspec.CancelTenantTaskParams) {
+	a.cancelTask(w, r, tenant, id)
+}
+
+func (a *a2aHTTPAdapter) cancelTask(w http.ResponseWriter, r *http.Request, tenant, taskID string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, true, true)
+	if !ok {
+		return
+	}
+
+	task, err := a.srv.a2aRouter.CancelTask(ctx, idCtx, agentSlug, taskID)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, task); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) SubscribeToTask(w http.ResponseWriter, r *http.Request, id a2aspec.TaskIdParam, _ a2aspec.SubscribeToTaskParams) {
+	a.subscribeToTask(w, r, "", id, false)
+}
+
+func (a *a2aHTTPAdapter) SubscribeToTaskPost(w http.ResponseWriter, r *http.Request, id a2aspec.TaskIdParam, _ a2aspec.SubscribeToTaskPostParams) {
+	a.subscribeToTask(w, r, "", id, true)
+}
+
+func (a *a2aHTTPAdapter) SubscribeToTenantTask(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, id a2aspec.TaskIdParam, _ a2aspec.SubscribeToTenantTaskParams) {
+	a.subscribeToTask(w, r, tenant, id, false)
+}
+
+func (a *a2aHTTPAdapter) SubscribeToTenantTaskPost(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, id a2aspec.TaskIdParam, _ a2aspec.SubscribeToTenantTaskPostParams) {
+	a.subscribeToTask(w, r, tenant, id, true)
+}
+
+func (a *a2aHTTPAdapter) subscribeToTask(w http.ResponseWriter, r *http.Request, tenant, taskID string, isPostCompat bool) {
+	if isPostCompat && !a.srv.cfg.A2A.EnableSubscribePostCompat {
+		w.Header().Set("X-Gateway-Request-Id", gatewayRequestID(r))
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("POST :subscribe compat is disabled; use GET /tasks/{id}:subscribe"))
+		return
+	}
+
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, isPostCompat, true)
+	if !ok {
+		return
+	}
+	if a.srv.a2aStreamSub == nil {
+		a2a.WriteHTTPError(w, a2a.ErrUnsupportedOperation("A2A task stream subscriber is not configured"))
+		return
+	}
+
+	a.srv.a2aStreamSub.SubscribeTaskStream(w, r.WithContext(ctx), idCtx, agentSlug, taskID)
+}
+
+func (a *a2aHTTPAdapter) CreateTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, taskID a2aspec.TaskIdParentParam, _ a2aspec.CreateTaskPushNotificationConfigParams) {
+	a.createPushConfig(w, r, "", taskID)
+}
+
+func (a *a2aHTTPAdapter) CreateTenantTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, taskID a2aspec.TaskIdParentParam, _ a2aspec.CreateTenantTaskPushNotificationConfigParams) {
+	a.createPushConfig(w, r, tenant, taskID)
+}
+
+func (a *a2aHTTPAdapter) createPushConfig(w http.ResponseWriter, r *http.Request, tenant, taskID string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, true, true)
+	if !ok {
+		return
+	}
+
+	reqCfg, err := a2a.ReadStrictJSONBody[a2aspec.TaskPushNotificationConfig](r, maxA2ARequestBodyBytes, "TaskPushNotificationConfig")
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if reqCfg.TaskId != nil && strings.TrimSpace(*reqCfg.TaskId) != "" && *reqCfg.TaskId != taskID {
+		a2a.WriteHTTPError(w, a2a.ErrInvalidParams(fmt.Sprintf("body taskId %q does not match path taskId %q", *reqCfg.TaskId, taskID)))
+		return
+	}
+	if tenant != "" {
+		if reqCfg.Tenant != nil && strings.TrimSpace(*reqCfg.Tenant) != "" && *reqCfg.Tenant != tenant {
+			a2a.WriteHTTPError(w, a2a.ErrInvalidParams(fmt.Sprintf("body tenant %q does not match path tenant %q", *reqCfg.Tenant, tenant)))
+			return
+		}
+		t := tenant
+		reqCfg.Tenant = &t
+	}
+
+	created, err := a.srv.a2aRouter.CreateTaskPushNotificationConfig(ctx, idCtx, agentSlug, taskID, reqCfg)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusCreated, created); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) ListTaskPushNotificationConfigs(w http.ResponseWriter, r *http.Request, taskID a2aspec.TaskIdParentParam, params a2aspec.ListTaskPushNotificationConfigsParams) {
+	a.listPushConfigs(w, r, "", taskID, params.PageSize, params.PageToken)
+}
+
+func (a *a2aHTTPAdapter) ListTenantTaskPushNotificationConfigs(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, taskID a2aspec.TaskIdParentParam, params a2aspec.ListTenantTaskPushNotificationConfigsParams) {
+	a.listPushConfigs(w, r, tenant, taskID, params.PageSize, params.PageToken)
+}
+
+func (a *a2aHTTPAdapter) listPushConfigs(w http.ResponseWriter, r *http.Request, tenant, taskID string, pageSize *int32, pageToken *string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
+		return
+	}
+
+	resp, err := a.srv.a2aRouter.ListTaskPushNotificationConfigs(ctx, idCtx, agentSlug, taskID, pageSize, pageToken)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, resp); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) GetTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, taskID a2aspec.TaskIdParentParam, id a2aspec.PushConfigIdParam, _ a2aspec.GetTaskPushNotificationConfigParams) {
+	a.getPushConfig(w, r, "", taskID, id)
+}
+
+func (a *a2aHTTPAdapter) GetTenantTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, taskID a2aspec.TaskIdParentParam, id a2aspec.PushConfigIdParam, _ a2aspec.GetTenantTaskPushNotificationConfigParams) {
+	a.getPushConfig(w, r, tenant, taskID, id)
+}
+
+func (a *a2aHTTPAdapter) getPushConfig(w http.ResponseWriter, r *http.Request, tenant, taskID, configID string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
+		return
+	}
+
+	cfg, err := a.srv.a2aRouter.GetTaskPushNotificationConfig(ctx, idCtx, agentSlug, taskID, configID)
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, cfg); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) DeleteTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, taskID a2aspec.TaskIdParentParam, id a2aspec.PushConfigIdParam, _ a2aspec.DeleteTaskPushNotificationConfigParams) {
+	a.deletePushConfig(w, r, "", taskID, id)
+}
+
+func (a *a2aHTTPAdapter) DeleteTenantTaskPushNotificationConfig(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, taskID a2aspec.TaskIdParentParam, id a2aspec.PushConfigIdParam, _ a2aspec.DeleteTenantTaskPushNotificationConfigParams) {
+	a.deletePushConfig(w, r, tenant, taskID, id)
+}
+
+func (a *a2aHTTPAdapter) deletePushConfig(w http.ResponseWriter, r *http.Request, tenant, taskID, configID string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
+		return
+	}
+
+	if err := a.srv.a2aRouter.DeleteTaskPushNotificationConfig(ctx, idCtx, agentSlug, taskID, configID); err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, map[string]any{}); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func (a *a2aHTTPAdapter) GetExtendedAgentCard(w http.ResponseWriter, r *http.Request, _ a2aspec.GetExtendedAgentCardParams) {
+	a.getExtendedAgentCard(w, r, "")
+}
+
+func (a *a2aHTTPAdapter) GetTenantExtendedAgentCard(w http.ResponseWriter, r *http.Request, tenant a2aspec.TenantPathParam, _ a2aspec.GetTenantExtendedAgentCardParams) {
+	a.getExtendedAgentCard(w, r, tenant)
+}
+
+func (a *a2aHTTPAdapter) getExtendedAgentCard(w http.ResponseWriter, r *http.Request, tenant string) {
+	ctx, idCtx, agentSlug, ok := a.prepareCall(w, r, tenant, false, true)
+	if !ok {
+		return
+	}
+
+	card, err := a.srv.a2aRouter.GetExtendedAgentCard(ctx, idCtx, agentSlug, a.srv.serverBaseURL(r))
+	if err != nil {
+		a2a.WriteHTTPError(w, err)
+		return
+	}
+	if err := a2a.WriteJSONResponse(w, r, http.StatusOK, card); err != nil {
+		a2a.WriteHTTPError(w, err)
+	}
+}
+
+func bindTenantToSendRequest(req *a2aspec.SendMessageRequest, pathTenant string) error {
+	if req == nil || strings.TrimSpace(pathTenant) == "" {
+		return nil
+	}
+	if req.Tenant != nil && strings.TrimSpace(*req.Tenant) != "" && *req.Tenant != pathTenant {
+		return a2a.ErrInvalidParams(fmt.Sprintf("body tenant %q does not match path tenant %q", *req.Tenant, pathTenant))
+	}
+	t := pathTenant
+	req.Tenant = &t
+	return nil
 }
 
 func (s *GatewayServer) serverBaseURL(r *http.Request) string {
 	return s.canonicalBaseURL(r)
 }
+
+// Keep time import referenced only if needed by future helpers.
+var _ = time.RFC3339

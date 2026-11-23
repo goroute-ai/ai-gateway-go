@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -163,33 +162,29 @@ func TestDualNode_CrossNodeA2ATaskLifecycle(t *testing.T) {
 	c2 := &httpClientHelper{t: t, ts: ts2}
 	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-cluster-admin-key"}
 
-	// 1. Setup Mock Upstream A2A Agent returning pb.SendMessageResponse
+	// 1. Setup Mock Upstream A2A Agent returning OpenAPI SendMessageResponse
 	mockA2A := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_COMPLETED,
-						Message: &pb.Message{
-							Role: pb.Role_ROLE_AGENT,
-							Parts: []*pb.Part{
-								{Content: &pb.Part_Text{Text: "Distributed cluster task complete"}},
-							},
-						},
-					},
-					Artifacts: []*pb.Artifact{
-						{
-							Name: "cluster_diff",
-							Parts: []*pb.Part{
-								{Content: &pb.Part_Text{Text: "PASS: Node1 and Node2 converged"}},
-							},
-						},
-					},
+		w.Header().Set("Content-Type", "application/a2a+json")
+		artName := "cluster_diff"
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id: "task_cluster_upstream_1",
+			Status: a2aspec.TaskStatus{
+				State: a2aspec.TASKSTATECOMPLETED,
+				Message: &a2aspec.Message{
+					MessageId: "msg_cluster_resp_1",
+					Role:      a2aspec.ROLEAGENT,
+					Parts:     []a2aspec.Part{a2aspec.NewTextPart("Distributed cluster task complete")},
 				},
 			},
-		}
-		outJSON, _ := a2a.ProtoJSONMarshaler.Marshal(respObj)
+			Artifacts: &[]a2aspec.Artifact{
+				{
+					ArtifactId: "art_diff_1",
+					Name:       &artName,
+					Parts:      []a2aspec.Part{a2aspec.NewTextPart("PASS: Node1 and Node2 converged")},
+				},
+			},
+		})
+		outJSON, _ := json.Marshal(respObj)
 		_, _ = w.Write(outJSON)
 	}))
 	defer mockA2A.Close()
@@ -220,8 +215,7 @@ func TestDualNode_CrossNodeA2ATaskLifecycle(t *testing.T) {
 		"name":                 "Cluster Worker Agent",
 		"slug":                 fmt.Sprintf("worker-%d", time.Now().UnixNano()),
 		"endpoint_url":         mockA2A.URL,
-		"protocol_binding":     "http_json",
-		"protocol_version":     "v1.0",
+		"protocol_binding":     domain.A2AProtocolBindingHTTPJSON,
 		"task_visibility_mode": "key_strict",
 		"is_active":            true,
 	}, &agentResp)
@@ -236,7 +230,7 @@ func TestDualNode_CrossNodeA2ATaskLifecycle(t *testing.T) {
 	sendTaskRPC := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      "msg-req-001",
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_cluster_001",
@@ -264,7 +258,7 @@ func TestDualNode_CrossNodeA2ATaskLifecycle(t *testing.T) {
 	getTaskRPC := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      "get-req-002",
-		"method":  "tasks/get",
+		"method":  "GetTask",
 		"params": map[string]any{
 			"id": taskID,
 		},
@@ -421,7 +415,7 @@ func TestDualNode_DistributedOutboxDeliveryDeduplication(t *testing.T) {
 	_ = ts2
 	adminHeaders := map[string]string{"Authorization": "Bearer sk-gw-cluster-admin-key"}
 
-	// Track delivery events and verify idempotency across concurrent outbox workers on both nodes
+	// Track webhook delivery events and verify exact-once idempotency across concurrent outbox workers on both nodes
 	var deliveryCount int32
 	var receivedIdempotencyKeys sync.Map
 
@@ -431,10 +425,22 @@ func TestDualNode_DistributedOutboxDeliveryDeduplication(t *testing.T) {
 		if idemKey != "" {
 			receivedIdempotencyKeys.Store(idemKey, true)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer webhookServer.Close()
+
+	// Mock upstream A2A agent returning a valid OpenAPI SendMessageResponse
+	mockAgent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/a2a+json")
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id: "task_outbox_upstream_1",
+			Status: a2aspec.TaskStatus{
+				State: a2aspec.TASKSTATEWORKING,
+			},
+		})
+		_ = json.NewEncoder(w).Encode(respObj)
+	}))
+	defer mockAgent.Close()
 
 	// Setup Org, Key, Agent
 	var org domain.Organization
@@ -452,44 +458,71 @@ func TestDualNode_DistributedOutboxDeliveryDeduplication(t *testing.T) {
 	}, &vk)
 	secretKey := vk.RawKey
 
-	// Register Agent on Node 1 pointing to webhookServer
+	// Register Agent on Node 1 pointing to mockAgent
 	var agentResp struct {
 		Agent domain.A2AAgent `json:"agent"`
 	}
 	agentSlug := fmt.Sprintf("outbox-%d", time.Now().UnixNano())
-	c1.doJSON("POST", "/admin/v1/a2a/agents", adminHeaders, map[string]any{
+	createResp, createRaw := c1.doJSON("POST", "/admin/v1/a2a/agents", adminHeaders, map[string]any{
 		"org_id":               org.ID,
 		"name":                 "Outbox Agent",
 		"slug":                 agentSlug,
-		"endpoint_url":         webhookServer.URL,
-		"protocol_binding":     "http_json",
-		"protocol_version":     "v1.0",
+		"endpoint_url":         mockAgent.URL,
+		"protocol_binding":     domain.A2AProtocolBindingHTTPJSON,
 		"task_visibility_mode": "key_strict",
 		"is_active":            true,
 	}, &agentResp)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create outbox agent failed (%d): %s", createResp.StatusCode, string(createRaw))
+	}
 
 	userHeaders := map[string]string{"Authorization": "Bearer " + secretKey}
 
-	// Trigger task send via Node 1
+	// Trigger task send via Node 1 with pushNotificationConfig to enqueue transactional outbox event
 	sendTaskRPC := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      "msg-outbox-01",
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_outbox_test",
 				"role":      "ROLE_USER",
 				"parts":     []map[string]any{{"text": "Trigger outbox"}},
 			},
+			"configuration": map[string]any{
+				"taskPushNotificationConfig": map[string]any{
+					"url":   webhookServer.URL,
+					"token": "outbox-verify-tok",
+				},
+			},
 		},
 	}
-	resp, _ := c1.doJSON("POST", "/a2a/v1/agents/"+agentSlug, userHeaders, sendTaskRPC, nil)
+	var sendRPCResp map[string]any
+	resp, sendRaw := c1.doJSON("POST", "/a2a/v1/agents/"+agentSlug, userHeaders, sendTaskRPC, &sendRPCResp)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("tasks/send failed: %d", resp.StatusCode)
+		t.Fatalf("SendMessage failed (%d): %s", resp.StatusCode, string(sendRaw))
+	}
+	resMap, _ := sendRPCResp["result"].(map[string]any)
+	taskMap, _ := resMap["task"].(map[string]any)
+	taskID, _ := taskMap["id"].(string)
+	if taskID == "" {
+		t.Fatalf("expected task.id in SendMessage result, got: %s", string(sendRaw))
 	}
 
-	// Allow outbox workers on both Node 1 and Node 2 to poll and execute
-	time.Sleep(300 * time.Millisecond)
+	// Cancel task on Node 2 to trigger a webhook notification delivered via SKIP LOCKED outbox workers
+	cancelResp, cancelRaw := c1.doJSON("POST", "/a2a/v1/agents/"+agentSlug+"/tasks/"+taskID+":cancel", userHeaders, map[string]any{}, nil)
+	if cancelResp.StatusCode != http.StatusOK {
+		t.Fatalf("CancelTask failed (%d): %s", cancelResp.StatusCode, string(cancelRaw))
+	}
+
+	// Wait up to 3s for outbox workers on Node 1 / Node 2 to deliver webhook exactly once per event
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&deliveryCount) >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	count := atomic.LoadInt32(&deliveryCount)
 	if count == 0 {

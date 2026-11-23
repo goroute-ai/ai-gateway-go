@@ -2,18 +2,18 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestRouterService_AuditLogs_DispatchAndRBACDenial(t *testing.T) {
@@ -26,17 +26,13 @@ func TestRouterService_AuditLogs_DispatchAndRBACDenial(t *testing.T) {
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Message{
-				Message: &pb.Message{
-					MessageId: "msg_up_1",
-					Role:      pb.Role_ROLE_AGENT,
-					Parts:     []*pb.Part{{Content: &pb.Part_Text{Text: "done"}}},
-				},
-			},
-		}
-		outJSON, _ := protojson.Marshal(respObj)
-		w.Header().Set("Content-Type", "application/json")
+		respObj := a2aspec.NewSendMessageResponseMessage(&a2aspec.Message{
+			MessageId: "msg_up_1",
+			Role:      a2aspec.ROLEAGENT,
+			Parts:     []a2aspec.Part{a2aspec.NewTextPart("done")},
+		})
+		outJSON, _ := json.Marshal(respObj)
+		w.Header().Set("Content-Type", MediaTypeA2AJSON)
 		_, _ = w.Write(outJSON)
 	}))
 	defer upstream.Close()
@@ -62,11 +58,11 @@ func TestRouterService_AuditLogs_DispatchAndRBACDenial(t *testing.T) {
 		VirtualKeyID:        "vk-allowed",
 		KeyAllowedA2AAgents: []string{"audit-agent"},
 	}
-	sendReq := &pb.SendMessageRequest{
-		Message: &pb.Message{
+	sendReq := &a2aspec.SendMessageRequest{
+		Message: a2aspec.Message{
 			MessageId: "msg_1",
-			Role:      pb.Role_ROLE_USER,
-			Parts:     []*pb.Part{{Content: &pb.Part_Text{Text: "hello"}}},
+			Role:      a2aspec.ROLEUSER,
+			Parts:     []a2aspec.Part{a2aspec.NewTextPart("hello")},
 		},
 	}
 	if _, err := router.SendMessage(ctx, allowedCtx, "audit-agent", sendReq); err != nil {
@@ -81,10 +77,10 @@ func TestRouterService_AuditLogs_DispatchAndRBACDenial(t *testing.T) {
 	if _, err := router.SendMessage(ctx, deniedCtx, "audit-agent", sendReq); err == nil {
 		t.Fatal("expected RBAC denial on SendMessage")
 	}
-	if _, err := router.GetTask(ctx, deniedCtx, "audit-agent", "task_1"); err == nil {
+	if _, err := router.GetTask(ctx, deniedCtx, "audit-agent", "task_1", nil); err == nil {
 		t.Fatal("expected RBAC denial on GetTask")
 	}
-	if _, err := router.ListTasks(ctx, deniedCtx, "audit-agent", &pb.ListTasksRequest{}); err == nil {
+	if _, err := router.ListTasks(ctx, deniedCtx, "audit-agent", &a2aspec.ListTasksRequest{}); err == nil {
 		t.Fatal("expected RBAC denial on ListTasks")
 	}
 	if _, err := router.CancelTask(ctx, deniedCtx, "audit-agent", "task_1"); err == nil {
@@ -119,12 +115,16 @@ func TestRouterService_AuditLogs_NilRepoSafe(t *testing.T) {
 		VirtualKeyID:        "vk-1",
 		KeyAllowedA2AAgents: []string{"other"},
 	}
-	if _, err := router.SendMessage(context.Background(), deniedCtx, "audit-agent", &pb.SendMessageRequest{
-		Message: &pb.Message{MessageId: "m1"},
+	if _, err := router.SendMessage(context.Background(), deniedCtx, "audit-agent", &a2aspec.SendMessageRequest{
+		Message: a2aspec.Message{
+			MessageId: "m1",
+			Role:      a2aspec.ROLEUSER,
+			Parts:     []a2aspec.Part{a2aspec.NewTextPart("hi")},
+		},
 	}); err == nil {
 		t.Fatal("expected RBAC error")
 	}
-	if _, err := router.GetTask(context.Background(), deniedCtx, "audit-agent", "t1"); err == nil {
+	if _, err := router.GetTask(context.Background(), deniedCtx, "audit-agent", "t1", nil); err == nil {
 		t.Fatal("expected RBAC error")
 	}
 }

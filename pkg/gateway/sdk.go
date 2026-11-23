@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
@@ -924,6 +922,8 @@ func (c *Client) CreateVirtualKey(ctx context.Context, req VirtualKeyRequest) (*
 		RPMLimit:           req.RPMLimit,
 		TPMLimit:           req.TPMLimit,
 		AllowedModels:      req.AllowedModels,
+		AllowedEndpoints:   req.AllowedEndpoints,
+		AllowedA2AAgents:   req.AllowedA2AAgents,
 		MinPriorityRank:    req.MinPriorityRank,
 		AllowedRoutingTags: slices.Clone(req.AllowedRoutingTags),
 	}
@@ -1168,109 +1168,239 @@ func (c *Client) CallMCPTool(ctx context.Context, route, name string, args map[s
 	return c.CallMCP(ctx, route, reqBytes, hdrs)
 }
 
-// SendA2AMessage sends a message to an A2A agent (supporting HTTP+JSON or JSON-RPC dispatch via the gateway).
-func (c *Client) SendA2AMessage(ctx context.Context, agentSlug string, req *pb.SendMessageRequest) (*pb.SendMessageResponse, error) {
-	reqJSON, err := a2a.ProtoJSONMarshaler.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal a2a message request: %w", err)
+func (c *Client) doA2AJSON(ctx context.Context, method, fullURL string, reqBody, out any) error {
+	var bodyReader io.Reader
+	if reqBody != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return fmt.Errorf("marshal a2a request: %w", err)
+		}
+		bodyReader = bytes.NewReader(b)
 	}
-
-	url := fmt.Sprintf("%s/a2a/v1/agents/%s", c.baseURL, agentSlug)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqJSON))
+	httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("A2A-Version", "1.0")
+	if reqBody != nil {
+		httpReq.Header.Set("Content-Type", "application/a2a+json")
+	}
 	if c.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("a2a error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("unmarshal a2a response: %w (body: %s)", err, string(respBody))
+		}
+	}
+	return nil
+}
+
+// SendA2AMessage sends a synchronous A2A v1.0 message via POST /a2a/v1/agents/{slug}/message:send.
+func (c *Client) SendA2AMessage(ctx context.Context, agentSlug string, req *A2ASendMessageRequest) (*A2ASendMessageResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("a2a SendMessageRequest is required")
+	}
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/message:send", c.baseURL, url.PathEscape(agentSlug))
+	if req.Tenant != "" {
+		target = fmt.Sprintf("%s/a2a/v1/agents/%s/%s/message:send", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(req.Tenant))
+	}
+	var sendResp A2ASendMessageResponse
+	if err := c.doA2AJSON(ctx, http.MethodPost, target, req, &sendResp); err != nil {
 		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("a2a error (HTTP %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var sendResp pb.SendMessageResponse
-	if err := a2a.StrictProtoJSONUnmarshaler.Unmarshal(respBody, &sendResp); err != nil {
-		return nil, fmt.Errorf("unmarshal a2a response: %w (body: %s)", err, string(respBody))
 	}
 	return &sendResp, nil
 }
 
-// GetA2ATask retrieves an A2A task by ID from the gateway.
-func (c *Client) GetA2ATask(ctx context.Context, agentSlug, taskID string) (*pb.Task, error) {
-	url := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s", c.baseURL, agentSlug, taskID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+// SendA2AStreamingMessage streams A2A v1.0 frames from POST /a2a/v1/agents/{slug}/message:stream.
+func (c *Client) SendA2AStreamingMessage(ctx context.Context, agentSlug string, req *A2ASendMessageRequest, onFrame func(A2AStreamResponse) error) error {
+	if req == nil {
+		return fmt.Errorf("a2a SendMessageRequest is required")
 	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal a2a streaming request: %w", err)
+	}
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/message:stream", c.baseURL, url.PathEscape(agentSlug))
+	if req.Tenant != "" {
+		target = fmt.Sprintf("%s/a2a/v1/agents/%s/%s/message:stream", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(req.Tenant))
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/a2a+json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("A2A-Version", "1.0")
 	if c.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("a2a error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("a2a stream error (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
-	var task pb.Task
-	if err := a2a.StrictProtoJSONUnmarshaler.Unmarshal(respBody, &task); err != nil {
-		return nil, fmt.Errorf("unmarshal a2a task: %w (body: %s)", err, string(respBody))
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var frame A2AStreamResponse
+		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+			return fmt.Errorf("decode a2a stream frame: %w", err)
+		}
+		if onFrame != nil {
+			if err := onFrame(frame); err != nil {
+				return err
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+// GetA2ATask retrieves an A2A task by ID via GET /a2a/v1/agents/{slug}/tasks/{taskID}.
+func (c *Client) GetA2ATask(ctx context.Context, agentSlug, taskID string, historyLength ...int32) (*A2ATask, error) {
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID))
+	if len(historyLength) > 0 {
+		target += fmt.Sprintf("?historyLength=%d", historyLength[0])
+	}
+	var task A2ATask
+	if err := c.doA2AJSON(ctx, http.MethodGet, target, nil, &task); err != nil {
+		return nil, err
 	}
 	return &task, nil
 }
 
-// CancelA2ATask cancels an active A2A task.
-func (c *Client) CancelA2ATask(ctx context.Context, agentSlug, taskID string) (*pb.Task, error) {
-	url := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s:cancel", c.baseURL, agentSlug, taskID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
+// ListA2ATasks lists A2A tasks visible to the caller via GET /a2a/v1/agents/{slug}/tasks.
+func (c *Client) ListA2ATasks(ctx context.Context, agentSlug string, req *A2AListTasksRequest) (*A2AListTasksResponse, error) {
+	q := url.Values{}
+	if req != nil {
+		if req.ContextId != "" {
+			q.Set("contextId", req.ContextId)
+		}
+		if req.Status != "" {
+			q.Set("status", req.Status)
+		}
+		if req.PageSize > 0 {
+			q.Set("pageSize", strconv.Itoa(int(req.PageSize)))
+		}
+		if req.PageToken != "" {
+			q.Set("pageToken", req.PageToken)
+		}
+		if req.HistoryLength != nil {
+			q.Set("historyLength", strconv.Itoa(int(*req.HistoryLength)))
+		}
+		if req.StatusTimestampAfter != "" {
+			q.Set("statusTimestampAfter", req.StatusTimestampAfter)
+		}
+		if req.IncludeArtifacts {
+			q.Set("includeArtifacts", "true")
+		}
+	}
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks", c.baseURL, url.PathEscape(agentSlug))
+	if encoded := q.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	var listResp A2AListTasksResponse
+	if err := c.doA2AJSON(ctx, http.MethodGet, target, nil, &listResp); err != nil {
 		return nil, err
 	}
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
+	return &listResp, nil
+}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
+// CancelA2ATask cancels an active A2A task via POST /a2a/v1/agents/{slug}/tasks/{taskID}:cancel.
+func (c *Client) CancelA2ATask(ctx context.Context, agentSlug, taskID string) (*A2ATask, error) {
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s:cancel", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID))
+	var task A2ATask
+	if err := c.doA2AJSON(ctx, http.MethodPost, target, map[string]any{}, &task); err != nil {
 		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("a2a error (HTTP %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var task pb.Task
-	if err := a2a.StrictProtoJSONUnmarshaler.Unmarshal(respBody, &task); err != nil {
-		return nil, fmt.Errorf("unmarshal a2a task: %w (body: %s)", err, string(respBody))
 	}
 	return &task, nil
+}
+
+// CreateA2APushConfig creates a webhook push notification config for an A2A task.
+func (c *Client) CreateA2APushConfig(ctx context.Context, agentSlug, taskID string, cfg *A2ATaskPushNotificationConfig) (*A2ATaskPushNotificationConfig, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("push config is required")
+	}
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s/pushNotificationConfigs", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID))
+	var created A2ATaskPushNotificationConfig
+	if err := c.doA2AJSON(ctx, http.MethodPost, target, cfg, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+// GetA2APushConfig retrieves a task push notification config by ID.
+func (c *Client) GetA2APushConfig(ctx context.Context, agentSlug, taskID, configID string) (*A2ATaskPushNotificationConfig, error) {
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s/pushNotificationConfigs/%s", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID), url.PathEscape(configID))
+	var out A2ATaskPushNotificationConfig
+	if err := c.doA2AJSON(ctx, http.MethodGet, target, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListA2APushConfigs lists push notification configs registered on a task.
+func (c *Client) ListA2APushConfigs(ctx context.Context, agentSlug, taskID string, pageSize int32, pageToken string) (*A2AListTaskPushNotificationConfigsResponse, error) {
+	q := url.Values{}
+	if pageSize > 0 {
+		q.Set("pageSize", strconv.Itoa(int(pageSize)))
+	}
+	if pageToken != "" {
+		q.Set("pageToken", pageToken)
+	}
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s/pushNotificationConfigs", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID))
+	if encoded := q.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	var out A2AListTaskPushNotificationConfigsResponse
+	if err := c.doA2AJSON(ctx, http.MethodGet, target, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteA2APushConfig deletes a push notification config from a task.
+func (c *Client) DeleteA2APushConfig(ctx context.Context, agentSlug, taskID, configID string) error {
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/tasks/%s/pushNotificationConfigs/%s", c.baseURL, url.PathEscape(agentSlug), url.PathEscape(taskID), url.PathEscape(configID))
+	return c.doA2AJSON(ctx, http.MethodDelete, target, nil, nil)
+}
+
+// GetA2AExtendedAgentCard fetches the authenticated extended AgentCard for an A2A agent.
+func (c *Client) GetA2AExtendedAgentCard(ctx context.Context, agentSlug string) (map[string]any, error) {
+	target := fmt.Sprintf("%s/a2a/v1/agents/%s/extendedAgentCard", c.baseURL, url.PathEscape(agentSlug))
+	var card map[string]any
+	if err := c.doA2AJSON(ctx, http.MethodGet, target, nil, &card); err != nil {
+		return nil, err
+	}
+	return card, nil
 }
 
 // SetA2AAgentKillSwitch toggles an emergency kill-switch for an A2A agent via admin API.
@@ -1413,13 +1543,124 @@ func (c *Client) SyncMCPTools(ctx context.Context, serverID string) (int, error)
 
 // AddA2AAgent registers an upstream A2A agent using pure public SDK types.
 func (c *Client) AddA2AAgent(ctx context.Context, agent A2AAgentConfig) (string, error) {
-	a2aAgent := domain.A2AAgent{
-		Name:        agent.Name,
-		Slug:        agent.Slug,
-		EndpointURL: agent.EndpointURL,
-		IsActive:    true,
+	if agent.OrgID == "" {
+		agent.OrgID = "org_default"
 	}
-	return c.RegisterA2AAgent(ctx, a2aAgent)
+	bodyBytes, err := json.Marshal(agent)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Agent domain.A2AAgent `json:"agent"`
+	}
+	if err := c.doAdminJSONRequest(ctx, http.MethodPost, "/admin/v1/a2a/agents", bodyBytes, http.StatusCreated, &res); err != nil {
+		return "", err
+	}
+	return res.Agent.ID, nil
+}
+
+// UpdateA2AAgent updates mutable settings on an existing A2A agent.
+func (c *Client) UpdateA2AAgent(ctx context.Context, agentID string, update map[string]any) (*domain.A2AAgent, error) {
+	bodyBytes, err := json.Marshal(update)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Agent domain.A2AAgent `json:"agent"`
+	}
+	if err := c.doAdminJSONRequest(ctx, http.MethodPut, "/admin/v1/a2a/agents/"+url.PathEscape(agentID), bodyBytes, http.StatusOK, &res); err != nil {
+		return nil, err
+	}
+	return &res.Agent, nil
+}
+
+// DeleteA2AAgent deletes an A2A agent by ID via Admin API.
+func (c *Client) DeleteA2AAgent(ctx context.Context, agentID string) error {
+	return c.doAdminJSONRequest(ctx, http.MethodDelete, "/admin/v1/a2a/agents/"+url.PathEscape(agentID), nil, http.StatusOK, nil)
+}
+
+// SyncA2AAgentCard triggers upstream AgentCard discovery & verification via Admin API.
+func (c *Client) SyncA2AAgentCard(ctx context.Context, agentID string, cardURL, jwksURL string) (*domain.A2AAgent, error) {
+	bodyBytes, _ := json.Marshal(map[string]any{
+		"agent_card_url": cardURL,
+		"jwks_url":       jwksURL,
+	})
+	var res struct {
+		Agent domain.A2AAgent `json:"agent"`
+	}
+	if err := c.doAdminJSONRequest(ctx, http.MethodPost, "/admin/v1/a2a/agents/"+url.PathEscape(agentID)+"/sync-card", bodyBytes, http.StatusOK, &res); err != nil {
+		return nil, err
+	}
+	return &res.Agent, nil
+}
+
+// ListA2AOutboxEvents lists A2A push webhook outbox events via Admin API.
+func (c *Client) ListA2AOutboxEvents(ctx context.Context, orgID, status string, limit int) ([]A2AOutboxEvent, error) {
+	q := url.Values{}
+	if orgID != "" {
+		q.Set("org_id", orgID)
+	}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/admin/v1/a2a/outbox"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var res struct {
+		Events []A2AOutboxEvent `json:"events"`
+	}
+	if err := c.doAdminJSONRequest(ctx, http.MethodGet, path, nil, http.StatusOK, &res); err != nil {
+		return nil, err
+	}
+	return res.Events, nil
+}
+
+// ReplayA2AOutboxEvent re-queues a dead-lettered or failed A2A outbox event via Admin API.
+func (c *Client) ReplayA2AOutboxEvent(ctx context.Context, eventID string) (*A2AOutboxEvent, error) {
+	var res struct {
+		Event A2AOutboxEvent `json:"event"`
+	}
+	if err := c.doAdminJSONRequest(ctx, http.MethodPost, "/admin/v1/a2a/outbox/"+url.PathEscape(eventID)+"/replay", []byte(`{}`), http.StatusOK, &res); err != nil {
+		return nil, err
+	}
+	return &res.Event, nil
+}
+
+func (c *Client) doAdminJSONRequest(ctx context.Context, method, path string, body []byte, expectedStatus int, out any) error {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.adminKey())
+	if body != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != expectedStatus {
+		return fmt.Errorf("admin a2a error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+	if out != nil && len(respBody) > 0 {
+		return json.Unmarshal(respBody, out)
+	}
+	return nil
 }
 
 // RegisterA2AAgent registers an upstream A2A agent via POST /admin/v1/a2a/agents.
@@ -1431,42 +1672,27 @@ func (c *Client) RegisterA2AAgent(ctx context.Context, agent domain.A2AAgent) (s
 	if err != nil {
 		return "", err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/admin/v1/a2a/agents", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.adminKey())
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("register a2a agent error (HTTP %d): %s", resp.StatusCode, string(respBody))
-	}
-
 	var res struct {
 		Agent domain.A2AAgent `json:"agent"`
 	}
-	if err := json.Unmarshal(respBody, &res); err != nil {
+	if err := c.doAdminJSONRequest(ctx, http.MethodPost, "/admin/v1/a2a/agents", bodyBytes, http.StatusCreated, &res); err != nil {
 		return "", err
 	}
 	return res.Agent.ID, nil
 }
 
-// GetWellKnownAgentCard fetches the cryptographically signed gateway agent card.
-func (c *Client) GetWellKnownAgentCard(ctx context.Context) (map[string]any, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/.well-known/agent-card.json", nil)
+// GetWellKnownAgentCard fetches the signed A2A v1.0 Gateway or agent-specific AgentCard.
+func (c *Client) GetWellKnownAgentCard(ctx context.Context, agentSlug ...string) (map[string]any, error) {
+	target := c.baseURL + "/.well-known/agent-card.json"
+	if len(agentSlug) > 0 && strings.TrimSpace(agentSlug[0]) != "" {
+		target += "?agent=" + url.QueryEscape(strings.TrimSpace(agentSlug[0]))
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
+	}
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -1475,8 +1701,16 @@ func (c *Client) GetWellKnownAgentCard(ctx context.Context) (map[string]any, err
 	}
 	defer resp.Body.Close()
 
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent card error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
 	var card map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+	if err := json.Unmarshal(respBody, &card); err != nil {
 		return nil, err
 	}
 	return card, nil

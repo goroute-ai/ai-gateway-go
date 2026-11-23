@@ -6,3 +6,4 @@ extensions:
       - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ValidateAndResolveBaseURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]
       - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ResolveCredentialBaseURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]
       - ["github.com/goroute-ai/ai-gateway-go/internal/adapter", "", false, "ValidateAndSanitizeMediaURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]
+      - ["github.com/goroute-ai/ai-gateway-go/internal/a2a", "", false, "ValidateAndSanitizeCardURL", "", "", "ReturnValue[0]", "request-forgery", "manual"]

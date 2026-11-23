@@ -743,33 +743,41 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 	}
 	mcpRows.Close()
 
-	a2aRows, err := tx.Query(ctx, `
-		SELECT id, org_id, name, slug, endpoint_url, agent_card_url, agent_card_json,
-		       task_visibility_mode, auth_type, encrypted_auth_secret, encrypted_auth_dek,
-		       max_task_iterations, max_task_budget_micros, is_active, is_killed,
-		       created_at, updated_at
-		FROM a2a_agents WHERE encrypted_auth_dek <> '' ORDER BY id ASC FOR UPDATE`)
+	a2aRows, err := tx.Query(ctx, `SELECT `+a2aAgentSelectCols+` FROM a2a_agents WHERE COALESCE(encrypted_auth_dek, '') <> '' ORDER BY id ASC FOR UPDATE`)
 	if err != nil {
 		return summary, err
 	}
 	for a2aRows.Next() {
-		var a domain.A2AAgent
-		if sErr := a2aRows.Scan(
-			&a.ID, &a.OrgID, &a.Name, &a.Slug, &a.EndpointURL, &a.AgentCardURL, &a.AgentCardJSON,
-			&a.TaskVisibilityMode, &a.AuthType, &a.EncryptedAuthSecret, &a.EncryptedAuthDEK,
-			&a.MaxTaskIterations, &a.MaxTaskBudgetMicros, &a.IsActive, &a.IsKilled,
-			&a.CreatedAt, &a.UpdatedAt,
-		); sErr != nil {
+		a, sErr := scanA2AAgent(a2aRows)
+		if sErr != nil {
 			a2aRows.Close()
 			return summary, sErr
 		}
-		batch.A2AAgents = append(batch.A2AAgents, &a)
+		batch.A2AAgents = append(batch.A2AAgents, a)
 	}
 	if rErr := a2aRows.Err(); rErr != nil {
 		a2aRows.Close()
 		return summary, rErr
 	}
 	a2aRows.Close()
+
+	a2aPushRows, err := tx.Query(ctx, `SELECT `+a2aPushConfigSelectCols+` FROM a2a_push_notification_configs WHERE COALESCE(encrypted_auth_dek, '') <> '' ORDER BY id ASC FOR UPDATE`)
+	if err != nil {
+		return summary, err
+	}
+	for a2aPushRows.Next() {
+		pc, sErr := scanA2APushConfig(a2aPushRows)
+		if sErr != nil {
+			a2aPushRows.Close()
+			return summary, sErr
+		}
+		batch.A2APushConfigs = append(batch.A2APushConfigs, pc)
+	}
+	if rErr := a2aPushRows.Err(); rErr != nil {
+		a2aPushRows.Close()
+		return summary, rErr
+	}
+	a2aPushRows.Close()
 
 	grRows, err := tx.Query(ctx, `SELECT `+guardrailDefinitionSelectCols+` FROM guardrail_definitions WHERE encrypted_dek <> '' ORDER BY id ASC FOR UPDATE`)
 	if err != nil {
@@ -858,6 +866,20 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 		}
 		summary.A2AAgentsRewrapped++
 	}
+	for _, pc := range updated.A2APushConfigs {
+		if pc == nil || pc.ID == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE a2a_push_notification_configs
+			SET encrypted_auth_dek = $2, updated_at = NOW()
+			WHERE id = $1`,
+			pc.ID, pc.EncryptedAuthDEK,
+		); err != nil {
+			return summary, err
+		}
+		summary.A2APushConfigsRewrapped++
+	}
 	for _, g := range updated.Guardrails {
 		if g == nil || g.ID == "" {
 			continue
@@ -914,6 +936,11 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 			if err := p.mem.UpdateA2AAgent(ctx, a); err != nil {
 				_ = p.mem.CreateA2AAgent(ctx, a)
 			}
+		}
+	}
+	for _, pc := range updated.A2APushConfigs {
+		if pc != nil {
+			_ = p.mem.SetA2APushNotificationConfig(ctx, pc)
 		}
 	}
 	for _, g := range updated.Guardrails {

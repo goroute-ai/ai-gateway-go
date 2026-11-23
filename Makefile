@@ -54,8 +54,9 @@ deadcode:
 	fi
 
 specgen:
-	@echo "==> Regenerating gateway OpenAPI + MCP spec types and validating contracts..."
+	@echo "==> Regenerating gateway OpenAPI, MCP, and A2A spec types and validating contracts..."
 	@go generate ./internal/mcp/spec
+	@go generate ./internal/a2a/spec
 	@go generate ./internal/openapi
 
 catalog-sync:

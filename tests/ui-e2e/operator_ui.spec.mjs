@@ -472,6 +472,56 @@ async function run() {
     assert.equal(await fieldControl(regSrvModal, 'Transport').inputValue(), 'streamable_http');
     await regSrvModal.getByRole('button', { name: 'Cancel' }).click();
 
+    // Check 5d: Agentic Hub -> A2A Mesh Protocol (Register, Edit, Kill/Revive, Push Webhook, Outbox, Delete)
+    await page.getByRole('button', { name: /A2A Mesh Protocol/i }).click();
+    await page.getByRole('button', { name: /Register A2A Agent/i }).click();
+    const regAgentModal = modalByTitle(page, /Register A2A Agent/i);
+    await regAgentModal.waitFor({ state: 'visible' });
+    const a2aSlug = `ui-a2a-${suffix}`;
+    await fieldControl(regAgentModal, 'Agent Name *').fill(`UI Live Agent ${suffix}`);
+    await fieldControl(regAgentModal, 'Mesh Slug *').fill(a2aSlug);
+    await fieldControl(regAgentModal, 'Endpoint URL *').fill('https://agent.example.com/a2a');
+    await fieldControl(regAgentModal, 'Binding').selectOption('HTTP+JSON');
+    await regAgentModal.getByLabel('Public Card Discovery').check();
+    await regAgentModal.getByRole('button', { name: 'Register Agent' }).click();
+    await regAgentModal.waitFor({ state: 'hidden' });
+
+    const a2aRow = page.locator('tbody tr', { hasText: a2aSlug });
+    await a2aRow.waitFor({ state: 'visible' });
+    await a2aRow.getByText('HTTP+JSON · Public').waitFor({ state: 'visible' });
+    await a2aRow.getByText('ACTIVE', { exact: true }).waitFor({ state: 'visible' });
+
+    // Edit agent
+    await a2aRow.getByRole('button', { name: 'Edit' }).click();
+    const editAgentModal = modalByTitle(page, /Edit A2A Agent/i);
+    await editAgentModal.waitFor({ state: 'visible' });
+    await fieldControl(editAgentModal, 'Agent Name *').fill(`UI Live Agent Edited ${suffix}`);
+    await editAgentModal.getByRole('button', { name: 'Save' }).click();
+    await editAgentModal.waitFor({ state: 'hidden' });
+    await a2aRow.getByText(`UI Live Agent Edited ${suffix}`).waitFor({ state: 'visible' });
+
+    // Kill-switch -> Revive
+    await a2aRow.getByRole('button', { name: 'Kill' }).click();
+    await a2aRow.getByText('KILLED', { exact: true }).waitFor({ state: 'visible' });
+    await a2aRow.getByRole('button', { name: 'Revive' }).click();
+    await a2aRow.getByText('ACTIVE', { exact: true }).waitFor({ state: 'visible' });
+
+    // Push Outbox panel visible & Push Webhook modal opens and closes cleanly
+    await page.getByText(/Push Outbox/i).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: /Push Webhook/i }).click();
+    const pushModal = modalByTitle(page, /A2A Push Webhook/i);
+    await pushModal.waitFor({ state: 'visible' });
+    await pushModal.getByRole('button', { name: 'Cancel' }).click();
+    await pushModal.waitFor({ state: 'hidden' });
+
+    // Delete agent and confirm removal persists across reload
+    await a2aRow.getByRole('button', { name: 'Del' }).click();
+    await a2aRow.waitFor({ state: 'detached' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('aside button', { hasText: /MCP|Agentic/i }).click();
+    await page.getByRole('button', { name: /A2A Mesh Protocol/i }).click();
+    assert.equal(await page.locator('tbody tr', { hasText: a2aSlug }).count(), 0, 'deleted A2A agent should remain deleted after reload');
+
     // Check 6: Sign Out & Session Revocation
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });

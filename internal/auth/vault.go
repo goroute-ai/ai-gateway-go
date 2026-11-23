@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -324,6 +325,24 @@ func (v *Vault) DecryptString(encHex, dekHex string) (string, error) {
 	}
 
 	return string(plainBytes), nil
+}
+
+// DeriveSubkey deterministically derives a 32-byte purpose-scoped secret from the Vault's active KEK
+// via HMAC-SHA256, allowing all gateway pods with the same master key to share stable signing identities.
+func (v *Vault) DeriveSubkey(purpose string) ([]byte, error) {
+	if v == nil {
+		return nil, fmt.Errorf("vault is nil")
+	}
+	v.mu.RLock()
+	kek := append([]byte(nil), v.kek...)
+	v.mu.RUnlock()
+	if len(kek) == 0 {
+		return nil, fmt.Errorf("vault KEK is not initialized")
+	}
+	mac := hmac.New(sha256.New, kek)
+	mac.Write([]byte("goroute-subkey:"))
+	mac.Write([]byte(purpose))
+	return mac.Sum(nil), nil
 }
 
 func aesGCMEncrypt(key, plaintext []byte) (ciphertext, nonce []byte, err error) {

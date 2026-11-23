@@ -6,21 +6,47 @@ import { Badge } from '../components/common/Badge';
 import { Modal, FormModal, Field, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY, BTN_ELEV, CARD_CLS, EMPTY_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
 import { ErrorAlert } from '../components/common/ErrorAlert';
-import type { MCPTool, MCPServer, MCPSpecInfo, MCPRuntimeSpecState } from '../types';
+import type { MCPTool, MCPServer, MCPSpecInfo, MCPRuntimeSpecState, A2AAgent } from '../types';
 import {
   Bot,
   Layers,
   Settings,
   Zap,
   RefreshCw,
-  CheckCircle2,
-  AlertTriangle,
   Activity,
   Search,
   Plus,
 } from 'lucide-react';
 
+const tr = (s: string) => s.trim() || undefined;
 const MCP_TRANSPORTS = ['streamable_http', 'http_sse_2024', 'stdio', 'openapi'] as const;
+const SRV_BTN_CLS = 'flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition';
+const INIT_SRV_FORM = {
+  name: '', slug: '', endpoint: '', protocol: '2026-07-28', transport: 'streamable_http',
+  authType: 'none', authSecret: '', staticHeaders: '', oauthEndpoint: '', oauthClientId: '', oauthScopes: '', pinnedHash: '', active: true,
+};
+const INIT_AGENT_FORM = {
+  name: '',
+  slug: '',
+  endpoint: '',
+  cardUrl: '',
+  binding: 'HTTP+JSON',
+  publicCard: false,
+  visibility: 'key_strict',
+  authType: 'none',
+  authSecret: '',
+  maxIter: '50',
+  maxBudget: '',
+  active: true,
+};
+
+const TextField: React.FC<{
+  label: string; value: string; onChange: (v: string) => void; type?: string; req?: boolean; cls?: string;
+}> = ({ label, value, onChange, type = 'text', req, cls = MONO_INPUT_CLS }) => (
+  <Field label={label}>
+    <input type={type} required={req} value={value} onChange={(e) => onChange(e.target.value)} className={cls} />
+  </Field>
+);
 
 const SpecTransportFields: React.FC<{
   specs: MCPSpecInfo[];
@@ -66,9 +92,6 @@ export const AgenticView: React.FC = () => {
   // Modal toggles
   const [showServerModal, setShowServerModal] = useState(false);
   const [editingServer, setEditingServer] = useState<MCPServer | null>(null);
-  const [editSrvProtocol, setEditSrvProtocol] = useState('2026-07-28');
-  const [editSrvTransport, setEditSrvTransport] = useState('streamable_http');
-  const [editSrvActive, setEditSrvActive] = useState(true);
   const [showToolsetModal, setShowToolsetModal] = useState(false);
   const [showCredModal, setShowCredModal] = useState(false);
   const [showAgentModal, setShowAgentModal] = useState(false);
@@ -78,47 +101,23 @@ export const AgenticView: React.FC = () => {
   const [gatewaySpecVersion, setGatewaySpecVersion] = useState('2026-07-28');
   const [gatewayStrictSchema, setGatewayStrictSchema] = useState(false);
 
-  // MCP User BYOK Credential form state
-  const [credServerId, setCredServerId] = useState('');
-  const [credUserId, setCredUserId] = useState('');
-  const [credToken, setCredToken] = useState('');
+  // MCP User BYOK & A2A Push forms
+  const [credForm, setCredForm] = useState({ serverId: '', userId: '', token: '' });
+  const [pushForm, setPushForm] = useState({ taskId: '', targetUrl: '', authToken: '' });
 
-  // A2A Push Notification Config form state
-  const [pushTaskId, setPushTaskId] = useState('');
-  const [pushTargetUrl, setPushTargetUrl] = useState('');
-  const [pushAuthToken, setPushAuthToken] = useState('');
-
-  // MCP Server form state
-  const [srvName, setSrvName] = useState('');
-  const [srvSlug, setSrvSlug] = useState('');
-  const [srvEndpoint, setSrvEndpoint] = useState('');
-  const [srvProtocol, setSrvProtocol] = useState('2026-07-28');
-  const [srvTransport, setSrvTransport] = useState('streamable_http');
-  const [srvAuthType, setSrvAuthType] = useState('none');
-  const [srvAuthSecret, setSrvAuthSecret] = useState('');
-  const [srvStaticHeaders, setSrvStaticHeaders] = useState('');
-  const [srvOAuthEndpoint, setSrvOAuthEndpoint] = useState('');
-  const [srvOAuthClientId, setSrvOAuthClientId] = useState('');
-  const [srvOAuthScopes, setSrvOAuthScopes] = useState('');
-  const [srvPinnedHash, setSrvPinnedHash] = useState('');
+  const [srvForm, setSrvForm] = useState(INIT_SRV_FORM);
+  const patchSrvForm = (p: Partial<typeof INIT_SRV_FORM>) => setSrvForm((prev) => ({ ...prev, ...p }));
   const [srvFormError, setSrvFormError] = useState<string | null>(null);
 
-  // MCP Toolset form state
-  const [tsName, setTsName] = useState('');
-  const [tsSlug, setTsSlug] = useState('');
-  const [tsSelectedToolIds, setTsSelectedToolIds] = useState<string[]>([]);
-  const [tsManualToolIds, setTsManualToolIds] = useState('');
+  const [tsForm, setTsForm] = useState<{ name: string; slug: string; selected: string[]; manual: string }>({
+    name: '', slug: '', selected: [], manual: '',
+  });
 
-  // A2A Agent form state
-  const [agentName, setAgentName] = useState('');
-  const [agentSlug, setAgentSlug] = useState('');
-  const [agentEndpoint, setAgentEndpoint] = useState('');
-  const [agentCardUrl, setAgentCardUrl] = useState('');
-  const [agentVisibility, setAgentVisibility] = useState('key_strict');
-  const [agentAuthType, setAgentAuthType] = useState('none');
-  const [agentAuthSecret, setAgentAuthSecret] = useState('');
-  const [agentMaxIter, setAgentMaxIter] = useState('50');
-  const [agentMaxBudgetMicros, setAgentMaxBudgetMicros] = useState('');
+  // A2A Agent form state (shared across create and edit modes)
+  const [editingAgent, setEditingAgent] = useState<A2AAgent | null>(null);
+  const [agentForm, setAgentForm] = useState(INIT_AGENT_FORM);
+  const patchAgentForm = (patch: Partial<typeof INIT_AGENT_FORM>) =>
+    setAgentForm((prev) => ({ ...prev, ...patch }));
 
   // Fetch Active Gateway MCP API Specification & Official Releases
   const {
@@ -146,83 +145,41 @@ export const AgenticView: React.FC = () => {
     },
   });
 
-  const updateServerMutation = useMutation({
-    mutationFn: ({ serverId, payload }: { serverId: string; payload: Parameters<typeof adminApi.updateMCPServer>[2] }) =>
-      adminApi.updateMCPServer(adminKey, serverId, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-servers'] });
-      setEditingServer(null);
-    },
-  });
-
-  // Fetch MCP Servers
-  const {
-    data: mcpServersData,
-    isLoading: isMCPLoading,
-    isError: isMCPError,
-    error: mcpError,
-    refetch: refetchMCP,
-  } = useQuery({
+  const mcpQ = useQuery({
     queryKey: ['admin', 'mcp-servers', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPServers(adminKey, activeOrgId),
     enabled: isUnlocked,
   });
-
-  // Fetch MCP Toolsets
-  const {
-    data: mcpToolsetsData,
-    isError: isToolsetsError,
-    error: toolsetsError,
-    refetch: refetchToolsets,
-  } = useQuery({
+  const tsQ = useQuery({
     queryKey: ['admin', 'mcp-toolsets', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPToolsets(adminKey, activeOrgId),
     enabled: isUnlocked && activeTab === 'mcp',
   });
-
-  // Fetch MCP Tools
-  const {
-    data: mcpToolsData,
-    isLoading: isToolsLoading,
-    isError: isToolsError,
-    error: toolsError,
-    refetch: refetchTools,
-  } = useQuery({
+  const toolsQ = useQuery({
     queryKey: ['admin', 'mcp-tools', adminKey, activeOrgId],
     queryFn: () => adminApi.listMCPTools(adminKey, activeOrgId),
     enabled: isUnlocked && activeTab === 'mcp',
   });
-
-  // Fetch A2A Agents
-  const {
-    data: a2aAgentsData,
-    isLoading: isA2ALoading,
-    isError: isA2AError,
-    error: a2aError,
-    refetch: refetchA2A,
-  } = useQuery({
+  const a2aQ = useQuery({
     queryKey: ['admin', 'a2a-agents', adminKey, activeOrgId],
     queryFn: () => adminApi.listA2AAgents(adminKey, activeOrgId),
     enabled: isUnlocked,
   });
+  const { data: mcpServersData, isLoading: isMCPLoading, refetch: refetchMCP } = mcpQ;
+  const { data: mcpToolsetsData, refetch: refetchToolsets } = tsQ;
+  const { data: mcpToolsData, isLoading: isToolsLoading, refetch: refetchTools } = toolsQ;
+  const { data: a2aAgentsData, isLoading: isA2ALoading, refetch: refetchA2A } = a2aQ;
 
-  // Create MCP Server Mutation
-  const createServerMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof adminApi.createMCPServer>[1]) =>
-      adminApi.createMCPServer(adminKey, payload),
+  const saveServerMutation = useMutation({
+    mutationFn: (arg: { id?: string; payload: Record<string, any> }) =>
+      arg.id
+        ? adminApi.updateMCPServer(adminKey, arg.id, arg.payload)
+        : adminApi.createMCPServer(adminKey, arg.payload as Parameters<typeof adminApi.createMCPServer>[1]),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-servers'] });
       setShowServerModal(false);
-      setSrvName('');
-      setSrvSlug('');
-      setSrvEndpoint('');
-      setSrvAuthType('none');
-      setSrvAuthSecret('');
-      setSrvStaticHeaders('');
-      setSrvOAuthEndpoint('');
-      setSrvOAuthClientId('');
-      setSrvOAuthScopes('');
-      setSrvPinnedHash('');
+      setEditingServer(null);
+      setSrvForm(INIT_SRV_FORM);
       setSrvFormError(null);
     },
   });
@@ -234,31 +191,61 @@ export const AgenticView: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'mcp-toolsets'] });
       setShowToolsetModal(false);
-      setTsName('');
-      setTsSlug('');
-      setTsSelectedToolIds([]);
-      setTsManualToolIds('');
+      setTsForm({ name: '', slug: '', selected: [], manual: '' });
     },
   });
 
-  // Create A2A Agent Mutation
-  const createAgentMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof adminApi.createA2AAgent>[1]) =>
-      adminApi.createA2AAgent(adminKey, payload),
+  // Save (Create / Update) A2A Agent Mutation
+  const saveAgentMutation = useMutation({
+    mutationFn: (arg: { id?: string; data: Record<string, any> }) =>
+      arg.id
+        ? adminApi.updateA2AAgent(adminKey, arg.id, arg.data)
+        : adminApi.createA2AAgent(adminKey, arg.data as Parameters<typeof adminApi.createA2AAgent>[1]),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'a2a-agents'] });
       setShowAgentModal(false);
-      setAgentName('');
-      setAgentSlug('');
-      setAgentEndpoint('');
-      setAgentCardUrl('');
-      setAgentVisibility('key_strict');
-      setAgentAuthType('none');
-      setAgentAuthSecret('');
-      setAgentMaxIter('50');
-      setAgentMaxBudgetMicros('');
+      setEditingAgent(null);
+      setAgentForm(INIT_AGENT_FORM);
     },
   });
+
+  const a2aActionMutation = useMutation({
+    mutationFn: (op: { kind: 'del' | 'sync' | 'replay' | 'kill'; id: string; killed?: boolean }): Promise<unknown> =>
+      op.kind === 'del'
+        ? adminApi.deleteA2AAgent(adminKey, op.id)
+        : op.kind === 'sync'
+        ? adminApi.syncA2AAgentCard(adminKey, op.id)
+        : op.kind === 'kill'
+        ? adminApi.setA2AKillSwitch(adminKey, op.id, Boolean(op.killed))
+        : adminApi.replayA2AOutboxEvent(adminKey, op.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'a2a-agents'] });
+      queryClient.invalidateQueries({ queryKey: ['admin', 'a2a-outbox'] });
+    },
+  });
+
+  const { data: a2aOutboxData } = useQuery({
+    queryKey: ['admin', 'a2a-outbox', activeOrgId, adminKey],
+    queryFn: () => adminApi.listA2AOutboxEvents(adminKey, { org_id: activeOrgId || undefined, limit: 50 }),
+    enabled: isUnlocked && activeTab === 'a2a',
+  });
+
+  const openEditAgentModal = (agent: A2AAgent) => {
+    setEditingAgent(agent);
+    setAgentForm({
+      ...INIT_AGENT_FORM,
+      name: agent.name,
+      slug: agent.slug,
+      endpoint: agent.endpoint_url,
+      cardUrl: agent.agent_card_url || '',
+      binding: agent.protocol_binding || 'HTTP+JSON',
+      visibility: agent.task_visibility_mode || 'key_strict',
+      authType: agent.auth_type || 'none',
+      publicCard: Boolean(agent.is_public_card),
+      active: Boolean(agent.is_active),
+    });
+    setShowAgentModal(true);
+  };
 
   // MCP Server Sync Mutation
   const syncServerMutation = useMutation({
@@ -269,24 +256,13 @@ export const AgenticView: React.FC = () => {
     },
   });
 
-  // A2A Kill-switch Mutation
-  const killSwitchMutation = useMutation({
-    mutationFn: ({ agentId, killed }: { agentId: string; killed: boolean }) =>
-      adminApi.setA2AKillSwitch(adminKey, agentId, killed),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'a2a-agents'] });
-    },
-  });
-
   // Set MCP User BYOK Credential Mutation
   const setUserCredMutation = useMutation({
     mutationFn: (payload: Parameters<typeof adminApi.setMCPUserCredential>[1]) =>
       adminApi.setMCPUserCredential(adminKey, payload),
     onSuccess: () => {
       setShowCredModal(false);
-      setCredServerId('');
-      setCredUserId('');
-      setCredToken('');
+      setCredForm({ serverId: '', userId: '', token: '' });
     },
   });
 
@@ -296,9 +272,7 @@ export const AgenticView: React.FC = () => {
       adminApi.setA2APushConfig(adminKey, payload),
     onSuccess: () => {
       setShowPushModal(false);
-      setPushTaskId('');
-      setPushTargetUrl('');
-      setPushAuthToken('');
+      setPushForm({ taskId: '', targetUrl: '', authToken: '' });
     },
   });
 
@@ -317,30 +291,18 @@ export const AgenticView: React.FC = () => {
     return counts;
   }, [mcpTools]);
 
-  const toggleToolSelection = (toolId: string) => {
-    setTsSelectedToolIds((prev) =>
-      prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
-    );
+  const toggleToolSelection = (toolId: string) =>
+    setTsForm((p) => ({
+      ...p,
+      selected: p.selected.includes(toolId) ? p.selected.filter((id) => id !== toolId) : [...p.selected, toolId],
+    }));
+
+  const matchesSearch = (...vals: Array<string | undefined>) => {
+    const term = searchFilter.trim().toLowerCase();
+    return !term || vals.some((v) => v?.toLowerCase().includes(term));
   };
-
-  const filteredTools = mcpTools.filter((t) => {
-    if (!searchFilter.trim()) return true;
-    const term = searchFilter.toLowerCase();
-    return (
-      t.name?.toLowerCase().includes(term) ||
-      t.description?.toLowerCase().includes(term)
-    );
-  });
-
-  const filteredAgents = a2aAgents.filter((a) => {
-    if (!searchFilter.trim()) return true;
-    const term = searchFilter.toLowerCase();
-    return (
-      a.name?.toLowerCase().includes(term) ||
-      a.slug?.toLowerCase().includes(term) ||
-      a.endpoint_url?.toLowerCase().includes(term)
-    );
-  });
+  const filteredTools = mcpTools.filter((t) => matchesSearch(t.name, t.description));
+  const filteredAgents = a2aAgents.filter((a) => matchesSearch(a.name, a.slug, a.endpoint_url));
 
   return (
     <div className="space-y-6">
@@ -352,57 +314,29 @@ export const AgenticView: React.FC = () => {
             Agentic Ecosystem (MCP & A2A)
           </h2>
           <p className="text-xs text-brand-muted mt-1">
-            Standard Model Context Protocol tool runtime orchestration and Agent-to-Agent mesh with instant emergency kill-switches.
+            MCP runtimes & A2A agent mesh controls.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          {activeTab === 'mcp' ? (
-            <>
-              <button
-                onClick={() => setShowCredModal(true)}
-                className={BTN_ELEV}
-              >
+          {(activeTab === 'mcp'
+            ? [
+                ['Set User BYOK', () => setShowCredModal(true), BTN_ELEV],
+                ['Create Toolset', () => setShowToolsetModal(true), BTN_ELEV],
+                ['Register MCP Server', () => setShowServerModal(true), BTN_PRIMARY],
+              ]
+            : [
+                ['Push Webhook', () => setShowPushModal(true), BTN_ELEV],
+                ['Register A2A Agent', () => setShowAgentModal(true), BTN_PRIMARY],
+              ]
+          ).map(([lbl, fn, cls]) => (
+            <button key={lbl as string} onClick={fn as () => void} className={cls as string}>
+              <span className="flex items-center gap-1.5">
                 <Plus className="w-3.5 h-3.5" />
-                Set User BYOK
-              </button>
-              <button
-                onClick={() => setShowToolsetModal(true)}
-                className={BTN_ELEV}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Create Toolset
-              </button>
-              <button
-                onClick={() => setShowServerModal(true)}
-                className={BTN_PRIMARY}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" />
-                  Register MCP Server
-                </span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => setShowPushModal(true)}
-                className={BTN_ELEV}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Push Webhook
-              </button>
-              <button
-                onClick={() => setShowAgentModal(true)}
-                className={BTN_PRIMARY}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" />
-                  Register A2A Agent
-                </span>
-              </button>
-            </>
-          )}
+                {lbl as string}
+              </span>
+            </button>
+          ))}
           <button
             onClick={() => {
               if (activeTab === 'mcp') {
@@ -421,52 +355,38 @@ export const AgenticView: React.FC = () => {
         </div>
       </div>
 
-      {/* Error Alerts */}
-      {isMCPError && (
-        <ErrorAlert error={mcpError} title="Failed to load MCP servers" onRetry={() => refetchMCP()} />
-      )}
-      {isToolsetsError && (
-        <ErrorAlert error={toolsetsError} title="Failed to load MCP toolsets" onRetry={() => refetchToolsets()} />
-      )}
-      {isToolsError && (
-        <ErrorAlert error={toolsError} title="Failed to load MCP tools" onRetry={() => refetchTools()} />
-      )}
-      {isA2AError && (
-        <ErrorAlert error={a2aError} title="Failed to load A2A agents" onRetry={() => refetchA2A()} />
-      )}
-      {syncServerMutation.isError && (
-        <ErrorAlert error={syncServerMutation.error} title="Failed to sync MCP server" />
-      )}
-      {killSwitchMutation.isError && (
-        <ErrorAlert error={killSwitchMutation.error} title="Failed to toggle A2A kill-switch" />
+      {[
+        [mcpQ.isError, mcpQ.error, 'MCP servers', mcpQ.refetch],
+        [tsQ.isError, tsQ.error, 'MCP toolsets', tsQ.refetch],
+        [toolsQ.isError, toolsQ.error, 'MCP tools', toolsQ.refetch],
+        [a2aQ.isError, a2aQ.error, 'A2A agents', a2aQ.refetch],
+        [syncServerMutation.isError, syncServerMutation.error, 'MCP sync', undefined],
+        [a2aActionMutation.isError, a2aActionMutation.error, 'A2A action', undefined],
+      ].map(([isErr, err, label, retry]) =>
+        isErr ? <ErrorAlert key={String(label)} error={err} title={`Failed: ${label}`} onRetry={retry as any} /> : null
       )}
 
       {/* Tabs */}
       <div className="border-b border-border-subtle">
         <div className="flex items-center justify-between">
           <div className="flex gap-4">
-            <button
-              onClick={() => setActiveTab('mcp')}
-              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
-                activeTab === 'mcp'
-                  ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-brand-muted hover:text-brand-title'
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              Model Context Protocol ({mcpServers.length} Servers, {mcpTools.length} Tools)
-            </button>
-            <button
-              onClick={() => setActiveTab('a2a')}
-              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
-                activeTab === 'a2a'
-                  ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-brand-muted hover:text-brand-title'
-              }`}
-            >
-              <Activity className="w-4 h-4" />
-              A2A Mesh Protocol ({a2aAgents.length} Agents)
-            </button>
+            {([
+              ['mcp', Layers, `Model Context Protocol (${mcpServers.length} Servers, ${mcpTools.length} Tools)`],
+              ['a2a', Activity, `A2A Mesh Protocol (${a2aAgents.length} Agents)`],
+            ] as const).map(([key, Icon, label]) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
+                  activeTab === key
+                    ? 'border-accent-primary text-accent-primary font-semibold'
+                    : 'border-transparent text-brand-muted hover:text-brand-title'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
           </div>
 
           <div className="flex items-center gap-2 pb-2">
@@ -610,58 +530,28 @@ export const AgenticView: React.FC = () => {
                       </div>
 
                       <div className="space-y-1.5 text-xs font-mono my-3">
-                        <div className="text-brand-muted flex justify-between">
-                          <span>Spec Release:</span>
-                          <span className="text-accent-primary font-semibold">{srv.protocol_version || '2026-07-28'}</span>
-                        </div>
-                        <div className="text-brand-muted flex justify-between">
-                          <span>Transport:</span>
-                          <span className="text-brand-body uppercase">{srv.transport_type}</span>
-                        </div>
-                        {srv.endpoint_url && (
-                          <div className="text-brand-muted flex justify-between truncate" title={srv.endpoint_url}>
-                            <span>Endpoint:</span>
-                            <span className="text-accent-primary truncate max-w-[160px]">{srv.endpoint_url}</span>
+                        {[
+                          ['Spec Release:', srv.protocol_version || '2026-07-28', 'text-accent-primary font-semibold'],
+                          ['Transport:', srv.transport_type, 'text-brand-body uppercase'],
+                          srv.endpoint_url ? ['Endpoint:', srv.endpoint_url, 'text-accent-primary truncate max-w-[160px]'] : null,
+                          ['Tools Registered:', toolCountByServer.get(srv.id) ?? 0, 'text-status-success font-bold'],
+                        ].map((r) => r && (
+                          <div key={String(r[0])} className="text-brand-muted flex justify-between">
+                            <span>{r[0]}</span>
+                            <span className={String(r[2])}>{r[1]}</span>
                           </div>
-                        )}
-                        <div className="text-brand-muted flex justify-between">
-                          <span>Tools Registered:</span>
-                          <span className="text-status-success font-bold">{toolCountByServer.get(srv.id) ?? 0}</span>
-                        </div>
+                        ))}
                       </div>
                     </div>
 
                     <div className="pt-3 border-t border-border-subtle flex flex-wrap justify-end gap-2">
-                      <button
-                        onClick={() => {
-                          setEditingServer(srv);
-                          setEditSrvProtocol(srv.protocol_version || '2026-07-28');
-                          setEditSrvTransport(srv.transport_type || 'streamable_http');
-                          setEditSrvActive(srv.is_active);
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
-                      >
-                        <Settings className="w-3 h-3" />
-                        Edit Spec
-                      </button>
-                      <button
-                        onClick={() => {
-                          setCredServerId(srv.id);
-                          setShowCredModal(true);
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
-                      >
-                        <Plus className="w-3 h-3" />
-                        Set BYOK
-                      </button>
-                      <button
-                        onClick={() => syncServerMutation.mutate(srv.id)}
-                        disabled={syncServerMutation.isPending}
-                        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
-                      >
-                        <RefreshCw className="w-3 h-3" />
-                        Sync Schema
-                      </button>
+                      {[
+                        ['Edit Spec', () => { setEditingServer(srv); patchSrvForm({ protocol: srv.protocol_version || '2026-07-28', transport: srv.transport_type || 'streamable_http', active: srv.is_active }); setShowServerModal(true); }],
+                        ['Set BYOK', () => { setCredForm((p) => ({ ...p, serverId: srv.id })); setShowCredModal(true); }],
+                        ['Sync Schema', () => syncServerMutation.mutate(srv.id)],
+                      ].map(([lbl, fn]) => (
+                        <button key={lbl as string} onClick={fn as () => void} className={SRV_BTN_CLS}>{lbl as string}</button>
+                      ))}
                     </div>
                   </div>
                 ))}
@@ -676,9 +566,7 @@ export const AgenticView: React.FC = () => {
               Curated MCP Toolsets ({mcpToolsets.length})
             </h3>
             {mcpToolsets.length === 0 ? (
-              <div className="p-4 bg-surface-base border border-border-subtle rounded-lg text-center text-xs text-brand-muted font-mono">
-                No curated toolsets defined yet. Use "Create Toolset" to bundle discovered MCP tools under a dedicated `/mcp/toolsets/{'{slug}'}` endpoint.
-              </div>
+              <div className={EMPTY_CLS}>No MCP toolsets.</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {mcpToolsets.map((ts) => (
@@ -709,13 +597,11 @@ export const AgenticView: React.FC = () => {
             </h3>
 
             {isToolsLoading ? (
-              <div className={EMPTY_CLS}>
-                Discovering tools from active MCP runtimes...
-              </div>
+              <div className={EMPTY_CLS}>Loading tools...</div>
             ) : filteredTools.length === 0 ? (
-              <div className="p-6 bg-surface-base border border-border-subtle rounded-lg text-center text-xs text-brand-muted font-mono">
-                No tools discovered matching current search filter.
-              </div>
+        <div className="p-4 bg-surface-base border border-border-subtle rounded-lg text-xs text-brand-muted font-mono text-center">
+          No tools.
+        </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredTools.map((tool, idx) => (
@@ -731,7 +617,7 @@ export const AgenticView: React.FC = () => {
                         </h4>
                       </div>
                       <p className="text-xs text-brand-muted line-clamp-2 mb-3">
-                        {tool.description || 'No tool description provided.'}
+                        {tool.description || '—'}
                       </p>
                     </div>
 
@@ -741,7 +627,7 @@ export const AgenticView: React.FC = () => {
                       </span>
                       <button
                         onClick={() => setSelectedTool(tool)}
-                        className="px-2 py-0.5 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-xs font-mono transition"
+                        className={SRV_BTN_CLS}
                       >
                         Inspect Schema
                       </button>
@@ -762,24 +648,17 @@ export const AgenticView: React.FC = () => {
               <table className="w-full text-left text-xs font-mono">
                 <thead className="bg-surface-elevated text-brand-muted uppercase text-[10px] tracking-wider border-b border-border-subtle">
                   <tr>
-                    <th className="px-4 py-3">Agent Identity</th>
-                    <th className="px-4 py-3">Mesh Slug</th>
-                    <th className="px-4 py-3">Destination Endpoint</th>
-                    <th className="px-4 py-3">State</th>
-                    <th className="px-4 py-3 text-right">Emergency Kill-Switch</th>
+                    {['Agent', 'Slug', 'Binding', 'Endpoint', 'State'].map((h) => (
+                      <th key={h} className="px-4 py-3">{h}</th>
+                    ))}
+                    <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border-subtle">
-                  {isA2ALoading ? (
+                  {isA2ALoading || filteredAgents.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-brand-muted">
-                        Loading registered A2A mesh agents...
-                      </td>
-                    </tr>
-                  ) : filteredAgents.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-brand-muted">
-                        No A2A agents registered in this mesh.
+                      <td colSpan={6} className="px-4 py-8 text-center text-brand-muted">
+                        {isA2ALoading ? 'Loading...' : 'No A2A agents.'}
                       </td>
                     </tr>
                   ) : (
@@ -790,42 +669,30 @@ export const AgenticView: React.FC = () => {
                           {agent.name}
                         </td>
                         <td className="px-4 py-3 text-brand-muted">{agent.slug}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant={agent.is_public_card ? 'info' : 'neutral'}>
+                            {agent.protocol_binding || 'HTTP+JSON'}{agent.is_public_card ? ' · Public' : ''}
+                          </Badge>
+                        </td>
                         <td className="px-4 py-3 text-brand-body truncate max-w-[200px]" title={agent.endpoint_url}>
                           {agent.endpoint_url}
                         </td>
                         <td className="px-4 py-3">
-                          {agent.is_killed ? (
-                            <Badge variant="danger">
-                              <span className="flex items-center gap-1">
-                                <AlertTriangle className="w-3 h-3" /> KILL-SWITCHED
-                              </span>
-                            </Badge>
-                          ) : agent.is_active ? (
-                            <Badge variant="success">
-                              <span className="flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" /> ACTIVE ROUTING
-                              </span>
-                            </Badge>
-                          ) : (
-                            <Badge variant="neutral">INACTIVE</Badge>
-                          )}
+                          <Badge variant={agent.is_killed ? 'danger' : agent.is_active ? 'success' : 'neutral'}>
+                            {agent.is_killed ? 'KILLED' : agent.is_active ? 'ACTIVE' : 'INACTIVE'}
+                          </Badge>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() =>
-                              killSwitchMutation.mutate({
-                                agentId: agent.id,
-                                killed: !agent.is_killed,
-                              })
-                            }
-                            disabled={killSwitchMutation.isPending}
-                            className={`px-3 py-1 rounded text-xs font-mono font-medium border transition inline-flex items-center gap-1.5 hover:opacity-90 ${
-                              agent.is_killed ? 'status-success' : 'status-danger'
-                            }`}
-                          >
-                            <Zap className="w-3 h-3" />
-                            {agent.is_killed ? 'Revive Agent' : 'Kill Agent'}
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            {[
+                              agent.agent_card_url ? ['Sync', () => a2aActionMutation.mutate({ kind: 'sync', id: agent.id }), 'border-border-subtle text-brand-body'] : null,
+                              ['Edit', () => openEditAgentModal(agent), 'border-border-subtle text-brand-body'],
+                              [agent.is_killed ? 'Revive' : 'Kill', () => a2aActionMutation.mutate({ kind: 'kill', id: agent.id, killed: !agent.is_killed }), agent.is_killed ? 'status-success' : 'status-danger'],
+                              ['Del', () => a2aActionMutation.mutate({ kind: 'del', id: agent.id }), 'border-border-subtle text-brand-muted'],
+                            ].map((item) => item && (
+                              <button key={item[0] as string} onClick={item[1] as () => void} className={`px-2 py-1 rounded text-xs font-mono border ${item[2]}`}>{item[0] as string}</button>
+                            ))}
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -834,52 +701,61 @@ export const AgenticView: React.FC = () => {
               </table>
             </div>
           </div>
+
+          {/* Push Notification Outbox Table */}
+          <div className={`${CARD_CLS} overflow-hidden text-xs font-mono`}>
+            <div className="px-4 py-2.5 border-b border-border-subtle font-semibold text-brand-title">
+              Push Outbox ({(a2aOutboxData?.events || []).length})
+            </div>
+            {(a2aOutboxData?.events || []).map((ev) => (
+              <div key={ev.id} className="px-4 py-2 border-b border-border-subtle flex items-center justify-between gap-3">
+                <span className="text-brand-muted truncate">{ev.task_id}</span>
+                <span className="text-brand-body truncate flex-1">{ev.target_url}</span>
+                <Badge variant={ev.status === 'sent' ? 'success' : ev.status === 'dead_letter' ? 'danger' : 'warning'}>{ev.status}</Badge>
+                <span className="text-brand-muted">{ev.attempt_count}</span>
+                {ev.status !== 'sent' && (
+                  <button onClick={() => a2aActionMutation.mutate({ kind: 'replay', id: ev.id })} className="px-2 py-1 rounded border border-border-subtle text-brand-body">Replay</button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Tool Schema Modal */}
-      {selectedTool && (
-        <Modal
-          title={`MCP Tool: ${selectedTool.name}`}
-          isOpen={!!selectedTool}
-          onClose={() => setSelectedTool(null)}
-          size="lg"
-        >
+      {(selectedTool) && (
+        <Modal title={`MCP Tool: ${selectedTool.name}`} isOpen={true} onClose={() => setSelectedTool(null)} size="lg">
           <div className="space-y-4">
-            <div>
-              <span className="text-xs text-brand-muted font-mono block mb-1">Description:</span>
+            <Field label="Description">
               <p className="text-xs text-brand-body bg-surface-code border border-border-subtle rounded p-3 font-mono">
-                {selectedTool.description || 'No description available'}
+                {selectedTool.description || 'No description'}
               </p>
-            </div>
-
-            <div>
-              <span className="text-xs text-brand-muted font-mono block mb-1">Input JSON Schema:</span>
-              <CodeBlock
-                code={JSON.stringify(selectedTool.input_schema || {}, null, 2)}
-                language="json"
-              />
-            </div>
+            </Field>
+            <Field label="Input JSON Schema">
+              <CodeBlock code={JSON.stringify(selectedTool.input_schema || {}, null, 2)} language="json" />
+            </Field>
           </div>
         </Modal>
       )}
 
-      {/* Register MCP Server Modal */}
+      {/* Register / Edit MCP Server Modal */}
       <FormModal
         open={showServerModal}
-        onClose={() => setShowServerModal(false)}
-        title="Register Upstream MCP Server"
-        description="Connect a Model Context Protocol server to discover and govern callable tools."
-        maxWidth="lg"
+        onClose={() => { setShowServerModal(false); setEditingServer(null); setSrvForm(INIT_SRV_FORM); setSrvFormError(null); }}
+        title={editingServer ? `Edit MCP Spec: ${editingServer.name}` : 'Register Upstream MCP Server'}
+        maxWidth={editingServer ? undefined : 'lg'}
         onSubmit={() => {
-          if (!srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()) return;
+          if (editingServer) {
+            saveServerMutation.mutate({ id: editingServer.id, payload: { protocol_version: srvForm.protocol, transport_type: srvForm.transport, is_active: srvForm.active } });
+            return;
+          }
+          if (!srvForm.name.trim() || !srvForm.slug.trim() || !srvForm.endpoint.trim()) return;
           setSrvFormError(null);
           let parsedHeaders: Record<string, string> | undefined;
-          if (srvStaticHeaders.trim()) {
+          if (srvForm.staticHeaders.trim()) {
             try {
-              const raw = JSON.parse(srvStaticHeaders);
+              const raw = JSON.parse(srvForm.staticHeaders);
               if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-                setSrvFormError('Static headers must be a JSON object of key/value strings.');
+                setSrvFormError('Static headers must be a JSON object.');
                 return;
               }
               parsedHeaders = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v)]));
@@ -888,249 +764,240 @@ export const AgenticView: React.FC = () => {
               return;
             }
           }
-          const scopes = srvOAuthScopes.split(',').map((s) => s.trim()).filter(Boolean);
-          createServerMutation.mutate({
-            org_id: activeOrgId || undefined,
-            name: srvName.trim(),
-            slug: srvSlug.trim(),
-            endpoint_url: srvEndpoint.trim(),
-            protocol_version: srvProtocol,
-            transport_type: srvTransport,
-            auth_type: srvAuthType,
-            auth_secret: srvAuthSecret.trim() || undefined,
-            static_headers: parsedHeaders,
-            oauth2_endpoint: srvAuthType === 'oauth2' ? srvOAuthEndpoint.trim() || undefined : undefined,
-            oauth2_client_id: srvAuthType === 'oauth2' ? srvOAuthClientId.trim() || undefined : undefined,
-            oauth2_scopes: srvAuthType === 'oauth2' && scopes.length > 0 ? scopes : undefined,
-            pinned_tool_hash: srvPinnedHash.trim() || undefined,
+          const scopes = srvForm.oauthScopes.split(',').map((s) => s.trim()).filter(Boolean);
+          saveServerMutation.mutate({
+            payload: {
+              org_id: activeOrgId || undefined,
+              name: srvForm.name.trim(),
+              slug: srvForm.slug.trim(),
+              endpoint_url: srvForm.endpoint.trim(),
+              protocol_version: srvForm.protocol,
+              transport_type: srvForm.transport,
+              auth_type: srvForm.authType,
+              auth_secret: srvForm.authSecret.trim() || undefined,
+              static_headers: parsedHeaders,
+              oauth2_endpoint: srvForm.authType === 'oauth2' ? srvForm.oauthEndpoint.trim() || undefined : undefined,
+              oauth2_client_id: srvForm.authType === 'oauth2' ? srvForm.oauthClientId.trim() || undefined : undefined,
+              oauth2_scopes: srvForm.authType === 'oauth2' && scopes.length > 0 ? scopes : undefined,
+              pinned_tool_hash: srvForm.pinnedHash.trim() || undefined,
+            },
           });
         }}
-        pending={createServerMutation.isPending || !srvName.trim() || !srvSlug.trim() || !srvEndpoint.trim()}
-        submitLabel={createServerMutation.isPending ? 'Registering...' : 'Register Server'}
+        pending={saveServerMutation.isPending || (!editingServer && (!srvForm.name.trim() || !srvForm.slug.trim() || !srvForm.endpoint.trim()))}
+        submitLabel={editingServer ? 'Save' : saveServerMutation.isPending ? 'Registering...' : 'Register Server'}
       >
-        {srvFormError && <ErrorAlert error={srvFormError} title="Invalid MCP server input" />}
-        {createServerMutation.isError && <ErrorAlert error={createServerMutation.error} title="Failed to register MCP server" />}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Server Name *"><input type="text" required value={srvName} onChange={(e) => setSrvName(e.target.value)} placeholder="GitHub Enterprise MCP" className={INPUT_CLS} /></Field>
-          <Field label="Slug *"><input type="text" required value={srvSlug} onChange={(e) => setSrvSlug(e.target.value)} placeholder="github-mcp" className={MONO_INPUT_CLS} /></Field>
-        </div>
-        <Field label="Endpoint URL *"><input type="text" required value={srvEndpoint} onChange={(e) => setSrvEndpoint(e.target.value)} placeholder="https://mcp.internal.example.com/mcp" className={MONO_INPUT_CLS} /></Field>
-        <div className="grid grid-cols-3 gap-3">
+        {srvFormError && <ErrorAlert error={srvFormError} title="Invalid input" />}
+        {saveServerMutation.isError && <ErrorAlert error={saveServerMutation.error} title="Failed" />}
+        {!editingServer && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <TextField label="Server Name *" req cls={INPUT_CLS} value={srvForm.name} onChange={(name) => patchSrvForm({ name })} />
+              <TextField label="Slug *" req value={srvForm.slug} onChange={(slug) => patchSrvForm({ slug })} />
+            </div>
+            <TextField label="Endpoint URL *" req value={srvForm.endpoint} onChange={(endpoint) => patchSrvForm({ endpoint })} />
+          </>
+        )}
+        <div className={editingServer ? 'space-y-4' : 'grid grid-cols-3 gap-3'}>
           <SpecTransportFields
             specs={availableSpecs}
-            protocol={srvProtocol}
-            onProtocolChange={setSrvProtocol}
-            transport={srvTransport}
-            onTransportChange={setSrvTransport}
+            protocol={srvForm.protocol}
+            onProtocolChange={(protocol) => patchSrvForm({ protocol })}
+            transport={srvForm.transport}
+            onTransportChange={(transport) => patchSrvForm({ transport })}
           />
-          <Field label="Auth Mode">
-            <select value={srvAuthType} onChange={(e) => setSrvAuthType(e.target.value)} className={INPUT_CLS}>
-              {['none', 'static', 'oauth2', 'delegation', 'vault_jwt'].map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </Field>
+          {editingServer ? (
+            <label className="flex items-center gap-2 text-xs font-mono text-brand-body">
+              <input type="checkbox" checked={srvForm.active} onChange={(e) => patchSrvForm({ active: e.target.checked })} />
+              Server Active
+            </label>
+          ) : (
+            <Field label="Auth Mode">
+              <select value={srvForm.authType} onChange={(e) => patchSrvForm({ authType: e.target.value })} className={INPUT_CLS}>
+                {['none', 'static', 'oauth2', 'delegation', 'vault_jwt'].map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </Field>
+          )}
         </div>
-        {srvAuthType !== 'none' && (
-          <Field label="Auth Secret / Token (Vault Encrypted)">
-            <input type="password" value={srvAuthSecret} onChange={(e) => setSrvAuthSecret(e.target.value)} placeholder="Bearer token or client secret..." className={MONO_INPUT_CLS} />
-          </Field>
+        {!editingServer && srvForm.authType !== 'none' && (
+          <TextField label="Auth Secret / Token" type="password" value={srvForm.authSecret} onChange={(authSecret) => patchSrvForm({ authSecret })} />
         )}
-        {srvAuthType === 'oauth2' && (
+        {!editingServer && srvForm.authType === 'oauth2' && (
           <div className="space-y-3 p-3 rounded-lg bg-surface-elevated/40 border border-border-subtle">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="OAuth2 Token Endpoint"><input type="text" value={srvOAuthEndpoint} onChange={(e) => setSrvOAuthEndpoint(e.target.value)} placeholder="https://auth.example.com/oauth/token" className={MONO_INPUT_CLS} /></Field>
-              <Field label="OAuth2 Client ID"><input type="text" value={srvOAuthClientId} onChange={(e) => setSrvOAuthClientId(e.target.value)} placeholder="mcp-client-id" className={MONO_INPUT_CLS} /></Field>
+              <TextField label="OAuth2 Token Endpoint" value={srvForm.oauthEndpoint} onChange={(oauthEndpoint) => patchSrvForm({ oauthEndpoint })} />
+              <TextField label="OAuth2 Client ID" value={srvForm.oauthClientId} onChange={(oauthClientId) => patchSrvForm({ oauthClientId })} />
             </div>
-            <Field label="OAuth2 Scopes (comma-separated)"><input type="text" value={srvOAuthScopes} onChange={(e) => setSrvOAuthScopes(e.target.value)} placeholder="tools:read, tools:execute" className={MONO_INPUT_CLS} /></Field>
+            <TextField label="OAuth2 Scopes" value={srvForm.oauthScopes} onChange={(oauthScopes) => patchSrvForm({ oauthScopes })} />
           </div>
         )}
-        <Field label="Static Headers JSON (Optional)"><textarea rows={2} value={srvStaticHeaders} onChange={(e) => setSrvStaticHeaders(e.target.value)} placeholder='{"X-Tenant-Env": "prod"}' className={MONO_INPUT_CLS} /></Field>
-        <Field label="Pinned Tool Hash (Optional SHA-256)"><input type="text" value={srvPinnedHash} onChange={(e) => setSrvPinnedHash(e.target.value)} placeholder="sha256:..." className={MONO_INPUT_CLS} /></Field>
+        {!editingServer && (
+          <>
+            <Field label="Static Headers JSON"><textarea rows={2} value={srvForm.staticHeaders} onChange={(e) => patchSrvForm({ staticHeaders: e.target.value })} className={MONO_INPUT_CLS} /></Field>
+            <TextField label="Pinned Tool Hash" value={srvForm.pinnedHash} onChange={(pinnedHash) => patchSrvForm({ pinnedHash })} />
+          </>
+        )}
       </FormModal>
 
       {/* Create MCP Toolset Modal */}
       <FormModal
         open={showToolsetModal}
         onClose={() => setShowToolsetModal(false)}
-        title="Create Curated MCP Toolset"
-        description="Bundle specific MCP tools into a curated `/mcp/toolsets/{slug}` endpoint."
+        title="Create MCP Toolset"
         maxWidth="lg"
         onSubmit={() => {
-          if (!tsName.trim() || !tsSlug.trim()) return;
-          const manual = tsManualToolIds.split(',').map((s) => s.trim()).filter(Boolean);
+          if (!tsForm.name.trim() || !tsForm.slug.trim()) return;
+          const manual = tsForm.manual.split(',').map((s) => s.trim()).filter(Boolean);
           createToolsetMutation.mutate({
             org_id: activeOrgId || undefined,
-            name: tsName.trim(),
-            slug: tsSlug.trim(),
-            tool_ids: Array.from(new Set([...tsSelectedToolIds, ...manual])),
+            name: tsForm.name.trim(),
+            slug: tsForm.slug.trim(),
+            tool_ids: Array.from(new Set([...tsForm.selected, ...manual])),
           });
         }}
-        pending={createToolsetMutation.isPending || !tsName.trim() || !tsSlug.trim()}
-        submitLabel={createToolsetMutation.isPending ? 'Creating...' : 'Create Toolset'}
+        pending={createToolsetMutation.isPending || !tsForm.name.trim() || !tsForm.slug.trim()}
+        submitLabel="Create Toolset"
       >
-        {createToolsetMutation.isError && <ErrorAlert error={createToolsetMutation.error} title="Failed to create MCP toolset" />}
+        {createToolsetMutation.isError && <ErrorAlert error={createToolsetMutation.error} title="Failed" />}
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Toolset Name *"><input type="text" required value={tsName} onChange={(e) => setTsName(e.target.value)} placeholder="Read-Only DevOps Tools" className={INPUT_CLS} /></Field>
-          <Field label="Slug *"><input type="text" required value={tsSlug} onChange={(e) => setTsSlug(e.target.value)} placeholder="devops-readonly" className={MONO_INPUT_CLS} /></Field>
+          <TextField label="Toolset Name *" req cls={INPUT_CLS} value={tsForm.name} onChange={(name) => setTsForm((p) => ({ ...p, name }))} />
+          <TextField label="Slug *" req value={tsForm.slug} onChange={(slug) => setTsForm((p) => ({ ...p, slug }))} />
         </div>
         {mcpTools.length > 0 && (
-          <Field label={`Select Discovered Tools (${tsSelectedToolIds.length} selected)`}>
+          <Field label={`Select Tools (${tsForm.selected.length})`}>
             <div className="p-2 bg-surface-elevated/40 border border-border-subtle rounded-lg space-y-1.5">
               {mcpTools.map((tool: any, i: number) => {
                 const tid = tool.id || tool.name || String(i);
                 return (
                   <label key={tid} className="flex items-center gap-2 text-xs font-mono text-brand-body">
-                    <input type="checkbox" checked={tsSelectedToolIds.includes(tid)} onChange={() => toggleToolSelection(tid)} />
+                    <input type="checkbox" checked={tsForm.selected.includes(tid)} onChange={() => toggleToolSelection(tid)} />
                     <span className="truncate">{tool.name}</span>
-                    {tool.id && <span className="text-[10px] text-brand-muted">({tool.id})</span>}
                   </label>
                 );
               })}
             </div>
           </Field>
         )}
-        <Field label="Tool IDs (comma-separated, optional)"><input type="text" value={tsManualToolIds} onChange={(e) => setTsManualToolIds(e.target.value)} placeholder="mcp_tool_1, mcp_tool_2" className={MONO_INPUT_CLS} /></Field>
+        <TextField label="Tool IDs" value={tsForm.manual} onChange={(manual) => setTsForm((p) => ({ ...p, manual }))} />
       </FormModal>
 
-      {/* Edit MCP Server Specification Modal */}
+
+      {/* Register / Edit A2A Agent Modal */}
       <FormModal
-        open={!!editingServer}
-        onClose={() => setEditingServer(null)}
-        title={editingServer ? `Edit MCP Spec: ${editingServer.name}` : 'Edit MCP Server'}
-        description="Switch this upstream MCP server's protocol specification release and transport driver."
+        open={showAgentModal}
+        onClose={() => { setShowAgentModal(false); setEditingAgent(null); setAgentForm(INIT_AGENT_FORM); }}
+        title={editingAgent ? `Edit A2A Agent: ${editingAgent.name}` : 'Register A2A Agent'}
+        maxWidth="lg"
         onSubmit={() => {
-          if (!editingServer) return;
-          updateServerMutation.mutate({
-            serverId: editingServer.id,
-            payload: {
-              protocol_version: editSrvProtocol,
-              transport_type: editSrvTransport,
-              is_active: editSrvActive,
+          if (!agentForm.name.trim() || !agentForm.endpoint.trim()) return;
+          if (!editingAgent && !agentForm.slug.trim()) return;
+          const maxIter = parseInt(agentForm.maxIter, 10);
+          const maxBudget = parseInt(agentForm.maxBudget, 10);
+          saveAgentMutation.mutate({
+            id: editingAgent?.id,
+            data: {
+              org_id: editingAgent ? undefined : activeOrgId || undefined,
+              name: agentForm.name.trim(),
+              slug: editingAgent ? undefined : agentForm.slug.trim(),
+              endpoint_url: agentForm.endpoint.trim(),
+              agent_card_url: tr(agentForm.cardUrl),
+              protocol_binding: agentForm.binding,
+              is_public_card: agentForm.publicCard,
+              task_visibility_mode: agentForm.visibility,
+              auth_type: agentForm.authType,
+              auth_secret: agentForm.authType !== 'none' ? tr(agentForm.authSecret) : undefined,
+              is_active: editingAgent ? agentForm.active : undefined,
+              max_task_iterations: editingAgent || isNaN(maxIter) || maxIter <= 0 ? undefined : maxIter,
+              max_task_budget_micros: editingAgent || isNaN(maxBudget) || maxBudget <= 0 ? undefined : maxBudget,
             },
           });
         }}
-        pending={updateServerMutation.isPending}
-        submitLabel={updateServerMutation.isPending ? 'Saving...' : 'Save Server Spec'}
+        pending={saveAgentMutation.isPending || !agentForm.name.trim() || !agentForm.endpoint.trim() || (!editingAgent && !agentForm.slug.trim())}
+        submitLabel={editingAgent ? 'Save' : 'Register Agent'}
       >
-        {updateServerMutation.isError && (
-          <ErrorAlert error={updateServerMutation.error} title="Failed to update MCP server spec" />
-        )}
-        <SpecTransportFields
-          specs={availableSpecs}
-          protocol={editSrvProtocol}
-          onProtocolChange={setEditSrvProtocol}
-          transport={editSrvTransport}
-          onTransportChange={setEditSrvTransport}
-        />
-        <label className="flex items-center gap-2 text-xs font-mono text-brand-body cursor-pointer">
-          <input
-            type="checkbox"
-            checked={editSrvActive}
-            onChange={(e) => setEditSrvActive(e.target.checked)}
-          />
-          Server Active
+        {saveAgentMutation.isError && <ErrorAlert error={saveAgentMutation.error} title="Failed" />}
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label="Agent Name *" req cls={INPUT_CLS} value={agentForm.name} onChange={(name) => patchAgentForm({ name })} />
+          {!editingAgent && <TextField label="Mesh Slug *" req value={agentForm.slug} onChange={(slug) => patchAgentForm({ slug })} />}
+        </div>
+        <TextField label="Endpoint URL *" req value={agentForm.endpoint} onChange={(endpoint) => patchAgentForm({ endpoint })} />
+        <TextField label="Agent Card URL" value={agentForm.cardUrl} onChange={(cardUrl) => patchAgentForm({ cardUrl })} />
+        <div className="grid grid-cols-3 gap-3">
+          {([
+            ['Binding', 'binding', ['HTTP+JSON', 'JSONRPC', 'GRPC']],
+            ['Visibility', 'visibility', ['key_strict', 'user_strict', 'team', 'org_admin']],
+            ['Auth', 'authType', ['none', 'static', 'vault_jwt']],
+          ] as const).map(([lbl, key, opts]) => (
+            <Field key={key} label={lbl}>
+              <select value={agentForm[key]} onChange={(e) => patchAgentForm({ [key]: e.target.value })} className={INPUT_CLS}>
+                {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </Field>
+          ))}
+        </div>
+        <label className="flex items-center gap-2 text-xs font-mono text-brand-body">
+          <input type="checkbox" checked={agentForm.publicCard} onChange={(e) => patchAgentForm({ publicCard: e.target.checked })} />
+          Public Card Discovery
         </label>
-      </FormModal>
-
-      {/* Register A2A Agent Modal */}
-      <FormModal
-        open={showAgentModal}
-        onClose={() => setShowAgentModal(false)}
-        title="Register A2A Mesh Agent"
-        description="Register an Agent-to-Agent protocol endpoint with task isolation, iteration caps, and budget controls."
-        maxWidth="lg"
-        onSubmit={() => {
-          if (!agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()) return;
-          const maxIter = parseInt(agentMaxIter, 10);
-          const maxBudget = parseInt(agentMaxBudgetMicros, 10);
-          createAgentMutation.mutate({
-            org_id: activeOrgId || undefined,
-            name: agentName.trim(),
-            slug: agentSlug.trim(),
-            endpoint_url: agentEndpoint.trim(),
-            agent_card_url: agentCardUrl.trim() || undefined,
-            task_visibility_mode: agentVisibility,
-            auth_type: agentAuthType,
-            auth_secret: agentAuthType !== 'none' ? agentAuthSecret.trim() || undefined : undefined,
-            max_task_iterations: !isNaN(maxIter) && maxIter > 0 ? maxIter : 50,
-            max_task_budget_micros: !isNaN(maxBudget) && maxBudget > 0 ? maxBudget : undefined,
-          });
-        }}
-        pending={createAgentMutation.isPending || !agentName.trim() || !agentSlug.trim() || !agentEndpoint.trim()}
-        submitLabel={createAgentMutation.isPending ? 'Registering...' : 'Register Agent'}
-      >
-        {createAgentMutation.isError && <ErrorAlert error={createAgentMutation.error} title="Failed to register A2A agent" />}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Agent Name *"><input type="text" required value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="Incident Triage Agent" className={INPUT_CLS} /></Field>
-          <Field label="Mesh Slug *"><input type="text" required value={agentSlug} onChange={(e) => setAgentSlug(e.target.value)} placeholder="incident-triage" className={MONO_INPUT_CLS} /></Field>
-        </div>
-        <Field label="Endpoint URL *"><input type="text" required value={agentEndpoint} onChange={(e) => setAgentEndpoint(e.target.value)} placeholder="https://agent.internal.example.com/a2a" className={MONO_INPUT_CLS} /></Field>
-        <Field label="Agent Card URL (Optional)"><input type="text" value={agentCardUrl} onChange={(e) => setAgentCardUrl(e.target.value)} placeholder="https://agent.internal.example.com/.well-known/agent-card.json" className={MONO_INPUT_CLS} /></Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Task Visibility">
-            <select value={agentVisibility} onChange={(e) => setAgentVisibility(e.target.value)} className={INPUT_CLS}>
-              {['key_strict', 'user_strict', 'team', 'org_admin'].map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </Field>
-          <Field label="Upstream Auth">
-            <select value={agentAuthType} onChange={(e) => setAgentAuthType(e.target.value)} className={INPUT_CLS}>
-              {['none', 'static', 'vault_jwt'].map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </Field>
-        </div>
-        {agentAuthType !== 'none' && (
-          <Field label="Auth Secret (Vault Encrypted)"><input type="password" value={agentAuthSecret} onChange={(e) => setAgentAuthSecret(e.target.value)} placeholder="Upstream agent secret..." className={MONO_INPUT_CLS} /></Field>
+        {editingAgent && (
+          <label className="flex items-center gap-2 text-xs font-mono text-brand-body">
+            <input type="checkbox" checked={agentForm.active} onChange={(e) => patchAgentForm({ active: e.target.checked })} />
+            Agent Active
+          </label>
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Max Task Iterations"><input type="number" min={1} value={agentMaxIter} onChange={(e) => setAgentMaxIter(e.target.value)} className={MONO_INPUT_CLS} /></Field>
-          <Field label="Max Task Budget (micros, optional)"><input type="number" min={0} value={agentMaxBudgetMicros} onChange={(e) => setAgentMaxBudgetMicros(e.target.value)} placeholder="1000000" className={MONO_INPUT_CLS} /></Field>
-        </div>
+        {agentForm.authType !== 'none' && (
+          <TextField label="Auth Secret" type="password" value={agentForm.authSecret} onChange={(authSecret) => patchAgentForm({ authSecret })} />
+        )}
+        {!editingAgent && (
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="Max Iterations" type="number" value={agentForm.maxIter} onChange={(maxIter) => patchAgentForm({ maxIter })} />
+            <TextField label="Max Budget (micros)" type="number" value={agentForm.maxBudget} onChange={(maxBudget) => patchAgentForm({ maxBudget })} />
+          </div>
+        )}
       </FormModal>
 
       {/* Set MCP User BYOK Credential Modal */}
       <FormModal
         open={showCredModal}
         onClose={() => setShowCredModal(false)}
-        title="Set MCP User BYOK Credential"
-        description="Store a Vault-encrypted per-user BYOK token for an upstream MCP server."
+        title="Set MCP User BYOK"
         onSubmit={() => {
-          if (!credServerId.trim() || !credUserId.trim() || !credToken.trim()) return;
-          setUserCredMutation.mutate({ org_id: activeOrgId || undefined, server_id: credServerId.trim(), user_id: credUserId.trim(), token: credToken.trim() });
+          if (!credForm.serverId.trim() || !credForm.userId.trim() || !credForm.token.trim()) return;
+          setUserCredMutation.mutate({ org_id: activeOrgId || undefined, server_id: credForm.serverId.trim(), user_id: credForm.userId.trim(), token: credForm.token.trim() });
         }}
-        pending={setUserCredMutation.isPending || !credServerId.trim() || !credUserId.trim() || !credToken.trim()}
-        submitLabel="Save Credential"
+        pending={setUserCredMutation.isPending || !credForm.serverId.trim() || !credForm.userId.trim() || !credForm.token.trim()}
+        submitLabel="Save"
       >
-        {setUserCredMutation.isError && <ErrorAlert error={setUserCredMutation.error} title="Failed to save MCP user credential" />}
+        {setUserCredMutation.isError && <ErrorAlert error={setUserCredMutation.error} title="Failed" />}
         <Field label="MCP Server ID *">
           {mcpServers.length > 0 ? (
-            <select required value={credServerId} onChange={(e) => setCredServerId(e.target.value)} className={INPUT_CLS}>
-              <option value="">Select MCP Server...</option>
-              {mcpServers.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.id})</option>)}
+            <select required value={credForm.serverId} onChange={(e) => setCredForm((p) => ({ ...p, serverId: e.target.value }))} className={INPUT_CLS}>
+              <option value="">Select Server...</option>
+              {mcpServers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           ) : (
-            <input type="text" required value={credServerId} onChange={(e) => setCredServerId(e.target.value)} placeholder="mcp_srv_..." className={MONO_INPUT_CLS} />
+            <input type="text" required value={credForm.serverId} onChange={(e) => setCredForm((p) => ({ ...p, serverId: e.target.value }))} className={MONO_INPUT_CLS} />
           )}
         </Field>
-        <Field label="User ID *"><input type="text" required value={credUserId} onChange={(e) => setCredUserId(e.target.value)} placeholder="usr_..." className={MONO_INPUT_CLS} /></Field>
-        <Field label="User Token (Vault Encrypted) *"><input type="password" required value={credToken} onChange={(e) => setCredToken(e.target.value)} placeholder="ghp_... or OAuth bearer token" className={MONO_INPUT_CLS} /></Field>
+        <TextField label="User ID *" req value={credForm.userId} onChange={(userId) => setCredForm((p) => ({ ...p, userId }))} />
+        <TextField label="User Token *" req type="password" value={credForm.token} onChange={(token) => setCredForm((p) => ({ ...p, token }))} />
       </FormModal>
 
       {/* Configure A2A Push Notification Webhook Modal */}
       <FormModal
         open={showPushModal}
         onClose={() => setShowPushModal(false)}
-        title="Configure A2A Push Notification Webhook"
-        description="Register a webhook URL to receive asynchronous A2A task state updates."
+        title="A2A Push Webhook"
         onSubmit={() => {
-          if (!pushTaskId.trim() || !pushTargetUrl.trim()) return;
-          setPushConfigMutation.mutate({ task_id: pushTaskId.trim(), target_url: pushTargetUrl.trim(), auth_token: pushAuthToken.trim() || undefined });
+          if (!pushForm.taskId.trim() || !pushForm.targetUrl.trim()) return;
+          setPushConfigMutation.mutate({ task_id: pushForm.taskId.trim(), target_url: pushForm.targetUrl.trim(), auth_token: tr(pushForm.authToken) });
         }}
-        pending={setPushConfigMutation.isPending || !pushTaskId.trim() || !pushTargetUrl.trim()}
-        submitLabel="Save Webhook"
+        pending={setPushConfigMutation.isPending || !pushForm.taskId.trim() || !pushForm.targetUrl.trim()}
+        submitLabel="Save"
       >
-        {setPushConfigMutation.isError && <ErrorAlert error={setPushConfigMutation.error} title="Failed to configure push webhook" />}
-        <Field label="A2A Task ID *"><input type="text" required value={pushTaskId} onChange={(e) => setPushTaskId(e.target.value)} placeholder="task_..." className={MONO_INPUT_CLS} /></Field>
-        <Field label="Webhook Target URL *"><input type="text" required value={pushTargetUrl} onChange={(e) => setPushTargetUrl(e.target.value)} placeholder="https://callbacks.internal.example.com/a2a/webhook" className={MONO_INPUT_CLS} /></Field>
-        <Field label="Webhook Auth Token (Vault Encrypted, optional)"><input type="password" value={pushAuthToken} onChange={(e) => setPushAuthToken(e.target.value)} placeholder="Bearer secret..." className={MONO_INPUT_CLS} /></Field>
+        {setPushConfigMutation.isError && <ErrorAlert error={setPushConfigMutation.error} title="Failed" />}
+        <TextField label="Task ID *" req value={pushForm.taskId} onChange={(taskId) => setPushForm((p) => ({ ...p, taskId }))} />
+        <TextField label="Target URL *" req value={pushForm.targetUrl} onChange={(targetUrl) => setPushForm((p) => ({ ...p, targetUrl }))} />
+        <TextField label="Auth Token" type="password" value={pushForm.authToken} onChange={(authToken) => setPushForm((p) => ({ ...p, authToken }))} />
       </FormModal>
     </div>
   );

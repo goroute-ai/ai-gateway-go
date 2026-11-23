@@ -593,6 +593,8 @@ All 5 official MCP schemas (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-2
 
 ## 13. Agent-to-Agent Protocol (A2A v1.0) Subsystem Internals
 
+GoRoute's A2A subsystem follows an **OpenAPI-first architecture**: `docs/openapi/a2a.openapi.yaml` (`oapi-codegen` via `docs/openapi/a2a.codegen.yaml`) generates canonical DTOs and `ServerInterface` in `internal/a2a/spec`. `internal/a2a` (`router_service.go`, `jsonrpc.go`, `card.go`, `streams.go`, `outbox_worker.go`, `openai_bridge.go`) operates natively on `internal/a2a/spec` types with `google.rpc.StatusError` error mapping, while `internal/a2a/pb` protobuf types are isolated solely to the gRPC adapter (`internal/a2a/grpc_server.go`).
+
 ### 13.1 Subscribe-First SSE Task Streaming Pattern
 
 To guarantee zero event loss and zero duplicate deliveries across network reconnections, GoRoute implements the Subscribe-First streaming pattern:
@@ -626,20 +628,19 @@ sequenceDiagram
 ### 13.2 JCS Canonicalization & JWS Signing Pipeline
 
 1. **Card Ingestion & Verification**:
-   - Inbound upstream cards are decoded. If signed, their JWS signatures (`ES256`, `RS256`, `EdDSA`) are validated by `UpstreamCardVerifier` against trusted public keys, requiring a valid `kid` header.
-2. **Gateway Namespace Rewriting**:
-   - External URLs in `supported_interfaces` are rewritten to point to GoRoute Gateway endpoints.
-   - Historical signatures are stripped to establish a clean security boundary.
+   - Upstream cards are fetched behind `internal/security/network.Policy` (redirect/private-IP SSRF protection) and verified by `UpstreamCardVerifier` (`ES256`, `RS256`, `EdDSA`) against configured JWKS (`trusted_card_jwks` / `jwks_url`) with required `kid` headers.
+2. **Gateway Namespace Rewriting & Discovery Isolation**:
+   - External URLs in `supportedInterfaces` are rewritten to GoRoute tenant/slug endpoints; public `/.well-known/agent-card.json` only includes agents with `is_public_card: true`, whereas `GET /extendedAgentCard` requires authenticated caller identity and respects task/agent scoping.
+   - Historical upstream signatures are stripped to establish a clean security boundary.
 3. **Canonicalization & Re-Signing**:
    - The card payload is canonicalized using RFC 8785 JSON Canonicalization Scheme (JCS), ensuring identical byte representations regardless of key order or whitespace.
    - The gateway signs the JCS payload using its own Vault/KMS key, generating a tamper-proof Gateway Agent Card.
 
-### 13.3 Transactional Outbox & Safety Controls
+### 13.3 Transactional Outbox, Vault Encryption & Safety Controls
 
-- Task events and webhook notifications are committed in a single atomic PostgreSQL transaction (`a2a_task_events` + `a2a_outbox_events`).
-- The `OutboxWorker` claims pending webhooks using PostgreSQL `FOR UPDATE SKIP LOCKED`.
-- Deliveries execute through the outbound SSRF safe HTTP client.
-- Failures retry with exponential backoff: $t_{\text{backoff}} = 2^{\text{attempt}} \times 100\text{ ms}$. Events exceeding `MaxRetries` transition to `dead_letter` for operator inspection.
+- Task events and webhook fan-out notifications (honoring agent-scoped & caller-scoped `a2a_push_configs`) are committed in a single atomic PostgreSQL transaction (`a2a_task_events` + `a2a_outbox_events`).
+- Push configuration tokens are encrypted with Vault `DeriveSubkey(orgID, "a2a-push-config")` (`token_ciphertext`, `dek_encrypted`) and re-wrapped on KEK rotation.
+- The `OutboxWorker` claims pending webhooks using PostgreSQL `FOR UPDATE SKIP LOCKED`, dispatches via the SSRF-safe HTTP client with `A2AOutboxReplay`, retries with exponential backoff ($t_{\text{backoff}} = 2^{\text{attempt}} \times 100\text{ ms}$), and marks exhausted items `dead_letter`.
 - Administrative kill-switch activations (`POST /admin/v1/a2a/agents/{id}/kill-switch`) immediately revoke agent dispatch rights in storage, rejecting incoming traffic with `HTTP 503 agent_killed`.
 
 ---
@@ -716,14 +717,13 @@ To support large catalogs of tools without exceeding prompt token budgets, GoRou
 ## 16. Native A2A gRPC & OpenAI Compatibility Bridge
 
 ### 16.1 Native gRPC Architecture (`lf.a2a.v1.A2AService`)
-The gateway hosts a native gRPC server wired directly into `GatewayServer.A2ARouter()`:
-- `SendMessage`: Unmarshals protobuf `SendMessageRequest`, enforces RBAC via gRPC metadata headers, records durable task events in PostgreSQL, and dispatches to upstream agent.
-- `SubscribeToTask`: Streams real-time task status updates over bidirectional gRPC streams.
-- Zero-Allocation Protobuf Marshalling: Employs `protojson.UnmarshalOptions{DiscardUnknown: false}` for strict schema verification.
+The gateway hosts a native gRPC server (gated by `a2a.enabled` and `server.grpc_port > 0`) implementing all 11 RPCs of `lf.a2a.v1.A2AService` over the shared `GatewayServer.A2ARouter()`, `StreamSubscriber`, and `AuthResolver`:
+- **Unary & Streaming Interceptors**: Enforce panic recovery (`grpcUnaryRecoveryInterceptor` / `grpcStreamRecoveryInterceptor`) and mandatory caller authentication from gRPC `authorization` metadata (`AuthResolver`) without falling back to anonymous identity.
+- **Boundary Isolation**: `GRPCServer` converts incoming `pb` messages into canonical OpenAPI `internal/a2a/spec` structs via JSON roundtrip and delegates to `RouterService`, keeping all core business logic, guardrails, and persistence `pb`-free.
 
 ### 16.2 A2A OpenAI Compatibility Bridge
-Allows any OpenAI SDK client to trigger multi-agent workflows:
-- Model Prefix Detection: Requests to `POST /v1/chat/completions` targeting `model: "a2a/{agent_slug}"` bypass LLM inference adapters and route into the A2A subsystem.
+Allows any OpenAI SDK client to trigger multi-agent workflows when `a2a.enabled` is true:
+- Model Prefix Detection: Requests to `POST /v1/chat/completions` targeting `model: "a2a/{agent_slug}"` bypass LLM model allowlists/inference adapters and route into the A2A subsystem (with guardrails and A2A agent RBAC enforced).
 - Conversational Context Resumption: If an agent enters `TASK_STATE_INPUT_REQUIRED`, the bridge saves the `taskId` in the completion ID. When the client replies, the bridge resumes the existing task without creating duplicate workflows.
 
 ---

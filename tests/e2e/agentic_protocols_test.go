@@ -16,6 +16,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth/upstream"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -420,26 +421,21 @@ func TestLiveStack_A2A_Native_gRPC_and_OpenAIBridge(t *testing.T) {
 
 	// 1. Mock upstream A2A agent returning Task Completed
 	mockAgentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Id: "task_live_grpc_100",
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_COMPLETED,
-					},
-					Artifacts: []*pb.Artifact{
-						{
-							Name: "code-analysis",
-							Parts: []*pb.Part{
-								{Content: &pb.Part_Text{Text: "Code passes all static analysis checks cleanly."}},
-							},
-						},
-					},
+		w.Header().Set("Content-Type", "application/a2a+json")
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id: "task_live_grpc_100",
+			Status: a2aspec.TaskStatus{
+				State: a2aspec.TASKSTATECOMPLETED,
+			},
+			Artifacts: &[]a2aspec.Artifact{
+				{
+					ArtifactId: "art_code_1",
+					Name:       func() *string { s := "code-analysis"; return &s }(),
+					Parts:      []a2aspec.Part{a2aspec.NewTextPart("Code passes all static analysis checks cleanly.")},
 				},
 			},
-		}
-		b, _ := a2a.ProtoJSONMarshaler.Marshal(respObj)
+		})
+		b, _ := json.Marshal(respObj)
 		_, _ = w.Write(b)
 	}))
 	defer mockAgentSrv.Close()
@@ -484,6 +480,8 @@ func TestLiveStack_A2A_Native_gRPC_and_OpenAIBridge(t *testing.T) {
 	rbac := auth.NewRBACEngine(pgRepo)
 	authSvc := auth.NewService(pgRepo, redisFabric, "sk-gw-master-admin-live-e2e-key", 10*time.Second, time.Minute)
 	a2aGRPC := a2a.NewGRPCServer(gw.A2ARouter(), authSvc, rbac)
+	a2aGRPC.SetAuthResolver(gw.AuthResolver())
+	a2aGRPC.SetStreamSubscriber(gw.A2AStreamSubscriber())
 	a2aGRPC.Register(grpcServer)
 
 	go func() {

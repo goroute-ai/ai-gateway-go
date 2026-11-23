@@ -360,7 +360,7 @@ func TestE2E_Auth_DataPlaneOIDC_IssuerBinding_ClaimMapping_JIT(t *testing.T) {
 		t.Fatalf("OIDC JWT on /mcp failed (%d): %s", r.StatusCode, string(b))
 	}
 	if r, b := cluster.c2.doJSON(http.MethodPost, "/a2a/v1/agents/"+a2aSlug, map[string]string{"Authorization": "Bearer " + tokIssA}, map[string]any{
-		"jsonrpc": "2.0", "id": 2, "method": "tasks/send", "params": map[string]any{"message": map[string]any{"messageId": "m1", "role": "ROLE_USER", "parts": []map[string]any{{"text": "hi"}}}},
+		"jsonrpc": "2.0", "id": 2, "method": "SendMessage", "params": map[string]any{"message": map[string]any{"messageId": "m1", "role": "ROLE_USER", "parts": []map[string]any{{"text": "hi"}}}},
 	}, nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("OIDC JWT on /a2a failed (%d): %s", r.StatusCode, string(b))
 	}

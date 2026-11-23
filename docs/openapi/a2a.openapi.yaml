@@ -1,205 +1,2528 @@
 openapi: 3.1.0
 info:
-  title: GoRoute AI Gateway — Agent-to-Agent (A2A) Protocol Service
+  title: Agent2Agent (A2A) Protocol Specification API
   version: 1.0.0
-  description: >
-    Enterprise implementation of Linux Foundation Agent-to-Agent Protocol (A2A v1.0).
-    Features RFC 8785 JCS canonicalization, JWS cryptographic card signatures, dual HTTP+JSON
-    and JSON-RPC 2.0 dispatch, Subscribe-First SSE task streaming, multi-tenant visibility isolation,
-    transactional outbox with exponential backoff & dead-letter queue, and administrative emergency kill-switch.
+  summary: Complete Linux Foundation Agent2Agent (A2A) v1.0 Protocol OpenAPI Specification
+  description: |
+    Authoritative OpenAPI 3.1.0 specification for the **Agent2Agent (A2A) Protocol v1.0**,
+    derived directly from the upstream `a2aproject/A2A` normative Protobuf contract
+    (`specification/a2a.proto`, commit `5f931b8`) and protocol specification (`docs/specification.md`).
+
+    ### Covered Protocol Layers & Bindings
+    - **Agent Discovery**: RFC 8615 well-known manifest (`GET /.well-known/agent-card.json`) with RFC 8785 JCS canonicalization and RFC 7515 JWS (`AgentCardSignature`).
+    - **HTTP+JSON / REST Binding**: All 11 A2A v1.0 operations on both root (`/message:send`, `/tasks/{id}`, ...) and multi-tenant (`/{tenant}/message:send`, `/{tenant}/tasks/{id}`, ...) paths, using `application/a2a+json` (and `application/json` compatibility), `A2A-Version` / `A2A-Extensions` headers, `text/event-stream` SSE streaming, and `google.rpc.Status` + `google.rpc.ErrorInfo` error envelopes.
+    - **JSON-RPC 2.0 Binding**: Single-endpoint `POST /` (and `POST /{tenant}`) supporting all 11 canonical PascalCase A2A v1.0 JSON-RPC methods (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`, `GetExtendedAgentCard`) and A2A JSON-RPC error codes (`-32001` through `-32009`).
+    - **Push Notification Webhooks**: Server-initiated HTTP `POST` callbacks delivering `StreamResponse` payloads with `Content-Type: application/a2a+json` and configured authentication headers.
+    - **Canonical ProtoJSON Data Model**: 1:1 camelCase ProtoJSON schemas for all 44 messages and 2 enums (`SCREAMING_SNAKE_CASE`) defined in `lf.a2a.v1`.
+
+    > **Note on `SubscribeToTask` HTTP Method**: `specification/a2a.proto` binds `SubscribeToTask` to `GET /tasks/{id}:subscribe`, while `docs/specification.md` (Sections 5.3 and 11.3.2) lists `POST /tasks/{id}:subscribe`. Both `GET` and `POST` are documented here for full interoperability.
+  contact:
+    name: Agent2Agent (A2A) Protocol Working Group
+    url: https://a2a-protocol.org/latest/specification/
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+externalDocs:
+  description: Official A2A Protocol Specification (a2aproject/A2A)
+  url: https://github.com/a2aproject/A2A/blob/main/docs/specification.md
+
 servers:
-  - url: https://api.goroute.ai
-    description: Production Gateway
+  - url: https://agent.example.com
+    description: A2A Agent Endpoint (Production HTTPS)
   - url: http://localhost:8080
-    description: Local Development Gateway
+    description: Local Development Endpoint
+
+tags:
+  - name: Discovery
+    description: Public and authenticated extended Agent Card discovery endpoints.
+  - name: Messaging
+    description: Synchronous and streaming message exchange operations (`SendMessage`, `SendStreamingMessage`).
+  - name: Tasks
+    description: Task retrieval, listing, cancellation, and live SSE event subscription operations.
+  - name: Push Notifications
+    description: CRUD operations for asynchronous task webhook push notification configurations.
+  - name: JSON-RPC 2.0
+    description: JSON-RPC 2.0 over HTTP(S) transport binding supporting all 11 A2A v1.0 operations.
+
 paths:
+  # ===========================================================================
+  # Agent Discovery (RFC 8615)
+  # ===========================================================================
   /.well-known/agent-card.json:
     get:
-      summary: Gateway Well-Known Agent Card
-      description: Returns the cryptographically signed Agent Card declaring supported interfaces, models, and tools.
+      tags: [Discovery]
+      summary: Get Well-Known Agent Card
+      description: |
+        Returns the public self-describing `AgentCard` manifest for the agent at the
+        RFC 8615 well-known URI. May include RFC 7515 JWS cryptographic signatures
+        computed over the RFC 8785 (JCS) canonicalized Agent Card payload.
       operationId: getWellKnownAgentCard
+      security: []
       responses:
         '200':
-          description: Signed JSON Agent Card
+          description: Public Agent Card manifest.
           content:
             application/json:
               schema:
-                type: object
-  /a2a/v1/agents/{agentSlug}:
+                $ref: '#/components/schemas/AgentCard'
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===========================================================================
+  # JSON-RPC 2.0 Transport Binding
+  # ===========================================================================
+  /:
     post:
-      summary: Send Message to Agent
-      description: Sends an A2A message to an upstream agent via HTTP+JSON or JSON-RPC 2.0 dual-binding.
-      operationId: sendA2AMessage
-      security:
-        - VirtualKeyAuth: []
+      tags: [JSON-RPC 2.0]
+      summary: Dispatch A2A JSON-RPC 2.0 Request
+      description: |
+        Single-endpoint JSON-RPC 2.0 transport binding over HTTP(S).
+        Supports all 11 canonical PascalCase A2A v1.0 methods:
+        `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`,
+        `SubscribeToTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`,
+        `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`, and
+        `GetExtendedAgentCard`.
+
+        - Application-level errors return HTTP `200 OK` with a JSON-RPC `error` object (`-32001`..-`32009`, `-32700`, `-32600`..`-32603`).
+        - Transport-level authentication/authorization failures return HTTP `401` / `403`.
+        - Streaming methods (`SendStreamingMessage`, `SubscribeToTask`) return `text/event-stream` SSE frames containing JSON-RPC `StreamResponse` envelopes.
+      operationId: dispatchJsonRpc
       parameters:
-        - name: agentSlug
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Slug of target agent
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/JSONRPCRequest'
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
       responses:
         '200':
-          description: Agent response message or task
+          description: |
+            JSON-RPC 2.0 response envelope (result or protocol error), or an SSE stream
+            for `SendStreamingMessage` and `SubscribeToTask`.
           content:
             application/json:
               schema:
-                type: object
-  /a2a/v1/agents/{agentSlug}/tasks:
-    get:
-      summary: List Tasks for Agent
-      operationId: listA2ATasks
-      security:
-        - VirtualKeyAuth: []
-      parameters:
-        - name: agentSlug
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of tasks conforming to caller visibility policy
-  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:
-    get:
-      summary: Get Task Details
-      operationId: getA2ATask
-      security:
-        - VirtualKeyAuth: []
-      parameters:
-        - name: agentSlug
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: taskID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Task details with state and artifacts
-  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:cancel:
+                $ref: '#/components/schemas/JSONRPCResponse'
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream where each `data:` line contains a JSON-RPC 2.0
+                  response object whose `result` is a `StreamResponse` (or `error` on failure).
+                example: |
+                  data: {"jsonrpc":"2.0","id":1,"result":{"task":{"id":"task-123","contextId":"ctx-456","status":{"state":"TASK_STATE_WORKING"}}}}
+
+                  data: {"jsonrpc":"2.0","id":1,"result":{"statusUpdate":{"taskId":"task-123","contextId":"ctx-456","status":{"state":"TASK_STATE_COMPLETED"}}}}
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+
+  /{tenant}:
     post:
-      summary: Cancel Task
-      operationId: cancelA2ATask
-      security:
-        - VirtualKeyAuth: []
+      tags: [JSON-RPC 2.0]
+      summary: Dispatch Tenant-Scoped A2A JSON-RPC 2.0 Request
+      description: Tenant-routed equivalent of `POST /` for multi-tenant A2A JSON-RPC 2.0 endpoints.
+      operationId: dispatchTenantJsonRpc
       parameters:
-        - name: agentSlug
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: taskID
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/JSONRPCRequest'
       responses:
         '200':
-          description: Canceled task object
-  /a2a/v1/agents/{agentSlug}/tasks/{taskID}:subscribe:
-    get:
-      summary: Subscribe to Task Event Stream
-      description: Subscribe-First Server-Sent Events (SSE) stream delivering historical backfill and live real-time task events.
-      operationId: subscribeA2ATaskStream
-      security:
-        - VirtualKeyAuth: []
+          description: JSON-RPC 2.0 response envelope or SSE stream for streaming methods.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/JSONRPCResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream of JSON-RPC `StreamResponse` envelopes.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+
+  # ===========================================================================
+  # HTTP+JSON / REST Binding — Message Operations
+  # ===========================================================================
+  /message:send:
+    post:
+      tags: [Messaging]
+      summary: Send Message
+      description: |
+        Sends a message to an agent to initiate a new task, continue an existing non-terminal
+        task, or receive a direct stateless `Message` reply.
+
+        If `configuration.returnImmediately` is `false` (default), the server waits until the
+        task reaches a terminal (`TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`,
+        `TASK_STATE_REJECTED`) or interrupted (`TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_AUTH_REQUIRED`) state.
+      operationId: sendMessage
       parameters:
-        - name: agentSlug
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: taskID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: after_seq
-          in: query
-          required: false
-          schema:
-            type: integer
-          description: Event sequence number to replay from
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      callbacks:
+        sendMessageTaskUpdate:
+          $ref: '#/components/callbacks/TaskUpdateWebhook'
       responses:
         '200':
-          description: Real-time task event stream
+          description: Agent response containing either a `Task` or a `Message`.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/message:send:
+    post:
+      tags: [Messaging]
+      summary: Send Message (Tenant-Scoped)
+      description: Tenant-routed equivalent of `POST /message:send`.
+      operationId: sendTenantMessage
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      callbacks:
+        sendTenantMessageTaskUpdate:
+          $ref: '#/components/callbacks/TaskUpdateWebhook'
+      responses:
+        '200':
+          description: Agent response containing either a `Task` or a `Message`.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /message:stream:
+    post:
+      tags: [Messaging]
+      summary: Send Streaming Message
+      description: |
+        Sends a message to an agent and streams real-time `StreamResponse` events over
+        Server-Sent Events (`text/event-stream`). Requires `AgentCard.capabilities.streaming == true`;
+        otherwise returns `UnsupportedOperationError` (`HTTP 400`).
+      operationId: sendStreamingMessage
+      parameters:
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '200':
+          description: |
+            Server-Sent Events stream delivering linearly ordered `StreamResponse` JSON objects
+            (initial `task` or single `message`, followed by zero or more `statusUpdate` or
+            `artifactUpdate` events until a terminal or interrupted state is reached).
           content:
             text/event-stream:
               schema:
                 type: string
-  /admin/v1/a2a/agents:
+                description: SSE stream where each `data:` payload is a serialized `StreamResponse`.
+                example: |
+                  data: {"task":{"id":"task-123","contextId":"ctx-456","status":{"state":"TASK_STATE_WORKING"}}}
+
+                  data: {"artifactUpdate":{"taskId":"task-123","contextId":"ctx-456","artifact":{"artifactId":"art-1","parts":[{"text":"Hello"}]}}}
+
+                  data: {"statusUpdate":{"taskId":"task-123","contextId":"ctx-456","status":{"state":"TASK_STATE_COMPLETED"}}}
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/message:stream:
     post:
-      summary: Register Upstream A2A Agent
-      operationId: adminCreateA2AAgent
-      security:
-        - MasterAdminAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, slug, endpoint_url]
-              properties:
-                name: {type: string}
-                slug: {type: string}
-                endpoint_url: {type: string, format: uri}
-                task_visibility_mode: {type: string, enum: [key_strict, user_strict, team, org_admin]}
-                auth_type: {type: string, enum: [none, static, vault_jwt]}
-                max_task_iterations: {type: integer}
-                max_task_budget_micros: {type: integer}
-      responses:
-        '201':
-          description: A2A Agent created
-    get:
-      summary: List A2A Agents
-      operationId: adminListA2AAgents
-      security:
-        - MasterAdminAuth: []
-      responses:
-        '200':
-          description: List of registered agents
-  /admin/v1/a2a/agents/{id}/kill-switch:
-    post:
-      summary: Toggle Emergency Kill-Switch for Agent
-      operationId: adminSetA2AKillSwitch
-      security:
-        - MasterAdminAuth: []
+      tags: [Messaging]
+      summary: Send Streaming Message (Tenant-Scoped)
+      description: Tenant-routed equivalent of `POST /message:stream`.
+      operationId: sendTenantStreamingMessage
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
       requestBody:
         required: true
         content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
           application/json:
             schema:
-              type: object
-              required: [killed]
-              properties:
-                killed: {type: boolean}
+              $ref: '#/components/schemas/SendMessageRequest'
       responses:
         '200':
-          description: Kill-switch status updated
+          description: Server-Sent Events stream of `StreamResponse` objects.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream where each `data:` payload is a serialized `StreamResponse`.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===========================================================================
+  # HTTP+JSON / REST Binding — Task Operations
+  # ===========================================================================
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List Tasks
+      description: Lists tasks matching optional filter criteria with cursor-based pagination.
+      operationId: listTasks
+      parameters:
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/ContextIdQueryParam'
+        - $ref: '#/components/parameters/StatusQueryParam'
+        - $ref: '#/components/parameters/PageSizeQueryParam'
+        - $ref: '#/components/parameters/PageTokenQueryParam'
+        - $ref: '#/components/parameters/HistoryLengthQueryParam'
+        - $ref: '#/components/parameters/StatusTimestampAfterQueryParam'
+        - $ref: '#/components/parameters/IncludeArtifactsQueryParam'
+      responses:
+        '200':
+          description: Paginated list of matching tasks.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks:
+    get:
+      tags: [Tasks]
+      summary: List Tasks (Tenant-Scoped)
+      description: Tenant-routed equivalent of `GET /tasks`.
+      operationId: listTenantTasks
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/ContextIdQueryParam'
+        - $ref: '#/components/parameters/StatusQueryParam'
+        - $ref: '#/components/parameters/PageSizeQueryParam'
+        - $ref: '#/components/parameters/PageTokenQueryParam'
+        - $ref: '#/components/parameters/HistoryLengthQueryParam'
+        - $ref: '#/components/parameters/StatusTimestampAfterQueryParam'
+        - $ref: '#/components/parameters/IncludeArtifactsQueryParam'
+      responses:
+        '200':
+          description: Paginated list of matching tasks.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get Task
+      description: Gets the latest state, artifacts, and optional message history of a task.
+      operationId: getTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/HistoryLengthQueryParam'
+      responses:
+        '200':
+          description: Latest task state.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get Task (Tenant-Scoped)
+      description: Tenant-routed equivalent of `GET /tasks/{id}`.
+      operationId: getTenantTask
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/HistoryLengthQueryParam'
+      responses:
+        '200':
+          description: Latest task state.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /tasks/{id}:cancel:
+    post:
+      tags: [Tasks]
+      summary: Cancel Task
+      description: |
+        Requests cancellation of an in-progress task. Returns `TaskNotCancelableError` (`HTTP 400`)
+        if the task has already reached a terminal state.
+      operationId: cancelTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: false
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+      responses:
+        '200':
+          description: Updated task object reflecting cancellation.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks/{id}:cancel:
+    post:
+      tags: [Tasks]
+      summary: Cancel Task (Tenant-Scoped)
+      description: Tenant-routed equivalent of `POST /tasks/{id}:cancel`.
+      operationId: cancelTenantTask
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: false
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+      responses:
+        '200':
+          description: Updated task object reflecting cancellation.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/Task'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /tasks/{id}:subscribe:
+    get:
+      tags: [Tasks]
+      summary: Subscribe to Task (GET — Protobuf HTTP Binding)
+      description: |
+        Subscribes to real-time updates for a task not in a terminal state via Server-Sent Events
+        (`specification/a2a.proto` `google.api.http` binding). Returns `UnsupportedOperationError`
+        (`HTTP 400`) if streaming is unsupported or the task is already in a terminal state
+        (`TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`, `TASK_STATE_REJECTED`).
+      operationId: subscribeToTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/LastEventIDHeader'
+      responses:
+        '200':
+          description: Server-Sent Events stream of `StreamResponse` task updates.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream where each `data:` payload is a serialized `StreamResponse`.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Tasks]
+      summary: Subscribe to Task (POST — Markdown Spec Binding)
+      description: |
+        POST variant of `SubscribeToTask` documented in `docs/specification.md` Sections 5.3 and 11.3.2.
+        Streams `StreamResponse` events over Server-Sent Events until the task terminates or disconnects.
+      operationId: subscribeToTaskPost
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/LastEventIDHeader'
+      responses:
+        '200':
+          description: Server-Sent Events stream of `StreamResponse` task updates.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream where each `data:` payload is a serialized `StreamResponse`.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks/{id}:subscribe:
+    get:
+      tags: [Tasks]
+      summary: Subscribe to Task (Tenant-Scoped GET)
+      description: Tenant-routed equivalent of `GET /tasks/{id}:subscribe`.
+      operationId: subscribeToTenantTask
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/LastEventIDHeader'
+      responses:
+        '200':
+          description: Server-Sent Events stream of `StreamResponse` task updates.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Tasks]
+      summary: Subscribe to Task (Tenant-Scoped POST)
+      description: Tenant-routed equivalent of `POST /tasks/{id}:subscribe`.
+      operationId: subscribeToTenantTaskPost
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/LastEventIDHeader'
+      responses:
+        '200':
+          description: Server-Sent Events stream of `StreamResponse` task updates.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===========================================================================
+  # HTTP+JSON / REST Binding — Push Notification Configuration Operations
+  # ===========================================================================
+  /tasks/{taskId}/pushNotificationConfigs:
+    post:
+      tags: [Push Notifications]
+      summary: Create Task Push Notification Config
+      description: |
+        Registers a push notification webhook configuration for a specific task.
+        Requires `AgentCard.capabilities.pushNotifications == true`; otherwise returns
+        `PushNotificationNotSupportedError` (`HTTP 400`).
+      operationId: createTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/TaskPushNotificationConfig'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskPushNotificationConfig'
+      callbacks:
+        pushConfigTaskUpdate:
+          $ref: '#/components/callbacks/TaskUpdateWebhook'
+      responses:
+        '200':
+          description: Created push notification configuration.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '201':
+          description: Created push notification configuration.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Push Notifications]
+      summary: List Task Push Notification Configs
+      description: Lists all push notification configurations registered for a task.
+      operationId: listTaskPushNotificationConfigs
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/PageSizeQueryParam'
+        - $ref: '#/components/parameters/PageTokenQueryParam'
+      responses:
+        '200':
+          description: List of push notification configurations.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/ListTaskPushNotificationConfigsResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTaskPushNotificationConfigsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks/{taskId}/pushNotificationConfigs:
+    post:
+      tags: [Push Notifications]
+      summary: Create Task Push Notification Config (Tenant-Scoped)
+      description: Tenant-routed equivalent of `POST /tasks/{taskId}/pushNotificationConfigs`.
+      operationId: createTenantTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      requestBody:
+        required: true
+        content:
+          application/a2a+json:
+            schema:
+              $ref: '#/components/schemas/TaskPushNotificationConfig'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskPushNotificationConfig'
+      callbacks:
+        tenantPushConfigTaskUpdate:
+          $ref: '#/components/callbacks/TaskUpdateWebhook'
+      responses:
+        '200':
+          description: Created push notification configuration.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '201':
+          description: Created push notification configuration.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Push Notifications]
+      summary: List Task Push Notification Configs (Tenant-Scoped)
+      description: Tenant-routed equivalent of `GET /tasks/{taskId}/pushNotificationConfigs`.
+      operationId: listTenantTaskPushNotificationConfigs
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+        - $ref: '#/components/parameters/PageSizeQueryParam'
+        - $ref: '#/components/parameters/PageTokenQueryParam'
+      responses:
+        '200':
+          description: List of push notification configurations.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/ListTaskPushNotificationConfigsResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTaskPushNotificationConfigsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /tasks/{taskId}/pushNotificationConfigs/{id}:
+    get:
+      tags: [Push Notifications]
+      summary: Get Task Push Notification Config
+      description: Retrieves a specific push notification configuration associated with a task.
+      operationId: getTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/PushConfigIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Push notification configuration details.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Push Notifications]
+      summary: Delete Task Push Notification Config
+      description: Deletes a specific push notification configuration from a task.
+      operationId: deleteTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/PushConfigIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Push notification configuration deleted.
+          content:
+            application/a2a+json:
+              schema:
+                type: object
+            application/json:
+              schema:
+                type: object
+        '204':
+          description: Push notification configuration deleted (No Content).
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/tasks/{taskId}/pushNotificationConfigs/{id}:
+    get:
+      tags: [Push Notifications]
+      summary: Get Task Push Notification Config (Tenant-Scoped)
+      description: Tenant-routed equivalent of `GET /tasks/{taskId}/pushNotificationConfigs/{id}`.
+      operationId: getTenantTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/PushConfigIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Push notification configuration details.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPushNotificationConfig'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Push Notifications]
+      summary: Delete Task Push Notification Config (Tenant-Scoped)
+      description: Tenant-routed equivalent of `DELETE /tasks/{taskId}/pushNotificationConfigs/{id}`.
+      operationId: deleteTenantTaskPushNotificationConfig
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/TaskIdParentParam'
+        - $ref: '#/components/parameters/PushConfigIdParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Push notification configuration deleted.
+          content:
+            application/a2a+json:
+              schema:
+                type: object
+            application/json:
+              schema:
+                type: object
+        '204':
+          description: Push notification configuration deleted (No Content).
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===========================================================================
+  # HTTP+JSON / REST Binding — Authenticated Extended Agent Card
+  # ===========================================================================
+  /extendedAgentCard:
+    get:
+      tags: [Discovery]
+      summary: Get Extended Agent Card
+      description: |
+        Retrieves the authenticated extended `AgentCard` containing privileged skills,
+        internal endpoints, or tenant-specific metadata. Returns `UnsupportedOperationError`
+        if `capabilities.extendedAgentCard` is false, or `ExtendedAgentCardNotConfiguredError`
+        if declared but not configured.
+      operationId: getExtendedAgentCard
+      parameters:
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Authenticated extended Agent Card.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /{tenant}/extendedAgentCard:
+    get:
+      tags: [Discovery]
+      summary: Get Extended Agent Card (Tenant-Scoped)
+      description: Tenant-routed equivalent of `GET /extendedAgentCard`.
+      operationId: getTenantExtendedAgentCard
+      parameters:
+        - $ref: '#/components/parameters/TenantPathParam'
+        - $ref: '#/components/parameters/A2AVersionHeader'
+        - $ref: '#/components/parameters/A2AExtensionsHeader'
+      responses:
+        '200':
+          description: Authenticated extended Agent Card.
+          content:
+            application/a2a+json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCard'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+# =============================================================================
+# Reusable Components
+# =============================================================================
 components:
   securitySchemes:
-    VirtualKeyAuth:
+    BearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: sk-gw-key
-    MasterAdminAuth:
-      type: http
-      scheme: bearer
+      bearerFormat: JWT
+      description: Standard HTTP Bearer token (JWT, OAuth2 access token, or gateway virtual key).
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication header declared via `APIKeySecurityScheme`.
+    OAuth2Auth:
+      type: oauth2
+      description: OAuth 2.0 authentication declared via `OAuth2SecurityScheme`.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/oauth2/authorize
+          tokenUrl: https://auth.example.com/oauth2/token
+          scopes:
+            a2a:read: Read tasks and extended agent cards
+            a2a:write: Send messages, cancel tasks, and configure push notifications
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth2/token
+          scopes:
+            a2a:read: Read tasks and extended agent cards
+            a2a:write: Send messages, cancel tasks, and configure push notifications
+    OpenIdConnectAuth:
+      type: openIdConnect
+      openIdConnectUrl: https://auth.example.com/.well-known/openid-configuration
+      description: OpenID Connect authentication declared via `OpenIdConnectSecurityScheme`.
+
+  # ---------------------------------------------------------------------------
+  # Parameters (Headers, Path, Query)
+  # ---------------------------------------------------------------------------
+  parameters:
+    A2AVersionHeader:
+      name: A2A-Version
+      in: header
+      required: false
+      description: |
+        A2A protocol version in `Major.Minor` format (e.g., `1.0`).
+        Unsupported versions trigger `VersionNotSupportedError` (`HTTP 400` / JSON-RPC `-32009`).
+      schema:
+        type: string
+        pattern: '^[0-9]+\.[0-9]+$'
+        example: '1.0'
+
+    A2AExtensionsHeader:
+      name: A2A-Extensions
+      in: header
+      required: false
+      description: |
+        Comma-separated list of extension URIs requested by the client.
+        Omitting an extension marked `required: true` on the Agent Card triggers
+        `ExtensionSupportRequiredError` (`HTTP 400` / JSON-RPC `-32008`).
+      schema:
+        type: string
+        example: https://example.com/extensions/geolocation/v1,https://standards.org/extensions/citations/v1
+
+    LastEventIDHeader:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: Optional standard SSE event identifier used to resume an interrupted stream.
+      schema:
+        type: string
+
+    TenantPathParam:
+      name: tenant
+      in: path
+      required: true
+      description: |
+        Opaque routing identifier matching the `tenant` value from the selected
+        `AgentInterface` in the Agent Card when multi-tenant routing is used.
+      schema:
+        type: string
+
+    TaskIdParam:
+      name: id
+      in: path
+      required: true
+      description: Unique resource identifier of the task.
+      schema:
+        type: string
+
+    TaskIdParentParam:
+      name: taskId
+      in: path
+      required: true
+      description: Parent task resource identifier.
+      schema:
+        type: string
+
+    PushConfigIdParam:
+      name: id
+      in: path
+      required: true
+      description: Unique resource identifier of the push notification configuration.
+      schema:
+        type: string
+
+    ContextIdQueryParam:
+      name: contextId
+      in: query
+      required: false
+      description: Filter tasks by context ID to retrieve tasks belonging to a specific conversation or session.
+      schema:
+        type: string
+
+    StatusQueryParam:
+      name: status
+      in: query
+      required: false
+      description: Filter tasks by their current `TaskState` enum value.
+      schema:
+        $ref: '#/components/schemas/TaskState'
+
+    PageSizeQueryParam:
+      name: pageSize
+      in: query
+      required: false
+      description: |
+        Maximum number of items to return. For `ListTasks`, defaults to 50 with a
+        valid range of 1 to 100.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 50
+
+    PageTokenQueryParam:
+      name: pageToken
+      in: query
+      required: false
+      description: Opaque pagination cursor returned as `nextPageToken` from a previous list call.
+      schema:
+        type: string
+
+    HistoryLengthQueryParam:
+      name: historyLength
+      in: query
+      required: false
+      description: |
+        Maximum number of most recent messages from the task's history to return.
+        Unset means no client limit; `0` omits all history messages.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+
+    StatusTimestampAfterQueryParam:
+      name: statusTimestampAfter
+      in: query
+      required: false
+      description: |
+        Filter tasks whose status was updated at or after this ISO 8601 UTC timestamp
+        (e.g., `2025-11-09T10:30:00Z`).
+      schema:
+        type: string
+        format: date-time
+
+    IncludeArtifactsQueryParam:
+      name: includeArtifacts
+      in: query
+      required: false
+      description: Whether to include task output artifacts in the response (defaults to `false`).
+      schema:
+        type: boolean
+        default: false
+
+  # ---------------------------------------------------------------------------
+  # Reusable Error Responses (google.rpc.Status + google.rpc.ErrorInfo)
+  # ---------------------------------------------------------------------------
+  responses:
+    BadRequestError:
+      description: |
+        Bad Request / Failed Precondition — validation failure or A2A protocol error
+        (`TASK_NOT_CANCELABLE`, `PUSH_NOTIFICATION_NOT_SUPPORTED`, `UNSUPPORTED_OPERATION`,
+        `CONTENT_TYPE_NOT_SUPPORTED`, `EXTENDED_AGENT_CARD_NOT_CONFIGURED`,
+        `EXTENSION_SUPPORT_REQUIRED`, `VERSION_NOT_SUPPORTED`).
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+    UnauthorizedError:
+      description: Authentication failed — missing, invalid, or expired credentials.
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+    ForbiddenError:
+      description: Authorization failed — caller lacks required scopes or permissions.
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+    NotFoundError:
+      description: Requested task or push notification configuration does not exist or is not accessible (`TASK_NOT_FOUND`).
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+    UnsupportedMediaTypeError:
+      description: Unsupported request `Content-Type` (`CONTENT_TYPE_NOT_SUPPORTED`).
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+    InternalServerError:
+      description: Internal server error or invalid upstream agent response (`INVALID_AGENT_RESPONSE`).
+      content:
+        application/a2a+json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GoogleRpcStatusError'
+
+  # ---------------------------------------------------------------------------
+  # Push Notification Webhook Callback (Section 4.3.3)
+  # ---------------------------------------------------------------------------
+  callbacks:
+    TaskUpdateWebhook:
+      '{$request.body#/url}':
+        post:
+          summary: Asynchronous Task Update Push Notification
+          description: |
+            Server-initiated HTTP `POST` webhook delivering task lifecycle updates using the
+            same `StreamResponse` payload schema as real-time SSE streams. The server MUST attach
+            the `Authorization` header configured in `TaskPushNotificationConfig.authentication`
+            and SHOULD include `token` if configured. Clients MUST acknowledge receipt with HTTP `2xx`.
+          parameters:
+            - name: Authorization
+              in: header
+              required: false
+              description: HTTP authentication header (`{scheme} {credentials}`) from `TaskPushNotificationConfig.authentication`.
+              schema:
+                type: string
+            - name: X-A2A-Notification-Token
+              in: header
+              required: false
+              description: Optional task/session verification token from `TaskPushNotificationConfig.token`.
+              schema:
+                type: string
+          requestBody:
+            required: true
+            content:
+              application/a2a+json:
+                schema:
+                  $ref: '#/components/schemas/StreamResponse'
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/StreamResponse'
+          responses:
+            '200':
+              description: Webhook notification acknowledged.
+            '202':
+              description: Webhook notification accepted for asynchronous processing.
+            '204':
+              description: Webhook notification acknowledged (No Content).
+
+  # ---------------------------------------------------------------------------
+  # Layer 1: Canonical ProtoJSON Data Model (All 44 Messages + 2 Enums + Error/RPC Envelopes)
+  # ---------------------------------------------------------------------------
+  schemas:
+    # ---- Enums ----
+    TaskState:
+      type: string
+      description: Defines the possible lifecycle states of a `Task` (ProtoJSON `SCREAMING_SNAKE_CASE`).
+      enum:
+        - TASK_STATE_UNSPECIFIED
+        - TASK_STATE_SUBMITTED
+        - TASK_STATE_WORKING
+        - TASK_STATE_COMPLETED
+        - TASK_STATE_FAILED
+        - TASK_STATE_CANCELED
+        - TASK_STATE_INPUT_REQUIRED
+        - TASK_STATE_REJECTED
+        - TASK_STATE_AUTH_REQUIRED
+
+    Role:
+      type: string
+      description: Defines the sender of a message in A2A protocol communication.
+      enum:
+        - ROLE_UNSPECIFIED
+        - ROLE_USER
+        - ROLE_AGENT
+
+    # ---- Generic Protobuf Helpers ----
+    GoogleProtobufValue:
+      description: |
+        Represents a dynamically typed JSON value (`google.protobuf.Value`):
+        object, array, string, number, boolean, or null.
+
+    Metadata:
+      type: object
+      additionalProperties: true
+      description: Flexible key-value map (`google.protobuf.Struct`) for custom metadata.
+
+    # ---- Core Execution Objects ----
+    Task:
+      type: object
+      required:
+        - id
+        - status
+      description: |
+        Core unit of action for A2A. Holds the current lifecycle status, generated output
+        artifacts, and multi-turn interaction history.
+      properties:
+        id:
+          type: string
+          description: Unique identifier (e.g., UUID) for the task, generated by the server for a new task.
+        contextId:
+          type: string
+          description: Unique identifier (e.g., UUID) for the contextual collection of interactions (tasks and messages).
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Artifact'
+          description: Set of output artifacts produced for this task.
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+          description: History of interactions associated with this task.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    TaskStatus:
+      type: object
+      required:
+        - state
+      description: Container for the current status of a task.
+      properties:
+        state:
+          $ref: '#/components/schemas/TaskState'
+        message:
+          $ref: '#/components/schemas/Message'
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp when the status was recorded (e.g., `2025-10-28T10:30:00.000Z`).
+
+    Part:
+      type: object
+      description: |
+        Container for a section of communication content. Exactly one of `text`, `raw`,
+        `url`, or `data` MUST be populated (`oneof content`).
+      oneOf:
+        - required: [text]
+        - required: [raw]
+        - required: [url]
+        - required: [data]
+      properties:
+        text:
+          type: string
+          description: String content of a text part.
+        raw:
+          type: string
+          format: byte
+          description: Raw byte content of a file, encoded as a base64 string in JSON.
+        url:
+          type: string
+          format: uri
+          description: URL pointing to external file content.
+        data:
+          $ref: '#/components/schemas/GoogleProtobufValue'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        filename:
+          type: string
+          description: Optional filename for a file part (e.g., `document.pdf`).
+        mediaType:
+          type: string
+          description: MIME media type of the part content (e.g., `text/plain`, `application/json`, `image/png`).
+
+    Message:
+      type: object
+      required:
+        - messageId
+        - role
+        - parts
+      description: |
+        One unit of communication between client and server. Associated with a context and/or a task.
+        For server messages, `contextId` MUST be provided, and `taskId` only if a task was created.
+      properties:
+        messageId:
+          type: string
+          description: Unique identifier (e.g., UUID) of the message created by the sender.
+        contextId:
+          type: string
+          description: Optional context identifier associating the message with a conversation.
+        taskId:
+          type: string
+          description: Optional task identifier associating the message with a specific task.
+        role:
+          $ref: '#/components/schemas/Role'
+        parts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Part'
+          description: Non-empty container of message content parts.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        extensions:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: URIs of extensions present in or contributing to this message.
+        referenceTaskIds:
+          type: array
+          items:
+            type: string
+          description: List of task IDs referenced by this message for additional context.
+
+    Artifact:
+      type: object
+      required:
+        - artifactId
+        - parts
+      description: Represents a generated output artifact for a task.
+      properties:
+        artifactId:
+          type: string
+          description: Unique identifier (e.g., UUID) for the artifact within its parent task.
+        name:
+          type: string
+          description: Human-readable name for the artifact.
+        description:
+          type: string
+          description: Optional human-readable description of the artifact.
+        parts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Part'
+          description: Content parts of the artifact (must contain at least one part).
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        extensions:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: URIs of extensions present in or contributing to this artifact.
+
+    # ---- Streaming Event Objects ----
+    TaskStatusUpdateEvent:
+      type: object
+      required:
+        - taskId
+        - contextId
+        - status
+      description: Event sent by an agent notifying the client of a change in task status.
+      properties:
+        taskId:
+          type: string
+          description: ID of the task that changed.
+        contextId:
+          type: string
+          description: ID of the context to which the task belongs.
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    TaskArtifactUpdateEvent:
+      type: object
+      required:
+        - taskId
+        - contextId
+        - artifact
+      description: Task delta event indicating an artifact has been generated or updated.
+      properties:
+        taskId:
+          type: string
+          description: ID of the task for this artifact.
+        contextId:
+          type: string
+          description: ID of the context to which the task belongs.
+        artifact:
+          $ref: '#/components/schemas/Artifact'
+        append:
+          type: boolean
+          description: If `true`, append this artifact's parts to a previously sent artifact with the same ID.
+        lastChunk:
+          type: boolean
+          description: If `true`, this is the final chunk of the streamed artifact.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    # ---- Push Notification Objects ----
+    AuthenticationInfo:
+      type: object
+      required:
+        - scheme
+      description: HTTP authentication details used by the agent when sending push notification webhooks.
+      properties:
+        scheme:
+          type: string
+          description: Case-insensitive IANA HTTP authentication scheme (e.g., `Bearer`, `Basic`, `Digest`).
+        credentials:
+          type: string
+          description: Push notification credentials formatted according to `scheme`.
+
+    TaskPushNotificationConfig:
+      type: object
+      required:
+        - url
+      description: Associates a webhook push notification destination and auth details with a specific task.
+      properties:
+        tenant:
+          type: string
+          description: Optional opaque routing identifier matching `AgentInterface.tenant`.
+        id:
+          type: string
+          description: Unique identifier (e.g., UUID) for this push notification configuration.
+        taskId:
+          type: string
+          description: ID of the task associated with this configuration (empty when embedded inside `SendMessageConfiguration`).
+        url:
+          type: string
+          format: uri
+          description: HTTPS URL where task update notifications will be POSTed.
+        token:
+          type: string
+          description: Optional verification token unique to this task or session.
+        authentication:
+          $ref: '#/components/schemas/AuthenticationInfo'
+
+    # ---- Agent Discovery Objects ----
+    AgentInterface:
+      type: object
+      required:
+        - url
+        - protocolBinding
+        - protocolVersion
+      description: Declares a target URL, protocol binding, optional tenant, and protocol version for contacting an agent.
+      properties:
+        url:
+          type: string
+          description: Absolute HTTPS URL for HTTP bindings (or `hostname:port` for `GRPC`).
+        protocolBinding:
+          type: string
+          description: |
+            Protocol binding supported at `url`. Standard values are `JSONRPC`, `GRPC`, and `HTTP+JSON`;
+            custom bindings SHOULD use a URI.
+          examples:
+            - HTTP+JSON
+            - JSONRPC
+            - GRPC
+        tenant:
+          type: string
+          description: Optional opaque routing identifier that clients MUST supply when contacting this interface.
+        protocolVersion:
+          type: string
+          description: Latest supported A2A `Major.Minor` protocol version exposed at this interface (e.g., `1.0`).
+
+    AgentProvider:
+      type: object
+      required:
+        - url
+        - organization
+      description: Service provider metadata for an agent.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: URL for the provider's website or documentation.
+        organization:
+          type: string
+          description: Name of the provider organization.
+
+    AgentExtension:
+      type: object
+      description: Declaration of a protocol extension supported by an agent.
+      properties:
+        uri:
+          type: string
+          format: uri
+          description: Unique URI identifying the extension.
+        description:
+          type: string
+          description: Human-readable explanation of how the agent uses the extension.
+        required:
+          type: boolean
+          description: If `true`, clients MUST declare support for this extension via `A2A-Extensions`.
+        params:
+          $ref: '#/components/schemas/Metadata'
+
+    AgentCapabilities:
+      type: object
+      description: Optional protocol capabilities supported by an agent.
+      properties:
+        streaming:
+          type: boolean
+          description: Indicates whether the agent supports SSE/gRPC streaming (`SendStreamingMessage`, `SubscribeToTask`).
+        pushNotifications:
+          type: boolean
+          description: Indicates whether the agent supports asynchronous push notification webhooks.
+        extensions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentExtension'
+          description: Protocol extensions supported by the agent.
+        extendedAgentCard:
+          type: boolean
+          description: Indicates whether the agent supports `GetExtendedAgentCard` when authenticated.
+
+    AgentSkill:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - tags
+      description: Distinct capability or domain behavior that an agent can perform.
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the skill.
+        name:
+          type: string
+          description: Human-readable name for the skill.
+        description:
+          type: string
+          description: Detailed description of the skill.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Keywords describing the skill's capabilities.
+        examples:
+          type: array
+          items:
+            type: string
+          description: Example prompts or scenarios handled by this skill.
+        inputModes:
+          type: array
+          items:
+            type: string
+          description: Supported input MIME media types for this skill (overrides `AgentCard.defaultInputModes`).
+        outputModes:
+          type: array
+          items:
+            type: string
+          description: Supported output MIME media types for this skill (overrides `AgentCard.defaultOutputModes`).
+        securityRequirements:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRequirement'
+          description: Security requirements necessary to invoke this skill.
+
+    AgentCardSignature:
+      type: object
+      required:
+        - protected
+        - signature
+      description: RFC 7515 JSON Web Signature (JWS) computed over the RFC 8785 (JCS) canonicalized `AgentCard` (excluding `signatures`).
+      properties:
+        protected:
+          type: string
+          description: Base64url-encoded JSON JWS protected header object.
+        signature:
+          type: string
+          description: Base64url-encoded computed cryptographic signature.
+        header:
+          $ref: '#/components/schemas/Metadata'
+
+    AgentCard:
+      type: object
+      required:
+        - name
+        - description
+        - supportedInterfaces
+        - version
+        - capabilities
+        - defaultInputModes
+        - defaultOutputModes
+        - skills
+      description: Self-describing manifest advertising an agent's identity, interfaces, capabilities, security schemes, and skills.
+      properties:
+        name:
+          type: string
+          description: Human-readable name of the agent.
+        description:
+          type: string
+          description: Human-readable description of the agent's purpose.
+        supportedInterfaces:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AgentInterface'
+          description: Ordered list of supported protocol interfaces (first entry is preferred).
+        provider:
+          $ref: '#/components/schemas/AgentProvider'
+        version:
+          type: string
+          description: Version string of the agent implementation (e.g., `1.0.0`).
+        documentationUrl:
+          type: string
+          format: uri
+          description: Optional URL providing additional documentation.
+        capabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+        securitySchemes:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/SecurityScheme'
+          description: Map of named security scheme definitions for authenticating with this agent.
+        securityRequirements:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRequirement'
+          description: Security requirements applied when contacting the agent.
+        defaultInputModes:
+          type: array
+          items:
+            type: string
+          description: Default supported input MIME media types across all skills.
+        defaultOutputModes:
+          type: array
+          items:
+            type: string
+          description: Default supported output MIME media types across all skills.
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSkill'
+          description: Skills supported by the agent.
+        signatures:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCardSignature'
+          description: JSON Web Signatures computed for this `AgentCard`.
+        iconUrl:
+          type: string
+          format: uri
+          description: Optional URL to an icon image for the agent.
+
+    # ---- Security Objects (OpenAPI 3.2 Aligned) ----
+    StringList:
+      type: object
+      description: Wrapper containing a list of scope strings.
+      properties:
+        list:
+          type: array
+          items:
+            type: string
+          description: Individual scope strings.
+
+    SecurityRequirement:
+      type: object
+      description: Map of security scheme names to required scopes.
+      properties:
+        schemes:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/StringList'
+          description: Map of security scheme identifiers to required scope lists.
+
+    SecurityScheme:
+      type: object
+      description: Discriminated union defining an agent endpoint security scheme (`oneof scheme`).
+      oneOf:
+        - required: [apiKeySecurityScheme]
+        - required: [httpAuthSecurityScheme]
+        - required: [oauth2SecurityScheme]
+        - required: [openIdConnectSecurityScheme]
+        - required: [mtlsSecurityScheme]
+      properties:
+        apiKeySecurityScheme:
+          $ref: '#/components/schemas/APIKeySecurityScheme'
+        httpAuthSecurityScheme:
+          $ref: '#/components/schemas/HTTPAuthSecurityScheme'
+        oauth2SecurityScheme:
+          $ref: '#/components/schemas/OAuth2SecurityScheme'
+        openIdConnectSecurityScheme:
+          $ref: '#/components/schemas/OpenIdConnectSecurityScheme'
+        mtlsSecurityScheme:
+          $ref: '#/components/schemas/MutualTlsSecurityScheme'
+
+    APIKeySecurityScheme:
+      type: object
+      required:
+        - location
+        - name
+      description: Security scheme using an API key.
+      properties:
+        description:
+          type: string
+        location:
+          type: string
+          enum: [query, header, cookie]
+          description: Location of the API key (`query`, `header`, or `cookie`).
+        name:
+          type: string
+          description: Name of the header, query, or cookie parameter.
+
+    HTTPAuthSecurityScheme:
+      type: object
+      required:
+        - scheme
+      description: Security scheme using HTTP authentication (RFC 9110 / RFC 7235).
+      properties:
+        description:
+          type: string
+        scheme:
+          type: string
+          description: IANA HTTP authentication scheme name (e.g., `Bearer`, `Basic`).
+        bearerFormat:
+          type: string
+          description: Optional hint identifying bearer token format (e.g., `JWT`).
+
+    OAuth2SecurityScheme:
+      type: object
+      required:
+        - flows
+      description: Security scheme using OAuth 2.0.
+      properties:
+        description:
+          type: string
+        flows:
+          $ref: '#/components/schemas/OAuthFlows'
+        oauth2MetadataUrl:
+          type: string
+          format: uri
+          description: HTTPS URL to OAuth 2.0 Authorization Server Metadata (RFC 8414).
+
+    OpenIdConnectSecurityScheme:
+      type: object
+      required:
+        - openIdConnectUrl
+      description: Security scheme using OpenID Connect Discovery.
+      properties:
+        description:
+          type: string
+        openIdConnectUrl:
+          type: string
+          format: uri
+          description: OpenID Connect Discovery URL.
+
+    MutualTlsSecurityScheme:
+      type: object
+      description: Security scheme using mutual TLS (mTLS) client certificate authentication.
+      properties:
+        description:
+          type: string
+
+    OAuthFlows:
+      type: object
+      description: Supported OAuth 2.0 flow configuration (`oneof flow`).
+      oneOf:
+        - required: [authorizationCode]
+        - required: [clientCredentials]
+        - required: [implicit]
+        - required: [password]
+        - required: [deviceCode]
+      properties:
+        authorizationCode:
+          $ref: '#/components/schemas/AuthorizationCodeOAuthFlow'
+        clientCredentials:
+          $ref: '#/components/schemas/ClientCredentialsOAuthFlow'
+        implicit:
+          $ref: '#/components/schemas/ImplicitOAuthFlow'
+        password:
+          $ref: '#/components/schemas/PasswordOAuthFlow'
+        deviceCode:
+          $ref: '#/components/schemas/DeviceCodeOAuthFlow'
+
+    AuthorizationCodeOAuthFlow:
+      type: object
+      required:
+        - authorizationUrl
+        - tokenUrl
+        - scopes
+      description: OAuth 2.0 Authorization Code flow configuration.
+      properties:
+        authorizationUrl:
+          type: string
+          format: uri
+        tokenUrl:
+          type: string
+          format: uri
+        refreshUrl:
+          type: string
+          format: uri
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+        pkceRequired:
+          type: boolean
+          description: Indicates whether PKCE (RFC 7636) is required for this flow.
+
+    ClientCredentialsOAuthFlow:
+      type: object
+      required:
+        - tokenUrl
+        - scopes
+      description: OAuth 2.0 Client Credentials flow configuration.
+      properties:
+        tokenUrl:
+          type: string
+          format: uri
+        refreshUrl:
+          type: string
+          format: uri
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+
+    ImplicitOAuthFlow:
+      type: object
+      deprecated: true
+      description: 'Deprecated: Use Authorization Code + PKCE instead.'
+      properties:
+        authorizationUrl:
+          type: string
+          format: uri
+        refreshUrl:
+          type: string
+          format: uri
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+
+    PasswordOAuthFlow:
+      type: object
+      deprecated: true
+      description: 'Deprecated: Use Authorization Code + PKCE or Device Code.'
+      properties:
+        tokenUrl:
+          type: string
+          format: uri
+        refreshUrl:
+          type: string
+          format: uri
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+
+    DeviceCodeOAuthFlow:
+      type: object
+      required:
+        - deviceAuthorizationUrl
+        - tokenUrl
+        - scopes
+      description: OAuth 2.0 Device Authorization Grant flow configuration (RFC 8628).
+      properties:
+        deviceAuthorizationUrl:
+          type: string
+          format: uri
+        tokenUrl:
+          type: string
+          format: uri
+        refreshUrl:
+          type: string
+          format: uri
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+
+    # ---- Operation Request & Response Objects ----
+    SendMessageConfiguration:
+      type: object
+      description: Configuration options for `SendMessage` and `SendStreamingMessage`.
+      properties:
+        acceptedOutputModes:
+          type: array
+          items:
+            type: string
+          description: MIME media types the client is prepared to accept for response parts.
+        taskPushNotificationConfig:
+          $ref: '#/components/schemas/TaskPushNotificationConfig'
+        historyLength:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Maximum number of most recent history messages to include in the returned task (`0` omits history).
+        returnImmediately:
+          type: boolean
+          description: |
+            If `true`, return immediately after creating the task while processing continues asynchronously.
+            If `false` (default), block until the task reaches a terminal or interrupted state.
+
+    SendMessageRequest:
+      type: object
+      required:
+        - message
+      description: Request payload for `SendMessage` and `SendStreamingMessage`.
+      properties:
+        tenant:
+          type: string
+          description: Optional opaque routing identifier matching `AgentInterface.tenant`.
+        message:
+          $ref: '#/components/schemas/Message'
+        configuration:
+          $ref: '#/components/schemas/SendMessageConfiguration'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    SendMessageResponse:
+      type: object
+      description: Response payload for `SendMessage` containing either a `task` or a direct `message` (`oneof payload`).
+      oneOf:
+        - required: [task]
+        - required: [message]
+      properties:
+        task:
+          $ref: '#/components/schemas/Task'
+        message:
+          $ref: '#/components/schemas/Message'
+
+    StreamResponse:
+      type: object
+      description: Wrapper object emitted on SSE streams, gRPC streams, and push notification webhooks (`oneof payload`).
+      oneOf:
+        - required: [task]
+        - required: [message]
+        - required: [statusUpdate]
+        - required: [artifactUpdate]
+      properties:
+        task:
+          $ref: '#/components/schemas/Task'
+        message:
+          $ref: '#/components/schemas/Message'
+        statusUpdate:
+          $ref: '#/components/schemas/TaskStatusUpdateEvent'
+        artifactUpdate:
+          $ref: '#/components/schemas/TaskArtifactUpdateEvent'
+
+    GetTaskRequest:
+      type: object
+      required:
+        - id
+      description: Request parameters for `GetTask` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        id:
+          type: string
+          description: Resource ID of the task to retrieve.
+        historyLength:
+          type: integer
+          format: int32
+          minimum: 0
+
+    ListTasksRequest:
+      type: object
+      description: Request parameters for `ListTasks` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        contextId:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskState'
+        pageSize:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+        pageToken:
+          type: string
+        historyLength:
+          type: integer
+          format: int32
+          minimum: 0
+        statusTimestampAfter:
+          type: string
+          format: date-time
+        includeArtifacts:
+          type: boolean
+
+    ListTasksResponse:
+      type: object
+      required:
+        - tasks
+        - nextPageToken
+        - pageSize
+        - totalSize
+      description: Paginated result object returned by `ListTasks`.
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+          description: Tasks matching the requested filter criteria.
+        nextPageToken:
+          type: string
+          description: Cursor token for the next page, or empty string if no more results exist.
+        pageSize:
+          type: integer
+          format: int32
+          description: Page size applied to this response.
+        totalSize:
+          type: integer
+          format: int32
+          description: Total number of matching tasks available prior to pagination.
+
+    CancelTaskRequest:
+      type: object
+      required:
+        - id
+      description: Request payload for `CancelTask`.
+      properties:
+        tenant:
+          type: string
+        id:
+          type: string
+          description: Resource ID of the task to cancel.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    SubscribeToTaskRequest:
+      type: object
+      required:
+        - id
+      description: Request parameters for `SubscribeToTask` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        id:
+          type: string
+          description: Resource ID of the task to subscribe to.
+
+    GetTaskPushNotificationConfigRequest:
+      type: object
+      required:
+        - taskId
+        - id
+      description: Request parameters for `GetTaskPushNotificationConfig` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        taskId:
+          type: string
+          description: Parent task resource ID.
+        id:
+          type: string
+          description: Push notification configuration resource ID.
+
+    ListTaskPushNotificationConfigsRequest:
+      type: object
+      required:
+        - taskId
+      description: Request parameters for `ListTaskPushNotificationConfigs` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        taskId:
+          type: string
+          description: Parent task resource ID.
+        pageSize:
+          type: integer
+          format: int32
+          minimum: 1
+        pageToken:
+          type: string
+
+    ListTaskPushNotificationConfigsResponse:
+      type: object
+      description: Paginated response object returned by `ListTaskPushNotificationConfigs`.
+      properties:
+        configs:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskPushNotificationConfig'
+          description: Push notification configurations registered for the task.
+        nextPageToken:
+          type: string
+          description: Cursor token for the next page, or empty string if none remain.
+
+    DeleteTaskPushNotificationConfigRequest:
+      type: object
+      required:
+        - taskId
+        - id
+      description: Request parameters for `DeleteTaskPushNotificationConfig` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+        taskId:
+          type: string
+          description: Parent task resource ID.
+        id:
+          type: string
+          description: Push notification configuration resource ID.
+
+    GetExtendedAgentCardRequest:
+      type: object
+      description: Request parameters for `GetExtendedAgentCard` (used directly in JSON-RPC `params`).
+      properties:
+        tenant:
+          type: string
+
+    # ---- Error Models (Sections 3.3.2, 5.4, 9.5, 11.6) ----
+    A2AErrorReason:
+      type: string
+      description: |
+        Canonical A2A-specific error reasons serialized in `google.rpc.ErrorInfo.reason`
+        (UPPER_SNAKE_CASE without the `Error` suffix, paired with `domain: "a2a-protocol.org"`).
+      enum:
+        - TASK_NOT_FOUND
+        - TASK_NOT_CANCELABLE
+        - PUSH_NOTIFICATION_NOT_SUPPORTED
+        - UNSUPPORTED_OPERATION
+        - CONTENT_TYPE_NOT_SUPPORTED
+        - INVALID_AGENT_RESPONSE
+        - EXTENDED_AGENT_CARD_NOT_CONFIGURED
+        - EXTENSION_SUPPORT_REQUIRED
+        - VERSION_NOT_SUPPORTED
+
+    GoogleRpcErrorInfo:
+      type: object
+      required:
+        - '@type'
+        - reason
+        - domain
+      description: Structured `google.rpc.ErrorInfo` detail identifying an A2A-specific protocol error.
+      properties:
+        '@type':
+          type: string
+          enum:
+            - type.googleapis.com/google.rpc.ErrorInfo
+        reason:
+          $ref: '#/components/schemas/A2AErrorReason'
+        domain:
+          type: string
+          enum:
+            - a2a-protocol.org
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Additional contextual key-value debugging metadata (e.g., `taskId`, `timestamp`).
+
+    FieldViolation:
+      type: object
+      required:
+        - field
+        - description
+      description: Single request field validation failure inside `google.rpc.BadRequest`.
+      properties:
+        field:
+          type: string
+        description:
+          type: string
+
+    GoogleRpcBadRequest:
+      type: object
+      required:
+        - '@type'
+        - fieldViolations
+      description: Structured `google.rpc.BadRequest` detail describing request field validation errors.
+      properties:
+        '@type':
+          type: string
+          enum:
+            - type.googleapis.com/google.rpc.BadRequest
+        fieldViolations:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldViolation'
+
+    GoogleRpcErrorDetail:
+      type: object
+      required:
+        - '@type'
+      additionalProperties: true
+      description: |
+        ProtoJSON `google.protobuf.Any` error detail object. Implementations SHOULD use
+        `google.rpc.ErrorInfo` (for A2A-specific errors) or `google.rpc.BadRequest` (for validation errors).
+      properties:
+        '@type':
+          type: string
+          description: Type URL of the embedded Protobuf detail message (e.g., `type.googleapis.com/google.rpc.ErrorInfo`).
+
+    GoogleRpcStatus:
+      type: object
+      required:
+        - code
+        - message
+      description: HTTP+JSON error payload following `google.rpc.Status`.
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP status code equivalent (e.g., `400`, `401`, `403`, `404`, `500`).
+        status:
+          type: string
+          description: Canonical gRPC/RPC status name (e.g., `INVALID_ARGUMENT`, `NOT_FOUND`, `FAILED_PRECONDITION`, `INTERNAL`).
+        message:
+          type: string
+          description: Human-readable error message.
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoogleRpcErrorDetail'
+          description: Array of typed error detail objects (`google.rpc.ErrorInfo`, `google.rpc.BadRequest`, etc.).
+
+    GoogleRpcStatusError:
+      type: object
+      required:
+        - error
+      description: Root JSON error envelope returned by the HTTP+JSON/REST binding (Section 11.6).
+      properties:
+        error:
+          $ref: '#/components/schemas/GoogleRpcStatus'
+
+    # ---- JSON-RPC 2.0 Envelopes (Section 9) ----
+    JSONRPCMethod:
+      type: string
+      description: Canonical PascalCase A2A v1.0 JSON-RPC 2.0 method names.
+      enum:
+        - SendMessage
+        - SendStreamingMessage
+        - GetTask
+        - ListTasks
+        - CancelTask
+        - SubscribeToTask
+        - CreateTaskPushNotificationConfig
+        - GetTaskPushNotificationConfig
+        - ListTaskPushNotificationConfigs
+        - DeleteTaskPushNotificationConfig
+        - GetExtendedAgentCard
+
+    JSONRPCRequest:
+      type: object
+      required:
+        - jsonrpc
+        - method
+      description: Standard JSON-RPC 2.0 request envelope for A2A v1.0 operations.
+      properties:
+        jsonrpc:
+          type: string
+          enum: ['2.0']
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+          description: Request correlation identifier echoed back in the response.
+        method:
+          $ref: '#/components/schemas/JSONRPCMethod'
+        params:
+          oneOf:
+            - $ref: '#/components/schemas/SendMessageRequest'
+            - $ref: '#/components/schemas/GetTaskRequest'
+            - $ref: '#/components/schemas/ListTasksRequest'
+            - $ref: '#/components/schemas/CancelTaskRequest'
+            - $ref: '#/components/schemas/SubscribeToTaskRequest'
+            - $ref: '#/components/schemas/TaskPushNotificationConfig'
+            - $ref: '#/components/schemas/GetTaskPushNotificationConfigRequest'
+            - $ref: '#/components/schemas/ListTaskPushNotificationConfigsRequest'
+            - $ref: '#/components/schemas/DeleteTaskPushNotificationConfigRequest'
+            - $ref: '#/components/schemas/GetExtendedAgentCardRequest'
+          description: Method-specific ProtoJSON parameter object.
+
+    JSONRPCError:
+      type: object
+      required:
+        - code
+        - message
+      description: |
+        JSON-RPC 2.0 error object (Section 9.5).
+        Standard codes: `-32700` (Parse error), `-32600` (Invalid request), `-32601` (Method not found),
+        `-32602` (Invalid params), `-32603` (Internal error).
+        A2A-specific codes: `-32001` (`TaskNotFoundError`), `-32002` (`TaskNotCancelableError`),
+        `-32003` (`PushNotificationNotSupportedError`), `-32004` (`UnsupportedOperationError`),
+        `-32005` (`ContentTypeNotSupportedError`), `-32006` (`InvalidAgentResponseError`),
+        `-32007` (`ExtendedAgentCardNotConfiguredError`), `-32008` (`ExtensionSupportRequiredError`),
+        `-32009` (`VersionNotSupportedError`).
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoogleRpcErrorDetail'
+          description: Optional array of ProtoJSON `Any` error detail objects (`google.rpc.ErrorInfo`, `google.rpc.BadRequest`).
+
+    JSONRPCResponse:
+      type: object
+      required:
+        - jsonrpc
+      description: Standard JSON-RPC 2.0 response envelope containing either `result` or `error`.
+      oneOf:
+        - required: [result]
+        - required: [error]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ['2.0']
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+            - type: 'null'
+        result:
+          oneOf:
+            - $ref: '#/components/schemas/SendMessageResponse'
+            - $ref: '#/components/schemas/Task'
+            - $ref: '#/components/schemas/ListTasksResponse'
+            - $ref: '#/components/schemas/TaskPushNotificationConfig'
+            - $ref: '#/components/schemas/ListTaskPushNotificationConfigsResponse'
+            - $ref: '#/components/schemas/AgentCard'
+            - type: object
+              description: Empty object returned by `DeleteTaskPushNotificationConfig`.
+        error:
+          $ref: '#/components/schemas/JSONRPCError'

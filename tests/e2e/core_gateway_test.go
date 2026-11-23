@@ -15,8 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
-	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
+	a2aspec "github.com/goroute-ai/ai-gateway-go/internal/a2a/spec"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
@@ -336,18 +335,12 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	// 1. Start Mock Upstream Agent Webhook Server
 	mockAgentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedWebhook.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Id: "task_live_123",
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_WORKING,
-					},
-				},
-			},
-		}
-		outJSON, _ := a2a.ProtoJSONMarshaler.Marshal(respObj)
+		w.Header().Set("Content-Type", "application/a2a+json")
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id:     "task_live_123",
+			Status: a2aspec.TaskStatus{State: a2aspec.TASKSTATEWORKING},
+		})
+		outJSON, _ := json.Marshal(respObj)
 		_, _ = w.Write(outJSON)
 	}))
 	defer mockAgentSrv.Close()
@@ -378,6 +371,7 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 		"name":                 "Code Review Agent",
 		"slug":                 "code-reviewer",
 		"endpoint_url":         mockAgentSrv.URL + "/tasks",
+		"is_public_card":       true,
 		"visibility_mode":      "org_admin",
 		"is_active":            true,
 		"cost_per_task_micros": 200,
@@ -387,13 +381,8 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	}
 	agent := agentResp.Agent
 
-	// 4. Test Agent Card Discovery: GET /.well-known/agent-card.json
-	// Unauthenticated lookup of a specific tenant agent must fail closed (AUTH-10).
-	unauthResp, _ := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", nil, nil, nil)
-	if unauthResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for unauthenticated tenant agent card discovery, got %d", unauthResp.StatusCode)
-	}
-	resp, cardRaw := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", vkHeaders, nil, nil)
+	// 4. Test Agent Card Discovery: GET /.well-known/agent-card.json (public card discovery)
+	resp, cardRaw := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", nil, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("agent card discovery failed (%d): %s", resp.StatusCode, string(cardRaw))
 	}
@@ -406,7 +395,7 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	resp, raw = client.doJSON(http.MethodPost, "/a2a/v1/agents/code-reviewer", vkHeaders, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      201,
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_001",
@@ -492,7 +481,7 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	resp, raw = client.doJSON(http.MethodPost, "/a2a/v1/agents/code-reviewer", vkHeaders, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      202,
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_002",
@@ -551,18 +540,12 @@ func TestLiveStack_UnifiedMultiProtocolAgenticLoop(t *testing.T) {
 
 	// 3. Mock A2A Agent
 	mockA2ASrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		respObj := &pb.SendMessageResponse{
-			Payload: &pb.SendMessageResponse_Task{
-				Task: &pb.Task{
-					Id: "task_patch_456",
-					Status: &pb.TaskStatus{
-						State: pb.TaskState_TASK_STATE_COMPLETED,
-					},
-				},
-			},
-		}
-		outJSON, _ := a2a.ProtoJSONMarshaler.Marshal(respObj)
+		w.Header().Set("Content-Type", "application/a2a+json")
+		respObj := a2aspec.NewSendMessageResponseTask(&a2aspec.Task{
+			Id:     "task_patch_456",
+			Status: a2aspec.TaskStatus{State: a2aspec.TASKSTATECOMPLETED},
+		})
+		outJSON, _ := json.Marshal(respObj)
 		_, _ = w.Write(outJSON)
 	}))
 	defer mockA2ASrv.Close()
@@ -681,7 +664,7 @@ func TestLiveStack_UnifiedMultiProtocolAgenticLoop(t *testing.T) {
 	resp, raw = client.doJSON(http.MethodPost, "/a2a/v1/agents/patch-verifier", vkHeaders, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      302,
-		"method":  "tasks/send",
+		"method":  "SendMessage",
 		"params": map[string]any{
 			"message": map[string]any{
 				"messageId": "msg_003",
