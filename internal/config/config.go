@@ -49,6 +49,7 @@ type OutboundSSRFConfig struct {
 	AllowPrivateNetworks bool          `yaml:"allow_private_networks"` // default false (or true in local test/dev)
 	AllowedPrivateCIDRs  []string      `yaml:"allowed_private_cidrs"`  // e.g. ["10.0.0.0/8"]
 	AllowInsecureHTTP    bool          `yaml:"allow_insecure_http"`    // default false (forces https:// upstream unless true)
+	AllowLoopbackHTTP    bool          `yaml:"allow_loopback_http"`    // default false (permits http:// strictly to 127.0.0.0/8, ::1, localhost)
 	AllowedSchemes       []string      `yaml:"allowed_schemes"`        // e.g. ["https", "http"]
 	BlockedIPs           []string      `yaml:"blocked_ips"`            // e.g. ["169.254.169.254"]
 	DialTimeout          time.Duration `yaml:"dial_timeout"`
@@ -222,7 +223,8 @@ type ToolPolicyConfig struct {
 
 // ServerConfig configures HTTP/gRPC listeners, timeouts, CORS, HSTS, and per-organization file upload limits.
 type ServerConfig struct {
-	Environment               string        `yaml:"environment"` // "development", "staging", "production"
+	Environment               string        `yaml:"environment"`     // "development", "staging", "production"
+	PublicBaseURL             string        `yaml:"public_base_url"` // Canonical external origin (e.g. "https://gateway.example.com") for SSO/CLI URLs
 	Host                      string        `yaml:"host"`
 	Port                      int           `yaml:"port"`
 	GRPCPort                  int           `yaml:"grpc_port"` // 0 = disabled; >0 enables A2A gRPC server
@@ -272,69 +274,67 @@ type OIDCClaimMapping struct {
 
 // OIDCIssuerConfig configures a single OIDC/JWT issuer for multi-issuer verification.
 type OIDCIssuerConfig struct {
-	Issuer              string           `yaml:"issuer"`
-	Audience            string           `yaml:"audience,omitempty"`
-	JWKSURL             string           `yaml:"jwks_url,omitempty"`
-	DiscoveryURL        string           `yaml:"discovery_url,omitempty"`
-	Algorithms          []string         `yaml:"algorithms,omitempty"`
-	AllowedEmailDomains []string         `yaml:"allowed_email_domains,omitempty"`
-	ClaimMapping        OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
-	AutoRegister        bool             `yaml:"auto_register,omitempty"`
-	DefaultOrgID        string           `yaml:"default_org_id,omitempty"`
-	DefaultTeamID       string           `yaml:"default_team_id,omitempty"`
-	DefaultRole         string           `yaml:"default_role,omitempty"`
+	Issuer                    string           `yaml:"issuer"`
+	Audience                  string           `yaml:"audience,omitempty"`
+	JWKSURL                   string           `yaml:"jwks_url,omitempty"`
+	DiscoveryURL              string           `yaml:"discovery_url,omitempty"`
+	Algorithms                []string         `yaml:"algorithms,omitempty"`
+	AllowedEmailDomains       []string         `yaml:"allowed_email_domains,omitempty"`
+	AllowUnverifiedEmail      bool             `yaml:"allow_unverified_email,omitempty"`
+	AllowPrivilegedRoleClaims bool             `yaml:"allow_privileged_role_claims,omitempty"`
+	ClaimMapping              OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
+	AutoRegister              bool             `yaml:"auto_register,omitempty"`
+	DefaultOrgID              string           `yaml:"default_org_id,omitempty"`
+	DefaultTeamID             string           `yaml:"default_team_id,omitempty"`
+	DefaultRole               string           `yaml:"default_role,omitempty"`
 }
 
 // IntrospectionConfig configures OAuth 2.0 RFC 7662 token introspection or OIDC UserInfo verification.
 type IntrospectionConfig struct {
-	TokenInfoEndpoint string        `yaml:"token_info_endpoint,omitempty"`
-	ClientID          string        `yaml:"client_id,omitempty"`
-	ClientSecret      string        `yaml:"client_secret,omitempty"`
-	Mode              string        `yaml:"mode,omitempty"`
-	UserIDField       string        `yaml:"user_id_field,omitempty"`
-	EmailField        string        `yaml:"email_field,omitempty"`
-	RoleField         string        `yaml:"role_field,omitempty"`
-	OrgIDField        string        `yaml:"org_id_field,omitempty"`
-	TeamIDField       string        `yaml:"team_id_field,omitempty"`
-	CacheTTL          time.Duration `yaml:"cache_ttl,omitempty"`
-	AutoRegister      bool          `yaml:"auto_register,omitempty"`
-	DefaultTeamID     string        `yaml:"default_team_id,omitempty"`
-	DefaultRole       string        `yaml:"default_role,omitempty"`
-}
-
-// ProxyAuthConfig configures CIDR-guarded reverse-proxy identity header authentication.
-type ProxyAuthConfig struct {
-	Enabled           bool              `yaml:"enabled,omitempty"`
-	TrustedProxyCIDRs []string          `yaml:"trusted_proxy_cidrs,omitempty"`
-	HeaderMapping     map[string]string `yaml:"header_mapping,omitempty"`
-	AutoRegister      bool              `yaml:"auto_register,omitempty"`
-	DefaultTeamID     string            `yaml:"default_team_id,omitempty"`
-	DefaultRole       string            `yaml:"default_role,omitempty"`
+	TokenInfoEndpoint         string        `yaml:"token_info_endpoint,omitempty"`
+	Issuer                    string        `yaml:"issuer,omitempty"`
+	Audience                  string        `yaml:"audience,omitempty"`
+	DiscoveryURL              string        `yaml:"discovery_url,omitempty"`
+	ClientID                  string        `yaml:"client_id,omitempty"`
+	ClientSecret              string        `yaml:"client_secret,omitempty"`
+	Mode                      string        `yaml:"mode,omitempty"`
+	UserIDField               string        `yaml:"user_id_field,omitempty"`
+	EmailField                string        `yaml:"email_field,omitempty"`
+	RoleField                 string        `yaml:"role_field,omitempty"`
+	OrgIDField                string        `yaml:"org_id_field,omitempty"`
+	TeamIDField               string        `yaml:"team_id_field,omitempty"`
+	CacheTTL                  time.Duration `yaml:"cache_ttl,omitempty"`
+	AutoRegister              bool          `yaml:"auto_register,omitempty"`
+	AllowUnverifiedEmail      bool          `yaml:"allow_unverified_email,omitempty"`
+	AllowPrivilegedRoleClaims bool          `yaml:"allow_privileged_role_claims,omitempty"`
+	DefaultTeamID             string        `yaml:"default_team_id,omitempty"`
+	DefaultRole               string        `yaml:"default_role,omitempty"`
 }
 
 // SSOProviderConfig configures an interactive OIDC SSO identity provider for Control Plane and CLI login.
 type SSOProviderConfig struct {
-	ID                    string           `yaml:"id,omitempty"`
-	Name                  string           `yaml:"name,omitempty"`
-	Type                  string           `yaml:"type,omitempty"`
-	DisplayName           string           `yaml:"display_name,omitempty"`
-	ClientID              string           `yaml:"client_id"`
-	ClientSecret          string           `yaml:"client_secret,omitempty"`
-	Issuer                string           `yaml:"issuer,omitempty"`
-	AuthorizationEndpoint string           `yaml:"authorization_endpoint,omitempty"`
-	TokenEndpoint         string           `yaml:"token_endpoint,omitempty"`
-	JWKSURL               string           `yaml:"jwks_url,omitempty"`
-	DiscoveryURL          string           `yaml:"discovery_url,omitempty"`
-	Scopes                []string         `yaml:"scopes,omitempty"`
-	RedirectURL           string           `yaml:"redirect_url,omitempty"`
-	AllowedEmailDomains   []string         `yaml:"allowed_email_domains,omitempty"`
-	AutoRegister          bool             `yaml:"auto_register,omitempty"`
-	DefaultOrgID          string           `yaml:"default_org_id,omitempty"`
-	DefaultTeamID         string           `yaml:"default_team_id,omitempty"`
-	DefaultRole           string           `yaml:"default_role,omitempty"`
-	TenantID              string           `yaml:"tenant_id,omitempty"`
-	Algorithms            []string         `yaml:"algorithms,omitempty"`
-	ClaimMapping          OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
+	ID                        string           `yaml:"id,omitempty"`
+	Name                      string           `yaml:"name,omitempty"`
+	Type                      string           `yaml:"type,omitempty"`
+	DisplayName               string           `yaml:"display_name,omitempty"`
+	ClientID                  string           `yaml:"client_id"`
+	ClientSecret              string           `yaml:"client_secret,omitempty"`
+	Issuer                    string           `yaml:"issuer,omitempty"`
+	AuthorizationEndpoint     string           `yaml:"authorization_endpoint,omitempty"`
+	TokenEndpoint             string           `yaml:"token_endpoint,omitempty"`
+	JWKSURL                   string           `yaml:"jwks_url,omitempty"`
+	DiscoveryURL              string           `yaml:"discovery_url,omitempty"`
+	Scopes                    []string         `yaml:"scopes,omitempty"`
+	RedirectURL               string           `yaml:"redirect_url,omitempty"`
+	AllowedEmailDomains       []string         `yaml:"allowed_email_domains,omitempty"`
+	AllowUnverifiedEmail      bool             `yaml:"allow_unverified_email,omitempty"`
+	AllowPrivilegedRoleClaims bool             `yaml:"allow_privileged_role_claims,omitempty"`
+	AutoRegister              bool             `yaml:"auto_register,omitempty"`
+	DefaultOrgID              string           `yaml:"default_org_id,omitempty"`
+	DefaultTeamID             string           `yaml:"default_team_id,omitempty"`
+	DefaultRole               string           `yaml:"default_role,omitempty"`
+	Algorithms                []string         `yaml:"algorithms,omitempty"`
+	ClaimMapping              OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
 }
 
 // KeyRotationSinkConfig configures declarative external secret-manager synchronization
@@ -348,7 +348,7 @@ type KeyRotationSinkConfig struct {
 	Namespace  string `yaml:"namespace,omitempty"`   // Optional Vault namespace header
 }
 
-// AuthConfig configures virtual-key, JWT/OIDC, SSO, proxy auth, key rotation, and HIBP screening.
+// AuthConfig configures virtual-key, OIDC/JWKS, SSO, introspection, and key rotation.
 type AuthConfig struct {
 	AllowAmbientCloudIAM         bool                  `yaml:"allow_ambient_cloud_iam,omitempty"`
 	MasterAdminKey               string                `yaml:"master_admin_key"`
@@ -357,14 +357,12 @@ type AuthConfig struct {
 	AllowMasterKeyDataPlane      bool                  `yaml:"allow_master_key_data_plane"`
 	EnableDataPlaneJWT           bool                  `yaml:"enable_data_plane_jwt"`
 	CustomAPIKeyHeader           string                `yaml:"custom_api_key_header"`
-	JWTSecret                    string                `yaml:"jwt_secret"`
 	JWTIssuer                    string                `yaml:"jwt_issuer"`
 	JWTAudience                  string                `yaml:"jwt_audience"`
 	OIDCJWKSURL                  string                `yaml:"oidc_jwks_url"`
 	OIDCIssuers                  []OIDCIssuerConfig    `yaml:"oidc_issuers,omitempty"`
 	SSOProviders                 []SSOProviderConfig   `yaml:"sso_providers,omitempty"`
 	Introspection                IntrospectionConfig   `yaml:"introspection,omitempty"`
-	ProxyAuth                    ProxyAuthConfig       `yaml:"proxy_auth,omitempty"`
 	DefaultOrgID                 string                `yaml:"default_org_id"`
 	DefaultVirtualKey            string                `yaml:"default_virtual_key"`
 	L1CacheTTL                   time.Duration         `yaml:"l1_cache_ttl"`
@@ -375,12 +373,11 @@ type AuthConfig struct {
 	KeyRotationPollInterval      time.Duration         `yaml:"key_rotation_poll_interval,omitempty"`
 	KeyRotationGracePeriod       time.Duration         `yaml:"key_rotation_grace_period,omitempty"`
 	KeyExpiryAlertPollInterval   time.Duration         `yaml:"key_expiry_alert_poll_interval,omitempty"`
-	UIUsername                   string                `yaml:"ui_username,omitempty"`
-	UIPassword                   string                `yaml:"ui_password,omitempty"`
 	SessionSecret                string                `yaml:"session_secret,omitempty"`
 	SessionTTL                   time.Duration         `yaml:"session_ttl,omitempty"`
-	EnableHIBPCheck              bool                  `yaml:"enable_hibp_check,omitempty"`
-	HIBPBaseURL                  string                `yaml:"hibp_base_url,omitempty"`
+	CLILoginDefaultTTL           time.Duration         `yaml:"cli_login_default_ttl,omitempty"`
+	CLILoginMaxTTL               time.Duration         `yaml:"cli_login_max_ttl,omitempty"`
+	AuthStartRateLimitPerMin     int                   `yaml:"auth_start_rate_limit_per_min,omitempty"`
 }
 
 // RouterConfig configures intelligent model routing, retries, cooldowns, fallbacks, hedging, and scheduling.
@@ -552,7 +549,6 @@ func Default() *Config {
 		Auth: AuthConfig{
 			MasterAdminKey:          "sk-gw-master-admin-default-key-change-me",
 			MasterEncryptionKey:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			JWTSecret:               "",
 			DefaultOrgID:            "org_default",
 			L1CacheTTL:              15 * time.Second,
 			L2CacheTTL:              5 * time.Minute,
@@ -753,6 +749,7 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	cfg.applyAuthEnvOverrides()
 	cfg.applyRouterEnvOverrides()
 	cfg.applyFinOpsAndProtocolEnvOverrides()
+	cfg.resolveSecretEnvValues()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -760,9 +757,52 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) resolveSecretEnvValues() {
+	c.Storage.PostgresDSN = ResolveEnvValue(c.Storage.PostgresDSN)
+	c.Storage.RedisPass = ResolveEnvValue(c.Storage.RedisPass)
+	c.Auth.MasterAdminKey = ResolveEnvValue(c.Auth.MasterAdminKey)
+	c.Auth.MasterEncryptionKey = ResolveEnvValue(c.Auth.MasterEncryptionKey)
+	for i := range c.Auth.PreviousMasterEncryptionKeys {
+		c.Auth.PreviousMasterEncryptionKeys[i] = ResolveEnvValue(c.Auth.PreviousMasterEncryptionKeys[i])
+	}
+	c.Auth.SessionSecret = ResolveEnvValue(c.Auth.SessionSecret)
+	c.Auth.DefaultVirtualKey = ResolveEnvValue(c.Auth.DefaultVirtualKey)
+	c.Auth.KeyRotationDeliveryURL = ResolveEnvValue(c.Auth.KeyRotationDeliveryURL)
+	c.Auth.KeyRotationDeliveryToken = ResolveEnvValue(c.Auth.KeyRotationDeliveryToken)
+	c.Auth.KeyRotationSink.Address = ResolveEnvValue(c.Auth.KeyRotationSink.Address)
+	c.Auth.KeyRotationSink.Token = ResolveEnvValue(c.Auth.KeyRotationSink.Token)
+	c.Auth.Introspection.ClientID = ResolveEnvValue(c.Auth.Introspection.ClientID)
+	c.Auth.Introspection.ClientSecret = ResolveEnvValue(c.Auth.Introspection.ClientSecret)
+	for i := range c.Auth.SSOProviders {
+		c.Auth.SSOProviders[i].ClientID = ResolveEnvValue(c.Auth.SSOProviders[i].ClientID)
+		c.Auth.SSOProviders[i].ClientSecret = ResolveEnvValue(c.Auth.SSOProviders[i].ClientSecret)
+	}
+}
+
+func isUnresolvedEnvReference(raw string) bool {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return false
+	}
+	if strings.HasPrefix(v, "os.environ/") {
+		return true
+	}
+	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && len(v) > 3 {
+		return true
+	}
+	return false
+}
+
 func (c *Config) applyServerAndStorageEnvOverrides() {
 	envInt("GATEWAY_PORT", &c.Server.Port)
 	envInt("GATEWAY_GRPC_PORT", &c.Server.GRPCPort)
+	envTrimStr("GATEWAY_PUBLIC_BASE_URL", &c.Server.PublicBaseURL)
+	if v := os.Getenv("GATEWAY_CORS_ALLOWED_ORIGINS"); v != "" {
+		if origins := splitTrimCSV(v); len(origins) > 0 {
+			c.Server.CORSAllowedOrigins = origins
+		}
+	}
+	envBool("GATEWAY_ENABLE_HSTS", &c.Server.EnableHSTS)
 	envInt64("GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG", &c.Server.MaxFileStorageBytesPerOrg)
 	envInt("GATEWAY_MAX_CONCURRENT_FILE_UPLOADS", &c.Server.MaxConcurrentFileUploads)
 
@@ -807,18 +847,18 @@ func (c *Config) applyAuthEnvOverrides() {
 	envBool("GATEWAY_ALLOW_MASTER_KEY_DATA_PLANE", &c.Auth.AllowMasterKeyDataPlane)
 	envBool("GATEWAY_ENABLE_DATA_PLANE_JWT", &c.Auth.EnableDataPlaneJWT)
 	envTrimStr("GATEWAY_CUSTOM_API_KEY_HEADER", &c.Auth.CustomAPIKeyHeader)
-	envStr("GATEWAY_JWT_SECRET", &c.Auth.JWTSecret)
 	envStr("GATEWAY_JWT_ISSUER", &c.Auth.JWTIssuer)
 	envStr("GATEWAY_JWT_AUDIENCE", &c.Auth.JWTAudience)
 	envStr("GATEWAY_OIDC_JWKS_URL", &c.Auth.OIDCJWKSURL)
 	envDuration("GATEWAY_KEY_ROTATION_POLL_INTERVAL", &c.Auth.KeyRotationPollInterval)
 	envDuration("GATEWAY_KEY_ROTATION_GRACE_PERIOD", &c.Auth.KeyRotationGracePeriod)
-	envTrimStr("GATEWAY_UI_USERNAME", &c.Auth.UIUsername)
-	envStr("GATEWAY_UI_PASSWORD", &c.Auth.UIPassword)
 	envStr("GATEWAY_SESSION_SECRET", &c.Auth.SessionSecret)
 	envDuration("GATEWAY_SESSION_TTL", &c.Auth.SessionTTL)
-	envBool("GATEWAY_ENABLE_HIBP_CHECK", &c.Auth.EnableHIBPCheck)
-	envTrimStr("GATEWAY_HIBP_BASE_URL", &c.Auth.HIBPBaseURL)
+	envStr("GATEWAY_INTROSPECTION_CLIENT_ID", &c.Auth.Introspection.ClientID)
+	envStr("GATEWAY_INTROSPECTION_CLIENT_SECRET", &c.Auth.Introspection.ClientSecret)
+	envDuration("GATEWAY_CLI_LOGIN_DEFAULT_TTL", &c.Auth.CLILoginDefaultTTL)
+	envDuration("GATEWAY_CLI_LOGIN_MAX_TTL", &c.Auth.CLILoginMaxTTL)
+	envInt("GATEWAY_AUTH_START_RATE_LIMIT_PER_MIN", &c.Auth.AuthStartRateLimitPerMin)
 }
 
 func (c *Config) applyRouterEnvOverrides() {
@@ -853,7 +893,14 @@ func (c *Config) applyFinOpsAndProtocolEnvOverrides() {
 	envInt("GATEWAY_FINOPS_SOFT_BUDGET_COOLDOWN_SEC", &c.FinOps.SoftBudgetCooldownSec)
 	envFloat("GATEWAY_FINOPS_BUDGET_EXCEEDED_THROTTLE_PCT", &c.FinOps.BudgetExceededThrottlePct)
 	envBool("GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE", &c.Security.Network.OutboundSSRF.AllowPrivateNetworks)
+	if v := os.Getenv("GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS"); v != "" {
+		if cidrs := splitTrimCSV(v); len(cidrs) > 0 {
+			c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = cidrs
+		}
+	}
 	envBool("GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP", &c.Security.Network.OutboundSSRF.AllowInsecureHTTP)
+	envBool("GATEWAY_ALLOW_LOOPBACK_HTTP", &c.Security.Network.OutboundSSRF.AllowLoopbackHTTP)
+	envBool("GATEWAY_SECURITY_SSRF_ALLOW_LOOPBACK_HTTP", &c.Security.Network.OutboundSSRF.AllowLoopbackHTTP)
 	envBool("GATEWAY_MCP_ENABLED", &c.MCP.Enabled)
 	envBool("GATEWAY_MCP_ALLOW_STDIO", &c.MCP.AllowStdioServers)
 	envBool("GATEWAY_A2A_ENABLED", &c.A2A.Enabled)
@@ -1010,12 +1057,42 @@ func (c *Config) validateServer() error {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server.port: %d", c.Server.Port)
 	}
-	if c.Server.CORSAllowCredentials {
-		for _, origin := range c.Server.CORSAllowedOrigins {
-			if strings.TrimSpace(origin) == "*" {
+	if rawBase := strings.TrimSpace(c.Server.PublicBaseURL); rawBase != "" {
+		u, err := url.Parse(rawBase)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("invalid server.public_base_url %q: must be an http or https origin without credentials, query, or fragment", c.Server.PublicBaseURL)
+		}
+		if u.Path != "" && u.Path != "/" {
+			return fmt.Errorf("invalid server.public_base_url %q: must not include a path", c.Server.PublicBaseURL)
+		}
+		c.Server.PublicBaseURL = strings.TrimRight(rawBase, "/")
+	}
+	for i, rawOrigin := range c.Server.CORSAllowedOrigins {
+		origin := strings.TrimSpace(rawOrigin)
+		if origin == "" {
+			continue
+		}
+		if strings.EqualFold(origin, "null") {
+			return fmt.Errorf("security violation: server.cors_allowed_origins cannot contain \"null\" origin")
+		}
+		if origin == "*" {
+			if c.Server.CORSAllowCredentials {
 				return fmt.Errorf("security violation: server.cors_allow_credentials cannot be true when server.cors_allowed_origins contains \"*\"")
 			}
+			if c.isNonDevEnvironment() {
+				return fmt.Errorf("security violation: server.cors_allowed_origins cannot contain wildcard \"*\" in %q environment", c.effectiveEnvironment())
+			}
+			c.Server.CORSAllowedOrigins[i] = origin
+			continue
 		}
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("invalid server.cors_allowed_origins entry %q: must be an http or https origin (scheme://host[:port]) without path, query, or fragment", rawOrigin)
+		}
+		if c.isNonDevEnvironment() && u.Scheme != "https" {
+			return fmt.Errorf("security violation: server.cors_allowed_origins entry %q must use https in %q environment", rawOrigin, c.effectiveEnvironment())
+		}
+		c.Server.CORSAllowedOrigins[i] = origin
 	}
 	if c.Server.GRPCPort < 0 || c.Server.GRPCPort > 65535 {
 		return fmt.Errorf("invalid server.grpc_port: %d", c.Server.GRPCPort)
@@ -1029,15 +1106,61 @@ func (c *Config) validateServer() error {
 	return nil
 }
 
+func (c *Config) effectiveEnvironment() string {
+	env := strings.ToLower(strings.TrimSpace(c.Server.Environment))
+	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate != "" {
+			env = candidate
+		}
+	}
+	return env
+}
+
+func (c *Config) isNonDevEnvironment() bool {
+	env := c.effectiveEnvironment()
+	return env != "development" && env != "test"
+}
+
 func (c *Config) validateAuth() error {
 	if c.Auth.SessionTTL <= 0 {
 		c.Auth.SessionTTL = 24 * time.Hour
+	}
+	if c.Auth.CLILoginDefaultTTL <= 0 {
+		c.Auth.CLILoginDefaultTTL = 24 * time.Hour
+	}
+	if c.Auth.CLILoginMaxTTL <= 0 {
+		c.Auth.CLILoginMaxTTL = 30 * 24 * time.Hour
+	}
+	if c.Auth.CLILoginDefaultTTL > c.Auth.CLILoginMaxTTL {
+		return fmt.Errorf("auth.cli_login_default_ttl (%s) cannot exceed auth.cli_login_max_ttl (%s)", c.Auth.CLILoginDefaultTTL, c.Auth.CLILoginMaxTTL)
+	}
+	if c.Auth.AuthStartRateLimitPerMin < 0 {
+		return fmt.Errorf("auth.auth_start_rate_limit_per_min cannot be negative")
+	}
+	if c.Auth.AuthStartRateLimitPerMin == 0 {
+		c.Auth.AuthStartRateLimitPerMin = 30
+	}
+	if isUnresolvedEnvReference(c.Auth.MasterAdminKey) {
+		return fmt.Errorf("auth.master_admin_key contains an unresolved environment variable reference")
+	}
+	if isUnresolvedEnvReference(c.Auth.MasterEncryptionKey) {
+		return fmt.Errorf("auth.master_encryption_key contains an unresolved environment variable reference")
+	}
+	if isUnresolvedEnvReference(c.Auth.SessionSecret) {
+		return fmt.Errorf("auth.session_secret contains an unresolved environment variable reference")
+	}
+	if isUnresolvedEnvReference(c.Auth.Introspection.ClientSecret) {
+		return fmt.Errorf("auth.introspection.client_secret contains an unresolved environment variable reference")
 	}
 	if len(c.Auth.MasterAdminKey) < 12 {
 		return fmt.Errorf("auth.master_admin_key must be at least 12 characters")
 	}
 	if len(c.Auth.MasterEncryptionKey) < 32 {
 		return fmt.Errorf("auth.master_encryption_key must be at least 32 bytes for AES-256-GCM")
+	}
+	if trimmedSess := strings.TrimSpace(c.Auth.SessionSecret); trimmedSess != "" && len(trimmedSess) < 32 {
+		return fmt.Errorf("auth.session_secret must be at least 32 bytes when configured")
 	}
 	for i, pk := range c.Auth.PreviousMasterEncryptionKeys {
 		resolved := ResolveEnvValue(pk)
@@ -1059,40 +1182,30 @@ func (c *Config) validateAuth() error {
 	if err := c.validateProductionAuthSecrets(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(c.Auth.JWTSecret) != "" || strings.TrimSpace(c.Auth.OIDCJWKSURL) != "" {
+	if strings.TrimSpace(c.Auth.OIDCJWKSURL) != "" {
 		if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
-			return fmt.Errorf("auth.jwt_issuer is required when JWT or OIDC authentication is enabled")
+			return fmt.Errorf("auth.jwt_issuer is required when OIDC authentication is enabled")
 		}
 		if strings.TrimSpace(c.Auth.JWTAudience) == "" {
-			return fmt.Errorf("auth.jwt_audience is required when JWT or OIDC authentication is enabled")
+			return fmt.Errorf("auth.jwt_audience is required when OIDC authentication is enabled")
 		}
 	}
 	if err := validateOIDCIssuers(c.Auth.OIDCIssuers); err != nil {
 		return err
 	}
-	if err := validateSSOProviders(c.Auth.SSOProviders); err != nil {
+	if err := validateSSOProviders(c.Auth.SSOProviders, c.Server.PublicBaseURL, c.isNonDevEnvironment()); err != nil {
 		return err
 	}
-	if err := validateIntrospectionConfig(c.Auth.Introspection); err != nil {
-		return err
-	}
-	return validateProxyAuthConfig(c.Auth.ProxyAuth)
+	return validateIntrospectionConfig(c.Auth.Introspection)
 }
 
 func (c *Config) validateProductionAuthSecrets() error {
 	const (
 		defaultMasterAdminKey      = "sk-gw-master-admin-default-key-change-me"
 		defaultMasterEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-		defaultJWTSecret           = "gateway-jwt-hmac-secret-change-me"
 	)
-	env := strings.ToLower(strings.TrimSpace(c.Server.Environment))
-	for _, candidate := range []string{os.Getenv("ENV"), os.Getenv("GATEWAY_ENV")} {
-		candidate = strings.ToLower(strings.TrimSpace(candidate))
-		if candidate != "" {
-			env = candidate
-		}
-	}
-	if env == "development" || env == "test" {
+	env := c.effectiveEnvironment()
+	if !c.isNonDevEnvironment() {
 		return nil
 	}
 	if c.Auth.MasterAdminKey == defaultMasterAdminKey {
@@ -1101,10 +1214,19 @@ func (c *Config) validateProductionAuthSecrets() error {
 	if c.Auth.MasterEncryptionKey == defaultMasterEncryptionKey {
 		return fmt.Errorf("security violation: auth.master_encryption_key cannot be the default key in %q environment", env)
 	}
-	if c.Auth.JWTSecret == defaultJWTSecret {
-		return fmt.Errorf("security violation: auth.jwt_secret cannot be the default secret in %q environment", env)
+	if len(strings.TrimSpace(c.Auth.SessionSecret)) < 32 {
+		return fmt.Errorf("security violation: auth.session_secret (GATEWAY_SESSION_SECRET) must be at least 32 bytes in %q environment", env)
 	}
 	return nil
+}
+
+func isAllowedOIDCAlgorithm(alg string) bool {
+	trimmed := strings.TrimSpace(alg)
+	if trimmed == "" || strings.EqualFold(trimmed, "none") {
+		return false
+	}
+	upper := strings.ToUpper(trimmed)
+	return !strings.HasPrefix(upper, "HS")
 }
 
 func validateOIDCIssuers(issuers []OIDCIssuerConfig) error {
@@ -1113,6 +1235,9 @@ func validateOIDCIssuers(issuers []OIDCIssuerConfig) error {
 		trimmedIss := strings.TrimSpace(iss.Issuer)
 		if trimmedIss == "" {
 			return fmt.Errorf("auth.oidc_issuers[%d].issuer is required", i)
+		}
+		if strings.TrimSpace(iss.Audience) == "" {
+			return fmt.Errorf("auth.oidc_issuers[%d].audience is required", i)
 		}
 		if _, exists := seenIssuers[trimmedIss]; exists {
 			return fmt.Errorf("duplicate auth.oidc_issuers[%d].issuer %q", i, trimmedIss)
@@ -1125,16 +1250,15 @@ func validateOIDCIssuers(issuers []OIDCIssuerConfig) error {
 			}
 		}
 		for _, alg := range iss.Algorithms {
-			trimmedAlg := strings.TrimSpace(alg)
-			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
-				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains invalid algorithm %q", i, alg)
+			if !isAllowedOIDCAlgorithm(alg) {
+				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains unsupported or symmetric algorithm %q", i, alg)
 			}
 		}
 	}
 	return nil
 }
 
-func validateSSOProviders(providers []SSOProviderConfig) error {
+func validateSSOProviders(providers []SSOProviderConfig, publicBaseURL string, nonDev bool) error {
 	seenSSOProviders := make(map[string]struct{}, len(providers))
 	for i, sso := range providers {
 		id := strings.ToLower(strings.TrimSpace(sso.ID))
@@ -1150,6 +1274,9 @@ func validateSSOProviders(providers []SSOProviderConfig) error {
 		seenSSOProviders[id] = struct{}{}
 		if strings.TrimSpace(sso.ClientID) == "" {
 			return fmt.Errorf("auth.sso_providers[%d] (%q): client_id is required", i, id)
+		}
+		if isUnresolvedEnvReference(sso.ClientSecret) {
+			return fmt.Errorf("auth.sso_providers[%d] (%q).client_secret contains an unresolved environment variable reference", i, id)
 		}
 		for _, urlField := range []struct {
 			name string
@@ -1168,34 +1295,40 @@ func validateSSOProviders(providers []SSOProviderConfig) error {
 				}
 			}
 		}
-		ptype := strings.ToLower(strings.TrimSpace(sso.Type))
-		if ptype == "" {
-			switch {
-			case id == "google":
-				ptype = "google"
-			case id == "microsoft" || id == "entra" || id == "azure_ad" || strings.TrimSpace(sso.TenantID) != "":
-				ptype = "microsoft"
-			default:
-				ptype = "oidc"
-			}
-		}
-		if ptype != "google" && ptype != "microsoft" {
-			hasDiscovery := strings.TrimSpace(sso.DiscoveryURL) != ""
-			hasManual := strings.TrimSpace(sso.AuthorizationEndpoint) != "" && strings.TrimSpace(sso.TokenEndpoint) != ""
-			hasIssuerURL := false
-			if iss := strings.TrimSpace(sso.Issuer); iss != "" {
-				if u, err := url.Parse(iss); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
-					hasIssuerURL = true
+		if nonDev {
+			redirect := strings.TrimSpace(sso.RedirectURL)
+			if redirect != "" {
+				if u, err := url.Parse(redirect); err != nil || u.Scheme != "https" {
+					return fmt.Errorf("security violation: auth.sso_providers[%d] (%q).redirect_url must use https in production", i, id)
+				}
+			} else {
+				u, err := url.Parse(strings.TrimSpace(publicBaseURL))
+				if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+					return fmt.Errorf("security violation: auth.sso_providers[%d] (%q) requires an https redirect_url or https server.public_base_url in production", i, id)
 				}
 			}
-			if !hasDiscovery && !hasManual && !hasIssuerURL {
-				return fmt.Errorf("auth.sso_providers[%d] (%q) requires discovery_url, an http(s) issuer, or authorization_endpoint + token_endpoint", i, id)
+		}
+		ptype := strings.ToLower(strings.TrimSpace(sso.Type))
+		if ptype == "" {
+			ptype = "oidc"
+		}
+		if ptype != "oidc" {
+			return fmt.Errorf("auth.sso_providers[%d] (%q): unsupported type %q (only standard \"oidc\" is supported)", i, id, sso.Type)
+		}
+		hasDiscovery := strings.TrimSpace(sso.DiscoveryURL) != ""
+		hasManual := strings.TrimSpace(sso.AuthorizationEndpoint) != "" && strings.TrimSpace(sso.TokenEndpoint) != ""
+		hasIssuerURL := false
+		if iss := strings.TrimSpace(sso.Issuer); iss != "" {
+			if u, err := url.Parse(iss); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+				hasIssuerURL = true
 			}
 		}
+		if !hasDiscovery && !hasManual && !hasIssuerURL {
+			return fmt.Errorf("auth.sso_providers[%d] (%q) requires discovery_url, an http(s) issuer, or authorization_endpoint + token_endpoint", i, id)
+		}
 		for _, alg := range sso.Algorithms {
-			trimmedAlg := strings.TrimSpace(alg)
-			if trimmedAlg == "" || strings.EqualFold(trimmedAlg, "none") {
-				return fmt.Errorf("auth.sso_providers[%d] (%q).algorithms contains invalid algorithm %q", i, id, alg)
+			if !isAllowedOIDCAlgorithm(alg) {
+				return fmt.Errorf("auth.sso_providers[%d] (%q).algorithms contains unsupported or symmetric algorithm %q", i, id, alg)
 			}
 		}
 	}
@@ -1203,13 +1336,22 @@ func validateSSOProviders(providers []SSOProviderConfig) error {
 }
 
 func validateIntrospectionConfig(cfg IntrospectionConfig) error {
-	ep := strings.TrimSpace(cfg.TokenInfoEndpoint)
-	if ep == "" {
-		return nil
-	}
-	u, err := url.Parse(ep)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("auth.introspection.token_info_endpoint must be a valid http or https URL")
+	for _, urlField := range []struct {
+		name string
+		val  string
+	}{
+		{"token_info_endpoint", cfg.TokenInfoEndpoint},
+		{"issuer", cfg.Issuer},
+		{"discovery_url", cfg.DiscoveryURL},
+	} {
+		raw := strings.TrimSpace(urlField.val)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("auth.introspection.%s must be a valid http or https URL", urlField.name)
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
 	case "", "auto", "introspect", "userinfo":
@@ -1219,29 +1361,29 @@ func validateIntrospectionConfig(cfg IntrospectionConfig) error {
 	}
 }
 
-func validateProxyAuthConfig(cfg ProxyAuthConfig) error {
-	for _, cidr := range cfg.TrustedProxyCIDRs {
-		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
-			return fmt.Errorf("invalid auth.proxy_auth.trusted_proxy_cidrs %q: %w", cidr, err)
-		}
-	}
-	for hdr, target := range cfg.HeaderMapping {
-		if strings.TrimSpace(hdr) == "" {
-			return fmt.Errorf("auth.proxy_auth.header_mapping must not contain empty header names")
-		}
-		switch strings.ToLower(strings.TrimSpace(target)) {
-		case "user_id", "user_email", "team_id", "org_id":
-		default:
-			return fmt.Errorf("invalid auth.proxy_auth.header_mapping target %q for header %q", target, hdr)
-		}
-	}
-	return nil
-}
-
 func (c *Config) validateNetworkSecurity() error {
+	if c.isNonDevEnvironment() {
+		env := c.effectiveEnvironment()
+		ssrf := c.Security.Network.OutboundSSRF
+		if ssrf.AllowLoopbackHTTP {
+			return fmt.Errorf("security violation: security.network.outbound_ssrf.allow_loopback_http cannot be true in %q environment", env)
+		}
+		if ssrf.AllowInsecureHTTP {
+			return fmt.Errorf("security violation: security.network.outbound_ssrf.allow_insecure_http cannot be true in %q environment", env)
+		}
+		if ssrf.AllowPrivateNetworks {
+			return fmt.Errorf("security violation: security.network.outbound_ssrf.allow_private_networks cannot be true in %q environment (use explicit allowed_private_cidrs instead)", env)
+		}
+	}
 	for _, cidr := range c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs {
-		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+		_, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
 			return fmt.Errorf("invalid security.network.outbound_ssrf.allowed_private_cidrs %q: %w", cidr, err)
+		}
+		if c.isNonDevEnvironment() {
+			if err := validateNonDevAllowedPrivateCIDR(cidr, ipNet, c.effectiveEnvironment()); err != nil {
+				return err
+			}
 		}
 	}
 	for _, ipStr := range c.Security.Network.OutboundSSRF.BlockedIPs {
@@ -1257,6 +1399,43 @@ func (c *Config) validateNetworkSecurity() error {
 	for _, cidr := range c.Security.Network.InboundCaller.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 			return fmt.Errorf("invalid security.network.inbound_caller.trusted_proxy_cidrs %q: %w", cidr, err)
+		}
+	}
+	return nil
+}
+
+func validateNonDevAllowedPrivateCIDR(raw string, ipNet *net.IPNet, env string) error {
+	ones, bits := ipNet.Mask.Size()
+	if bits == 32 && ones < 8 {
+		return fmt.Errorf("security violation: security.network.outbound_ssrf.allowed_private_cidrs %q is overly broad (IPv4 prefix must be at least /8 in %q environment)", raw, env)
+	}
+	if bits == 128 && ones < 7 {
+		return fmt.Errorf("security violation: security.network.outbound_ssrf.allowed_private_cidrs %q is overly broad (IPv6 prefix must be at least /7 in %q environment)", raw, env)
+	}
+	if bits == 32 && ones >= 24 && ipNet.Contains(net.ParseIP("100.100.100.200")) {
+		return fmt.Errorf("security violation: security.network.outbound_ssrf.allowed_private_cidrs %q overlaps forbidden cloud metadata IP in %q environment", raw, env)
+	}
+	forbiddenRanges := []string{
+		"0.0.0.0/8",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"224.0.0.0/4",
+		"::/128",
+		"::1/128",
+		"fe80::/10",
+		"ff00::/8",
+		"fd00:ec2::254/128",
+	}
+	for _, fRaw := range forbiddenRanges {
+		_, fNet, err := net.ParseCIDR(fRaw)
+		if err != nil {
+			continue
+		}
+		if (ipNet.IP.To4() != nil) != (fNet.IP.To4() != nil) {
+			continue
+		}
+		if ipNet.Contains(fNet.IP) || fNet.Contains(ipNet.IP) {
+			return fmt.Errorf("security violation: security.network.outbound_ssrf.allowed_private_cidrs %q overlaps forbidden loopback, link-local, multicast, or cloud metadata range (%s) in %q environment", raw, fRaw, env)
 		}
 	}
 	return nil

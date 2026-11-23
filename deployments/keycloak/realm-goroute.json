@@ -1,0 +1,176 @@
+{
+  "realm": "goroute",
+  "enabled": true,
+  "displayName": "GoRoute AI Gateway (Local Dev)",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "goroute-gateway",
+      "name": "GoRoute AI Gateway",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "goroute-gateway-dev-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "redirectUris": [
+        "http://localhost:8080/auth/sso/keycloak/callback",
+        "http://127.0.0.1:8080/auth/sso/keycloak/callback",
+        "http://localhost:18080/auth/sso/keycloak/callback",
+        "http://127.0.0.1:18080/auth/sso/keycloak/callback"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/ui/##http://127.0.0.1:8080/ui/##http://localhost:18080/ui/##http://127.0.0.1:18080/ui/",
+        "access.token.signed.response.alg": "RS256",
+        "id.token.signed.response.alg": "RS256"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "goroute_role",
+            "claim.name": "role",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@goroute.local",
+      "email": "admin@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "GoRoute",
+      "lastName": "Admin",
+      "attributes": {
+        "org_id": [
+          "org_default"
+        ],
+        "goroute_role": [
+          "platform_admin"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin1234",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "orgadmin@goroute.local",
+      "email": "orgadmin@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "GoRoute",
+      "lastName": "OrgAdmin",
+      "attributes": {
+        "org_id": [
+          "org_default"
+        ],
+        "goroute_role": [
+          "org_admin"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orgadmin1234",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "developer@goroute.local",
+      "email": "developer@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "GoRoute",
+      "lastName": "Developer",
+      "attributes": {
+        "org_id": [
+          "org_default"
+        ],
+        "goroute_role": [
+          "developer"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev1234",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

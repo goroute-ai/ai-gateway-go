@@ -18,14 +18,15 @@ func DistFS() (fs.FS, error) {
 	return fs.Sub(embeddedDist, "dist")
 }
 
-const uiContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+// ContentSecurityPolicy is the strict CSP enforced on embedded Operator UI and Control Plane routes.
+const ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"
 
 func setUISecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("Content-Security-Policy", uiContentSecurityPolicy)
+	h.Set("Content-Security-Policy", ContentSecurityPolicy)
 }
 
 // RegisterRoutes mounts the embedded operator dashboard on the Chi router at /ui.

@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,7 +50,7 @@ func TestSSOStateStore_MemoryAndRedis_SingleUseAndExpiry(t *testing.T) {
 
 			err := store.Save(ctx, &auth.SSOAuthState{
 				State:        "state-abc",
-				Provider:     "google",
+				Provider:     "keycloak",
 				CodeVerifier: "verifier-123",
 				Nonce:        "nonce-456",
 				CLILoginID:   "cli-789",
@@ -60,7 +63,7 @@ func TestSSOStateStore_MemoryAndRedis_SingleUseAndExpiry(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Consume: %v", err)
 			}
-			if got.Provider != "google" || got.CodeVerifier != "verifier-123" || got.Nonce != "nonce-456" || got.CLILoginID != "cli-789" {
+			if got.Provider != "keycloak" || got.CodeVerifier != "verifier-123" || got.Nonce != "nonce-456" || got.CLILoginID != "cli-789" {
 				t.Fatalf("unexpected consumed state: %+v", got)
 			}
 
@@ -116,7 +119,7 @@ func TestCLILoginStore_MemoryAndRedis_EncryptedAndRateLimited(t *testing.T) {
 			store.SetNowFunc(func() time.Time { return now })
 			store.SetPollInterval(5 * time.Second)
 
-			sess, err := store.Start(ctx, "google")
+			sess, err := store.Start(ctx, "keycloak")
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
@@ -176,7 +179,24 @@ func TestCLILoginStore_MemoryAndRedis_EncryptedAndRateLimited(t *testing.T) {
 	}
 }
 
-func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *testing.T) {
+func TestSSOProviderManager_RejectsLegacyProviderTypes(t *testing.T) {
+	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatalf("network.NewPolicy: %v", err)
+	}
+	for _, legacyType := range []string{"google", "microsoft", "entra", "azure_ad", "okta_id_jag"} {
+		if _, err := auth.NewSSOProviderManager([]auth.SSOProviderConfig{{
+			ID:       "legacy",
+			Type:     legacyType,
+			ClientID: "cid",
+			Issuer:   "https://idp.example.com",
+		}}, netPolicy); err == nil {
+			t.Fatalf("expected provider type %q to be rejected", legacyType)
+		}
+	}
+}
+
+func TestSSOProviderManager_OIDCDiscovery_PKCE_ATHash_UserInfo_AndLogout(t *testing.T) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
@@ -184,30 +204,40 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 
 	var idpURL string
 	var expectedChallenge string
-	tenantGUID := "11111111-2222-3333-4444-555555555555"
+	var accessToken = "kc-access-token-abc123"
+	var overrideATHash string
+	var userinfoSubOverride string
+	var revokeCalls atomic.Int32
+
+	sum := sha256.Sum256([]byte(accessToken))
+	validATHash := base64.RawURLEncoding.EncodeToString(sum[:16])
 
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
+		case "/realms/goroute/.well-known/openid-configuration":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"issuer":                 "https://login.microsoftonline.com/{tenantid}/v2.0",
-				"authorization_endpoint": idpURL + "/authorize",
-				"token_endpoint":         idpURL + "/token",
-				"jwks_uri":               idpURL + "/jwks",
+				"issuer":                           idpURL + "/realms/goroute",
+				"authorization_endpoint":           idpURL + "/realms/goroute/protocol/openid-connect/auth",
+				"token_endpoint":                   idpURL + "/realms/goroute/protocol/openid-connect/token",
+				"userinfo_endpoint":                idpURL + "/realms/goroute/protocol/openid-connect/userinfo",
+				"end_session_endpoint":             idpURL + "/realms/goroute/protocol/openid-connect/logout",
+				"revocation_endpoint":              idpURL + "/realms/goroute/protocol/openid-connect/revoke",
+				"jwks_uri":                         idpURL + "/realms/goroute/protocol/openid-connect/certs",
+				"code_challenge_methods_supported": []string{"S256"},
 			})
-		case "/jwks":
+		case "/realms/goroute/protocol/openid-connect/certs":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"keys": []map[string]any{{
-					"kty": "RSA",
-					"kid": "ms-key-1",
-					"use": "sig",
-					"alg": "RS256",
-					"n":   base64.RawURLEncoding.EncodeToString(privKey.N.Bytes()),
-					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes()),
+					"kty":     "RSA",
+					"kid":     "kc-key-1",
+					"use":     "sig",
+					"key_ops": []string{"verify"},
+					"n":       base64.RawURLEncoding.EncodeToString(privKey.N.Bytes()),
+					"e":       base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes()),
 				}},
 			})
-		case "/token":
+		case "/realms/goroute/protocol/openid-connect/token":
 			_ = r.ParseForm()
 			verifier := r.FormValue("code_verifier")
 			if !upstream.ValidatePKCE(verifier, expectedChallenge, "S256") {
@@ -216,22 +246,42 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 				return
 			}
 			now := time.Now().UTC()
-			idTok := signRS256JWT(t, privKey, "ms-key-1", map[string]any{
-				"iss":                "https://login.microsoftonline.com/" + tenantGUID + "/v2.0",
-				"sub":                "ms-sub-1",
-				"aud":                "ms-client-id",
-				"tid":                tenantGUID,
-				"nonce":              r.FormValue("code"), // test passes nonce via code lookup below
-				"preferred_username": "alice@contoso.com",
-				"name":               "Alice Contoso",
-				"iat":                now.Unix(),
-				"exp":                now.Add(5 * time.Minute).Unix(),
+			atHash := validATHash
+			if overrideATHash != "" {
+				atHash = overrideATHash
+			}
+			// Intentionally omit email/name from ID Token to exercise UserInfo hydration.
+			idTok := signRS256JWT(t, privKey, "kc-key-1", map[string]any{
+				"iss":     idpURL + "/realms/goroute",
+				"sub":     "kc-sub-1",
+				"aud":     "goroute-gateway",
+				"nonce":   r.FormValue("code"),
+				"at_hash": atHash,
+				"iat":     now.Unix(),
+				"exp":     now.Add(5 * time.Minute).Unix(),
 			})
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token_type":   "Bearer",
-				"access_token": "ms-access",
+				"access_token": accessToken,
 				"id_token":     idTok,
 			})
+		case "/realms/goroute/protocol/openid-connect/userinfo":
+			sub := "kc-sub-1"
+			if userinfoSubOverride != "" {
+				sub = userinfoSubOverride
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sub":            sub,
+				"email":          "alice@goroute.local",
+				"email_verified": true,
+				"name":           "Alice Keycloak",
+				"org_id":         "org_from_userinfo",
+				"role":           "org_admin",
+				"team_ids":       []string{"team_userinfo"},
+			})
+		case "/realms/goroute/protocol/openid-connect/revoke":
+			revokeCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -240,8 +290,7 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 	idpURL = idp.URL
 
 	netPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
-		AllowPrivateNetworks: true,
-		AllowInsecureHTTP:    true,
+		AllowLoopbackHTTP: true,
 	})
 	if err != nil {
 		t.Fatalf("network.NewPolicy: %v", err)
@@ -249,13 +298,12 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 
 	mgr, err := auth.NewSSOProviderManager([]auth.SSOProviderConfig{
 		{
-			ID:                  "microsoft",
-			Type:                "microsoft",
-			TenantID:            "common",
-			ClientID:            "ms-client-id",
-			ClientSecret:        "ms-client-secret",
-			DiscoveryURL:        idp.URL + "/.well-known/openid-configuration",
-			AllowedEmailDomains: []string{"contoso.com"},
+			ID:                  "keycloak",
+			Type:                "oidc",
+			ClientID:            "goroute-gateway",
+			ClientSecret:        "gw-secret",
+			Issuer:              idp.URL + "/realms/goroute",
+			AllowedEmailDomains: []string{"goroute.local"},
 		},
 	}, netPolicy)
 	if err != nil {
@@ -263,7 +311,7 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 	}
 
 	stateStore := auth.NewSSOStateStore(nil)
-	authURL, state, err := mgr.BuildAuthorizationURL(context.Background(), "microsoft", "http://localhost/auth/sso/microsoft/callback", "", "", stateStore)
+	authURL, state, err := mgr.BuildAuthorizationURL(context.Background(), "keycloak", "http://localhost:8080/auth/sso/keycloak/callback", "", "", stateStore)
 	if err != nil {
 		t.Fatalf("BuildAuthorizationURL: %v", err)
 	}
@@ -273,13 +321,116 @@ func TestSSOProviderManager_MicrosoftTemplatedIssuerAndPreferredUsername(t *test
 		t.Fatalf("Consume: %v", err)
 	}
 
-	// Pass st.Nonce as the code so the mock token handler embeds it cleanly.
-	claims, err := mgr.ExchangeAndVerify(context.Background(), "microsoft", st.Nonce, st.RedirectURI, st.CodeVerifier, st.Nonce)
+	// 1. Valid exchange with at_hash verification + UserInfo hydration.
+	claims, err := mgr.ExchangeAndVerify(context.Background(), "keycloak", st.Nonce, st.RedirectURI, st.CodeVerifier, st.Nonce)
 	if err != nil {
 		t.Fatalf("ExchangeAndVerify: %v", err)
 	}
-	if claims.Email != "alice@contoso.com" || claims.DisplayName != "Alice Contoso" {
-		t.Fatalf("unexpected Microsoft claims: %+v", claims)
+	if claims.Email != "alice@goroute.local" || claims.DisplayName != "Alice Keycloak" || !claims.EmailVerified {
+		t.Fatalf("unexpected OIDC claims: %+v", claims)
+	}
+	if claims.OrgID != "org_from_userinfo" || claims.Role != "org_admin" || len(claims.TeamIDs) != 1 || claims.TeamIDs[0] != "team_userinfo" {
+		t.Fatalf("expected default org_id/role/team_ids hydrated from userinfo, got %+v", claims)
+	}
+	if claims.RawIDToken == "" {
+		t.Fatal("expected RawIDToken populated on verified SSOIDTokenClaims for encrypted id_token_hint")
+	}
+
+	// 2. Mismatched at_hash must fail.
+	overrideATHash = "bad-at-hash-value"
+	if _, err := mgr.ExchangeAndVerify(context.Background(), "keycloak", st.Nonce, st.RedirectURI, st.CodeVerifier, st.Nonce); err == nil {
+		t.Fatalf("expected invalid at_hash to fail verification")
+	}
+	overrideATHash = ""
+
+	// 3. Mismatched UserInfo sub must fail (sub substitution protection).
+	userinfoSubOverride = "evil-other-sub"
+	if _, err := mgr.ExchangeAndVerify(context.Background(), "keycloak", st.Nonce, st.RedirectURI, st.CodeVerifier, st.Nonce); err == nil {
+		t.Fatalf("expected userinfo sub mismatch to fail verification")
+	}
+	userinfoSubOverride = ""
+
+	// 4. RP-Initiated Logout constructs end_session_endpoint URL.
+	endSessionURL, err := mgr.BuildEndSessionURL(context.Background(), "keycloak", "id-tok-hint", "http://localhost:8080/")
+	if err != nil {
+		t.Fatalf("BuildEndSessionURL: %v", err)
+	}
+	parsedEnd, err := url.Parse(endSessionURL)
+	if err != nil || !strings.HasSuffix(parsedEnd.Path, "/protocol/openid-connect/logout") {
+		t.Fatalf("unexpected end_session_url: %q (%v)", endSessionURL, err)
+	}
+	if parsedEnd.Query().Get("post_logout_redirect_uri") != "http://localhost:8080/" {
+		t.Fatalf("missing post_logout_redirect_uri in %q", endSessionURL)
+	}
+
+	// 5. RFC 7009 token revocation hits revocation_endpoint.
+	if err := mgr.RevokeToken(context.Background(), "keycloak", accessToken, "access_token"); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	if revokeCalls.Load() != 1 {
+		t.Fatalf("expected 1 revocation call, got %d", revokeCalls.Load())
+	}
+}
+
+func TestOIDC_RFC8414MetadataFallback(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	var srvURL string
+	var rfc8414Hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tenant/.well-known/openid-configuration":
+			w.WriteHeader(http.StatusNotFound)
+		case "/.well-known/oauth-authorization-server/tenant":
+			rfc8414Hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 srvURL + "/tenant",
+				"authorization_endpoint": srvURL + "/tenant/authorize",
+				"token_endpoint":         srvURL + "/tenant/token",
+				"jwks_uri":               srvURL + "/tenant/jwks",
+			})
+		case "/tenant/jwks":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"keys": []map[string]any{{
+					"kty":     "RSA",
+					"kid":     "k1",
+					"use":     "sig",
+					"key_ops": []string{"verify"},
+					"n":       base64.RawURLEncoding.EncodeToString(privKey.N.Bytes()),
+					"e":       base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes()),
+				}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	netPolicy, _ := network.NewPolicy(config.OutboundSSRFConfig{AllowLoopbackHTTP: true})
+	mgr, err := auth.NewSSOProviderManager([]auth.SSOProviderConfig{{
+		ID:       "rfc8414",
+		Type:     "oidc",
+		ClientID: "cid",
+		Issuer:   srv.URL + "/tenant",
+	}}, netPolicy)
+	if err != nil {
+		t.Fatalf("NewSSOProviderManager: %v", err)
+	}
+	stateStore := auth.NewSSOStateStore(nil)
+	authURL, _, err := mgr.BuildAuthorizationURL(context.Background(), "rfc8414", "http://localhost/cb", "", "", stateStore)
+	if err != nil {
+		t.Fatalf("BuildAuthorizationURL with RFC 8414 fallback: %v", err)
+	}
+	if !strings.HasPrefix(authURL, srvURL+"/tenant/authorize?") {
+		t.Fatalf("unexpected authorization_url: %s", authURL)
+	}
+	if rfc8414Hits.Load() != 1 {
+		t.Fatalf("expected 1 hit to RFC 8414 fallback endpoint, got %d", rfc8414Hits.Load())
 	}
 }
 

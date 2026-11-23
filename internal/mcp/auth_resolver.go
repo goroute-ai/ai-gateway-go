@@ -149,18 +149,6 @@ func (r *AuthResolver) ResolveStrategy(
 		}); err == nil {
 			return s, extraHeaders
 		}
-	case "okta_id_jag":
-		if s, err := upstream.NewOktaIDJAGStrategy(upstream.OktaIDJAGConfig{
-			TokenEndpoint: server.OAuth2Endpoint,
-			ClientID:      server.OAuth2ClientID,
-			Audience:      server.OAuth2Endpoint,
-			SigningKey:    secret,
-			Scopes:        server.OAuth2Scopes,
-			NetPolicy:     r.netPolicy,
-			TokenCache:    r.tokenCache,
-		}); err == nil {
-			return s, extraHeaders
-		}
 	}
 
 	// Default: static strategy with whatever extra headers exist

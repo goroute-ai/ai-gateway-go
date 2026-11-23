@@ -54,14 +54,19 @@ env:
   GATEWAY_STORAGE_MODE: "postgres"
   GATEWAY_REDIS_ADDR: "redis:6379"
 
+# Optional inline config.yaml mounted at /etc/goroute/config.yaml via ConfigMap.
+# Use os.environ/VAR references for OIDC client secrets and supply values via secrets.extraSecrets or secrets.existingSecret.
+config: ""
+
 secrets:
   create: true
   existingSecret: ""
-  postgresDSN: "postgres://gateway:changeme@postgres:5432/aigateway?sslmode=require"
-  masterAdminKey: "changeme-master-admin-key"
-  masterEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  jwtSecret: ""
+  postgresDSN: "postgres://gateway:CHANGE_ME@postgres:5432/aigateway?sslmode=require"
+  masterAdminKey: ""
+  masterEncryptionKey: ""
+  sessionSecret: ""
   redisPassword: ""
+  extraSecrets: {}
 
 resources:
   requests:
@@ -109,6 +114,8 @@ networkPolicy:
     postgres: 5432
     redis: 6379
     https: 443
+    # Set to a non-zero port (e.g., 8443) if your internal OIDC IdP listens on a custom TLS port.
+    oidc: 0
 
 migration:
   enabled: false

@@ -882,9 +882,9 @@ func TestAdminControlPlaneMiddleware_JWTSourceRestriction(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
+	idp := newTestOIDCIssuer(t)
 	svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
-	jwtSecret := "mw-jwt-secret"
-	svc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{Secret: jwtSecret}))
+	svc.SetJWTVerifier(auth.NewJWTVerifier(idp.JWTConfig("ai-gateway")))
 
 	adminVK, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
 		OrgID: "org_mw",
@@ -895,13 +895,12 @@ func TestAdminControlPlaneMiddleware_JWTSourceRestriction(t *testing.T) {
 		t.Fatalf("IssueVirtualKey: %v", err)
 	}
 
-	jwtTok, err := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	jwtTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-mw-admin",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 
 	mw := auth.AdminControlPlaneMiddleware(svc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		op := auth.OperatorFromContext(r.Context())

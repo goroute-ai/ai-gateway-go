@@ -368,7 +368,6 @@ func (r *MemoryRepository) DeleteUser(ctx context.Context, id string) error {
 			delete(r.teamMemberships, mID)
 		}
 	}
-	delete(r.userCredentials, id)
 	for sessID, sess := range r.operatorSessions {
 		if sess != nil && sess.UserID == id {
 			delete(r.operatorSessions, sessID)
@@ -945,18 +944,6 @@ func (r *MemoryRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, cla
 	return &cp, nil
 }
 
-func cloneUserCredential(cred *domain.UserCredential) *domain.UserCredential {
-	if cred == nil {
-		return nil
-	}
-	cp := *cred
-	if cred.LockedUntil != nil {
-		t := *cred.LockedUntil
-		cp.LockedUntil = &t
-	}
-	return &cp
-}
-
 func cloneOperatorSession(sess *domain.OperatorSession) *domain.OperatorSession {
 	if sess == nil {
 		return nil
@@ -967,64 +954,6 @@ func cloneOperatorSession(sess *domain.OperatorSession) *domain.OperatorSession 
 		cp.RevokedAt = &t
 	}
 	return &cp
-}
-
-func (r *MemoryRepository) UpsertUserPassword(ctx context.Context, userID, passwordHash string, resetRequired bool) error {
-	userID = strings.TrimSpace(userID)
-	passwordHash = strings.TrimSpace(passwordHash)
-	if userID == "" {
-		return fmt.Errorf("user_id is required")
-	}
-	if passwordHash == "" {
-		return fmt.Errorf("password_hash is required")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.userCredentials[userID] = &domain.UserCredential{
-		UserID:                userID,
-		PasswordHash:          passwordHash,
-		PasswordResetRequired: resetRequired,
-		FailedAttempts:        0,
-		LockedUntil:           nil,
-		UpdatedAt:             time.Now().UTC(),
-	}
-	return nil
-}
-
-func (r *MemoryRepository) GetUserCredential(ctx context.Context, userID string) (*domain.UserCredential, error) {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	cred, ok := r.userCredentials[userID]
-	if !ok || cred == nil {
-		return nil, fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
-	}
-	return cloneUserCredential(cred), nil
-}
-
-func (r *MemoryRepository) UpdateUserLoginFailure(ctx context.Context, userID string, failedAttempts int, lockedUntil *time.Time) error {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("user_id is required")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cred, ok := r.userCredentials[userID]
-	if !ok || cred == nil {
-		return fmt.Errorf("user credential for %q %w", userID, ErrNotFound)
-	}
-	cred.FailedAttempts = failedAttempts
-	if lockedUntil != nil {
-		t := lockedUntil.UTC()
-		cred.LockedUntil = &t
-	} else {
-		cred.LockedUntil = nil
-	}
-	cred.UpdatedAt = time.Now().UTC()
-	return nil
 }
 
 func (r *MemoryRepository) CreateOperatorSession(ctx context.Context, session *domain.OperatorSession) error {
@@ -1084,13 +1013,20 @@ func (r *MemoryRepository) RevokeOperatorSession(ctx context.Context, id string,
 		t := revokedAt
 		sess.RevokedAt = &t
 	}
+	sess.EncryptedIDToken = ""
+	sess.EncryptedIDTokenDEK = ""
 	return nil
 }
 
 func (r *MemoryRepository) RevokeAllUserSessions(ctx context.Context, userID string, revokedAt time.Time) error {
+	_, err := r.RevokeAllUserSessionsReturningIDs(ctx, userID, revokedAt)
+	return err
+}
+
+func (r *MemoryRepository) RevokeAllUserSessionsReturningIDs(ctx context.Context, userID string, revokedAt time.Time) ([]string, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
-		return fmt.Errorf("user_id is required")
+		return nil, fmt.Errorf("user_id is required")
 	}
 	if revokedAt.IsZero() {
 		revokedAt = time.Now().UTC()
@@ -1099,11 +1035,15 @@ func (r *MemoryRepository) RevokeAllUserSessions(ctx context.Context, userID str
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, sess := range r.operatorSessions {
+	var ids []string
+	for id, sess := range r.operatorSessions {
 		if sess != nil && sess.UserID == userID && sess.RevokedAt == nil {
 			t := revokedAt
 			sess.RevokedAt = &t
+			sess.EncryptedIDToken = ""
+			sess.EncryptedIDTokenDEK = ""
+			ids = append(ids, id)
 		}
 	}
-	return nil
+	return ids, nil
 }

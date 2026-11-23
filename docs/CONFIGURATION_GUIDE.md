@@ -303,15 +303,15 @@ router:
 ### Dual-Boundary Security Architecture
 - **Boundary 1 (Client $\rightarrow$ Gateway)**: Clients authenticate with Gateway-issued **Virtual API Keys (`sk-gw-...`)** (via `Authorization: Bearer`, `x-api-key`, `api-key`, `x-goog-api-key`, or `auth.custom_api_key_header`; conflicting credentials across sources are rejected). Only the **SHA-256 hex digest** is persisted; the raw key is returned once upon creation. Validated via a 2-tier cache (**L1 In-Process RWMutex Map** + **L2 Redis Cache** with instant Pub/Sub invalidation).
 - **Enterprise Federation, SSO, Provisioning & Key Rotation**:
-  - **Multi-Issuer OIDC & Introspection**: Configure `auth.enable_data_plane_jwt`, `auth.oidc_issuers[]` (per-issuer JWKS/discovery, claim mappings, email domain allowlists), `auth.introspection` (RFC 7662 / UserInfo), and `auth.proxy_auth` (CIDR-guarded reverse proxy identity headers). Bind human identities explicitly by `(org_id, oidc_issuer, oidc_subject)`.
-  - **Operator Sessions, HIBP & CLI Login**: Browser sessions use signed `goroute_session` cookies plus `X-CSRF-Token` validation on mutations; `/auth/login` and `/auth/password` support optional k-anonymity HIBP password screening (`auth.enable_hibp_check`) and login throttling.
+  - **Multi-Issuer OIDC & Introspection**: Configure `auth.enable_data_plane_jwt`, `auth.oidc_issuers[]` (per-issuer asymmetric JWKS/Discovery, claim mappings, email domain allowlists), and `auth.introspection` (RFC 7662 / OIDC UserInfo, supporting `issuer` / `discovery_url`). Bind human identities explicitly by `(org_id, oidc_issuer, oidc_subject)`.
+  - **Operator OIDC SSO & CLI Login**: Browser sessions authenticate exclusively via standard OpenID Connect (`type: "oidc"`, PKCE `S256`, `state`, `nonce`, `at_hash`) and receive signed `goroute_session` cookies plus `X-CSRF-Token` validation on mutations; `/auth/logout` supports RP-Initiated Logout (`end_session_url`), and emergency break-glass access remains available via `GATEWAY_MASTER_ADMIN_KEY`.
   - **SCIM 2.0 Provisioning & Key Rotation Grace Periods**: `/scim/v2/Users` and `/scim/v2/Groups` apply user and team membership changes in tenant-scoped atomic transactions. Scheduled or manual key rotations (`POST /admin/v1/keys/{keyID}/rotate`) support dual-valid grace windows emitting `X-Gateway-Key-Deprecated` and `X-Gateway-Key-Revoke-At`.
 - **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
   - Every credential gets a unique random 32-byte **Data Encryption Key (DEK)** + 12-byte `DataNonce`.
   - The DEK is encrypted by the gateway's 32-byte **Master Key Encryption Key (`master_encryption_key`)** + 12-byte `DEKNonce`.
 
 > [!WARNING]
-> **Production Key Hardening**: In production environments (`ENV=production` or `GATEWAY_ENV=production`), `Config.Validate()` strictly enforces that `auth.master_admin_key`, `auth.master_encryption_key`, and `auth.jwt_secret` must be overridden with non-default, high-entropy secrets. Leaving default demo keys in production results in a fatal startup error.
+> **Production Key Hardening**: In production environments (`ENV=production` or `GATEWAY_ENV=production`), `Config.Validate()` strictly enforces that `auth.master_admin_key` and `auth.master_encryption_key` must be overridden with non-default, high-entropy secrets. Leaving default demo keys in production results in a fatal startup error.
 
 ### Go SDK: Issuing, Scoping & Revoking Virtual Keys
 ```go
@@ -582,7 +582,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `server.host` | — | `"0.0.0.0"` | HTTP network bind address. |
 | `server.port` | `GATEWAY_PORT` | `8080` | HTTP listen port (1–65535). |
 | `server.grpc_port` | `GATEWAY_GRPC_PORT` | `0` | Optional A2A gRPC listen port (`0` disables gRPC; `1–65535` enables). |
-| `server.cors_allowed_origins` | — | `[]` | Allowed CORS origins (empty disables CORS headers; wildcard `*` disallows credentials). |
+| `server.cors_allowed_origins` | `GATEWAY_CORS_ALLOWED_ORIGINS` | `[]` | Allowed CORS origins (empty disables CORS headers; wildcard `*`, `"null"`, and non-HTTPS origins are rejected in production). |
 | `server.cors_allow_credentials` | — | `false` | Allows `Access-Control-Allow-Credentials: true` (rejected if origins include `*`). |
 | `server.enable_hsts` | — | `false` | Emits `Strict-Transport-Security` header on HTTP responses. |
 | `server.max_file_storage_bytes_per_org` | `GATEWAY_MAX_FILE_STORAGE_BYTES_PER_ORG` | `5368709120` | Per-organization file storage quota in bytes (`5 GiB` default; `0` = unlimited). |
@@ -615,33 +615,24 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.allow_ambient_cloud_iam` | — | `false` | Opt-in flag allowing ambient `storage.rds_iam` credential resolution. |
 | `auth.enable_data_plane_jwt` | `GATEWAY_ENABLE_DATA_PLANE_JWT` | `false` | Enables OIDC/JWT bearer token verification on `/v1/*` data plane routes. |
 | `auth.custom_api_key_header` | `GATEWAY_CUSTOM_API_KEY_HEADER` | `""` | Custom header override for virtual key extraction (conflicts across sources are rejected). |
-| `auth.jwt_secret` | `GATEWAY_JWT_SECRET` | `""` | HMAC secret for verifying HS256 JWT tokens. |
 | `auth.jwt_issuer` | `GATEWAY_JWT_ISSUER` | `""` | Default expected JWT `iss` claim for single-issuer verification. |
 | `auth.jwt_audience` | `GATEWAY_JWT_AUDIENCE` | `""` | Default expected JWT `aud` claim. |
-| `auth.oidc_jwks_url` | `GATEWAY_OIDC_JWKS_URL` | `""` | Legacy single-issuer OIDC JWKS URL (`auth.oidc_issuers[]` preferred for multi-issuer). |
-| `auth.oidc_issuers[]` | — | `[]` | Multi-issuer OIDC verifier list (`issuer`, `audience`, `jwks_url`, `discovery_url`, `claim_mapping`, `allowed_email_domains`). |
-| `auth.sso_providers[]` | — | `[]` | Browser & CLI OIDC SSO identity providers (`id`, `client_id`, `client_secret`, `issuer`, `redirect_url`, `claim_mapping`). |
-| `auth.introspection.*` | — | `{}` | RFC 7662 token introspection / OIDC UserInfo verification settings (`token_info_endpoint`, `mode`, `cache_ttl`). |
-| `auth.proxy_auth.*` | — | `{}` | CIDR-guarded reverse proxy header authentication (`enabled`, `trusted_proxy_cidrs`, `header_mapping`). |
+| `auth.oidc_jwks_url` | `GATEWAY_OIDC_JWKS_URL` | `""` | Single-issuer OIDC JWKS URL (`auth.oidc_issuers[]` preferred for multi-issuer). |
+| `auth.oidc_issuers[]` | — | `[]` | Multi-issuer asymmetric OIDC verifier list (`issuer`, `audience`, `jwks_url`, `discovery_url`, `algorithms`, `claim_mapping`, `allowed_email_domains`). |
+| `auth.sso_providers[]` | — | `[]` | Browser & CLI OIDC SSO identity providers (`id`, `type: "oidc"`, `client_id`, `client_secret`, `issuer`, `discovery_url`, `redirect_url`, `claim_mapping`). |
+| `auth.introspection.*` | — | `{}` | RFC 7662 token introspection / OIDC UserInfo verification settings (`issuer`, `discovery_url`, `token_info_endpoint`, `mode`, `cache_ttl`). |
 | `auth.key_rotation_delivery_url` / `key_rotation_delivery_token` | `GATEWAY_KEY_ROTATION_DELIVERY_URL` / `_TOKEN` | `""` | HTTPS webhook destination and bearer secret required to promote scheduled replacement keys. |
 | `auth.key_rotation_sink.*` | `GATEWAY_KEY_ROTATION_SINK_*` | `""` | Declarative secret-manager sink (`driver`: `webhook` or `vault_kv2`; `address`, `mount`, `path_prefix`, `namespace`, `token`). |
-| `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background worker interval checking due virtual key rotations. |
+| `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background worker interval checking due virtual key rotations and expired grace-hash cleanup. |
 | `auth.key_rotation_grace_period` | `GATEWAY_KEY_ROTATION_GRACE_PERIOD` | `24h` | Default grace window during which a rotated key remains valid with deprecation headers. |
-| `auth.ui_username` / `ui_password` | `GATEWAY_UI_USERNAME` / `GATEWAY_UI_PASSWORD` | `""` | Optional operator password login credentials for `/auth/login`. |
-| `auth.session_secret` / `session_ttl` | `GATEWAY_SESSION_SECRET` / `GATEWAY_SESSION_TTL` | `""` / `0s` | HMAC secret and lifetime for signed `goroute_session` cookies. |
-| `auth.enable_hibp_check` / `hibp_base_url` | `GATEWAY_ENABLE_HIBP_CHECK` / `GATEWAY_HIBP_BASE_URL` | `false` / `""` | Enables k-anonymity SHA-1 prefix password screening on login and `/auth/password`. |
+| `auth.key_expiry_alert_poll_interval` | — | `1h` | Background poll interval for organization `key_expiry_alert_days` webhook notifications. |
+| `auth.session_secret` | `GATEWAY_SESSION_SECRET` | `""` | Signing secret for Control Plane operator cookie sessions (`goroute_session`). |
+| `auth.session_ttl` | `GATEWAY_SESSION_TTL` | `0s` (`24h` runtime default) | Lifetime of revocable operator UI sessions in `operator_sessions`. |
 | `auth.default_org_id` | — | `"org_default"` | Initial default organization ID seeded at startup. |
 | `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
 | `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
 | `auth.l2_cache_ttl` | — | `5m` | Redis L2 cache TTL for virtual key identity and permissions. |
-| `auth.enable_data_plane_jwt` | — | `false` | Allows verified OIDC/JWT bearer tokens on data-plane routes (`jwt_key_mappings` + JIT user resolution). |
-| `auth.custom_api_key_header` | — | `""` | Optional custom header name accepted for virtual API keys alongside `Authorization: Bearer`. |
-| `auth.key_rotation_poll_interval` | `GATEWAY_KEY_ROTATION_POLL_INTERVAL` | `1m` | Background sweep interval for due virtual key rotations and expired grace-hash cleanup. |
-| `auth.key_rotation_grace_period` | `GATEWAY_KEY_ROTATION_GRACE_PERIOD` | `24h` | Dual-active grace window for previous key hashes during automated virtual key rotation. |
-| `auth.key_expiry_alert_poll_interval` | — | `1h` | Background poll interval for organization `key_expiry_alert_days` webhook notifications. |
-| `auth.session_secret` | `GATEWAY_SESSION_SECRET` | `""` | Signing secret for Control Plane operator cookie sessions (`POST /auth/login`). |
-| `auth.session_ttl` | `GATEWAY_SESSION_TTL` | — | Lifetime of revocable operator UI sessions in `operator_sessions`. |
-| `auth.enable_hibp_check` | `GATEWAY_ENABLE_HIBP_CHECK` | `false` | Enables k-anonymity breached-password checks on operator password updates. |
+| `security.network.outbound_ssrf.allow_loopback_http` | `GATEWAY_ALLOW_LOOPBACK_HTTP` | `false` | Permits plain `http://` strictly to loopback addresses (`127.0.0.1`, `::1`, `localhost`) for local OIDC IdPs like Keycloak dev while blocking private networks. |
 | `router.default_fast_alias` | — | `"fast"` | Default model group aliased to low-latency models. |
 | `router.default_reasoning_alias` | — | `"reasoning"` | Default model group aliased to high-reasoning frontier models. |
 | `router.default_coding_alias` | — | `"coding"` | Default model group aliased to code generation models. |
@@ -744,7 +735,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `a2a.trusted_card_jwks` | — | `{}` | Upstream agent slug -> JWKS URL mapping for card verification. |
 | `security.network.outbound_ssrf.egress_proxy_url` | — | `""` | Corporate HTTP/HTTPS egress proxy URL for enterprise outbound firewalls. |
 | `security.network.outbound_ssrf.allow_private_networks` | `GATEWAY_SECURITY_SSRF_ALLOW_PRIVATE` | `false` | Enables private/internal IP egress (must remain false in production). |
-| `security.network.outbound_ssrf.allowed_private_cidrs` | — | `[]` | Explicit private CIDR allowlist (e.g. `["10.0.0.0/8"]`) when egress is gated. |
+| `security.network.outbound_ssrf.allowed_private_cidrs` | `GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS` | `[]` | Explicit private VPC CIDR allowlist (e.g. `["10.20.0.0/16"]`); in production, prefix length must be `>= /8` (IPv4) / `>= /7` (IPv6) and must not overlap loopback, link-local, multicast, or cloud IMDS ranges. |
 | `security.network.outbound_ssrf.allow_insecure_http` | `GATEWAY_SECURITY_SSRF_ALLOW_INSECURE_HTTP` | `false` | Allows plaintext HTTP upstream requests. |
 | `security.network.outbound_ssrf.allowed_schemes` | — | `["https"]` | Allowed URL schemes for provider endpoints (`https`, `http`). |
 | `security.network.outbound_ssrf.blocked_ips` | — | `["169.254.169.254", ...]` | Cloud metadata and sensitive IP addresses blocked from egress. |
@@ -786,7 +777,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 
 Link an existing user with the `oidc_issuer` and `oidc_subject` fields on the admin user API. The issuer must match the verified provider issuer, and the subject must match the configured subject claim. The gateway searches for this pair within the resolved organization. Legacy subject-only JWT links are accepted only with one enabled verifier and an unambiguous match. Browser SSO requires an issuer-bound link or explicit JIT provisioning.
 
-With `auth.enable_hibp_check` enabled, the gateway computes a password digest in memory and sends its five-character prefix to the configured range service. A confirmed breach blocks login and password changes. Service outages are logged and preserve password availability. Administrators can reset a breached operator password through the authorized password endpoint.
+Operator authentication uses OpenID Connect Authorization Code + PKCE (`S256`) configured under `auth.sso_providers` (with emergency break-glass access via `GATEWAY_MASTER_ADMIN_KEY`). In production (`GATEWAY_ENV=production`), configure `server.public_base_url` (or explicit HTTPS `redirect_url`), a `>= 32`-byte `auth.session_secret` (`GATEWAY_SESSION_SECRET`), and per-issuer `audience` on all `auth.oidc_issuers[]`; global `allow_private_networks`, `allow_insecure_http`, and `allow_loopback_http` are rejected at startup (use targeted `allowed_private_cidrs` for internal VPC endpoints). Email-domain restrictions enforce `email_verified: true` unless `allow_unverified_email: true` is explicitly set, and JIT `platform_admin` role claims require `allow_privileged_role_claims: true`.
 
 Scheduled key rotation requires either an in-process Go SDK `KeySecretSink`, `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, or a declarative `auth.key_rotation_sink` (`webhook` or `vault_kv2`). Both `Deliver` webhooks and `SecretSink` pushes execute transactionally inside scheduled rotation sweeps with strict SSRF controls (`https://` only, redirects disabled, private IP checks) and reuse the same AES-GCM-encrypted staged replacement across transient delivery failures until a `2xx` response promotes the key and begins the old key's grace window. Delivery success/failure counters are exported as `gateway_key_rotation_deliveries_total` and `gateway_key_rotation_delivery_failures_total`. Manual rotations return the replacement directly to the authorized caller.
 

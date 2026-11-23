@@ -645,6 +645,7 @@ func TestJWTVerifier_ClaimMappingsAndAllowedEmailDomains(t *testing.T) {
 		"aud":                     "ai-gateway",
 		"exp":                     exp,
 		"mail":                    "Alice@Acme.com",
+		"email_verified":          true,
 		"https://acme.com/org_id": "org_acme_1",
 		"groups":                  []string{"team_ml", "team_platform"},
 		"realm_access":            map[string]any{"roles": []string{"org_admin", "developer"}},
@@ -654,6 +655,18 @@ func TestJWTVerifier_ClaimMappingsAndAllowedEmailDomains(t *testing.T) {
 	claims, err := verifier.Verify(ctx, tokOK)
 	if err != nil {
 		t.Fatalf("verify valid mapped claims failed: %v", err)
+	}
+	// Unverified email must be rejected when allowed_email_domains is enforced
+	tokUnverified := sign(map[string]any{
+		"sub":            "unverified-user",
+		"iss":            "https://idp.acme.com",
+		"aud":            "ai-gateway",
+		"exp":            exp,
+		"mail":           "bob@acme.com",
+		"email_verified": false,
+	})
+	if _, err := verifier.Verify(ctx, tokUnverified); err == nil {
+		t.Fatal("expected unverified email to be rejected when allowed_email_domains is enforced")
 	}
 	if claims.Subject != "user_mapped_99" {
 		t.Fatalf("Subject = %q, want user_mapped_99", claims.Subject)
@@ -679,11 +692,12 @@ func TestJWTVerifier_ClaimMappingsAndAllowedEmailDomains(t *testing.T) {
 
 	// Fallback defaults when optional org/team/role claims are absent
 	tokDefaults := sign(map[string]any{
-		"sub":  "sub-2",
-		"iss":  "https://idp.acme.com",
-		"aud":  "ai-gateway",
-		"exp":  exp,
-		"mail": "bob@partner.org",
+		"sub":            "sub-2",
+		"iss":            "https://idp.acme.com",
+		"aud":            "ai-gateway",
+		"exp":            exp,
+		"mail":           "bob@partner.org",
+		"email_verified": true,
 	})
 	claimsDef, err := verifier.Verify(ctx, tokDefaults)
 	if err != nil {

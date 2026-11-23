@@ -18,7 +18,7 @@ import (
 )
 
 func TestE2E_Identity_ScheduledRotationStagedDeliveryGraceAndPresets(t *testing.T) {
-	sink := newMockSecurityAndWebhookSink(t, nil, "rot-delivery-bearer-token")
+	sink := newMockSecurityAndWebhookSink(t, "rot-delivery-bearer-token")
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, nil)
 

@@ -123,10 +123,12 @@ func TestAdminJWTMappingsCRUD_RBACAndCrossOrgIsolation(t *testing.T) {
 		IsActive:    true,
 	})
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.MasterAdminKey = "sk-gw-master-jwt-mappings-test"
-	cfg.Auth.JWTSecret = "admin-jwt-mappings-secret"
-	cfg.Auth.JWTIssuer = "https://admin-idp.example"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_a"
 
@@ -158,13 +160,13 @@ func TestAdminJWTMappingsCRUD_RBACAndCrossOrgIsolation(t *testing.T) {
 	defer ts.Close()
 
 	exp := time.Now().UTC().Add(10 * time.Minute).Unix()
-	adminAJWT, _ := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	adminAJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-admin-a",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
 		ExpiresAt: exp,
 	})
-	viewerAJWT, _ := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	viewerAJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-viewer-a",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
@@ -404,12 +406,13 @@ func TestGatewayServer_DataPlaneOIDCMappingJITAndCustomHeader(t *testing.T) {
 
 	// 2. Mapped OIDC JWT works on /v1/models and respects mapped VirtualKey's AllowedEndpoints (/mcp returns 403)
 	mappedJWT := signTestRS256JWT(t, rsaPriv, "kid-srv", map[string]any{
-		"iss":        oidcSrv.URL,
-		"sub":        "alice-sub",
-		"aud":        "ai-gateway",
-		"email":      "alice@orga.example",
-		"department": "platform",
-		"exp":        time.Now().UTC().Add(10 * time.Minute).Unix(),
+		"iss":            oidcSrv.URL,
+		"sub":            "alice-sub",
+		"aud":            "ai-gateway",
+		"email":          "alice@orga.example",
+		"email_verified": true,
+		"department":     "platform",
+		"exp":            time.Now().UTC().Add(10 * time.Minute).Unix(),
 	})
 	status, _ = doJSONRequest(t, ts.URL, http.MethodGet, "/v1/models", mappedJWT, nil, nil)
 	if status != http.StatusOK {
@@ -426,12 +429,13 @@ func TestGatewayServer_DataPlaneOIDCMappingJITAndCustomHeader(t *testing.T) {
 
 	// 3. Unmapped OIDC JWT triggers JIT user provisioning and succeeds on /v1/models and /mcp
 	jitJWT := signTestRS256JWT(t, rsaPriv, "kid-srv", map[string]any{
-		"iss":   oidcSrv.URL,
-		"sub":   "bob-jit-sub",
-		"aud":   "ai-gateway",
-		"email": "bob@orga.example",
-		"name":  "Bob JIT",
-		"exp":   time.Now().UTC().Add(10 * time.Minute).Unix(),
+		"iss":            oidcSrv.URL,
+		"sub":            "bob-jit-sub",
+		"aud":            "ai-gateway",
+		"email":          "bob@orga.example",
+		"email_verified": true,
+		"name":           "Bob JIT",
+		"exp":            time.Now().UTC().Add(10 * time.Minute).Unix(),
 	})
 	status, _ = doJSONRequest(t, ts.URL, http.MethodGet, "/v1/models", jitJWT, nil, nil)
 	if status != http.StatusOK {
@@ -456,7 +460,7 @@ func TestGatewayServer_DataPlaneOIDCMappingJITAndCustomHeader(t *testing.T) {
 	}
 }
 
-func TestGatewayServer_DataPlaneDefaultsIntrospectionAndProxyAuth(t *testing.T) {
+func TestGatewayServer_DataPlaneDefaultsAndDiscoveryIntrospection(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	_ = repo.CreateOrganization(ctx, &domain.Organization{ID: "org_x", Name: "Org X", Slug: "org-x", IsActive: true})
@@ -470,9 +474,20 @@ func TestGatewayServer_DataPlaneDefaultsIntrospectionAndProxyAuth(t *testing.T) 
 		IsActive:    true,
 	})
 
+	var introspectSrvURL string
 	introspectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 introspectSrvURL,
+				"jwks_uri":               introspectSrvURL + "/certs",
+				"authorization_endpoint": introspectSrvURL + "/auth",
+				"token_endpoint":         introspectSrvURL + "/token",
+				"introspection_endpoint": introspectSrvURL + "/introspect",
+			})
+			return
+		}
+		_ = r.ParseForm()
 		if r.FormValue("token") == "opaque-x1-token" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
@@ -486,26 +501,22 @@ func TestGatewayServer_DataPlaneDefaultsIntrospectionAndProxyAuth(t *testing.T) 
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": false})
 	}))
 	defer introspectSrv.Close()
+	introspectSrvURL = introspectSrv.URL
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
-	cfg.Auth.MasterAdminKey = "sk-gw-master-introspect-proxy"
-	cfg.Auth.JWTSecret = "dataplane-disabled-secret"
-	cfg.Auth.JWTIssuer = "https://idp.orgx.example"
+	cfg.Auth.MasterAdminKey = "sk-gw-master-introspect"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_x"
 	// EnableDataPlaneJWT intentionally left false (fail-closed default)
-	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
-	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.Introspection = config.IntrospectionConfig{
-		TokenInfoEndpoint: introspectSrv.URL + "/introspect",
-		ClientID:          "gw",
-		ClientSecret:      "secret",
-		Mode:              "introspect",
-	}
-	cfg.Auth.ProxyAuth = config.ProxyAuthConfig{
-		Enabled:           true,
-		TrustedProxyCIDRs: []string{"127.0.0.0/8", "::1/128"},
-		HeaderMapping:     auth.DefaultProxyHeaderMapping(),
+		Issuer:       introspectSrv.URL,
+		ClientID:     "gw",
+		ClientSecret: "secret",
+		Mode:         "introspect",
 	}
 
 	gw, err := server.New(cfg, repo, nil, nil)
@@ -519,7 +530,7 @@ func TestGatewayServer_DataPlaneDefaultsIntrospectionAndProxyAuth(t *testing.T) 
 	defer ts.Close()
 
 	// 1. EnableDataPlaneJWT=false rejects valid JWT on /v1/models
-	jwtTok, _ := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	jwtTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-x1",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
@@ -531,18 +542,9 @@ func TestGatewayServer_DataPlaneDefaultsIntrospectionAndProxyAuth(t *testing.T) 
 		t.Fatalf("expected 401 on /v1/models when EnableDataPlaneJWT=false, got %d", status)
 	}
 
-	// 2. Opaque Bearer token succeeds via Introspection
+	// 2. Opaque Bearer token succeeds via OIDC Discovery Introspection
 	status, _ = doJSONRequest(t, ts.URL, http.MethodGet, "/v1/models", "opaque-x1-token", nil, nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200 on /v1/models with opaque introspection token, got %d", status)
-	}
-
-	// 3. Trusted reverse proxy headers succeed on /v1/models
-	status, _ = doJSONRequest(t, ts.URL, http.MethodGet, "/v1/models", "", nil, map[string]string{
-		"X-Auth-Request-Email": "x1@orgx.example",
-		"X-Auth-Request-Org":   "org_x",
-	})
-	if status != http.StatusOK {
-		t.Fatalf("expected 200 on /v1/models with trusted proxy headers, got %d", status)
 	}
 }

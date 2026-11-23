@@ -34,11 +34,15 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 			csp := rec.Header().Get("Content-Security-Policy")
 			assert.Contains(t, csp, "default-src 'self'")
 			assert.Contains(t, csp, "script-src 'self'")
-			assert.Contains(t, csp, "style-src 'self' 'unsafe-inline'")
+			assert.Contains(t, csp, "style-src 'self'")
 			assert.Contains(t, csp, "img-src 'self' data:")
 			assert.Contains(t, csp, "font-src 'self'")
 			assert.Contains(t, csp, "connect-src 'self'")
+			assert.Contains(t, csp, "base-uri 'self'")
+			assert.Contains(t, csp, "form-action 'self'")
+			assert.Contains(t, csp, "object-src 'none'")
 			assert.Contains(t, csp, "frame-ancestors 'none'")
+			assert.NotContains(t, csp, "'unsafe-inline'")
 		}
 	})
 
@@ -128,7 +132,7 @@ func TestCORSMiddleware(t *testing.T) {
 			assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), hdr)
 		}
 
-		// Disallowed origin
+		// Disallowed origin still receives Vary: Origin to prevent shared cache poisoning
 		bad := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
 		bad.Header.Set("Origin", "https://other.example.com")
 		badRec := httptest.NewRecorder()
@@ -136,9 +140,16 @@ func TestCORSMiddleware(t *testing.T) {
 		assert.Empty(t, badRec.Header().Get("Access-Control-Allow-Origin"))
 		assert.Empty(t, badRec.Header().Get("Access-Control-Allow-Credentials"))
 		assert.Empty(t, badRec.Header().Get("Access-Control-Expose-Headers"))
+		assert.Contains(t, badRec.Header().Values("Vary"), "Origin")
+
+		// Missing Origin header also receives Vary: Origin when an explicit allowlist is configured
+		noOrig := httptest.NewRequest(http.MethodGet, "/admin/v1/keys", nil)
+		noOrigRec := httptest.NewRecorder()
+		h.ServeHTTP(noOrigRec, noOrig)
+		assert.Contains(t, noOrigRec.Header().Values("Vary"), "Origin")
 	})
 
-	t.Run("wildcard without credentials is allowed", func(t *testing.T) {
+	t.Run("wildcard without credentials is allowed on data plane but blocked on auth and admin routes", func(t *testing.T) {
 		h := server.CORSMiddleware([]string{"*"}, false)(okHandler)
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -149,6 +160,22 @@ func TestCORSMiddleware(t *testing.T) {
 		assert.Empty(t, rec.Header().Get("Access-Control-Allow-Credentials"))
 		assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), "X-Gateway-Provider")
 		assert.Contains(t, rec.Header().Get("Access-Control-Expose-Headers"), "X-Gateway-Model")
+
+		for _, protectedPath := range []string{"/auth/me", "/auth/sso/keycloak/login", "/admin/v1/keys"} {
+			admReq := httptest.NewRequest(http.MethodGet, protectedPath, nil)
+			admReq.Header.Set("Origin", "https://any.example.com")
+			admRec := httptest.NewRecorder()
+			h.ServeHTTP(admRec, admReq)
+			assert.Empty(t, admRec.Header().Get("Access-Control-Allow-Origin"), "wildcard CORS must not apply to %s", protectedPath)
+		}
+
+		// "null" Origin preflight is rejected with 403
+		nullPre := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+		nullPre.Header.Set("Origin", "null")
+		nullPre.Header.Set("Access-Control-Request-Method", "POST")
+		nullRec := httptest.NewRecorder()
+		h.ServeHTTP(nullRec, nullPre)
+		assert.Equal(t, http.StatusForbidden, nullRec.Code)
 	})
 
 	t.Run("wildcard is never combined with AllowCredentials true", func(t *testing.T) {

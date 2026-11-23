@@ -27,7 +27,7 @@ go vet ./...
 go build -o /dev/null ./cmd/gateway
 
 # OpenAPI 3.1/3.0, Multi-Release MCP YAML Schema (`cmd/mcpgen`) & A2A v1.0 Protobuf parity
-# Enforces /v1, /admin/v1, and /auth parity (125 total OpenAPI paths)
+# Enforces /v1, /admin/v1, and /auth parity (123 total OpenAPI paths)
 make specgen && git diff --exit-code -- internal/openapi/ internal/mcp/spec/
 
 # Embedded Operator Web UI asset sync & 500 KB bundle budget
@@ -54,7 +54,7 @@ go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 # 1. Start isolated Postgres 16 (localhost:15432) and Redis 7 (localhost:16379)
 make test-live-up
 
-# 2. Verify forward/reverse migrations 0001..0038, preflight checks, and Pg repositories
+# 2. Verify forward/reverse migrations 0001..0040, preflight checks, and Pg repositories
 make test-postgres
 
 # 3. Run full dual-node cluster E2E suite under -race:
@@ -84,11 +84,27 @@ make test-ui-e2e
 make test-live-down
 ```
 
-[`tests/ui-e2e/run_ui_e2e.sh`](../tests/ui-e2e/run_ui_e2e.sh) builds the real gateway binary, launches a local mock OIDC/HIBP server (`mock_idp.mjs`), executes migrations, boots the gateway on `http://localhost:<PORT>`, and drives Chromium across [`operator_ui.spec.mjs`](../tests/ui-e2e/operator_ui.spec.mjs):
-- Strict `/ui/` CSP (`script-src 'self'` without `'unsafe-inline'`) and zero uncaught page/console errors
-- OIDC SSO buttons & PKCE `S256` start redirect verification
-- Password login (verifying no client-side `password_sha1` field) & server-side HIBP 5-char prefix rejection
+[`tests/ui-e2e/run_ui_e2e.sh`](../tests/ui-e2e/run_ui_e2e.sh) builds the real gateway binary, launches a local mock OIDC IdP server (`mock_idp.mjs`), executes migrations, boots the gateway on `http://localhost:<PORT>`, and drives Chromium across [`operator_ui.spec.mjs`](../tests/ui-e2e/operator_ui.spec.mjs):
+- Strict `/ui/` CSP (`script-src 'self'` and `style-src 'self'` without `'unsafe-inline'`, plus zero `securitypolicyviolation`, page, or console errors)
+- OIDC-only LoginView (no password inputs, legacy `/auth/login` and `/auth/password` return 404/405), PKCE `S256` start redirect, full OIDC callback, and `org_admin` vs `platform_admin` RBAC
+- Emergency Break-Glass Key tab (`GATEWAY_MASTER_ADMIN_KEY`) unlock and `/ui/cli` CLI device-approval flow
 - `HttpOnly` `goroute_session` persistence across page reloads
 - `KeysView` `llm_api` preset creation and manual grace-period key rotation badges
 - `FinOpsView` -> `QuotasTab` per-model policy (`model_per_key`), `rolling_24h` budget window, `TempBudgetModal` persistence across reload, and `/auth/logout` session revocation
 - `AgenticView` multi-release MCP protocol switching across `2024-11-05`..`2026-07-28`, persistence across reload, and `Register Upstream MCP Server` auto-transport selection
+
+---
+
+## Tier 3 — Production-Like Docker OIDC Verification (`make test-prod-docker`)
+
+Runs an isolated production-topology Docker Compose stack (`deployments/prod-test/docker-compose.prod-test.yml`) featuring:
+- 2× read-only non-root GoRoute AI Gateway replicas (`GATEWAY_ENV=production`, `enable_hsts: true`, fail-closed SSRF policy)
+- Live Keycloak 26 production instance (`start` mode backed by PostgreSQL, `sslRequired: "all"`)
+- Caddy TLS 1.3 reverse proxy terminating `https://gateway.prod.test` and `https://auth.prod.test` with an ephemeral test CA
+- PostgreSQL 16 (TLS) and Redis 7 (`--requirepass`) on an isolated internal data network plus an SSRF trap service
+
+```bash
+make test-prod-docker
+```
+
+Executes startup fail-closed container checks, migrations `0039`/`0040`, asymmetric JWT (`RS256`/`ES256`/`EdDSA`), RFC 7662 introspection + revocation, multi-replica SCIM/admin session revocation, CSRF/Host/SSRF/secret-scrubbing security checks, resilience (Keycloak outage stale-JWKS survival, Redis restart, live KEK rotation), and Playwright Chromium browser login + seamless Keycloak RP-Initiated Logout (`id_token_hint`).

@@ -15,20 +15,18 @@ import (
 
 // ResolverConfig configures unified Data Plane credential and identity resolution.
 type ResolverConfig struct {
-	Service                    *Service
-	Repo                       storage.Repository
-	RBAC                       *RBACEngine
-	JWTVerifier                *JWTVerifier
-	Introspector               *OAuthIntrospector
-	ProxyAuth                  *ProxyAuthenticator
-	EnableDataPlaneJWT         bool
-	DefaultOrgID               string
-	IntrospectionAutoRegister  bool
-	IntrospectionDefaultTeamID string
-	IntrospectionDefaultRole   string
-	ProxyAutoRegister          bool
-	ProxyDefaultTeamID         string
-	ProxyDefaultRole           string
+	Service                                *Service
+	Repo                                   storage.Repository
+	RBAC                                   *RBACEngine
+	JWTVerifier                            *JWTVerifier
+	Introspector                           *OAuthIntrospector
+	EnableDataPlaneJWT                     bool
+	DefaultOrgID                           string
+	IntrospectionAutoRegister              bool
+	IntrospectionAllowUnverifiedEmail      bool
+	IntrospectionAllowPrivilegedRoleClaims bool
+	IntrospectionDefaultTeamID             string
+	IntrospectionDefaultRole               string
 }
 
 // EmbeddedAuthenticator optionally supplies an authenticated data-plane identity.
@@ -36,24 +34,21 @@ type EmbeddedAuthenticator func(context.Context, *http.Request) (*domain.Identit
 
 // AuthResolver resolves Data Plane HTTP requests into a frozen domain.IdentityContext
 // with an attached domain.Principal across Virtual API Keys, OIDC/JWT (with claim-to-key
-// mapping and race-safe JIT user provisioning), OAuth token introspection, and trusted
-// reverse-proxy identity headers.
+// mapping and race-safe JIT user provisioning), and OAuth 2.0 token introspection / UserInfo.
 type AuthResolver struct {
-	embeddedAuth               EmbeddedAuthenticator
-	authSvc                    *Service
-	repo                       storage.Repository
-	rbac                       *RBACEngine
-	jwtVerifier                *JWTVerifier
-	introspector               *OAuthIntrospector
-	proxyAuth                  *ProxyAuthenticator
-	enableDataPlaneJWT         bool
-	defaultOrgID               string
-	introspectionAutoRegister  bool
-	introspectionDefaultTeamID string
-	introspectionDefaultRole   string
-	proxyAutoRegister          bool
-	proxyDefaultTeamID         string
-	proxyDefaultRole           string
+	embeddedAuth                           EmbeddedAuthenticator
+	authSvc                                *Service
+	repo                                   storage.Repository
+	rbac                                   *RBACEngine
+	jwtVerifier                            *JWTVerifier
+	introspector                           *OAuthIntrospector
+	enableDataPlaneJWT                     bool
+	defaultOrgID                           string
+	introspectionAutoRegister              bool
+	introspectionAllowUnverifiedEmail      bool
+	introspectionAllowPrivilegedRoleClaims bool
+	introspectionDefaultTeamID             string
+	introspectionDefaultRole               string
 }
 
 // NewAuthResolver constructs a unified AuthResolver from cfg.
@@ -67,20 +62,18 @@ func NewAuthResolver(cfg ResolverConfig) *AuthResolver {
 		jwtVerifier = cfg.Service.JWTVerifier()
 	}
 	return &AuthResolver{
-		authSvc:                    cfg.Service,
-		repo:                       repo,
-		rbac:                       cfg.RBAC,
-		jwtVerifier:                jwtVerifier,
-		introspector:               cfg.Introspector,
-		proxyAuth:                  cfg.ProxyAuth,
-		enableDataPlaneJWT:         cfg.EnableDataPlaneJWT,
-		defaultOrgID:               strings.TrimSpace(cfg.DefaultOrgID),
-		introspectionAutoRegister:  cfg.IntrospectionAutoRegister,
-		introspectionDefaultTeamID: strings.TrimSpace(cfg.IntrospectionDefaultTeamID),
-		introspectionDefaultRole:   strings.TrimSpace(cfg.IntrospectionDefaultRole),
-		proxyAutoRegister:          cfg.ProxyAutoRegister,
-		proxyDefaultTeamID:         strings.TrimSpace(cfg.ProxyDefaultTeamID),
-		proxyDefaultRole:           strings.TrimSpace(cfg.ProxyDefaultRole),
+		authSvc:                                cfg.Service,
+		repo:                                   repo,
+		rbac:                                   cfg.RBAC,
+		jwtVerifier:                            jwtVerifier,
+		introspector:                           cfg.Introspector,
+		enableDataPlaneJWT:                     cfg.EnableDataPlaneJWT,
+		defaultOrgID:                           strings.TrimSpace(cfg.DefaultOrgID),
+		introspectionAutoRegister:              cfg.IntrospectionAutoRegister,
+		introspectionAllowUnverifiedEmail:      cfg.IntrospectionAllowUnverifiedEmail,
+		introspectionAllowPrivilegedRoleClaims: cfg.IntrospectionAllowPrivilegedRoleClaims,
+		introspectionDefaultTeamID:             strings.TrimSpace(cfg.IntrospectionDefaultTeamID),
+		introspectionDefaultRole:               strings.TrimSpace(cfg.IntrospectionDefaultRole),
 	}
 }
 
@@ -178,9 +171,7 @@ func (r *AuthResolver) ResolveRequest(ctx context.Context, req *http.Request) (*
 	token := strings.TrimSpace(cred.Token)
 	var idCtx *domain.IdentityContext
 	if token == "" {
-		if r.proxyAuth != nil && r.proxyAuth.Enabled() {
-			idCtx, err = r.resolveProxyAuth(ctx, req)
-		} else if r.authSvc != nil {
+		if r.authSvc != nil {
 			idCtx, err = r.authSvc.AuthenticateVirtualKey(ctx, "")
 		} else {
 			return nil, &domain.GatewayError{
@@ -322,27 +313,32 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 		claimTeamID = strings.TrimSpace(claims.TeamIDs[0])
 	}
 
-	var autoRegister bool
+	var autoRegister, allowUnverifiedEmail, allowPrivilegedRoles bool
 	var defaultTeamID, defaultRole string
 	if ov != nil {
 		autoRegister = ov.AutoRegister()
+		allowUnverifiedEmail = ov.AllowUnverifiedEmail()
+		allowPrivilegedRoles = ov.AllowPrivilegedRoleClaims()
 		defaultTeamID = ov.DefaultTeamID()
 		defaultRole = ov.DefaultRole()
 	}
 
 	return r.resolveOrProvisionUser(ctx, userResolutionParams{
-		orgID:         orgID,
-		jwt:           true,
-		issuer:        effectiveIssuer,
-		subject:       claims.Subject,
-		email:         claims.Email,
-		displayName:   extractRawDisplayName(claims.RawClaims, claims.Email, claims.Subject),
-		claimTeamID:   claimTeamID,
-		claimRole:     claims.Role,
-		autoRegister:  autoRegister,
-		defaultTeamID: defaultTeamID,
-		defaultRole:   defaultRole,
-		principal:     principal,
+		orgID:                     orgID,
+		jwt:                       true,
+		issuer:                    effectiveIssuer,
+		subject:                   claims.Subject,
+		email:                     claims.Email,
+		emailVerified:             claims.EmailVerified,
+		allowUnverifiedEmail:      allowUnverifiedEmail,
+		allowPrivilegedRoleClaims: allowPrivilegedRoles,
+		displayName:               extractRawDisplayName(claims.RawClaims, claims.Email, claims.Subject),
+		claimTeamID:               claimTeamID,
+		claimRole:                 claims.Role,
+		autoRegister:              autoRegister,
+		defaultTeamID:             defaultTeamID,
+		defaultRole:               defaultRole,
+		principal:                 principal,
 	})
 }
 
@@ -456,157 +452,20 @@ func (r *AuthResolver) resolveIntrospectedBearer(ctx context.Context, rawToken s
 	}
 
 	return r.resolveOrProvisionUser(ctx, userResolutionParams{
-		orgID:         orgID,
-		subject:       subject,
-		email:         email,
-		displayName:   extractRawDisplayName(res.Claims, email, subject),
-		claimTeamID:   strings.TrimSpace(res.TeamID),
-		claimRole:     strings.TrimSpace(res.Role),
-		autoRegister:  r.introspectionAutoRegister,
-		defaultTeamID: r.introspectionDefaultTeamID,
-		defaultRole:   r.introspectionDefaultRole,
-		principal:     principal,
+		orgID:                     orgID,
+		subject:                   subject,
+		email:                     email,
+		emailVerified:             res.EmailVerified,
+		allowUnverifiedEmail:      r.introspectionAllowUnverifiedEmail,
+		allowPrivilegedRoleClaims: r.introspectionAllowPrivilegedRoleClaims,
+		displayName:               extractRawDisplayName(res.Claims, email, subject),
+		claimTeamID:               strings.TrimSpace(res.TeamID),
+		claimRole:                 strings.TrimSpace(res.Role),
+		autoRegister:              r.introspectionAutoRegister,
+		defaultTeamID:             r.introspectionDefaultTeamID,
+		defaultRole:               r.introspectionDefaultRole,
+		principal:                 principal,
 	})
-}
-
-func (r *AuthResolver) resolveProxyAuth(ctx context.Context, req *http.Request) (*domain.IdentityContext, error) {
-	proxyID, err := r.proxyAuth.Authenticate(req)
-	if err != nil {
-		return nil, err
-	}
-
-	orgID := strings.TrimSpace(proxyID.OrgID)
-	if orgID == "" {
-		orgID = r.defaultOrgID
-	}
-	if orgID == "" {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "missing_org_id",
-			Message:    "Organization could not be determined for reverse-proxy identity",
-		}
-	}
-
-	if r.repo == nil {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeServer,
-			Code:       "auth_repository_unavailable",
-			Message:    "Identity repository is not configured",
-		}
-	}
-
-	org, err := r.repo.GetOrganization(ctx, orgID)
-	if err != nil || org == nil || !org.IsActive {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "organization_inactive",
-			Message:    "Organization associated with this identity is inactive or does not exist",
-		}
-	}
-
-	var user *domain.User
-	if proxyID.UserID != "" {
-		if ul, ok := r.repo.(storage.UserLookupRepository); ok {
-			if candidate, getErr := ul.GetUser(ctx, proxyID.UserID); getErr == nil && candidate != nil && candidate.OrgID == orgID {
-				user = candidate
-			}
-		}
-		if user == nil {
-			user, err = r.lookupUserByOrgAndSubject(ctx, orgID, proxyID.UserID)
-			if err != nil && !errors.Is(err, storage.ErrNotFound) {
-				return nil, &domain.GatewayError{
-					StatusCode: http.StatusServiceUnavailable,
-					Type:       domain.ErrorTypeServer,
-					Code:       "user_lookup_unavailable",
-					Message:    "Unable to resolve proxy user identity",
-					Retryable:  true,
-				}
-			}
-		}
-	}
-	if user == nil && proxyID.UserEmail != "" {
-		candidate, emailErr := r.lookupUserByOrgAndEmail(ctx, orgID, proxyID.UserEmail)
-		if emailErr != nil && !errors.Is(emailErr, storage.ErrNotFound) {
-			var gwErr *domain.GatewayError
-			if errors.As(emailErr, &gwErr) {
-				return nil, gwErr
-			}
-			return nil, &domain.GatewayError{
-				StatusCode: http.StatusServiceUnavailable,
-				Type:       domain.ErrorTypeServer,
-				Code:       "user_lookup_unavailable",
-				Message:    "Unable to resolve proxy user identity by email",
-				Retryable:  true,
-			}
-		}
-		if candidate != nil && (candidate.OIDCIssuer != "" || (candidate.OIDCSubject != "" && proxyID.UserID != "" && candidate.OIDCSubject != proxyID.UserID && candidate.ID != proxyID.UserID)) {
-			return nil, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "subject_mismatch",
-				Message:    "Proxy user identifier does not match registered OIDC identity",
-			}
-		}
-		user = candidate
-	}
-
-	if user == nil {
-		if !r.proxyAutoRegister {
-			return nil, &domain.GatewayError{
-				StatusCode:  http.StatusUnauthorized,
-				Type:        domain.ErrorTypeAuthentication,
-				Code:        "unknown_user",
-				Message:     "No registered user matches the reverse-proxy identity headers",
-				AuthFailure: true,
-			}
-		}
-		return r.resolveOrProvisionUser(ctx, userResolutionParams{
-			orgID:         orgID,
-			subject:       proxyID.UserID,
-			email:         proxyID.UserEmail,
-			displayName:   firstNonEmpty(proxyID.UserEmail, proxyID.UserID),
-			claimTeamID:   proxyID.TeamID,
-			autoRegister:  true,
-			defaultTeamID: r.proxyDefaultTeamID,
-			defaultRole:   r.proxyDefaultRole,
-			principal: &domain.Principal{
-				AuthMethod:    "proxy",
-				PrincipalType: "user",
-				Subject:       proxyID.UserID,
-				Email:         proxyID.UserEmail,
-			},
-		})
-	}
-
-	if !user.IsActive {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "user_inactive",
-			Message:    "User associated with this identity is inactive",
-		}
-	}
-	if !user.SCIMActive {
-		return nil, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "scim_deprovisioned",
-			Message:    "User associated with this identity has been deprovisioned via SCIM",
-		}
-	}
-
-	principal := &domain.Principal{
-		AuthMethod:    "proxy",
-		PrincipalType: "user",
-		Subject:       firstNonEmpty(proxyID.UserID, user.ID),
-		Email:         firstNonEmpty(user.Email, proxyID.UserEmail),
-	}
-
-	teamIDOverride := r.resolveMemberTeamIDOverride(ctx, org.ID, user, proxyID.TeamID)
-	return r.projectUserIdentity(ctx, org, user, principal, teamIDOverride)
 }
 
 func (r *AuthResolver) resolveMemberTeamIDOverride(ctx context.Context, orgID string, user *domain.User, requestedTeamID string) string {
@@ -633,18 +492,21 @@ func (r *AuthResolver) resolveMemberTeamIDOverride(ctx context.Context, orgID st
 }
 
 type userResolutionParams struct {
-	jwt           bool
-	issuer        string
-	orgID         string
-	subject       string
-	email         string
-	displayName   string
-	claimTeamID   string
-	claimRole     string
-	autoRegister  bool
-	defaultTeamID string
-	defaultRole   string
-	principal     *domain.Principal
+	jwt                       bool
+	issuer                    string
+	orgID                     string
+	subject                   string
+	email                     string
+	emailVerified             bool
+	allowUnverifiedEmail      bool
+	allowPrivilegedRoleClaims bool
+	displayName               string
+	claimTeamID               string
+	claimRole                 string
+	autoRegister              bool
+	defaultTeamID             string
+	defaultRole               string
+	principal                 *domain.Principal
 }
 
 func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolutionParams) (*domain.IdentityContext, error) {
@@ -693,7 +555,7 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 		}
 	}
 
-	if user == nil && p.email != "" && !p.jwt {
+	if user == nil && p.email != "" && !p.jwt && (p.emailVerified || p.allowUnverifiedEmail) {
 		candidate, emailErr := r.lookupUserByOrgAndEmail(ctx, p.orgID, p.email)
 		if emailErr != nil && !errors.Is(emailErr, storage.ErrNotFound) {
 			var gwErr *domain.GatewayError
@@ -754,7 +616,7 @@ func (r *AuthResolver) resolveOrProvisionUser(ctx context.Context, p userResolut
 			TeamID:            teamID,
 			Email:             email,
 			Name:              firstNonEmpty(p.displayName, email, p.subject),
-			Role:              resolveJITRole(p.claimRole, p.defaultRole),
+			Role:              resolveJITRole(p.claimRole, p.defaultRole, p.allowPrivilegedRoleClaims),
 			OIDCIssuer:        p.issuer,
 			OIDCSubject:       p.subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
@@ -1035,20 +897,32 @@ func (r *AuthResolver) projectUserIdentity(
 	return idCtx, nil
 }
 
-func resolveJITRole(claimRole, defaultRole string) domain.Role {
-	for _, candidate := range []string{claimRole, defaultRole} {
-		switch domain.Role(strings.ToLower(strings.TrimSpace(candidate))) {
-		case domain.RolePlatformAdmin,
-			domain.RoleOrgAdmin,
-			domain.RoleOrgViewer,
-			domain.RoleTeamAdmin,
-			domain.RoleDeveloper,
-			domain.RoleServiceAccount,
-			domain.RoleViewer:
-			return domain.Role(strings.ToLower(strings.TrimSpace(candidate)))
+func resolveJITRole(claimRole, defaultRole string, allowPrivilegedClaims bool) domain.Role {
+	if role, ok := parseValidDomainRole(claimRole); ok {
+		if role != domain.RolePlatformAdmin || allowPrivilegedClaims {
+			return role
 		}
 	}
+	if role, ok := parseValidDomainRole(defaultRole); ok {
+		return role
+	}
 	return domain.RoleDeveloper
+}
+
+func parseValidDomainRole(raw string) (domain.Role, bool) {
+	r := domain.Role(strings.ToLower(strings.TrimSpace(raw)))
+	switch r {
+	case domain.RolePlatformAdmin,
+		domain.RoleOrgAdmin,
+		domain.RoleOrgViewer,
+		domain.RoleTeamAdmin,
+		domain.RoleDeveloper,
+		domain.RoleServiceAccount,
+		domain.RoleViewer:
+		return r, true
+	default:
+		return "", false
+	}
 }
 
 func extractRawDisplayName(raw map[string]any, fallbacks ...string) string {

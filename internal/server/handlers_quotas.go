@@ -447,7 +447,11 @@ func (s *GatewayServer) handleAdminSetKeyTempBudget(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, existing.OrgID, true)
+	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, existing.Role, "virtual key") {
 		return
 	}
 

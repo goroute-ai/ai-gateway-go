@@ -463,10 +463,10 @@ func TestMiddlewares_CustomAPIKeyHeaderAndSources(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
+	idp := newTestOIDCIssuer(t)
 	svc := auth.NewService(repo, nil, "sk-gw-master-ext-secret", time.Minute, time.Minute)
 	svc.SetCustomAPIKeyHeader("X-Custom-Gateway-Key")
-	jwtSecret := "ext-jwt-secret"
-	svc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{Secret: jwtSecret}))
+	svc.SetJWTVerifier(auth.NewJWTVerifier(idp.JWTConfig("ai-gateway")))
 
 	devVK, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
 		OrgID: "org_ext",
@@ -486,13 +486,12 @@ func TestMiddlewares_CustomAPIKeyHeaderAndSources(t *testing.T) {
 		t.Fatalf("IssueVirtualKey(admin): %v", err)
 	}
 
-	jwtTok, err := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	jwtTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-ext-admin",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 
 	rbac := auth.NewRBACEngine(repo)
 	dpMW := auth.DataPlaneMiddleware(svc, rbac)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

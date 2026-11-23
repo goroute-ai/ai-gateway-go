@@ -23,14 +23,16 @@ This guide covers safe zero-downtime upgrades and rollback precautions when upgr
 4. **Scheduled Key Auto-Rotation Delivery & Rolling Master KEK Transition**:
    - Keys with `rotation_interval_sec > 0` remain untouched unless `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, a declarative `auth.key_rotation_sink` (`webhook`, `vault_kv2`), or a Go SDK `KeySecretSink` is configured. All HTTPS sinks run behind `internal/security/network` SSRF protections, reuse encrypted staged secrets (`virtual_keys.staged_key_dek`) across transient failures, and promote only after a `2xx` ACK.
    - During zero-downtime `POST /admin/v1/security/rotate-kek` transitions, database DEKs (including `staged_key_dek`) are re-wrapped atomically; configure `auth.previous_master_encryption_keys` during rolling replica restarts so peers can decrypt both previous and newly re-wrapped DEKs until all pods share the new primary key.
-5. **Server-Side Password Breach Screening (`auth.enable_hibp_check`)**:
-   - Passwords are submitted over TLS to `POST /auth/login` and `POST /auth/password`; client-side SHA-1 hashing (`password_sha1`) is removed. When `enable_hibp_check: true`, GoRoute hashes server-side, queries HIBP k-anonymity range APIs with strictly the **5-character uppercase SHA-1 prefix**, and fails open on upstream HIBP availability errors according to existing availability settings.
+5. **Vendor-Neutral OIDC-Only Authentication & Migrations `0039`–`0040`**:
+   - Proprietary SSO presets (`google`, `microsoft`, `okta_id_jag`), symmetric `auth.jwt_secret` (`HS256` data-plane/control-plane verification), reverse-proxy header auth (`auth.proxy_auth`), and local operator password endpoints (`/auth/login`, `/auth/password`, `auth.ui_username`/`ui_password`, `auth.enable_hibp_check`) are removed in favor of standard asymmetric OIDC + PKCE `S256` (e.g., Keycloak 26). Migration `0039_drop_user_credentials` drops the legacy `user_credentials` table, and Migration `0040_operator_sessions_oidc_metadata` adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` on `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`). Emergency break-glass access remains available via `GATEWAY_MASTER_ADMIN_KEY`.
+   - In production (`GATEWAY_ENV=production`), `auth.session_secret` must be at least 32 bytes, `server.public_base_url` (or explicit HTTPS `redirect_url`) is required when SSO is enabled, all `auth.oidc_issuers[]` require an `audience`, `server.cors_allowed_origins` rejects `"null"`, `"*"`, and non-HTTPS `http://` origins, and global `allow_private_networks`, `allow_insecure_http`, and `allow_loopback_http` are rejected (use explicit `allowed_private_cidrs` with prefix `>= /8` IPv4 / `>= /7` IPv6 and no overlap with loopback, link-local, multicast, or cloud IMDS ranges for internal VPC endpoints).
+   - For local development with HTTP IdPs (such as Docker Keycloak on `http://localhost:8081`), enable `security.network.outbound_ssrf.allow_loopback_http: true` (`GATEWAY_ALLOW_LOOPBACK_HTTP=true`).
 6. **AWS RDS IAM Requires TLS Verification (`sslmode=verify-full` / `verify-ca`)**:
    - When `storage.rds_iam.enabled: true`, every PostgreSQL connection candidate must verify the server certificate. Use `sslmode=verify-full` or `verify-ca`. The gateway rejects unverified TLS or plaintext fallback before dialing.
 
 ---
 
-## 2. Database Migrations (`0022`–`0038`)
+## 2. Database Migrations (`0022`–`0040`)
 
 Run migrations with the `-migrate-only` flag before rolling gateway pods:
 
@@ -57,6 +59,8 @@ ai-gateway -config /etc/goroute/config.yaml -migrate-only
 | `0036_production_routing_hardening` | Adds `model_deployments.{max_parallel_requests,itpm_capacity,otpm_capacity}`, `model_groups.{drop_unsupported_params,disable_cooldowns,saturation_fallbacks}`, `quota_policies.rpd_limit`, `virtual_keys.{min_priority_rank,allowed_routing_tags}`, `teams.{min_priority_rank,allowed_routing_tags}`, `guardrail_policies.sensitive_route_target`, and `guardrail_definitions.sensitive_route_target`. |
 | `0037_prune_unsupported_providers` | Prunes legacy non-4-provider deployments/models/credentials, removes `provider_credentials.{azure_deployment_name,api_version}` and `global_models.rerank_cost_micros_per_search_unit`, deletes removed cloud guardrail drivers, and seeds default Groq/OpenRouter models. |
 | `0038_mcp_runtime_spec` | Creates `mcp_runtime_settings` (`active_protocol_version` defaulting to `'2026-07-28'`, `strict_schema_validation`, `updated_by`, `updated_at`) backing live UI/API MCP specification switching. |
+| `0039_drop_user_credentials` | Drops legacy local password `user_credentials` table cleanly as part of the vendor-neutral OIDC-only migration. |
+| `0040_operator_sessions_oidc_metadata` | Adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for multi-provider logout routing and Vault-encrypted `id_token_hint` RP-Initiated Logout. |
 
 All columns added in `0036_production_routing_hardening` are nullable or defaulted idempotently (`ADD COLUMN IF NOT EXISTS`) with safe zero/false defaults:
 - `allow_strategy_override: false` and `debug_routing_headers: false` ensure untrusted request strategy overrides and diagnostic fallback error headers remain off unless explicitly opted in.

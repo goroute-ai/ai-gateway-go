@@ -477,7 +477,6 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		"model_access_group_members",
 		"deployment_ptu_shares",
 		"priority_classes",
-		"user_credentials",
 		"operator_sessions",
 	}
 	for _, tbl := range expectedTables {
@@ -487,8 +486,17 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 				SELECT 1 FROM information_schema.tables
 				WHERE table_schema = 'public' AND table_name = $1
 			)`, tbl).Scan(&exists); err != nil || !exists {
-			t.Fatalf("expected table %s after 0001..0034 (exists=%v, err=%v)", tbl, exists, err)
+			t.Fatalf("expected table %s after 0001..0039 (exists=%v, err=%v)", tbl, exists, err)
 		}
+	}
+
+	var legacyCredsExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'user_credentials'
+		)`).Scan(&legacyCredsExists); err != nil || legacyCredsExists {
+		t.Fatalf("expected user_credentials to be dropped after 0039 (exists=%v, err=%v)", legacyCredsExists, err)
 	}
 
 	expectedCols := []struct {
@@ -527,6 +535,9 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		{"virtual_keys", "revoked_at"},
 		{"virtual_keys", "revoked_by"},
 		{"virtual_keys", "expiry_alert_sent_days"},
+		{"operator_sessions", "provider_id"},
+		{"operator_sessions", "encrypted_id_token"},
+		{"operator_sessions", "encrypted_id_token_dek"},
 	}
 	for _, tc := range expectedCols {
 		var exists bool
@@ -549,7 +560,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0038) down through 0022.
+	// Exercise reverse down migrations from latest (0040) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -562,8 +573,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 17 {
-		t.Fatalf("expected 17 down migrations for 0022..0038, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 19 {
+		t.Fatalf("expected 19 down migrations for 0022..0040, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))

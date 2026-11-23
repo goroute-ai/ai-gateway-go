@@ -74,11 +74,13 @@ func TestAdminProjectsAndTeamMemberships_RBACAndMNMultiTeam(t *testing.T) {
 		IsActive: true,
 	}))
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.MasterAdminKey = "sk-gw-master-projects-test"
 	cfg.Auth.EnableDataPlaneJWT = true
-	cfg.Auth.JWTSecret = "projects-test-jwt-secret"
-	cfg.Auth.JWTIssuer = "https://idp.orga.example"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_a"
 
@@ -282,14 +284,13 @@ func TestAdminProjectsAndTeamMemberships_RBACAndMNMultiTeam(t *testing.T) {
 	assert.Equal(t, 5000, idCtx.TeamMemberTPMLimit)
 
 	// M:N AuthResolver: JWT with team_ids=["team_a2"] resolves usr_multi's team_a2 membership
-	tok, err := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	tok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-multi",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
 		TeamIDs:   []string{"team_a2"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	require.NoError(t, err)
 	jwtReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	jwtReq.Header.Set("Authorization", "Bearer "+tok)
 	jwtIDCtx, err := gw.AuthService().DataPlaneResolver().ResolveRequest(ctx, jwtReq)

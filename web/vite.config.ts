@@ -16,6 +16,17 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom'],
           query: ['@tanstack/react-query', 'lucide-react'],
+          common: [
+            './src/components/common/Badge.tsx',
+            './src/components/common/CodeBlock.tsx',
+            './src/components/common/ErrorAlert.tsx',
+            './src/components/common/Modal.tsx',
+            './src/utils/budget.ts',
+          ],
+          auth: [
+            './src/views/LoginView.tsx',
+            './src/views/CLILoginView.tsx',
+          ],
         },
       },
     },

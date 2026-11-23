@@ -87,9 +87,6 @@ model_list:
 func TestConfigValidationMatrix(t *testing.T) {
 	t.Run("Default configuration is valid in development and test", func(t *testing.T) {
 		cfg := config.Default()
-		if cfg.Auth.JWTSecret != "" {
-			t.Fatalf("expected default Auth.JWTSecret to be empty, got %q", cfg.Auth.JWTSecret)
-		}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected default keys to be rejected when environment is unset")
 		}
@@ -118,35 +115,78 @@ func TestConfigValidationMatrix(t *testing.T) {
 		cfg.Server.Environment = "production"
 		cfg.Auth.MasterAdminKey = "sk-gw-custom-production-super-secret-key-12345"
 		cfg.Auth.MasterEncryptionKey = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-		cfg.Auth.JWTSecret = "custom-production-jwt-secret-xyz-987"
+		cfg.Auth.SessionSecret = "prod-session-signing-secret-0123456789abcdef"
+		cfg.Auth.OIDCJWKSURL = "https://auth.example.com/protocol/openid-connect/certs"
 		cfg.Auth.JWTIssuer = "https://auth.example.com"
 		cfg.Auth.JWTAudience = "ai-gateway"
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("expected custom production keys to pass validation, got: %v", err)
 		}
+
+		// Production must reject missing/short session_secret
+		cfg.Auth.SessionSecret = ""
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production to reject empty session_secret")
+		}
+		cfg.Auth.SessionSecret = "short-secret"
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production to reject short session_secret (<32 bytes)")
+		}
+		cfg.Auth.SessionSecret = "prod-session-signing-secret-0123456789abcdef"
+
+		// Production must reject insecure SSRF flags while allowing targeted allowed_private_cidrs
+		cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production to reject allow_loopback_http=true")
+		}
+		cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = false
+
+		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production to reject allow_insecure_http=true")
+		}
+		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = false
+
+		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected production to reject global allow_private_networks=true")
+		}
+		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = false
+		cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{"10.20.0.0/24"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected targeted allowed_private_cidrs to pass in production, got: %v", err)
+		}
 	})
 
-	t.Run("JWT/OIDC requires issuer and audience", func(t *testing.T) {
+	t.Run("OIDC JWKS requires issuer and audience", func(t *testing.T) {
 		cfg := config.Default()
 		cfg.Server.Environment = "development"
-		cfg.Auth.JWTSecret = "custom-secret"
+		cfg.Auth.OIDCJWKSURL = "https://idp.example.com/.well-known/jwks.json"
 		if err := cfg.Validate(); err == nil {
-			t.Fatal("expected error when JWTSecret is set without JWTIssuer/JWTAudience")
+			t.Fatal("expected error when OIDCJWKSURL is set without JWTIssuer")
 		}
 		cfg.Auth.JWTIssuer = "https://idp.example.com"
 		if err := cfg.Validate(); err == nil {
-			t.Fatal("expected error when JWTSecret is set without JWTAudience")
+			t.Fatal("expected error when OIDCJWKSURL is set without JWTAudience")
 		}
 		cfg.Auth.JWTAudience = "ai-gateway"
 		if err := cfg.Validate(); err != nil {
-			t.Fatalf("expected valid JWT config, got: %v", err)
+			t.Fatalf("expected valid OIDC config, got: %v", err)
 		}
+	})
 
-		cfg.Auth.JWTSecret = ""
-		cfg.Auth.OIDCJWKSURL = "https://idp.example.com/.well-known/jwks.json"
-		cfg.Auth.JWTIssuer = ""
-		if err := cfg.Validate(); err == nil {
-			t.Fatal("expected error when OIDCJWKSURL is set without JWTIssuer")
+	t.Run("Symmetric HS256 and none algorithms are rejected in OIDC issuers", func(t *testing.T) {
+		for _, alg := range []string{"HS256", "HS384", "HS512", "none"} {
+			cfg := config.Default()
+			cfg.Server.Environment = "test"
+			cfg.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{
+				Issuer:     "https://idp.example.com/realms/goroute",
+				Audience:   "goroute-gateway",
+				Algorithms: []string{alg},
+			}}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected algorithm %q to be rejected", alg)
+			}
 		}
 	})
 
@@ -567,6 +607,7 @@ auth:
       default_team_id: "team_eng"
       default_role: "developer"
     - issuer: "https://idp-b.example.com"
+      audience: "gateway-api-b"
       jwks_url: "https://idp-b.example.com/keys"
 `
 	tmpPath := filepath.Join(t.TempDir(), "oidc_config.yaml")
@@ -599,29 +640,35 @@ auth:
 		{
 			name: "missing issuer",
 			edit: func(c *config.Config) {
-				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{JWKSURL: "https://idp.example.com/jwks.json"}}
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{Audience: "gw", JWKSURL: "https://idp.example.com/jwks.json"}}
+			},
+		},
+		{
+			name: "missing audience",
+			edit: func(c *config.Config) {
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{Issuer: "https://idp.example.com", JWKSURL: "https://idp.example.com/jwks.json"}}
 			},
 		},
 		{
 			name: "duplicate issuer",
 			edit: func(c *config.Config) {
 				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{
-					{Issuer: "https://idp.example.com"},
-					{Issuer: "https://idp.example.com"},
+					{Issuer: "https://idp.example.com", Audience: "gw"},
+					{Issuer: "https://idp.example.com", Audience: "gw"},
 				}
 			},
 		},
 		{
 			name: "non-url issuer without jwks_url or discovery_url",
 			edit: func(c *config.Config) {
-				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{Issuer: "urn:corp:idp"}}
+				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{{Issuer: "urn:corp:idp", Audience: "gw"}}
 			},
 		},
 		{
 			name: "alg none disallowed",
 			edit: func(c *config.Config) {
 				c.Auth.OIDCIssuers = []config.OIDCIssuerConfig{
-					{Issuer: "https://idp.example.com", Algorithms: []string{"none"}},
+					{Issuer: "https://idp.example.com", Audience: "gw", Algorithms: []string{"none"}},
 				}
 			},
 		},
@@ -715,17 +762,20 @@ server:
   environment: "test"
 auth:
   sso_providers:
-    - id: "google"
-      display_name: "Google SSO"
-      client_id: "google-cid"
-      client_secret: "os.environ/GOOGLE_SSO_SECRET"
+    - id: "keycloak"
+      display_name: "Keycloak SSO"
+      type: "oidc"
+      client_id: "keycloak-cid"
+      client_secret: "os.environ/KEYCLOAK_SSO_SECRET"
+      issuer: "https://keycloak.example.com/realms/goroute"
       allowed_email_domains: ["acme.example.com"]
       auto_register: true
       default_org_id: "org_default"
       default_role: "org_viewer"
-    - name: "microsoft"
-      tenant_id: "tenant-123"
-      client_id: "ms-cid"
+    - name: "dex"
+      type: "oidc"
+      client_id: "dex-cid"
+      discovery_url: "https://dex.example.com/.well-known/openid-configuration"
       scopes: ["openid", "email", "profile"]
     - id: "oidc"
       display_name: "Enterprise OIDC"
@@ -743,8 +793,8 @@ auth:
 	if len(cfg.Auth.SSOProviders) != 3 {
 		t.Fatalf("expected 3 sso_providers, got %d", len(cfg.Auth.SSOProviders))
 	}
-	if cfg.Auth.SSOProviders[1].TenantID != "tenant-123" {
-		t.Fatalf("expected microsoft tenant_id=tenant-123, got %q", cfg.Auth.SSOProviders[1].TenantID)
+	if cfg.Auth.SSOProviders[0].Type != "oidc" {
+		t.Fatalf("expected sso_providers[0].type=oidc, got %q", cfg.Auth.SSOProviders[0].Type)
 	}
 
 	// Negative validation cases
@@ -754,18 +804,26 @@ auth:
 	}{
 		{
 			name:      "missing id and name",
-			providers: []config.SSOProviderConfig{{ClientID: "cid"}},
+			providers: []config.SSOProviderConfig{{ClientID: "cid", Issuer: "https://idp.example.com"}},
 		},
 		{
 			name: "duplicate id/name",
 			providers: []config.SSOProviderConfig{
-				{ID: "google", ClientID: "c1"},
-				{Name: "google", ClientID: "c2"},
+				{ID: "keycloak", ClientID: "c1", Issuer: "https://idp1.example.com"},
+				{Name: "keycloak", ClientID: "c2", Issuer: "https://idp2.example.com"},
 			},
 		},
 		{
 			name:      "missing client_id",
-			providers: []config.SSOProviderConfig{{ID: "google"}},
+			providers: []config.SSOProviderConfig{{ID: "keycloak", Issuer: "https://idp.example.com"}},
+		},
+		{
+			name:      "unsupported type google",
+			providers: []config.SSOProviderConfig{{ID: "google", Type: "google", ClientID: "cid", Issuer: "https://accounts.google.com"}},
+		},
+		{
+			name:      "unsupported type microsoft",
+			providers: []config.SSOProviderConfig{{ID: "microsoft", Type: "microsoft", ClientID: "cid", Issuer: "https://idp.example.com"}},
 		},
 		{
 			name:      "oidc without endpoints or issuer",
@@ -777,7 +835,11 @@ auth:
 		},
 		{
 			name:      "disallowed none algorithm",
-			providers: []config.SSOProviderConfig{{ID: "google", ClientID: "cid", Algorithms: []string{"none"}}},
+			providers: []config.SSOProviderConfig{{ID: "oidc", ClientID: "cid", Issuer: "https://idp.example.com", Algorithms: []string{"none"}}},
+		},
+		{
+			name:      "disallowed HS256 algorithm",
+			providers: []config.SSOProviderConfig{{ID: "oidc", ClientID: "cid", Issuer: "https://idp.example.com", Algorithms: []string{"HS256"}}},
 		},
 	}
 	for _, tc := range invalidCases {
@@ -896,4 +958,132 @@ func TestConfig_PreviousKEKsAndKeyRotationSinkValidation(t *testing.T) {
 			t.Fatalf("expected webhook inheriting delivery_url to validate, got %v", err)
 		}
 	})
+}
+
+func TestConfig_SecretEnvResolutionAndProductionHardening(t *testing.T) {
+	t.Setenv("TEST_ADMIN_KEY", "sk-gw-resolved-admin-key-123456")
+	t.Setenv("TEST_ENC_KEY", "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff")
+	t.Setenv("TEST_SESS_SECRET", "session-secret-resolved-from-env-0123456789")
+	t.Setenv("TEST_INTROSPECT_CID", "introspect-client")
+	t.Setenv("TEST_INTROSPECT_SEC", "introspect-secret-value")
+	t.Setenv("TEST_REDIS_PASS", "redis-secret-pass")
+
+	yamlContent := `
+server:
+  environment: "production"
+  public_base_url: "https://gateway.example.com/"
+storage:
+  redis_pass: "os.environ/TEST_REDIS_PASS"
+auth:
+  master_admin_key: "os.environ/TEST_ADMIN_KEY"
+  master_encryption_key: "os.environ/TEST_ENC_KEY"
+  session_secret: "os.environ/TEST_SESS_SECRET"
+  introspection:
+    issuer: "https://idp.example.com/realms/goroute"
+    audience: "goroute-gateway"
+    client_id: "os.environ/TEST_INTROSPECT_CID"
+    client_secret: "os.environ/TEST_INTROSPECT_SEC"
+  sso_providers:
+    - id: "keycloak"
+      type: "oidc"
+      client_id: "goroute-gateway"
+      issuer: "https://idp.example.com/realms/goroute"
+`
+	tmpPath := filepath.Join(t.TempDir(), "prod.yaml")
+	if err := os.WriteFile(tmpPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatalf("write prod config: %v", err)
+	}
+	cfg, err := config.Load(tmpPath)
+	if err != nil {
+		t.Fatalf("expected resolved prod config to load, got: %v", err)
+	}
+	if cfg.Server.PublicBaseURL != "https://gateway.example.com" {
+		t.Fatalf("expected trimmed PublicBaseURL, got %q", cfg.Server.PublicBaseURL)
+	}
+	if cfg.Auth.SessionSecret != "session-secret-resolved-from-env-0123456789" {
+		t.Fatalf("expected resolved SessionSecret, got %q", cfg.Auth.SessionSecret)
+	}
+	if cfg.Auth.Introspection.ClientID != "introspect-client" || cfg.Auth.Introspection.ClientSecret != "introspect-secret-value" {
+		t.Fatalf("expected resolved Introspection credentials, got %q / %q", cfg.Auth.Introspection.ClientID, cfg.Auth.Introspection.ClientSecret)
+	}
+	if cfg.Storage.RedisPass != "redis-secret-pass" {
+		t.Fatalf("expected resolved RedisPass, got %q", cfg.Storage.RedisPass)
+	}
+
+	// Unset env var for required production session_secret must fail closed
+	badYAML := strings.ReplaceAll(yamlContent, "TEST_SESS_SECRET", "UNSET_SESS_SECRET_VAR")
+	badPath := filepath.Join(t.TempDir(), "prod-bad.yaml")
+	if err := os.WriteFile(badPath, []byte(badYAML), 0o600); err != nil {
+		t.Fatalf("write bad prod config: %v", err)
+	}
+	if _, err := config.Load(badPath); err == nil {
+		t.Fatal("expected production load with unset session_secret env ref to fail")
+	}
+
+	// Direct Validate() must reject literal unresolved os.environ/... strings
+	direct := config.Default()
+	direct.Server.Environment = "test"
+	direct.Auth.SessionSecret = "os.environ/GATEWAY_SESSION_SECRET"
+	if err := direct.Validate(); err == nil {
+		t.Fatal("expected Validate to reject literal os.environ/ session_secret")
+	}
+
+	// SEC-04: Production allowed_private_cidrs rejects broad, loopback, link-local, and metadata CIDRs
+	for _, badCIDR := range []string{
+		"0.0.0.0/0",
+		"10.0.0.0/4",
+		"::/0",
+		"127.0.0.0/8",
+		"127.0.0.1/32",
+		"::1/128",
+		"169.254.0.0/16",
+		"169.254.169.254/32",
+		"169.254.170.2/32",
+		"100.100.100.200/32",
+		"fe80::/10",
+		"fd00:ec2::254/128",
+		"224.0.0.0/4",
+	} {
+		c := *cfg
+		c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{badCIDR}
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected production Validate() to reject unsafe allowed_private_cidrs %q", badCIDR)
+		}
+	}
+	for _, goodCIDR := range []string{
+		"172.30.10.0/24",
+		"10.20.0.0/16",
+		"10.0.0.0/8",
+		"192.168.1.0/24",
+		"fd12:3456:789a::/48",
+	} {
+		c := *cfg
+		c.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = []string{goodCIDR}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("expected production Validate() to accept valid VPC CIDR %q, got: %v", goodCIDR, err)
+		}
+	}
+
+	// SEC-05: Production cors_allowed_origins rejects "null", "*", http://, and origins with paths/queries
+	for _, badOrigin := range []string{
+		"null",
+		"NULL",
+		"*",
+		"http://console.example.com",
+		"https://console.example.com/",
+		"https://console.example.com/ui",
+		"https://console.example.com?foo=bar",
+		"https://user:pass@console.example.com",
+	} {
+		c := *cfg
+		c.Server.CORSAllowedOrigins = []string{badOrigin}
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected production Validate() to reject unsafe cors_allowed_origins entry %q", badOrigin)
+		}
+	}
+	goodCORS := *cfg
+	goodCORS.Server.CORSAllowedOrigins = []string{"https://console.example.com", "https://portal.example.com:8443"}
+	if err := goodCORS.Validate(); err != nil {
+		t.Fatalf("expected production Validate() to accept valid HTTPS CORS origins, got: %v", err)
+	}
 }

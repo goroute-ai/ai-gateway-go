@@ -58,48 +58,74 @@ func TestMasterKeyDataPlaneDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestJWTVerifier_HS256(t *testing.T) {
+func TestJWTVerifier_AsymmetricOIDC_AndRejectsHS256(t *testing.T) {
 	ctx := context.Background()
-	secret := "super-secret-hmac-key-for-testing"
-	verifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:   secret,
-		Issuer:   "https://auth.example.com",
-		Audience: "ai-gateway",
-	})
-
+	idp := newTestOIDCIssuer(t)
 	now := time.Now().UTC()
-	tok, err := auth.SignHS256(secret, &auth.JWTClaims{
-		Subject:   "oidc-sub-123",
-		Issuer:    "https://auth.example.com",
-		Audience:  auth.AudienceClaim{"ai-gateway"},
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-		IssuedAt:  now.Unix(),
+
+	for _, alg := range []string{"RS256", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"} {
+		t.Run("accepts_"+alg, func(t *testing.T) {
+			verifier := auth.NewJWTVerifier(auth.JWTConfig{
+				Issuer:        idp.Issuer(),
+				Audience:      "ai-gateway",
+				OIDCJWKSURL:   idp.JWKSURL(),
+				Algorithms:    []string{alg},
+				NetworkPolicy: idp.NetworkPolicy(),
+			})
+			tok := idp.SignWithAlg(alg, map[string]any{
+				"iss": idp.Issuer(),
+				"sub": "oidc-sub-alg-" + alg,
+				"aud": "ai-gateway",
+				"iat": now.Unix(),
+				"exp": now.Add(5 * time.Minute).Unix(),
+			})
+			claims, err := verifier.Verify(ctx, tok)
+			if err != nil {
+				t.Fatalf("verify %s jwt: %v", alg, err)
+			}
+			if claims.Subject != "oidc-sub-alg-"+alg {
+				t.Fatalf("unexpected sub: %q", claims.Subject)
+			}
+		})
+	}
+
+	verifier := auth.NewJWTVerifier(idp.JWTConfig("ai-gateway"))
+
+	// Symmetric HS256 and alg=none must always be rejected
+	hsTok := signHS256TestToken("sym-secret", map[string]any{
+		"iss": idp.Issuer(),
+		"sub": "oidc-sub-hs",
+		"aud": "ai-gateway",
+		"exp": now.Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("sign jwt: %v", err)
+	if _, err := verifier.Verify(ctx, hsTok); err == nil {
+		t.Fatalf("expected HS256 token to be rejected")
 	}
 
-	claims, err := verifier.Verify(ctx, tok)
-	if err != nil {
-		t.Fatalf("verify valid hs256 jwt: %v", err)
-	}
-	if claims.Subject != "oidc-sub-123" {
-		t.Fatalf("expected sub oidc-sub-123, got %q", claims.Subject)
+	// Clock skew: within 30s leeway succeeds; beyond 30s fails
+	verifier.SetNowFunc(func() time.Time { return now })
+	withinSkewTok := idp.SignWithAlg("RS256", map[string]any{
+		"iss": idp.Issuer(),
+		"sub": "oidc-sub-skew",
+		"aud": "ai-gateway",
+		"exp": now.Add(-10 * time.Second).Unix(),
+	})
+	if _, err := verifier.Verify(ctx, withinSkewTok); err != nil {
+		t.Fatalf("expected token expired by 10s (within 30s clock skew) to pass: %v", err)
 	}
 
-	// Expired token
-	expiredTok, _ := auth.SignHS256(secret, &auth.JWTClaims{
-		Subject:   "oidc-sub-123",
-		Issuer:    "https://auth.example.com",
-		Audience:  auth.AudienceClaim{"ai-gateway"},
-		ExpiresAt: now.Add(-1 * time.Minute).Unix(),
+	expiredTok := idp.SignWithAlg("RS256", map[string]any{
+		"iss": idp.Issuer(),
+		"sub": "oidc-sub-expired",
+		"aud": "ai-gateway",
+		"exp": now.Add(-45 * time.Second).Unix(),
 	})
 	if _, err := verifier.Verify(ctx, expiredTok); err == nil {
-		t.Fatalf("expected expired jwt to fail")
+		t.Fatalf("expected token expired beyond 30s skew to fail")
 	}
 
 	// Wrong issuer
-	wrongIssTok, _ := auth.SignHS256(secret, &auth.JWTClaims{
+	wrongIssTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "oidc-sub-123",
 		Issuer:    "https://evil.example.com",
 		Audience:  auth.AudienceClaim{"ai-gateway"},
@@ -110,25 +136,14 @@ func TestJWTVerifier_HS256(t *testing.T) {
 	}
 
 	// Wrong audience
-	wrongAudTok, _ := auth.SignHS256(secret, &auth.JWTClaims{
+	wrongAudTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "oidc-sub-123",
-		Issuer:    "https://auth.example.com",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"other-aud"},
 		ExpiresAt: now.Add(5 * time.Minute).Unix(),
 	})
 	if _, err := verifier.Verify(ctx, wrongAudTok); err == nil {
 		t.Fatalf("expected wrong audience jwt to fail")
-	}
-
-	// Wrong signature
-	wrongSigTok, _ := auth.SignHS256("wrong-secret", &auth.JWTClaims{
-		Subject:   "oidc-sub-123",
-		Issuer:    "https://auth.example.com",
-		Audience:  auth.AudienceClaim{"ai-gateway"},
-		ExpiresAt: now.Add(5 * time.Minute).Unix(),
-	})
-	if _, err := verifier.Verify(ctx, wrongSigTok); err == nil {
-		t.Fatalf("expected wrong signature jwt to fail")
 	}
 }
 
@@ -270,9 +285,9 @@ func TestAuthenticateOperatorAndAuthorizeAdminAction(t *testing.T) {
 		IsActive:    true,
 	})
 
+	idp := newTestOIDCIssuer(t)
 	svc := auth.NewService(repo, nil, "sk-gw-master-admin-test", time.Minute, time.Minute)
-	jwtSecret := "operator-jwt-secret-key"
-	svc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{Secret: jwtSecret}))
+	svc.SetJWTVerifier(auth.NewJWTVerifier(idp.JWTConfig("ai-gateway")))
 
 	// 1. MasterAdminKey -> platform_admin
 	opMaster, err := svc.AuthenticateOperator(ctx, "sk-gw-master-admin-test")
@@ -328,8 +343,10 @@ func TestAuthenticateOperatorAndAuthorizeAdminAction(t *testing.T) {
 	}
 
 	// 3. Inbound JWT -> org_viewer
-	viewerTok, _ := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	viewerTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-viewer-a",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
 	opViewer, err := svc.AuthenticateOperator(ctx, viewerTok)
@@ -350,8 +367,10 @@ func TestAuthenticateOperatorAndAuthorizeAdminAction(t *testing.T) {
 	}
 
 	// Developer JWT should be rejected on control plane
-	devTok, _ := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	devTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-dev-a",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
 	if _, err := svc.AuthenticateOperator(ctx, devTok); err == nil {

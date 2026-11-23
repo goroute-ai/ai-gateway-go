@@ -10,11 +10,9 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -770,8 +768,8 @@ func (m *mockEnterpriseIdentityProvider) handle(w http.ResponseWriter, r *http.R
 }
 
 // -----------------------------------------------------------------------------
-// mockSecurityAndWebhookSink: HIBP k-anonymity range, Soft-Budget webhooks,
-// and HTTPS Key Rotation Delivery receiver
+// mockSecurityAndWebhookSink: Soft-Budget webhooks and HTTPS Key Rotation
+// Delivery receiver
 // -----------------------------------------------------------------------------
 
 type recordedRotationDelivery struct {
@@ -786,29 +784,17 @@ type mockSecurityAndWebhookSink struct {
 	tlsSrv  *httptest.Server
 
 	mu                 sync.Mutex
-	breachedSuffixes   map[string]string // uppercase 5-char SHA-1 prefix -> newline suffix entries
-	hibpOutage         bool
-	hibpPrefixes       []string
 	softBudgetEvents   []map[string]any
 	rotationDeliveries []recordedRotationDelivery
 	rotationFailures   int
 	rotationToken      string
 }
 
-func newMockSecurityAndWebhookSink(t *testing.T, breachedPasswords []string, rotationToken string) *mockSecurityAndWebhookSink {
+func newMockSecurityAndWebhookSink(t *testing.T, rotationToken string) *mockSecurityAndWebhookSink {
 	t.Helper()
 	s := &mockSecurityAndWebhookSink{
-		t:                t,
-		breachedSuffixes: make(map[string]string),
-		rotationToken:    rotationToken,
-	}
-	for _, pw := range breachedPasswords {
-		sum := sha1.Sum([]byte(pw))
-		hexHash := strings.ToUpper(hex.EncodeToString(sum[:]))
-		prefix, suffix := hexHash[:5], hexHash[5:]
-		existing := s.breachedSuffixes[prefix]
-		line := fmt.Sprintf("%s:1337\r\n", suffix)
-		s.breachedSuffixes[prefix] = existing + line
+		t:             t,
+		rotationToken: rotationToken,
 	}
 	s.httpSrv = httptest.NewServer(http.HandlerFunc(s.handleHTTP))
 	s.tlsSrv = httptest.NewTLSServer(http.HandlerFunc(s.handleTLS))
@@ -819,29 +805,16 @@ func newMockSecurityAndWebhookSink(t *testing.T, breachedPasswords []string, rot
 	return s
 }
 
-func (s *mockSecurityAndWebhookSink) HIBPBaseURL() string {
-	return s.httpSrv.URL + "/hibp/range"
-}
 func (s *mockSecurityAndWebhookSink) SoftBudgetWebhookURL() string {
 	return s.httpSrv.URL + "/webhooks/soft-budget"
 }
 func (s *mockSecurityAndWebhookSink) RotationHTTPSURL() string {
 	return s.tlsSrv.URL + "/webhooks/key-rotation"
 }
-func (s *mockSecurityAndWebhookSink) SetHIBPOutage(outage bool) {
-	s.mu.Lock()
-	s.hibpOutage = outage
-	s.mu.Unlock()
-}
 func (s *mockSecurityAndWebhookSink) SetRotationFailuresRemaining(n int) {
 	s.mu.Lock()
 	s.rotationFailures = n
 	s.mu.Unlock()
-}
-func (s *mockSecurityAndWebhookSink) HIBPPrefixes() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.hibpPrefixes...)
 }
 func (s *mockSecurityAndWebhookSink) SoftBudgetEvents() []map[string]any {
 	s.mu.Lock()
@@ -880,22 +853,6 @@ func (s *mockSecurityAndWebhookSink) HTTPSRotationDeliverFunc() func(ctx context
 
 func (s *mockSecurityAndWebhookSink) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case strings.HasPrefix(r.URL.Path, "/hibp/range/"):
-		prefix := strings.TrimPrefix(r.URL.Path, "/hibp/range/")
-		s.mu.Lock()
-		s.hibpPrefixes = append(s.hibpPrefixes, prefix)
-		outage := s.hibpOutage
-		body := s.breachedSuffixes[strings.ToUpper(prefix)]
-		s.mu.Unlock()
-		if outage {
-			http.Error(w, "hibp temporarily unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		if body == "" {
-			body = "00000000000000000000000000000000000:1\r\n"
-		}
-		_, _ = io.WriteString(w, body)
 	case r.URL.Path == "/webhooks/soft-budget":
 		raw, _ := io.ReadAll(r.Body)
 		var ev map[string]any
@@ -1159,17 +1116,4 @@ func findCookie(resp *http.Response, name string) *http.Cookie {
 		}
 	}
 	return nil
-}
-
-func isHex5Upper(s string) bool {
-	if len(s) != 5 {
-		return false
-	}
-	for i := 0; i < 5; i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
 }

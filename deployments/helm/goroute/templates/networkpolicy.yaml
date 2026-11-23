@@ -36,4 +36,8 @@ spec:
           port: {{ .Values.networkPolicy.egressPorts.redis }}
         - protocol: TCP
           port: {{ .Values.networkPolicy.egressPorts.https }}
+        {{- if gt (int (.Values.networkPolicy.egressPorts.oidc | default 0)) 0 }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egressPorts.oidc }}
+        {{- end }}
 {{- end }}

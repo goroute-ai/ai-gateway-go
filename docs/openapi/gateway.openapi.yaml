@@ -53,18 +53,6 @@ components:
           type: string
         session_id:
           type: string
-    OperatorLoginRequest:
-      type: object
-      required: [password]
-      description: Provide either email or username alongside the password.
-      properties:
-        email:
-          type: string
-        username:
-          type: string
-        password:
-          type: string
-          format: password
     OperatorSessionResponse:
       type: object
       properties:
@@ -81,27 +69,6 @@ components:
         expires_at:
           type: string
           format: date-time
-        password_reset_required:
-          type: boolean
-    OperatorPasswordRequest:
-      type: object
-      description: Supply a target user_id or email for an administrative reset. Self-service updates require current_password when a credential exists.
-      properties:
-        user_id:
-          type: string
-        email:
-          type: string
-        current_password:
-          type: string
-          format: password
-        new_password:
-          type: string
-          format: password
-          minLength: 8
-        password:
-          type: string
-          format: password
-          description: Alternate field for new_password.
     ChatCompletionRequest:
       type: object
       required:
@@ -3733,34 +3700,6 @@ components:
       schema:
         type: string
 paths:
-  /auth/login:
-    post:
-      operationId: operatorLogin
-      summary: Sign in with a password
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OperatorLoginRequest'
-      responses:
-        '200':
-          description: Operator session issued
-          headers:
-            Set-Cookie:
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OperatorSessionResponse'
-        '401':
-          description: Invalid credentials
-        '403':
-          description: Account or password policy disallows login
-        '429':
-          description: Login temporarily throttled
   /auth/me:
     get:
       operationId: operatorProfile
@@ -3793,38 +3732,19 @@ paths:
       responses:
         '200':
           description: Session cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  end_session_url:
+                    type: string
         '401':
           description: Authentication required
         '403':
           description: Invalid CSRF token
-  /auth/password:
-    post:
-      operationId: operatorPasswordUpdate
-      summary: Set or change an operator password
-      security:
-        - OperatorSession: []
-        - VirtualKeyBearer: []
-      parameters:
-        - in: header
-          name: X-CSRF-Token
-          schema:
-            type: string
-          description: Required for cookie authentication.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OperatorPasswordRequest'
-      responses:
-        '200':
-          description: Password updated and prior sessions revoked
-        '400':
-          description: Invalid or breached replacement password
-        '401':
-          description: Authentication required or incorrect current password
-        '403':
-          description: Insufficient privileges or invalid CSRF token
   /auth/sso/providers:
     get:
       operationId: listAuthSSOProviders

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/pkg/gateway"
@@ -148,12 +147,8 @@ func TestE2E_Auth_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
 
 	var orgID string
-	hsIssuer := "https://hs256.goroute.local"
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.Auth.EnableDataPlaneJWT = true
-		cfg.Auth.JWTIssuer = hsIssuer
-		cfg.Auth.JWTAudience = "goroute-e2e"
-		cfg.Auth.JWTSecret = idp.HSSecret()
 		cfg.Auth.OIDCIssuers = []config.OIDCIssuerConfig{
 			{
 				Issuer:       idp.IssuerA(),
@@ -180,21 +175,6 @@ func TestE2E_Auth_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
 	modelAlias := cluster.uniqueID("oidc-model")
 	cluster.seedOpenAIModel(ctx, orgID, modelAlias, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 
-	// Legacy default HS256 verifier has AutoRegister=false by default, so pre-register the HS256 user.
-	if err := cluster.pgRepo.CreateUser(ctx, &domain.User{
-		ID:          cluster.uniqueID("usr-hs256"),
-		OrgID:       orgID,
-		Email:       fmt.Sprintf("sub-issb-hs256-%s@alg.test", cluster.runTag),
-		Name:        "HS256 User",
-		Role:        domain.RoleDeveloper,
-		OIDCIssuer:  hsIssuer,
-		OIDCSubject: "sub-issb-hs256",
-		IsActive:    true,
-		SCIMActive:  true,
-	}); err != nil {
-		t.Fatalf("CreateUser(hs256): %v", err)
-	}
-
 	exp := time.Now().UTC().Add(10 * time.Minute).Unix()
 	algCases := []struct {
 		alg string
@@ -210,7 +190,6 @@ func TestE2E_Auth_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
 		{"ES384", idp.IssuerA(), "kid-a-es384", "sub-es384"},
 		{"EdDSA", idp.IssuerA(), "kid-a-eddsa", "sub-eddsa"},
 		{"RS256", idp.IssuerB(), "kid-b-1", "sub-issb-rs256"},
-		{"HS256", hsIssuer, "", "sub-issb-hs256"},
 	}
 	chatReq := map[string]any{
 		"model":    modelAlias,
@@ -224,13 +203,21 @@ func TestE2E_Auth_MultiIssuerOIDCDiscoveryAlgorithmsAndStaleJWKS(t *testing.T) {
 		// Warm IssuerA JWKS only on node1 (keeping node2 cold for kid rotation refresh check);
 		// run IssuerB cases on node2.
 		client := cluster.c1
-		if tc.iss == idp.IssuerB() || tc.iss == hsIssuer {
+		if tc.iss == idp.IssuerB() {
 			client = cluster.c2
 		}
 		r, b := client.doJSON(http.MethodPost, "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + tok}, chatReq, nil)
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("%s on %s failed (%d): %s", tc.alg, tc.iss, r.StatusCode, string(b))
 		}
+	}
+
+	// Reject symmetric HS256 JWTs even with valid format/claims.
+	hsTok := idp.SignJWT("HS256", "", "JWT", map[string]any{
+		"iss": idp.IssuerA(), "sub": "sub-hs256-rejected", "aud": "goroute-e2e", "org_id": orgID, "exp": exp,
+	})
+	if r, b := cluster.c1.doJSON(http.MethodPost, "/v1/chat/completions", map[string]string{"Authorization": "Bearer " + hsTok}, chatReq, nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for disallowed HS256 JWT, got %d: %s", r.StatusCode, string(b))
 	}
 
 	// Reject oauth-id-jag+jwt typ and unknown issuer.
@@ -517,53 +504,20 @@ func TestE2E_Auth_RFC7662IntrospectionUserInfoAndCache(t *testing.T) {
 	}
 }
 
-func TestE2E_Auth_CIDRProxyAuthAndEmbeddedSDKCustomAuthenticator(t *testing.T) {
+func TestE2E_Auth_EmbeddedSDKCustomAuthenticator(t *testing.T) {
 	upstream := newMockDeterministicLLMUpstream(t)
-	trustedCluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
-		cfg.Auth.ProxyAuth = config.ProxyAuthConfig{
-			Enabled:           true,
-			TrustedProxyCIDRs: []string{"127.0.0.0/8", "::1/128"},
-			HeaderMapping:     auth.DefaultProxyHeaderMapping(),
-			AutoRegister:      true,
-			DefaultRole:       "developer",
-		}
-		cfg.Security.Network.InboundCaller.TrustedProxyCIDRs = []string{"127.0.0.0/8", "::1/128"}
-	})
+	trustedCluster := setupConfigurableDualNodeCluster(t, nil)
 
 	ctx := context.Background()
-	org := trustedCluster.createOrg("Proxy & SDK Org")
-	allowedModel := trustedCluster.uniqueID("proxy-allowed")
-	blockedModel := trustedCluster.uniqueID("proxy-blocked")
+	org := trustedCluster.createOrg("Embedded SDK Org")
+	allowedModel := trustedCluster.uniqueID("sdk-allowed")
+	blockedModel := trustedCluster.uniqueID("sdk-blocked")
 	trustedCluster.seedOpenAIModel(ctx, org.ID, allowedModel, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 	trustedCluster.seedOpenAIModel(ctx, org.ID, blockedModel, upstream.OpenAIBaseURL(), 2_000_000, 8_000_000, 0, 0)
 
-	// 1. Trusted CIDR proxy headers succeed across both nodes.
-	proxyHdrs := map[string]string{
-		"X-Auth-Request-User":  "proxy-usr-" + trustedCluster.runTag,
-		"X-Auth-Request-Email": "proxy-" + trustedCluster.runTag + "@corp.test",
-		"X-Auth-Request-Org":   org.ID,
-	}
-	chatReq := map[string]any{"model": allowedModel, "messages": []map[string]string{{"role": "user", "content": "proxy"}}}
-	if r, b := trustedCluster.c1.doJSON(http.MethodPost, "/v1/chat/completions", proxyHdrs, chatReq, nil); r.StatusCode != http.StatusOK {
-		t.Fatalf("trusted proxy auth failed (%d): %s", r.StatusCode, string(b))
-	}
-
-	// Untrusted proxy CIDR rejects identical headers with 401.
-	untrustedCluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
-		cfg.Auth.ProxyAuth = config.ProxyAuthConfig{
-			Enabled:           true,
-			TrustedProxyCIDRs: []string{"10.250.0.0/24"},
-			HeaderMapping:     auth.DefaultProxyHeaderMapping(),
-			AutoRegister:      true,
-		}
-	})
-	if r, b := untrustedCluster.c1.doJSON(http.MethodPost, "/v1/chat/completions", proxyHdrs, chatReq, nil); r.StatusCode != http.StatusForbidden || !strings.Contains(string(b), "untrusted_proxy") {
-		t.Fatalf("expected 403 untrusted_proxy from untrusted proxy peer CIDR, got %d: %s", r.StatusCode, string(b))
-	}
-
-	// 2. Embedded Go SDK WithCustomAuthenticator wired through live Postgres + Redis HTTP entry point.
+	// Embedded Go SDK WithCustomAuthenticator wired through live Postgres + Redis HTTP entry point.
 	for _, k := range []string{
-		"GATEWAY_JWT_SECRET", "GATEWAY_JWT_ISSUER", "GATEWAY_JWT_AUDIENCE",
+		"GATEWAY_JWT_ISSUER", "GATEWAY_JWT_AUDIENCE",
 		"GATEWAY_OIDC_JWKS_URL", "GATEWAY_MASTER_ADMIN_KEY", "GATEWAY_MASTER_ENCRYPTION_KEY",
 	} {
 		t.Setenv(k, "")

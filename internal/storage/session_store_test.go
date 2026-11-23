@@ -32,17 +32,6 @@ func TestMemoryRepository_OperatorSessionAndCredentials(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	if err := repo.UpsertUserPassword(ctx, "usr-sess-1", "scrypt:32768:8:1:aa:bb", true); err != nil {
-		t.Fatalf("UpsertUserPassword: %v", err)
-	}
-	cred, err := repo.GetUserCredential(ctx, "usr-sess-1")
-	if err != nil {
-		t.Fatalf("GetUserCredential: %v", err)
-	}
-	if cred.PasswordHash != "scrypt:32768:8:1:aa:bb" || !cred.PasswordResetRequired {
-		t.Fatalf("unexpected credential: %+v", cred)
-	}
-
 	exp := time.Now().UTC().Add(time.Hour)
 	s1 := &domain.OperatorSession{
 		ID:        "jti-1",

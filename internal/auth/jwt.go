@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -18,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +34,9 @@ const (
 	defaultUnreachableCooldown = 30 * time.Second
 	defaultOIDCRefreshAttempts = 3
 	defaultRetryBaseDelay      = 100 * time.Millisecond
-	maxJWTDocumentBytes        = 1 << 20 // 1 MiB cap for discovery & JWKS payloads
+	// DefaultJWTClockSkew is the bounded clock-skew leeway honored for exp/nbf validation.
+	DefaultJWTClockSkew = 30 * time.Second
+	maxJWTDocumentBytes = 1 << 20 // 1 MiB cap for discovery & JWKS payloads
 )
 
 // AudienceClaim supports RFC 7519 `aud` values encoded as either a single string or a string array.
@@ -69,18 +71,19 @@ func (a AudienceClaim) Contains(target string) bool {
 
 // JWTClaims represents validated inbound JWT claims for Control Plane and Data Plane authentication.
 type JWTClaims struct {
-	Subject   string         `json:"sub"`
-	Issuer    string         `json:"iss,omitempty"`
-	Audience  AudienceClaim  `json:"aud,omitempty"`
-	ExpiresAt int64          `json:"exp,omitempty"`
-	NotBefore int64          `json:"nbf,omitempty"`
-	IssuedAt  int64          `json:"iat,omitempty"`
-	Email     string         `json:"email,omitempty"`
-	Role      string         `json:"role,omitempty"`
-	OrgID     string         `json:"org_id,omitempty"`
-	TeamIDs   []string       `json:"team_ids,omitempty"`
-	EndUserID string         `json:"end_user_id,omitempty"`
-	RawClaims map[string]any `json:"-"`
+	Subject       string         `json:"sub"`
+	Issuer        string         `json:"iss,omitempty"`
+	Audience      AudienceClaim  `json:"aud,omitempty"`
+	ExpiresAt     int64          `json:"exp,omitempty"`
+	NotBefore     int64          `json:"nbf,omitempty"`
+	IssuedAt      int64          `json:"iat,omitempty"`
+	Email         string         `json:"email,omitempty"`
+	EmailVerified bool           `json:"email_verified,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	OrgID         string         `json:"org_id,omitempty"`
+	TeamIDs       []string       `json:"team_ids,omitempty"`
+	EndUserID     string         `json:"end_user_id,omitempty"`
+	RawClaims     map[string]any `json:"-"`
 }
 
 // OIDCClaimMapping configures custom JWT claim paths (supporting both literal top-level keys
@@ -94,32 +97,34 @@ type OIDCClaimMapping struct {
 	EndUser string
 }
 
-// OIDCIssuerConfig configures a single OIDC or symmetric JWT issuer.
+// OIDCIssuerConfig configures a single OIDC issuer verified via asymmetric JWKS/Discovery.
 type OIDCIssuerConfig struct {
-	Issuer              string
-	Audience            string
-	JWKSURL             string
-	DiscoveryURL        string
-	Secret              string
-	Algorithms          []string
-	AllowedEmailDomains []string
-	ClaimMapping        OIDCClaimMapping
-	AutoRegister        bool
-	DefaultOrgID        string
-	DefaultTeamID       string
-	DefaultRole         string
-	CacheTTL            time.Duration
-	DiscoveryTTL        time.Duration
-	StaleCacheTTL       time.Duration
-	UnreachableCooldown time.Duration
-	RefreshAttempts     int
-	RetryBaseDelay      time.Duration
-	NetworkPolicy       *network.Policy
-	HTTPClient          *http.Client
-	Now                 func() time.Time
+	Issuer                    string
+	Audience                  string
+	JWKSURL                   string
+	DiscoveryURL              string
+	Algorithms                []string
+	AllowedEmailDomains       []string
+	AllowUnverifiedEmail      bool
+	AllowPrivilegedRoleClaims bool
+	ClaimMapping              OIDCClaimMapping
+	AutoRegister              bool
+	DefaultOrgID              string
+	DefaultTeamID             string
+	DefaultRole               string
+	CacheTTL                  time.Duration
+	DiscoveryTTL              time.Duration
+	StaleCacheTTL             time.Duration
+	UnreachableCooldown       time.Duration
+	RefreshAttempts           int
+	RetryBaseDelay            time.Duration
+	ClockSkew                 time.Duration
+	NetworkPolicy             *network.Policy
+	HTTPClient                *http.Client
+	Now                       func() time.Time
 }
 
-// MultiIssuerConfig configures multi-issuer JWT/OIDC verification with shared transport settings.
+// MultiIssuerConfig configures multi-issuer OIDC verification with shared transport settings.
 type MultiIssuerConfig struct {
 	Issuers             []OIDCIssuerConfig
 	NetworkPolicy       *network.Policy
@@ -130,12 +135,12 @@ type MultiIssuerConfig struct {
 	UnreachableCooldown time.Duration
 	RefreshAttempts     int
 	RetryBaseDelay      time.Duration
+	ClockSkew           time.Duration
 	Now                 func() time.Time
 }
 
-// JWTConfig configures inbound JWT and OIDC JWKS verification (single-issuer and/or multi-issuer).
+// JWTConfig configures inbound OIDC JWKS verification (single-issuer and/or multi-issuer).
 type JWTConfig struct {
-	Secret              string
 	Issuer              string
 	Audience            string
 	OIDCJWKSURL         string
@@ -156,6 +161,7 @@ type JWTConfig struct {
 	UnreachableCooldown time.Duration
 	RefreshAttempts     int
 	RetryBaseDelay      time.Duration
+	ClockSkew           time.Duration
 	Now                 func() time.Time
 }
 
@@ -164,23 +170,25 @@ type cachedJWK struct {
 	alg string
 }
 
-// OIDCVerifier validates inbound JWTs for a single configured issuer with OIDC discovery,
-// expanded signing algorithms, bounded retry/cooldown, and stale-JWKS grace caching.
+// OIDCVerifier validates inbound asymmetric OIDC JWTs for a single configured issuer with
+// OIDC Discovery / RFC 8414 metadata, bounded retry/cooldown, and stale-JWKS grace caching.
 type OIDCVerifier struct {
-	secret              []byte
-	issuer              string
-	audience            string
-	staticJWKSURL       string
-	discoveryURL        string
-	allowedAlgs         map[string]struct{}
-	allowedEmailDomains []string
-	claimMapping        OIDCClaimMapping
-	autoRegister        bool
-	defaultOrgID        string
-	defaultTeamID       string
-	defaultRole         string
-	httpClient          *http.Client
-	now                 func() time.Time
+	issuer                    string
+	audience                  string
+	staticJWKSURL             string
+	discoveryURL              string
+	derivedDiscovery          bool
+	allowedAlgs               map[string]struct{}
+	allowedEmailDomains       []string
+	allowUnverifiedEmail      bool
+	allowPrivilegedRoleClaims bool
+	claimMapping              OIDCClaimMapping
+	autoRegister              bool
+	defaultOrgID              string
+	defaultTeamID             string
+	defaultRole               string
+	httpClient                *http.Client
+	now                       func() time.Time
 
 	mu                  sync.RWMutex
 	discoveredJWKSURL   string
@@ -197,6 +205,7 @@ type OIDCVerifier struct {
 	unreachableCooldown time.Duration
 	refreshAttempts     int
 	retryBaseDelay      time.Duration
+	clockSkew           time.Duration
 	refreshGroup        singleflight.Group
 }
 
@@ -208,15 +217,16 @@ func NewOIDCVerifier(cfg OIDCIssuerConfig) *OIDCVerifier {
 
 func newOIDCVerifier(cfg OIDCIssuerConfig, defaultAttempts int) *OIDCVerifier {
 	issuer := strings.TrimSpace(cfg.Issuer)
-	secret := []byte(strings.TrimSpace(cfg.Secret))
 	jwksURL := strings.TrimSpace(cfg.JWKSURL)
 	discoveryURL := strings.TrimSpace(cfg.DiscoveryURL)
+	derivedDiscovery := false
 
 	// Automatically derive standard OIDC discovery URL when neither jwks_url nor discovery_url
-	// is set, no symmetric secret is configured, and issuer is an HTTP(S) URL.
-	if jwksURL == "" && discoveryURL == "" && len(secret) == 0 && issuer != "" {
+	// is set and issuer is an HTTP(S) URL.
+	if jwksURL == "" && discoveryURL == "" && issuer != "" {
 		if u, err := url.Parse(issuer); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
 			discoveryURL = strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+			derivedDiscovery = true
 		}
 	}
 
@@ -257,6 +267,12 @@ func newOIDCVerifier(cfg OIDCIssuerConfig, defaultAttempts int) *OIDCVerifier {
 	if retryBaseDelay <= 0 {
 		retryBaseDelay = defaultRetryBaseDelay
 	}
+	clockSkew := cfg.ClockSkew
+	if clockSkew == 0 {
+		clockSkew = DefaultJWTClockSkew
+	} else if clockSkew < 0 {
+		clockSkew = 0
+	}
 
 	var allowedAlgs map[string]struct{}
 	if len(cfg.Algorithms) > 0 {
@@ -278,28 +294,31 @@ func newOIDCVerifier(cfg OIDCIssuerConfig, defaultAttempts int) *OIDCVerifier {
 	}
 
 	return &OIDCVerifier{
-		secret:              secret,
-		issuer:              issuer,
-		audience:            strings.TrimSpace(cfg.Audience),
-		staticJWKSURL:       jwksURL,
-		discoveryURL:        discoveryURL,
-		allowedAlgs:         allowedAlgs,
-		allowedEmailDomains: allowedDomains,
-		claimMapping:        cfg.ClaimMapping,
-		autoRegister:        cfg.AutoRegister,
-		defaultOrgID:        strings.TrimSpace(cfg.DefaultOrgID),
-		defaultTeamID:       strings.TrimSpace(cfg.DefaultTeamID),
-		defaultRole:         strings.TrimSpace(cfg.DefaultRole),
-		httpClient:          client,
-		now:                 nowFn,
-		keys:                make(map[string]cachedJWK),
-		cacheTTL:            cacheTTL,
-		discoveryTTL:        discoveryTTL,
-		staleCacheTTL:       staleCacheTTL,
-		minRefreshInterval:  defaultMinRefreshInterval,
-		unreachableCooldown: cooldown,
-		refreshAttempts:     attempts,
-		retryBaseDelay:      retryBaseDelay,
+		issuer:                    issuer,
+		audience:                  strings.TrimSpace(cfg.Audience),
+		staticJWKSURL:             jwksURL,
+		discoveryURL:              discoveryURL,
+		derivedDiscovery:          derivedDiscovery,
+		allowedAlgs:               allowedAlgs,
+		allowedEmailDomains:       allowedDomains,
+		allowUnverifiedEmail:      cfg.AllowUnverifiedEmail,
+		allowPrivilegedRoleClaims: cfg.AllowPrivilegedRoleClaims,
+		claimMapping:              cfg.ClaimMapping,
+		autoRegister:              cfg.AutoRegister,
+		defaultOrgID:              strings.TrimSpace(cfg.DefaultOrgID),
+		defaultTeamID:             strings.TrimSpace(cfg.DefaultTeamID),
+		defaultRole:               strings.TrimSpace(cfg.DefaultRole),
+		httpClient:                client,
+		now:                       nowFn,
+		keys:                      make(map[string]cachedJWK),
+		cacheTTL:                  cacheTTL,
+		discoveryTTL:              discoveryTTL,
+		staleCacheTTL:             staleCacheTTL,
+		minRefreshInterval:        defaultMinRefreshInterval,
+		unreachableCooldown:       cooldown,
+		refreshAttempts:           attempts,
+		retryBaseDelay:            retryBaseDelay,
+		clockSkew:                 clockSkew,
 	}
 }
 
@@ -323,9 +342,9 @@ func (o *OIDCVerifier) currentTime() time.Time {
 	return fn()
 }
 
-// Enabled reports whether this issuer verifier has a secret, static JWKS URL, or OIDC discovery URL configured.
+// Enabled reports whether this issuer verifier has a static JWKS URL or OIDC discovery URL configured.
 func (o *OIDCVerifier) Enabled() bool {
-	return o != nil && (len(o.secret) > 0 || o.staticJWKSURL != "" || o.discoveryURL != "")
+	return o != nil && (o.staticJWKSURL != "" || o.discoveryURL != "")
 }
 
 // Issuer returns the configured issuer string.
@@ -365,19 +384,29 @@ func (o *OIDCVerifier) DefaultRole() string {
 	return o.defaultRole
 }
 
-// JWTVerifier validates inbound HS256 and OIDC asymmetric JWTs across one or more configured issuers.
+// AllowUnverifiedEmail reports whether unverified email claims are permitted for this issuer.
+func (o *OIDCVerifier) AllowUnverifiedEmail() bool {
+	return o != nil && o.allowUnverifiedEmail
+}
+
+// AllowPrivilegedRoleClaims reports whether IdP role claims may JIT-provision platform_admin.
+func (o *OIDCVerifier) AllowPrivilegedRoleClaims() bool {
+	return o != nil && o.allowPrivilegedRoleClaims
+}
+
+// JWTVerifier validates inbound asymmetric OIDC JWTs across one or more configured issuers.
 type JWTVerifier struct {
 	defaultVerifier *OIDCVerifier
 	issuers         map[string]*OIDCVerifier
 }
 
-// NewJWTVerifier constructs a JWTVerifier supporting legacy single-issuer JWTConfig as well as
+// NewJWTVerifier constructs a JWTVerifier supporting single-issuer as well as
 // multi-issuer OIDC configs using the outbound network policy HTTP client for discovery and JWKS fetches.
 func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 	issuers := make(map[string]*OIDCVerifier, len(cfg.Issuers)+1)
 
 	var defaultVerifier *OIDCVerifier
-	if strings.TrimSpace(cfg.Secret) != "" || strings.TrimSpace(cfg.OIDCJWKSURL) != "" || strings.TrimSpace(cfg.DiscoveryURL) != "" {
+	if strings.TrimSpace(cfg.OIDCJWKSURL) != "" || strings.TrimSpace(cfg.DiscoveryURL) != "" {
 		// Preserve single-attempt + cooldown semantics on legacy single-issuer JWTConfig
 		// unless RefreshAttempts is explicitly configured.
 		legacyCfg := OIDCIssuerConfig{
@@ -385,7 +414,6 @@ func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 			Audience:            cfg.Audience,
 			JWKSURL:             cfg.OIDCJWKSURL,
 			DiscoveryURL:        cfg.DiscoveryURL,
-			Secret:              cfg.Secret,
 			Algorithms:          cfg.Algorithms,
 			AllowedEmailDomains: cfg.AllowedEmailDomains,
 			ClaimMapping:        cfg.ClaimMapping,
@@ -399,6 +427,7 @@ func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 			UnreachableCooldown: cfg.UnreachableCooldown,
 			RefreshAttempts:     cfg.RefreshAttempts,
 			RetryBaseDelay:      cfg.RetryBaseDelay,
+			ClockSkew:           cfg.ClockSkew,
 			NetworkPolicy:       cfg.NetworkPolicy,
 			HTTPClient:          cfg.HTTPClient,
 			Now:                 cfg.Now,
@@ -410,7 +439,7 @@ func NewJWTVerifier(cfg JWTConfig) *JWTVerifier {
 	}
 
 	for _, issCfg := range cfg.Issuers {
-		merged := inheritMultiIssuerDefaults(issCfg, cfg.NetworkPolicy, cfg.HTTPClient, cfg.CacheTTL, cfg.DiscoveryTTL, cfg.StaleCacheTTL, cfg.UnreachableCooldown, cfg.RefreshAttempts, cfg.RetryBaseDelay, cfg.Now)
+		merged := inheritMultiIssuerDefaults(issCfg, cfg.NetworkPolicy, cfg.HTTPClient, cfg.CacheTTL, cfg.DiscoveryTTL, cfg.StaleCacheTTL, cfg.UnreachableCooldown, cfg.RefreshAttempts, cfg.RetryBaseDelay, cfg.ClockSkew, cfg.Now)
 		ov := NewOIDCVerifier(merged)
 		if ov.issuer != "" {
 			issuers[ov.issuer] = ov
@@ -435,6 +464,7 @@ func NewMultiIssuerJWTVerifier(cfg MultiIssuerConfig) *JWTVerifier {
 		UnreachableCooldown: cfg.UnreachableCooldown,
 		RefreshAttempts:     cfg.RefreshAttempts,
 		RetryBaseDelay:      cfg.RetryBaseDelay,
+		ClockSkew:           cfg.ClockSkew,
 		Now:                 cfg.Now,
 	})
 }
@@ -445,7 +475,7 @@ func inheritMultiIssuerDefaults(
 	httpClient *http.Client,
 	cacheTTL, discoveryTTL, staleCacheTTL, cooldown time.Duration,
 	refreshAttempts int,
-	retryBaseDelay time.Duration,
+	retryBaseDelay, clockSkew time.Duration,
 	nowFn func() time.Time,
 ) OIDCIssuerConfig {
 	if iss.NetworkPolicy == nil {
@@ -471,6 +501,9 @@ func inheritMultiIssuerDefaults(
 	}
 	if iss.RetryBaseDelay <= 0 {
 		iss.RetryBaseDelay = retryBaseDelay
+	}
+	if iss.ClockSkew == 0 {
+		iss.ClockSkew = clockSkew
 	}
 	if iss.Now == nil {
 		iss.Now = nowFn
@@ -524,7 +557,7 @@ func (v *JWTVerifier) SingleIdentityIssuer() bool {
 	return count == 1
 }
 
-// Enabled reports whether at least one HMAC secret, static JWKS URL, or OIDC discovery issuer is configured.
+// Enabled reports whether at least one static JWKS URL or OIDC discovery issuer is configured.
 func (v *JWTVerifier) Enabled() bool {
 	if v == nil {
 		return false
@@ -565,7 +598,7 @@ func parseJWTEnvelope(rawToken string) (parts []string, hdr jwtHeader, payloadBy
 		return nil, jwtHeader{}, nil, nil, fmt.Errorf("parse jwt header: %w", err)
 	}
 	if hdr.Alg == "" || strings.EqualFold(hdr.Alg, "none") {
-		return nil, jwtHeader{}, nil, nil, errors.New("jwt algorithm is missing or disallowed")
+		return nil, jwtHeader{}, nil, nil, errors.New("jwt algorithm is missing or none")
 	}
 	if isDisallowedTokenType(hdr.Typ) {
 		return nil, jwtHeader{}, nil, nil, errors.New("oauth-id-jag+jwt tokens cannot be used directly as bearer tokens")
@@ -631,6 +664,9 @@ func (o *OIDCVerifier) Verify(ctx context.Context, rawToken string) (*JWTClaims,
 }
 
 func (o *OIDCVerifier) verifyParsed(ctx context.Context, parts []string, hdr jwtHeader, payloadBytes, sigBytes []byte) (*JWTClaims, error) {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(hdr.Alg)), "HS") {
+		return nil, fmt.Errorf("symmetric jwt algorithm %q is disallowed for OIDC verification", hdr.Alg)
+	}
 	if len(o.allowedAlgs) > 0 {
 		if _, allowed := o.allowedAlgs[hdr.Alg]; !allowed {
 			return nil, fmt.Errorf("jwt signing algorithm %q is not allowed for issuer %q", hdr.Alg, o.issuer)
@@ -660,13 +696,14 @@ func (o *OIDCVerifier) verifyParsed(ctx context.Context, parts []string, hdr jwt
 	}
 
 	nowUnix := o.currentTime().UTC().Unix()
+	skewSec := int64(o.clockSkew / time.Second)
 	if base.ExpiresAt <= 0 {
 		return nil, errors.New("jwt missing exp claim")
 	}
-	if nowUnix >= base.ExpiresAt {
+	if nowUnix >= base.ExpiresAt+skewSec {
 		return nil, errors.New("jwt token is expired")
 	}
-	if base.NotBefore > 0 && nowUnix < base.NotBefore {
+	if base.NotBefore > 0 && nowUnix+skewSec < base.NotBefore {
 		return nil, errors.New("jwt token is not yet valid")
 	}
 	if o.issuer != "" && base.Issuer != o.issuer {
@@ -691,11 +728,20 @@ func (o *OIDCVerifier) verifyParsed(ctx context.Context, parts []string, hdr jwt
 		return nil, errors.New("jwt missing sub claim")
 	}
 
-	if err := o.enforceEmailDomain(claims.Email); err != nil {
+	if err := o.enforceEmailDomain(claims.Email, claims.EmailVerified); err != nil {
 		return nil, err
 	}
 
 	return claims, nil
+}
+
+func extractBoolClaim(raw map[string]any, path string) (bool, bool) {
+	val, ok := resolveClaimPath(raw, path)
+	if !ok || val == nil {
+		return false, false
+	}
+	b, ok := val.(bool)
+	return b, ok
 }
 
 func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any) {
@@ -711,6 +757,9 @@ func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any)
 	}
 	if v, ok := extractStringClaim(raw, emailPath); ok {
 		claims.Email = v
+	}
+	if verified, ok := extractBoolClaim(raw, "email_verified"); ok {
+		claims.EmailVerified = verified
 	}
 
 	orgPath := strings.TrimSpace(o.claimMapping.OrgID)
@@ -754,9 +803,12 @@ func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any)
 	}
 }
 
-func (o *OIDCVerifier) enforceEmailDomain(email string) error {
+func (o *OIDCVerifier) enforceEmailDomain(email string, emailVerified bool) error {
 	if len(o.allowedEmailDomains) == 0 {
 		return nil
+	}
+	if !o.allowUnverifiedEmail && !emailVerified {
+		return errors.New("jwt email_verified must be true when allowed_email_domains is enforced")
 	}
 	trimmed := strings.TrimSpace(email)
 	atIdx := strings.LastIndex(trimmed, "@")
@@ -867,19 +919,7 @@ func trimNonEmptyStrings(items []string) []string {
 
 func (o *OIDCVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signingInput string, sigBytes []byte) error {
 	switch hdr.Alg {
-	case "HS256":
-		if len(o.secret) == 0 {
-			return errors.New("HS256 jwt secret is not configured")
-		}
-		mac := hmac.New(sha256.New, o.secret)
-		_, _ = mac.Write([]byte(signingInput))
-		expected := mac.Sum(nil)
-		if !hmac.Equal(sigBytes, expected) {
-			return errors.New("invalid HS256 jwt signature")
-		}
-		return nil
-
-	case "RS256", "RS384", "RS512", "PS256":
+	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
 		pubKey, err := o.resolveJWKSKey(ctx, hdr.Kid, hdr.Alg)
 		if err != nil {
 			return err
@@ -913,6 +953,18 @@ func (o *OIDCVerifier) verifySignature(ctx context.Context, hdr jwtHeader, signi
 		}
 		digest := sha512.Sum384([]byte(signingInput))
 		return verifyECDSASignature("ES384", ecKey, digest[:], 48, sigBytes)
+
+	case "ES512":
+		pubKey, err := o.resolveJWKSKey(ctx, hdr.Kid, hdr.Alg)
+		if err != nil {
+			return err
+		}
+		ecKey, ok := pubKey.(*ecdsa.PublicKey)
+		if !ok || ecKey.Curve != elliptic.P521() {
+			return errors.New("jwt key type mismatch for ES512")
+		}
+		digest := sha512.Sum512([]byte(signingInput))
+		return verifyECDSASignature("ES512", ecKey, digest[:], 66, sigBytes)
 
 	case "EdDSA":
 		pubKey, err := o.resolveJWKSKey(ctx, hdr.Kid, hdr.Alg)
@@ -959,21 +1011,30 @@ func verifyRSASignature(alg string, rsaKey *rsa.PublicKey, signingInput string, 
 			return fmt.Errorf("invalid PS256 jwt signature: %w", err)
 		}
 		return nil
+	case "PS384":
+		digest := sha512.Sum384([]byte(signingInput))
+		if err := rsa.VerifyPSS(rsaKey, crypto.SHA384, digest[:], sigBytes, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthAuto}); err != nil {
+			return fmt.Errorf("invalid PS384 jwt signature: %w", err)
+		}
+		return nil
+	case "PS512":
+		digest := sha512.Sum512([]byte(signingInput))
+		if err := rsa.VerifyPSS(rsaKey, crypto.SHA512, digest[:], sigBytes, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthAuto}); err != nil {
+			return fmt.Errorf("invalid PS512 jwt signature: %w", err)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported rsa algorithm %q", alg)
 	}
 }
 
 func verifyECDSASignature(alg string, ecKey *ecdsa.PublicKey, digest []byte, coordSize int, sigBytes []byte) error {
-	if len(sigBytes) == coordSize*2 {
-		r := new(big.Int).SetBytes(sigBytes[:coordSize])
-		s := new(big.Int).SetBytes(sigBytes[coordSize:])
-		if !ecdsa.Verify(ecKey, digest, r, s) {
-			return fmt.Errorf("invalid %s jwt signature", alg)
-		}
-		return nil
+	if len(sigBytes) != coordSize*2 {
+		return fmt.Errorf("invalid %s jwt signature length", alg)
 	}
-	if !ecdsa.VerifyASN1(ecKey, digest, sigBytes) {
+	r := new(big.Int).SetBytes(sigBytes[:coordSize])
+	s := new(big.Int).SetBytes(sigBytes[coordSize:])
+	if !ecdsa.Verify(ecKey, digest, r, s) {
 		return fmt.Errorf("invalid %s jwt signature", alg)
 	}
 	return nil
@@ -1064,9 +1125,123 @@ func (o *OIDCVerifier) lookupKeyLocked(kid string) (cachedJWK, bool) {
 	return cachedJWK{}, false
 }
 
-type oidcDiscoveryDocument struct {
-	Issuer  string `json:"issuer"`
-	JWKSURI string `json:"jwks_uri"`
+// OIDCDiscoveryMetadata holds standard OpenID Connect Discovery 1.0 and OAuth 2.0 AS Metadata (RFC 8414) fields.
+type OIDCDiscoveryMetadata struct {
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	TokenEndpoint                     string   `json:"token_endpoint"`
+	UserInfoEndpoint                  string   `json:"userinfo_endpoint,omitempty"`
+	JWKSURI                           string   `json:"jwks_uri"`
+	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
+	IntrospectionEndpoint             string   `json:"introspection_endpoint,omitempty"`
+	RevocationEndpoint                string   `json:"revocation_endpoint,omitempty"`
+	EndSessionEndpoint                string   `json:"end_session_endpoint,omitempty"`
+	ScopesSupported                   []string `json:"scopes_supported,omitempty"`
+	ResponseTypesSupported            []string `json:"response_types_supported,omitempty"`
+	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
+	IDTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported,omitempty"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	ClaimsSupported                   []string `json:"claims_supported,omitempty"`
+}
+
+// BuildRFC8414DiscoveryURL constructs the RFC 8414 Section 3.1 Authorization Server Metadata URL
+// for an issuer (inserting `/.well-known/oauth-authorization-server` before any issuer path).
+func BuildRFC8414DiscoveryURL(issuer string) string {
+	u, err := url.Parse(strings.TrimSpace(issuer))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return ""
+	}
+	cleanPath := strings.TrimSuffix(u.Path, "/")
+	u.Path = "/.well-known/oauth-authorization-server" + cleanPath
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+// FetchOIDCDiscoveryMetadata fetches and validates OIDC Discovery 1.0 metadata, optionally falling
+// back to RFC 8414 (`/.well-known/oauth-authorization-server`) when the derived OIDC path returns 404.
+func FetchOIDCDiscoveryMetadata(
+	ctx context.Context,
+	httpClient *http.Client,
+	discoveryURL, configuredIssuer string,
+	allowRFC8414Fallback bool,
+) (*OIDCDiscoveryMetadata, error) {
+	if httpClient == nil {
+		return nil, errors.New("oidc discovery http client is not initialized")
+	}
+
+	fetchOnce := func(targetURL string) (*OIDCDiscoveryMetadata, int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			return nil, 0, fmt.Errorf("build oidc discovery request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, 0, fmt.Errorf("fetch oidc discovery: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			return nil, resp.StatusCode, fmt.Errorf("fetch oidc discovery: unexpected status %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWTDocumentBytes))
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read oidc discovery body: %w", err)
+		}
+
+		var doc OIDCDiscoveryMetadata
+		if err := json.Unmarshal(body, &doc); err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("parse oidc discovery json: %w", err)
+		}
+		return &doc, resp.StatusCode, nil
+	}
+
+	doc, status, err := fetchOnce(discoveryURL)
+	if err != nil && status == http.StatusNotFound && allowRFC8414Fallback && configuredIssuer != "" {
+		candidates := []string{BuildRFC8414DiscoveryURL(configuredIssuer)}
+		if suffixURL := strings.TrimRight(strings.TrimSpace(configuredIssuer), "/") + "/.well-known/oauth-authorization-server"; suffixURL != candidates[0] {
+			candidates = append(candidates, suffixURL)
+		}
+		for _, rfcURL := range candidates {
+			if rfcURL == "" || rfcURL == discoveryURL {
+				continue
+			}
+			fallbackDoc, fallbackStatus, fallbackErr := fetchOnce(rfcURL)
+			if fallbackErr == nil {
+				doc = fallbackDoc
+				err = nil
+				break
+			}
+			if fallbackStatus != http.StatusNotFound {
+				err = fallbackErr
+				break
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	doc.Issuer = strings.TrimSpace(doc.Issuer)
+	doc.AuthorizationEndpoint = strings.TrimSpace(doc.AuthorizationEndpoint)
+	doc.TokenEndpoint = strings.TrimSpace(doc.TokenEndpoint)
+	doc.UserInfoEndpoint = strings.TrimSpace(doc.UserInfoEndpoint)
+	doc.JWKSURI = strings.TrimSpace(doc.JWKSURI)
+	doc.RegistrationEndpoint = strings.TrimSpace(doc.RegistrationEndpoint)
+	doc.IntrospectionEndpoint = strings.TrimSpace(doc.IntrospectionEndpoint)
+	doc.RevocationEndpoint = strings.TrimSpace(doc.RevocationEndpoint)
+	doc.EndSessionEndpoint = strings.TrimSpace(doc.EndSessionEndpoint)
+
+	// OIDC Discovery 1.0 §4.3: issuer MUST be present and strictly equal to configuredIssuer.
+	if configuredIssuer != "" && doc.Issuer != configuredIssuer {
+		return nil, fmt.Errorf("oidc discovery issuer mismatch: got %q, want %q", doc.Issuer, configuredIssuer)
+	}
+	return doc, nil
 }
 
 type jwksDocument struct {
@@ -1074,15 +1249,16 @@ type jwksDocument struct {
 }
 
 type jwkEntry struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Use string `json:"use,omitempty"`
-	Alg string `json:"alg,omitempty"`
-	N   string `json:"n,omitempty"`
-	E   string `json:"e,omitempty"`
-	Crv string `json:"crv,omitempty"`
-	X   string `json:"x,omitempty"`
-	Y   string `json:"y,omitempty"`
+	Kty    string   `json:"kty"`
+	Kid    string   `json:"kid"`
+	Use    string   `json:"use,omitempty"`
+	KeyOps []string `json:"key_ops,omitempty"`
+	Alg    string   `json:"alg,omitempty"`
+	N      string   `json:"n,omitempty"`
+	E      string   `json:"e,omitempty"`
+	Crv    string   `json:"crv,omitempty"`
+	X      string   `json:"x,omitempty"`
+	Y      string   `json:"y,omitempty"`
 }
 
 func (o *OIDCVerifier) refreshWithRetry(ctx context.Context, kid string) error {
@@ -1160,45 +1336,19 @@ func (o *OIDCVerifier) resolveJWKSURL(ctx context.Context, forceRediscover bool)
 		return "", errors.New("oidc discovery url is not configured")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.discoveryURL, nil)
+	doc, err := FetchOIDCDiscoveryMetadata(ctx, o.httpClient, o.discoveryURL, o.issuer, o.derivedDiscovery)
 	if err != nil {
-		return "", fmt.Errorf("build oidc discovery request: %w", err)
+		return "", err
 	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch oidc discovery: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch oidc discovery: unexpected status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWTDocumentBytes))
-	if err != nil {
-		return "", fmt.Errorf("read oidc discovery body: %w", err)
-	}
-
-	var doc oidcDiscoveryDocument
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return "", fmt.Errorf("parse oidc discovery json: %w", err)
-	}
-
-	discoveredIss := strings.TrimSpace(doc.Issuer)
-	if discoveredIss != "" && o.issuer != "" && discoveredIss != o.issuer {
-		return "", fmt.Errorf("oidc discovery issuer mismatch: got %q, want %q", discoveredIss, o.issuer)
-	}
-	jwksURI := strings.TrimSpace(doc.JWKSURI)
-	if jwksURI == "" {
+	if doc.JWKSURI == "" {
 		return "", errors.New("oidc discovery document missing jwks_uri")
 	}
 
 	o.mu.Lock()
-	o.discoveredJWKSURL = jwksURI
+	o.discoveredJWKSURL = doc.JWKSURI
 	o.discoveredAt = o.now().UTC()
 	o.mu.Unlock()
-	return jwksURI, nil
+	return doc.JWKSURI, nil
 }
 
 func (o *OIDCVerifier) refreshJWKS(ctx context.Context, jwksURL string) error {
@@ -1230,6 +1380,9 @@ func (o *OIDCVerifier) refreshJWKS(ctx context.Context, jwksURL string) error {
 	parsed := make(map[string]cachedJWK, len(doc.Keys))
 	for _, entry := range doc.Keys {
 		if entry.Use != "" && entry.Use != "sig" {
+			continue
+		}
+		if len(entry.KeyOps) > 0 && !slices.Contains(entry.KeyOps, "verify") {
 			continue
 		}
 		pub, err := parseJWKPublicKey(entry)
@@ -1266,16 +1419,25 @@ func parseJWKPublicKey(entry jwkEntry) (any, error) {
 		if err != nil || len(nBytes) == 0 {
 			return nil, errors.New("invalid RSA modulus")
 		}
+		modulus := new(big.Int).SetBytes(nBytes)
+		// RFC 7518 §3.3 requires RSA keys of at least 2048 bits for RS*/PS* signatures.
+		if modulus.BitLen() < 2048 {
+			return nil, fmt.Errorf("RSA key modulus too small: %d bits (minimum 2048)", modulus.BitLen())
+		}
 		eBytes, err := base64.RawURLEncoding.DecodeString(entry.E)
 		if err != nil || len(eBytes) == 0 {
 			return nil, errors.New("invalid RSA exponent")
 		}
-		eInt := new(big.Int).SetBytes(eBytes).Int64()
-		if eInt <= 0 {
+		eBig := new(big.Int).SetBytes(eBytes)
+		if !eBig.IsInt64() {
+			return nil, errors.New("invalid RSA exponent value")
+		}
+		eInt := eBig.Int64()
+		if eInt < 3 || eInt%2 == 0 {
 			return nil, errors.New("invalid RSA exponent value")
 		}
 		return &rsa.PublicKey{
-			N: new(big.Int).SetBytes(nBytes),
+			N: modulus,
 			E: int(eInt),
 		}, nil
 
@@ -1286,6 +1448,8 @@ func parseJWKPublicKey(entry jwkEntry) (any, error) {
 			curve = elliptic.P256()
 		case "P-384":
 			curve = elliptic.P384()
+		case "P-521":
+			curve = elliptic.P521()
 		default:
 			return nil, fmt.Errorf("unsupported EC curve %q", entry.Crv)
 		}
@@ -1320,43 +1484,4 @@ func parseJWKPublicKey(entry jwkEntry) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported jwk key type %q", entry.Kty)
 	}
-}
-
-// SignHS256 signs a JWTClaims payload with HS256 using the given secret.
-func SignHS256(secret string, claims *JWTClaims) (string, error) {
-	if strings.TrimSpace(secret) == "" {
-		return "", errors.New("jwt secret is required")
-	}
-	hdrJSON, err := json.Marshal(map[string]string{
-		"alg": "HS256",
-		"typ": "JWT",
-	})
-	if err != nil {
-		return "", err
-	}
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	if claims != nil && len(claims.RawClaims) > 0 {
-		merged := make(map[string]any, len(claims.RawClaims)+8)
-		for k, v := range claims.RawClaims {
-			merged[k] = v
-		}
-		var base map[string]any
-		if err := json.Unmarshal(claimsJSON, &base); err == nil {
-			for k, v := range base {
-				merged[k] = v
-			}
-		}
-		claimsJSON, err = json.Marshal(merged)
-		if err != nil {
-			return "", err
-		}
-	}
-	signingInput := base64.RawURLEncoding.EncodeToString(hdrJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
-	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
-	_, _ = mac.Write([]byte(signingInput))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return signingInput + "." + sig, nil
 }

@@ -19,7 +19,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.starlark.net v0.0.0-20261021141710-4f4267fb140d
-	golang.org/x/crypto v0.58.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/text v0.44.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20261104224025-d1e00e9f33ab

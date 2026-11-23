@@ -19,16 +19,25 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestE2E_Operator_SessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
-	const breachedPw = "BreachedPass123!"
-	const validPw = "CleanOperator#2026!"
-	const newCleanPw = "RotatedOperator#2026!"
-
-	sink := newMockSecurityAndWebhookSink(t, []string{breachedPw}, "")
+func TestE2E_Operator_CrossNodeOIDCSessionCSRFAndLogout(t *testing.T) {
+	idp := newMockEnterpriseIdentityProvider(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
-		cfg.Auth.EnableHIBPCheck = true
-		cfg.Auth.HIBPBaseURL = sink.HIBPBaseURL()
 		cfg.Auth.SessionTTL = 1 * time.Hour
+		cfg.Auth.SSOProviders = []config.SSOProviderConfig{
+			{
+				ID:           "keycloak",
+				Name:         "Keycloak",
+				Type:         "oidc",
+				DisplayName:  "Keycloak",
+				ClientID:     "goroute-ui",
+				ClientSecret: "kc-secret",
+				Issuer:       idp.IssuerA(),
+				DiscoveryURL: idp.IssuerA() + "/.well-known/openid-configuration",
+				AutoRegister: true,
+				DefaultOrgID: "org_default",
+				DefaultRole:  "org_admin",
+			},
+		}
 	})
 
 	org := cluster.createOrg("Operator Auth Org")
@@ -41,46 +50,20 @@ func TestE2E_Operator_SessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
 		t.Fatalf("create operator user (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// Admin sets initial password on operator user via /auth/password (first checking breached password rejection).
-	if r, b := cluster.c1.doJSON(http.MethodPost, "/auth/password", cluster.adminHdrs, map[string]any{
-		"user_id": usr.ID, "new_password": breachedPw,
-	}, nil); r.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "breached_password") {
-		t.Fatalf("expected 400 breached_password on setting breached password, got %d: %s", r.StatusCode, string(b))
-	}
-	// Verify server-side HIBP screening sent ONLY 5 uppercase hex chars.
-	prefixes := sink.HIBPPrefixes()
-	if len(prefixes) == 0 {
-		t.Fatalf("expected HIBP prefix query from server-side screening")
-	}
-	for _, p := range prefixes {
-		if !isHex5Upper(p) {
-			t.Fatalf("expected strictly 5-char uppercase hex HIBP prefix, got %q", p)
+	// Legacy password routes are permanently removed in OIDC-only mode.
+	for _, legacyPath := range []string{"/auth/login", "/auth/password"} {
+		if rDead, _ := cluster.doHTTP(cluster.ts1, http.MethodPost, legacyPath, map[string]string{"Content-Type": "application/json"}, nil, []byte(`{}`), true); rDead.StatusCode != http.StatusNotFound && rDead.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("expected legacy route %s to return 404/405, got %d", legacyPath, rDead.StatusCode)
 		}
 	}
 
-	// Set clean initial password.
-	if r, b := cluster.c1.doJSON(http.MethodPost, "/auth/password", cluster.adminHdrs, map[string]any{
-		"user_id": usr.ID, "new_password": validPw,
-	}, nil); r.StatusCode != http.StatusOK {
-		t.Fatalf("set initial clean password failed (%d): %s", r.StatusCode, string(b))
+	// Issue a provider-bound OIDC session on node1; verify cookie + CSRF across node1 & node2.
+	issued, err := cluster.node1.SessionManager().IssueSessionWithProvider(context.Background(), usr.ID, usr.OrgID, usr.TeamID, "keycloak", domain.OperatorRoleOrgAdmin)
+	if err != nil {
+		t.Fatalf("IssueSessionWithProvider: %v", err)
 	}
-
-	// Login with valid password -> receives HttpOnly session cookie + csrf_token; works across node1 and node2.
-	loginBody, _ := json.Marshal(map[string]any{"email": email, "password": validPw})
-	rLogin, bLogin := cluster.doHTTP(cluster.ts1, http.MethodPost, "/auth/login", map[string]string{"Content-Type": "application/json"}, nil, loginBody, true)
-	if rLogin.StatusCode != http.StatusOK {
-		t.Fatalf("POST /auth/login failed (%d): %s", rLogin.StatusCode, string(bLogin))
-	}
-	sessCookie := findCookie(rLogin, auth.SessionCookieName)
-	if sessCookie == nil || sessCookie.Value == "" || !sessCookie.HttpOnly {
-		t.Fatalf("expected HttpOnly %s cookie, got %+v", auth.SessionCookieName, sessCookie)
-	}
-	var loginPayload map[string]any
-	_ = json.Unmarshal(bLogin, &loginPayload)
-	csrfTok, _ := loginPayload["csrf_token"].(string)
-	if csrfTok == "" {
-		t.Fatalf("expected non-empty csrf_token in login payload: %s", string(bLogin))
-	}
+	sessCookie := &http.Cookie{Name: auth.SessionCookieName, Value: issued.Token}
+	csrfTok := issued.CSRFToken
 
 	// GET /auth/me on sibling node2 succeeds via cookie.
 	if rMe, bMe := cluster.doHTTP(cluster.ts2, http.MethodGet, "/auth/me", nil, []*http.Cookie{sessCookie}, nil, true); rMe.StatusCode != http.StatusOK {
@@ -96,47 +79,12 @@ func TestE2E_Operator_SessionsPasswordLoginThrottleAndHIBP(t *testing.T) {
 		t.Fatalf("mutating /admin/v1/teams on node2 with CSRF expected 201, got %d: %s", rWithCSRF.StatusCode, string(bWithCSRF))
 	}
 
-	// Self password change when HIBP returns 503 preserves existing availability behavior.
-	sink.SetHIBPOutage(true)
-	pwChangeBody, _ := json.Marshal(map[string]any{"current_password": validPw, "new_password": newCleanPw})
-	if rPW, bPW := cluster.doHTTP(cluster.ts1, http.MethodPost, "/auth/password", map[string]string{"Content-Type": "application/json", auth.CSRFHeaderName: csrfTok}, []*http.Cookie{sessCookie}, pwChangeBody, true); rPW.StatusCode != http.StatusOK {
-		t.Fatalf("expected HIBP outage availability fallback to allow clean password change, got %d: %s", rPW.StatusCode, string(bPW))
-	}
-	sink.SetHIBPOutage(false)
-
-	// Re-login with newCleanPw, then logout on node1 -> session invalidated on node2 immediately.
-	loginBody2, _ := json.Marshal(map[string]any{"email": email, "password": newCleanPw})
-	rLogin2, bLogin2 := cluster.doHTTP(cluster.ts1, http.MethodPost, "/auth/login", map[string]string{"Content-Type": "application/json"}, nil, loginBody2, true)
-	if rLogin2.StatusCode != http.StatusOK {
-		t.Fatalf("re-login with rotated password failed (%d): %s", rLogin2.StatusCode, string(bLogin2))
-	}
-	var lp2 map[string]any
-	_ = json.Unmarshal(bLogin2, &lp2)
-	csrf2, _ := lp2["csrf_token"].(string)
-	ck2 := findCookie(rLogin2, auth.SessionCookieName)
-	if rLogout, bLogout := cluster.doHTTP(cluster.ts1, http.MethodPost, "/auth/logout", map[string]string{auth.CSRFHeaderName: csrf2}, []*http.Cookie{ck2}, nil, true); rLogout.StatusCode != http.StatusOK {
+	// Logout on node1 invalidates session on node2 immediately via shared Redis/Postgres.
+	if rLogout, bLogout := cluster.doHTTP(cluster.ts1, http.MethodPost, "/auth/logout", map[string]string{auth.CSRFHeaderName: csrfTok}, []*http.Cookie{sessCookie}, nil, true); rLogout.StatusCode != http.StatusOK {
 		t.Fatalf("POST /auth/logout failed (%d): %s", rLogout.StatusCode, string(bLogout))
 	}
-	if rDead, _ := cluster.doHTTP(cluster.ts2, http.MethodGet, "/auth/me", nil, []*http.Cookie{ck2}, nil, true); rDead.StatusCode != http.StatusUnauthorized {
+	if rDead, _ := cluster.doHTTP(cluster.ts2, http.MethodGet, "/auth/me", nil, []*http.Cookie{sessCookie}, nil, true); rDead.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 on node2 after logout, got %d", rDead.StatusCode)
-	}
-
-	// Brute-force login throttle across node1 -> node2 via shared Redis.
-	badBody, _ := json.Marshal(map[string]any{"email": email, "password": "WrongPassword!"})
-	throttled := false
-	for i := 0; i < 15; i++ {
-		ts := cluster.ts1
-		if i%2 == 1 {
-			ts = cluster.ts2
-		}
-		rFail, _ := cluster.doHTTP(ts, http.MethodPost, "/auth/login", map[string]string{"Content-Type": "application/json"}, nil, badBody, true)
-		if rFail.StatusCode == http.StatusTooManyRequests {
-			throttled = true
-			break
-		}
-	}
-	if !throttled {
-		t.Fatalf("expected 429 brute-force throttle after repeated bad logins")
 	}
 }
 

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 const QuotasTab = lazy(() => import('./finops/QuotasTab').then((m) => ({ default: m.QuotasTab })));
+const INSPECT_BTN = 'px-2 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-[11px] transition inline-flex items-center gap-1';
 
 const SpendBreakdownCard: React.FC<{
   title: string;
@@ -52,10 +53,9 @@ const SpendBreakdownCard: React.FC<{
                   </span>
                 </div>
                 <div className="w-full bg-surface-elevated rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className={`${barClass} h-1.5 rounded-full`}
-                    style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
-                  />
+                  <svg viewBox="0 0 100 6" preserveAspectRatio="none" className={`w-full h-1.5 block ${barClass}`}>
+                    <rect width={Math.min(100, Math.max(2, pct))} height="6" fill="currentColor" />
+                  </svg>
                 </div>
               </div>
             );
@@ -121,27 +121,15 @@ export const FinOpsView: React.FC = () => {
   const spendLogs = spendLogsData?.data || [];
   const auditLogs = auditLogsData?.data || [];
 
-  const filteredSpendLogs = spendLogs.filter((evt) => {
-    if (!searchFilter.trim()) return true;
-    const term = searchFilter.toLowerCase();
-    return (
-      evt.request_id?.toLowerCase().includes(term) ||
-      evt.provider?.toLowerCase().includes(term) ||
-      evt.resolved_model?.toLowerCase().includes(term) ||
-      evt.virtual_key_id?.toLowerCase().includes(term)
-    );
-  });
-
-  const filteredAuditLogs = auditLogs.filter((log) => {
-    if (!searchFilter.trim()) return true;
-    const term = searchFilter.toLowerCase();
-    return (
-      log.action?.toLowerCase().includes(term) ||
-      log.resource?.toLowerCase().includes(term) ||
-      log.resource_id?.toLowerCase().includes(term) ||
-      log.actor_id?.toLowerCase().includes(term)
-    );
-  });
+  const term = searchFilter.trim().toLowerCase();
+  const matchTerm = (...vals: (string | undefined)[]) =>
+    !term || vals.some((v) => v?.toLowerCase().includes(term));
+  const filteredSpendLogs = spendLogs.filter((e) =>
+    matchTerm(e.request_id, e.provider, e.resolved_model, e.virtual_key_id)
+  );
+  const filteredAuditLogs = auditLogs.filter((l) =>
+    matchTerm(l.action, l.resource, l.resource_id, l.actor_id)
+  );
 
   // Format integer micro-dollars ($1 = 1,000,000 micros)
   const formatMicroDollars = (micros?: number) => {
@@ -230,10 +218,10 @@ export const FinOpsView: React.FC = () => {
       {summary && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { title: 'Spend by Provider', icon: <DollarSign className="w-4 h-4 text-accent-primary" />, entries: summary.spend_by_provider, barClass: 'bg-accent-primary', emptyText: 'No provider spend yet' },
-            { title: 'Top Models by Spend', icon: <Layers className="w-4 h-4 text-accent-glow" />, entries: summary.spend_by_model, barClass: 'bg-accent-dark', emptyText: 'No model spend yet', limit: 5 },
-            { title: 'Spend by Team', icon: <Layers className="w-4 h-4 text-status-success" />, entries: summary.spend_by_team, barClass: 'bg-status-success', emptyText: 'No team spend yet' },
-            { title: 'Top Virtual Keys by Spend', icon: <DollarSign className="w-4 h-4 text-status-info" />, entries: summary.spend_by_virtual_key, barClass: 'bg-status-info', emptyText: 'No virtual key spend yet', limit: 5 },
+            { title: 'Spend by Provider', icon: <DollarSign className="w-4 h-4 text-accent-primary" />, entries: summary.spend_by_provider, barClass: 'text-accent-primary', emptyText: 'No provider spend yet' },
+            { title: 'Top Models by Spend', icon: <Layers className="w-4 h-4 text-accent-glow" />, entries: summary.spend_by_model, barClass: 'text-accent-glow', emptyText: 'No model spend yet', limit: 5 },
+            { title: 'Spend by Team', icon: <Layers className="w-4 h-4 text-status-success" />, entries: summary.spend_by_team, barClass: 'text-status-success', emptyText: 'No team spend yet' },
+            { title: 'Top Virtual Keys by Spend', icon: <DollarSign className="w-4 h-4 text-status-info" />, entries: summary.spend_by_virtual_key, barClass: 'text-status-info', emptyText: 'No virtual key spend yet', limit: 5 },
           ].map((b) => (
             <SpendBreakdownCard key={b.title} {...b} totalCostMicros={totalCostMicros} formatMicroDollars={formatMicroDollars} />
           ))}
@@ -244,39 +232,24 @@ export const FinOpsView: React.FC = () => {
       <div className="border-b border-border-subtle">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex gap-4">
-            <button
-              onClick={() => setActiveTab('spend')}
-              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
-                activeTab === 'spend'
-                  ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-brand-muted hover:text-brand-title'
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              Recent Spend Events ({spendLogs.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('quotas')}
-              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
-                activeTab === 'quotas'
-                  ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-brand-muted hover:text-brand-title'
-              }`}
-            >
-              <Clock className="w-4 h-4" />
-              Quotas &amp; Multi-Window Budgets
-            </button>
-            <button
-              onClick={() => setActiveTab('audit')}
-              className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
-                activeTab === 'audit'
-                  ? 'border-accent-primary text-accent-primary font-semibold'
-                  : 'border-transparent text-brand-muted hover:text-brand-title'
-              }`}
-            >
-              <AlertTriangle className="w-4 h-4" />
-              Administrative Audit Log ({auditLogs.length})
-            </button>
+            {([
+              ['spend', <Layers className="w-4 h-4" />, `Recent Spend Events (${spendLogs.length})`],
+              ['quotas', <Clock className="w-4 h-4" />, 'Quotas & Multi-Window Budgets'],
+              ['audit', <AlertTriangle className="w-4 h-4" />, `Administrative Audit Log (${auditLogs.length})`],
+            ] as const).map(([id, icon, label]) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`pb-3 text-xs font-medium border-b-2 flex items-center gap-2 transition ${
+                  activeTab === id
+                    ? 'border-accent-primary text-accent-primary font-semibold'
+                    : 'border-transparent text-brand-muted hover:text-brand-title'
+                }`}
+              >
+                {icon}
+                {label}
+              </button>
+            ))}
           </div>
 
           {activeTab !== 'quotas' && (
@@ -327,14 +300,9 @@ export const FinOpsView: React.FC = () => {
             <table className="w-full text-left text-xs font-mono">
               <thead className={THEAD_CLS}>
                 <tr>
-                  <th className="px-4 py-3">Timestamp</th>
-                  <th className="px-4 py-3">Request ID</th>
-                  <th className="px-4 py-3">Resolved Model</th>
-                  <th className="px-4 py-3">Provider</th>
-                  <th className="px-4 py-3">Tokens (P/C/Total)</th>
-                  <th className="px-4 py-3">Cost (USD / µ$)</th>
-                  <th className="px-4 py-3">Latency</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  {['Timestamp', 'Request ID', 'Resolved Model', 'Provider', 'Tokens (P/C/Total)', 'Cost (USD / µ$)', 'Latency', 'Actions'].map((h, i) => (
+                    <th key={h} className={`px-4 py-3${i === 7 ? ' text-right' : ''}`}>{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -355,7 +323,7 @@ export const FinOpsView: React.FC = () => {
                     <tr key={evt.id || evt.request_id} className="hover:bg-surface-elevated/40 transition">
                       <td className="px-4 py-3 text-brand-muted whitespace-nowrap">
                         <span className="flex items-center gap-1.5">
-                          <Clock className="w-3 h-3 text-brand-muted" />
+                          <Clock className="w-3 h-3" />
                           {evt.created_at ? new Date(evt.created_at).toLocaleTimeString() : 'N/A'}
                         </span>
                       </td>
@@ -387,10 +355,7 @@ export const FinOpsView: React.FC = () => {
                         {evt.latency_ms ? `${evt.latency_ms.toFixed(0)} ms` : '-'}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => setSelectedSpendEvent(evt)}
-                          className="px-2 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-[11px] transition inline-flex items-center gap-1"
-                        >
+                        <button onClick={() => setSelectedSpendEvent(evt)} className={INSPECT_BTN}>
                           <Search className="w-3 h-3" />
                           Inspect
                         </button>
@@ -411,12 +376,9 @@ export const FinOpsView: React.FC = () => {
             <table className="w-full text-left text-xs font-mono">
               <thead className={THEAD_CLS}>
                 <tr>
-                  <th className="px-4 py-3">Timestamp</th>
-                  <th className="px-4 py-3">Action</th>
-                  <th className="px-4 py-3">Resource</th>
-                  <th className="px-4 py-3">Resource ID</th>
-                  <th className="px-4 py-3">Actor</th>
-                  <th className="px-4 py-3 text-right">Payload</th>
+                  {['Timestamp', 'Action', 'Resource', 'Resource ID', 'Actor', 'Payload'].map((h, i) => (
+                    <th key={h} className={`px-4 py-3${i === 5 ? ' text-right' : ''}`}>{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -437,7 +399,7 @@ export const FinOpsView: React.FC = () => {
                     <tr key={log.id} className="hover:bg-surface-elevated/40 transition">
                       <td className="px-4 py-3 text-brand-muted whitespace-nowrap">
                         <span className="flex items-center gap-1.5">
-                          <Clock className="w-3 h-3 text-brand-muted" />
+                          <Clock className="w-3 h-3" />
                           {log.created_at ? new Date(log.created_at).toLocaleString() : 'N/A'}
                         </span>
                       </td>
@@ -462,10 +424,7 @@ export const FinOpsView: React.FC = () => {
                         {log.actor_id || 'master-admin'}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => setSelectedAuditLog(log)}
-                          className="px-2 py-1 bg-surface-elevated hover:bg-surface-hover border border-border-subtle text-brand-body hover:text-brand-title rounded text-[11px] transition inline-flex items-center gap-1"
-                        >
+                        <button onClick={() => setSelectedAuditLog(log)} className={INSPECT_BTN}>
                           <Search className="w-3 h-3" />
                           Details
                         </button>

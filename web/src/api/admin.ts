@@ -36,7 +36,6 @@ import type {
   A2AAgent,
   GatewayConfig,
   SSOProviderPublicInfo,
-  AuthLoginResponse,
   AuthMeResponse,
   QuotaPolicy,
   BudgetWindowLimit,
@@ -580,31 +579,21 @@ export const adminApi = {
 export const authApi = {
   getSSOProviders: () =>
     apiFetch<{ providers: SSOProviderPublicInfo[] }>('/auth/sso/providers'),
-  loginPassword: (data: {
-    email?: string;
-    username?: string;
-    password: string;
-  }) =>
-    apiFetch<AuthLoginResponse>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
   getMe: (key?: string) =>
     apiFetch<AuthMeResponse>('/auth/me', {}, key),
   logout: (key?: string) =>
-    apiFetch<{ status: string }>('/auth/logout', { method: 'POST' }, key),
-  updatePassword: (
-    data: {
-      current_password?: string;
-      new_password: string;
-      user_id?: string;
-      email?: string;
-    },
+    apiFetch<{ status: string; end_session_url?: string }>('/auth/logout', { method: 'POST' }, key),
+  completeCLILogin: (
+    loginId: string,
+    data: { org_id?: string; team_id?: string; key_name?: string; ttl_seconds?: number },
     key?: string
   ) =>
-    apiFetch<{ status: string; user_id: string; password_reset_required: boolean }>(
-      '/auth/password',
-      { method: 'POST', body: JSON.stringify(data) },
-      key
-    ),
+    apiFetch<{
+      status: string;
+      login_id: string;
+      org_id: string;
+      team_id?: string;
+      key_id: string;
+      key_prefix: string;
+    }>(`/auth/cli/complete/${enc(loginId)}`, { method: 'POST', body: JSON.stringify(data) }, key),
 };

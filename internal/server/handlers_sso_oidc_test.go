@@ -187,14 +187,15 @@ func (m *mockOIDCIdP) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC()
 		idToken := signTestRS256JWT(m.t, m.privKey, m.kid, map[string]any{
-			"iss":   m.srv.URL,
-			"sub":   entry.Sub,
-			"aud":   aud,
-			"nonce": nonce,
-			"email": entry.Email,
-			"name":  entry.Name,
-			"iat":   now.Unix(),
-			"exp":   now.Add(10 * time.Minute).Unix(),
+			"iss":            m.srv.URL,
+			"sub":            entry.Sub,
+			"aud":            aud,
+			"nonce":          nonce,
+			"email":          entry.Email,
+			"email_verified": true,
+			"name":           entry.Name,
+			"iat":            now.Unix(),
+			"exp":            now.Add(10 * time.Minute).Unix(),
 		})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -253,10 +254,13 @@ func newOIDCSSOTestServer(t *testing.T, idp *mockOIDCIdP, mutator func(*config.C
 				DefaultRole:         "org_admin",
 			},
 			{
-				ID:           "google",
-				DisplayName:  "Google Workspace",
-				ClientID:     "google-client-id",
-				ClientSecret: "google-secret-value-never-expose",
+				ID:           "keycloak",
+				Type:         "oidc",
+				DisplayName:  "Keycloak SSO",
+				ClientID:     "keycloak-client-id",
+				ClientSecret: "keycloak-secret-value-never-expose",
+				Issuer:       idp.URL(),
+				DiscoveryURL: idp.URL() + "/.well-known/openid-configuration",
 				AutoRegister: true,
 				DefaultOrgID: "org-sso",
 			},
@@ -278,7 +282,7 @@ func TestAuthSSO_OIDCProvidersRedactionAndLoginRedirects(t *testing.T) {
 		t.Fatalf("GET /auth/sso/providers status = %d, body = %s", provRec.Code, provRec.Body.String())
 	}
 	if strings.Contains(provRec.Body.String(), "super-secret-oidc-client-secret") ||
-		strings.Contains(provRec.Body.String(), "google-secret-value-never-expose") {
+		strings.Contains(provRec.Body.String(), "keycloak-secret-value-never-expose") {
 		t.Fatalf("GET /auth/sso/providers leaked client_secret: %s", provRec.Body.String())
 	}
 	var provResp struct {
@@ -287,7 +291,7 @@ func TestAuthSSO_OIDCProvidersRedactionAndLoginRedirects(t *testing.T) {
 	if err := json.Unmarshal(provRec.Body.Bytes(), &provResp); err != nil {
 		t.Fatalf("decode providers: %v", err)
 	}
-	if len(provResp.Providers) != 2 || provResp.Providers[0].ID != "oidc" || provResp.Providers[1].ID != "google" {
+	if len(provResp.Providers) != 2 || provResp.Providers[0].ID != "oidc" || provResp.Providers[1].ID != "keycloak" {
 		t.Fatalf("unexpected providers list: %+v", provResp.Providers)
 	}
 
@@ -299,7 +303,7 @@ func TestAuthSSO_OIDCProvidersRedactionAndLoginRedirects(t *testing.T) {
 		t.Fatalf("GET /admin/v1/config status = %d, body = %s", cfgRec.Code, cfgRec.Body.String())
 	}
 	if strings.Contains(cfgRec.Body.String(), "super-secret-oidc-client-secret") ||
-		strings.Contains(cfgRec.Body.String(), "google-secret-value-never-expose") {
+		strings.Contains(cfgRec.Body.String(), "keycloak-secret-value-never-expose") {
 		t.Fatalf("GET /admin/v1/config leaked SSO client_secret: %s", cfgRec.Body.String())
 	}
 	if !strings.Contains(cfgRec.Body.String(), `"client_secret":"[REDACTED]"`) {

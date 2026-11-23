@@ -97,13 +97,14 @@ func TestAuthResolver_FailClosedWhenDataPlaneJWTDisabled(t *testing.T) {
 		t.Fatalf("IssueVirtualKey: %v", err)
 	}
 
-	secret := "test-hs256-secret-for-fail-closed"
+	idp := newTestOIDCIssuer(t)
 	verifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:       secret,
-		Issuer:       "https://idp.example.com",
-		Audience:     "ai-gateway",
-		AutoRegister: true,
-		DefaultOrgID: "org_a",
+		Issuer:        idp.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
+		AutoRegister:  true,
+		DefaultOrgID:  "org_a",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
 
 	resolver := auth.NewAuthResolver(auth.ResolverConfig{
@@ -115,16 +116,13 @@ func TestAuthResolver_FailClosedWhenDataPlaneJWTDisabled(t *testing.T) {
 	})
 	svc.SetDataPlaneResolver(resolver)
 
-	jwtTok, err := auth.SignHS256(secret, &auth.JWTClaims{
+	jwtTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "user-sub-1",
-		Issuer:    "https://idp.example.com",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "alice@example.com",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+jwtTok)
@@ -237,12 +235,13 @@ func TestAuthResolver_JWTKeyMappingAndEmailDomainDeny(t *testing.T) {
 
 	// 1. Mapped claim resolves to mapped VirtualKey with Principal attached
 	mappedTok := signRS256JWT(t, rsaPriv, "kid-1", map[string]any{
-		"iss":    oidcSrv.URL,
-		"sub":    "oidc-alice",
-		"aud":    "ai-gateway",
-		"email":  "alice@allowed.example",
-		"groups": []string{"devs", "ml-platform"},
-		"exp":    time.Now().UTC().Add(10 * time.Minute).Unix(),
+		"iss":            oidcSrv.URL,
+		"sub":            "oidc-alice",
+		"aud":            "ai-gateway",
+		"email":          "alice@allowed.example",
+		"email_verified": true,
+		"groups":         []string{"devs", "ml-platform"},
+		"exp":            time.Now().UTC().Add(10 * time.Minute).Unix(),
 	})
 
 	for _, path := range []string{"/v1/chat/completions", "/mcp", "/a2a/v1/agents/coder/"} {
@@ -316,15 +315,16 @@ func TestAuthResolver_JITProvisioningAndConcurrentRaceRecovery(t *testing.T) {
 		IsActive:              true,
 	})
 
-	secret := "jit-concurrent-race-secret"
+	idp := newTestOIDCIssuer(t)
 	verifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:        secret,
-		Issuer:        "https://sso.jit.example",
+		Issuer:        idp.Issuer(),
 		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
 		AutoRegister:  true,
 		DefaultOrgID:  "org_jit",
 		DefaultTeamID: "team_eng",
 		DefaultRole:   "developer",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
 	svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
 	resolver := auth.NewAuthResolver(auth.ResolverConfig{
@@ -335,16 +335,13 @@ func TestAuthResolver_JITProvisioningAndConcurrentRaceRecovery(t *testing.T) {
 		DefaultOrgID:       "org_jit",
 	})
 
-	tok, err := auth.SignHS256(secret, &auth.JWTClaims{
+	tok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "race-sub-42",
-		Issuer:    "https://sso.jit.example",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "racer@jit.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 
 	const workers = 24
 	var wg sync.WaitGroup
@@ -397,11 +394,12 @@ func TestAuthResolver_JITProvisioningAndConcurrentRaceRecovery(t *testing.T) {
 
 	// Verify AutoRegister=false rejects unknown user
 	noJITVerifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:       secret,
-		Issuer:       "https://sso.jit.example",
-		Audience:     "ai-gateway",
-		AutoRegister: false,
-		DefaultOrgID: "org_jit",
+		Issuer:        idp.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
+		AutoRegister:  false,
+		DefaultOrgID:  "org_jit",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
 	noJITResolver := auth.NewAuthResolver(auth.ResolverConfig{
 		Service:            svc,
@@ -410,9 +408,9 @@ func TestAuthResolver_JITProvisioningAndConcurrentRaceRecovery(t *testing.T) {
 		EnableDataPlaneJWT: true,
 		DefaultOrgID:       "org_jit",
 	})
-	unknownTok, _ := auth.SignHS256(secret, &auth.JWTClaims{
+	unknownTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "unknown-sub-99",
-		Issuer:    "https://sso.jit.example",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "unknown@jit.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -424,7 +422,7 @@ func TestAuthResolver_JITProvisioningAndConcurrentRaceRecovery(t *testing.T) {
 	}
 }
 
-func TestAuthResolver_OpaqueIntrospectionAndProxyAuth(t *testing.T) {
+func TestAuthResolver_OpaqueIntrospectionViaOIDCDiscovery(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	_ = repo.CreateOrganization(ctx, &domain.Organization{
@@ -457,18 +455,29 @@ func TestAuthResolver_OpaqueIntrospectionAndProxyAuth(t *testing.T) {
 	})
 
 	var introspectCalls atomic.Int32
+	var introspectSrvURL string
 	introspectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 introspectSrvURL,
+				"jwks_uri":               introspectSrvURL + "/certs",
+				"authorization_endpoint": introspectSrvURL + "/auth",
+				"token_endpoint":         introspectSrvURL + "/token",
+				"introspection_endpoint": introspectSrvURL + "/introspect",
+			})
+			return
+		}
 		introspectCalls.Add(1)
 		_ = r.ParseForm()
 		tok := r.FormValue("token")
-		w.Header().Set("Content-Type", "application/json")
 		if tok == "opaque-valid-bob" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
 				"sub":    "sub-bob",
 				"email":  "bob@ent.example",
 				"org_id": "org_ent",
-				"iss":    "https://oauth.ent.example",
+				"iss":    introspectSrvURL,
 				"exp":    time.Now().UTC().Add(5 * time.Minute).Unix(),
 			})
 			return
@@ -476,41 +485,30 @@ func TestAuthResolver_OpaqueIntrospectionAndProxyAuth(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": false})
 	}))
 	defer introspectSrv.Close()
+	introspectSrvURL = introspectSrv.URL
 
 	netPol, _ := network.NewPolicy(config.OutboundSSRFConfig{
-		AllowPrivateNetworks: true,
-		AllowInsecureHTTP:    true,
+		AllowLoopbackHTTP: true,
 	})
 	introspector := auth.NewOAuthIntrospector(auth.IntrospectionConfig{
-		TokenInfoEndpoint: introspectSrv.URL + "/introspect",
-		ClientID:          "gw-client",
-		ClientSecret:      "gw-secret",
-		Mode:              auth.IntrospectionModeIntrospect,
-		NetworkPolicy:     netPol,
+		Issuer:        introspectSrv.URL,
+		ClientID:      "gw-client",
+		ClientSecret:  "gw-secret",
+		Mode:          auth.IntrospectionModeIntrospect,
+		NetworkPolicy: netPol,
 	})
-
-	proxyAuth, err := auth.NewProxyAuthenticator(auth.ProxyAuthConfig{
-		Enabled:           true,
-		TrustedProxyCIDRs: []string{"10.0.0.0/8"},
-		HeaderMapping:     auth.DefaultProxyHeaderMapping(),
-	})
-	if err != nil {
-		t.Fatalf("NewProxyAuthenticator: %v", err)
-	}
 
 	svc := auth.NewService(repo, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
 	resolver := auth.NewAuthResolver(auth.ResolverConfig{
 		Service:            svc,
 		Repo:               repo,
 		Introspector:       introspector,
-		ProxyAuth:          proxyAuth,
 		EnableDataPlaneJWT: false,
 		DefaultOrgID:       "org_ent",
 	})
 	svc.SetDataPlaneResolver(resolver)
-	rbac := auth.NewRBACEngine(repo)
 
-	// 1. Opaque Bearer token introspection
+	// 1. Opaque Bearer token introspection resolved via OIDC Discovery
 	opaqueReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	opaqueReq.Header.Set("Authorization", "Bearer opaque-valid-bob")
 	idCtx, err := resolver.ResolveRequest(ctx, opaqueReq)
@@ -529,41 +527,6 @@ func TestAuthResolver_OpaqueIntrospectionAndProxyAuth(t *testing.T) {
 	badOpaqueReq.Header.Set("Authorization", "Bearer opaque-revoked")
 	if _, err := resolver.ResolveRequest(ctx, badOpaqueReq); err == nil {
 		t.Fatal("expected inactive opaque token to fail")
-	}
-
-	// 2. Trusted Reverse Proxy Authentication via DataPlaneMiddleware
-	var gotIdentity *domain.IdentityContext
-	mw := auth.DataPlaneMiddleware(svc, rbac)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotIdentity = auth.IdentityFromContext(r.Context())
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	proxyReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	proxyReq.RemoteAddr = "10.20.30.40:5555"
-	proxyReq.Header.Set("X-Auth-Request-Email", "bob@ent.example")
-	proxyReq.Header.Set("X-Auth-Request-Org", "org_ent")
-	proxyReq.Header.Set("X-Auth-Request-Role", "platform_admin") // spoofed header must have no effect
-	rec := httptest.NewRecorder()
-	mw.ServeHTTP(rec, proxyReq)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for trusted proxy request, got %d (%s)", rec.Code, rec.Body.String())
-	}
-	if gotIdentity == nil || gotIdentity.UserID != "usr_bob" || gotIdentity.Role != domain.RoleDeveloper {
-		t.Fatalf("expected server-side role developer for usr_bob, got %+v", gotIdentity)
-	}
-	if gotIdentity.Principal == nil || gotIdentity.Principal.AuthMethod != "proxy" {
-		t.Fatalf("expected proxy principal, got %+v", gotIdentity.Principal)
-	}
-
-	// Untrusted Proxy IP fails closed with 403
-	untrustedReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	untrustedReq.RemoteAddr = "203.0.113.10:5555"
-	untrustedReq.Header.Set("X-Auth-Request-Email", "bob@ent.example")
-	untrustedReq.Header.Set("X-Auth-Request-Org", "org_ent")
-	untrustedRec := httptest.NewRecorder()
-	mw.ServeHTTP(untrustedRec, untrustedReq)
-	if untrustedRec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for untrusted proxy IP, got %d", untrustedRec.Code)
 	}
 }
 
@@ -608,6 +571,7 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 	mem := storage.NewMemoryRepository()
 	_ = mem.CreateOrganization(ctx, &domain.Organization{ID: "org_r", Name: "Org R", Slug: "org-r", IsActive: true})
 
+	idp := newTestOIDCIssuer(t)
 	raceRepo := &simulatedConflictRaceRepo{
 		MemoryRepository: mem,
 		preCreated: &domain.User{
@@ -616,7 +580,7 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 			Email:             "winner@org-r.example",
 			Name:              "Winner",
 			Role:              domain.RoleDeveloper,
-			OIDCIssuer:        "https://idp.r.example",
+			OIDCIssuer:        idp.Issuer(),
 			OIDCSubject:       "sub-race-winner",
 			MaxBudgetMicros:   123456,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
@@ -624,13 +588,13 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 		},
 	}
 
-	secret := "race-recovery-secret"
 	verifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:       secret,
-		Issuer:       "https://idp.r.example",
-		Audience:     "ai-gateway",
-		AutoRegister: true,
-		DefaultOrgID: "org_r",
+		Issuer:        idp.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
+		AutoRegister:  true,
+		DefaultOrgID:  "org_r",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
 	svc := auth.NewService(raceRepo, nil, "sk-gw-master-admin-secret", time.Minute, time.Minute)
 	resolver := auth.NewAuthResolver(auth.ResolverConfig{
@@ -641,9 +605,9 @@ func TestAuthResolver_JITSimulatedDBConflictReReadRecovery(t *testing.T) {
 		DefaultOrgID:       "org_r",
 	})
 
-	tok, _ := auth.SignHS256(secret, &auth.JWTClaims{
+	tok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-race-winner",
-		Issuer:    "https://idp.r.example",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "winner@org-r.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -665,13 +629,16 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 	mem := storage.NewMemoryRepository()
 	_ = mem.CreateOrganization(ctx, &domain.Organization{ID: "org_m", Name: "Org M", Slug: "org-m", IsActive: true})
 
+	idpA := newTestOIDCIssuer(t)
+	idpB := newTestOIDCIssuer(t)
+
 	_ = mem.CreateUser(ctx, &domain.User{
 		ID:          "usr_a",
 		OrgID:       "org_m",
 		Email:       "user-a@org-m.example",
 		Name:        "User A",
 		Role:        domain.RoleDeveloper,
-		OIDCIssuer:  "https://idp-a.example",
+		OIDCIssuer:  idpA.Issuer(),
 		OIDCSubject: "same-sub",
 		IsActive:    true,
 	})
@@ -681,7 +648,7 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 		Email:       "user-b@org-m.example",
 		Name:        "User B",
 		Role:        domain.RoleDeveloper,
-		OIDCIssuer:  "https://idp-b.example",
+		OIDCIssuer:  idpB.Issuer(),
 		OIDCSubject: "same-sub",
 		IsActive:    true,
 	})
@@ -703,23 +670,23 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 		IsActive:    true,
 	})
 
-	secretA := "issuer-a-secret-material-012345"
-	secretB := "issuer-b-secret-material-012345"
 	multiVerifier := auth.NewJWTVerifier(auth.JWTConfig{
 		Issuers: []auth.OIDCIssuerConfig{
 			{
-				Issuer:       "https://idp-a.example",
-				Audience:     "ai-gateway",
-				Secret:       secretA,
-				AutoRegister: false,
-				DefaultOrgID: "org_m",
+				Issuer:        idpA.Issuer(),
+				Audience:      "ai-gateway",
+				JWKSURL:       idpA.JWKSURL(),
+				AutoRegister:  false,
+				DefaultOrgID:  "org_m",
+				NetworkPolicy: idpA.NetworkPolicy(),
 			},
 			{
-				Issuer:       "https://idp-b.example",
-				Audience:     "ai-gateway",
-				Secret:       secretB,
-				AutoRegister: false,
-				DefaultOrgID: "org_m",
+				Issuer:        idpB.Issuer(),
+				Audience:      "ai-gateway",
+				JWKSURL:       idpB.JWKSURL(),
+				AutoRegister:  false,
+				DefaultOrgID:  "org_m",
+				NetworkPolicy: idpB.NetworkPolicy(),
 			},
 		},
 	})
@@ -732,9 +699,9 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 		DefaultOrgID:       "org_m",
 	})
 
-	tokA, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+	tokA := idpA.SignClaims(&auth.JWTClaims{
 		Subject:   "same-sub",
-		Issuer:    "https://idp-a.example",
+		Issuer:    idpA.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "user-a@org-m.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -746,9 +713,9 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 		t.Fatalf("expected usr_a from issuer A, got %+v err=%v", ctxA, err)
 	}
 
-	tokB, _ := auth.SignHS256(secretB, &auth.JWTClaims{
+	tokB := idpB.SignClaims(&auth.JWTClaims{
 		Subject:   "same-sub",
-		Issuer:    "https://idp-b.example",
+		Issuer:    idpB.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "user-b@org-m.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -761,9 +728,9 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 	}
 
 	// Email match alone must not auto-link.
-	tokEmail, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+	tokEmail := idpA.SignClaims(&auth.JWTClaims{
 		Subject:   "unlinked-sub",
-		Issuer:    "https://idp-a.example",
+		Issuer:    idpA.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "emailonly@org-m.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -775,9 +742,9 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 	}
 
 	// Multi-issuer refuses unbound legacy subject.
-	tokLegacy, _ := auth.SignHS256(secretA, &auth.JWTClaims{
+	tokLegacy := idpA.SignClaims(&auth.JWTClaims{
 		Subject:   "legacy-sub",
-		Issuer:    "https://idp-a.example",
+		Issuer:    idpA.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		Email:     "legacy@org-m.example",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -790,11 +757,12 @@ func TestAuthResolver_OIDCIssuerIsolationLegacyAndNoEmailLink(t *testing.T) {
 
 	// Single-issuer resolver allows unambiguous legacy subject.
 	singleVerifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:       secretA,
-		Issuer:       "https://idp-a.example",
-		Audience:     "ai-gateway",
-		AutoRegister: false,
-		DefaultOrgID: "org_m",
+		Issuer:        idpA.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idpA.JWKSURL(),
+		AutoRegister:  false,
+		DefaultOrgID:  "org_m",
+		NetworkPolicy: idpA.NetworkPolicy(),
 	})
 	singleResolver := auth.NewAuthResolver(auth.ResolverConfig{
 		Service:            svc,

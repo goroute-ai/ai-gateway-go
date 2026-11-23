@@ -21,9 +21,7 @@ html[data-theme='dark'] {
 
   --rgb-accent-primary: 56 189 248;
   --rgb-accent-dark: 14 165 233;
-  --rgb-accent-darker: 2 132 199;
   --rgb-accent-glow: 125 211 252;
-  --rgb-accent-lighter: 186 230 253;
   --rgb-accent-contrast: 8 13 20;
   --accent-soft: rgba(56, 189, 248, 0.09);
 
@@ -75,9 +73,7 @@ html[data-theme='light'] {
 
   --rgb-accent-primary: 3 105 161;
   --rgb-accent-dark: 7 89 133;
-  --rgb-accent-darker: 12 74 110;
   --rgb-accent-glow: 2 132 199;
-  --rgb-accent-lighter: 14 165 233;
   --rgb-accent-contrast: 255 255 255;
   --accent-soft: rgba(2, 132, 199, 0.08);
 

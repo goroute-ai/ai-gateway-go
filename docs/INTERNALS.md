@@ -275,7 +275,7 @@ GoRoute AI Gateway enforces dual security boundaries alongside enterprise federa
 |  - Persistent Storage: Only SHA-256(full_key) is stored in PostgreSQL                   |
 |  - Verification: crypto/subtle.ConstantTimeCompare against L1/L2 cached hash             |
 |  - Federated OIDC/JWT & Introspection: bound by (org_id, oidc_issuer, oidc_subject)      |
-|  - Operator Sessions: HMAC goroute_session cookie + X-CSRF-Token + HIBP k-anonymity     |
+|  - Operator Sessions: HMAC goroute_session cookie + X-CSRF-Token + OIDC id_token_hint  |
 |  - Embedded SDK: CustomAuthenticator (CustomAuthModeOff / On / Auto, RunPostChecks)     |
 |  - Key revocation broadcasts L1 eviction through gw:events:invalidation                   |
 +-----------------------------------------------------------------------------------------+
@@ -295,7 +295,7 @@ Virtual-key expiry metadata is stored with each cached identity and checked on e
 
 ### 5.1 Identity Federation, Sessions, SCIM & Key Rotation Mechanics
 - **Federated OIDC & Strict Issuer Binding (`internal/auth/jwt.go`, `internal/auth/sso.go`, `migrations/0034`)**: Both Data Plane JWTs (`auth.enable_data_plane_jwt`) and Operator/CLI OIDC SSO authenticate users strictly by `(org_id, oidc_issuer, oidc_subject)`. Implicit cross-issuer email linking is disabled; legacy subject-only records resolve only when an organization has one unambiguous trusted issuer. Explicit `(org_id, issuer, claim_name, claim_value) -> virtual_key_id` (`jwt_key_mappings`) and ABAC `access_group_rules` remain isolated inside the verified tenant.
-- **Operator Sessions, CSRF & HIBP (`internal/auth/session.go`, `internal/auth/password.go`)**: Browser login (`/auth/login`, `/auth/sso/*`) issues `HttpOnly` signed `goroute_session` cookies backed by `operator_sessions` and Redis `gw:auth:session:{active,revoked}:{jti}` state. Cookie-authenticated state-changing requests require `X-CSRF-Token`. When `auth.enable_hibp_check` is enabled, `HIBPRangeClient` hashes the password in memory, transmits only the 5-hex SHA-1 prefix over `network.Policy`, and rejects confirmed breaches on login/password change while preserving availability on HIBP service errors.
+- **Operator Sessions, CSRF & OIDC Logout (`internal/auth/session.go`, `internal/auth/sso.go`)**: Browser OIDC SSO login (`/auth/sso/{provider}/login` + `/callback`) issues `HttpOnly` signed `goroute_session` cookies backed by `operator_sessions` (storing `provider_id` and Vault-encrypted `id_token` for RP-Initiated Logout) and Redis `gw:auth:session:{active,revoked}:{jti}` state with Pub/Sub multi-replica eviction (`session_revoked`). Cookie-authenticated state-changing requests require `X-CSRF-Token`. Active sessions fail closed on user deactivation, SCIM deprovisioning, or DB lookup failures.
 - **SCIM 2.0 Atomic Provisioning & Key Rotation (`internal/server/handlers_scim.go`, `internal/auth/rotation.go`)**: `/scim/v2/Users` and `/scim/v2/Groups` apply group name and membership updates inside one tenant-scoped PostgreSQL transaction, blocking cross-org user attachment. Key rotation (`POST /admin/v1/keys/{keyID}/rotate` and scheduled webhook delivery under `gw:lock:key_rotation`) keeps deprecated hashes active in `virtual_key_deprecated_hashes` through their grace window (`X-Gateway-Key-Deprecated: true`, `X-Gateway-Key-Revoke-At`).
 - **Embedded `CustomAuthenticator` (`pkg/gateway/auth.go`)**: Supports `CustomAuthModeOff`, `CustomAuthModeOn` (fail closed), and `CustomAuthModeAuto` (abstain -> fall back to standard auth); when returning a direct `Identity` with `RunPostChecks: true`, RBAC model/endpoint policies and quota limits still run through standard enforcement.
 
@@ -747,7 +747,7 @@ The `internal/auth/upstream` package (alongside provider IAM adapters and `inter
 
 ## 18. Embedded Operator Web UI Architecture & Static Serving Mechanics
 
-The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`), supporting Master Admin Key, Operator Password (`/auth/login`), and OIDC SSO (`/auth/sso/{provider}/login`) authentication via `LoginView`, `OverviewView`, `PlaygroundView`, `OrganizationsView`, `ModelsView`, `KeysView` (`TempBudgetModal`), `FinOpsView` (`QuotasTab`), `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`), `CredentialsView`, `AgenticView`, and `ConfigView`.
+The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`), supporting OIDC SSO (`/auth/sso/{provider}/login`), CLI device approval (`/ui/cli`), and emergency Break-Glass Key (`GATEWAY_MASTER_ADMIN_KEY`) authentication via `LoginView`, `CLILoginView`, `OverviewView`, `PlaygroundView`, `OrganizationsView`, `ModelsView`, `KeysView` (`TempBudgetModal`), `FinOpsView` (`QuotasTab`), `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`), `CredentialsView`, `AgenticView`, and `ConfigView`.
 
 ### 18.1 Route Dispatch & Fallback Lifecycle
 ```

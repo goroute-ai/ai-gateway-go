@@ -355,7 +355,7 @@ func TestE2E_Quota_RealtimeWebSocketAndBatchJSONLQuotas(t *testing.T) {
 }
 
 func TestE2E_Quota_SoftBudgetWebhookThrottlingAndModelFallback(t *testing.T) {
-	sink := newMockSecurityAndWebhookSink(t, nil, "")
+	sink := newMockSecurityAndWebhookSink(t, "")
 	upstream := newMockDeterministicLLMUpstream(t)
 	cluster := setupConfigurableDualNodeCluster(t, func(cfg *config.Config) {
 		cfg.FinOps.SoftBudgetWebhookURL = sink.SoftBudgetWebhookURL()

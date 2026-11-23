@@ -67,24 +67,31 @@ func TestSCIMActiveEnforcementAndImmediateEviction(t *testing.T) {
 		t.Fatalf("expected 403 scim_deprovisioned, got %v", err)
 	}
 
-	// AuthResolver proxy auth also rejects !user.SCIMActive.
-	proxyAuth, err := auth.NewProxyAuthenticator(auth.ProxyAuthConfig{
-		Enabled:           true,
-		TrustedProxyCIDRs: []string{"127.0.0.1/32"},
-		HeaderMapping:     auth.DefaultProxyHeaderMapping(),
+	// AuthResolver OIDC JWT auth also rejects !user.SCIMActive.
+	idp := newTestOIDCIssuer(t)
+	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
+		Issuer:        idp.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
+		DefaultOrgID:  "org-scim",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
-	if err != nil {
-		t.Fatalf("NewProxyAuthenticator: %v", err)
-	}
+	tok := idp.SignClaims(&auth.JWTClaims{
+		Subject:  user.OIDCSubject,
+		Issuer:   idp.Issuer(),
+		Audience: auth.AudienceClaim{"ai-gateway"},
+		Email:    user.Email,
+		OrgID:    user.OrgID,
+	})
 	resolver := auth.NewAuthResolver(auth.ResolverConfig{
-		Service:      svc,
-		Repo:         repo,
-		ProxyAuth:    proxyAuth,
-		DefaultOrgID: "org-scim",
+		Service:            svc,
+		Repo:               repo,
+		JWTVerifier:        jwtVerifier,
+		EnableDataPlaneJWT: true,
+		DefaultOrgID:       "org-scim",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("X-Auth-Request-Email", user.Email)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	_, err = resolver.ResolveRequest(ctx, req)
 	if !errors.As(err, &gwErr) || gwErr.StatusCode != http.StatusForbidden || gwErr.Code != "scim_deprovisioned" {
 		t.Fatalf("expected AuthResolver 403 scim_deprovisioned, got %v", err)

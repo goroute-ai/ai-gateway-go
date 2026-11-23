@@ -5,6 +5,7 @@ import { useAuth } from './context/AuthContext';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 const LoginView = lazy(() => import('./views/LoginView').then((m) => ({ default: m.LoginView })));
+const CLILoginView = lazy(() => import('./views/CLILoginView').then((m) => ({ default: m.CLILoginView })));
 const OverviewView = lazy(() => import('./views/OverviewView').then((m) => ({ default: m.OverviewView })));
 const PlaygroundView = lazy(() => import('./views/PlaygroundView').then((m) => ({ default: m.PlaygroundView })));
 const OrganizationsView = lazy(() => import('./views/OrganizationsView').then((m) => ({ default: m.OrganizationsView })));
@@ -34,6 +35,11 @@ function parseViewFromPath(pathname: string): NavView {
   return VALID_VIEWS.has(stripped) ? stripped : 'overview';
 }
 
+function isCLILoginPath(pathname: string): boolean {
+  const stripped = pathname.replace(/^\/ui\/?/, '').split('/')[0];
+  return stripped === 'cli';
+}
+
 const ViewLoadingFallback = () => (
   <div className="flex items-center justify-center h-64 text-brand-muted font-mono text-xs gap-2">
     <RefreshCw className="w-4 h-4 animate-spin text-accent-primary" />
@@ -43,18 +49,21 @@ const ViewLoadingFallback = () => (
 
 export const App: React.FC = () => {
   const [activeView, setActiveView] = useState<NavView>(() => parseViewFromPath(window.location.pathname));
+  const [isCLIRoute, setIsCLIRoute] = useState<boolean>(() => isCLILoginPath(window.location.pathname));
   const { isUnlocked, isBootstrapping, deprecatedKeyRevokeAt } = useAuth();
 
   const navigateTo = (view: NavView) => {
+    setIsCLIRoute(false);
     setActiveView(view);
     const targetPath = view === 'overview' ? '/ui/' : `/ui/${view}`;
-    if (window.location.pathname !== targetPath) {
+    if (window.location.pathname !== targetPath || window.location.search !== '') {
       window.history.pushState({ view }, '', targetPath);
     }
   };
 
   useEffect(() => {
     const onPopState = () => {
+      setIsCLIRoute(isCLILoginPath(window.location.pathname));
       setActiveView(parseViewFromPath(window.location.pathname));
     };
     window.addEventListener('popstate', onPopState);
@@ -62,6 +71,9 @@ export const App: React.FC = () => {
   }, []);
 
   const renderActiveView = () => {
+    if (isCLIRoute) {
+      return <CLILoginView onDone={() => navigateTo('overview')} />;
+    }
     switch (activeView) {
       case 'overview':
         return <OverviewView onNavigateToPlayground={() => navigateTo('playground')} />;

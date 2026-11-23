@@ -2,16 +2,12 @@ package server
 
 import (
 	"context"
-	"crypto/sha1"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,36 +17,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
-
-type authLoginRequest struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type authPasswordRequest struct {
-	UserID          string `json:"user_id,omitempty"`
-	Email           string `json:"email,omitempty"`
-	CurrentPassword string `json:"current_password,omitempty"`
-	NewPassword     string `json:"new_password"`
-	Password        string `json:"password,omitempty"`
-}
-
-const minControlPlanePasswordLen = 8
-
-func extractClientIP(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	host := strings.TrimSpace(r.RemoteAddr)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		return strings.TrimSpace(h)
-	}
-	return host
-}
 
 func mapUserRoleForControlPlane(role domain.Role) (domain.OperatorRole, bool) {
 	switch role {
@@ -67,305 +35,62 @@ func mapUserRoleForControlPlane(role domain.Role) (domain.OperatorRole, bool) {
 	}
 }
 
-func (s *GatewayServer) lookupUserByEmail(ctx context.Context, email string) (*domain.User, error) {
-	email = strings.TrimSpace(email)
-	if email == "" || s.repo == nil {
-		return nil, storage.ErrNotFound
+func extractRawSessionToken(r *http.Request) string {
+	if r == nil {
+		return ""
 	}
-	if oidcRepo, ok := s.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
-		return oidcRepo.GetUserByEmail(ctx, email)
+	if c, err := r.Cookie(auth.SessionCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		return strings.TrimSpace(c.Value)
 	}
-	orgs, err := s.repo.ListOrganizations(ctx)
-	if err != nil {
-		return nil, err
+	if h := strings.TrimSpace(r.Header.Get("X-Session-Token")); h != "" {
+		return h
 	}
-	for _, org := range orgs {
-		if org == nil {
-			continue
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(authz) > 7 && strings.EqualFold(authz[:7], "Bearer ") {
+		tok := strings.TrimSpace(authz[7:])
+		if auth.IsSessionTokenAudience(tok) {
+			return tok
 		}
-		users, err := s.repo.ListUsers(ctx, org.ID)
-		if err != nil {
-			continue
-		}
-		for _, u := range users {
-			if u != nil && strings.EqualFold(u.Email, email) {
-				return u, nil
+	}
+	return ""
+}
+
+func (s *GatewayServer) resolveLogoutContext(ctx context.Context, r *http.Request, op *domain.OperatorContext) (providerID, idTokenHint string) {
+	if op != nil && op.SessionID != "" {
+		if sessRepo, ok := s.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
+			if sess, err := sessRepo.GetOperatorSession(ctx, op.SessionID); err == nil && sess != nil {
+				providerID = strings.TrimSpace(sess.ProviderID)
+				if s.sessionMgr != nil {
+					idTokenHint = s.sessionMgr.DecryptIDTokenHint(sess)
+				}
 			}
 		}
 	}
-	return nil, storage.ErrNotFound
-}
-
-// screenPassword uses SHA-1 solely for the HIBP k-anonymity prefix protocol, not password storage.
-func (s *GatewayServer) screenPassword(w http.ResponseWriter, r *http.Request, password string, rejectionStatus int) bool {
-	if s == nil || s.cfg == nil || !s.cfg.Auth.EnableHIBPCheck || s.breachScreener == nil {
-		return true
-	}
-	digest := sha1.Sum([]byte(password))
-	breached, err := s.breachScreener.CheckDigest(r.Context(), hex.EncodeToString(digest[:]))
-	if err != nil {
-		logger.WarnContext(r.Context(), "HIBP password breach check failed; continuing",
-			slog.String("component", "auth"),
-			slog.String("error", err.Error()),
-		)
-		return true
-	}
-	if !breached {
-		return true
-	}
-	domain.WriteHTTPError(w, &domain.GatewayError{
-		StatusCode: rejectionStatus,
-		Type:       domain.ErrorTypeInvalidRequest,
-		Code:       "breached_password",
-		Message:    "Password has appeared in a known data breach; choose a different password",
-	})
-	return false
-}
-
-func (s *GatewayServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
-	var req authLoginRequest
-	if err := decodeAdminJSON(w, r, &req); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_request",
-			Message:    err.Error(),
-		})
-		return
-	}
-
-	identifier := strings.TrimSpace(req.Email)
-	if identifier == "" {
-		identifier = strings.TrimSpace(req.Username)
-	}
-	if identifier == "" || req.Password == "" {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "missing_credentials",
-			Message:    "email (or username) and password are required",
-		})
-		return
-	}
-
-	clientIP := extractClientIP(r)
-	if s.loginThrottle != nil {
-		if err := s.loginThrottle.Check(r.Context(), identifier, clientIP); err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
-	}
-
-	if s.sessionMgr == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeServer,
-			Code:       "session_manager_unavailable",
-			Message:    "Session authentication is not initialized",
-		})
-		return
-	}
-
-	// 1. Check configured UIUsername / UIPassword admin credentials if configured.
-	if s.cfg != nil && strings.TrimSpace(s.cfg.Auth.UIUsername) != "" && s.cfg.Auth.UIPassword != "" &&
-		strings.EqualFold(identifier, strings.TrimSpace(s.cfg.Auth.UIUsername)) {
-		var matched bool
-		if strings.HasPrefix(s.cfg.Auth.UIPassword, "scrypt:") {
-			matched, _ = auth.VerifyPassword(req.Password, s.cfg.Auth.UIPassword)
-		} else {
-			matched = subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.cfg.Auth.UIPassword)) == 1
-		}
-		if !matched {
-			if s.loginThrottle != nil {
-				s.loginThrottle.RecordFailure(r.Context(), identifier, clientIP)
+	if providerID == "" && s.sessionMgr != nil {
+		if rawTok := extractRawSessionToken(r); rawTok != "" {
+			if claims, sess, err := s.sessionMgr.VerifySession(ctx, rawTok); err == nil {
+				if claims != nil && strings.TrimSpace(claims.ProviderID) != "" {
+					providerID = strings.TrimSpace(claims.ProviderID)
+				} else if sess != nil && strings.TrimSpace(sess.ProviderID) != "" {
+					providerID = strings.TrimSpace(sess.ProviderID)
+				}
+				if idTokenHint == "" && sess != nil {
+					idTokenHint = s.sessionMgr.DecryptIDTokenHint(sess)
+				}
 			}
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "invalid_credentials",
-				Message:    "Invalid username or password",
-			})
-			return
-		}
-
-		if s.loginThrottle != nil {
-			s.loginThrottle.RecordSuccess(r.Context(), identifier, clientIP)
-		}
-
-		if !s.screenPassword(w, r, req.Password, http.StatusForbidden) {
-			return
-		}
-		resetRequired := false
-
-		orgID := strings.TrimSpace(s.cfg.Auth.DefaultOrgID)
-		if orgID == "" {
-			orgID = "org_default"
-		}
-		issued, err := s.sessionMgr.IssueSyntheticSession(r.Context(), auth.UIAdminActorID, orgID, domain.OperatorRolePlatformAdmin)
-		if err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
-		auth.SetSessionCookie(w, issued.Token, issued.ExpiresAt)
-		s.audit(r.Context(), orgID, "auth.login", "operator_session", issued.Session.ID, map[string]any{
-			"actor_id":                auth.UIAdminActorID,
-			"auth_method":             "ui_credentials",
-			"password_reset_required": resetRequired,
-		})
-		writeJSON(w, http.StatusOK, map[string]any{
-			"token":                   issued.Token,
-			"session_token":           issued.Token,
-			"csrf_token":              issued.CSRFToken,
-			"expires_at":              issued.ExpiresAt.UTC().Format(time.RFC3339),
-			"password_reset_required": resetRequired,
-			"operator": domain.OperatorContext{
-				ActorID:    auth.UIAdminActorID,
-				Role:       domain.OperatorRolePlatformAdmin,
-				OrgID:      orgID,
-				AuthMethod: "session",
-				SessionID:  issued.Session.ID,
-			},
-		})
-		return
-	}
-
-	// 2. Database user credential authentication.
-	sessRepo, hasSessRepo := s.repo.(storage.OperatorSessionRepository)
-	if !hasSessRepo || sessRepo == nil {
-		if s.loginThrottle != nil {
-			s.loginThrottle.RecordFailure(r.Context(), identifier, clientIP)
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "invalid_credentials",
-			Message:    "Invalid email or password",
-		})
-		return
-	}
-
-	user, err := s.lookupUserByEmail(r.Context(), identifier)
-	if err != nil || user == nil {
-		if s.loginThrottle != nil {
-			s.loginThrottle.RecordFailure(r.Context(), identifier, clientIP)
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "invalid_credentials",
-			Message:    "Invalid email or password",
-		})
-		return
-	}
-
-	cred, err := sessRepo.GetUserCredential(r.Context(), user.ID)
-	if err != nil || cred == nil {
-		if s.loginThrottle != nil {
-			s.loginThrottle.RecordFailure(r.Context(), identifier, clientIP)
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "invalid_credentials",
-			Message:    "Invalid email or password",
-		})
-		return
-	}
-
-	valid, needsUpgrade := auth.VerifyPassword(req.Password, cred.PasswordHash)
-	if !valid {
-		if s.loginThrottle != nil {
-			s.loginThrottle.RecordFailure(r.Context(), identifier, clientIP)
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "invalid_credentials",
-			Message:    "Invalid email or password",
-		})
-		return
-	}
-
-	if s.loginThrottle != nil {
-		s.loginThrottle.RecordSuccess(r.Context(), identifier, clientIP)
-	}
-
-	if !user.IsActive {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "user_inactive",
-			Message:    "Operator user account is inactive",
-		})
-		return
-	}
-
-	org, err := s.repo.GetOrganization(r.Context(), user.OrgID)
-	if err != nil || !org.IsActive {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "organization_inactive",
-			Message:    "Organization associated with this user is inactive",
-		})
-		return
-	}
-
-	opRole, ok := mapUserRoleForControlPlane(user.Role)
-	if !ok {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "insufficient_permissions",
-			Message:    "User role is not authorized for Control Plane access",
-		})
-		return
-	}
-
-	if !s.screenPassword(w, r, req.Password, http.StatusForbidden) {
-		return
-	}
-
-	resetRequired := cred.PasswordResetRequired
-	if needsUpgrade {
-		if upgraded, hashErr := auth.HashPasswordScrypt(req.Password); hashErr == nil {
-			_ = sessRepo.UpsertUserPassword(r.Context(), user.ID, upgraded, resetRequired)
 		}
 	}
-
-	issued, err := s.sessionMgr.IssueSession(r.Context(), user.ID, user.OrgID, user.TeamID, opRole)
-	if err != nil {
-		domain.WriteHTTPError(w, err)
-		return
+	// Only fall back to query ?provider= if the verified session carries no bound provider.
+	if providerID == "" {
+		providerID = strings.TrimSpace(r.URL.Query().Get("provider"))
 	}
-
-	auth.SetSessionCookie(w, issued.Token, issued.ExpiresAt)
-	s.audit(r.Context(), user.OrgID, "auth.login", "operator_session", issued.Session.ID, map[string]any{
-		"user_id":                 user.ID,
-		"password_reset_required": resetRequired,
-		"password_hash_upgraded":  needsUpgrade,
-	})
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token":                   issued.Token,
-		"session_token":           issued.Token,
-		"csrf_token":              issued.CSRFToken,
-		"expires_at":              issued.ExpiresAt.UTC().Format(time.RFC3339),
-		"password_reset_required": resetRequired,
-		"operator": domain.OperatorContext{
-			ActorID:    user.ID,
-			Role:       opRole,
-			OrgID:      user.OrgID,
-			TeamID:     user.TeamID,
-			AuthMethod: "session",
-			SessionID:  issued.Session.ID,
-		},
-		"user": user,
-	})
+	return providerID, idTokenHint
 }
 
 func (s *GatewayServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	op := auth.OperatorFromContext(r.Context())
+	providerID, idTokenHint := s.resolveLogoutContext(r.Context(), r, op)
+
 	if op != nil && op.SessionID != "" && s.sessionMgr != nil {
 		expiresAt := time.Now().UTC().Add(s.sessionMgr.TTL())
 		if err := s.sessionMgr.RevokeSession(r.Context(), op.SessionID, expiresAt); err != nil {
@@ -374,12 +99,24 @@ func (s *GatewayServer) handleAuthLogout(w http.ResponseWriter, r *http.Request)
 		}
 		s.audit(r.Context(), op.OrgID, "auth.logout", "operator_session", op.SessionID, map[string]any{
 			"actor_id": op.ActorID,
+			"provider": providerID,
 		})
 	}
 	auth.ClearSessionCookie(w)
-	writeJSON(w, http.StatusOK, map[string]any{
+
+	resp := map[string]any{
 		"status": "logged_out",
-	})
+	}
+	if providerID != "" && s.ssoMgr != nil {
+		postLogoutRedirect := ""
+		if base := s.requestBaseURL(r); base != "" {
+			postLogoutRedirect = base + "/ui/"
+		}
+		if endSessionURL, err := s.ssoMgr.BuildEndSessionURL(r.Context(), providerID, idTokenHint, postLogoutRedirect); err == nil && endSessionURL != "" {
+			resp["end_session_url"] = endSessionURL
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *GatewayServer) handleAuthMe(w http.ResponseWriter, r *http.Request) {
@@ -401,172 +138,13 @@ func (s *GatewayServer) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		resp["csrf_token"] = op.CSRFToken
 	}
 
-	if ul, ok := s.repo.(storage.UserLookupRepository); ok && ul != nil && op.ActorID != "" && op.ActorID != auth.UIAdminActorID && op.ActorID != "master_admin" {
+	if ul, ok := s.repo.(storage.UserLookupRepository); ok && ul != nil && op.ActorID != "" && op.ActorID != "master_admin" {
 		if user, err := ul.GetUser(r.Context(), op.ActorID); err == nil && user != nil {
 			resp["user"] = user
 		}
 	}
-	if sessRepo, ok := s.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil && op.ActorID != "" {
-		if cred, err := sessRepo.GetUserCredential(r.Context(), op.ActorID); err == nil && cred != nil {
-			resp["password_reset_required"] = cred.PasswordResetRequired
-		}
-	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *GatewayServer) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
-	op := auth.OperatorFromContext(r.Context())
-	if op == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "unauthenticated",
-			Message:    "Authentication is required",
-		})
-		return
-	}
-
-	var req authPasswordRequest
-	if err := decodeAdminJSON(w, r, &req); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_request",
-			Message:    err.Error(),
-		})
-		return
-	}
-
-	newPassword := req.NewPassword
-	if newPassword == "" {
-		newPassword = req.Password
-	}
-	if len(newPassword) < minControlPlanePasswordLen {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "weak_password",
-			Message:    "new_password must be at least 8 characters",
-		})
-		return
-	}
-
-	sessRepo, hasSessRepo := s.repo.(storage.OperatorSessionRepository)
-	if !hasSessRepo || sessRepo == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusServiceUnavailable,
-			Type:       domain.ErrorTypeServer,
-			Code:       "credential_store_unavailable",
-			Message:    "User credential storage is unavailable",
-		})
-		return
-	}
-
-	targetUserID := strings.TrimSpace(req.UserID)
-	targetEmail := strings.TrimSpace(req.Email)
-	var targetUser *domain.User
-	var err error
-
-	if targetUserID == "" && targetEmail == "" {
-		targetUserID = op.ActorID
-	}
-
-	if targetUserID != "" {
-		if ul, ok := s.repo.(storage.UserLookupRepository); ok && ul != nil {
-			targetUser, err = ul.GetUser(r.Context(), targetUserID)
-		} else {
-			err = storage.ErrNotFound
-		}
-	} else {
-		targetUser, err = s.lookupUserByEmail(r.Context(), targetEmail)
-	}
-	if err != nil || targetUser == nil {
-		status := http.StatusNotFound
-		code := "user_not_found"
-		msg := "Target user was not found"
-		if !errors.Is(err, storage.ErrNotFound) && err != nil && !strings.Contains(strings.ToLower(err.Error()), "not found") {
-			status = http.StatusInternalServerError
-			code = "user_lookup_failed"
-			msg = err.Error()
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: status,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       code,
-			Message:    msg,
-		})
-		return
-	}
-
-	isSelf := op.ActorID == targetUser.ID
-	if !isSelf {
-		if _, ok := s.authorizeAdmin(w, r, targetUser.OrgID, true); !ok {
-			return
-		}
-	} else {
-		// Self-rotation requires verifying current_password when a credential already exists.
-		if existing, credErr := sessRepo.GetUserCredential(r.Context(), targetUser.ID); credErr == nil && existing != nil {
-			valid, _ := auth.VerifyPassword(req.CurrentPassword, existing.PasswordHash)
-			if !valid {
-				domain.WriteHTTPError(w, &domain.GatewayError{
-					StatusCode: http.StatusUnauthorized,
-					Type:       domain.ErrorTypeAuthentication,
-					Code:       "invalid_current_password",
-					Message:    "current_password is incorrect",
-				})
-				return
-			}
-		}
-	}
-
-	if !s.screenPassword(w, r, newPassword, http.StatusBadRequest) {
-		return
-	}
-
-	hashed, err := auth.HashPasswordScrypt(newPassword)
-	if err != nil {
-		domain.WriteHTTPError(w, err)
-		return
-	}
-
-	beforeCred, _ := sessRepo.GetUserCredential(r.Context(), targetUser.ID)
-	if err := sessRepo.UpsertUserPassword(r.Context(), targetUser.ID, hashed, false); err != nil {
-		domain.WriteHTTPError(w, err)
-		return
-	}
-
-	if s.sessionMgr != nil {
-		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), targetUser.ID)
-	}
-	if isSelf {
-		auth.ClearSessionCookie(w)
-	}
-
-	var beforeAudit map[string]any
-	if beforeCred != nil {
-		beforeAudit = map[string]any{
-			"password_configured":     beforeCred.PasswordHash != "",
-			"password_reset_required": beforeCred.PasswordResetRequired,
-			"failed_attempts":         beforeCred.FailedAttempts,
-			"locked":                  beforeCred.LockedUntil != nil && beforeCred.LockedUntil.After(time.Now().UTC()),
-		}
-	}
-	afterAudit := map[string]any{
-		"password_configured":     true,
-		"password_reset_required": false,
-		"failed_attempts":         0,
-		"locked":                  false,
-	}
-	s.auditWithDiff(r.Context(), targetUser.OrgID, "auth.password.updated", "user_credential", targetUser.ID, map[string]any{
-		"self_service": isSelf,
-	}, beforeAudit, afterAudit)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                  "password_updated",
-		"user_id":                 targetUser.ID,
-		"password_reset_required": false,
-	})
 }
 
 type cliStartRequest struct {
@@ -583,16 +161,21 @@ type cliCompleteRequest struct {
 	TTLSeconds    int64    `json:"ttl_seconds,omitempty"`
 }
 
-func requestBaseURL(r *http.Request) string {
+func (s *GatewayServer) requestBaseURL(r *http.Request) string {
+	if s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.Server.PublicBaseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(s.cfg.Server.PublicBaseURL), "/")
+	}
 	if r == nil {
 		return ""
 	}
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+	if r.TLS != nil {
+		scheme = "https"
+	} else if isFromTrustedProxy(r.Context()) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
 		scheme = "https"
 	}
 	host := strings.TrimSpace(r.Host)
-	if host == "" {
+	if host == "" || strings.ContainsAny(host, " \t\r\n/@\\?#") {
 		return ""
 	}
 	return scheme + "://" + host
@@ -606,6 +189,70 @@ func acceptsJSONResponse(r *http.Request) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json")
+}
+
+func prefersHTMLRedirect(r *http.Request) bool {
+	if r == nil || acceptsJSONResponse(r) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+}
+
+func mapIDPErrorCode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "access_denied",
+		"login_required",
+		"interaction_required",
+		"consent_required",
+		"account_selection_required",
+		"temporarily_unavailable",
+		"server_error",
+		"invalid_request",
+		"unauthorized_client":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "sso_provider_error"
+	}
+}
+
+func sanitizeLogString(raw string, maxLen int) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func buildUICallbackErrorRedirect(redirectAfter, errCode string) string {
+	safeCode := strings.TrimSpace(errCode)
+	if safeCode == "" {
+		safeCode = "sso_provider_error"
+	}
+	if clean, err := validateSafeRedirectAfter(redirectAfter); err == nil && strings.HasPrefix(clean, "/ui") {
+		if u, pErr := url.Parse(clean); pErr == nil && u.Path != "" {
+			q := u.Query()
+			q.Set("auth_error", safeCode)
+			u.RawQuery = q.Encode()
+			u.Fragment = ""
+			return u.String()
+		}
+	}
+	return "/ui/?auth_error=" + url.QueryEscape(safeCode)
+}
+
+func writeSSOCallbackError(w http.ResponseWriter, r *http.Request, redirectAfter, errCode string, err error) {
+	if prefersHTMLRedirect(r) {
+		http.Redirect(w, r, buildUICallbackErrorRedirect(redirectAfter, errCode), http.StatusFound)
+		return
+	}
+	writeSSOError(w, err)
 }
 
 func validateSafeRedirectAfter(raw string) (string, error) {
@@ -708,7 +355,7 @@ func (s *GatewayServer) handleAuthSSOLogin(w http.ResponseWriter, r *http.Reques
 	}
 
 	redirectURI := ""
-	if base := requestBaseURL(r); base != "" {
+	if base := s.requestBaseURL(r); base != "" {
 		redirectURI = base + "/auth/sso/" + url.PathEscape(providerID) + "/callback"
 	}
 
@@ -748,16 +395,19 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 
 	providerID := strings.TrimSpace(chi.URLParam(r, "provider"))
 	if idpErr := strings.TrimSpace(r.URL.Query().Get("error")); idpErr != "" {
-		desc := strings.TrimSpace(r.URL.Query().Get("error_description"))
-		msg := "SSO provider returned error: " + idpErr
-		if desc != "" {
-			msg += " (" + desc + ")"
-		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		mappedCode := mapIDPErrorCode(idpErr)
+		slog.WarnContext(
+			r.Context(),
+			"oidc callback returned provider error",
+			"provider", sanitizeLogString(providerID, 64),
+			"idp_error", sanitizeLogString(idpErr, 64),
+			"idp_error_description", sanitizeLogString(r.URL.Query().Get("error_description"), 256),
+		)
+		writeSSOCallbackError(w, r, "", mappedCode, &domain.GatewayError{
 			StatusCode:  http.StatusUnauthorized,
 			Type:        domain.ErrorTypeAuthentication,
 			Code:        "sso_provider_error",
-			Message:     msg,
+			Message:     "SSO provider rejected the authentication request (" + mappedCode + ")",
 			AuthFailure: true,
 		})
 		return
@@ -766,7 +416,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	if code == "" || state == "" {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		writeSSOCallbackError(w, r, "", "missing_sso_params", &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
 			Code:       "missing_sso_params",
@@ -777,7 +427,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 
 	authState, err := s.ssoStateStore.Consume(r.Context(), state)
 	if err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		writeSSOCallbackError(w, r, "", "invalid_sso_state", &domain.GatewayError{
 			StatusCode:  http.StatusUnauthorized,
 			Type:        domain.ErrorTypeAuthentication,
 			Code:        "invalid_sso_state",
@@ -789,7 +439,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 
 	p, ok := s.ssoMgr.GetProvider(providerID)
 	if !ok {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		writeSSOCallbackError(w, r, authState.RedirectAfter, "sso_provider_not_found", &domain.GatewayError{
 			StatusCode: http.StatusNotFound,
 			Type:       domain.ErrorTypeNotFound,
 			Code:       "sso_provider_not_found",
@@ -798,7 +448,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if authState.Provider != p.ID() {
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		writeSSOCallbackError(w, r, authState.RedirectAfter, "sso_provider_mismatch", &domain.GatewayError{
 			StatusCode:  http.StatusUnauthorized,
 			Type:        domain.ErrorTypeAuthentication,
 			Code:        "sso_provider_mismatch",
@@ -817,17 +467,26 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 		authState.Nonce,
 	)
 	if err != nil {
-		writeSSOError(w, err)
+		writeSSOCallbackError(w, r, authState.RedirectAfter, "sso_exchange_failed", err)
 		return
 	}
 
 	user, err := s.resolveOrProvisionSSOUser(r.Context(), p, idClaims)
 	if err != nil {
-		domain.WriteHTTPError(w, err)
+		writeSSOCallbackError(w, r, authState.RedirectAfter, "sso_user_not_authorized", err)
 		return
 	}
 
 	if authState.CLILoginID != "" {
+		if user.Role == domain.RoleOrgViewer || user.Role == domain.RoleViewer {
+			writeSSOCallbackError(w, r, authState.RedirectAfter, "insufficient_permissions", &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    "Read-only viewer accounts cannot approve CLI virtual key issuance",
+			})
+			return
+		}
 		if _, cliErr := s.mintAndCompleteCLILogin(
 			r.Context(),
 			authState.CLILoginID,
@@ -839,7 +498,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 			nil,
 			0,
 		); cliErr != nil {
-			domain.WriteHTTPError(w, cliErr)
+			writeSSOCallbackError(w, r, authState.RedirectAfter, "cli_login_failed", cliErr)
 			return
 		}
 	}
@@ -864,7 +523,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 			})
 			return
 		}
-		domain.WriteHTTPError(w, &domain.GatewayError{
+		writeSSOCallbackError(w, r, authState.RedirectAfter, "insufficient_permissions", &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,
 			Code:       "insufficient_permissions",
@@ -883,7 +542,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	issued, err := s.sessionMgr.IssueSession(r.Context(), user.ID, user.OrgID, user.TeamID, opRole)
+	issued, err := s.sessionMgr.IssueSessionWithOIDC(r.Context(), user.ID, user.OrgID, user.TeamID, p.ID(), idClaims.RawIDToken, opRole)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -944,13 +603,6 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 	if orgID == "" {
 		if org, err := s.repo.GetOrganization(ctx, "org_default"); err == nil && org != nil && org.IsActive {
 			orgID = org.ID
-		} else if orgs, err := s.repo.ListOrganizations(ctx); err == nil {
-			for _, o := range orgs {
-				if o != nil && o.IsActive {
-					orgID = o.ID
-					break
-				}
-			}
 		}
 	}
 	if orgID == "" {
@@ -1080,11 +732,12 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			TeamID:            teamID,
 			Email:             email,
 			Name:              name,
-			Role:              resolveSSOProvisionRole(claims.Role, p.DefaultRole()),
+			Role:              resolveSSOProvisionRole(claims.Role, p.DefaultRole(), p.AllowPrivilegedRoleClaims()),
 			OIDCIssuer:        claims.Issuer,
 			OIDCSubject:       claims.Subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
 			IsActive:          true,
+			SCIMActive:        true,
 		}
 
 		if oidcRepo, ok := s.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
@@ -1129,12 +782,21 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			Message:    "User account is inactive",
 		}
 	}
+	if !user.SCIMActive {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "scim_deprovisioned",
+			Message:    "User account has been deprovisioned via SCIM",
+		}
+	}
 	return user, nil
 }
 
-func resolveSSOProvisionRole(claimRole, defaultRole string) domain.Role {
-	for _, candidate := range []string{claimRole, defaultRole} {
-		switch domain.Role(strings.ToLower(strings.TrimSpace(candidate))) {
+func resolveSSOProvisionRole(claimRole, defaultRole string, allowPrivilegedClaims bool) domain.Role {
+	parseRole := func(raw string) (domain.Role, bool) {
+		r := domain.Role(strings.ToLower(strings.TrimSpace(raw)))
+		switch r {
 		case domain.RolePlatformAdmin,
 			domain.RoleOrgAdmin,
 			domain.RoleOrgViewer,
@@ -1142,8 +804,18 @@ func resolveSSOProvisionRole(claimRole, defaultRole string) domain.Role {
 			domain.RoleDeveloper,
 			domain.RoleServiceAccount,
 			domain.RoleViewer:
-			return domain.Role(strings.ToLower(strings.TrimSpace(candidate)))
+			return r, true
+		default:
+			return "", false
 		}
+	}
+	if role, ok := parseRole(claimRole); ok {
+		if role != domain.RolePlatformAdmin || allowPrivilegedClaims {
+			return role
+		}
+	}
+	if role, ok := parseRole(defaultRole); ok {
+		return role
 	}
 	return domain.RoleOrgViewer
 }
@@ -1205,7 +877,7 @@ func (s *GatewayServer) handleAuthCLIStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	verificationURL := requestBaseURL(r) + "/ui/cli?login_id=" + url.QueryEscape(sess.LoginID) + "&user_code=" + url.QueryEscape(sess.UserCode)
+	verificationURL := s.requestBaseURL(r) + "/ui/cli?login_id=" + url.QueryEscape(sess.LoginID) + "&user_code=" + url.QueryEscape(sess.UserCode)
 	if sess.Provider != "" {
 		verificationURL += "&provider=" + url.QueryEscape(sess.Provider)
 	}
@@ -1281,6 +953,16 @@ func (s *GatewayServer) handleAuthCLIComplete(w http.ResponseWriter, r *http.Req
 		orgID = "org_default"
 	}
 
+	if op.Role == domain.OperatorRoleOrgViewer {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "insufficient_permissions",
+			Message:    "Read-only org_viewer operators cannot approve CLI virtual key issuance",
+		})
+		return
+	}
+
 	if op.Role != domain.OperatorRolePlatformAdmin && orgID != op.OrgID {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
@@ -1308,7 +990,7 @@ func (s *GatewayServer) handleAuthCLIComplete(w http.ResponseWriter, r *http.Req
 	}
 
 	userID := ""
-	if op.ActorID != "" && op.ActorID != "master_admin" && op.ActorID != auth.UIAdminActorID {
+	if op.ActorID != "" && op.ActorID != "master_admin" {
 		if u, err := s.lookupUserByID(r.Context(), op.ActorID); err == nil && u != nil && u.OrgID == orgID {
 			userID = u.ID
 		}
@@ -1421,11 +1103,25 @@ func (s *GatewayServer) mintAndCompleteCLILogin(
 	if keyName == "" {
 		keyName = "cli-" + loginID
 	}
-	var expiresAt *time.Time
-	if ttlSeconds > 0 {
-		t := time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second)
-		expiresAt = &t
+	defaultTTL := 24 * time.Hour
+	maxTTL := 30 * 24 * time.Hour
+	if s.cfg != nil {
+		if s.cfg.Auth.CLILoginDefaultTTL > 0 {
+			defaultTTL = s.cfg.Auth.CLILoginDefaultTTL
+		}
+		if s.cfg.Auth.CLILoginMaxTTL > 0 {
+			maxTTL = s.cfg.Auth.CLILoginMaxTTL
+		}
 	}
+	effectiveTTL := defaultTTL
+	if ttlSeconds > 0 {
+		effectiveTTL = time.Duration(ttlSeconds) * time.Second
+		if effectiveTTL > maxTTL {
+			effectiveTTL = maxTTL
+		}
+	}
+	expTime := time.Now().UTC().Add(effectiveTTL)
+	expiresAt := &expTime
 
 	vk, err := s.authSvc.IssueVirtualKey(ctx, &domain.VirtualKey{
 		Name:          keyName,

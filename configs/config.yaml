@@ -20,9 +20,7 @@ storage:
 auth:
   master_admin_key: "sk-gw-master-admin-default-key-change-me"
   master_encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  jwt_secret: "gateway-jwt-hmac-secret-change-me"
   default_org_id: "org_default"
-  default_virtual_key: "sk-gw-master-admin-default-key-change-me"
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
 
@@ -64,12 +62,11 @@ cache:
 security:
   network:
     outbound_ssrf:
-      allow_private_networks: true # enabled for local loopback dev / demo
-      allowed_private_cidrs:
-        - "127.0.0.1/32"
-        - "10.0.0.0/8"
-      allow_insecure_http: true    # enabled for local demo upstreams (http://localhost:*)
-      allowed_schemes: ["http", "https"]
+      allow_private_networks: false # fail-closed default; use allowed_private_cidrs for internal VPC upstreams
+      allowed_private_cidrs: []
+      allow_insecure_http: false    # fail-closed default; enforce HTTPS outbound
+      allow_loopback_http: false    # local dev/test only (rejected in production)
+      allowed_schemes: ["https"]
       blocked_ips:
         - "169.254.169.254"
       dial_timeout: 10s

@@ -427,12 +427,13 @@ func TestAuthResolver_ProjectsAccessGroupsAndDynamicAllowedModels(t *testing.T) 
 		IsActive:      true,
 	})
 
-	jwtSecret := "resolver-access-rule-secret"
+	idp := newTestOIDCIssuer(t)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:       jwtSecret,
-		Issuer:       "https://idp.proj.example",
-		Audience:     "ai-gateway",
-		DefaultOrgID: "org_proj",
+		Issuer:        idp.Issuer(),
+		Audience:      "ai-gateway",
+		OIDCJWKSURL:   idp.JWKSURL(),
+		DefaultOrgID:  "org_proj",
+		NetworkPolicy: idp.NetworkPolicy(),
 	})
 	svc := auth.NewService(repo, nil, "master-key", time.Minute, time.Minute)
 	svc.SetJWTVerifier(jwtVerifier)
@@ -447,9 +448,9 @@ func TestAuthResolver_ProjectsAccessGroupsAndDynamicAllowedModels(t *testing.T) 
 		DefaultOrgID:       "org_proj",
 	})
 
-	tok, err := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	tok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-proj-1",
-		Issuer:    "https://idp.proj.example",
+		Issuer:    idp.Issuer(),
 		Audience:  auth.AudienceClaim{"ai-gateway"},
 		OrgID:     "org_proj",
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
@@ -457,9 +458,6 @@ func TestAuthResolver_ProjectsAccessGroupsAndDynamicAllowedModels(t *testing.T) 
 			"department": "machine-learning",
 		},
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -498,9 +496,9 @@ func TestAuthorizeTeamAdminAction_AndOperatorAuthentication(t *testing.T) {
 		IsActive:    true,
 	})
 
-	jwtSecret := "team-admin-unit-secret"
+	idp := newTestOIDCIssuer(t)
 	svc := auth.NewService(repo, nil, "sk-gw-master-admin", time.Minute, time.Minute)
-	svc.SetJWTVerifier(auth.NewJWTVerifier(auth.JWTConfig{Secret: jwtSecret}))
+	svc.SetJWTVerifier(auth.NewJWTVerifier(idp.JWTConfig("ai-gateway")))
 
 	// 1. VirtualKey with RoleTeamAdmin maps to OperatorRoleTeamAdmin and populates TeamID.
 	vkTeamAdmin, err := svc.IssueVirtualKey(ctx, &domain.VirtualKey{
@@ -521,13 +519,12 @@ func TestAuthorizeTeamAdminAction_AndOperatorAuthentication(t *testing.T) {
 	}
 
 	// 2. JWT for User with RoleTeamAdmin maps to OperatorRoleTeamAdmin and populates TeamID from User.TeamID.
-	jwtTok, err := auth.SignHS256(jwtSecret, &auth.JWTClaims{
+	jwtTok := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-ta-a1",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
 	})
-	if err != nil {
-		t.Fatalf("SignHS256: %v", err)
-	}
 	opJWT, err := svc.AuthenticateOperator(ctx, jwtTok)
 	if err != nil {
 		t.Fatalf("AuthenticateOperator(jwt): %v", err)

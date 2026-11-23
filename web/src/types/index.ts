@@ -32,21 +32,10 @@ export interface SSOProviderPublicInfo {
   type: string;
 }
 
-export interface AuthLoginResponse {
-  token: string;
-  session_token: string;
-  csrf_token: string;
-  expires_at: string;
-  password_reset_required: boolean;
-  operator: OperatorContext;
-  user?: User;
-}
-
 export interface AuthMeResponse {
   operator: OperatorContext;
   csrf_token?: string;
   user?: User;
-  password_reset_required?: boolean;
 }
 
 export type Role =
@@ -135,7 +124,9 @@ export interface User {
   team_id?: string;
   email: string;
   name?: string;
+  oidc_issuer?: string;
   oidc_subject?: string;
+  scim_active?: boolean;
   role: Role;
   max_budget_micros?: number;
   temp_budget_increase_micros?: number;

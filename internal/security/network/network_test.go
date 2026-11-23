@@ -152,3 +152,74 @@ func TestHTTPClientRedirectSecurity(t *testing.T) {
 		}
 	})
 }
+
+func TestPolicyAllowLoopbackHTTP(t *testing.T) {
+	p, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: false,
+		AllowInsecureHTTP:    false,
+		AllowLoopbackHTTP:    true,
+		AllowedSchemes:       []string{"https"},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicy failed: %v", err)
+	}
+
+	allowed := []string{
+		"http://127.0.0.1:18081/realms/goroute/.well-known/openid-configuration",
+		"http://localhost:18081/realms/goroute",
+		"http://[::1]:18081/realms/goroute",
+		"https://idp.example.com/.well-known/openid-configuration",
+	}
+	for _, raw := range allowed {
+		u, _ := url.Parse(raw)
+		if err := p.ValidateURL(u); err != nil {
+			t.Fatalf("expected URL %s to be allowed when AllowLoopbackHTTP=true, got: %v", raw, err)
+		}
+	}
+
+	blocked := []string{
+		"http://example.com/.well-known/openid-configuration",
+		"http://10.0.0.5:8080/token",
+		"http://192.168.1.10:8080/token",
+		"http://169.254.169.254/latest/meta-data",
+		"http://metadata.google.internal/computeMetadata/v1",
+		"https://10.0.0.5/token",
+	}
+	for _, raw := range blocked {
+		u, _ := url.Parse(raw)
+		if err := p.ValidateURL(u); err == nil {
+			t.Fatalf("expected non-loopback/private/IMDS URL %s to remain blocked, got nil error", raw)
+		}
+	}
+
+	// RequiresLoopbackDial must be true for http://*.localhost when AllowInsecureHTTP=false
+	uLoop, _ := url.Parse("http://evil.localhost:8080/token")
+	if !p.RequiresLoopbackDial(uLoop) {
+		t.Fatal("expected RequiresLoopbackDial=true for http://evil.localhost when AllowInsecureHTTP=false and AllowLoopbackHTTP=true")
+	}
+	uHTTPS, _ := url.Parse("https://idp.example.com/token")
+	if p.RequiresLoopbackDial(uHTTPS) {
+		t.Fatal("expected RequiresLoopbackDial=false for https:// URL")
+	}
+
+	// SEC-04: Cloud metadata IPs (AWS IMDS, IPv6 IMDS, ECS task metadata, Alibaba IMDS)
+	// remain unconditionally blocked even if broad link-local / CGNAT CIDRs are passed to AllowedPrivateCIDRs.
+	pWithCIDRs, err := network.NewPolicy(config.OutboundSSRFConfig{
+		AllowPrivateNetworks: false,
+		AllowedPrivateCIDRs:  []string{"169.254.0.0/16", "100.64.0.0/10", "fd00::/8"},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicy with CIDRs failed: %v", err)
+	}
+	for _, metaIP := range []string{
+		"169.254.169.254",
+		"169.254.170.2",
+		"169.254.170.23",
+		"100.100.100.200",
+		"fd00:ec2::254",
+	} {
+		if err := pWithCIDRs.ValidateIP(net.ParseIP(metaIP)); err == nil {
+			t.Fatalf("expected cloud metadata IP %s to remain blocked even when covered by AllowedPrivateCIDRs", metaIP)
+		}
+	}
+}

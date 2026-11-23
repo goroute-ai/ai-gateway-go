@@ -56,6 +56,28 @@ func isPrivilegedOrgOrPlatformRole(role domain.Role) bool {
 	}
 }
 
+func ensureOperatorCanMutateTargetRole(w http.ResponseWriter, op *domain.OperatorContext, targetRole domain.Role, resource string) bool {
+	if targetRole == domain.RolePlatformAdmin && (op == nil || op.Role != domain.OperatorRolePlatformAdmin) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "platform_admin_required",
+			Message:    fmt.Sprintf("Only platform_admin can modify %s with platform_admin role", resource),
+		})
+		return false
+	}
+	if op != nil && op.Role == domain.OperatorRoleTeamAdmin && isPrivilegedOrgOrPlatformRole(targetRole) {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "insufficient_permissions",
+			Message:    fmt.Sprintf("team_admin cannot modify %s with organization-wide or platform roles", resource),
+		})
+		return false
+	}
+	return true
+}
+
 func (s *GatewayServer) validateTeamAdminKeyTargetUser(ctx context.Context, w http.ResponseWriter, op *domain.OperatorContext, orgID, userID string) bool {
 	if op == nil || op.Role != domain.OperatorRoleTeamAdmin || strings.TrimSpace(userID) == "" {
 		return true
@@ -790,6 +812,9 @@ func (s *GatewayServer) handleAdminRevokeKey(w http.ResponseWriter, r *http.Requ
 	}
 	op, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true)
 	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, vk.Role, "virtual key") {
 		return
 	}
 	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
@@ -2137,13 +2162,31 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"default_org_id":         p.DefaultOrgID,
 			"default_team_id":        p.DefaultTeamID,
 			"default_role":           p.DefaultRole,
-			"tenant_id":              p.TenantID,
+		})
+	}
+
+	oidcIssuers := make([]map[string]any, 0, len(cfg.Auth.OIDCIssuers))
+	for _, iss := range cfg.Auth.OIDCIssuers {
+		oidcIssuers = append(oidcIssuers, map[string]any{
+			"issuer":                       iss.Issuer,
+			"audience":                     iss.Audience,
+			"jwks_url":                     iss.JWKSURL,
+			"discovery_url":                iss.DiscoveryURL,
+			"algorithms":                   iss.Algorithms,
+			"allowed_email_domains":        iss.AllowedEmailDomains,
+			"allow_unverified_email":       iss.AllowUnverifiedEmail,
+			"allow_privileged_role_claims": iss.AllowPrivilegedRoleClaims,
+			"auto_register":                iss.AutoRegister,
+			"default_org_id":               iss.DefaultOrgID,
+			"default_team_id":              iss.DefaultTeamID,
+			"default_role":                 iss.DefaultRole,
 		})
 	}
 
 	return map[string]any{
 		"server": map[string]any{
 			"environment":                    cfg.Server.Environment,
+			"public_base_url":                cfg.Server.PublicBaseURL,
 			"host":                           cfg.Server.Host,
 			"port":                           cfg.Server.Port,
 			"grpc_port":                      cfg.Server.GRPCPort,
@@ -2173,6 +2216,7 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"allow_private_networks": cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks,
 				"allowed_private_cidrs":  cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs,
 				"allow_insecure_http":    cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP,
+				"allow_loopback_http":    cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP,
 				"allowed_schemes":        cfg.Security.Network.OutboundSSRF.AllowedSchemes,
 				"blocked_ips":            cfg.Security.Network.OutboundSSRF.BlockedIPs,
 				"dial_timeout":           cfg.Security.Network.OutboundSSRF.DialTimeout.String(),
@@ -2201,7 +2245,6 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"allow_master_key_data_plane":         cfg.Auth.AllowMasterKeyDataPlane,
 			"enable_data_plane_jwt":               cfg.Auth.EnableDataPlaneJWT,
 			"custom_api_key_header":               cfg.Auth.CustomAPIKeyHeader,
-			"jwt_secret":                          redactSecret(cfg.Auth.JWTSecret),
 			"jwt_issuer":                          cfg.Auth.JWTIssuer,
 			"jwt_audience":                        cfg.Auth.JWTAudience,
 			"oidc_jwks_url":                       cfg.Auth.OIDCJWKSURL,
@@ -2222,12 +2265,26 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"key_rotation_poll_interval":     cfg.Auth.KeyRotationPollInterval.String(),
 			"key_rotation_grace_period":      cfg.Auth.KeyRotationGracePeriod.String(),
 			"key_expiry_alert_poll_interval": cfg.Auth.KeyExpiryAlertPollInterval.String(),
-			"ui_username":                    cfg.Auth.UIUsername,
-			"ui_password":                    redactSecret(cfg.Auth.UIPassword),
 			"session_secret":                 redactSecret(cfg.Auth.SessionSecret),
 			"session_ttl":                    cfg.Auth.SessionTTL.String(),
-			"enable_hibp_check":              cfg.Auth.EnableHIBPCheck,
+			"cli_login_default_ttl":          cfg.Auth.CLILoginDefaultTTL.String(),
+			"cli_login_max_ttl":              cfg.Auth.CLILoginMaxTTL.String(),
+			"auth_start_rate_limit_per_min":  cfg.Auth.AuthStartRateLimitPerMin,
+			"oidc_issuers":                   oidcIssuers,
 			"sso_providers":                  ssoProviders,
+			"introspection": map[string]any{
+				"token_info_endpoint":          cfg.Auth.Introspection.TokenInfoEndpoint,
+				"issuer":                       cfg.Auth.Introspection.Issuer,
+				"audience":                     cfg.Auth.Introspection.Audience,
+				"discovery_url":                cfg.Auth.Introspection.DiscoveryURL,
+				"client_id":                    cfg.Auth.Introspection.ClientID,
+				"client_secret":                redactSecret(cfg.Auth.Introspection.ClientSecret),
+				"mode":                         cfg.Auth.Introspection.Mode,
+				"cache_ttl":                    cfg.Auth.Introspection.CacheTTL.String(),
+				"auto_register":                cfg.Auth.Introspection.AutoRegister,
+				"allow_unverified_email":       cfg.Auth.Introspection.AllowUnverifiedEmail,
+				"allow_privileged_role_claims": cfg.Auth.Introspection.AllowPrivilegedRoleClaims,
+			},
 		},
 		"router": map[string]any{
 			"default_fast_alias":                 cfg.Router.DefaultFastAlias,

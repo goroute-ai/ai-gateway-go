@@ -32,7 +32,14 @@ spec:
           image: "{{ .Values.migration.image.repository }}:{{ .Values.migration.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.migration.image.pullPolicy }}
           command:
+            {{- if and .Values.config (not .Values.migration.command) }}
+            - "/app/ai-gateway"
+            - "-config"
+            - "/etc/goroute/config.yaml"
+            - "-migrate-only"
+            {{- else }}
             {{- toYaml .Values.migration.command | nindent 12 }}
+            {{- end }}
           env:
             {{- range $key, $val := .Values.env }}
             - name: {{ $key }}
@@ -43,4 +50,16 @@ spec:
                 name: {{ include "goroute.secretName" . }}
           resources:
             {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- if .Values.config }}
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/goroute
+              readOnly: true
+          {{- end }}
+      {{- if .Values.config }}
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: {{ include "goroute.fullname" . }}-config
+      {{- end }}
 {{- end }}

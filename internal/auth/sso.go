@@ -3,13 +3,17 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,6 +37,8 @@ const (
 	DefaultCLIPollInterval = 5 * time.Second
 	// maxOIDCTokenResponseBytes bounds upstream IdP token endpoint responses.
 	maxOIDCTokenResponseBytes = 1 << 20
+	// maxFallbackStateEntries bounds in-memory SSO/CLI fallback maps during Redis outages.
+	maxFallbackStateEntries = 10000
 )
 
 var (
@@ -70,27 +76,28 @@ return 0
 
 // SSOProviderConfig configures an interactive OIDC SSO identity provider.
 type SSOProviderConfig struct {
-	ID                    string
-	Name                  string
-	Type                  string
-	DisplayName           string
-	ClientID              string
-	ClientSecret          string
-	Issuer                string
-	AuthorizationEndpoint string
-	TokenEndpoint         string
-	JWKSURL               string
-	DiscoveryURL          string
-	Scopes                []string
-	RedirectURL           string
-	AllowedEmailDomains   []string
-	AutoRegister          bool
-	DefaultOrgID          string
-	DefaultTeamID         string
-	DefaultRole           string
-	TenantID              string
-	Algorithms            []string
-	ClaimMapping          OIDCClaimMapping
+	ID                        string
+	Name                      string
+	Type                      string
+	DisplayName               string
+	ClientID                  string
+	ClientSecret              string
+	Issuer                    string
+	AuthorizationEndpoint     string
+	TokenEndpoint             string
+	JWKSURL                   string
+	DiscoveryURL              string
+	Scopes                    []string
+	RedirectURL               string
+	AllowedEmailDomains       []string
+	AllowUnverifiedEmail      bool
+	AllowPrivilegedRoleClaims bool
+	AutoRegister              bool
+	DefaultOrgID              string
+	DefaultTeamID             string
+	DefaultRole               string
+	Algorithms                []string
+	ClaimMapping              OIDCClaimMapping
 }
 
 // SSOProviderPublicInfo exposes non-sensitive SSO provider metadata for login UI discovery.
@@ -100,24 +107,33 @@ type SSOProviderPublicInfo struct {
 	Type        string `json:"type"`
 }
 
-// SSOEndpoints holds resolved OAuth 2.0 / OIDC endpoints for an SSO provider.
+// SSOEndpoints holds resolved OAuth 2.0 / OIDC endpoints and metadata for an SSO provider.
 type SSOEndpoints struct {
-	Issuer                string
-	AuthorizationEndpoint string
-	TokenEndpoint         string
-	JWKSURL               string
+	Issuer                            string
+	AuthorizationEndpoint             string
+	TokenEndpoint                     string
+	UserInfoEndpoint                  string
+	JWKSURL                           string
+	EndSessionEndpoint                string
+	RevocationEndpoint                string
+	IntrospectionEndpoint             string
+	CodeChallengeMethodsSupported     []string
+	IDTokenSigningAlgsSupported       []string
+	TokenEndpointAuthMethodsSupported []string
 }
 
 // SSOIDTokenClaims represents verified identity claims extracted from an OIDC ID token.
 type SSOIDTokenClaims struct {
-	Subject     string
-	Issuer      string
-	Email       string
-	DisplayName string
-	OrgID       string
-	TeamIDs     []string
-	Role        string
-	RawClaims   map[string]any
+	Subject       string
+	Issuer        string
+	Email         string
+	EmailVerified bool
+	DisplayName   string
+	OrgID         string
+	TeamIDs       []string
+	Role          string
+	RawIDToken    string `json:"-"`
+	RawClaims     map[string]any
 }
 
 // SSOError wraps an SSO failure with an HTTP status code and machine-readable GatewayError code.
@@ -168,26 +184,28 @@ func (e *SSOError) GatewayError() *domain.GatewayError {
 
 // SSOProvider represents a normalized, runtime-ready OIDC SSO provider.
 type SSOProvider struct {
-	id                    string
-	providerType          string
-	displayName           string
-	clientID              string
-	clientSecret          string
-	issuer                string
-	authorizationEndpoint string
-	tokenEndpoint         string
-	jwksURL               string
-	discoveryURL          string
-	scopes                []string
-	redirectURL           string
-	allowedEmailDomains   []string
-	autoRegister          bool
-	defaultOrgID          string
-	defaultTeamID         string
-	defaultRole           string
-	tenantID              string
-	algorithms            []string
-	claimMapping          OIDCClaimMapping
+	id                        string
+	providerType              string
+	displayName               string
+	clientID                  string
+	clientSecret              string
+	issuer                    string
+	authorizationEndpoint     string
+	tokenEndpoint             string
+	jwksURL                   string
+	discoveryURL              string
+	scopes                    []string
+	redirectURL               string
+	allowedEmailDomains       []string
+	allowUnverifiedEmail      bool
+	allowPrivilegedRoleClaims bool
+	autoRegister              bool
+	defaultOrgID              string
+	defaultTeamID             string
+	defaultRole               string
+	derivedDiscovery          bool
+	algorithms                []string
+	claimMapping              OIDCClaimMapping
 
 	httpClient *http.Client
 	netPolicy  *network.Policy
@@ -204,7 +222,7 @@ type SSOProvider struct {
 // ID returns the normalized provider identifier.
 func (p *SSOProvider) ID() string { return p.id }
 
-// Type returns the provider type ("google", "microsoft", or "oidc").
+// Type returns the normalized provider type ("oidc").
 func (p *SSOProvider) Type() string { return p.providerType }
 
 // DisplayName returns the user-facing display label for the provider.
@@ -224,6 +242,12 @@ func (p *SSOProvider) DefaultTeamID() string { return p.defaultTeamID }
 
 // DefaultRole returns the fallback role configured for this provider.
 func (p *SSOProvider) DefaultRole() string { return p.defaultRole }
+
+// AllowUnverifiedEmail reports whether unverified email claims are accepted for this provider.
+func (p *SSOProvider) AllowUnverifiedEmail() bool { return p.allowUnverifiedEmail }
+
+// AllowPrivilegedRoleClaims reports whether IdP role claims may JIT-provision platform_admin.
+func (p *SSOProvider) AllowPrivilegedRoleClaims() bool { return p.allowPrivilegedRoleClaims }
 
 // PublicInfo returns non-sensitive provider metadata safe for unauthenticated exposure.
 func (p *SSOProvider) PublicInfo() SSOProviderPublicInfo {
@@ -320,29 +344,18 @@ func (m *SSOProviderManager) buildProvider(cfg SSOProviderConfig) (*SSOProvider,
 
 	ptype := strings.ToLower(strings.TrimSpace(cfg.Type))
 	if ptype == "" {
-		switch {
-		case id == "google":
-			ptype = "google"
-		case id == "microsoft" || id == "entra" || id == "azure_ad" || strings.TrimSpace(cfg.TenantID) != "":
-			ptype = "microsoft"
-		default:
-			ptype = "oidc"
-		}
+		ptype = "oidc"
+	}
+	if ptype != "oidc" {
+		return nil, fmt.Errorf("sso provider %q: unsupported type %q (only \"oidc\" is supported)", id, ptype)
 	}
 
 	displayName := strings.TrimSpace(cfg.DisplayName)
 	if displayName == "" {
-		switch ptype {
-		case "google":
-			displayName = "Google"
-		case "microsoft":
-			displayName = "Microsoft"
-		default:
-			if name := strings.TrimSpace(cfg.Name); name != "" {
-				displayName = name
-			} else {
-				displayName = id
-			}
+		if name := strings.TrimSpace(cfg.Name); name != "" {
+			displayName = name
+		} else {
+			displayName = id
 		}
 	}
 
@@ -351,25 +364,12 @@ func (m *SSOProviderManager) buildProvider(cfg SSOProviderConfig) (*SSOProvider,
 	tokenEndpoint := strings.TrimSpace(cfg.TokenEndpoint)
 	jwksURL := strings.TrimSpace(cfg.JWKSURL)
 	discoveryURL := strings.TrimSpace(cfg.DiscoveryURL)
-	tenantID := strings.TrimSpace(cfg.TenantID)
-
-	switch ptype {
-	case "google":
-		if issuer == "" && discoveryURL == "" && authEndpoint == "" && tokenEndpoint == "" {
-			issuer = "https://accounts.google.com"
-		}
-	case "microsoft":
-		if tenantID == "" {
-			tenantID = "common"
-		}
-		if issuer == "" && discoveryURL == "" && authEndpoint == "" && tokenEndpoint == "" {
-			issuer = fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tenantID)
-		}
-	}
+	derivedDiscovery := false
 
 	if discoveryURL == "" && issuer != "" && (authEndpoint == "" || tokenEndpoint == "" || jwksURL == "") {
 		if u, err := url.Parse(issuer); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
 			discoveryURL = strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+			derivedDiscovery = true
 		}
 	}
 
@@ -384,30 +384,32 @@ func (m *SSOProviderManager) buildProvider(cfg SSOProviderConfig) (*SSOProvider,
 	}
 
 	return &SSOProvider{
-		id:                    id,
-		providerType:          ptype,
-		displayName:           displayName,
-		clientID:              clientID,
-		clientSecret:          strings.TrimSpace(cfg.ClientSecret),
-		issuer:                issuer,
-		authorizationEndpoint: authEndpoint,
-		tokenEndpoint:         tokenEndpoint,
-		jwksURL:               jwksURL,
-		discoveryURL:          discoveryURL,
-		scopes:                scopes,
-		redirectURL:           strings.TrimSpace(cfg.RedirectURL),
-		allowedEmailDomains:   allowedDomains,
-		autoRegister:          cfg.AutoRegister,
-		defaultOrgID:          strings.TrimSpace(cfg.DefaultOrgID),
-		defaultTeamID:         strings.TrimSpace(cfg.DefaultTeamID),
-		defaultRole:           strings.TrimSpace(cfg.DefaultRole),
-		tenantID:              tenantID,
-		algorithms:            append([]string(nil), cfg.Algorithms...),
-		claimMapping:          cfg.ClaimMapping,
-		httpClient:            m.httpClient,
-		netPolicy:             m.netPolicy,
-		now:                   m.currentTime,
-		discoveryTTL:          defaultDiscoveryCacheTTL,
+		id:                        id,
+		providerType:              ptype,
+		displayName:               displayName,
+		clientID:                  clientID,
+		clientSecret:              strings.TrimSpace(cfg.ClientSecret),
+		issuer:                    issuer,
+		authorizationEndpoint:     authEndpoint,
+		tokenEndpoint:             tokenEndpoint,
+		jwksURL:                   jwksURL,
+		discoveryURL:              discoveryURL,
+		scopes:                    scopes,
+		redirectURL:               strings.TrimSpace(cfg.RedirectURL),
+		allowedEmailDomains:       allowedDomains,
+		allowUnverifiedEmail:      cfg.AllowUnverifiedEmail,
+		allowPrivilegedRoleClaims: cfg.AllowPrivilegedRoleClaims,
+		autoRegister:              cfg.AutoRegister,
+		defaultOrgID:              strings.TrimSpace(cfg.DefaultOrgID),
+		defaultTeamID:             strings.TrimSpace(cfg.DefaultTeamID),
+		defaultRole:               strings.TrimSpace(cfg.DefaultRole),
+		derivedDiscovery:          derivedDiscovery,
+		algorithms:                append([]string(nil), cfg.Algorithms...),
+		claimMapping:              cfg.ClaimMapping,
+		httpClient:                m.httpClient,
+		netPolicy:                 m.netPolicy,
+		now:                       m.currentTime,
+		discoveryTTL:              defaultDiscoveryCacheTTL,
 	}, nil
 }
 
@@ -525,8 +527,29 @@ func (p *SSOProvider) ResolveEndpoints(ctx context.Context) (SSOEndpoints, error
 		if ep.TokenEndpoint == "" {
 			ep.TokenEndpoint = cached.TokenEndpoint
 		}
+		if ep.UserInfoEndpoint == "" {
+			ep.UserInfoEndpoint = cached.UserInfoEndpoint
+		}
 		if ep.JWKSURL == "" {
 			ep.JWKSURL = cached.JWKSURL
+		}
+		if ep.EndSessionEndpoint == "" {
+			ep.EndSessionEndpoint = cached.EndSessionEndpoint
+		}
+		if ep.RevocationEndpoint == "" {
+			ep.RevocationEndpoint = cached.RevocationEndpoint
+		}
+		if ep.IntrospectionEndpoint == "" {
+			ep.IntrospectionEndpoint = cached.IntrospectionEndpoint
+		}
+		if len(ep.CodeChallengeMethodsSupported) == 0 {
+			ep.CodeChallengeMethodsSupported = append([]string(nil), cached.CodeChallengeMethodsSupported...)
+		}
+		if len(ep.IDTokenSigningAlgsSupported) == 0 {
+			ep.IDTokenSigningAlgsSupported = append([]string(nil), cached.IDTokenSigningAlgsSupported...)
+		}
+		if len(ep.TokenEndpointAuthMethodsSupported) == 0 {
+			ep.TokenEndpointAuthMethodsSupported = append([]string(nil), cached.TokenEndpointAuthMethodsSupported...)
 		}
 	}
 	return ep, nil
@@ -542,84 +565,38 @@ func (p *SSOProvider) currentTime() time.Time {
 	return fn().UTC()
 }
 
-type ssoDiscoveryDoc struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
-}
-
 func (p *SSOProvider) fetchDiscovery(ctx context.Context) (SSOEndpoints, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.discoveryURL, nil)
+	doc, err := FetchOIDCDiscoveryMetadata(ctx, p.httpClient, p.discoveryURL, p.issuer, p.derivedDiscovery)
 	if err != nil {
+		code := "sso_discovery_failed"
+		if strings.Contains(err.Error(), "issuer") {
+			code = "sso_discovery_issuer_mismatch"
+		} else if strings.Contains(err.Error(), "fetch oidc discovery") {
+			code = "sso_discovery_unreachable"
+		} else if strings.Contains(err.Error(), "decode") {
+			code = "sso_discovery_invalid"
+		}
 		return SSOEndpoints{}, &SSOError{
 			StatusCode: http.StatusBadGateway,
 			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_failed",
-			Message:    "Failed to build OIDC discovery request",
+			Code:       code,
+			Message:    err.Error(),
 			Err:        err,
-		}
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return SSOEndpoints{}, &SSOError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_unreachable",
-			Message:    "Failed to fetch OIDC discovery document",
-			Err:        err,
-		}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return SSOEndpoints{}, &SSOError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_failed",
-			Message:    fmt.Sprintf("OIDC discovery endpoint returned HTTP %d", resp.StatusCode),
-		}
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWTDocumentBytes))
-	if err != nil {
-		return SSOEndpoints{}, &SSOError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_failed",
-			Message:    "Failed to read OIDC discovery document",
-			Err:        err,
-		}
-	}
-
-	var doc ssoDiscoveryDoc
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return SSOEndpoints{}, &SSOError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_invalid",
-			Message:    "Invalid OIDC discovery JSON",
-			Err:        err,
-		}
-	}
-
-	docIss := strings.TrimSpace(doc.Issuer)
-	if p.issuer != "" && docIss != "" && !strings.Contains(docIss, "{tenantid}") && docIss != p.issuer {
-		return SSOEndpoints{}, &SSOError{
-			StatusCode: http.StatusBadGateway,
-			Type:       domain.ErrorTypeServer,
-			Code:       "sso_discovery_issuer_mismatch",
-			Message:    fmt.Sprintf("OIDC discovery issuer %q does not match configured issuer %q", docIss, p.issuer),
 		}
 	}
 
 	return SSOEndpoints{
-		Issuer:                docIss,
-		AuthorizationEndpoint: strings.TrimSpace(doc.AuthorizationEndpoint),
-		TokenEndpoint:         strings.TrimSpace(doc.TokenEndpoint),
-		JWKSURL:               strings.TrimSpace(doc.JWKSURI),
+		Issuer:                            strings.TrimSpace(doc.Issuer),
+		AuthorizationEndpoint:             strings.TrimSpace(doc.AuthorizationEndpoint),
+		TokenEndpoint:                     strings.TrimSpace(doc.TokenEndpoint),
+		UserInfoEndpoint:                  strings.TrimSpace(doc.UserInfoEndpoint),
+		JWKSURL:                           strings.TrimSpace(doc.JWKSURI),
+		EndSessionEndpoint:                strings.TrimSpace(doc.EndSessionEndpoint),
+		RevocationEndpoint:                strings.TrimSpace(doc.RevocationEndpoint),
+		IntrospectionEndpoint:             strings.TrimSpace(doc.IntrospectionEndpoint),
+		CodeChallengeMethodsSupported:     append([]string(nil), doc.CodeChallengeMethodsSupported...),
+		IDTokenSigningAlgsSupported:       append([]string(nil), doc.IDTokenSigningAlgValuesSupported...),
+		TokenEndpointAuthMethodsSupported: append([]string(nil), doc.TokenEndpointAuthMethodsSupported...),
 	}, nil
 }
 
@@ -678,6 +655,15 @@ func (m *SSOProviderManager) BuildAuthorizationURL(
 			Type:       domain.ErrorTypeServer,
 			Code:       "sso_invalid_authorization_endpoint",
 			Message:    fmt.Sprintf("SSO provider %q has invalid authorization_endpoint", p.id),
+		}
+	}
+
+	if len(ep.CodeChallengeMethodsSupported) > 0 && !containsStringExact(ep.CodeChallengeMethodsSupported, "S256") {
+		return "", "", &SSOError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeServer,
+			Code:       "sso_pkce_unsupported",
+			Message:    fmt.Sprintf("SSO provider %q discovery metadata does not advertise PKCE S256 support", p.id),
 		}
 	}
 
@@ -806,10 +792,17 @@ func (m *SSOProviderManager) ExchangeAndVerify(
 	if strings.TrimSpace(redirectURI) != "" {
 		form.Set("redirect_uri", strings.TrimSpace(redirectURI))
 	}
-	form.Set("client_id", p.clientID)
 	form.Set("code_verifier", codeVerifier)
-	if p.clientSecret != "" {
-		form.Set("client_secret", p.clientSecret)
+
+	useBasicAuth := p.clientSecret != "" &&
+		len(ep.TokenEndpointAuthMethodsSupported) > 0 &&
+		containsStringExact(ep.TokenEndpointAuthMethodsSupported, "client_secret_basic") &&
+		!containsStringExact(ep.TokenEndpointAuthMethodsSupported, "client_secret_post")
+	if !useBasicAuth {
+		form.Set("client_id", p.clientID)
+		if p.clientSecret != "" {
+			form.Set("client_secret", p.clientSecret)
+		}
 	}
 
 	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.TokenEndpoint, strings.NewReader(form.Encode()))
@@ -824,6 +817,9 @@ func (m *SSOProviderManager) ExchangeAndVerify(
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenReq.Header.Set("Accept", "application/json")
+	if useBasicAuth {
+		tokenReq.SetBasicAuth(p.clientID, p.clientSecret)
+	}
 
 	resp, err := p.httpClient.Do(tokenReq)
 	if err != nil {
@@ -851,9 +847,15 @@ func (m *SSOProviderManager) ExchangeAndVerify(
 	var tokenResp oidcTokenExchangeResponse
 	_ = json.Unmarshal(body, &tokenResp)
 	if resp.StatusCode != http.StatusOK {
+		slog.WarnContext(ctx, "sso: upstream token exchange failed",
+			"provider", p.id,
+			"status", resp.StatusCode,
+			"idp_error", tokenResp.Error,
+			"idp_error_description", tokenResp.ErrorDescription,
+		)
 		msg := "SSO token exchange failed"
 		if tokenResp.Error != "" {
-			msg = fmt.Sprintf("SSO token exchange failed (%s: %s)", tokenResp.Error, tokenResp.ErrorDescription)
+			msg = fmt.Sprintf("SSO token exchange failed (%s)", tokenResp.Error)
 		}
 		status := http.StatusUnauthorized
 		if resp.StatusCode >= 500 {
@@ -877,7 +879,207 @@ func (m *SSOProviderManager) ExchangeAndVerify(
 		}
 	}
 
-	return p.verifyIDToken(ctx, ep, rawIDToken, expectedNonce)
+	claims, alg, err := p.verifyIDToken(ctx, ep, rawIDToken, expectedNonce)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := verifyATHash(alg, tokenResp.AccessToken, claims.RawClaims); err != nil {
+		return nil, &SSOError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_id_token",
+			Message:    "ID token at_hash validation failed: " + err.Error(),
+			Err:        err,
+		}
+	}
+
+	needsUserInfo := claims.Email == "" ||
+		claims.DisplayName == "" ||
+		claims.DisplayName == claims.Subject ||
+		claims.OrgID == "" ||
+		claims.Role == "" ||
+		len(claims.TeamIDs) == 0 ||
+		(!claims.EmailVerified && len(p.allowedEmailDomains) > 0)
+	if strings.TrimSpace(tokenResp.AccessToken) != "" && ep.UserInfoEndpoint != "" && needsUserInfo {
+		if err := p.hydrateFromUserInfo(ctx, ep.UserInfoEndpoint, tokenResp.AccessToken, claims); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := p.enforceAllowedEmailDomain(claims.Email, claims.EmailVerified); err != nil {
+		return nil, &SSOError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "email_domain_not_allowed",
+			Message:    err.Error(),
+			Err:        err,
+		}
+	}
+
+	return claims, nil
+}
+
+// BuildEndSessionURL constructs an OIDC RP-Initiated Logout URL (`end_session_endpoint`)
+// if the provider is configured with one or advertises it via OIDC Discovery.
+func (m *SSOProviderManager) BuildEndSessionURL(
+	ctx context.Context,
+	providerID, idTokenHint, postLogoutRedirectURI string,
+) (string, error) {
+	return m.BuildEndSessionURLWithState(ctx, providerID, idTokenHint, postLogoutRedirectURI, "")
+}
+
+// BuildEndSessionURLWithState constructs an OIDC RP-Initiated Logout URL with an optional state parameter.
+func (m *SSOProviderManager) BuildEndSessionURLWithState(
+	ctx context.Context,
+	providerID, idTokenHint, postLogoutRedirectURI, state string,
+) (string, error) {
+	if m == nil {
+		return "", nil
+	}
+	p, ok := m.GetProvider(providerID)
+	if !ok {
+		return "", ErrSSOProviderNotFound
+	}
+	ep, err := p.resolveDiscoveryBackedEndpoints(ctx)
+	if err != nil {
+		return "", err
+	}
+	if ep.EndSessionEndpoint == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(ep.EndSessionEndpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", &SSOError{
+			StatusCode: http.StatusBadGateway,
+			Type:       domain.ErrorTypeServer,
+			Code:       "sso_invalid_end_session_endpoint",
+			Message:    fmt.Sprintf("SSO provider %q has invalid end_session_endpoint", p.id),
+		}
+	}
+	q := parsed.Query()
+	if strings.TrimSpace(p.clientID) != "" {
+		q.Set("client_id", p.clientID)
+	}
+	if strings.TrimSpace(idTokenHint) != "" {
+		q.Set("id_token_hint", strings.TrimSpace(idTokenHint))
+	}
+	if strings.TrimSpace(postLogoutRedirectURI) != "" {
+		q.Set("post_logout_redirect_uri", strings.TrimSpace(postLogoutRedirectURI))
+	}
+	if strings.TrimSpace(state) != "" {
+		q.Set("state", strings.TrimSpace(state))
+	}
+	parsed.RawQuery = q.Encode()
+	return parsed.String(), nil
+}
+
+// RevokeToken calls an OIDC provider's RFC 7009 revocation endpoint when configured or discovered.
+func (m *SSOProviderManager) RevokeToken(ctx context.Context, providerID, token, tokenTypeHint string) error {
+	if m == nil {
+		return nil
+	}
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		return nil
+	}
+	p, ok := m.GetProvider(providerID)
+	if !ok {
+		return ErrSSOProviderNotFound
+	}
+	ep, err := p.resolveDiscoveryBackedEndpoints(ctx)
+	if err != nil {
+		return err
+	}
+	if ep.RevocationEndpoint == "" {
+		return nil
+	}
+
+	form := url.Values{}
+	form.Set("token", trimmedToken)
+	if strings.TrimSpace(tokenTypeHint) != "" {
+		form.Set("token_type_hint", strings.TrimSpace(tokenTypeHint))
+	}
+	if p.clientSecret == "" {
+		form.Set("client_id", p.clientID)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.RevocationEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("build token revocation request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if p.clientID != "" && p.clientSecret != "" {
+		req.SetBasicAuth(p.clientID, p.clientSecret)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("token revocation request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("token revocation endpoint returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (p *SSOProvider) resolveDiscoveryBackedEndpoints(ctx context.Context) (SSOEndpoints, error) {
+	ep, err := p.ResolveEndpoints(ctx)
+	if err != nil {
+		return SSOEndpoints{}, err
+	}
+	if ep.EndSessionEndpoint != "" || ep.RevocationEndpoint != "" || p.discoveryURL == "" {
+		return ep, nil
+	}
+	// If static auth/token/jwks endpoints bypassed discovery in ResolveEndpoints, fetch discovery
+	// via the same TTL cache and singleflight group rather than issuing uncached HTTP calls.
+	now := p.currentTime()
+	p.mu.RLock()
+	cached := p.discovered
+	fresh := cached != nil && !p.discoveredAt.IsZero() && now.Sub(p.discoveredAt) < p.discoveryTTL
+	p.mu.RUnlock()
+
+	if !fresh {
+		res, discErr, _ := p.discoveryGroup.Do("discovery", func() (any, error) {
+			now := p.currentTime()
+			p.mu.RLock()
+			stillCached := p.discovered
+			stillFresh := stillCached != nil && !p.discoveredAt.IsZero() && now.Sub(p.discoveredAt) < p.discoveryTTL
+			p.mu.RUnlock()
+			if stillFresh {
+				return *stillCached, nil
+			}
+			fetched, fetchErr := p.fetchDiscovery(ctx)
+			if fetchErr != nil {
+				return SSOEndpoints{}, fetchErr
+			}
+			discoveredAt := p.currentTime()
+			p.mu.Lock()
+			p.discovered = &fetched
+			p.discoveredAt = discoveredAt
+			p.mu.Unlock()
+			return fetched, nil
+		})
+		if discErr == nil {
+			d := res.(SSOEndpoints)
+			cached = &d
+		}
+	}
+	if cached != nil {
+		if ep.EndSessionEndpoint == "" {
+			ep.EndSessionEndpoint = cached.EndSessionEndpoint
+		}
+		if ep.RevocationEndpoint == "" {
+			ep.RevocationEndpoint = cached.RevocationEndpoint
+		}
+		if ep.UserInfoEndpoint == "" {
+			ep.UserInfoEndpoint = cached.UserInfoEndpoint
+		}
+	}
+	return ep, nil
 }
 
 func (p *SSOProvider) getOrInitVerifier(ep SSOEndpoints) (*OIDCVerifier, error) {
@@ -888,9 +1090,14 @@ func (p *SSOProvider) getOrInitVerifier(ep SSOEndpoints) (*OIDCVerifier, error) 
 		return p.verifier, nil
 	}
 
-	jwksURL := ep.JWKSURL
+	// Prefer dynamic discoveryURL when no static jwks_url was configured so JWKS URI rotations
+	// published in OIDC Discovery are picked up automatically after discoveryTTL expires.
+	staticJWKS := p.jwksURL
 	discoveryURL := p.discoveryURL
-	if jwksURL == "" && discoveryURL == "" {
+	if staticJWKS == "" && discoveryURL == "" {
+		staticJWKS = ep.JWKSURL
+	}
+	if staticJWKS == "" && discoveryURL == "" {
 		return nil, &SSOError{
 			StatusCode: http.StatusBadGateway,
 			Type:       domain.ErrorTypeServer,
@@ -899,41 +1106,36 @@ func (p *SSOProvider) getOrInitVerifier(ep SSOEndpoints) (*OIDCVerifier, error) 
 		}
 	}
 
-	// Microsoft multi-tenant endpoints return issuer templates containing "{tenantid}";
-	// handle template matching explicitly after signature verification.
-	verifierIssuer := ep.Issuer
-	if strings.Contains(verifierIssuer, "{tenantid}") {
-		verifierIssuer = ""
-	}
-
 	v := NewOIDCVerifier(OIDCIssuerConfig{
-		Issuer:        verifierIssuer,
-		Audience:      p.clientID,
-		JWKSURL:       jwksURL,
-		DiscoveryURL:  discoveryURL,
-		Algorithms:    p.algorithms,
-		ClaimMapping:  p.claimMapping,
-		AutoRegister:  p.autoRegister,
-		DefaultOrgID:  p.defaultOrgID,
-		DefaultTeamID: p.defaultTeamID,
-		DefaultRole:   p.defaultRole,
-		NetworkPolicy: p.netPolicy,
-		HTTPClient:    p.httpClient,
-		Now:           p.now,
+		Issuer:                    ep.Issuer,
+		Audience:                  p.clientID,
+		JWKSURL:                   staticJWKS,
+		DiscoveryURL:              discoveryURL,
+		Algorithms:                p.algorithms,
+		AllowUnverifiedEmail:      p.allowUnverifiedEmail,
+		AllowPrivilegedRoleClaims: p.allowPrivilegedRoleClaims,
+		ClaimMapping:              p.claimMapping,
+		AutoRegister:              p.autoRegister,
+		DefaultOrgID:              p.defaultOrgID,
+		DefaultTeamID:             p.defaultTeamID,
+		DefaultRole:               p.defaultRole,
+		NetworkPolicy:             p.netPolicy,
+		HTTPClient:                p.httpClient,
+		Now:                       p.now,
 	})
 	p.verifier = v
 	return v, nil
 }
 
-func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDToken, expectedNonce string) (*SSOIDTokenClaims, error) {
+func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDToken, expectedNonce string) (*SSOIDTokenClaims, string, error) {
 	verifier, err := p.getOrInitVerifier(ep)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	claims, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, &SSOError{
+		return nil, "", &SSOError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "invalid_id_token",
@@ -942,43 +1144,30 @@ func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDT
 		}
 	}
 
-	// Enforce Microsoft Entra ID templated multi-tenant issuer if applicable.
-	if strings.Contains(ep.Issuer, "{tenantid}") {
-		tid, _ := extractStringClaim(claims.RawClaims, "tid")
-		if tid == "" {
-			return nil, &SSOError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "invalid_id_token",
-				Message:    "ID token missing tid claim for multi-tenant issuer validation",
-			}
-		}
-		wantIss := strings.ReplaceAll(ep.Issuer, "{tenantid}", tid)
-		if claims.Issuer != wantIss {
-			return nil, &SSOError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "invalid_id_token",
-				Message:    fmt.Sprintf("ID token issuer mismatch: got %q, want %q", claims.Issuer, wantIss),
-			}
+	// OIDC Core Section 3.1.3.7 items 4-5:
+	// - If multiple audiences are present, azp MUST be present.
+	// - If azp is present (regardless of audience count), azp MUST equal client_id.
+	azp, hasAZP := extractStringClaim(claims.RawClaims, "azp")
+	if len(claims.Audience) > 1 && !hasAZP {
+		return nil, "", &SSOError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_id_token",
+			Message:    "ID token with multiple audiences must include an azp claim",
 		}
 	}
-
-	// OIDC Core Section 3.1.3.7: validate azp when multiple audiences are present.
-	if len(claims.Audience) > 1 {
-		if azp, hasAZP := extractStringClaim(claims.RawClaims, "azp"); hasAZP && azp != p.clientID {
-			return nil, &SSOError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "invalid_id_token",
-				Message:    "ID token azp claim does not match client_id",
-			}
+	if hasAZP && azp != p.clientID {
+		return nil, "", &SSOError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "invalid_id_token",
+			Message:    "ID token azp claim does not match client_id",
 		}
 	}
 
 	// OIDC Core Section 3.1.3.7: validate nonce against bound auth state.
 	if strings.TrimSpace(expectedNonce) == "" {
-		return nil, &SSOError{
+		return nil, "", &SSOError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "invalid_sso_nonce",
@@ -987,7 +1176,7 @@ func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDT
 	}
 	tokenNonce, hasNonce := extractStringClaim(claims.RawClaims, "nonce")
 	if !hasNonce || subtle.ConstantTimeCompare([]byte(tokenNonce), []byte(expectedNonce)) != 1 {
-		return nil, &SSOError{
+		return nil, "", &SSOError{
 			StatusCode: http.StatusUnauthorized,
 			Type:       domain.ErrorTypeAuthentication,
 			Code:       "invalid_sso_nonce",
@@ -996,41 +1185,176 @@ func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDT
 	}
 
 	email := strings.TrimSpace(claims.Email)
-	if email == "" && p.providerType == "microsoft" && strings.TrimSpace(p.claimMapping.Email) == "" {
-		if v, ok := extractStringClaim(claims.RawClaims, "preferred_username"); ok {
-			email = v
-		} else if v, ok := extractStringClaim(claims.RawClaims, "upn"); ok {
-			email = v
-		}
-	}
-
-	if err := p.enforceAllowedEmailDomain(email); err != nil {
-		return nil, &SSOError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "email_domain_not_allowed",
-			Message:    err.Error(),
-			Err:        err,
-		}
-	}
-
 	displayName := extractSSODisplayName(claims.RawClaims, email, claims.Subject)
 
+	_, hdr, _, _, _ := parseJWTEnvelope(rawIDToken)
+
 	return &SSOIDTokenClaims{
-		Subject:     claims.Subject,
-		Issuer:      claims.Issuer,
-		Email:       email,
-		DisplayName: displayName,
-		OrgID:       claims.OrgID,
-		TeamIDs:     claims.TeamIDs,
-		Role:        claims.Role,
-		RawClaims:   claims.RawClaims,
-	}, nil
+		Subject:       claims.Subject,
+		Issuer:        claims.Issuer,
+		Email:         email,
+		EmailVerified: claims.EmailVerified,
+		DisplayName:   displayName,
+		OrgID:         claims.OrgID,
+		TeamIDs:       claims.TeamIDs,
+		Role:          claims.Role,
+		RawIDToken:    rawIDToken,
+		RawClaims:     claims.RawClaims,
+	}, hdr.Alg, nil
 }
 
-func (p *SSOProvider) enforceAllowedEmailDomain(email string) error {
+func (p *SSOProvider) hydrateFromUserInfo(ctx context.Context, endpoint, accessToken string, claims *SSOIDTokenClaims) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		slog.WarnContext(ctx, "sso: failed to build userinfo request", "provider", p.id, "error", err)
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		slog.WarnContext(ctx, "sso: userinfo request failed; continuing with ID token claims", "provider", p.id, "error", err)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		slog.WarnContext(ctx, "sso: userinfo endpoint returned non-200 status", "provider", p.id, "status", resp.StatusCode)
+		return nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOIDCTokenResponseBytes))
+	if err != nil {
+		slog.WarnContext(ctx, "sso: failed to read userinfo response", "provider", p.id, "error", err)
+		return nil
+	}
+
+	var uiClaims map[string]any
+	if err := json.Unmarshal(body, &uiClaims); err != nil {
+		slog.WarnContext(ctx, "sso: invalid json from userinfo endpoint", "provider", p.id, "error", err)
+		return nil
+	}
+
+	uiSub, _ := extractStringClaim(uiClaims, "sub")
+	if uiSub == "" || subtle.ConstantTimeCompare([]byte(uiSub), []byte(claims.Subject)) != 1 {
+		return &SSOError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "sso_userinfo_subject_mismatch",
+			Message:    "OIDC UserInfo sub claim does not match ID token subject",
+		}
+	}
+
+	if claims.RawClaims == nil {
+		claims.RawClaims = make(map[string]any, len(uiClaims))
+	}
+	for k, v := range uiClaims {
+		if _, exists := claims.RawClaims[k]; !exists {
+			claims.RawClaims[k] = v
+		}
+	}
+
+	if claims.Email == "" {
+		emailPath := strings.TrimSpace(p.claimMapping.Email)
+		if emailPath == "" {
+			emailPath = "email"
+		}
+		if v, ok := extractStringClaim(uiClaims, emailPath); ok {
+			claims.Email = strings.TrimSpace(v)
+		}
+	}
+	if !claims.EmailVerified {
+		if verified, ok := extractBoolClaim(uiClaims, "email_verified"); ok && verified {
+			claims.EmailVerified = true
+		}
+	}
+
+	if claims.DisplayName == "" || claims.DisplayName == claims.Subject || claims.DisplayName == claims.Email {
+		hydratedName := extractSSODisplayName(uiClaims, claims.Email, claims.Subject)
+		if hydratedName != "" && hydratedName != claims.Subject {
+			claims.DisplayName = hydratedName
+		}
+	}
+
+	if claims.OrgID == "" {
+		orgPath := strings.TrimSpace(p.claimMapping.OrgID)
+		if orgPath == "" {
+			orgPath = "org_id"
+		}
+		if v, ok := extractStringClaim(uiClaims, orgPath); ok {
+			claims.OrgID = strings.TrimSpace(v)
+		}
+	}
+	if claims.Role == "" {
+		rolePath := strings.TrimSpace(p.claimMapping.Role)
+		if rolePath == "" {
+			rolePath = "role"
+		}
+		if v, ok := extractStringClaim(uiClaims, rolePath); ok {
+			claims.Role = strings.TrimSpace(v)
+		}
+	}
+	if len(claims.TeamIDs) == 0 {
+		teamPath := strings.TrimSpace(p.claimMapping.TeamIDs)
+		if teamPath == "" {
+			teamPath = "team_ids"
+		}
+		if vals, ok := extractStringSliceClaim(uiClaims, teamPath); ok {
+			claims.TeamIDs = vals
+		}
+	}
+
+	return nil
+}
+
+func verifyATHash(alg, accessToken string, rawClaims map[string]any) error {
+	expectedHash, hasATHash := extractStringClaim(rawClaims, "at_hash")
+	if !hasATHash {
+		return nil
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return errors.New("ID token includes at_hash but token response omitted access_token")
+	}
+
+	var h hash.Hash
+	switch strings.ToUpper(strings.TrimSpace(alg)) {
+	case "RS256", "PS256", "ES256":
+		h = sha256.New()
+	case "RS384", "PS384", "ES384":
+		h = sha512.New384()
+	case "RS512", "PS512", "ES512", "EDDSA":
+		// Per OIDC Core §3.1.3.6 / RFC 8037, Ed25519 (EdDSA) uses SHA-512 (leftmost 256 bits).
+		h = sha512.New()
+	default:
+		return fmt.Errorf("cannot verify at_hash for unsupported signing algorithm %q", alg)
+	}
+
+	_, _ = h.Write([]byte(accessToken))
+	sum := h.Sum(nil)
+	computed := base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
+	if subtle.ConstantTimeCompare([]byte(computed), []byte(expectedHash)) != 1 {
+		return errors.New("ID token at_hash does not match access_token")
+	}
+	return nil
+}
+
+func containsStringExact(items []string, target string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *SSOProvider) enforceAllowedEmailDomain(email string, emailVerified bool) error {
 	if len(p.allowedEmailDomains) == 0 {
 		return nil
+	}
+	if !p.allowUnverifiedEmail && !emailVerified {
+		return errors.New("id token email_verified must be true when allowed_email_domains is enforced")
 	}
 	trimmed := strings.TrimSpace(email)
 	atIdx := strings.LastIndex(trimmed, "@")
@@ -1147,6 +1471,7 @@ func (s *SSOStateStore) Save(ctx context.Context, st *SSOAuthState) error {
 		if err == nil {
 			return nil
 		}
+		slog.WarnContext(ctx, "sso: redis unavailable saving auth state; falling back to local memory (multi-replica callbacks may fail)", "error", err)
 	}
 
 	s.mu.Lock()
@@ -1155,6 +1480,9 @@ func (s *SSOStateStore) Save(ctx context.Context, st *SSOAuthState) error {
 		if existing == nil || !now.Before(existing.ExpiresAt) {
 			delete(s.states, k)
 		}
+	}
+	if len(s.states) >= maxFallbackStateEntries {
+		return errors.New("sso state store capacity exceeded")
 	}
 	s.states[cp.State] = &cp
 	return nil
@@ -1379,6 +1707,7 @@ func (s *CLILoginStore) saveSession(ctx context.Context, sess *CLILoginSession, 
 		if err == nil {
 			return nil
 		}
+		slog.WarnContext(ctx, "sso: redis unavailable saving cli login session; falling back to local memory", "error", err)
 	}
 
 	s.mu.Lock()
@@ -1388,6 +1717,9 @@ func (s *CLILoginStore) saveSession(ctx context.Context, sess *CLILoginSession, 
 			delete(s.sessions, k)
 			delete(s.lastPoll, k)
 		}
+	}
+	if _, exists := s.sessions[sess.LoginID]; !exists && len(s.sessions) >= maxFallbackStateEntries {
+		return errors.New("cli login store capacity exceeded")
 	}
 	cp := *sess
 	s.sessions[sess.LoginID] = &cp

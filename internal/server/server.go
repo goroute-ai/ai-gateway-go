@@ -52,11 +52,10 @@ type GatewayServer struct {
 	vault              *auth.Vault
 	authSvc            *auth.Service
 	sessionMgr         *auth.SessionManager
-	loginThrottle      *auth.LoginThrottle
-	breachScreener     auth.BreachScreener
 	ssoMgr             *auth.SSOProviderManager
 	ssoStateStore      *auth.SSOStateStore
 	cliLoginStore      *auth.CLILoginStore
+	authStartLimiter   *authStartRateLimiter
 	authResolver       *auth.AuthResolver
 	keyRotation        *auth.KeyRotationManager
 	keyExpiryAlerts    *auth.KeyExpiryAlertManager
@@ -249,11 +248,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		vault:              authDeps.vault,
 		authSvc:            authDeps.authSvc,
 		sessionMgr:         authDeps.sessionMgr,
-		loginThrottle:      authDeps.loginThrottle,
-		breachScreener:     authDeps.breachScreener,
 		ssoMgr:             authDeps.ssoMgr,
 		ssoStateStore:      authDeps.ssoStateStore,
 		cliLoginStore:      authDeps.cliLoginStore,
+		authStartLimiter:   newAuthStartRateLimiter(redisFabric, cfg.Auth.AuthStartRateLimitPerMin),
 		authResolver:       authDeps.authResolver,
 		keyRotation:        authDeps.keyRotation,
 		keyExpiryAlerts:    authDeps.keyExpiryAlerts,
@@ -318,8 +316,6 @@ type serverAuthDeps struct {
 	vault           *auth.Vault
 	authSvc         *auth.Service
 	sessionMgr      *auth.SessionManager
-	loginThrottle   *auth.LoginThrottle
-	breachScreener  auth.BreachScreener
 	ssoMgr          *auth.SSOProviderManager
 	ssoStateStore   *auth.SSOStateStore
 	cliLoginStore   *auth.CLILoginStore
@@ -416,7 +412,6 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
 	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
-		Secret:        cfg.Auth.JWTSecret,
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,
 		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
@@ -425,15 +420,15 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 		NetworkPolicy: netPolicy,
 	})
 	authSvc.SetJWTVerifier(jwtVerifier)
-	sessionSecret := auth.DeriveSessionSecret(cfg.Auth.SessionSecret, cfg.Auth.MasterEncryptionKey, cfg.Auth.JWTSecret, cfg.Auth.MasterAdminKey)
+	sessionSecret := auth.DeriveSessionSecret(
+		config.ResolveEnvValue(cfg.Auth.SessionSecret),
+		config.ResolveEnvValue(cfg.Auth.MasterEncryptionKey),
+		config.ResolveEnvValue(cfg.Auth.MasterAdminKey),
+	)
 	sessionMgr := auth.NewSessionManager(repo, redisFabric, sessionSecret, cfg.Auth.SessionTTL)
-	loginThrottle := auth.NewLoginThrottle(redisFabric)
-	var breachScreener auth.BreachScreener
-	if cfg.Auth.EnableHIBPCheck {
-		breachScreener = auth.NewHIBPRangeClient(cfg.Auth.HIBPBaseURL, netPolicy)
-	}
+	sessionMgr.SetVault(vault)
 	authSvc.SetSessionManager(sessionMgr)
-	authSvc.SetLoginThrottle(loginThrottle)
+	authSvc.AddInvalidationHandler(sessionMgr.HandleInvalidation)
 
 	ssoMgr, err := auth.NewSSOProviderManager(buildSSOProviderConfigs(cfg.Auth.SSOProviders), netPolicy)
 	if err != nil {
@@ -443,11 +438,16 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 	cliLoginStore := auth.NewCLILoginStore(redisFabric, vault)
 
 	var introspector *auth.OAuthIntrospector
-	if strings.TrimSpace(cfg.Auth.Introspection.TokenInfoEndpoint) != "" {
+	if strings.TrimSpace(cfg.Auth.Introspection.TokenInfoEndpoint) != "" ||
+		strings.TrimSpace(cfg.Auth.Introspection.DiscoveryURL) != "" ||
+		strings.TrimSpace(cfg.Auth.Introspection.Issuer) != "" {
 		introspector = auth.NewOAuthIntrospector(auth.IntrospectionConfig{
 			TokenInfoEndpoint: cfg.Auth.Introspection.TokenInfoEndpoint,
-			ClientID:          cfg.Auth.Introspection.ClientID,
-			ClientSecret:      cfg.Auth.Introspection.ClientSecret,
+			Issuer:            cfg.Auth.Introspection.Issuer,
+			Audience:          cfg.Auth.Introspection.Audience,
+			DiscoveryURL:      cfg.Auth.Introspection.DiscoveryURL,
+			ClientID:          config.ResolveEnvValue(cfg.Auth.Introspection.ClientID),
+			ClientSecret:      config.ResolveEnvValue(cfg.Auth.Introspection.ClientSecret),
 			Mode:              cfg.Auth.Introspection.Mode,
 			UserIDField:       cfg.Auth.Introspection.UserIDField,
 			EmailField:        cfg.Auth.Introspection.EmailField,
@@ -460,37 +460,23 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 		})
 	}
 
-	var proxyAuth *auth.ProxyAuthenticator
-	if cfg.Auth.ProxyAuth.Enabled {
-		proxyAuth, err = auth.NewProxyAuthenticator(auth.ProxyAuthConfig{
-			Enabled:           cfg.Auth.ProxyAuth.Enabled,
-			TrustedProxyCIDRs: cfg.Auth.ProxyAuth.TrustedProxyCIDRs,
-			HeaderMapping:     cfg.Auth.ProxyAuth.HeaderMapping,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("invalid proxy auth config: %w", err)
-		}
-	}
-
 	rbac := auth.NewRBACEngine(repo)
 	rbac.SetRedis(redisFabric)
 	authSvc.AddInvalidationHandler(rbac.HandleInvalidation)
 
 	authResolver := auth.NewAuthResolver(auth.ResolverConfig{
-		Service:                    authSvc,
-		Repo:                       repo,
-		RBAC:                       rbac,
-		JWTVerifier:                jwtVerifier,
-		Introspector:               introspector,
-		ProxyAuth:                  proxyAuth,
-		EnableDataPlaneJWT:         cfg.Auth.EnableDataPlaneJWT,
-		DefaultOrgID:               cfg.Auth.DefaultOrgID,
-		IntrospectionAutoRegister:  cfg.Auth.Introspection.AutoRegister,
-		IntrospectionDefaultTeamID: cfg.Auth.Introspection.DefaultTeamID,
-		IntrospectionDefaultRole:   cfg.Auth.Introspection.DefaultRole,
-		ProxyAutoRegister:          cfg.Auth.ProxyAuth.AutoRegister,
-		ProxyDefaultTeamID:         cfg.Auth.ProxyAuth.DefaultTeamID,
-		ProxyDefaultRole:           cfg.Auth.ProxyAuth.DefaultRole,
+		Service:                                authSvc,
+		Repo:                                   repo,
+		RBAC:                                   rbac,
+		JWTVerifier:                            jwtVerifier,
+		Introspector:                           introspector,
+		EnableDataPlaneJWT:                     cfg.Auth.EnableDataPlaneJWT,
+		DefaultOrgID:                           cfg.Auth.DefaultOrgID,
+		IntrospectionAutoRegister:              cfg.Auth.Introspection.AutoRegister,
+		IntrospectionAllowUnverifiedEmail:      cfg.Auth.Introspection.AllowUnverifiedEmail,
+		IntrospectionAllowPrivilegedRoleClaims: cfg.Auth.Introspection.AllowPrivilegedRoleClaims,
+		IntrospectionDefaultTeamID:             cfg.Auth.Introspection.DefaultTeamID,
+		IntrospectionDefaultRole:               cfg.Auth.Introspection.DefaultRole,
 	})
 	authSvc.SetDataPlaneResolver(authResolver)
 
@@ -518,8 +504,6 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 		vault:           vault,
 		authSvc:         authSvc,
 		sessionMgr:      sessionMgr,
-		loginThrottle:   loginThrottle,
-		breachScreener:  breachScreener,
 		ssoMgr:          ssoMgr,
 		ssoStateStore:   ssoStateStore,
 		cliLoginStore:   cliLoginStore,
@@ -882,17 +866,15 @@ func (s *GatewayServer) registerHealthAndMetricsRoutes(r chi.Router) {
 
 func (s *GatewayServer) registerAuthRoutes(r chi.Router) {
 	r.Route("/auth", func(authRouter chi.Router) {
-		authRouter.Post("/login", s.handleAuthLogin)
 		authRouter.Get("/sso/providers", s.handleAuthSSOProviders)
-		authRouter.Get("/sso/{provider}/login", s.handleAuthSSOLogin)
+		authRouter.Get("/sso/{provider}/login", s.authStartLimiter.wrap(s.handleAuthSSOLogin))
 		authRouter.Get("/sso/{provider}/callback", s.handleAuthSSOCallback)
-		authRouter.Post("/cli/start", s.handleAuthCLIStart)
+		authRouter.Post("/cli/start", s.authStartLimiter.wrap(s.handleAuthCLIStart))
 		authRouter.Get("/cli/poll/{login_id}", s.handleAuthCLIPoll)
 		authRouter.Group(func(protected chi.Router) {
 			protected.Use(auth.AdminControlPlaneMiddleware(s.authSvc))
 			protected.Post("/logout", s.handleAuthLogout)
 			protected.Get("/me", s.handleAuthMe)
-			protected.Post("/password", s.handleAuthPassword)
 			protected.Post("/cli/complete/{login_id}", s.handleAuthCLIComplete)
 		})
 	})
@@ -1356,11 +1338,6 @@ func (s *GatewayServer) SessionManager() *auth.SessionManager {
 	return s.sessionMgr
 }
 
-// LoginThrottle returns the operator login rate limiter/throttle.
-func (s *GatewayServer) LoginThrottle() *auth.LoginThrottle {
-	return s.loginThrottle
-}
-
 // SSOProviderManager returns the configured OIDC SSO provider manager, or nil when receiver is nil.
 func (s *GatewayServer) SSOProviderManager() *auth.SSOProviderManager {
 	if s == nil {
@@ -1579,13 +1556,24 @@ func isNonPublicIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || testNet1CIDR.Contains(ip)
 }
 
+type trustedProxyContextKey struct{}
+
+func isFromTrustedProxy(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(trustedProxyContextKey{}).(bool)
+	return v
+}
+
 // trustedRealIPMiddleware extracts forwarded client IP headers only for requests originating
-// from configured trusted proxy CIDRs so untrusted callers cannot spoof X-Forwarded-For.
+// from configured trusted proxy CIDRs so untrusted callers cannot spoof X-Forwarded-For or X-Forwarded-Proto.
 func trustedRealIPMiddleware(trustedProxyCIDRs []string) func(http.Handler) http.Handler {
 	trustedNets := parseCIDRList(trustedProxyCIDRs)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if len(trustedNets) > 0 && ipInNets(extractRemoteIP(r.RemoteAddr), trustedNets) {
+				r = r.WithContext(context.WithValue(r.Context(), trustedProxyContextKey{}, true))
 				if realIP := extractTrustedForwardedIP(r); realIP != "" {
 					r.RemoteAddr = realIP
 				}
@@ -1651,12 +1639,14 @@ func buildOIDCIssuerConfigs(issuers []config.OIDCIssuerConfig, netPolicy *networ
 	out := make([]auth.OIDCIssuerConfig, 0, len(issuers))
 	for _, iss := range issuers {
 		out = append(out, auth.OIDCIssuerConfig{
-			Issuer:              iss.Issuer,
-			Audience:            iss.Audience,
-			JWKSURL:             iss.JWKSURL,
-			DiscoveryURL:        iss.DiscoveryURL,
-			Algorithms:          iss.Algorithms,
-			AllowedEmailDomains: iss.AllowedEmailDomains,
+			Issuer:                    iss.Issuer,
+			Audience:                  iss.Audience,
+			JWKSURL:                   iss.JWKSURL,
+			DiscoveryURL:              iss.DiscoveryURL,
+			Algorithms:                iss.Algorithms,
+			AllowedEmailDomains:       iss.AllowedEmailDomains,
+			AllowUnverifiedEmail:      iss.AllowUnverifiedEmail,
+			AllowPrivilegedRoleClaims: iss.AllowPrivilegedRoleClaims,
 			ClaimMapping: auth.OIDCClaimMapping{
 				UserID:  iss.ClaimMapping.UserID,
 				Email:   iss.ClaimMapping.Email,
@@ -1682,26 +1672,27 @@ func buildSSOProviderConfigs(providers []config.SSOProviderConfig) []auth.SSOPro
 	out := make([]auth.SSOProviderConfig, 0, len(providers))
 	for _, p := range providers {
 		out = append(out, auth.SSOProviderConfig{
-			ID:                    p.ID,
-			Name:                  p.Name,
-			Type:                  p.Type,
-			DisplayName:           p.DisplayName,
-			ClientID:              config.ResolveEnvValue(p.ClientID),
-			ClientSecret:          config.ResolveEnvValue(p.ClientSecret),
-			Issuer:                p.Issuer,
-			AuthorizationEndpoint: p.AuthorizationEndpoint,
-			TokenEndpoint:         p.TokenEndpoint,
-			JWKSURL:               p.JWKSURL,
-			DiscoveryURL:          p.DiscoveryURL,
-			Scopes:                append([]string(nil), p.Scopes...),
-			RedirectURL:           p.RedirectURL,
-			AllowedEmailDomains:   append([]string(nil), p.AllowedEmailDomains...),
-			AutoRegister:          p.AutoRegister,
-			DefaultOrgID:          p.DefaultOrgID,
-			DefaultTeamID:         p.DefaultTeamID,
-			DefaultRole:           p.DefaultRole,
-			TenantID:              p.TenantID,
-			Algorithms:            append([]string(nil), p.Algorithms...),
+			ID:                        p.ID,
+			Name:                      p.Name,
+			Type:                      p.Type,
+			DisplayName:               p.DisplayName,
+			ClientID:                  config.ResolveEnvValue(p.ClientID),
+			ClientSecret:              config.ResolveEnvValue(p.ClientSecret),
+			Issuer:                    p.Issuer,
+			AuthorizationEndpoint:     p.AuthorizationEndpoint,
+			TokenEndpoint:             p.TokenEndpoint,
+			JWKSURL:                   p.JWKSURL,
+			DiscoveryURL:              p.DiscoveryURL,
+			Scopes:                    append([]string(nil), p.Scopes...),
+			RedirectURL:               p.RedirectURL,
+			AllowedEmailDomains:       append([]string(nil), p.AllowedEmailDomains...),
+			AllowUnverifiedEmail:      p.AllowUnverifiedEmail,
+			AllowPrivilegedRoleClaims: p.AllowPrivilegedRoleClaims,
+			AutoRegister:              p.AutoRegister,
+			DefaultOrgID:              p.DefaultOrgID,
+			DefaultTeamID:             p.DefaultTeamID,
+			DefaultRole:               p.DefaultRole,
+			Algorithms:                append([]string(nil), p.Algorithms...),
 			ClaimMapping: auth.OIDCClaimMapping{
 				UserID:  p.ClaimMapping.UserID,
 				Email:   p.ClaimMapping.Email,

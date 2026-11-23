@@ -65,7 +65,12 @@ func TestUI_RouteDeliveryAndSPAFallback(t *testing.T) {
 	assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
 	csp := rec.Header().Get("Content-Security-Policy")
 	assert.Contains(t, csp, "default-src 'self'")
+	assert.Contains(t, csp, "style-src 'self'")
+	assert.Contains(t, csp, "base-uri 'self'")
+	assert.Contains(t, csp, "form-action 'self'")
+	assert.Contains(t, csp, "object-src 'none'")
 	assert.Contains(t, csp, "frame-ancestors 'none'")
+	assert.NotContains(t, csp, "'unsafe-inline'")
 }
 
 func TestUI_StaticAssetMimeAndCaching(t *testing.T) {

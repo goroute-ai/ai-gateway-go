@@ -53,13 +53,17 @@ services:
       dockerfile: deployments/Dockerfile
     ports:
       - "8080:8080"
+    volumes:
+      - "${GATEWAY_CONFIG_HOST_PATH:-../configs/config.yaml}:/app/configs/config.yaml:ro"
     environment:
       GATEWAY_ENV: "${GATEWAY_ENV:-development}"
       GATEWAY_PORT: "8080"
       GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@postgres:5432/aigateway?sslmode=disable"
       GATEWAY_REDIS_ADDR: "redis:6379"
-      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-https://auth.goroute.local}"
+      GATEWAY_JWT_ISSUER: "${GATEWAY_JWT_ISSUER:-http://localhost:8081/realms/goroute}"
       GATEWAY_JWT_AUDIENCE: "${GATEWAY_JWT_AUDIENCE:-goroute-gateway}"
+      GATEWAY_SESSION_SECRET: "${GATEWAY_SESSION_SECRET:-dev-local-session-secret-change-me-0123456789abcdef}"
+      KEYCLOAK_SSO_SECRET: "${KEYCLOAK_SSO_SECRET:-goroute-gateway-dev-secret}"
       GATEWAY_MASTER_ADMIN_KEY: "${GATEWAY_MASTER_ADMIN_KEY:-sk-gw-master-admin-default-key-change-me}"
       GATEWAY_MASTER_ENCRYPTION_KEY: "${GATEWAY_MASTER_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
     depends_on:
@@ -67,3 +71,26 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  keycloak:
+    profiles: ["keycloak"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: "${KC_HOSTNAME:-http://localhost:8081}"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "8081:8080"
+      - "9000:9000"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s

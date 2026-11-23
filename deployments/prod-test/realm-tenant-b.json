@@ -1,0 +1,63 @@
+{
+  "realm": "tenant-b",
+  "enabled": true,
+  "displayName": "Tenant B Prod-Test Realm",
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "goroute-tenant-b-mint",
+      "name": "Tenant B CI Token Minter",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "tenant-b-mint-secret-2026",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": ["basic", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "goroute-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "goroute-gateway",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "bob@tenantb.local",
+      "email": "bob@tenantb.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Bob",
+      "lastName": "TenantB",
+      "attributes": {
+        "org_id": ["org_tenant_b"]
+      },
+      "credentials": [
+        { "type": "password", "value": "TenantB!2026", "temporary": false }
+      ]
+    }
+  ]
+}

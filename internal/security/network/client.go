@@ -110,6 +110,17 @@ func WithStreamingRequest(ctx context.Context) context.Context {
 
 type streamingRequestContextKey struct{}
 
+type requireLoopbackDialContextKey struct{}
+
+func withRequireLoopbackDial(ctx context.Context) context.Context {
+	return context.WithValue(ctx, requireLoopbackDialContextKey{}, true)
+}
+
+func requiresLoopbackDial(ctx context.Context) bool {
+	v, _ := ctx.Value(requireLoopbackDialContextKey{}).(bool)
+	return v
+}
+
 // NewHTTPClientWithTimeouts constructs the SSRF-restricted client with separate
 // total request, response-header, and response-body idle timeouts. A total
 // timeout applies only to non-streaming requests.
@@ -181,6 +192,22 @@ func NewHTTPClientWithOptions(policy *Policy, options HTTPClientOptions, stats *
 			validIPs, err := resolver.LookupAndValidate(ctx, host)
 			if err != nil {
 				return nil, err
+			}
+			if requiresLoopbackDial(ctx) {
+				filtered := validIPs[:0]
+				for _, ip := range validIPs {
+					cleanIP := ip
+					if v4 := ip.To4(); v4 != nil {
+						cleanIP = v4
+					}
+					if cleanIP.IsLoopback() {
+						filtered = append(filtered, ip)
+					}
+				}
+				if len(filtered) == 0 {
+					return nil, fmt.Errorf("%w: http loopback policy requires resolved loopback IP for %q", ErrInsecureHTTPBlocked, host)
+				}
+				validIPs = filtered
 			}
 
 			// Connect to the first validated IP to prevent DNS rebinding races
@@ -297,6 +324,9 @@ func (rt idleTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	streaming, _ := req.Context().Value(streamingRequestContextKey{}).(bool)
 	streaming = streaming || strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream")
 	ctx := req.Context()
+	if rt.policy != nil && rt.policy.RequiresLoopbackDial(req.URL) {
+		ctx = withRequireLoopbackDial(ctx)
+	}
 	var cancel context.CancelFunc
 	if !streaming && rt.requestTimeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, rt.requestTimeout)

@@ -2,7 +2,7 @@
 
 > **Version**: `v1.24.0`\
 > **Base URL (Local)**: `http://localhost:8080`  
-> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`125` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
+> **OpenAPI Contracts**: [docs/openapi/gateway.openapi.yaml](./openapi/gateway.openapi.yaml) (`123` OpenAPI paths), [docs/openapi/mcp.openapi.yaml](./openapi/mcp.openapi.yaml), [docs/openapi/a2a.openapi.yaml](./openapi/a2a.openapi.yaml)  
 > **Provisioning**: SCIM 2.0 `/scim/v2/*` (`12` endpoints across `/scim/v2/Users` and `/scim/v2/Groups`)
 
 ---
@@ -13,8 +13,8 @@
 All Data Plane (`/v1/*`) and Admin Control Plane (`/admin/v1/*`) endpoints extract caller credentials consistently:
 - **Supported Key Headers**: `Authorization: Bearer <token>`, `x-api-key`, `api-key`, `x-goog-api-key`, or a configured override header (`auth.custom_api_key_header` / `GATEWAY_CUSTOM_API_KEY_HEADER`).
 - **Conflicting Credentials Rejected**: Supplying contradictory credentials across multiple supported headers is rejected rather than silently picking one.
-- **Enterprise Data Plane Identity Modes**: When enabled, `/v1/*` accepts OIDC/JWT bearer tokens (`auth.enable_data_plane_jwt: true` + `auth.oidc_issuers` / `auth.oidc_jwks_url`), RFC 7662 token introspection / UserInfo (`auth.introspection`), and CIDR-guarded proxy headers (`auth.proxy_auth`).
-- **Operator Session Cookie (`OperatorSession`)**: Browser sessions authenticated via `/auth/login` or `/auth/sso/{provider}/callback` receive an `HttpOnly` signed `goroute_session` cookie. State-changing cookie-authenticated requests must also echo `X-CSRF-Token`.
+- **Enterprise Data Plane Identity Modes**: When enabled, `/v1/*` accepts asymmetric OIDC/JWT bearer tokens (`auth.enable_data_plane_jwt: true` + `auth.oidc_issuers` / `auth.oidc_jwks_url`) and RFC 7662 token introspection / OIDC UserInfo (`auth.introspection`).
+- **Operator Session Cookie (`OperatorSession`)**: Browser sessions authenticated via `/auth/sso/{provider}/callback` receive an `HttpOnly` signed `goroute_session` cookie. State-changing cookie-authenticated requests must also echo `X-CSRF-Token`.
 
 ```http
 Authorization: Bearer sk-gw-prod-7f9a2b8c4d1e
@@ -65,23 +65,21 @@ Every response from GoRoute AI Gateway includes tracing, attribution, and lifecy
 
 When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, `X-Gateway-Tier-Stepdowns`, `X-Gateway-Key-Deprecated`, `X-Gateway-Key-Revoke-At`, `X-Gateway-Budget-Throttled`, `X-Gateway-Budget-Fallback`, and `X-Gateway-Original-Model` to browser clients.
 
-### 1.4 Operator Authentication, Password Lifecycle & CLI SSO (`/auth/*`)
-1. **Password Login & Sessions**:
-   - `POST /auth/login`: Authenticates username/email + password (screening against HIBP k-anonymity range check when `auth.enable_hibp_check: true` and enforcing failed-login throttling) and issues `goroute_session` + CSRF token.
-   - `POST /auth/logout` *(authenticated)*: Revokes the active session (`gw:auth:session:revoked:{jti}`).
+### 1.4 Operator OIDC Sessions & CLI SSO (`/auth/*`)
+1. **Session Lifecycle**:
+   - `POST /auth/logout` *(authenticated)*: Revokes the active session (`gw:auth:session:revoked:{jti}`), clears `goroute_session`, and returns `end_session_url` for OIDC RP-Initiated Logout when supported by the provider.
    - `GET /auth/me` *(authenticated)*: Returns current principal identity, role, organization/team scope, and CSRF token.
-   - `POST /auth/password` *(authenticated)*: Changes operator password (screens new password with HIBP k-anonymity prefix check when enabled and rejects breached passwords).
 2. **Browser OIDC SSO**:
    - `GET /auth/sso/providers`: Lists configured OIDC SSO providers.
-   - `GET /auth/sso/{provider}/login`: Generates PKCE + state + nonce and redirects (or returns JSON when `?format=json`).
-   - `GET /auth/sso/{provider}/callback`: Validates state/nonce/signature/domain/issuer binding `(org_id, oidc_issuer, oidc_subject)` and mints a `goroute_session` cookie.
+   - `GET /auth/sso/{provider}/login`: Generates PKCE `S256` + `state` + `nonce` and redirects (or returns JSON when `?format=json`).
+   - `GET /auth/sso/{provider}/callback`: Validates `state`, `nonce`, asymmetric signature, `at_hash`, optional `/userinfo` `sub` match, email domain allowlist, and issuer binding `(org_id, oidc_issuer, oidc_subject)`, then mints a `goroute_session` cookie.
 3. **CLI Device Login Flow**:
    - `POST /auth/cli/start`: Starts a CLI login session and returns `login_id` + verification URL.
    - `GET /auth/cli/poll/{login_id}`: Polls login status and retrieves a single-use CLI credential once completed.
    - `POST /auth/cli/complete/{login_id}` *(authenticated session + `X-CSRF-Token`)*: Approves the pending CLI login session.
 
 ### 1.5 SCIM 2.0 Identity Provisioning (`/scim/v2/*`)
-Enterprise identity providers (Okta, Microsoft Entra ID, Ping) synchronize users and groups over bearer-authenticated SCIM 2.0 endpoints:
+Enterprise identity providers synchronize users and groups over bearer-authenticated SCIM 2.0 endpoints:
 - **Users**: `GET /scim/v2/Users`, `POST /scim/v2/Users`, `GET /scim/v2/Users/{id}`, `PUT /scim/v2/Users/{id}`, `PATCH /scim/v2/Users/{id}`, `DELETE /scim/v2/Users/{id}`.
 - **Groups (Teams & Memberships)**: `GET /scim/v2/Groups`, `POST /scim/v2/Groups`, `GET /scim/v2/Groups/{id}`, `PUT /scim/v2/Groups/{id}`, `PATCH /scim/v2/Groups/{id}`, `DELETE /scim/v2/Groups/{id}`. Group name and membership changes execute atomically inside one tenant-scoped PostgreSQL transaction, validating foreign-org user IDs cleanly.
 
@@ -1097,15 +1095,14 @@ GoRoute AI Gateway embeds a production-grade single-page application (SPA) direc
 - `GET /ui/*`: Client-Side History API fallback. Any unmapped subpath under `/ui/` (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/keys`, `/ui/finops`, `/ui/guardrails`, `/ui/credentials`, `/ui/agentic`) serves `index.html` with status `200 OK` for SPA client-side routing (`window.location.pathname` + `history.pushState`).
 
 ### 8.2 Client Authentication
-The Operator UI (`LoginView`) supports three authentication mechanisms depending on gateway configuration:
-1. **Master Admin Key / Bearer Key**: Enter the Master Admin Key configured by `auth.master_admin_key` (`GATEWAY_MASTER_ADMIN_KEY`) or an authorized admin key. The UI probes `GET /admin/v1/organizations` with `Authorization: Bearer <key>` and clears invalid credentials on `401 Unauthorized` or error.
-2. **Operator Password Login**: Signs in with `POST /auth/login` (`auth.ui_username` / `auth.ui_password` or user password credentials), storing an `HttpOnly` `goroute_session` cookie and sending `X-CSRF-Token` on mutations.
-3. **Enterprise OIDC SSO**: Discovers configured providers via `GET /auth/sso/providers` and completes PKCE authorization code login via `/auth/sso/{provider}/login` and `/auth/sso/{provider}/callback`.
+The Operator UI (`LoginView`) supports two authentication mechanisms:
+1. **OIDC SSO (Primary)**: Discovers configured `type: "oidc"` providers via `GET /auth/sso/providers` and completes Authorization Code + PKCE (`S256`) login via `/auth/sso/{provider}/login` and `/auth/sso/{provider}/callback`, storing an `HttpOnly` `goroute_session` cookie and sending `X-CSRF-Token` on mutations (and RP-Initiated Logout `end_session_url` on sign-out).
+2. **Break-Glass Key (Secondary)**: Enter the Master Admin Key configured by `auth.master_admin_key` (`GATEWAY_MASTER_ADMIN_KEY`) for emergency/CLI access. The UI probes `GET /admin/v1/organizations` with `Authorization: Bearer <key>` and clears invalid credentials on `401 Unauthorized` or error.
 
 ### 8.3 Supported Frontend Views
 | In-app view | Component | Core Functionality |
 | :--- | :--- | :--- |
-| Sign In | `LoginView` | Master Admin Key, password login, and OIDC SSO provider selector. |
+| Sign In | `LoginView` | OIDC SSO provider selector and secondary Break-Glass Master Admin Key unlock tab. |
 | Sidebar: Overview | `OverviewView` | Gateway health, latency, request, model, and error summaries. |
 | Sidebar: Playground | `PlaygroundView` | Streaming chat playground with cost & guardrail telemetry and escaped code export. |
 | Sidebar: Orgs & Teams | `OrganizationsView` | Organizations, teams, projects, users, micro-dollar budgets, provider subscriptions, and org model policies. |

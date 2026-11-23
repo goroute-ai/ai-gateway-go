@@ -32,10 +32,10 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, SQL migrations (`0001`–`0038`), change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0040`), change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`125` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `10` `/auth`, and `4` provider aliases):*
+   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`123` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `8` `/auth`, and `4` provider aliases):*
    - Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI paths, self-service key APIs, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
    - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground, SSO/password/key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and Agentic Hub Gateway MCP spec switcher.
    - Model Context Protocol (Spec-Generated Multi-Release `2024-11-05`–`2026-07-28` Virtual Hub, Scoped Servers, and Curated Toolsets).
@@ -49,7 +49,7 @@ docs/
    - Two-layer Guardrails Pipeline (`Engine`, 15-driver registry, Starlark `custom_code` sandbox, tool trust taint tracking, `StreamWindowEvaluator`), `/v1/guardrails/apply`, and preflight credential validation mechanics.
    - Stage 0 `PreRouterRegistry` (heuristic complexity, semantic embedding centroids, quality tiering, Thompson-sampling adaptive bandit), `DeploymentFilterChain` (`RoutingPlugin`, region, `&`/`!` tags, staleness, capacity/budget caps, session & prompt-cache affinity), `Deployment.Priority` tier walk, 7-strategy Load Balancer (including `fastest-response` hedged racing), PTU priority capacity sharing, and `PriorityScheduler`.
    - Adaptive `RetryPolicy` & failure-rate `CooldownPolicy` (with lone-deployment safety net) and specialized fallback chains (`context_window_fallbacks`, `content_policy_fallbacks`, `fallback_targets`).
-   - AES-256-GCM Envelope Encryption (DEK/KEK), `(org_id, oidc_issuer, oidc_subject)` federation, HIBP screening, key rotation grace windows, `CustomAuthenticator`, and Cloud IAM `DistributedTokenCache`.
+   - AES-256-GCM Envelope Encryption (DEK/KEK), `(org_id, oidc_issuer, oidc_subject)` federation, OIDC PKCE `S256` & RP-Initiated Logout, key rotation grace windows, `CustomAuthenticator`, and Cloud IAM `DistributedTokenCache`.
    - Exact 64-bit micro-dollar integer accounting formula ($10^{-6}\text{ USD}$) with zero float drift.
    - Single-roundtrip atomic Redis Lua rate limiting (`check_and_increment.lua`, `check_descriptors.lua`), `rolling_24h` PostgreSQL cold recovery, and distributed routing/affinity/bandit Lua scripts.
    - MCP Virtual Hub aggregation, AEAD-encrypted MRTR tokens, and SHA-256 tool pinning.
@@ -61,7 +61,7 @@ docs/
    - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
    - 6-stage routing pipeline and Reliability Manager (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`, priority tier step-downs, specialized fallback chains, and mid-stream recovery).
-   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0038`), and distributed caching/Redis cluster keyspace.
+   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0040`), and distributed caching/Redis cluster keyspace.
 
 5. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*
@@ -71,7 +71,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 6. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v1.24.0`, migrations `0022`–`0038`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v1.24.0`, migrations `0022`–`0040`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 7. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL & Redis E2E suites, and Playwright headless Chromium Web UI tests.*

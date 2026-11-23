@@ -365,8 +365,8 @@ Authenticates human operators, workload JWTs, reverse-proxy identities, and serv
 #### How It Works Under the Hood
 
 1. **Inbound Authentication, Federation & Lifecycle**:
-   - *Data Plane Ingress*: Supports Virtual API Keys (`sk-gw-...`, optional custom header), multi-issuer OIDC/JWT verification (`RS256`–`EdDSA` / `HS256` with discovery, stale-JWKS grace caching, claim-to-key mappings, and issuer-bound `(org_id, oidc_issuer, oidc_subject)` resolution), RFC 7662 token introspection / UserInfo, CIDR-guarded reverse-proxy headers, and embedded SDK `WithCustomAuthenticator`.
-   - *Control Plane SSO & Sessions (`/auth/*`)*: Provides OIDC Authorization Code + PKCE browser login, CLI device sign-in (`/auth/cli/*`), operator password sessions with `goroute_session` cookies + CSRF protection, Redis login throttling, and server-side HIBP 5-character SHA-1 prefix screening (`/auth/password`).
+   - *Data Plane Ingress*: Supports Virtual API Keys (`sk-gw-...`, optional custom header), multi-issuer asymmetric OIDC/JWT verification (`RS256`–`PS512`, `ES256`–`ES512`, `EdDSA` with Discovery + RFC 8414 fallback, stale-JWKS grace caching, claim-to-key mappings, and issuer-bound `(org_id, oidc_issuer, oidc_subject)` resolution), RFC 7662 token introspection / OIDC UserInfo, and embedded SDK `WithCustomAuthenticator`.
+   - *Control Plane OIDC SSO & Sessions (`/auth/*`)*: Provides standard OIDC Authorization Code + PKCE (`S256`) browser login, CLI device sign-in (`/auth/cli/*`), revocable `goroute_session` cookies + CSRF protection, RP-Initiated Logout (`end_session_url`), and `GATEWAY_MASTER_ADMIN_KEY` break-glass access.
    - *Identity Governance & Key Lifecycle*: Supports `key_type` capability presets (`llm_api`, `management`, `read_only`, `service_account`), manual grace-period rotation and scheduled HTTPS key-rotation webhooks, SCIM v2 `/scim/v2/{Users,Groups}` provisioning, `team_admin` delegation, dynamic access rules, M:N `team_memberships` + `projects`, and audited operator impersonation.
 2. **Outbound Credentials, Opt-In Cloud IAM & Vault**:
    - Upstream provider secrets are envelope-encrypted in PostgreSQL with AES-256-GCM (KEK/DEK), while upstream OAuth `client_credentials` and RFC 8693 token exchanges are cached encrypted in Redis (`DistributedTokenCache`).
@@ -406,7 +406,7 @@ Returns:
 
 ### 6. Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`27` paths), `/admin/v1` (`84` paths), `/auth` (`10` paths), and `4` provider aliases is enforced by `make specgen` (`125` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`27` paths), `/admin/v1` (`84` paths), `/auth` (`8` paths), and `4` provider aliases is enforced by `make specgen` (`123` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -579,13 +579,13 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`125` OpenAPI paths). |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`123` OpenAPI paths). |
 | **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, `WithKeyRotationSecretSink`, routing hooks), and env vars. |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0038`) and Redis cluster keyspace. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0040`) and Redis cluster keyspace. |
 | **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for identity federation, quota descriptors, and routing engines. |
-| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0038`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
-| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 3-tier verification workflow: static/contract parity, race unit & guardrail tests + live Postgres/Redis E2E, and Playwright Chromium Web UI E2E. |
-| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `125` paths) and vendor protocol specifications. |
+| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0040`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
+| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 3-tier verification workflow: static/contract parity, race unit & guardrail tests + live Postgres/Redis E2E, Playwright Chromium Web UI E2E, and production Docker OIDC suites. |
+| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `123` paths) and vendor protocol specifications. |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 
 ---

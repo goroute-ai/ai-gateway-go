@@ -22,6 +22,7 @@ bin/
 gemini_api_*.yaml
 *.log
 *.tmp
+.tmp/
 .DS_Store
 # Frontend dependencies & build artifacts
 node_modules/

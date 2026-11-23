@@ -57,10 +57,12 @@ func TestTeamAdminControlPlaneRBAC_IsolationAndScopedOperations(t *testing.T) {
 		IsActive: true,
 	}))
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.MasterAdminKey = "sk-gw-master-team-admin-test"
-	cfg.Auth.JWTSecret = "team-admin-control-plane-jwt-secret"
-	cfg.Auth.JWTIssuer = "https://idp.orga.example"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_a"
 
@@ -133,13 +135,12 @@ func TestTeamAdminControlPlaneRBAC_IsolationAndScopedOperations(t *testing.T) {
 		},
 	}))
 
-	teamAdminJWT, err := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	teamAdminJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-a1-admin",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute).Unix(),
 	})
-	require.NoError(t, err)
 
 	for _, cred := range []struct {
 		label  string
@@ -393,11 +394,13 @@ func TestAdminAccessGroupRules_CRUDAndDynamicModelGrant(t *testing.T) {
 		IsActive:    true,
 	}))
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.MasterAdminKey = "sk-gw-master-access-rules-test"
 	cfg.Auth.EnableDataPlaneJWT = true
-	cfg.Auth.JWTSecret = "access-rules-dataplane-secret"
-	cfg.Auth.JWTIssuer = "https://idp.orga.example"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_a"
 
@@ -421,7 +424,7 @@ func TestAdminAccessGroupRules_CRUDAndDynamicModelGrant(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	researcherJWT, err := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	researcherJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "sub-researcher",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
@@ -431,7 +434,6 @@ func TestAdminAccessGroupRules_CRUDAndDynamicModelGrant(t *testing.T) {
 			"groups": []string{"engineering", "ai-research"},
 		},
 	})
-	require.NoError(t, err)
 
 	// 1. Before creating the rule, researcher in team_a1 only sees gpt-4.1-mini on GET /v1/models
 	// and is denied claude-sonnet-4-20250514.

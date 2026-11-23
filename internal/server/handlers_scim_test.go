@@ -29,7 +29,6 @@ func newSCIMTestServer(t *testing.T) (*server.GatewayServer, storage.Repository)
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "sk-gw-master-scim-test"
 	cfg.Auth.DefaultOrgID = "org_a"
-	cfg.Auth.JWTSecret = "scim-test-jwt-secret"
 
 	srv, err := server.New(cfg, repo, nil, nil)
 	require.NoError(t, err)

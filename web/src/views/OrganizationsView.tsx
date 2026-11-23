@@ -72,8 +72,12 @@ const SoftPolicyFields: React.FC<{
   </>
 );
 
+const BASE_ROLES = ['developer', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'service_account'];
+
 export const OrganizationsView: React.FC = () => {
-  const { adminKey, isUnlocked, activeOrgId, setActiveOrgId } = useAuth();
+  const { adminKey, authMode, operator, isUnlocked, activeOrgId, setActiveOrgId } = useAuth();
+  const isPlatformAdmin = authMode === 'master_key' || operator?.role === 'platform_admin';
+  const roleOptions = isPlatformAdmin ? [...BASE_ROLES, 'platform_admin'] : BASE_ROLES;
   const qc = useQueryClient();
   const [tab, setTab] = useState<'orgs' | 'teams' | 'users' | 'policies'>('orgs');
   const [modal, setModal] = useState<'org' | 'team' | 'user' | 'sub' | 'policy' | 'members' | null>(null);
@@ -127,12 +131,19 @@ export const OrganizationsView: React.FC = () => {
       ...(Object.keys(fb).length > 0 || zeroDefault ? { budget_fallbacks: fb } : {}),
     };
   };
+  const softInit = (e?: any) => ({
+    softBudget: e ? microsToUsdInput(e.soft_budget_micros) : '',
+    throttle: !!e?.throttle_on_budget_exceeded,
+    fallbacks: e ? formatBudgetFallbacks(e.budget_fallbacks) : '',
+  });
+  const splitCSV = (v?: string) => (v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   const orgs = orgsQ.data?.data || [];
   const teams = teamsQ.data?.data || [];
   const users = usersQ.data?.data || [];
   const subs = subsQ.data?.data || [];
   const pols = polsQ.data?.data || [];
+  const topErr = orgsQ.error || teamsQ.error || delMut.error || usersQ.error || subsQ.error || polsQ.error || (!modal && saveMut.error);
 
   const renderBudgetCell = (entity: { max_budget_micros?: number; soft_budget_micros?: number; spent_micros?: number; throttle_on_budget_exceeded?: boolean; budget_fallbacks?: Record<string, string[]> }) => {
     const softHit = !!entity.soft_budget_micros && entity.soft_budget_micros > 0 && (entity.spent_micros ?? 0) >= entity.soft_budget_micros;
@@ -160,9 +171,9 @@ export const OrganizationsView: React.FC = () => {
           <p className="text-xs text-brand-muted mt-0.5">Org: <code className="text-accent-primary font-mono">{activeOrgId}</code></p>
         </div>
         <div className="flex gap-2">
-          {tab === 'orgs' && <button onClick={() => openM('org', { editOrgId: '', orgName: '', orgId: '', orgBudget: '', softBudget: '', throttle: false, fallbacks: '', selfServe: 'disabled', orgRpm: '', orgTpm: '', orgGuarantee: false, devSelfKeys: false, webhookUrl: '', expiryDays: '7, 1' })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
-          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', softBudget: '', throttle: false, fallbacks: '', teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', teamMinPrio: '', teamAllowedTags: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
-          {tab === 'users' && <button onClick={() => openM('user', { editUserId: '', email: '', userName: '', userId: '', userTeamId: '', userBudget: '', softBudget: '', throttle: false, fallbacks: '', role: 'developer', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
+          {tab === 'orgs' && <button onClick={() => openM('org', { editOrgId: '', orgName: '', orgId: '', orgBudget: '', ...softInit(), selfServe: 'disabled', orgRpm: '', orgTpm: '', orgGuarantee: false, devSelfKeys: false, webhookUrl: '', expiryDays: '7, 1' })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
+          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', ...softInit(), teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', teamMinPrio: '', teamAllowedTags: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
+          {tab === 'users' && <button onClick={() => openM('user', { editUserId: '', email: '', userName: '', userId: '', userTeamId: '', oidcIssuer: '', oidcSubject: '', scimActive: true, userBudget: '', ...softInit(), role: 'developer', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
           {tab === 'policies' && <>
             <button onClick={() => setModal('sub')} className="px-3 py-1.5 rounded-md border border-accent-primary/30 text-accent-primary text-xs font-semibold">+ Provider Sub</button>
             <button onClick={() => setModal('policy')} className={BTN_PRIMARY}>+ Model Policy</button>
@@ -178,9 +189,7 @@ export const OrganizationsView: React.FC = () => {
         ))}
       </div>
 
-      {(orgsQ.error || teamsQ.error || delMut.error || usersQ.error || subsQ.error || polsQ.error || (!modal && saveMut.error)) && (
-        <ErrorAlert error={orgsQ.error || teamsQ.error || delMut.error || usersQ.error || subsQ.error || polsQ.error || saveMut.error} title="Operation failed" />
-      )}
+      {!!topErr && <ErrorAlert error={topErr} title="Operation failed" />}
 
       {tab !== 'policies' ? (
         <div className={`${panel} overflow-x-auto`}>
@@ -204,7 +213,7 @@ export const OrganizationsView: React.FC = () => {
                   <td className={cell}>
                     <div className="flex items-center gap-2">
                       {activeOrgId === o.id ? <Badge variant="info">Selected</Badge> : <button onClick={() => setActiveOrgId(o.id)} className="text-accent-primary hover:underline font-mono">Switch</button>}
-                      <button onClick={() => openM('org', { editOrgId: o.id, orgName: o.name, orgBudget: microsToUsdInput(o.max_budget_micros), softBudget: microsToUsdInput(o.soft_budget_micros), throttle: !!o.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(o.budget_fallbacks), reset: o.budget_reset_period || 'monthly', selfServe: o.self_serve_budget_policy || 'disabled', orgRpm: o.rpm_limit ? String(o.rpm_limit) : '', orgTpm: o.tpm_limit ? String(o.tpm_limit) : '', orgGuarantee: !!o.enforce_guaranteed_throughput, devSelfKeys: !!o.developer_self_serve_keys, webhookUrl: o.lifecycle_webhook_url || '', expiryDays: (o.key_expiry_alert_days || [7, 1]).join(', '), active: o.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => openM('org', { editOrgId: o.id, orgName: o.name, orgBudget: microsToUsdInput(o.max_budget_micros), ...softInit(o), reset: o.budget_reset_period || 'monthly', selfServe: o.self_serve_budget_policy || 'disabled', orgRpm: o.rpm_limit ? String(o.rpm_limit) : '', orgTpm: o.tpm_limit ? String(o.tpm_limit) : '', orgGuarantee: !!o.enforce_guaranteed_throughput, devSelfKeys: !!o.developer_self_serve_keys, webhookUrl: o.lifecycle_webhook_url || '', expiryDays: (o.key_expiry_alert_days || [7, 1]).join(', '), active: o.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
                     </div>
                   </td>
                 </tr>
@@ -218,25 +227,28 @@ export const OrganizationsView: React.FC = () => {
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
                     <button onClick={() => openM('members', { membersTeamId: t.id, membersTeamName: t.name, addUserIds: '', rmUserIds: '' })} className="px-1.5 py-0.5 text-[10px] font-mono text-accent-primary hover:underline" title="Sync members">Members</button>
-                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), softBudget: microsToUsdInput(t.soft_budget_micros), throttle: !!t.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(t.budget_fallbacks), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), teamMinPrio: t.min_priority_rank ? String(t.min_priority_rank) : '', teamAllowedTags: (t.allowed_routing_tags || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), ...softInit(t), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), teamMinPrio: t.min_priority_rank ? String(t.min_priority_rank) : '', teamAllowedTags: (t.allowed_routing_tags || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) delMut.mutate({ kind: 'teams', id: t.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
               ))}
-              {tab === 'users' && users.map((u) => (
+              {tab === 'users' && users.map((u) => {
+                const locked = u.role === 'platform_admin' && !isPlatformAdmin;
+                return (
                 <tr key={u.id}>
                   <td className={`${cell} font-medium text-brand-title`}>{u.email}</td>
                   <td className={`${cell} text-brand-body`}>{u.name || '—'}</td>
                   <td className={`${cell} font-mono text-brand-muted`}>{u.team_id || '—'}</td>
                   <td className={cell}>{renderBudgetCell(u)}</td>
                   <td className={cell}><Badge variant="info">{u.role}</Badge></td>
-                  <td className={cell}><Badge variant={u.is_active ? 'success' : 'danger'}>{u.is_active ? 'Active' : 'Inactive'}</Badge></td>
+                  <td className={cell}><Badge variant={u.is_active && u.scim_active !== false ? 'success' : 'danger'}>{!u.is_active ? 'Inactive' : u.scim_active === false ? 'SCIM Off' : 'Active'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => openM('user', { editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', userBudget: microsToUsdInput(u.max_budget_micros), softBudget: microsToUsdInput(u.soft_budget_micros), throttle: !!u.throttle_on_budget_exceeded, fallbacks: formatBudgetFallbacks(u.budget_fallbacks), role: u.role, active: u.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) delMut.mutate({ kind: 'users', id: u.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('user', { editUserId: u.id, email: u.email, userName: u.name || '', userTeamId: u.team_id || '', oidcIssuer: u.oidc_issuer || '', oidcSubject: u.oidc_subject || '', scimActive: u.scim_active !== false, userBudget: microsToUsdInput(u.max_budget_micros), ...softInit(u), role: u.role, active: u.is_active })} disabled={locked} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (confirm(`Delete user "${u.email}"?`)) delMut.mutate({ kind: 'users', id: u.id }); }} disabled={delMut.isPending || locked} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -319,9 +331,9 @@ export const OrganizationsView: React.FC = () => {
             enforce_guaranteed_throughput: !!f.teamGuarantee,
             default_member_max_budget_micros: defMemM ?? 0,
             default_member_rpm_limit: f.defMemRpm ? parseInt(f.defMemRpm, 10) : 0,
-            team_member_permissions: (f.teamPerms || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            team_member_permissions: splitCSV(f.teamPerms),
             min_priority_rank: f.teamMinPrio ? Math.max(0, parseInt(f.teamMinPrio, 10) || 0) : 0,
-            allowed_routing_tags: (f.teamAllowedTags || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            allowed_routing_tags: splitCSV(f.teamAllowedTags),
             ...budgetPatch('teamBudget', true),
             is_active: !!f.active,
           };
@@ -347,8 +359,7 @@ export const OrganizationsView: React.FC = () => {
       </FormModal>
 
       <FormModal open={modal === 'members'} onClose={() => setModal(null)} title={`Members: ${f.membersTeamName || f.membersTeamId}`} submitLabel="Sync" pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
-        const parse = (v?: string) => (v || '').split(',').map((s) => s.trim()).filter(Boolean);
-        saveMut.mutate({ k: 'team-members', fn: () => adminApi.bulkSyncTeamMembers(adminKey, f.membersTeamId, { org_id: activeOrgId, members: parse(f.addUserIds).map((user_id) => ({ user_id })), remove_user_ids: parse(f.rmUserIds) }) });
+        saveMut.mutate({ k: 'team-members', fn: () => adminApi.bulkSyncTeamMembers(adminKey, f.membersTeamId, { org_id: activeOrgId, members: splitCSV(f.addUserIds).map((user_id) => ({ user_id })), remove_user_ids: splitCSV(f.rmUserIds) }) });
       }}>
         {txt('addUserIds', 'Add User IDs')}
         {txt('rmUserIds', 'Remove User IDs')}
@@ -374,6 +385,9 @@ export const OrganizationsView: React.FC = () => {
             ...(!f.editUserId && f.userId?.trim() && { id: f.userId.trim() }),
             name: (f.userName || '').trim(),
             team_id: f.userTeamId || '',
+            oidc_issuer: (f.oidcIssuer || '').trim(),
+            oidc_subject: (f.oidcSubject || '').trim(),
+            ...(f.editUserId ? { scim_active: !!f.scimActive } : {}),
             ...budgetPatch('userBudget', true),
             is_active: !!f.active,
           };
@@ -387,11 +401,15 @@ export const OrganizationsView: React.FC = () => {
         </div>
         <div className="grid grid-cols-3 gap-2">
           <select value={f.userTeamId || ''} onChange={(e) => set('userTeamId', e.target.value)} className={INPUT_CLS}><option value="">No Team</option>{teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
-          <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}>{['developer', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'service_account'].map((r) => <option key={r} value={r}>{r}</option>)}</select>
+          <select value={f.role} onChange={(e) => set('role', e.target.value)} className={INPUT_CLS}>{roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}</select>
           {txt('userBudget', 'Max USD', 'number')}
         </div>
+        <div className={g2}>
+          {txt('oidcIssuer', 'OIDC Issuer')}
+          {txt('oidcSubject', 'OIDC Subject')}
+        </div>
         <SoftPolicyFields f={f} set={set} />
-        {f.editUserId && chk('active', 'Active')}
+        {f.editUserId && <div className={g2}>{chk('active', 'Active')}{chk('scimActive', 'SCIM Active')}</div>}
       </FormModal>
 
       <FormModal open={modal === 'sub'} onClose={() => setModal(null)} title="Provider Sub" pending={saveMut.isPending} error={saveMut.error} onSubmit={() => saveMut.mutate({ k: 'org-subscriptions', fn: () => adminApi.setOrgSubscription(adminKey, activeOrgId, { provider: f.subProv, is_enabled: f.subOn, auto_enable_new: f.subAuto }) })}>

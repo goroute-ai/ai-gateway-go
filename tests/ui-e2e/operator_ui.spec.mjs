@@ -3,14 +3,10 @@ import { chromium } from 'playwright';
 
 const BASE_URL = process.env.UI_E2E_BASE_URL;
 const ADMIN_KEY = process.env.UI_E2E_ADMIN_KEY;
-const UI_USERNAME = process.env.UI_E2E_USERNAME;
-const UI_PASSWORD = process.env.UI_E2E_PASSWORD;
 const MOCK_IDP_URL = process.env.UI_E2E_MOCK_IDP_URL;
 
 assert(BASE_URL, 'UI_E2E_BASE_URL is required');
 assert(ADMIN_KEY, 'UI_E2E_ADMIN_KEY is required');
-assert(UI_USERNAME, 'UI_E2E_USERNAME is required');
-assert(UI_PASSWORD, 'UI_E2E_PASSWORD is required');
 assert(MOCK_IDP_URL, 'UI_E2E_MOCK_IDP_URL is required');
 
 async function adminAPI(path, method = 'GET', body = null) {
@@ -58,34 +54,27 @@ async function run() {
   const orgId = orgRes.json.id;
   assert(orgId, 'created org id must be non-empty');
 
-  // Create an operator user and verify HIBP prefix-only screening on breached password "password123".
+  // Create a user for team membership sync checks.
   const opUserRes = await adminAPI('/admin/v1/users', 'POST', {
     org_id: orgId,
-    email: `ui-operator-${suffix}@example.com`,
-    name: 'UI E2E Operator',
-    role: 'org_admin',
+    email: `ui-member-${suffix}@example.com`,
+    name: 'UI E2E Member',
+    role: 'developer',
   });
   assert.equal(opUserRes.status, 201, `create user failed: ${opUserRes.text}`);
-  const breachedRes = await adminAPI('/auth/password', 'POST', {
-    user_id: opUserRes.json.id,
-    new_password: 'password123',
-  });
-  assert.equal(breachedRes.status, 400, `expected HIBP 400 rejection, got ${breachedRes.status}: ${breachedRes.text}`);
-  assert.match(breachedRes.text, /breached_password|password_breached|breach/i);
 
-  const hibpAuditRes = await fetch(`${MOCK_IDP_URL}/hibp/audit`).then((r) => r.json());
-  assert(
-    Array.isArray(hibpAuditRes.prefixes) && hibpAuditRes.prefixes.includes('CBFDA'),
-    `expected mock HIBP to receive only 5-char prefix CBFDA, got ${JSON.stringify(hibpAuditRes)}`
-  );
-
-  // Set a strong password on the org_admin user so we can test non-platform_admin UI RBAC later.
-  const strongOpPassword = `UiOrgAdm!Strong-${suffix}`;
-  const setPassRes = await adminAPI('/auth/password', 'POST', {
-    user_id: opUserRes.json.id,
-    new_password: strongOpPassword,
-  });
-  assert.equal(setPassRes.status, 200, `expected 200 setting strong password: ${setPassRes.text}`);
+  // Verify legacy local-password routes are removed in OIDC-only mode.
+  for (const legacyPath of ['/auth/login', '/auth/password']) {
+    const legacyResp = await fetch(`${BASE_URL}${legacyPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert(
+      legacyResp.status === 404 || legacyResp.status === 405,
+      `expected removed endpoint ${legacyPath} to return 404/405, got ${legacyResp.status}`
+    );
+  }
 
   // Verify OIDC SSO start redirect emits PKCE S256 challenge and state without following redirect.
   const ssoStartResp = await fetch(`${BASE_URL}/auth/sso/corp-oidc/login?redirect_after=%2Fui%2F`, {
@@ -104,7 +93,18 @@ async function run() {
 
   const pageErrors = [];
   const consoleErrors = [];
+  const cspViolations = [];
   let allowExpected403 = false;
+  await page.exposeFunction('__recordCSPViolation', (detail) => {
+    cspViolations.push(detail);
+  });
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      if (typeof window.__recordCSPViolation === 'function') {
+        window.__recordCSPViolation(`${e.violatedDirective}: ${e.blockedURI || 'inline'}`);
+      }
+    });
+  });
   page.on('pageerror', (err) => pageErrors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
@@ -118,12 +118,14 @@ async function run() {
   });
 
   try {
-    // Check 1: /ui/ CSP header and SSO + Password LoginView
+    // Check 1: /ui/ CSP header and OIDC-only LoginView
     const uiResp = await page.goto(`${BASE_URL}/ui/`, { waitUntil: 'networkidle' });
     assert(uiResp, 'expected main document response for /ui/');
     assert.equal(uiResp.status(), 200, 'expected 200 for /ui/');
     const csp = (uiResp.headers()['content-security-policy'] || '').toLowerCase();
     assert(csp.includes("script-src 'self'"), `CSP must include script-src 'self', got: ${csp}`);
+    assert(csp.includes("style-src 'self'"), `CSP must include style-src 'self', got: ${csp}`);
+    assert(!csp.includes("'unsafe-inline'"), `CSP must not allow 'unsafe-inline' in any directive, got: ${csp}`);
     const scriptDirective = csp
       .split(';')
       .map((s) => s.trim())
@@ -132,30 +134,31 @@ async function run() {
       scriptDirective && !scriptDirective.includes("'unsafe-inline'"),
       `script-src must not allow 'unsafe-inline', got: ${scriptDirective}`
     );
+    const styleDirective = csp
+      .split(';')
+      .map((s) => s.trim())
+      .find((s) => s.startsWith('style-src'));
+    assert(
+      styleDirective && !styleDirective.includes("'unsafe-inline'"),
+      `style-src must not allow 'unsafe-inline', got: ${styleDirective}`
+    );
 
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
+    assert.equal(
+      await page.locator('input[autocomplete="current-password"]').count(),
+      0,
+      'LoginView must not render password input in OIDC-only mode'
+    );
     await page.getByRole('button', { name: /Continue with Corporate OIDC/i }).waitFor({ state: 'visible' });
 
-    // Check 2: Password Login and assert NO client-side password_sha1 is submitted
-    const loginReqPromise = page.waitForRequest(
-      (req) => req.url().endsWith('/auth/login') && req.method() === 'POST'
+    // Check 2: Full Browser OIDC Authorization Code + PKCE Flow (platform_admin)
+    const callbackRespPromise = page.waitForResponse(
+      (res) => res.url().includes('/auth/sso/corp-oidc/callback')
     );
-    const loginRespPromise = page.waitForResponse(
-      (res) => res.url().endsWith('/auth/login') && res.request().method() === 'POST'
-    );
-
-    await page.locator('input[placeholder="operator@example.com or admin"]').fill(UI_USERNAME);
-    await page.locator('input[placeholder="Enter password..."]').fill(UI_PASSWORD);
-    await page.locator('button[type="submit"]', { hasText: 'Sign In' }).click();
-
-    const loginReq = await loginReqPromise;
-    const loginPayload = loginReq.postDataJSON();
-    assert.equal(loginPayload.password, UI_PASSWORD, 'expected raw password over TLS/localhost transport');
-    assert.equal('password_sha1' in loginPayload, false, 'client must never compute/send password_sha1');
-
-    const loginResp = await loginRespPromise;
-    assert.equal(loginResp.status(), 200, 'expected /auth/login 200');
-    const setCookie = loginResp.headers()['set-cookie'] || '';
+    await page.getByRole('button', { name: /Continue with Corporate OIDC/i }).click();
+    const callbackResp = await callbackRespPromise;
+    assert.equal(callbackResp.status(), 302, 'expected OIDC callback 302 redirect back to /ui/');
+    const setCookie = callbackResp.headers()['set-cookie'] || '';
     if (setCookie) {
       assert(/httponly/i.test(setCookie), `session cookie must be HttpOnly: ${setCookie}`);
     }
@@ -482,11 +485,9 @@ async function run() {
     const meStatusAfterLogout = await page.evaluate(() => fetch('/auth/me').then((r) => r.status));
     assert.equal(meStatusAfterLogout, 401, 'expected /auth/me to return 401 after sign out');
 
-    // Check 7: Sign in as org_admin and verify ConfigView hides platform_admin-only "Rotate KEK" control
+    // Check 7: Sign in as org_admin via OIDC and verify ConfigView hides platform_admin-only "Rotate KEK" control
     allowExpected403 = true;
-    await page.locator('input[placeholder="operator@example.com or admin"]').fill(opUserRes.json.email);
-    await page.locator('input[placeholder="Enter password..."]').fill(strongOpPassword);
-    await page.locator('button[type="submit"]', { hasText: 'Sign In' }).click();
+    await page.getByRole('button', { name: /Continue with Org Admin OIDC/i }).click();
     await page.locator('button[title*="Click to sign out"]').waitFor({ state: 'visible' });
 
     await page.locator('aside button', { hasText: 'Gateway Config' }).click();
@@ -501,10 +502,54 @@ async function run() {
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
 
+    // Check 8: Break-Glass Key tab (invalid key error -> valid master key -> platform_admin access -> sign out)
+    await page.getByRole('button', { name: /Break-Glass Key/i }).click();
+    const keyInput = page.locator('input[placeholder="Enter Master Admin Key..."]');
+    await keyInput.waitFor({ state: 'visible' });
+    await keyInput.fill('sk-gw-invalid-break-glass-key');
+    await page.getByRole('button', { name: /Unlock Break-Glass Session/i }).click();
+    await page.getByText(/Sign In Failed/i).waitFor({ state: 'visible' });
+
+    await keyInput.fill(ADMIN_KEY);
+    await page.getByRole('button', { name: /Unlock Break-Glass Session/i }).click();
+    await page.locator('button[title*="Click to sign out"]').waitFor({ state: 'visible' });
+    await page.locator('aside button', { hasText: 'Gateway Config' }).click();
+    await page.getByRole('button', { name: 'Rotate KEK' }).waitFor({ state: 'visible' });
+
+    // Check 9: /ui/cli device approval route completes POST /auth/cli/start -> /ui/cli -> /auth/cli/poll
+    const cliStartRes = await fetch(`${BASE_URL}/auth/cli/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'corp-oidc' }),
+    });
+    assert.equal(cliStartRes.status, 200, `POST /auth/cli/start failed: ${cliStartRes.status}`);
+    const cliStartJson = await cliStartRes.json();
+    assert(cliStartJson.login_id, 'expected login_id from /auth/cli/start');
+    assert(cliStartJson.verification_url.includes('/ui/cli?'), `unexpected verification_url: ${cliStartJson.verification_url}`);
+
+    await page.goto(cliStartJson.verification_url, { waitUntil: 'networkidle' });
+    // Re-unlock with break-glass key on fresh page load (master_key mode is in-memory)
+    await page.getByRole('button', { name: /Break-Glass Key/i }).click();
+    await page.locator('input[placeholder="Enter Master Admin Key..."]').fill(ADMIN_KEY);
+    await page.getByRole('button', { name: /Unlock Break-Glass Session/i }).click();
+    await page.getByRole('heading', { name: 'Approve CLI Login' }).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: /Approve CLI Login/i }).click();
+    await page.getByText('CLI Session Approved').waitFor({ state: 'visible' });
+
+    const cliPollRes = await fetch(`${BASE_URL}/auth/cli/poll/${cliStartJson.login_id}`);
+    assert.equal(cliPollRes.status, 200, `GET /auth/cli/poll failed: ${cliPollRes.status}`);
+    const cliPollJson = await cliPollRes.json();
+    assert.equal(cliPollJson.status, 'completed');
+    assert(cliPollJson.api_key && cliPollJson.api_key.startsWith('sk-gw-'), 'expected minted sk-gw key from /auth/cli/poll');
+
+    await page.locator('button[title*="Click to sign out"]').click();
+    await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
+
     assert.deepEqual(pageErrors, [], `unexpected browser pageerror exceptions: ${JSON.stringify(pageErrors)}`);
     assert.deepEqual(consoleErrors, [], `unexpected browser console.error messages: ${JSON.stringify(consoleErrors)}`);
+    assert.deepEqual(cspViolations, [], `unexpected browser CSP violations: ${JSON.stringify(cspViolations)}`);
 
-    console.log('UI E2E PASS: CSP, HIBP prefix-only, SSO PKCE redirect, cookie reload persistence, KeysView preset/rotation/block/bulk, Teams perms/sync, QuotasTab rolling_24h/TempBoost, ConfigView KEK RBAC, and logout revocation verified.');
+    console.log('UI E2E PASS: CSP, OIDC-only PKCE login/callback/logout, cookie reload persistence, KeysView preset/rotation/block/bulk, Teams perms/sync, QuotasTab rolling_24h/TempBoost, ConfigView KEK RBAC, Break-Glass Key, /ui/cli approval, and logout revocation verified.');
   } finally {
     await context.close();
     await browser.close();

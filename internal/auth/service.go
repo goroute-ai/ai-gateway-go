@@ -50,7 +50,6 @@ type Service struct {
 	customAPIKeyHeader      string
 	jwtVerifier             *JWTVerifier
 	sessionManager          *SessionManager
-	loginThrottle           *LoginThrottle
 	dataPlaneResolver       *AuthResolver
 	l1TTL                   time.Duration
 	l2TTL                   time.Duration
@@ -142,21 +141,6 @@ func (s *Service) SessionManager() *SessionManager {
 		return nil
 	}
 	return s.sessionManager
-}
-
-// SetLoginThrottle configures brute-force login throttling.
-func (s *Service) SetLoginThrottle(t *LoginThrottle) {
-	if s != nil {
-		s.loginThrottle = t
-	}
-}
-
-// LoginThrottle returns the configured LoginThrottle, if any.
-func (s *Service) LoginThrottle() *LoginThrottle {
-	if s == nil {
-		return nil
-	}
-	return s.loginThrottle
 }
 
 // SetDataPlaneResolver attaches a unified AuthResolver for DataPlaneMiddleware.
@@ -1684,14 +1668,9 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Message:    "Invalid or expired JWT: " + err.Error(),
 			}
 		}
-		user, err := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
-		if err != nil || user == nil {
-			return nil, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "unknown_operator",
-				Message:    "No user mapped to JWT subject",
-			}
+		user, err := s.resolveOIDCUserForClaims(ctx, claims, "unknown_operator")
+		if err != nil {
+			return nil, err
 		}
 		if !user.IsActive {
 			return nil, &domain.GatewayError{
@@ -1796,62 +1775,90 @@ func (s *Service) authenticateSessionToken(ctx context.Context, rawToken string)
 	if sess != nil && op.CSRFToken == "" {
 		op.CSRFToken = sess.CSRFToken
 	}
-	if claims.Synthetic || claims.Subject == UIAdminActorID {
-		return op, nil
-	}
 	if ul, ok := s.repo.(storage.UserLookupRepository); ok && ul != nil {
 		user, uErr := ul.GetUser(ctx, claims.Subject)
-		if uErr == nil && user != nil {
-			if !user.IsActive {
+		if uErr != nil {
+			if errors.Is(uErr, storage.ErrNotFound) {
 				return nil, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "user_inactive",
-					Message:    "Operator user account is inactive",
+					StatusCode: http.StatusUnauthorized,
+					Type:       domain.ErrorTypeAuthentication,
+					Code:       "unknown_operator",
+					Message:    "Operator account associated with this session no longer exists",
 				}
 			}
-			org, oErr := s.repo.GetOrganization(ctx, user.OrgID)
-			if oErr != nil || !org.IsActive {
-				return nil, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "organization_inactive",
-					Message:    "Organization associated with this operator is inactive",
-				}
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "user_lookup_unavailable",
+				Message:    "Unable to verify operator account status",
+				Retryable:  true,
 			}
-			opRole, ok := mapDomainRoleToOperatorRole(user.Role)
-			if !ok {
-				return nil, &domain.GatewayError{
-					StatusCode: http.StatusForbidden,
-					Type:       domain.ErrorTypePermission,
-					Code:       "insufficient_permissions",
-					Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
-				}
-			}
-			if opRole == domain.OperatorRoleTeamAdmin && user.TeamID != "" {
-				if team, teamErr := s.repo.GetTeam(ctx, user.TeamID); teamErr == nil && team != nil {
-					if team.OrgID != user.OrgID {
-						return nil, &domain.GatewayError{
-							StatusCode: http.StatusForbidden,
-							Type:       domain.ErrorTypePermission,
-							Code:       "team_org_mismatch",
-							Message:    "Team associated with this operator does not belong to its organization",
-						}
-					}
-					if !team.IsActive {
-						return nil, &domain.GatewayError{
-							StatusCode: http.StatusForbidden,
-							Type:       domain.ErrorTypePermission,
-							Code:       "team_inactive",
-							Message:    "Team associated with this operator is inactive",
-						}
-					}
-				}
-			}
-			op.Role = opRole
-			op.OrgID = user.OrgID
-			op.TeamID = user.TeamID
 		}
+		if user == nil {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       "unknown_operator",
+				Message:    "Operator account associated with this session was not found",
+			}
+		}
+		if !user.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "user_inactive",
+				Message:    "Operator user account is inactive",
+			}
+		}
+		if !user.SCIMActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "scim_deprovisioned",
+				Message:    "Operator user account has been deprovisioned via SCIM",
+			}
+		}
+		org, oErr := s.repo.GetOrganization(ctx, user.OrgID)
+		if oErr != nil || org == nil || !org.IsActive {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "organization_inactive",
+				Message:    "Organization associated with this operator is inactive",
+			}
+		}
+		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		if !ok {
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "insufficient_permissions",
+				Message:    fmt.Sprintf("User role %q is not authorized for control plane access", user.Role),
+			}
+		}
+		if opRole == domain.OperatorRoleTeamAdmin && user.TeamID != "" {
+			if team, teamErr := s.repo.GetTeam(ctx, user.TeamID); teamErr == nil && team != nil {
+				if team.OrgID != user.OrgID {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "team_org_mismatch",
+						Message:    "Team associated with this operator does not belong to its organization",
+					}
+				}
+				if !team.IsActive {
+					return nil, &domain.GatewayError{
+						StatusCode: http.StatusForbidden,
+						Type:       domain.ErrorTypePermission,
+						Code:       "team_inactive",
+						Message:    "Team associated with this operator is inactive",
+					}
+				}
+			}
+		}
+		op.Role = opRole
+		op.OrgID = user.OrgID
+		op.TeamID = user.TeamID
 	}
 	return op, nil
 }
@@ -2016,14 +2023,9 @@ func (s *Service) AuthenticateSelfServiceUser(ctx context.Context, cred Extracte
 				Message:    "Invalid or expired JWT: " + err.Error(),
 			}
 		}
-		user, err := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
-		if err != nil || user == nil {
-			return nil, nil, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "unknown_user",
-				Message:    "No user mapped to JWT subject",
-			}
+		user, err := s.resolveOIDCUserForClaims(ctx, claims, "unknown_user")
+		if err != nil {
+			return nil, nil, err
 		}
 		checkedUser, uErr := resolveUser(user.ID, user.OrgID)
 		if uErr != nil {
@@ -2064,6 +2066,93 @@ func (s *Service) IsMasterCredential(rawToken string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Service) resolveOIDCUserForClaims(ctx context.Context, claims *JWTClaims, notFoundCode string) (*domain.User, error) {
+	if claims == nil || strings.TrimSpace(claims.Subject) == "" {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       notFoundCode,
+			Message:    "No user mapped to JWT subject",
+		}
+	}
+
+	effectiveIssuer := strings.TrimSpace(claims.Issuer)
+	orgID := strings.TrimSpace(claims.OrgID)
+	singleIssuer := s.jwtVerifier != nil && s.jwtVerifier.SingleIdentityIssuer()
+	if s.jwtVerifier != nil {
+		if ov := s.jwtVerifier.VerifierForIssuer(effectiveIssuer); ov != nil {
+			if effectiveIssuer == "" {
+				effectiveIssuer = strings.TrimSpace(ov.Issuer())
+			}
+			if orgID == "" {
+				orgID = strings.TrimSpace(ov.DefaultOrgID())
+			}
+		}
+	}
+
+	if orgID != "" {
+		if oidcRepo, ok := s.repo.(storage.OIDCUserRepository); ok && oidcRepo != nil {
+			user, err := oidcRepo.GetUserByOIDCIdentity(ctx, orgID, effectiveIssuer, claims.Subject)
+			if errors.Is(err, storage.ErrNotFound) && singleIssuer {
+				user, err = oidcRepo.GetUserByOIDCIdentity(ctx, orgID, "", claims.Subject)
+			}
+			if errors.Is(err, storage.ErrConflict) {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusConflict,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "ambiguous_oidc_identity",
+					Message:    "Multiple OIDC users share this subject without a bound issuer; contact an administrator to bind oidc_issuer",
+				}
+			}
+			if err == nil && user != nil {
+				return user, nil
+			}
+			if !errors.Is(err, storage.ErrNotFound) {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeServer,
+					Code:       "user_lookup_unavailable",
+					Message:    "Unable to resolve OIDC user identity",
+					Retryable:  true,
+				}
+			}
+			return nil, &domain.GatewayError{
+				StatusCode: http.StatusUnauthorized,
+				Type:       domain.ErrorTypeAuthentication,
+				Code:       notFoundCode,
+				Message:    "No user mapped to JWT subject",
+			}
+		}
+	}
+
+	user, err := s.repo.GetUserByOIDCSubject(ctx, claims.Subject)
+	if err != nil || user == nil {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       notFoundCode,
+			Message:    "No user mapped to JWT subject",
+		}
+	}
+	if user.OIDCIssuer != "" && effectiveIssuer != "" && user.OIDCIssuer != effectiveIssuer {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       notFoundCode,
+			Message:    "JWT issuer does not match mapped OIDC user issuer",
+		}
+	}
+	if user.OIDCIssuer == "" && !singleIssuer {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusConflict,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "ambiguous_oidc_identity",
+			Message:    "User has no bound oidc_issuer while multiple OIDC issuers are configured",
+		}
+	}
+	return user, nil
 }
 
 func (s *Service) resolveDefaultActiveOrg(ctx context.Context) *domain.Organization {

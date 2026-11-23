@@ -83,7 +83,6 @@ type MemoryRepository struct {
 	a2aPushConfigs    map[string]*domain.A2APushNotificationConfig
 	files             map[string]*domain.CanonicalFile
 	batches           map[string]*domain.CanonicalBatch
-	userCredentials   map[string]*domain.UserCredential
 	operatorSessions  map[string]*domain.OperatorSession
 }
 
@@ -168,7 +167,6 @@ func NewMemoryRepository() *MemoryRepository {
 		a2aTasks:                       make(map[string]*domain.A2ATask),
 		a2aTaskEvents:                  make(map[string][]*domain.A2ATaskEvent),
 		a2aPushConfigs:                 make(map[string]*domain.A2APushNotificationConfig),
-		userCredentials:                make(map[string]*domain.UserCredential),
 		operatorSessions:               make(map[string]*domain.OperatorSession),
 	}
 	r.seedDefaultGlobalCatalogue()

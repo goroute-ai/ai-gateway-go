@@ -62,12 +62,9 @@ GW_PORT="$(pick_free_port)"
 
 ADMIN_KEY="sk-gw-uie2e-$(openssl rand -hex 20)"
 ENC_KEY="$(openssl rand -hex 32)"
-JWT_SECRET="$(openssl rand -hex 32)"
 SESSION_SECRET="$(openssl rand -hex 32)"
-UI_USERNAME="ui-admin"
-UI_PASSWORD="UiE2eStrong!Pass-$(openssl rand -hex 8)"
 
-echo "==> Starting Mock OIDC/HIBP server on 127.0.0.1:${MOCK_IDP_PORT}..."
+echo "==> Starting Mock OIDC IdP server on 127.0.0.1:${MOCK_IDP_PORT}..."
 MOCK_IDP_PORT="$MOCK_IDP_PORT" node "$UI_E2E_DIR/mock_idp.mjs" >"$TMP_DIR/mock_idp.log" 2>&1 &
 IDP_PID=$!
 
@@ -101,14 +98,10 @@ auth:
   master_encryption_key: "${ENC_KEY}"
   allow_master_key_data_plane: false
   enable_data_plane_jwt: true
-  jwt_secret: "${JWT_SECRET}"
   jwt_issuer: "http://127.0.0.1:${MOCK_IDP_PORT}/oidc"
   jwt_audience: "goroute-ui-client"
-  ui_username: "${UI_USERNAME}"
-  ui_password: "${UI_PASSWORD}"
+  oidc_jwks_url: "http://127.0.0.1:${MOCK_IDP_PORT}/oidc/jwks"
   session_secret: "${SESSION_SECRET}"
-  enable_hibp_check: true
-  hibp_base_url: "http://127.0.0.1:${MOCK_IDP_PORT}/hibp/range"
   sso_providers:
     - id: "corp-oidc"
       display_name: "Corporate OIDC"
@@ -118,6 +111,18 @@ auth:
       issuer: "http://127.0.0.1:${MOCK_IDP_PORT}/oidc"
       discovery_url: "http://127.0.0.1:${MOCK_IDP_PORT}/oidc/.well-known/openid-configuration"
       redirect_url: "http://localhost:${GW_PORT}/auth/sso/corp-oidc/callback"
+      auto_register: true
+      default_role: "platform_admin"
+    - id: "org-oidc"
+      display_name: "Org Admin OIDC"
+      type: "oidc"
+      client_id: "goroute-org-client"
+      client_secret: "mock-org-client-secret"
+      issuer: "http://127.0.0.1:${MOCK_IDP_PORT}/org-oidc"
+      discovery_url: "http://127.0.0.1:${MOCK_IDP_PORT}/org-oidc/.well-known/openid-configuration"
+      redirect_url: "http://localhost:${GW_PORT}/auth/sso/org-oidc/callback"
+      auto_register: true
+      default_role: "org_admin"
 
 rate_limit:
   enabled: true
@@ -126,10 +131,10 @@ rate_limit:
 security:
   network:
     outbound_ssrf:
-      allow_private_networks: true
-      allow_insecure_http: true
+      allow_private_networks: false
+      allow_insecure_http: false
+      allow_loopback_http: true
       allowed_schemes:
-        - "http"
         - "https"
 EOF
 
@@ -161,8 +166,6 @@ echo "==> Executing Playwright Chromium Operator Web UI suite..."
   cd "$UI_E2E_DIR"
   UI_E2E_BASE_URL="http://localhost:${GW_PORT}" \
   UI_E2E_ADMIN_KEY="$ADMIN_KEY" \
-  UI_E2E_USERNAME="$UI_USERNAME" \
-  UI_E2E_PASSWORD="$UI_PASSWORD" \
   UI_E2E_MOCK_IDP_URL="http://127.0.0.1:${MOCK_IDP_PORT}" \
   node operator_ui.spec.mjs
 )

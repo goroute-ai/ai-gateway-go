@@ -3,14 +3,11 @@ package server_test
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -82,8 +79,19 @@ func findCookie(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
-func TestAuthSSO_LoginCookieCSRFAdminAndLogoutRevocation(t *testing.T) {
-	srv, repo, cfg := newSSOTestServer(t, nil)
+func TestAuthSSO_SessionCookieCSRF_RPInitiatedLogout_AndLegacyRoutesRemoved(t *testing.T) {
+	idp := newServerTestOIDCIssuer(t)
+	srv, repo, _ := newSSOTestServer(t, func(c *config.Config) {
+		c.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
+		c.Auth.SSOProviders = []config.SSOProviderConfig{{
+			ID:           "keycloak",
+			Type:         "oidc",
+			ClientID:     "goroute-gateway",
+			ClientSecret: "kc-secret",
+			Issuer:       idp.Issuer(),
+			DiscoveryURL: idp.DiscoveryURL(),
+		}}
+	})
 	ctx := context.Background()
 
 	user := &domain.User{
@@ -98,54 +106,20 @@ func TestAuthSSO_LoginCookieCSRFAdminAndLogoutRevocation(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	// Admin sets initial password for the user via POST /auth/password.
-	setPassRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/password", map[string]any{
-		"user_id":      user.ID,
-		"new_password": "StrongOperatorPassword!1",
-	}, map[string]string{
-		"Authorization": "Bearer " + cfg.Auth.MasterAdminKey,
-	})
-	if setPassRec.Code != http.StatusOK {
-		t.Fatalf("POST /auth/password status = %d, body = %s", setPassRec.Code, setPassRec.Body.String())
+	// Legacy password endpoints are removed in OIDC-only mode.
+	for _, removed := range []string{"/auth/login", "/auth/password"} {
+		rec := doJSONReq(t, srv.Handler(), http.MethodPost, removed, map[string]any{}, nil)
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected removed endpoint %s to return 404/405, got %d", removed, rec.Code)
+		}
 	}
 
-	// Login via POST /auth/login.
-	loginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":    user.Email,
-		"password": "StrongOperatorPassword!1",
-	}, nil)
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("POST /auth/login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
+	// Issue a provider-bound OIDC operator session cleanly.
+	issued, err := srv.SessionManager().IssueSessionWithProvider(ctx, user.ID, user.OrgID, user.TeamID, "keycloak", domain.OperatorRoleOrgAdmin)
+	if err != nil {
+		t.Fatalf("IssueSessionWithProvider: %v", err)
 	}
-
-	var loginBody struct {
-		Token     string `json:"token"`
-		CSRFToken string `json:"csrf_token"`
-		Operator  struct {
-			ActorID    string `json:"actor_id"`
-			Role       string `json:"role"`
-			OrgID      string `json:"org_id"`
-			AuthMethod string `json:"auth_method"`
-			SessionID  string `json:"session_id"`
-		} `json:"operator"`
-	}
-	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginBody); err != nil {
-		t.Fatalf("decode login response: %v", err)
-	}
-	if loginBody.Token == "" || loginBody.CSRFToken == "" || loginBody.Operator.SessionID == "" {
-		t.Fatalf("expected token, csrf_token, and session_id in login response, got %+v", loginBody)
-	}
-	if loginBody.Operator.ActorID != user.ID || loginBody.Operator.OrgID != "org-sso" || loginBody.Operator.AuthMethod != "session" {
-		t.Fatalf("unexpected operator in login response: %+v", loginBody.Operator)
-	}
-
-	sessCookie := findCookie(loginRec, auth.SessionCookieName)
-	if sessCookie == nil {
-		t.Fatalf("expected %s cookie to be set", auth.SessionCookieName)
-	}
-	if !sessCookie.HttpOnly || !sessCookie.Secure || sessCookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("expected HttpOnly; Secure; SameSite=Lax cookie, got %+v", sessCookie)
-	}
+	sessCookie := &http.Cookie{Name: auth.SessionCookieName, Value: issued.Token}
 
 	// GET /auth/me with cookie succeeds without CSRF header.
 	meRec := doJSONReq(t, srv.Handler(), http.MethodGet, "/auth/me", nil, nil, sessCookie)
@@ -178,7 +152,7 @@ func TestAuthSSO_LoginCookieCSRFAdminAndLogoutRevocation(t *testing.T) {
 		"org_id": "org-sso",
 		"name":   "Team Allowed Cookie",
 	}, map[string]string{
-		auth.CSRFHeaderName: loginBody.CSRFToken,
+		auth.CSRFHeaderName: issued.CSRFToken,
 	}, sessCookie)
 	if okCSRFRec.Code != http.StatusCreated {
 		t.Fatalf("POST /admin/v1/teams with valid CSRF status = %d, want 201 (%s)", okCSRFRec.Code, okCSRFRec.Body.String())
@@ -189,18 +163,30 @@ func TestAuthSSO_LoginCookieCSRFAdminAndLogoutRevocation(t *testing.T) {
 		"org_id": "org-sso",
 		"name":   "Team Allowed Bearer",
 	}, map[string]string{
-		"Authorization": "Bearer " + loginBody.Token,
+		"Authorization": "Bearer " + issued.Token,
 	})
 	if bearerRec.Code != http.StatusCreated {
 		t.Fatalf("POST /admin/v1/teams with Bearer session JWT status = %d, want 201 (%s)", bearerRec.Code, bearerRec.Body.String())
 	}
 
-	// Logout revokes session jti and clears cookie.
+	// Logout revokes session jti, clears cookie, and returns RP-Initiated Logout end_session_url.
 	logoutRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/logout", nil, map[string]string{
-		auth.CSRFHeaderName: loginBody.CSRFToken,
+		auth.CSRFHeaderName: issued.CSRFToken,
 	}, sessCookie)
 	if logoutRec.Code != http.StatusOK {
 		t.Fatalf("POST /auth/logout status = %d, body = %s", logoutRec.Code, logoutRec.Body.String())
+	}
+	var logoutResp struct {
+		Status        string `json:"status"`
+		EndSessionURL string `json:"end_session_url"`
+	}
+	if err := json.Unmarshal(logoutRec.Body.Bytes(), &logoutResp); err != nil {
+		t.Fatalf("decode logout response: %v", err)
+	}
+	if !strings.HasPrefix(logoutResp.EndSessionURL, idp.Issuer()+"/protocol/openid-connect/logout") ||
+		!strings.Contains(logoutResp.EndSessionURL, "post_logout_redirect_uri=") ||
+		!strings.Contains(logoutResp.EndSessionURL, "%2Fui%2F") {
+		t.Fatalf("expected OIDC end_session_url targeting /ui/ in logout response, got %+v", logoutResp)
 	}
 	cleared := findCookie(logoutRec, auth.SessionCookieName)
 	if cleared == nil || cleared.MaxAge != -1 {
@@ -213,235 +199,9 @@ func TestAuthSSO_LoginCookieCSRFAdminAndLogoutRevocation(t *testing.T) {
 		t.Fatalf("replayed cookie GET /auth/me status = %d, want 401", replayCookieRec.Code)
 	}
 	replayAdminRec := doJSONReq(t, srv.Handler(), http.MethodGet, "/admin/v1/teams?org_id=org-sso", nil, map[string]string{
-		"Authorization": "Bearer " + loginBody.Token,
+		"Authorization": "Bearer " + issued.Token,
 	})
 	if replayAdminRec.Code != http.StatusUnauthorized {
 		t.Fatalf("replayed bearer GET /admin/v1/teams status = %d, want 401", replayAdminRec.Code)
-	}
-}
-
-func TestAuthSSO_UIAdminCredentialsAndThrottleAndLegacyUpgrade(t *testing.T) {
-	srv, repo, _ := newSSOTestServer(t, func(c *config.Config) {
-		c.Auth.UIUsername = "admin"
-		c.Auth.UIPassword = "super-ui-password-123"
-		c.Auth.DefaultOrgID = "org-sso"
-	})
-	ctx := context.Background()
-
-	// 1. UIUsername/UIPassword login works and returns platform_admin session.
-	uiLoginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"username": "admin",
-		"password": "super-ui-password-123",
-	}, nil)
-	if uiLoginRec.Code != http.StatusOK {
-		t.Fatalf("UI admin login status = %d, body = %s", uiLoginRec.Code, uiLoginRec.Body.String())
-	}
-	uiCookie := findCookie(uiLoginRec, auth.SessionCookieName)
-	uiMeRec := doJSONReq(t, srv.Handler(), http.MethodGet, "/auth/me", nil, nil, uiCookie)
-	if uiMeRec.Code != http.StatusOK || !strings.Contains(uiMeRec.Body.String(), `"platform_admin"`) {
-		t.Fatalf("UI admin /auth/me unexpected response: %d %s", uiMeRec.Code, uiMeRec.Body.String())
-	}
-
-	// 2. Lower-cost scrypt password hash + 5-attempt lockout throttle + transparent scrypt cost upgrade.
-	user := &domain.User{
-		ID:       "usr-legacy",
-		OrgID:    "org-sso",
-		Email:    "legacy@sso.example.com",
-		Name:     "Legacy User",
-		Role:     domain.RoleOrgAdmin,
-		IsActive: true,
-	}
-	if err := repo.CreateUser(ctx, user); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	legacyHash, err := auth.HashPasswordScryptWithCost("LegacyPass!999", 1024, 8, 1)
-	if err != nil {
-		t.Fatalf("HashPasswordScryptWithCost: %v", err)
-	}
-	if err := repo.UpsertUserPassword(ctx, user.ID, legacyHash, false); err != nil {
-		t.Fatalf("UpsertUserPassword: %v", err)
-	}
-
-	now := time.Date(2026, 11, 18, 14, 0, 0, 0, time.UTC)
-	srv.LoginThrottle().SetNowFunc(func() time.Time { return now })
-
-	for i := 1; i <= 5; i++ {
-		rec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-			"email":    user.Email,
-			"password": "wrong-password",
-		}, nil)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("bad login %d status = %d, want 401", i, rec.Code)
-		}
-	}
-
-	// 6th attempt (even with correct password!) is throttled with 429.
-	throttledRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":    user.Email,
-		"password": "LegacyPass!999",
-	}, nil)
-	if throttledRec.Code != http.StatusTooManyRequests {
-		t.Fatalf("6th attempt status = %d, want 429 (%s)", throttledRec.Code, throttledRec.Body.String())
-	}
-
-	// Advance clock past 300s lockout and login with correct legacy password.
-	now = now.Add(301 * time.Second)
-	okRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":    user.Email,
-		"password": "LegacyPass!999",
-	}, nil)
-	if okRec.Code != http.StatusOK {
-		t.Fatalf("post-lockout login status = %d, body = %s", okRec.Code, okRec.Body.String())
-	}
-
-	// Verify stored password hash was transparently upgraded from sha256: to scrypt:32768:8:1:.
-	cred, err := repo.GetUserCredential(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("GetUserCredential: %v", err)
-	}
-	if !strings.HasPrefix(cred.PasswordHash, "scrypt:32768:8:1:") {
-		t.Fatalf("expected upgraded scrypt hash, got %q", cred.PasswordHash)
-	}
-}
-
-func TestAuthSSO_HIBPBreachScreeningAndPasswordRotation(t *testing.T) {
-	breachedPass := "CompromisedPass!2026"
-	breachedDigest := fmt.Sprintf("%X", sha1.Sum([]byte(breachedPass)))
-	prefix := breachedDigest[:5]
-	suffix := breachedDigest[5:]
-
-	hibpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/range/"+prefix {
-			_, _ = w.Write([]byte(suffix + ":1337\n"))
-			return
-		}
-		_, _ = w.Write([]byte("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF:1\n"))
-	}))
-	defer hibpSrv.Close()
-
-	srv, repo, _ := newSSOTestServer(t, func(c *config.Config) {
-		c.Auth.EnableHIBPCheck = true
-		c.Auth.HIBPBaseURL = hibpSrv.URL
-		c.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
-		c.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
-	})
-	ctx := context.Background()
-
-	user := &domain.User{
-		ID:       "usr-hibp",
-		OrgID:    "org-sso",
-		Email:    "hibp@sso.example.com",
-		Name:     "HIBP User",
-		Role:     domain.RoleOrgAdmin,
-		IsActive: true,
-	}
-	if err := repo.CreateUser(ctx, user); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	hash, err := auth.HashPasswordScrypt(breachedPass)
-	if err != nil {
-		t.Fatalf("HashPasswordScrypt: %v", err)
-	}
-	if err := repo.UpsertUserPassword(ctx, user.ID, hash, false); err != nil {
-		t.Fatalf("UpsertUserPassword: %v", err)
-	}
-
-	// Logging in with a breached password is rejected server-side before issuing a session,
-	// regardless of any client-supplied password_sha1 value.
-	for _, fields := range []map[string]any{
-		{"email": user.Email, "password": breachedPass},
-		{"email": user.Email, "password": breachedPass, "password_sha1": strings.Repeat("A", 40)},
-	} {
-		loginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", fields, nil)
-		if loginRec.Code != http.StatusForbidden || len(loginRec.Result().Cookies()) != 0 {
-			t.Fatalf("expected 403 breached_password rejection without a cookie, got %d (%s)", loginRec.Code, loginRec.Body.String())
-		}
-	}
-
-	session, err := srv.SessionManager().IssueSession(ctx, user.ID, user.OrgID, user.TeamID, domain.OperatorRoleOrgAdmin)
-	if err != nil {
-		t.Fatalf("IssueSession: %v", err)
-	}
-
-	// Rotating to a breached password via POST /auth/password is rejected with 400.
-	badRotateRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/password", map[string]any{
-		"current_password": breachedPass,
-		"new_password":     breachedPass,
-	}, map[string]string{
-		"Authorization": "Bearer " + session.Token,
-	})
-	if badRotateRec.Code != http.StatusBadRequest || !strings.Contains(badRotateRec.Body.String(), "breached_password") {
-		t.Fatalf("expected 400 breached_password on rotation, got %d (%s)", badRotateRec.Code, badRotateRec.Body.String())
-	}
-
-	// Rotating to a clean password succeeds and revokes prior sessions.
-	okRotateRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/password", map[string]any{
-		"current_password": breachedPass,
-		"new_password":     "FreshUnbreachedPass!987",
-	}, map[string]string{
-		"Authorization": "Bearer " + session.Token,
-	})
-	if okRotateRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on password rotation, got %d (%s)", okRotateRec.Code, okRotateRec.Body.String())
-	}
-
-	// Old session token must be rejected with 401 after password rotation.
-	oldMeRec := doJSONReq(t, srv.Handler(), http.MethodGet, "/auth/me", nil, map[string]string{
-		"Authorization": "Bearer " + session.Token,
-	})
-	if oldMeRec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected old session token to be revoked after password rotation, got %d", oldMeRec.Code)
-	}
-
-	// Login with new password succeeds with password_reset_required = false.
-	newLoginRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":    user.Email,
-		"password": "FreshUnbreachedPass!987",
-	}, nil)
-	if newLoginRec.Code != http.StatusOK {
-		t.Fatalf("new login status = %d, body = %s", newLoginRec.Code, newLoginRec.Body.String())
-	}
-	var newLoginResp struct {
-		PasswordResetRequired bool `json:"password_reset_required"`
-	}
-	if err := json.Unmarshal(newLoginRec.Body.Bytes(), &newLoginResp); err != nil {
-		t.Fatalf("decode newLoginResp: %v", err)
-	}
-	if newLoginResp.PasswordResetRequired {
-		t.Fatalf("expected password_reset_required=false after rotation")
-	}
-
-	// HIBP outage preserves login availability (fail-open with warning).
-	hibpDownSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer hibpDownSrv.Close()
-	downSrv, downRepo, _ := newSSOTestServer(t, func(c *config.Config) {
-		c.Auth.EnableHIBPCheck = true
-		c.Auth.HIBPBaseURL = hibpDownSrv.URL
-		c.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
-		c.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
-	})
-	downUser := &domain.User{
-		ID:       "usr-hibp-down",
-		OrgID:    "org-sso",
-		Email:    "hibp-down@sso.example.com",
-		Name:     "HIBP Down User",
-		Role:     domain.RoleOrgAdmin,
-		IsActive: true,
-	}
-	if err := downRepo.CreateUser(ctx, downUser); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	downHash, _ := auth.HashPasswordScrypt("FreshUnbreachedPass!987")
-	if err := downRepo.UpsertUserPassword(ctx, downUser.ID, downHash, false); err != nil {
-		t.Fatalf("UpsertUserPassword: %v", err)
-	}
-	downLoginRec := doJSONReq(t, downSrv.Handler(), http.MethodPost, "/auth/login", map[string]any{
-		"email":    downUser.Email,
-		"password": "FreshUnbreachedPass!987",
-	}, nil)
-	if downLoginRec.Code != http.StatusOK {
-		t.Fatalf("expected HIBP service outage to fail open on login, got %d (%s)", downLoginRec.Code, downLoginRec.Body.String())
 	}
 }

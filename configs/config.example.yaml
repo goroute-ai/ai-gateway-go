@@ -10,6 +10,7 @@
 
 server:
   environment: "production"  # "development", "staging", or "production"
+  public_base_url: "https://gateway.example.com" # Canonical external origin for OIDC redirect/logout & CLI URLs
   host: "0.0.0.0"
   port: 8080
   grpc_port: 0               # Optional A2A gRPC server port (0 = disabled, e.g. 9090)
@@ -17,7 +18,7 @@ server:
   write_timeout: 300s
   idle_timeout: 120s
   shutdown_timeout: 15s
-  cors_allowed_origins: []
+  cors_allowed_origins: []   # Keep [] for same-origin BFF UI; production rejects "*", "null", and http:// origins (override: GATEWAY_CORS_ALLOWED_ORIGINS)
   cors_allow_credentials: false
   enable_hsts: false
   max_file_storage_bytes_per_org: 5368709120 # Max per-org file storage quota in bytes (default 5 GiB; 0 = unlimited)
@@ -75,17 +76,20 @@ auth:
   key_rotation_poll_interval: 1m
   key_rotation_grace_period: 24h
   key_expiry_alert_poll_interval: 15m
-  jwt_secret: "os.environ/GATEWAY_JWT_SECRET"
+  # Inbound JWT / OIDC Bearer authentication (Data Plane & Control Plane)
+  # Note: Symmetric HS* JWT verification is disabled; all OIDC issuers must use asymmetric JWKS / Discovery.
   jwt_issuer: ""
   jwt_audience: ""
   oidc_jwks_url: ""
   oidc_issuers: []
-  #  - issuer: "https://idp.example.com/oauth2/default"
-  #    audience: "goroute-gateway"
-  #    jwks_url: "https://idp.example.com/oauth2/default/v1/keys"
-  #    discovery_url: "https://idp.example.com/oauth2/default/.well-known/openid-configuration"
-  #    algorithms: ["RS256", "ES256"]
+  #  - issuer: "https://keycloak.example.com/realms/goroute"
+  #    audience: "goroute-gateway"   # Required to prevent cross-client token replay
+  #    jwks_url: "https://keycloak.example.com/realms/goroute/protocol/openid-connect/certs"
+  #    discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #    algorithms: ["RS256", "PS256", "ES256", "EdDSA"]
   #    allowed_email_domains: ["example.com"]
+  #    allow_unverified_email: false # Require email_verified == true for domain checks & JIT email matching
+  #    allow_privileged_role_claims: false # Keep false unless IdP role claim is authorized to JIT platform_admin
   #    auto_register: false
   #    default_org_id: "org_default"
   #    default_team_id: ""
@@ -97,50 +101,44 @@ auth:
   #      team_ids: "groups"
   #      role: "role"
   #      end_user: "end_user_id"
+  # Control Plane OIDC Authorization Code + PKCE SSO providers
   sso_providers: []
-  #  - id: "okta"
-  #    name: "Okta Workforce SSO"
-  #    type: "oidc"
-  #    display_name: "Sign in with Okta"
-  #    client_id: "os.environ/SSO_OKTA_CLIENT_ID"
-  #    client_secret: "os.environ/SSO_OKTA_CLIENT_SECRET"
-  #    issuer: "https://idp.example.com/oauth2/default"
-  #    redirect_url: "https://gateway.example.com/auth/sso/okta/callback"
+  #  - id: "keycloak"
+  #    name: "Keycloak SSO"
+  #    type: "oidc"                   # Only open standard "oidc" is supported
+  #    display_name: "Sign in with Keycloak"
+  #    client_id: "os.environ/SSO_KEYCLOAK_CLIENT_ID"
+  #    client_secret: "os.environ/SSO_KEYCLOAK_CLIENT_SECRET"
+  #    issuer: "https://keycloak.example.com/realms/goroute"
+  #    discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #    redirect_url: "https://gateway.example.com/auth/sso/keycloak/callback"
   #    scopes: ["openid", "profile", "email"]
+  #    algorithms: ["RS256", "ES256", "EdDSA"]
   #    allowed_email_domains: ["example.com"]
-  #    auto_register: false
+  #    allow_unverified_email: false
+  #    allow_privileged_role_claims: false
+  #    auto_register: true
   #    default_org_id: "org_default"
   #    default_role: "org_viewer"
+  # OAuth 2.0 RFC 7662 Token Introspection / OIDC UserInfo (supports OIDC Discovery via issuer/discovery_url)
   introspection: {}
-  #  token_info_endpoint: "https://idp.example.com/oauth2/v1/introspect"
+  #  issuer: "https://keycloak.example.com/realms/goroute"
+  #  audience: "goroute-gateway"
+  #  discovery_url: "https://keycloak.example.com/realms/goroute/.well-known/openid-configuration"
+  #  # token_info_endpoint: "https://keycloak.example.com/realms/goroute/protocol/openid-connect/token/introspect"
   #  client_id: "os.environ/INTROSPECT_CLIENT_ID"
   #  client_secret: "os.environ/INTROSPECT_CLIENT_SECRET"
-  #  mode: "introspection"            # "introspection" (RFC 7662) or "userinfo"
+  #  mode: "introspect"               # "auto", "introspect" (RFC 7662), or "userinfo"
   #  cache_ttl: 5m
-  proxy_auth:
-    enabled: false
-    trusted_proxy_cidrs: []          # e.g. ["10.0.0.0/8"]
-    header_mapping: {}
-    #  user_id: "X-Auth-Request-User"
-    #  email: "X-Auth-Request-Email"
-    #  org_id: "X-Auth-Request-Org"
-    #  role: "X-Auth-Request-Role"
-  ui_username: ""                    # Optional password-login operator username
-  ui_password: ""                    # Optional password-login operator password (or os.environ/GATEWAY_UI_PASSWORD)
-  session_secret: "os.environ/GATEWAY_SESSION_SECRET" # HMAC secret for operator goroute_session cookies
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET" # Required >=32 bytes in production for goroute_session HMAC
   session_ttl: 24h
-  enable_hibp_check: false           # k-anonymity SHA-1 prefix breached password check
-  hibp_base_url: ""                  # Optional override for Pwned Passwords range API base URL
+  cli_login_default_ttl: 24h         # Default expiration for CLI-minted Virtual Keys
+  cli_login_max_ttl: 720h            # Maximum expiration (30d) for CLI-minted Virtual Keys
+  auth_start_rate_limit_per_min: 30  # Per-IP rate limit on /auth/sso/*/login and /auth/cli/start
   default_org_id: "org_default"
   default_virtual_key: "os.environ/GATEWAY_DEFAULT_KEY"
   l1_cache_ttl: 15s
   l2_cache_ttl: 5m
-  key_rotation_poll_interval: 1m
-  key_rotation_grace_period: 24h
-  key_expiry_alert_poll_interval: 1h
-  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
-  session_ttl: 12h
-  enable_hibp_check: false
 
 router:
   default_fast_alias: "fast"
@@ -313,8 +311,9 @@ security:
     outbound_ssrf:
       # In production, private networks and insecure HTTP must be disabled
       allow_private_networks: false
-      allowed_private_cidrs: []
+      allowed_private_cidrs: []   # Targeted VPC CIDRs only (e.g. ["10.20.0.0/16"]); production rejects < /8 (IPv4), < /7 (IPv6), loopback, link-local, and IMDS ranges (override: GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS)
       allow_insecure_http: false   # Strict HTTPS enforcement
+      allow_loopback_http: false   # Set true in local dev ONLY to allow http://localhost|127.0.0.1|::1 (e.g. Keycloak dev server) without opening private RFC 1918 networks
       allowed_schemes: ["https"]
       blocked_ips:
         - "169.254.169.254"       # Cloud metadata service protection
@@ -364,7 +363,6 @@ a2a:
 # ------------------------------------------------------------------------------
 # Certified Custom OpenAI-Compatible Upstream Providers
 # ------------------------------------------------------------------------------
-providers:
 providers:
   request_timeout: 2m          # Total deadline for non-streaming upstream requests
   response_header_timeout: 2m  # Maximum wait for upstream response headers / TTFT

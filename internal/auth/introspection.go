@@ -29,15 +29,19 @@ const (
 	// IntrospectionModeUserInfo forces OIDC GET UserInfo verification.
 	IntrospectionModeUserInfo = "userinfo"
 
-	defaultIntrospectionCacheTTL = 5 * time.Minute
-	maxIntrospectionResponseSize = 1 << 20 // 1 MiB
-	introspectionRequestTimeout  = 15 * time.Second
-	introspectRedisKeyPrefix     = "gw:auth:introspect:"
+	defaultIntrospectionCacheTTL   = 5 * time.Minute
+	defaultIntrospectionMaxEntries = 4096
+	maxIntrospectionResponseSize   = 1 << 20 // 1 MiB
+	introspectionRequestTimeout    = 15 * time.Second
+	introspectRedisKeyPrefix       = "gw:auth:introspect:"
 )
 
 // IntrospectionConfig configures OAuth 2.0 RFC 7662 token introspection and OIDC UserInfo verification.
 type IntrospectionConfig struct {
 	TokenInfoEndpoint string
+	Issuer            string
+	Audience          string
+	DiscoveryURL      string
 	ClientID          string
 	ClientSecret      string
 	Mode              string // "auto", "introspect", "userinfo"
@@ -47,6 +51,7 @@ type IntrospectionConfig struct {
 	OrgIDField        string
 	TeamIDField       string
 	CacheTTL          time.Duration
+	MaxL1Entries      int
 	NetworkPolicy     *network.Policy
 	HTTPClient        *http.Client
 	Redis             *storage.RedisFabric
@@ -55,24 +60,25 @@ type IntrospectionConfig struct {
 // IntrospectionResult contains verified claims extracted from an RFC 7662 introspection
 // response or an OIDC UserInfo endpoint response.
 type IntrospectionResult struct {
-	Active    bool           `json:"active"`
-	Subject   string         `json:"sub,omitempty"`
-	UserID    string         `json:"user_id,omitempty"`
-	Email     string         `json:"email,omitempty"`
-	Role      string         `json:"role,omitempty"`
-	OrgID     string         `json:"org_id,omitempty"`
-	TeamID    string         `json:"team_id,omitempty"`
-	Scope     string         `json:"scope,omitempty"`
-	ClientID  string         `json:"client_id,omitempty"`
-	TokenType string         `json:"token_type,omitempty"`
-	Username  string         `json:"username,omitempty"`
-	Issuer    string         `json:"iss,omitempty"`
-	Audience  AudienceClaim  `json:"aud,omitempty"`
-	ExpiresAt int64          `json:"exp,omitempty"`
-	IssuedAt  int64          `json:"iat,omitempty"`
-	NotBefore int64          `json:"nbf,omitempty"`
-	Groups    []string       `json:"groups,omitempty"`
-	Claims    map[string]any `json:"claims,omitempty"`
+	Active        bool           `json:"active"`
+	Subject       string         `json:"sub,omitempty"`
+	UserID        string         `json:"user_id,omitempty"`
+	Email         string         `json:"email,omitempty"`
+	EmailVerified bool           `json:"email_verified,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	OrgID         string         `json:"org_id,omitempty"`
+	TeamID        string         `json:"team_id,omitempty"`
+	Scope         string         `json:"scope,omitempty"`
+	ClientID      string         `json:"client_id,omitempty"`
+	TokenType     string         `json:"token_type,omitempty"`
+	Username      string         `json:"username,omitempty"`
+	Issuer        string         `json:"iss,omitempty"`
+	Audience      AudienceClaim  `json:"aud,omitempty"`
+	ExpiresAt     int64          `json:"exp,omitempty"`
+	IssuedAt      int64          `json:"iat,omitempty"`
+	NotBefore     int64          `json:"nbf,omitempty"`
+	Groups        []string       `json:"groups,omitempty"`
+	Claims        map[string]any `json:"claims,omitempty"`
 }
 
 type l1IntrospectionEntry struct {
@@ -86,24 +92,36 @@ type l2IntrospectionEntry struct {
 }
 
 // OAuthIntrospector verifies opaque or non-JWT bearer tokens via OAuth 2.0 RFC 7662
-// token introspection or generic OIDC UserInfo endpoints with SHA-256-keyed L1/L2 caching.
+// token introspection or generic OIDC UserInfo endpoints with SHA-256-keyed bounded L1/L2 caching.
 type OAuthIntrospector struct {
-	endpoint     string
-	clientID     string
-	clientSecret string
-	mode         string
-	userIDField  string
-	emailField   string
-	roleField    string
-	orgIDField   string
-	teamIDField  string
-	cacheTTL     time.Duration
-	httpClient   *http.Client
-	redis        *storage.RedisFabric
-	now          func() time.Time
+	endpoint         string
+	issuer           string
+	audience         string
+	discoveryURL     string
+	derivedDiscovery bool
+	clientID         string
+	clientSecret     string
+	mode             string
+	userIDField      string
+	emailField       string
+	roleField        string
+	orgIDField       string
+	teamIDField      string
+	cacheTTL         time.Duration
+	maxL1Entries     int
+	httpClient       *http.Client
+	redis            *storage.RedisFabric
+	now              func() time.Time
 
-	l1Cache sync.Map // sha256(token) -> l1IntrospectionEntry
+	l1Mu    sync.RWMutex
+	l1Cache map[string]l1IntrospectionEntry // sha256(token) -> l1IntrospectionEntry (bounded)
 	sfGroup singleflight.Group
+
+	discoveryMu    sync.RWMutex
+	discoveryDoc   *OIDCDiscoveryMetadata
+	discoveryAt    time.Time
+	discoveryTTL   time.Duration
+	discoveryGroup singleflight.Group
 }
 
 // NewOAuthIntrospector constructs an OAuthIntrospector. When cfg.HTTPClient is nil,
@@ -145,26 +163,49 @@ func NewOAuthIntrospector(cfg IntrospectionConfig) *OAuthIntrospector {
 		cacheTTL = defaultIntrospectionCacheTTL
 	}
 
+	issuer := strings.TrimSpace(cfg.Issuer)
+	discoveryURL := strings.TrimSpace(cfg.DiscoveryURL)
+	derivedDiscovery := false
+	endpoint := strings.TrimSpace(cfg.TokenInfoEndpoint)
+	if endpoint == "" && discoveryURL == "" && issuer != "" {
+		if u, err := url.Parse(issuer); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
+			discoveryURL = strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+			derivedDiscovery = true
+		}
+	}
+
+	maxL1 := cfg.MaxL1Entries
+	if maxL1 <= 0 {
+		maxL1 = defaultIntrospectionMaxEntries
+	}
+
 	return &OAuthIntrospector{
-		endpoint:     strings.TrimSpace(cfg.TokenInfoEndpoint),
-		clientID:     strings.TrimSpace(cfg.ClientID),
-		clientSecret: cfg.ClientSecret,
-		mode:         mode,
-		userIDField:  userIDField,
-		emailField:   emailField,
-		roleField:    roleField,
-		orgIDField:   orgIDField,
-		teamIDField:  teamIDField,
-		cacheTTL:     cacheTTL,
-		httpClient:   client,
-		redis:        cfg.Redis,
-		now:          time.Now,
+		endpoint:         endpoint,
+		issuer:           issuer,
+		audience:         strings.TrimSpace(cfg.Audience),
+		discoveryURL:     discoveryURL,
+		derivedDiscovery: derivedDiscovery,
+		clientID:         strings.TrimSpace(cfg.ClientID),
+		clientSecret:     cfg.ClientSecret,
+		mode:             mode,
+		userIDField:      userIDField,
+		emailField:       emailField,
+		roleField:        roleField,
+		orgIDField:       orgIDField,
+		teamIDField:      teamIDField,
+		cacheTTL:         cacheTTL,
+		maxL1Entries:     maxL1,
+		discoveryTTL:     defaultDiscoveryCacheTTL,
+		httpClient:       client,
+		redis:            cfg.Redis,
+		now:              time.Now,
+		l1Cache:          make(map[string]l1IntrospectionEntry),
 	}
 }
 
-// Enabled reports whether an introspection or UserInfo endpoint is configured.
+// Enabled reports whether an introspection/UserInfo endpoint or OIDC Discovery URL is configured.
 func (o *OAuthIntrospector) Enabled() bool {
-	return o != nil && o.endpoint != ""
+	return o != nil && (o.endpoint != "" || o.discoveryURL != "")
 }
 
 // ResolvedMode returns the effective verification mode ("introspect" or "userinfo"),
@@ -237,7 +278,12 @@ func (o *OAuthIntrospector) Introspect(ctx context.Context, rawToken string) (*I
 			return res, nil
 		}
 
-		res, err := o.fetchAndVerify(fetchCtx, mode, token, now)
+		endpoint, resolvedMode, resolveErr := o.resolveEndpointAndMode(fetchCtx, mode)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+
+		res, err := o.fetchAndVerify(fetchCtx, resolvedMode, endpoint, token, now)
 		if err != nil {
 			return nil, err
 		}
@@ -271,7 +317,7 @@ func (o *OAuthIntrospector) InvalidateToken(ctx context.Context, rawToken string
 		return
 	}
 	tokenHash := HashKey(token)
-	o.l1Cache.Delete(tokenHash)
+	o.deleteL1(tokenHash)
 	if o.redis != nil {
 		_, _ = o.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			return rdb.Del(ctx, introspectRedisKey(tokenHash)).Result()
@@ -279,18 +325,51 @@ func (o *OAuthIntrospector) InvalidateToken(ctx context.Context, rawToken string
 	}
 }
 
+func (o *OAuthIntrospector) deleteL1(tokenHash string) {
+	o.l1Mu.Lock()
+	delete(o.l1Cache, tokenHash)
+	o.l1Mu.Unlock()
+}
+
+func (o *OAuthIntrospector) storeL1(tokenHash string, entry l1IntrospectionEntry, now time.Time) {
+	o.l1Mu.Lock()
+	defer o.l1Mu.Unlock()
+	if o.l1Cache == nil {
+		o.l1Cache = make(map[string]l1IntrospectionEntry)
+	}
+	if _, exists := o.l1Cache[tokenHash]; !exists && len(o.l1Cache) >= o.maxL1Entries {
+		// Evict expired entries first; if still full, evict the soonest-expiring entry.
+		for k, v := range o.l1Cache {
+			if !now.Before(v.expiresAt) || isIntrospectionTokenExpired(v.result.ExpiresAt, now) {
+				delete(o.l1Cache, k)
+			}
+		}
+		if len(o.l1Cache) >= o.maxL1Entries {
+			var oldestKey string
+			var oldestExp time.Time
+			for k, v := range o.l1Cache {
+				if oldestKey == "" || v.expiresAt.Before(oldestExp) {
+					oldestKey = k
+					oldestExp = v.expiresAt
+				}
+			}
+			if oldestKey != "" {
+				delete(o.l1Cache, oldestKey)
+			}
+		}
+	}
+	o.l1Cache[tokenHash] = entry
+}
+
 func (o *OAuthIntrospector) lookupL1(tokenHash string, now time.Time) (*IntrospectionResult, bool) {
-	val, ok := o.l1Cache.Load(tokenHash)
+	o.l1Mu.RLock()
+	entry, ok := o.l1Cache[tokenHash]
+	o.l1Mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
-	entry, ok := val.(l1IntrospectionEntry)
-	if !ok || entry.result == nil {
-		o.l1Cache.Delete(tokenHash)
-		return nil, false
-	}
-	if !now.Before(entry.expiresAt) || isIntrospectionTokenExpired(entry.result.ExpiresAt, now) {
-		o.l1Cache.Delete(tokenHash)
+	if entry.result == nil || !now.Before(entry.expiresAt) || isIntrospectionTokenExpired(entry.result.ExpiresAt, now) {
+		o.deleteL1(tokenHash)
 		return nil, false
 	}
 	return cloneIntrospectionResult(entry.result), true
@@ -333,10 +412,10 @@ func (o *OAuthIntrospector) lookupL2(ctx context.Context, tokenHash string, now 
 	}
 
 	res := cloneIntrospectionResult(&cached.Result)
-	o.l1Cache.Store(tokenHash, l1IntrospectionEntry{
+	o.storeL1(tokenHash, l1IntrospectionEntry{
 		result:    res,
 		expiresAt: now.Add(ttl),
-	})
+	}, now)
 	return cloneIntrospectionResult(res), true
 }
 
@@ -351,10 +430,10 @@ func (o *OAuthIntrospector) storeCaches(ctx context.Context, tokenHash string, r
 
 	stored := cloneIntrospectionResult(res)
 	expiresAt := now.Add(ttl)
-	o.l1Cache.Store(tokenHash, l1IntrospectionEntry{
+	o.storeL1(tokenHash, l1IntrospectionEntry{
 		result:    stored,
 		expiresAt: expiresAt,
-	})
+	}, now)
 
 	if o.redis != nil {
 		payload, err := json.Marshal(l2IntrospectionEntry{
@@ -387,7 +466,98 @@ func (o *OAuthIntrospector) effectiveTTL(expUnix int64, now time.Time) time.Dura
 	return ttl
 }
 
-func (o *OAuthIntrospector) fetchAndVerify(ctx context.Context, mode, token string, now time.Time) (*IntrospectionResult, error) {
+func (o *OAuthIntrospector) resolveEndpointAndMode(ctx context.Context, fallbackMode string) (string, string, error) {
+	if o.endpoint != "" {
+		return o.endpoint, fallbackMode, nil
+	}
+	if o.discoveryURL == "" {
+		return "", "", &domain.GatewayError{
+			StatusCode: http.StatusServiceUnavailable,
+			Type:       domain.ErrorTypeServer,
+			Code:       "introspection_misconfigured",
+			Message:    "OAuth introspection has neither token_info_endpoint nor discovery_url/issuer",
+		}
+	}
+
+	now := o.now().UTC()
+	o.discoveryMu.RLock()
+	doc := o.discoveryDoc
+	fresh := doc != nil && !o.discoveryAt.IsZero() && now.Sub(o.discoveryAt) < o.discoveryTTL
+	o.discoveryMu.RUnlock()
+
+	if !fresh {
+		res, err, _ := o.discoveryGroup.Do("discovery", func() (any, error) {
+			now := o.now().UTC()
+			o.discoveryMu.RLock()
+			stillDoc := o.discoveryDoc
+			stillFresh := stillDoc != nil && !o.discoveryAt.IsZero() && now.Sub(o.discoveryAt) < o.discoveryTTL
+			o.discoveryMu.RUnlock()
+			if stillFresh {
+				return stillDoc, nil
+			}
+			fetched, err := FetchOIDCDiscoveryMetadata(ctx, o.httpClient, o.discoveryURL, o.issuer, o.derivedDiscovery)
+			if err != nil {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeServer,
+					Code:       "introspection_discovery_failed",
+					Message:    "Failed to fetch OIDC discovery metadata for introspection: " + err.Error(),
+					Retryable:  true,
+				}
+			}
+			o.discoveryMu.Lock()
+			o.discoveryDoc = fetched
+			o.discoveryAt = o.now().UTC()
+			o.discoveryMu.Unlock()
+			return fetched, nil
+		})
+		if err != nil {
+			return "", "", err
+		}
+		doc = res.(*OIDCDiscoveryMetadata)
+	}
+
+	introspectURL := strings.TrimSpace(doc.IntrospectionEndpoint)
+	userinfoURL := strings.TrimSpace(doc.UserInfoEndpoint)
+
+	switch o.mode {
+	case IntrospectionModeIntrospect:
+		if introspectURL == "" {
+			return "", "", &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "introspection_misconfigured",
+				Message:    "OIDC discovery document does not advertise introspection_endpoint",
+			}
+		}
+		return introspectURL, IntrospectionModeIntrospect, nil
+	case IntrospectionModeUserInfo:
+		if userinfoURL == "" {
+			return "", "", &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "introspection_misconfigured",
+				Message:    "OIDC discovery document does not advertise userinfo_endpoint",
+			}
+		}
+		return userinfoURL, IntrospectionModeUserInfo, nil
+	default:
+		if introspectURL != "" && (o.clientID != "" || userinfoURL == "") {
+			return introspectURL, IntrospectionModeIntrospect, nil
+		}
+		if userinfoURL != "" {
+			return userinfoURL, IntrospectionModeUserInfo, nil
+		}
+		return "", "", &domain.GatewayError{
+			StatusCode: http.StatusServiceUnavailable,
+			Type:       domain.ErrorTypeServer,
+			Code:       "introspection_misconfigured",
+			Message:    "OIDC discovery document advertises neither introspection_endpoint nor userinfo_endpoint",
+		}
+	}
+}
+
+func (o *OAuthIntrospector) fetchAndVerify(ctx context.Context, mode, endpoint, token string, now time.Time) (*IntrospectionResult, error) {
 	if o.httpClient == nil {
 		return nil, &domain.GatewayError{
 			StatusCode: http.StatusServiceUnavailable,
@@ -397,7 +567,7 @@ func (o *OAuthIntrospector) fetchAndVerify(ctx context.Context, mode, token stri
 		}
 	}
 
-	req, err := o.buildRequest(ctx, mode, token)
+	req, err := o.buildRequest(ctx, mode, endpoint, token)
 	if err != nil {
 		return nil, fmt.Errorf("build introspection request: %w", err)
 	}
@@ -449,14 +619,14 @@ func (o *OAuthIntrospector) fetchAndVerify(ctx context.Context, mode, token stri
 	return o.parseAndValidateClaims(mode, claims, now)
 }
 
-func (o *OAuthIntrospector) buildRequest(ctx context.Context, mode, token string) (*http.Request, error) {
+func (o *OAuthIntrospector) buildRequest(ctx context.Context, mode, endpoint, token string) (*http.Request, error) {
 	if mode == IntrospectionModeIntrospect {
 		form := url.Values{}
 		form.Set("token", token)
 		if o.clientID != "" && o.clientSecret == "" {
 			form.Set("client_id", o.clientID)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.endpoint, strings.NewReader(form.Encode()))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 		if err != nil {
 			return nil, err
 		}
@@ -468,7 +638,7 @@ func (o *OAuthIntrospector) buildRequest(ctx context.Context, mode, token string
 		return req, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -546,25 +716,36 @@ func (o *OAuthIntrospector) parseAndValidateClaims(mode string, claims map[strin
 		return nil, invalidIntrospectionTokenError("UserInfo response missing subject claim")
 	}
 
+	iss := introspectionStringClaim(claims, "iss")
+	aud := extractAudienceClaim(claims["aud"])
+	if o.issuer != "" && iss != "" && iss != o.issuer {
+		return nil, invalidIntrospectionTokenError(fmt.Sprintf("Token issuer %q does not match configured issuer", iss))
+	}
+	if o.audience != "" && !aud.Contains(o.audience) {
+		return nil, invalidIntrospectionTokenError(fmt.Sprintf("Token audience does not include %q", o.audience))
+	}
+	emailVerified, _ := extractBoolClaim(claims, "email_verified")
+
 	res := &IntrospectionResult{
-		Active:    active,
-		Subject:   sub,
-		UserID:    userID,
-		Email:     introspectionStringClaim(claims, o.emailField),
-		Role:      extractRoleClaim(claims, o.roleField),
-		OrgID:     introspectionStringClaim(claims, o.orgIDField),
-		TeamID:    introspectionStringClaim(claims, o.teamIDField),
-		Scope:     introspectionStringClaim(claims, "scope"),
-		ClientID:  introspectionStringClaim(claims, "client_id"),
-		TokenType: introspectionStringClaim(claims, "token_type"),
-		Username:  introspectionStringClaim(claims, "username"),
-		Issuer:    introspectionStringClaim(claims, "iss"),
-		Audience:  extractAudienceClaim(claims["aud"]),
-		ExpiresAt: exp,
-		IssuedAt:  iat,
-		NotBefore: nbf,
-		Groups:    introspectionStringSliceClaim(claims, "groups"),
-		Claims:    cloneClaimsMap(claims),
+		Active:        active,
+		Subject:       sub,
+		UserID:        userID,
+		Email:         introspectionStringClaim(claims, o.emailField),
+		EmailVerified: emailVerified,
+		Role:          extractRoleClaim(claims, o.roleField),
+		OrgID:         introspectionStringClaim(claims, o.orgIDField),
+		TeamID:        introspectionStringClaim(claims, o.teamIDField),
+		Scope:         introspectionStringClaim(claims, "scope"),
+		ClientID:      introspectionStringClaim(claims, "client_id"),
+		TokenType:     introspectionStringClaim(claims, "token_type"),
+		Username:      introspectionStringClaim(claims, "username"),
+		Issuer:        iss,
+		Audience:      aud,
+		ExpiresAt:     exp,
+		IssuedAt:      iat,
+		NotBefore:     nbf,
+		Groups:        introspectionStringSliceClaim(claims, "groups"),
+		Claims:        cloneClaimsMap(claims),
 	}
 	return res, nil
 }

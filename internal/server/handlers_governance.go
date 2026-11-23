@@ -593,6 +593,9 @@ func (s *GatewayServer) handleAdminBlockKey(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	if !ensureOperatorCanMutateTargetRole(w, op, vk.Role, "virtual key") {
+		return
+	}
 	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
 		return
 	}
@@ -628,7 +631,11 @@ func (s *GatewayServer) handleAdminUnblockKey(w http.ResponseWriter, r *http.Req
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "virtual_key_not_found", Message: "Virtual key not found"})
 		return
 	}
-	if _, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true); !ok {
+	op, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true)
+	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, vk.Role, "virtual key") {
 		return
 	}
 	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
@@ -665,7 +672,11 @@ func (s *GatewayServer) handleAdminResetKeySpend(w http.ResponseWriter, r *http.
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusNotFound, Type: domain.ErrorTypeNotFound, Code: "virtual_key_not_found", Message: "Virtual key not found"})
 		return
 	}
-	if _, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true); !ok {
+	op, ok := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true)
+	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, vk.Role, "virtual key") {
 		return
 	}
 	if !verifyExplicitOrgMatch(w, r, vk.OrgID, nil) {
@@ -768,6 +779,9 @@ func (s *GatewayServer) handleAdminBulkUpdateKeys(w http.ResponseWriter, r *http
 		}
 		op, authOK := s.authorizeTeamAdmin(w, r, vk.OrgID, vk.TeamID, true)
 		if !authOK {
+			return
+		}
+		if !ensureOperatorCanMutateTargetRole(w, op, vk.Role, "virtual key") {
 			return
 		}
 		firstOp = op

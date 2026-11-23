@@ -10,13 +10,10 @@ interface AuthContextType {
   adminKey: string;
   setAdminKey: (key: string) => void;
   unlockWithKey: (key: string) => Promise<void>;
-  loginWithPassword: (identifier: string, password: string) => Promise<void>;
-  updatePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   authMode: AuthMode;
   operator: OperatorContext | null;
   currentUser: User | null;
   csrfToken: string | null;
-  passwordResetRequired: boolean;
   deprecatedKeyRevokeAt: string | null;
   isBootstrapping: boolean;
   isUnlocked: boolean;
@@ -39,7 +36,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [operator, setOperator] = useState<OperatorContext | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [csrfTokenState, setCsrfTokenState] = useState<string | null>(null);
-  const [passwordResetRequired, setPasswordResetRequired] = useState<boolean>(false);
   const [deprecatedKeyRevokeAt, setDeprecatedKeyRevokeAt] = useState<string | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(true);
   const [activeOrgId, setActiveOrgId] = useState<string>('org_default');
@@ -52,22 +48,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCsrfToken(token);
   }, []);
 
+  const applyOrgs = useCallback((list?: Array<{ id: string }>, preferred?: string) => {
+    if (list && list.length > 0) {
+      if (preferred && list.some((o) => o.id === preferred)) setActiveOrgId(preferred);
+      else if (!list.some((o) => o.id === activeOrgId)) setActiveOrgId(list[0].id);
+    } else if (preferred) {
+      setActiveOrgId(preferred);
+    }
+  }, [activeOrgId]);
+
   const syncOrgSelection = useCallback(async (key: string, preferredOrgId?: string) => {
     try {
       const orgs = await adminApi.listOrgs(key);
-      if (orgs?.data && orgs.data.length > 0) {
-        if (preferredOrgId && orgs.data.some((o) => o.id === preferredOrgId)) {
-          setActiveOrgId(preferredOrgId);
-        } else if (!orgs.data.some((o) => o.id === activeOrgId)) {
-          setActiveOrgId(orgs.data[0].id);
-        }
-      } else if (preferredOrgId) {
-        setActiveOrgId(preferredOrgId);
-      }
+      applyOrgs(orgs?.data, preferredOrgId);
     } catch {
       if (preferredOrgId) setActiveOrgId(preferredOrgId);
     }
-  }, [activeOrgId]);
+  }, [applyOrgs]);
 
   useEffect(() => {
     setDeprecatedKeyHandler((revokeAt) => {
@@ -87,7 +84,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         syncCsrf(csrf);
         setOperator(me.operator);
         setCurrentUser(me.user || null);
-        setPasswordResetRequired(!!me.password_reset_required);
         setDeprecatedKeyRevokeAt(me.operator?.deprecated_key_revoke_at || null);
         setAuthMode(me.operator?.auth_method === 'session' ? 'session' : 'master_key');
         await syncOrgSelection('', me.operator?.org_id);
@@ -104,27 +100,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, [syncCsrf]);
 
-  const loginWithPassword = async (identifier: string, password: string): Promise<void> => {
-    const trimmed = identifier.trim();
-    if (!trimmed || !password) {
-      throw new Error('Email/username and password are required.');
-    }
-    const res = await authApi.loginPassword({
-      email: trimmed,
-      username: trimmed,
-      password,
-    });
-    setAdminKey('');
-    syncCsrf(res.csrf_token || null);
-    setOperator(res.operator);
-    setCurrentUser(res.user || null);
-    setPasswordResetRequired(!!res.password_reset_required);
-    setDeprecatedKeyRevokeAt(res.operator?.deprecated_key_revoke_at || null);
-    setAuthMode('session');
-    queryClient.clear();
-    await syncOrgSelection('', res.operator?.org_id);
-  };
-
   const unlockWithKey = async (rawKey: string): Promise<void> => {
     const trimmed = rawKey.trim();
     if (!trimmed) {
@@ -138,7 +113,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const me = await authApi.getMe(trimmed);
         meOp = me.operator || null;
         setCurrentUser(me.user || null);
-        setPasswordResetRequired(!!me.password_reset_required);
         if (me.operator?.deprecated_key_revoke_at) {
           setDeprecatedKeyRevokeAt(me.operator.deprecated_key_revoke_at);
         }
@@ -156,14 +130,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       );
       setAuthMode('master_key');
       queryClient.clear();
-      if (orgs?.data && orgs.data.length > 0) {
-        const preferred = meOp?.org_id;
-        if (preferred && orgs.data.some((o) => o.id === preferred)) {
-          setActiveOrgId(preferred);
-        } else if (!orgs.data.some((o) => o.id === activeOrgId)) {
-          setActiveOrgId(orgs.data[0].id);
-        }
-      }
+      applyOrgs(orgs?.data, meOp?.org_id);
     } catch (err) {
       setAdminKey('');
       setAuthMode('none');
@@ -173,29 +140,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const updatePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
-    await authApi.updatePassword(
-      {
-        ...(currentPassword ? { current_password: currentPassword } : {}),
-        new_password: newPassword,
-      },
-      adminKey || undefined
-    );
-    setPasswordResetRequired(false);
-    // Self-service password change revokes sessions on the server; clear local session state
-    if (authMode === 'session') {
-      syncCsrf(null);
-      setAuthMode('none');
-      setOperator(null);
-      setCurrentUser(null);
-      queryClient.clear();
-    }
-  };
-
   const lock = async (): Promise<void> => {
+    let endSessionURL: string | undefined;
     if (authMode === 'session') {
       try {
-        await authApi.logout();
+        const res = await authApi.logout();
+        endSessionURL = res?.end_session_url;
       } catch {
         // Always clear local session state even if server session already expired
       }
@@ -205,10 +155,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setOperator(null);
     setCurrentUser(null);
     syncCsrf(null);
-    setPasswordResetRequired(false);
     setDeprecatedKeyRevokeAt(null);
     setCapturedVirtualKey(null);
     queryClient.clear();
+    if (endSessionURL) {
+      window.location.assign(endSessionURL);
+    }
   };
 
   return (
@@ -217,13 +169,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         adminKey,
         setAdminKey,
         unlockWithKey,
-        loginWithPassword,
-        updatePassword,
         authMode,
         operator,
         currentUser,
         csrfToken: csrfTokenState,
-        passwordResetRequired,
         deprecatedKeyRevokeAt,
         isBootstrapping,
         isUnlocked,

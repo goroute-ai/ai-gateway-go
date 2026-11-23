@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
-import { Lock, AlertTriangle, Building2, Key, Sun, Moon, ShieldCheck } from 'lucide-react';
+import React from 'react';
+import { Lock, Building2, Key, Sun, Moon, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-import { FormModal, Field, MONO_INPUT_CLS } from '../common/Modal';
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../../api/admin';
 
@@ -16,19 +15,12 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
     authMode,
     operator,
     currentUser,
-    passwordResetRequired,
-    updatePassword,
     isUnlocked,
     logout,
     activeOrgId,
     setActiveOrgId,
   } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const [showPwdModal, setShowPwdModal] = useState(false);
-  const [curPwd, setCurPwd] = useState('');
-  const [newPwd, setNewPwd] = useState('');
-  const [pwdErr, setPwdErr] = useState<string | null>(null);
-  const [pwdSaving, setPwdSaving] = useState(false);
 
   const { data: orgsData } = useQuery({
     queryKey: ['admin', 'orgs', adminKey, authMode],
@@ -37,66 +29,39 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
     staleTime: 60000,
   });
 
-  const handlePasswordSubmit = async () => {
-    if (!newPwd || pwdSaving) return;
-    setPwdErr(null);
-    setPwdSaving(true);
-    try {
-      await updatePassword(curPwd, newPwd);
-      setCurPwd('');
-      setNewPwd('');
-      setShowPwdModal(false);
-    } catch (err: any) {
-      setPwdErr(err?.message || 'Failed to update password.');
-    } finally {
-      setPwdSaving(false);
-    }
-  };
-
   const identityLabel = currentUser?.email || operator?.actor_id || 'operator';
 
   return (
-    <>
-      <header className="h-16 border-b border-border bg-canvas/85 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
-        <div className="flex items-center gap-5">
-          <div className="flex items-center gap-3">
-            <img
-              src="/ui/logo-dark.png"
-              alt="GoRoute AI Gateway Logo"
-              className="h-8 w-auto object-contain drop-shadow-[0_2px_8px_rgb(var(--rgb-accent-primary)/0.28)]"
-            />
-            <div className="flex flex-col">
-              <div className="flex items-center gap-1.5 leading-none">
-                <span className="font-bold text-sm tracking-tight text-brand-title">
-                  GoRoute
-                </span>
-                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-accent-soft text-accent-primary border border-accent-primary/25 font-semibold">
-                  AI Gateway
-                </span>
-              </div>
-              <span className="text-[10px] font-mono text-brand-muted tracking-wider mt-0.5">Control Plane</span>
+    <header className="h-16 border-b border-border bg-canvas/85 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
+      <div className="flex items-center gap-5">
+        <div className="flex items-center gap-3">
+          <img
+            src="/ui/logo-dark.png"
+            alt="GoRoute AI Gateway Logo"
+            className="h-8 w-auto object-contain"
+          />
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1.5 leading-none">
+              <span className="font-bold text-sm tracking-tight text-brand-title">
+                GoRoute
+              </span>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-accent-soft text-accent-primary border border-accent-primary/25 font-semibold">
+                AI Gateway
+              </span>
             </div>
-          </div>
-
-          <div className="h-5 w-[1px] bg-border hidden sm:block" />
-
-          <div className="hidden sm:flex items-center gap-2 text-xs text-brand-muted">
-            <span className="w-2 h-2 rounded-full bg-accent-primary animate-pulse" />
-            <span className="capitalize text-brand-title font-medium">{currentView.replace('-', ' ')}</span>
+            <span className="text-[10px] font-mono text-brand-muted tracking-wider mt-0.5">Control Plane</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          {isUnlocked && passwordResetRequired && (
-            <button
-              type="button"
-              onClick={() => setShowPwdModal(true)}
-              className="flex items-center gap-1.5 text-xs status-warning border px-2.5 py-1 rounded-md font-mono"
-            >
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Password Reset Required</span>
-            </button>
-          )}
+        <div className="h-5 w-[1px] bg-border hidden sm:block" />
+
+        <div className="hidden sm:flex items-center gap-2 text-xs text-brand-muted">
+          <span className="w-2 h-2 rounded-full bg-accent-primary animate-pulse" />
+          <span className="capitalize text-brand-title font-medium">{currentView.replace('-', ' ')}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2.5">
 
           {isUnlocked && (
             <div className="flex items-center gap-1.5 bg-surface-elevated border border-border rounded-md px-2.5 py-1 text-xs">
@@ -150,24 +115,5 @@ export const Header: React.FC<HeaderProps> = ({ currentView }) => {
           )}
         </div>
       </header>
-
-      <FormModal
-        open={showPwdModal}
-        onClose={() => setShowPwdModal(false)}
-        title="Update Operator Password"
-        description="Your password requires rotation. Updating will sign out active sessions."
-        onSubmit={handlePasswordSubmit}
-        pending={pwdSaving}
-        submitLabel="Update Password"
-      >
-        {pwdErr && <p className="text-[11px] font-mono status-danger border rounded px-2.5 py-1.5">{pwdErr}</p>}
-        <Field label="Current Password">
-          <input type="password" value={curPwd} onChange={(e) => setCurPwd(e.target.value)} className={MONO_INPUT_CLS} required />
-        </Field>
-        <Field label="New Password (min 8 chars)">
-          <input type="password" minLength={8} value={newPwd} onChange={(e) => setNewPwd(e.target.value)} className={MONO_INPUT_CLS} required />
-        </Field>
-      </FormModal>
-    </>
   );
 };

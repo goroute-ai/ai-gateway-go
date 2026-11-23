@@ -29,7 +29,7 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	cfg.Server.Environment = "test"
 	cfg.Auth.MasterAdminKey = "sk-gw-super-secret-admin-key-12345"
 	cfg.Auth.MasterEncryptionKey = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-	cfg.Auth.JWTSecret = "super-secret-jwt-hmac-value"
+	cfg.Auth.SessionSecret = "super-secret-session-signing-value"
 	cfg.Auth.DefaultVirtualKey = "sk-gw-default-virtual-secret"
 	cfg.Storage.PostgresDSN = "postgres://gwuser:super-db-password@db.internal:5432/gateway?sslmode=require"
 	cfg.Storage.RedisPass = "super-redis-password"
@@ -81,7 +81,7 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	forbiddenSecrets := []string{
 		cfg.Auth.MasterAdminKey,
 		cfg.Auth.MasterEncryptionKey,
-		cfg.Auth.JWTSecret,
+		cfg.Auth.SessionSecret,
 		cfg.Auth.DefaultVirtualKey,
 		"super-db-password",
 		"super-redis-password",
@@ -103,7 +103,7 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 		t.Fatalf("decode /admin/v1/config response: %v", err)
 	}
 	authSection, _ := parsed["auth"].(map[string]any)
-	if authSection["master_admin_key"] != "[REDACTED]" || authSection["jwt_secret"] != "[REDACTED]" {
+	if authSection["master_admin_key"] != "[REDACTED]" || authSection["session_secret"] != "[REDACTED]" {
 		t.Fatalf("expected redacted auth secrets, got %+v", authSection)
 	}
 	storageSection, _ := parsed["storage"].(map[string]any)

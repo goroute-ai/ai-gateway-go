@@ -593,6 +593,9 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+	if !ensureOperatorCanMutateTargetRole(w, op, existing.Role, "user") {
+		return
+	}
 
 	var req struct {
 		OrgID                    *string                   `json:"org_id,omitempty"`
@@ -786,6 +789,9 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			s.authSvc.InvalidateOrg(r.Context(), updated.OrgID)
 		}
 	}
+	if s.sessionMgr != nil && (!updated.IsActive || !updated.SCIMActive || updated.Role != existing.Role || updated.OrgID != existing.OrgID || updated.OIDCIssuer != existing.OIDCIssuer || updated.OIDCSubject != existing.OIDCSubject) {
+		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), updated.ID)
+	}
 	s.auditWithDiff(r.Context(), updated.OrgID, "user.updated", "user", updated.ID, map[string]any{
 		"email":            updated.Email,
 		"role":             updated.Role,
@@ -824,7 +830,11 @@ func (s *GatewayServer) handleAdminDeleteUser(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, existing.OrgID, true)
+	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, existing.Role, "user") {
 		return
 	}
 	if !verifyExplicitOrgMatch(w, r, existing.OrgID, nil) {
@@ -855,6 +865,9 @@ func (s *GatewayServer) handleAdminDeleteUser(w http.ResponseWriter, r *http.Req
 	}
 	if s.authSvc != nil {
 		s.authSvc.InvalidateOrg(r.Context(), existing.OrgID)
+	}
+	if s.sessionMgr != nil {
+		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), userID)
 	}
 	s.auditWithDiff(r.Context(), existing.OrgID, "user.deleted", "user", userID, map[string]any{
 		"email": existing.Email,
@@ -1229,6 +1242,9 @@ func (s *GatewayServer) handleAdminUpdateKey(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !ensureOperatorCanMutateTargetRole(w, op, existing.Role, "virtual key") {
+		return
+	}
 
 	var req adminUpdateKeyRequest
 	if err := decodeAdminJSON(w, r, &req); err != nil {
@@ -1315,7 +1331,11 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.TeamID, true); !ok {
+	op, ok := s.authorizeTeamAdmin(w, r, existing.OrgID, existing.TeamID, true)
+	if !ok {
+		return
+	}
+	if !ensureOperatorCanMutateTargetRole(w, op, existing.Role, "virtual key") {
 		return
 	}
 

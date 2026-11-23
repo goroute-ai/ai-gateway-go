@@ -63,10 +63,12 @@ func TestAdminRBAC_DataPlaneMasterKeyDisabled_JWT_AuditLogs_And_MCPTools(t *test
 		},
 	})
 
+	idp := newServerTestOIDCIssuer(t)
 	cfg := config.Default()
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
 	cfg.Auth.MasterAdminKey = "sk-gw-master-rbac-test-key"
-	cfg.Auth.JWTSecret = "jwt-rbac-test-secret-key"
-	cfg.Auth.JWTIssuer = "https://idp.example.com"
+	cfg.Auth.OIDCJWKSURL = idp.JWKSURL()
+	cfg.Auth.JWTIssuer = idp.Issuer()
 	cfg.Auth.JWTAudience = "ai-gateway"
 	cfg.Auth.DefaultOrgID = "org_a"
 	cfg.MCP.Enabled = true
@@ -123,26 +125,20 @@ func TestAdminRBAC_DataPlaneMasterKeyDisabled_JWT_AuditLogs_And_MCPTools(t *test
 		t.Fatalf("expected 401 for MasterAdminKey on /mcp, got %d", status)
 	}
 
-	// Mint HS256 JWTs for org_admin and org_viewer
+	// Mint OIDC RS256 JWTs for org_admin and org_viewer
 	exp := time.Now().UTC().Add(10 * time.Minute).Unix()
-	adminJWT, err := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	adminJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "oidc-admin-a",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
 		ExpiresAt: exp,
 	})
-	if err != nil {
-		t.Fatalf("sign admin jwt: %v", err)
-	}
-	viewerJWT, err := auth.SignHS256(cfg.Auth.JWTSecret, &auth.JWTClaims{
+	viewerJWT := idp.SignClaims(&auth.JWTClaims{
 		Subject:   "oidc-viewer-a",
 		Issuer:    cfg.Auth.JWTIssuer,
 		Audience:  auth.AudienceClaim{cfg.Auth.JWTAudience},
 		ExpiresAt: exp,
 	})
-	if err != nil {
-		t.Fatalf("sign viewer jwt: %v", err)
-	}
 
 	// 2. org_admin JWT: can create team in org_a, cannot create org globally, cannot access org_b
 	status, _ = doReq(http.MethodPost, "/admin/v1/teams", adminJWT, map[string]any{

@@ -12,9 +12,9 @@ const pubJwk = {
   kid: 'mock-ui-rsa-1',
   alg: 'RS256',
   use: 'sig',
+  key_ops: ['verify'],
 };
 
-const hibpPrefixes = [];
 const authCodes = new Map();
 let baseUrl = '';
 
@@ -28,10 +28,31 @@ function signJWT(payload) {
   return `${signingInput}.${sig}`;
 }
 
+function computeATHash(accessToken) {
+  return crypto.createHash('sha256').update(accessToken).digest().subarray(0, 16).toString('base64url');
+}
+
 function sendJSON(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
+
+const PERSONAS = {
+  '/oidc': {
+    sub: 'ui-sso-operator-1',
+    email: 'sso-operator@example.com',
+    name: 'UI Platform Admin',
+    role: 'platform_admin',
+    clientId: 'goroute-ui-client',
+  },
+  '/org-oidc': {
+    sub: 'ui-org-admin-1',
+    email: 'org-admin@example.com',
+    name: 'UI Org Admin',
+    role: 'org_admin',
+    clientId: 'goroute-org-client',
+  },
+};
 
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url || '/', baseUrl || `http://${host}`);
@@ -40,77 +61,83 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { status: 'ok' });
   }
 
-  if (reqUrl.pathname === '/oidc/.well-known/openid-configuration') {
-    return sendJSON(res, 200, {
-      issuer: `${baseUrl}/oidc`,
-      authorization_endpoint: `${baseUrl}/oidc/authorize`,
-      token_endpoint: `${baseUrl}/oidc/token`,
-      userinfo_endpoint: `${baseUrl}/oidc/userinfo`,
-      jwks_uri: `${baseUrl}/oidc/jwks`,
-      response_types_supported: ['code'],
-      subject_types_supported: ['public'],
-      id_token_signing_alg_values_supported: ['RS256'],
-      code_challenge_methods_supported: ['S256'],
-    });
-  }
-
-  if (reqUrl.pathname === '/oidc/jwks') {
-    return sendJSON(res, 200, { keys: [pubJwk] });
-  }
-
-  if (reqUrl.pathname === '/oidc/authorize') {
-    const redirectUri = reqUrl.searchParams.get('redirect_uri') || '';
-    const state = reqUrl.searchParams.get('state') || '';
-    const nonce = reqUrl.searchParams.get('nonce') || '';
-    const codeChallenge = reqUrl.searchParams.get('code_challenge') || '';
-    const code = `ui-code-${crypto.randomUUID()}`;
-    authCodes.set(code, { nonce, codeChallenge });
-    const redir = new URL(redirectUri);
-    redir.searchParams.set('code', code);
-    redir.searchParams.set('state', state);
-    res.writeHead(302, { Location: redir.toString() });
-    return res.end();
-  }
-
-  if (reqUrl.pathname === '/oidc/token' && req.method === 'POST') {
-    const chunks = [];
-    for await (const ch of req) chunks.push(ch);
-    const params = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
-    const code = params.get('code') || '';
-    const meta = authCodes.get(code) || {};
-    authCodes.delete(code);
-    const now = Math.floor(Date.now() / 1000);
-    const idToken = signJWT({
-      iss: `${baseUrl}/oidc`,
-      sub: 'ui-sso-operator-1',
-      aud: 'goroute-ui-client',
-      email: 'sso-operator@example.com',
-      email_verified: true,
-      nonce: meta.nonce || undefined,
-      iat: now,
-      exp: now + 600,
-    });
-    return sendJSON(res, 200, {
-      access_token: 'mock-ui-access-token',
-      token_type: 'Bearer',
-      expires_in: 600,
-      id_token: idToken,
-    });
-  }
-
-  if (reqUrl.pathname.startsWith('/hibp/range/')) {
-    const prefix = reqUrl.pathname.slice('/hibp/range/'.length).toUpperCase();
-    hibpPrefixes.push(prefix);
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    if (prefix === 'CBFDA') {
-      // Remaining 35 hex suffix of SHA-1("password123")
-      return res.end('C6008F9CAB4083784CBD1874F76618D2A97:99999\r\n');
+  for (const [prefix, persona] of Object.entries(PERSONAS)) {
+    if (reqUrl.pathname === `${prefix}/.well-known/openid-configuration`) {
+      return sendJSON(res, 200, {
+        issuer: `${baseUrl}${prefix}`,
+        authorization_endpoint: `${baseUrl}${prefix}/authorize`,
+        token_endpoint: `${baseUrl}${prefix}/token`,
+        userinfo_endpoint: `${baseUrl}${prefix}/userinfo`,
+        end_session_endpoint: `${baseUrl}${prefix}/logout`,
+        jwks_uri: `${baseUrl}${prefix}/jwks`,
+        response_types_supported: ['code'],
+        subject_types_supported: ['public'],
+        id_token_signing_alg_values_supported: ['RS256'],
+        code_challenge_methods_supported: ['S256'],
+      });
     }
-    return res.end('00000000000000000000000000000000000:0\r\n');
-  }
 
-  if (reqUrl.pathname === '/hibp/audit') {
-    return sendJSON(res, 200, { prefixes: hibpPrefixes, count: hibpPrefixes.length });
+    if (reqUrl.pathname === `${prefix}/jwks`) {
+      return sendJSON(res, 200, { keys: [pubJwk] });
+    }
+
+    if (reqUrl.pathname === `${prefix}/authorize`) {
+      const redirectUri = reqUrl.searchParams.get('redirect_uri') || '';
+      const state = reqUrl.searchParams.get('state') || '';
+      const nonce = reqUrl.searchParams.get('nonce') || '';
+      const codeChallenge = reqUrl.searchParams.get('code_challenge') || '';
+      const code = `ui-code-${crypto.randomUUID()}`;
+      authCodes.set(code, { nonce, codeChallenge, prefix });
+      const redir = new URL(redirectUri);
+      redir.searchParams.set('code', code);
+      redir.searchParams.set('state', state);
+      res.writeHead(302, { Location: redir.toString() });
+      return res.end();
+    }
+
+    if (reqUrl.pathname === `${prefix}/token` && req.method === 'POST') {
+      const chunks = [];
+      for await (const ch of req) chunks.push(ch);
+      const params = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+      const code = params.get('code') || '';
+      const meta = authCodes.get(code) || {};
+      authCodes.delete(code);
+      const accessToken = `mock-ui-access-token-${code}`;
+      const now = Math.floor(Date.now() / 1000);
+      const idToken = signJWT({
+        iss: `${baseUrl}${prefix}`,
+        sub: persona.sub,
+        aud: persona.clientId,
+        email: persona.email,
+        email_verified: true,
+        name: persona.name,
+        role: persona.role,
+        nonce: meta.nonce || undefined,
+        at_hash: computeATHash(accessToken),
+        iat: now,
+        exp: now + 600,
+      });
+      return sendJSON(res, 200, {
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: 600,
+        id_token: idToken,
+      });
+    }
+
+    if (reqUrl.pathname === `${prefix}/userinfo`) {
+      return sendJSON(res, 200, {
+        sub: persona.sub,
+        email: persona.email,
+        name: persona.name,
+      });
+    }
+
+    if (reqUrl.pathname === `${prefix}/logout`) {
+      const postLogout = reqUrl.searchParams.get('post_logout_redirect_uri') || 'http://127.0.0.1/';
+      res.writeHead(302, { Location: postLogout });
+      return res.end();
+    }
   }
 
   res.writeHead(404);

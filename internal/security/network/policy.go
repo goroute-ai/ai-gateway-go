@@ -22,10 +22,11 @@ var (
 
 var (
 	// Default blocked cloud metadata IPs
-	metadataIPv4 = net.ParseIP("169.254.169.254")
-	metadataIPv6 = net.ParseIP("fd00:ec2::254")
-	ecsIPv4A     = net.ParseIP("169.254.170.2")
-	ecsIPv4B     = net.ParseIP("169.254.170.23")
+	metadataIPv4        = net.ParseIP("169.254.169.254")
+	metadataIPv6        = net.ParseIP("fd00:ec2::254")
+	ecsIPv4A            = net.ParseIP("169.254.170.2")
+	ecsIPv4B            = net.ParseIP("169.254.170.23")
+	alibabaMetadataIPv4 = net.ParseIP("100.100.100.200")
 
 	// Standard private/local IP CIDR ranges
 	privateCIDRs []*net.IPNet
@@ -59,6 +60,7 @@ type Policy struct {
 	AllowPrivateNetworks bool
 	AllowedPrivateCIDRs  []*net.IPNet
 	AllowInsecureHTTP    bool
+	AllowLoopbackHTTP    bool
 	AllowedSchemes       map[string]bool
 	BlockedIPs           []net.IP
 	DialTimeout          time.Duration
@@ -75,6 +77,7 @@ func NewPolicy(cfg config.OutboundSSRFConfig) (*Policy, error) {
 	p := &Policy{
 		AllowPrivateNetworks: cfg.AllowPrivateNetworks,
 		AllowInsecureHTTP:    cfg.AllowInsecureHTTP,
+		AllowLoopbackHTTP:    cfg.AllowLoopbackHTTP,
 		AllowedSchemes:       make(map[string]bool),
 		DialTimeout:          cfg.DialTimeout,
 		MaxRedirects:         cfg.MaxRedirects,
@@ -119,21 +122,26 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	if u == nil {
 		return errors.New("network: nil URL")
 	}
+	hostname := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	if hostname == "" {
+		return errors.New("network: missing hostname in URL")
+	}
+
+	isLoopbackHost := isLoopbackHostnameOrIP(hostname)
 	scheme := strings.ToLower(u.Scheme)
 	if len(p.AllowedSchemes) > 0 {
 		if !p.AllowedSchemes[scheme] {
-			return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
+			if !(p.AllowLoopbackHTTP && scheme == "http" && isLoopbackHost) {
+				return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
+			}
 		}
 	} else if scheme != "https" && scheme != "http" {
 		return fmt.Errorf("%w: scheme %q not allowed", ErrBlockedScheme, scheme)
 	}
 	if scheme == "http" && !p.AllowInsecureHTTP {
-		return ErrInsecureHTTPBlocked
-	}
-
-	hostname := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
-	if hostname == "" {
-		return errors.New("network: missing hostname in URL")
+		if !(p.AllowLoopbackHTTP && isLoopbackHost) {
+			return ErrInsecureHTTPBlocked
+		}
 	}
 
 	// Strictly block known cloud metadata hostnames unless explicitly opted into ambient cloud IAM
@@ -149,7 +157,7 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	}
 
 	if !p.AllowPrivateNetworks && len(p.AllowedPrivateCIDRs) == 0 {
-		if p.allowCloudMetadata && hostname == "localhost" {
+		if (p.allowCloudMetadata || p.AllowLoopbackHTTP) && (hostname == "localhost" || strings.HasSuffix(hostname, ".localhost")) {
 			return nil
 		}
 		if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || strings.HasSuffix(hostname, ".local") {
@@ -158,6 +166,27 @@ func (p *Policy) ValidateURL(u *url.URL) error {
 	}
 
 	return nil
+}
+
+// RequiresLoopbackDial reports whether u was permitted over plaintext HTTP solely
+// because AllowLoopbackHTTP is enabled (AllowInsecureHTTP is false). Callers must
+// verify that every resolved dial target IP is strictly loopback to prevent DNS-based
+// plaintext HTTP downgrades (e.g. evil.localhost resolving to a public IP).
+func (p *Policy) RequiresLoopbackDial(u *url.URL) bool {
+	if p == nil || u == nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "http") && !p.AllowInsecureHTTP && p.AllowLoopbackHTTP
+}
+
+func isLoopbackHostnameOrIP(hostname string) bool {
+	if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // ValidateIP tests whether an IP address is permitted under the policy.
@@ -173,13 +202,26 @@ func (p *Policy) ValidateIP(ip net.IP) error {
 	}
 
 	// Cloud metadata check is absolute and non-bypassable unless explicitly opted into ambient cloud IAM.
-	if cleanIP.Equal(metadataIPv4) || cleanIP.Equal(metadataIPv6) {
+	if cleanIP.Equal(metadataIPv4) || cleanIP.Equal(metadataIPv6) || cleanIP.Equal(ecsIPv4A) || cleanIP.Equal(ecsIPv4B) || cleanIP.Equal(alibabaMetadataIPv4) {
 		if p.allowCloudMetadata {
 			return nil
 		}
 		return ErrCloudMetadataBlocked
 	}
-	if p.allowCloudMetadata && (cleanIP.Equal(ecsIPv4A) || cleanIP.Equal(ecsIPv4B) || cleanIP.IsLoopback()) {
+	if p.allowCloudMetadata && cleanIP.IsLoopback() {
+		return nil
+	}
+	if p.AllowLoopbackHTTP && cleanIP.IsLoopback() {
+		// Still ensure explicit BlockedIPs check runs before returning.
+		for _, blocked := range p.BlockedIPs {
+			target := blocked
+			if unmapped := blocked.To4(); unmapped != nil {
+				target = unmapped
+			}
+			if cleanIP.Equal(target) {
+				return ErrBlockedIP
+			}
+		}
 		return nil
 	}
 

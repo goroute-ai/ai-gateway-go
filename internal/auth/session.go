@@ -35,23 +35,21 @@ const (
 	CSRFHeaderName = "X-CSRF-Token"
 	// DefaultSessionTTL is the default lifetime for Control Plane operator sessions.
 	DefaultSessionTTL = 24 * time.Hour
-	// UIAdminActorID is the synthetic actor ID used when authenticating via config UIUsername/UIPassword.
-	UIAdminActorID = "ui_admin"
 )
 
 // SessionClaims represents the signed payload of a Control Plane operator session JWT.
 type SessionClaims struct {
-	Subject   string        `json:"sub"`
-	Issuer    string        `json:"iss,omitempty"`
-	Audience  AudienceClaim `json:"aud,omitempty"`
-	JTI       string        `json:"jti"`
-	OrgID     string        `json:"org_id,omitempty"`
-	TeamID    string        `json:"team_id,omitempty"`
-	Role      string        `json:"role"`
-	CSRFToken string        `json:"csrf_token,omitempty"`
-	Synthetic bool          `json:"synthetic,omitempty"`
-	IssuedAt  int64         `json:"iat"`
-	ExpiresAt int64         `json:"exp"`
+	Subject    string        `json:"sub"`
+	Issuer     string        `json:"iss,omitempty"`
+	Audience   AudienceClaim `json:"aud,omitempty"`
+	JTI        string        `json:"jti"`
+	OrgID      string        `json:"org_id,omitempty"`
+	TeamID     string        `json:"team_id,omitempty"`
+	ProviderID string        `json:"prv,omitempty"`
+	Role       string        `json:"role"`
+	CSRFToken  string        `json:"csrf_token,omitempty"`
+	IssuedAt   int64         `json:"iat"`
+	ExpiresAt  int64         `json:"exp"`
 }
 
 // IssuedSession holds the signed session token, CSRF token, expiration, and session metadata.
@@ -67,25 +65,59 @@ type IssuedSession struct {
 type SessionManager struct {
 	repo   storage.Repository
 	redis  *storage.RedisFabric
+	vault  *Vault
 	secret []byte
 	ttl    time.Duration
 	now    func() time.Time
 
-	mu                sync.RWMutex
-	syntheticSessions map[string]*domain.OperatorSession
-	revokedSessions   map[string]time.Time
+	mu              sync.RWMutex
+	localSessions   map[string]*domain.OperatorSession
+	revokedSessions map[string]time.Time // jti -> expiration timestamp for bounded pruning
+}
+
+// SetVault attaches an envelope encryption Vault used to encrypt OIDC id_token_hint values at rest.
+func (m *SessionManager) SetVault(v *Vault) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.vault = v
+	m.mu.Unlock()
+}
+
+// HandleInvalidation processes cross-replica session revocation events from Redis Pub/Sub.
+func (m *SessionManager) HandleInvalidation(ev storage.InvalidationEvent) {
+	if m == nil {
+		return
+	}
+	if ev.Type == "session_revoked" && strings.TrimSpace(ev.EntityID) != "" {
+		now := m.currentTime()
+		m.mu.Lock()
+		m.pruneRevokedLocked(now)
+		m.revokedSessions[ev.EntityID] = now.Add(m.TTL())
+		if local, ok := m.localSessions[ev.EntityID]; ok && local != nil {
+			t := now
+			local.RevokedAt = &t
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *SessionManager) pruneRevokedLocked(now time.Time) {
+	for jti, exp := range m.revokedSessions {
+		if !now.Before(exp) {
+			delete(m.revokedSessions, jti)
+		}
+	}
 }
 
 // DeriveSessionSecret derives a 32-byte HMAC-SHA256 signing key from the configured session secret
 // or falls back to domain-separated derivation from master secrets so raw master keys are never reused directly.
-func DeriveSessionSecret(sessionSecret, masterEncryptionKey, jwtSecret, masterAdminKey string) []byte {
+func DeriveSessionSecret(sessionSecret, masterEncryptionKey, masterAdminKey string) []byte {
 	if trimmed := strings.TrimSpace(sessionSecret); trimmed != "" {
 		return []byte(trimmed)
 	}
 	seed := strings.TrimSpace(masterEncryptionKey)
-	if seed == "" {
-		seed = strings.TrimSpace(jwtSecret)
-	}
 	if seed == "" {
 		seed = strings.TrimSpace(masterAdminKey)
 	}
@@ -106,16 +138,16 @@ func NewSessionManager(repo storage.Repository, redisFabric *storage.RedisFabric
 	key := make([]byte, len(secret))
 	copy(key, secret)
 	if len(key) == 0 {
-		key = DeriveSessionSecret("", "", "", "")
+		key = DeriveSessionSecret("", "", "")
 	}
 	return &SessionManager{
-		repo:              repo,
-		redis:             redisFabric,
-		secret:            key,
-		ttl:               ttl,
-		now:               time.Now,
-		syntheticSessions: make(map[string]*domain.OperatorSession),
-		revokedSessions:   make(map[string]time.Time),
+		repo:            repo,
+		redis:           redisFabric,
+		secret:          key,
+		ttl:             ttl,
+		now:             time.Now,
+		localSessions:   make(map[string]*domain.OperatorSession),
+		revokedSessions: make(map[string]time.Time),
 	}
 }
 
@@ -157,22 +189,25 @@ func sessionActiveRedisKey(jti string) string {
 
 // IssueSession creates a new persisted operator session and returns an HS256-signed JWT + CSRF token.
 func (m *SessionManager) IssueSession(ctx context.Context, userID, orgID, teamID string, role domain.OperatorRole) (*IssuedSession, error) {
-	return m.issueSession(ctx, userID, orgID, teamID, role, false)
+	return m.IssueSessionWithProvider(ctx, userID, orgID, teamID, "", role)
 }
 
-// IssueSyntheticSession creates a revocable operator session for config-backed admin login (e.g., UIUsername/UIPassword)
-// without requiring a foreign-key row in the SQL users table.
-func (m *SessionManager) IssueSyntheticSession(ctx context.Context, actorID, orgID string, role domain.OperatorRole) (*IssuedSession, error) {
-	return m.issueSession(ctx, actorID, orgID, "", role, true)
+// IssueSessionWithProvider creates a new persisted operator session associated with an OIDC SSO provider ID.
+func (m *SessionManager) IssueSessionWithProvider(ctx context.Context, userID, orgID, teamID, providerID string, role domain.OperatorRole) (*IssuedSession, error) {
+	return m.IssueSessionWithOIDC(ctx, userID, orgID, teamID, providerID, "", role)
 }
 
-func (m *SessionManager) issueSession(ctx context.Context, userID, orgID, teamID string, role domain.OperatorRole, synthetic bool) (*IssuedSession, error) {
+// IssueSessionWithOIDC creates a persisted operator session associated with an OIDC SSO provider ID
+// and optionally stores a Vault-encrypted OIDC ID token for seamless RP-Initiated Logout (`id_token_hint`).
+func (m *SessionManager) IssueSessionWithOIDC(ctx context.Context, userID, orgID, teamID, providerID, rawIDToken string, role domain.OperatorRole) (*IssuedSession, error) {
 	if m == nil {
 		return nil, errors.New("session manager is nil")
 	}
 	userID = strings.TrimSpace(userID)
 	orgID = strings.TrimSpace(orgID)
 	teamID = strings.TrimSpace(teamID)
+	providerID = strings.TrimSpace(providerID)
+	rawIDToken = strings.TrimSpace(rawIDToken)
 	if userID == "" {
 		return nil, errors.New("user_id is required to issue session")
 	}
@@ -190,27 +225,37 @@ func (m *SessionManager) issueSession(ctx context.Context, userID, orgID, teamID
 	}
 	csrfToken := hex.EncodeToString(csrfBytes)
 
-	sess := &domain.OperatorSession{
-		ID:        jti,
-		UserID:    userID,
-		OrgID:     orgID,
-		Role:      string(role),
-		CSRFToken: csrfToken,
-		ExpiresAt: expiresAt,
-		CreatedAt: now,
+	var encIDToken, encIDTokenDEK string
+	m.mu.RLock()
+	vault := m.vault
+	m.mu.RUnlock()
+	if rawIDToken != "" && vault != nil {
+		if ct, dek, encErr := vault.EncryptString(rawIDToken); encErr == nil {
+			encIDToken = ct
+			encIDTokenDEK = dek
+		}
 	}
 
-	if synthetic {
-		m.mu.Lock()
-		m.syntheticSessions[jti] = cloneSession(sess)
-		m.mu.Unlock()
-	} else if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
+	sess := &domain.OperatorSession{
+		ID:                  jti,
+		UserID:              userID,
+		OrgID:               orgID,
+		Role:                string(role),
+		ProviderID:          providerID,
+		CSRFToken:           csrfToken,
+		EncryptedIDToken:    encIDToken,
+		EncryptedIDTokenDEK: encIDTokenDEK,
+		ExpiresAt:           expiresAt,
+		CreatedAt:           now,
+	}
+
+	if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
 		if err := sessRepo.CreateOperatorSession(ctx, sess); err != nil {
 			return nil, fmt.Errorf("persist operator session: %w", err)
 		}
 	} else {
 		m.mu.Lock()
-		m.syntheticSessions[jti] = cloneSession(sess)
+		m.localSessions[jti] = cloneSession(sess)
 		m.mu.Unlock()
 	}
 
@@ -223,17 +268,17 @@ func (m *SessionManager) issueSession(ctx context.Context, userID, orgID, teamID
 	}
 
 	claims := SessionClaims{
-		Subject:   userID,
-		Issuer:    SessionIssuer,
-		Audience:  AudienceClaim{SESSION_AUDIENCE},
-		JTI:       jti,
-		OrgID:     orgID,
-		TeamID:    teamID,
-		Role:      string(role),
-		CSRFToken: csrfToken,
-		Synthetic: synthetic,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: expiresAt.Unix(),
+		Subject:    userID,
+		Issuer:     SessionIssuer,
+		Audience:   AudienceClaim{SESSION_AUDIENCE},
+		JTI:        jti,
+		OrgID:      orgID,
+		TeamID:     teamID,
+		ProviderID: providerID,
+		Role:       string(role),
+		CSRFToken:  csrfToken,
+		IssuedAt:   now.Unix(),
+		ExpiresAt:  expiresAt.Unix(),
 	}
 
 	token, err := m.signJWT(claims)
@@ -316,6 +361,9 @@ func (m *SessionManager) VerifySession(ctx context.Context, rawToken string) (*S
 	if !claims.Audience.Contains(SESSION_AUDIENCE) {
 		return nil, nil, sessionUnauthorized("invalid_session", "Invalid session token audience")
 	}
+	if claims.Issuer != SessionIssuer {
+		return nil, nil, sessionUnauthorized("invalid_session", "Invalid session token issuer")
+	}
 	if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.JTI) == "" {
 		return nil, nil, sessionUnauthorized("invalid_session", "Session token missing subject or jti")
 	}
@@ -327,9 +375,9 @@ func (m *SessionManager) VerifySession(ctx context.Context, rawToken string) (*S
 
 	// Check local revocation cache first
 	m.mu.RLock()
-	_, locallyRevoked := m.revokedSessions[claims.JTI]
+	revExp, locallyRevoked := m.revokedSessions[claims.JTI]
 	m.mu.RUnlock()
-	if locallyRevoked {
+	if locallyRevoked && now.Before(revExp) {
 		return nil, nil, sessionUnauthorized("session_revoked", "Operator session has been revoked")
 	}
 
@@ -345,30 +393,28 @@ func (m *SessionManager) VerifySession(ctx context.Context, rawToken string) (*S
 		}
 	}
 
-	// Resolve session record from durable storage (or synthetic/Redis store)
+	// Resolve session record from durable storage (or local/Redis fallback)
 	var sess *domain.OperatorSession
-	if !claims.Synthetic {
-		if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
-			dbSess, err := sessRepo.GetOperatorSession(ctx, claims.JTI)
-			if err != nil {
-				if errors.Is(err, storage.ErrNotFound) {
-					return nil, nil, sessionUnauthorized("session_revoked", "Operator session not found or revoked")
-				}
-				return nil, nil, &domain.GatewayError{
-					StatusCode: http.StatusServiceUnavailable,
-					Type:       domain.ErrorTypeServer,
-					Code:       "session_store_unavailable",
-					Message:    "Unable to verify operator session state",
-					Retryable:  true,
-				}
+	if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
+		dbSess, err := sessRepo.GetOperatorSession(ctx, claims.JTI)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return nil, nil, sessionUnauthorized("session_revoked", "Operator session not found or revoked")
 			}
-			sess = dbSess
+			return nil, nil, &domain.GatewayError{
+				StatusCode: http.StatusServiceUnavailable,
+				Type:       domain.ErrorTypeServer,
+				Code:       "session_store_unavailable",
+				Message:    "Unable to verify operator session state",
+				Retryable:  true,
+			}
 		}
+		sess = dbSess
 	}
 	if sess == nil {
 		m.mu.RLock()
-		if syn, ok := m.syntheticSessions[claims.JTI]; ok && syn != nil {
-			sess = cloneSession(syn)
+		if local, ok := m.localSessions[claims.JTI]; ok && local != nil {
+			sess = cloneSession(local)
 		}
 		m.mu.RUnlock()
 	}
@@ -401,6 +447,25 @@ func (m *SessionManager) VerifySession(ctx context.Context, rawToken string) (*S
 	return &claims, sess, nil
 }
 
+// DecryptIDTokenHint decrypts the Vault-protected OIDC id_token stored on sess for RP-Initiated Logout.
+// Returns "" if unavailable or decryption fails (degrading safely without leaking errors).
+func (m *SessionManager) DecryptIDTokenHint(sess *domain.OperatorSession) string {
+	if m == nil || sess == nil || sess.EncryptedIDToken == "" || sess.EncryptedIDTokenDEK == "" {
+		return ""
+	}
+	m.mu.RLock()
+	vault := m.vault
+	m.mu.RUnlock()
+	if vault == nil {
+		return ""
+	}
+	raw, err := vault.DecryptString(sess.EncryptedIDToken, sess.EncryptedIDTokenDEK)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
 // RevokeSession immediately revokes a session by jti in DB, Redis, and local cache.
 func (m *SessionManager) RevokeSession(ctx context.Context, jti string, expiresAt time.Time) error {
 	if m == nil {
@@ -412,24 +477,33 @@ func (m *SessionManager) RevokeSession(ctx context.Context, jti string, expiresA
 	}
 	now := m.currentTime()
 
-	m.mu.Lock()
-	m.revokedSessions[jti] = now
-	if syn, ok := m.syntheticSessions[jti]; ok && syn != nil {
-		t := now
-		syn.RevokedAt = &t
-	}
-	m.mu.Unlock()
-
-	ttl := time.Until(expiresAt)
+	ttl := expiresAt.Sub(now)
 	if ttl <= 0 {
 		ttl = m.TTL()
 	}
+	revExp := now.Add(ttl)
+
+	m.mu.Lock()
+	m.pruneRevokedLocked(now)
+	m.revokedSessions[jti] = revExp
+	if local, ok := m.localSessions[jti]; ok && local != nil {
+		t := now
+		local.RevokedAt = &t
+		local.EncryptedIDToken = ""
+		local.EncryptedIDTokenDEK = ""
+	}
+	m.mu.Unlock()
+
 	if m.redis != nil {
 		_, _ = m.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 			if err := rdb.Set(ctx, sessionRevokedRedisKey(jti), "1", ttl).Err(); err != nil {
 				return nil, err
 			}
 			return rdb.Del(ctx, sessionActiveRedisKey(jti)).Result()
+		})
+		m.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
+			Type:     "session_revoked",
+			EntityID: jti,
 		})
 	}
 
@@ -441,7 +515,7 @@ func (m *SessionManager) RevokeSession(ctx context.Context, jti string, expiresA
 	return nil
 }
 
-// RevokeAllUserSessions revokes every active session belonging to userID across DB, Redis, and local cache.
+// RevokeAllUserSessions revokes every active session belonging to userID across DB, Redis, Pub/Sub, and local cache.
 func (m *SessionManager) RevokeAllUserSessions(ctx context.Context, userID string) error {
 	if m == nil {
 		return nil
@@ -451,32 +525,54 @@ func (m *SessionManager) RevokeAllUserSessions(ctx context.Context, userID strin
 		return errors.New("user_id is required")
 	}
 	now := m.currentTime()
+	revExp := now.Add(m.TTL())
+
+	revokedSet := make(map[string]struct{})
+	if listRepo, ok := m.repo.(storage.OperatorSessionRevocationListRepository); ok && listRepo != nil {
+		dbJTIs, err := listRepo.RevokeAllUserSessionsReturningIDs(ctx, userID, now)
+		if err != nil {
+			return err
+		}
+		for _, jti := range dbJTIs {
+			if jti != "" {
+				revokedSet[jti] = struct{}{}
+			}
+		}
+	} else if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
+		if err := sessRepo.RevokeAllUserSessions(ctx, userID, now); err != nil {
+			return err
+		}
+	}
 
 	m.mu.Lock()
-	var revokedJTIs []string
-	for jti, syn := range m.syntheticSessions {
-		if syn != nil && syn.UserID == userID && syn.RevokedAt == nil {
+	m.pruneRevokedLocked(now)
+	for jti, local := range m.localSessions {
+		if local != nil && local.UserID == userID && local.RevokedAt == nil {
 			t := now
-			syn.RevokedAt = &t
-			m.revokedSessions[jti] = now
-			revokedJTIs = append(revokedJTIs, jti)
+			local.RevokedAt = &t
+			local.EncryptedIDToken = ""
+			local.EncryptedIDTokenDEK = ""
+			revokedSet[jti] = struct{}{}
 		}
+	}
+	for jti := range revokedSet {
+		m.revokedSessions[jti] = revExp
 	}
 	m.mu.Unlock()
 
-	if m.redis != nil && len(revokedJTIs) > 0 {
-		for _, jti := range revokedJTIs {
+	if m.redis != nil && len(revokedSet) > 0 {
+		for jti := range revokedSet {
 			_, _ = m.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 				if err := rdb.Set(ctx, sessionRevokedRedisKey(jti), "1", m.TTL()).Err(); err != nil {
 					return nil, err
 				}
 				return rdb.Del(ctx, sessionActiveRedisKey(jti)).Result()
 			})
+			m.redis.PublishInvalidation(ctx, storage.InvalidationEvent{
+				Type:     "session_revoked",
+				EntityID: jti,
+			})
 		}
-	}
-
-	if sessRepo, ok := m.repo.(storage.OperatorSessionRepository); ok && sessRepo != nil {
-		return sessRepo.RevokeAllUserSessions(ctx, userID, now)
 	}
 	return nil
 }

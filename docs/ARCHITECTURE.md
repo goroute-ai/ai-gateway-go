@@ -3,7 +3,7 @@
 > **Document Status**: Production Reference Architecture (`v1.24.0`)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
 > **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`); consult those packages for exact wire translation.  
-> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`125` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
+> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`123` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -94,15 +94,15 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`125` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `10` `/auth`, `4` provider aliases, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
-| **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login, SCIM v2 provisioning, HIBP screening, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`123` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `8` `/auth`, `4` provider aliases, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login with PKCE `S256`, SCIM v2 provisioning, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
 | **5. AI Observability & Audit** | W3C distributed trace propagation (`traceparent`/`tracestate`), OpenMetrics Prometheus scraping, structured logs, immutable spend and governance audit ledgers. | `internal/observability`, `internal/finops`, `internal/server` |
 | **6. MCP Hub & Tool Registry** | Spec-generated 5-release MCP hub (`2024-11-05`–`2026-07-28`, UI-switchable via `PUT /admin/v1/mcp/spec`), Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `cmd/mcpgen`, `internal/mcp/spec`, `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
 | **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, `DistributedTokenCache` & opt-in AWS RDS IAM, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream`, `internal/storage` |
-| **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), Master Key / Password / OIDC SSO sign-in (`LoginView`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog & PTU/priority explorer, FinOps & multi-window quota/scope controls (`QuotasTab`, `TempBudgetModal`), 4-tab Guardrails Console, upstream credentials preflight validator, and read-only `ConfigView`. | `internal/ui`, `web` |
+| **9. Operator Web UI & Playground** | Embedded SPA console at `/ui/` (`internal/ui`, `web`), OIDC SSO & Break-Glass Key sign-in (`LoginView`), CLI device approval (`/ui/cli`, `CLILoginView`), multi-turn streaming chat playground with token & latency telemetry, interactive model catalog & PTU/priority explorer, FinOps & multi-window quota/scope controls (`QuotasTab`, `TempBudgetModal`), 4-tab Guardrails Console, upstream credentials preflight validator, and read-only `ConfigView`. | `internal/ui`, `web` |
 
 ---
 
@@ -271,7 +271,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `27` `/v1` paths, `84` `/admin/v1` paths, `10` `/auth` paths, `4` provider aliases (`125` total paths, verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `27` `/v1` paths, `84` `/admin/v1` paths, `8` `/auth` paths, `4` provider aliases (`123` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/groq.openapi.yaml` | `3.0.3` | **Groq** | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
@@ -385,11 +385,11 @@ The Reliability Manager wraps deployment execution with five coordinated recover
 - **Virtual API Keys (`sk-gw-<8char_id>-<36char_secret>`)**:
   - Generated using `crypto/rand`; only `SHA-256(full_key)` is persisted (`virtual_keys.key_hash`) and compared via `crypto/subtle.ConstantTimeCompare`.
   - **Multi-Source Extraction & Grace Rotation**: Extracts keys consistently across `Authorization: Bearer`, `x-api-key`, `api-key`, `x-goog-api-key`, or `auth.custom_api_key_header`, rejecting contradictory multi-header credentials. Scheduled or manual rotations record prior hashes in `virtual_key_deprecated_hashes` and emit `X-Gateway-Key-Deprecated` / `X-Gateway-Key-Revoke-At` headers during grace.
-- **Federated OIDC, Token Introspection & Reverse Proxy Auth**:
-  - Multi-issuer OIDC/JWT verification (`auth.oidc_issuers[]`, `auth.enable_data_plane_jwt`) binds subjects explicitly via `(org_id, oidc_issuer, oidc_subject)` (`0034`), supports explicit claim-to-key mappings (`jwt_key_mappings`) and ABAC rules (`access_group_rules`), and prevents implicit cross-issuer email account linking.
-  - Supports RFC 7662 token introspection / UserInfo (`auth.introspection`), CIDR-guarded reverse proxy headers (`auth.proxy_auth`), SCIM 2.0 `/scim/v2/*` provisioning with single-transaction tenant-scoped group updates, and service-key impersonation/delegation (`X-Gateway-Impersonate-*`, `X-Gateway-Delegated-*`).
-- **Operator Sessions, HIBP Screening & Embedded SDK Auth**:
-  - Browser & CLI sign-in (`/auth/login`, `/auth/sso/*`, `/auth/cli/*`) issues signed `goroute_session` cookies (`operator_sessions`) with CSRF protection (`X-CSRF-Token`), login throttling, and optional k-anonymity HIBP password prefix checking (`HIBPRangeClient`, failing open on upstream errors to preserve login availability).
+- **Federated OIDC & Token Introspection**:
+  - Multi-issuer asymmetric OIDC/JWT verification (`RS256`–`PS512`, `ES256`–`ES512`, `EdDSA`; `auth.oidc_issuers[]`, `auth.enable_data_plane_jwt`) binds subjects explicitly via `(org_id, oidc_issuer, oidc_subject)` (`0034`), supports explicit claim-to-key mappings (`jwt_key_mappings`) and ABAC rules (`access_group_rules`), and prevents implicit cross-issuer email account linking.
+  - Supports RFC 7662 token introspection / OIDC UserInfo (`auth.introspection` with lazy OIDC Discovery endpoint resolution), SCIM 2.0 `/scim/v2/*` provisioning with single-transaction tenant-scoped group updates, and service-key impersonation/delegation (`X-Gateway-Impersonate-*`, `X-Gateway-Delegated-*`).
+- **Operator OIDC SSO Sessions & Embedded SDK Auth**:
+  - Browser & CLI sign-in (`/auth/sso/*`, `/auth/cli/*`) enforces OpenID Connect PKCE `S256`, `nonce`, and `at_hash` verification, issues signed `goroute_session` cookies (`operator_sessions`) with CSRF protection (`X-CSRF-Token`), and supports RP-Initiated Logout (`end_session_url`) alongside `GATEWAY_MASTER_ADMIN_KEY` break-glass access.
   - Embedded SDK callers can install `gateway.WithCustomAuthenticator` (`CustomAuthModeOff`/`On`/`Auto`, `AuthDecision`, `RunPostChecks`).
 
 #### Boundary 2: Gateway $\rightarrow$ Provider Credential Vault (`internal/auth/vault.go`) & Cloud IAM
@@ -515,13 +515,13 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0038`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; and `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases.
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0040`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases; `0039` (`0039_drop_user_credentials`) drops the legacy local `user_credentials` table in favor of OIDC-only authentication; and `0040` (`0040_operator_sessions_oidc_metadata`) adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`).
 
 #### 1. Multi-Tenant Identity, Federation, SSO & RBAC
 - **`organizations` & `teams`** (`0001`, `0015`, `0022`, `0023`, `0030`, `0031`): Root tenant and departmental boundaries with integer micro-dollar budgets (`max_budget_micros`, `spent_micros`, `soft_budget_micros`, `budget_duration_seconds`, `budget_reset_at`), RPM/TPM/TPD/concurrency limits, and default fallback models.
 - **`team_memberships` & `projects`** (`0027`): Many-to-many user-to-team memberships and project sub-containers (`project_id` FK on `virtual_keys`).
 - **`users`** (`0001`, `0013`, `0022`–`0024`, `0028`, `0030`, `0034`): Identity members indexed by `(org_id, oidc_issuer, oidc_subject)` (`0034`), SCIM attributes, impersonation flags, and per-user budgets/limits.
-- **`user_credentials` & `operator_sessions`** (`0033`): Password hashes (`argon2id`/scrypt/HIBP status) and durable control-plane operator sessions.
+- **`operator_sessions`** (`0033`, `0039`): Durable, revocable control-plane OIDC operator sessions (`csrf_token`, expiration, revocation; legacy `user_credentials` dropped in `0039`).
 - **`virtual_keys` & `virtual_key_deprecated_hashes`** (`0001`, `0022`–`0025`, `0027`, `0028`, `0030`, `0031`, `0034`): Client ingress API keys (`sk-gw-...`), temporary budget overrides (`temp_budget_increase_micros`, `temp_budget_expires_at`), key rotation grace schedules & staged replacement envelopes (`0025`/`0034`), soft budgets, and deprecated grace hashes.
 - **`jwt_key_mappings` & `access_group_rules`** (`0024`, `0026`): Explicit tenant-scoped `(org_id, issuer, claim_name, claim_value) -> virtual_key_id` bindings and dynamic ABAC model/access-group rules.
 - **`org_provider_subscriptions` & `org_model_policies`** (`0001`): Layer 2 vendor enablement and Layer 3 model availability policies per organization.
@@ -689,10 +689,10 @@ ai-gateway-go/
 │   ├── CONFIGURATION_GUIDE.md        # Comprehensive YAML, Go SDK & environment configuration guide
 │   ├── UPGRADING.md                  # Zero-downtime upgrade guide & migration 0034 rollback safety runbook
 │   ├── TESTING.md                    # 3-tier verification manual (static/contracts, unit & Postgres/Redis E2E, Chromium UI)
-│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 125 paths + MCP + A2A + 4 Providers)
+│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 123 paths + MCP + A2A + 4 Providers)
 │   └── specs/                        # Pinned vendor specifications (MCP 2024-11-05..2026-07-28 & A2A v1.0 protobuf)
 ├── migrations/
-│   └── 0001..0038_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0038_mcp_runtime_spec)
+│   └── 0001..0040_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0040_operator_sessions_oidc_metadata)
 ├── tests/
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
@@ -703,7 +703,7 @@ ai-gateway-go/
 │   ├── domain/                       # Canonical structs, identity models, quotas, 4-layer model structures, errors
 │   ├── openapi/                      # Generated Go types from OpenAPI specs
 │   ├── adapter/                      # OpenAI, Anthropic, Groq, and OpenRouter (OpenAPI-first adapters)
-│   ├── auth/                         # Virtual keys, OIDC/SSO, SCIM, HIBP, rotation, L1/L2 cache, RBAC, Credential Vault & upstream IAM
+│   ├── auth/                         # Virtual keys, OIDC/SSO, SCIM, rotation, L1/L2 cache, RBAC, Credential Vault & upstream IAM
 │   ├── mcp/                          # Multi-release MCP engine (2024-11-05..2026-07-28), spec_profile, MRTR, Cache & Hub
 │   ├── a2a/                          # A2A v1.0 engine, Card signer/verifier, RouterService, Streams & Outbox
 │   ├── security/                     # Centralized outbound SSRF network policy engine & safe HTTP client
