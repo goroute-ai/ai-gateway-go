@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -262,14 +263,11 @@ func (p SpecProfile) HTTPStatusForResponse(isNotification bool, resp *JSONRPCRes
 // ShapeResult normalizes result payloads so fields match the caller's selected MCP release.
 func (p SpecProfile) ShapeResult(method string, result any) any {
 	resMap, ok := result.(map[string]any)
-	if !ok {
+	if !ok || resMap == nil {
 		return result
 	}
 
-	shaped := make(map[string]any, len(resMap)+4)
-	for k, v := range resMap {
-		shaped[k] = v
-	}
+	shaped := maps.Clone(resMap)
 
 	if p.info.SupportsResultType {
 		if _, exists := shaped["resultType"]; !exists {

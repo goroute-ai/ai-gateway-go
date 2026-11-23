@@ -50,6 +50,7 @@ type openAPISpecEntry struct {
 // OpenAPITransport implements governed OpenAPI-to-MCP translation.
 type OpenAPITransport struct {
 	httpClient *http.Client
+	netPolicy  *network.Policy
 	specMu     sync.Mutex
 	specCache  map[openAPISpecKey]*list.Element
 	specLRU    *list.List
@@ -63,6 +64,7 @@ func NewOpenAPITransport(netPolicy *network.Policy) *OpenAPITransport {
 	client.Timeout = 30 * time.Second
 	return &OpenAPITransport{
 		httpClient: client,
+		netPolicy:  netPolicy,
 		specCache:  make(map[openAPISpecKey]*list.Element),
 		specLRU:    list.New(),
 		maxSpecs:   maxOpenAPISpecCache,
@@ -85,6 +87,9 @@ func ParseOpenAPISpec(specJSON []byte) ([]OpenAPIOperation, error) {
 	var operations []OpenAPIOperation
 
 	for pathStr, pathObj := range paths {
+		if !isSafeOpenAPIPath(pathStr) {
+			continue
+		}
 		methodsMap, ok := pathObj.(map[string]any)
 		if !ok {
 			continue
@@ -210,7 +215,17 @@ func (t *OpenAPITransport) getOperations(
 	}
 	t.specMu.Unlock()
 
-	specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.EndpointURL, nil)
+	parsedEndpoint, err := url.Parse(server.EndpointURL)
+	if err != nil || (parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https") || parsedEndpoint.Host == "" {
+		return nil, nil, errors.New("openapi: invalid server endpoint URL")
+	}
+	if t.netPolicy != nil {
+		if err := t.netPolicy.ValidateURL(parsedEndpoint); err != nil {
+			return nil, nil, fmt.Errorf("openapi: blocked endpoint URL: %w", err)
+		}
+	}
+
+	specReq, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedEndpoint.String(), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -354,44 +369,6 @@ func (t *OpenAPITransport) RoundTrip(
 			}, nil, nil
 		}
 
-		// Construct target URL with path parameters
-		baseURL := strings.TrimRight(server.EndpointURL, "/")
-		// If EndpointURL points to /openapi.json, strip filename to get base service path
-		if strings.HasSuffix(baseURL, ".json") || strings.HasSuffix(baseURL, ".yaml") {
-			lastSlash := strings.LastIndex(baseURL, "/")
-			if lastSlash > 0 {
-				baseURL = baseURL[:lastSlash]
-			}
-		}
-
-		resolvedPath := targetOp.PathPattern
-		for _, p := range targetOp.PathParams {
-			val, ok := args[p]
-			if !ok {
-				return nil, nil, fmt.Errorf("openapi: missing required path parameter %q", p)
-			}
-			resolvedPath = strings.ReplaceAll(resolvedPath, "{"+p+"}", url.PathEscape(fmt.Sprint(val)))
-		}
-
-		targetURL := baseURL + resolvedPath
-
-		// Append query parameters
-		if len(targetOp.QueryParams) > 0 {
-			qVals := url.Values{}
-			for _, q := range targetOp.QueryParams {
-				if val, ok := args[q]; ok {
-					qVals.Set(q, fmt.Sprint(val))
-				}
-			}
-			if len(qVals) > 0 {
-				if strings.Contains(targetURL, "?") {
-					targetURL += "&" + qVals.Encode()
-				} else {
-					targetURL += "?" + qVals.Encode()
-				}
-			}
-		}
-
 		// Body
 		var bodyReader io.Reader
 		if bodyArg, hasBody := args["body"]; hasBody {
@@ -418,9 +395,9 @@ func (t *OpenAPITransport) RoundTrip(
 			}
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, targetOp.Method, targetURL, bodyReader)
+		httpReq, err := buildSafeOpenAPIRequest(ctx, server.EndpointURL, targetOp, args, bodyReader, t.netPolicy)
 		if err != nil {
-			return nil, nil, fmt.Errorf("openapi: create upstream request: %w", err)
+			return nil, nil, err
 		}
 
 		if bodyReader != nil {
@@ -475,4 +452,89 @@ func (t *OpenAPITransport) RoundTrip(
 			},
 		}, nil, nil
 	}
+}
+
+func isSafeOpenAPIPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+		return false
+	}
+	if strings.ContainsAny(p, "\\\r\n\x00?#") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func buildSafeOpenAPIRequest(
+	ctx context.Context,
+	endpointURL string,
+	targetOp *OpenAPIOperation,
+	args map[string]any,
+	bodyReader io.Reader,
+	netPolicy *network.Policy,
+) (*http.Request, error) {
+	baseURL := strings.TrimRight(endpointURL, "/")
+	if strings.HasSuffix(baseURL, ".json") || strings.HasSuffix(baseURL, ".yaml") {
+		if lastSlash := strings.LastIndex(baseURL, "/"); lastSlash > 0 {
+			baseURL = baseURL[:lastSlash]
+		}
+	}
+
+	baseParsed, err := url.Parse(baseURL)
+	if err != nil || (baseParsed.Scheme != "http" && baseParsed.Scheme != "https") || baseParsed.Host == "" || baseParsed.User != nil {
+		return nil, errors.New("openapi: invalid server base URL")
+	}
+	if !isSafeOpenAPIPath(targetOp.PathPattern) {
+		return nil, errors.New("openapi: unsafe operation path pattern")
+	}
+
+	resolvedRawPath := targetOp.PathPattern
+	resolvedEscapedPath := targetOp.PathPattern
+	for _, p := range targetOp.PathParams {
+		val, ok := args[p]
+		if !ok {
+			return nil, fmt.Errorf("openapi: missing required path parameter %q", p)
+		}
+		valStr := fmt.Sprint(val)
+		if valStr == "" || valStr == "." || valStr == ".." || strings.Contains(valStr, "..") || strings.ContainsAny(valStr, "/\\?#\r\n\x00") {
+			return nil, fmt.Errorf("openapi: invalid path parameter %q", p)
+		}
+		resolvedRawPath = strings.ReplaceAll(resolvedRawPath, "{"+p+"}", valStr)
+		resolvedEscapedPath = strings.ReplaceAll(resolvedEscapedPath, "{"+p+"}", url.PathEscape(valStr))
+	}
+	if !isSafeOpenAPIPath(resolvedRawPath) {
+		return nil, errors.New("openapi: invalid resolved request path")
+	}
+
+	qVals := url.Values{}
+	for _, q := range targetOp.QueryParams {
+		if val, ok := args[q]; ok {
+			qVals.Set(q, fmt.Sprint(val))
+		}
+	}
+
+	// Build request strictly from validated base scheme+host before attaching sanitized path/query.
+	baseOrigin := (&url.URL{Scheme: baseParsed.Scheme, Host: baseParsed.Host}).String()
+	httpReq, err := http.NewRequestWithContext(ctx, targetOp.Method, baseOrigin, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("openapi: create upstream request: %w", err)
+	}
+	httpReq.URL.Path = strings.TrimRight(baseParsed.Path, "/") + resolvedRawPath
+	if resolvedEscapedPath != resolvedRawPath || baseParsed.RawPath != "" {
+		httpReq.URL.RawPath = strings.TrimRight(baseParsed.EscapedPath(), "/") + resolvedEscapedPath
+	}
+	if len(qVals) > 0 {
+		httpReq.URL.RawQuery = qVals.Encode()
+	}
+
+	if netPolicy != nil {
+		if err := netPolicy.ValidateURL(httpReq.URL); err != nil {
+			return nil, fmt.Errorf("openapi: blocked target URL: %w", err)
+		}
+	}
+	return httpReq, nil
 }

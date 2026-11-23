@@ -421,3 +421,61 @@ func TestOpenAPITransport_GovernedAdapter(t *testing.T) {
 		t.Fatalf("unexpected POST content: %v", postResult)
 	}
 }
+
+func TestOpenAPITransport_BlocksPathTraversalAndPrivateEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	mockRESTServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi.json" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{
+  "openapi": "3.0.0",
+  "info": {"title": "Pet Store API", "version": "1.0.0"},
+  "paths": {
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "parameters": [{"name": "petId", "in": "path", "required": true, "schema": {"type": "string"}}]
+      }
+    }
+  }
+}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockRESTServer.Close()
+
+	// 1. Path traversal / delimiter smuggling in path parameters must be rejected.
+	allowPrivate := &network.Policy{AllowPrivateNetworks: true, AllowInsecureHTTP: true}
+	transport := mcp.NewOpenAPITransport(allowPrivate)
+	server := &domain.MCPServer{
+		ID:            "mcp_srv_sec",
+		Slug:          "petstore-sec",
+		TransportType: "openapi",
+		EndpointURL:   mockRESTServer.URL + "/openapi.json",
+		IsActive:      true,
+	}
+	for _, badID := range []string{"..", "../admin", "a/b", "a?x=1", "a#frag", `a\b`} {
+		reqBytes, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "getPetById",
+				"arguments": map[string]any{"petId": badID},
+			},
+		})
+		if _, _, err := transport.RoundTrip(ctx, server, nil, nil, reqBytes, nil); err == nil {
+			t.Fatalf("expected error for unsafe path param %q, got nil", badID)
+		}
+	}
+
+	// 2. Fail-closed SSRF policy must block loopback/private OpenAPI endpoints.
+	strictPolicy := &network.Policy{AllowPrivateNetworks: false, AllowInsecureHTTP: true}
+	strictTransport := mcp.NewOpenAPITransport(strictPolicy)
+	listBytes, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	if _, _, err := strictTransport.RoundTrip(ctx, server, nil, nil, listBytes, nil); err == nil {
+		t.Fatal("expected strict SSRF policy to block loopback OpenAPI server")
+	}
+}

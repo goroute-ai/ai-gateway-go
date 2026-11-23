@@ -134,8 +134,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (reqUrl.pathname === `${prefix}/logout`) {
-      const postLogout = reqUrl.searchParams.get('post_logout_redirect_uri') || 'http://127.0.0.1/';
-      res.writeHead(302, { Location: postLogout });
+      const safeLocation = sanitizeLoopbackRedirect(
+        reqUrl.searchParams.get('post_logout_redirect_uri'),
+        'http://127.0.0.1/',
+      );
+      if (!safeLocation) {
+        res.writeHead(400);
+        return res.end('invalid post_logout_redirect_uri');
+      }
+      res.writeHead(302, { Location: safeLocation });
       return res.end();
     }
   }
@@ -153,3 +160,27 @@ server.listen(port, host, () => {
 const shutdown = () => server.close(() => process.exit(0));
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+function sanitizeLoopbackRedirect(rawUri, fallbackUri) {
+  if (!rawUri) return fallbackUri;
+  let parsed;
+  try {
+    parsed = new URL(rawUri);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:') return null;
+  const hostLiteral = parsed.hostname === '127.0.0.1'
+    ? '127.0.0.1'
+    : parsed.hostname === 'localhost'
+      ? 'localhost'
+      : null;
+  if (!hostLiteral) return null;
+  const portNum = parsed.port === '' ? null : Number(parsed.port);
+  if (portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
+    return null;
+  }
+  const cleanPath = '/' + String(parsed.pathname || '').replace(/^\/+/, '');
+  const portPart = portNum !== null ? `:${portNum}` : '';
+  return `http://${hostLiteral}${portPart}${cleanPath}${parsed.search || ''}`;
+}
