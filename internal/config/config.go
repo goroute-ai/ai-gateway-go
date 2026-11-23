@@ -226,7 +226,8 @@ type ServerConfig struct {
 	Environment               string        `yaml:"environment"` // "development", "staging", "production"
 	Host                      string        `yaml:"host"`
 	Port                      int           `yaml:"port"`
-	GRPCPort                  int           `yaml:"grpc_port"` // 0 = disabled; >0 enables A2A gRPC server
+	PublicBaseURL             string        `yaml:"public_base_url" json:"public_base_url"` // canonical external base URL (e.g. "https://gateway.example.com")
+	GRPCPort                  int           `yaml:"grpc_port"`                              // 0 = disabled; >0 enables A2A gRPC server
 	ReadTimeout               time.Duration `yaml:"read_timeout"`
 	WriteTimeout              time.Duration `yaml:"write_timeout"`
 	IdleTimeout               time.Duration `yaml:"idle_timeout"`

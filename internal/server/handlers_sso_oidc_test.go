@@ -526,10 +526,11 @@ func TestAuthSSO_CLIFlow_StartCompletePoll_RateLimitAndSingleUse(t *testing.T) {
 		t.Fatalf("expected 403 without CSRF on cli complete, got %d", noCSRFComplete.Code)
 	}
 
-	// Authenticated operator approves CLI login with org_id and team_id.
+	// Authenticated operator approves CLI login with org_id, team_id, and user_code.
 	completeRec := doJSONReq(t, srv.Handler(), http.MethodPost, "/auth/cli/complete/"+startResp.LoginID, map[string]any{
-		"org_id":  "org-sso",
-		"team_id": "team-cli",
+		"org_id":    "org-sso",
+		"team_id":   "team-cli",
+		"user_code": startResp.UserCode,
 	}, map[string]string{
 		auth.CSRFHeaderName: cbResp.CSRFToken,
 	}, sessCookie)

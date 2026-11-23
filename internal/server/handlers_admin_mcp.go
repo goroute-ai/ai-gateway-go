@@ -97,8 +97,43 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 	if input.OrgID == "" {
 		input.OrgID = s.cfg.Auth.DefaultOrgID
 	}
-	if _, ok := s.authorizeAdmin(w, r, input.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, input.OrgID, true)
+	if !ok {
 		return
+	}
+	if input.TransportType != domain.MCPTransportStdio {
+		if gwErr := s.authorizeCustomBaseURL(op, input.EndpointURL); gwErr != nil {
+			domain.WriteHTTPError(w, gwErr)
+			return
+		}
+		cleanEndpoint, err := s.validateCredentialBaseURL(input.EndpointURL)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_endpoint_url",
+				Message:    err.Error(),
+			})
+			return
+		}
+		input.EndpointURL = cleanEndpoint
+	}
+	if gwErr := s.authorizeCustomBaseURL(op, input.OAuth2Endpoint); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
+	if strings.TrimSpace(input.OAuth2Endpoint) != "" {
+		cleanOAuth, err := s.validateCredentialBaseURL(input.OAuth2Endpoint)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_oauth2_endpoint",
+				Message:    err.Error(),
+			})
+			return
+		}
+		input.OAuth2Endpoint = cleanOAuth
 	}
 
 	if input.RPMLimit < 0 {
@@ -291,12 +326,12 @@ func (s *GatewayServer) handleAdminSyncMCPServer(w http.ResponseWriter, r *http.
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			domain.WriteHTTPError(w, &domain.GatewayError{
 				StatusCode: http.StatusBadGateway,
 				Type:       domain.ErrorTypeUpstream,
 				Code:       "sync_upstream_rejected",
-				Message:    fmt.Sprintf("Upstream returned HTTP %d: %s", resp.StatusCode, string(body)),
+				Message:    fmt.Sprintf("Upstream MCP server returned HTTP %d", resp.StatusCode),
 			})
 			return
 		}
@@ -845,7 +880,8 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 		})
 		return
 	}
-	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
+	op, ok := s.authorizeAdmin(w, r, existing.OrgID, true)
+	if !ok {
 		return
 	}
 
@@ -901,7 +937,25 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 		existing.Name = strings.TrimSpace(*input.Name)
 	}
 	if input.EndpointURL != nil && strings.TrimSpace(*input.EndpointURL) != "" {
-		existing.EndpointURL = strings.TrimSpace(*input.EndpointURL)
+		rawEndpoint := strings.TrimSpace(*input.EndpointURL)
+		if existing.TransportType != domain.MCPTransportStdio {
+			if gwErr := s.authorizeCustomBaseURL(op, rawEndpoint); gwErr != nil {
+				domain.WriteHTTPError(w, gwErr)
+				return
+			}
+			cleanEndpoint, err := s.validateCredentialBaseURL(rawEndpoint)
+			if err != nil {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_endpoint_url",
+					Message:    err.Error(),
+				})
+				return
+			}
+			rawEndpoint = cleanEndpoint
+		}
+		existing.EndpointURL = rawEndpoint
 	}
 	if input.AuthType != nil {
 		existing.AuthType = strings.TrimSpace(*input.AuthType)

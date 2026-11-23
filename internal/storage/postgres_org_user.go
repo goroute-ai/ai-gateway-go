@@ -1178,8 +1178,8 @@ func (p *PostgresRepository) UpdateUser(ctx context.Context, user *domain.User) 
 }
 
 func (p *PostgresRepository) GetUser(ctx context.Context, id string) (*domain.User, error) {
-	if u, err := p.mem.GetUser(ctx, id); err == nil && u != nil {
-		return u, nil
+	if p.pool == nil {
+		return p.mem.GetUser(ctx, id)
 	}
 	u, err := scanUser(p.pool.QueryRow(ctx, `SELECT `+userSelectCols+` FROM users WHERE id = $1`, id))
 	if err != nil {
@@ -1483,20 +1483,58 @@ func (p *PostgresRepository) DeleteJWTKeyMapping(ctx context.Context, id string)
 }
 
 func (p *PostgresRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
+	return p.ResolveJWTKeyMappingForOrg(ctx, "", issuer, claimName, claimValue)
+}
+
+func (p *PostgresRepository) ResolveJWTKeyMappingForOrg(ctx context.Context, orgID, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
 	if p.pool == nil {
-		return p.mem.ResolveJWTKeyMapping(ctx, issuer, claimName, claimValue)
+		return p.mem.ResolveJWTKeyMappingForOrg(ctx, orgID, issuer, claimName, claimValue)
 	}
-	m, err := scanJWTKeyMapping(p.pool.QueryRow(ctx,
-		`SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE issuer = $1 AND claim_name = $2 AND claim_value = $3 LIMIT 1`,
-		issuer, claimName, claimValue,
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	orgID = strings.TrimSpace(orgID)
+	if orgID != "" {
+		row := p.pool.QueryRow(ctx,
+			`SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE org_id = $1 AND issuer = $2 AND claim_name = $3 AND claim_value = $4 LIMIT 1`,
+			orgID, issuer, claimName, claimValue,
+		)
+		m, err := scanJWTKeyMapping(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+			}
+			return nil, err
 		}
+		return m, nil
+	}
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT `+jwtKeyMappingSelectCols+` FROM jwt_key_mappings WHERE issuer = $1 AND claim_name = $2 AND claim_value = $3 LIMIT 2`,
+		issuer, claimName, claimValue,
+	)
+	if err != nil {
 		return nil, err
 	}
-	return m, nil
+	defer rows.Close()
+
+	var matched *domain.JWTKeyMapping
+	for rows.Next() {
+		m, scanErr := scanJWTKeyMapping(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if matched != nil {
+			// Fail closed when multiple organizations share the same (issuer, claim_name, claim_value)
+			// and the caller did not establish an organization scope.
+			return nil, fmt.Errorf("ambiguous unscoped jwt key mapping %w", ErrNotFound)
+		}
+		matched = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if matched == nil {
+		return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	}
+	return matched, nil
 }
 
 func (p *PostgresRepository) UpsertUserPassword(ctx context.Context, userID, passwordHash string, resetRequired bool) error {

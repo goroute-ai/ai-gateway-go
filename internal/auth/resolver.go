@@ -274,8 +274,26 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 		RawClaims:     cloneClaimsMap(claims.RawClaims),
 	}
 
+	pinnedOrgID := ""
+	if ov != nil {
+		pinnedOrgID = strings.TrimSpace(ov.DefaultOrgID())
+	}
+	claimOrgID := strings.TrimSpace(claims.OrgID)
+	if pinnedOrgID != "" && claimOrgID != "" && claimOrgID != pinnedOrgID {
+		return nil, &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "cross_org_access_denied",
+			Message:    "JWT org_id claim does not match issuer organization scope",
+		}
+	}
+	explicitOrgID := pinnedOrgID
+	if explicitOrgID == "" {
+		explicitOrgID = claimOrgID
+	}
+
 	if mappingRepo, ok := r.repo.(storage.JWTMappingRepository); ok && mappingRepo != nil {
-		mapping, found, err := r.findJWTKeyMapping(ctx, mappingRepo, effectiveIssuer, claims)
+		mapping, found, err := r.findJWTKeyMapping(ctx, mappingRepo, explicitOrgID, effectiveIssuer, claims)
 		if err != nil {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
@@ -293,7 +311,7 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 			if err != nil {
 				return nil, err
 			}
-			if vkCtx.OrgID != mapping.OrgID {
+			if vkCtx.OrgID != mapping.OrgID || (explicitOrgID != "" && mapping.OrgID != explicitOrgID) {
 				return nil, &domain.GatewayError{
 					StatusCode: http.StatusForbidden,
 					Type:       domain.ErrorTypePermission,
@@ -309,10 +327,7 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 		}
 	}
 
-	orgID := strings.TrimSpace(claims.OrgID)
-	if orgID == "" && ov != nil {
-		orgID = ov.DefaultOrgID()
-	}
+	orgID := explicitOrgID
 	if orgID == "" {
 		orgID = r.defaultOrgID
 	}
@@ -351,14 +366,27 @@ type claimPair struct {
 	value string
 }
 
-func (r *AuthResolver) findJWTKeyMapping(ctx context.Context, repo storage.JWTMappingRepository, issuer string, claims *JWTClaims) (*domain.JWTKeyMapping, bool, error) {
+func (r *AuthResolver) findJWTKeyMapping(ctx context.Context, repo storage.JWTMappingRepository, orgID, issuer string, claims *JWTClaims) (*domain.JWTKeyMapping, bool, error) {
 	if issuer == "" || claims == nil {
 		return nil, false, nil
 	}
 
+	orgScopedRepo, hasOrgScoped := r.repo.(storage.OrgScopedJWTMappingRepository)
 	candidates := collectJWTClaimCandidates(claims)
 	for _, c := range candidates {
-		mapping, err := repo.ResolveJWTKeyMapping(ctx, issuer, c.name, c.value)
+		var (
+			mapping *domain.JWTKeyMapping
+			err     error
+		)
+		if hasOrgScoped && orgScopedRepo != nil && orgID != "" {
+			mapping, err = orgScopedRepo.ResolveJWTKeyMappingForOrg(ctx, orgID, issuer, c.name, c.value)
+		} else {
+			mapping, err = repo.ResolveJWTKeyMapping(ctx, issuer, c.name, c.value)
+			if err == nil && mapping != nil && orgID != "" && mapping.OrgID != orgID {
+				mapping = nil
+				err = storage.ErrNotFound
+			}
+		}
 		if err == nil && mapping != nil {
 			return mapping, true, nil
 		}
@@ -1038,8 +1066,7 @@ func (r *AuthResolver) projectUserIdentity(
 func resolveJITRole(claimRole, defaultRole string) domain.Role {
 	for _, candidate := range []string{claimRole, defaultRole} {
 		switch domain.Role(strings.ToLower(strings.TrimSpace(candidate))) {
-		case domain.RolePlatformAdmin,
-			domain.RoleOrgAdmin,
+		case domain.RoleOrgAdmin,
 			domain.RoleOrgViewer,
 			domain.RoleTeamAdmin,
 			domain.RoleDeveloper,

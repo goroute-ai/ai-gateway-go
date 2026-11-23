@@ -786,6 +786,9 @@ func (s *GatewayServer) handleAdminUpdateUser(w http.ResponseWriter, r *http.Req
 			s.authSvc.InvalidateOrg(r.Context(), updated.OrgID)
 		}
 	}
+	if s.sessionMgr != nil && (!updated.IsActive || !updated.SCIMActive || updated.Role != existing.Role) {
+		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), updated.ID)
+	}
 	s.auditWithDiff(r.Context(), updated.OrgID, "user.updated", "user", updated.ID, map[string]any{
 		"email":            updated.Email,
 		"role":             updated.Role,
@@ -852,6 +855,9 @@ func (s *GatewayServer) handleAdminDeleteUser(w http.ResponseWriter, r *http.Req
 	if err := s.repo.DeleteUser(r.Context(), userID); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
+	}
+	if s.sessionMgr != nil {
+		_ = s.sessionMgr.RevokeAllUserSessions(r.Context(), userID)
 	}
 	if s.authSvc != nil {
 		s.authSvc.InvalidateOrg(r.Context(), existing.OrgID)

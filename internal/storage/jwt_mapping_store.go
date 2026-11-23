@@ -18,6 +18,11 @@ type JWTMappingRepository interface {
 	ResolveJWTKeyMapping(ctx context.Context, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error)
 }
 
+// OrgScopedJWTMappingRepository resolves JWT claim-to-virtual-key mappings scoped to a specific organization.
+type OrgScopedJWTMappingRepository interface {
+	ResolveJWTKeyMappingForOrg(ctx context.Context, orgID, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error)
+}
+
 // JWTMappingLookupRepository is an optional Repository extension for direct JWT mapping lookup by ID.
 type JWTMappingLookupRepository interface {
 	GetJWTKeyMapping(ctx context.Context, id string) (*domain.JWTKeyMapping, error)

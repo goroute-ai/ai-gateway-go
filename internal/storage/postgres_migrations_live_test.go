@@ -549,7 +549,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0038) down through 0022.
+	// Exercise reverse down migrations from latest (0039) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -562,8 +562,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 17 {
-		t.Fatalf("expected 17 down migrations for 0022..0038, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 18 {
+		t.Fatalf("expected 18 down migrations for 0022..0039, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))

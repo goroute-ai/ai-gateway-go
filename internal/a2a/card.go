@@ -335,6 +335,29 @@ func (s *GatewayCardSigner) signDigest(sigInput string) ([]byte, error) {
 	}
 }
 
+// ServeWellKnownGatewayHubCard writes the public gateway-level A2A hub AgentCard without exposing tenant agents.
+func ServeWellKnownGatewayHubCard(w http.ResponseWriter, gatewayBaseURL string) {
+	card := &pb.AgentCard{
+		Name:        "GoRoute AI Gateway Agent Service",
+		Description: "Enterprise Linux Foundation A2A v1.0 Gateway Hub",
+		Version:     "1.0.0",
+		SupportedInterfaces: []*pb.AgentInterface{
+			{
+				ProtocolBinding: "HTTP+JSON",
+				Url:             gatewayBaseURL + "/a2a/v1/agents",
+			},
+			{
+				ProtocolBinding: "JSON-RPC",
+				Url:             gatewayBaseURL + "/a2a/v1/agents",
+			},
+		},
+	}
+	rawBytes, _ := protojson.Marshal(card)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(rawBytes)
+}
+
 // ServeWellKnownAgentCard serves `GET /.well-known/agent-card.json`.
 func ServeWellKnownAgentCard(
 	w http.ResponseWriter,
@@ -342,6 +365,19 @@ func ServeWellKnownAgentCard(
 	repo storage.Repository,
 	signer *GatewayCardSigner,
 	gatewayBaseURL string,
+	defaultAgentSlug string,
+) {
+	ServeWellKnownAgentCardForOrg(w, r, repo, signer, gatewayBaseURL, "", defaultAgentSlug)
+}
+
+// ServeWellKnownAgentCardForOrg serves `GET /.well-known/agent-card.json` scoped to orgID when provided.
+func ServeWellKnownAgentCardForOrg(
+	w http.ResponseWriter,
+	r *http.Request,
+	repo storage.Repository,
+	signer *GatewayCardSigner,
+	gatewayBaseURL string,
+	orgID string,
 	defaultAgentSlug string,
 ) {
 	agentSlug := r.URL.Query().Get("agent")
@@ -352,36 +388,18 @@ func ServeWellKnownAgentCard(
 		agentSlug = defaultAgentSlug
 	}
 	if agentSlug == "" {
-		agents, _ := repo.ListA2AAgents(r.Context(), "")
+		agents, _ := repo.ListA2AAgents(r.Context(), orgID)
 		if len(agents) > 0 {
 			agentSlug = agents[0].Slug
 		}
 	}
 	if agentSlug == "" {
-		card := &pb.AgentCard{
-			Name:        "GoRoute AI Gateway Agent Service",
-			Description: "Enterprise Linux Foundation A2A v1.0 Gateway Hub",
-			Version:     "1.0.0",
-			SupportedInterfaces: []*pb.AgentInterface{
-				{
-					ProtocolBinding: "HTTP+JSON",
-					Url:             gatewayBaseURL + "/a2a/v1/agents",
-				},
-				{
-					ProtocolBinding: "JSON-RPC",
-					Url:             gatewayBaseURL + "/a2a/v1/agents",
-				},
-			},
-		}
-		rawBytes, _ := protojson.Marshal(card)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(rawBytes)
+		ServeWellKnownGatewayHubCard(w, gatewayBaseURL)
 		return
 	}
 
-	agent, err := repo.GetA2AAgentBySlug(r.Context(), "", agentSlug)
-	if err != nil || agent == nil || !agent.IsActive {
+	agent, err := repo.GetA2AAgentBySlug(r.Context(), orgID, agentSlug)
+	if err != nil || agent == nil || !agent.IsActive || (orgID != "" && agent.OrgID != orgID) {
 		http.Error(w, fmt.Sprintf("A2A Agent %q not found", agentSlug), http.StatusNotFound)
 		return
 	}

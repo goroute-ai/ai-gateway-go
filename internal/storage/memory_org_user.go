@@ -854,8 +854,8 @@ func (r *MemoryRepository) GetOrCreateUserByOIDCSubject(ctx context.Context, use
 	return &out, true, nil
 }
 
-func jwtMappingTupleKey(issuer, claimName, claimValue string) string {
-	return issuer + "\x00" + claimName + "\x00" + claimValue
+func jwtMappingTupleKey(orgID, issuer, claimName, claimValue string) string {
+	return orgID + "\x00" + issuer + "\x00" + claimName + "\x00" + claimValue
 }
 
 func (r *MemoryRepository) CreateJWTKeyMapping(ctx context.Context, mapping *domain.JWTKeyMapping) error {
@@ -872,9 +872,9 @@ func (r *MemoryRepository) CreateJWTKeyMapping(ctx context.Context, mapping *dom
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	tupleKey := jwtMappingTupleKey(mapping.Issuer, mapping.ClaimName, mapping.ClaimValue)
+	tupleKey := jwtMappingTupleKey(mapping.OrgID, mapping.Issuer, mapping.ClaimName, mapping.ClaimValue)
 	if _, exists := r.jwtKeyMappingsByTuple[tupleKey]; exists {
-		return fmt.Errorf("jwt key mapping already exists for (%s, %s, %s): %w", mapping.Issuer, mapping.ClaimName, mapping.ClaimValue, ErrConflict)
+		return fmt.Errorf("jwt key mapping already exists for (%s, %s, %s, %s): %w", mapping.OrgID, mapping.Issuer, mapping.ClaimName, mapping.ClaimValue, ErrConflict)
 	}
 	if mapping.ID == "" {
 		mapping.ID = uuid.NewString()
@@ -925,24 +925,47 @@ func (r *MemoryRepository) DeleteJWTKeyMapping(ctx context.Context, id string) e
 	if !ok {
 		return fmt.Errorf("jwt key mapping %q %w", id, ErrNotFound)
 	}
-	delete(r.jwtKeyMappingsByTuple, jwtMappingTupleKey(m.Issuer, m.ClaimName, m.ClaimValue))
+	delete(r.jwtKeyMappingsByTuple, jwtMappingTupleKey(m.OrgID, m.Issuer, m.ClaimName, m.ClaimValue))
 	delete(r.jwtKeyMappings, id)
 	return nil
 }
 
 func (r *MemoryRepository) ResolveJWTKeyMapping(ctx context.Context, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
+	return r.ResolveJWTKeyMappingForOrg(ctx, "", issuer, claimName, claimValue)
+}
+
+func (r *MemoryRepository) ResolveJWTKeyMappingForOrg(ctx context.Context, orgID, issuer, claimName, claimValue string) (*domain.JWTKeyMapping, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	id, ok := r.jwtKeyMappingsByTuple[jwtMappingTupleKey(issuer, claimName, claimValue)]
-	if !ok {
-		return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	orgID = strings.TrimSpace(orgID)
+	if orgID != "" {
+		id, ok := r.jwtKeyMappingsByTuple[jwtMappingTupleKey(orgID, issuer, claimName, claimValue)]
+		if !ok {
+			return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+		}
+		m, ok := r.jwtKeyMappings[id]
+		if !ok {
+			return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+		}
+		cp := *m
+		return &cp, nil
 	}
-	m, ok := r.jwtKeyMappings[id]
-	if !ok {
-		return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
+	var matched *domain.JWTKeyMapping
+	for _, m := range r.jwtKeyMappings {
+		if m != nil && m.Issuer == issuer && m.ClaimName == claimName && m.ClaimValue == claimValue {
+			if matched != nil {
+				// Fail closed when multiple organizations share the same (issuer, claim_name, claim_value)
+				// and the caller did not establish an organization scope.
+				return nil, fmt.Errorf("ambiguous unscoped jwt key mapping %w", ErrNotFound)
+			}
+			cp := *m
+			matched = &cp
+		}
 	}
-	cp := *m
-	return &cp, nil
+	if matched != nil {
+		return matched, nil
+	}
+	return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
 }
 
 func cloneUserCredential(cred *domain.UserCredential) *domain.UserCredential {
