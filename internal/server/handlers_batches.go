@@ -193,7 +193,11 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 	// Launch background processor only after snapshotting the initial batch response
 	// so background field mutations cannot race with JSON serialization.
 	quotaHeaders := cloneBatchRoutingHeaders(r.Header)
-	go s.processBatchAsync(context.Background(), idCtx, batch, inputFile, releaseBudget, quotaHeaders)
+	batchCtx := context.Background()
+	if idCtx != nil {
+		batchCtx = auth.WithIdentity(batchCtx, idCtx)
+	}
+	go s.processBatchAsync(batchCtx, idCtx, batch, inputFile, releaseBudget, quotaHeaders)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -597,7 +601,7 @@ func (s *GatewayServer) processBatchAsync(
 			continue
 		}
 
-		// 2. Check model-scope authorization for this line item
+		// 2. Check model-scope authorization and custom authorizer for this line item
 		if err := s.rbac.AuthorizeRequestedModel(idCtx, item.Body.Model); err != nil {
 			counts.Failed++
 			errItem := map[string]any{
@@ -614,6 +618,42 @@ func (s *GatewayServer) processBatchAsync(
 				break
 			}
 			continue
+		}
+		if s.customAuthorizer != nil {
+			itemMethod := strings.TrimSpace(item.Method)
+			if itemMethod == "" {
+				itemMethod = http.MethodPost
+			}
+			itemPath := strings.TrimSpace(item.URL)
+			if itemPath == "" {
+				itemPath = "/v1/chat/completions"
+			}
+			if err := s.evaluateCustomAuthorizer(ctx, &auth.AuthzRequest{
+				Identity:     idCtx,
+				Action:       auth.AuthzActionInference,
+				ResourceType: "model",
+				ResourceID:   item.Body.Model,
+				Model:        item.Body.Model,
+				HTTPMethod:   itemMethod,
+				HTTPPath:     itemPath,
+			}); err != nil {
+				counts.Failed++
+				errCode := "custom_authorization_denied"
+				statusCode := http.StatusForbidden
+				var gwErr *domain.GatewayError
+				if errors.As(err, &gwErr) && gwErr != nil {
+					if gwErr.Code != "" {
+						errCode = gwErr.Code
+					}
+					if gwErr.StatusCode > 0 {
+						statusCode = gwErr.StatusCode
+					}
+				}
+				if !appendOutput(marshalBatchErrorEntry(item.CustomID, statusCode, errCode, err.Error())) {
+					break
+				}
+				continue
+			}
 		}
 		itemReq := (&http.Request{Header: quotaHeaders.Clone()}).WithContext(ctx)
 		if gwErr := s.applyChatRoutingHints(itemReq, idCtx, &item.Body); gwErr != nil {

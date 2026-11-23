@@ -91,7 +91,7 @@ func (s *GatewayServer) auditWithDiff(
 		enriched["impersonated_by"] = impersonatedBy
 		details = enriched
 	}
-	_ = s.repo.RecordAuditLog(ctx, &domain.AuditLog{
+	rec := &domain.AuditLog{
 		OrgID:       orgID,
 		ActorID:     actorID,
 		Action:      action,
@@ -100,7 +100,13 @@ func (s *GatewayServer) auditWithDiff(
 		Details:     details,
 		BeforeValue: redactAuditSnapshot(before),
 		AfterValue:  redactAuditSnapshot(after),
-	})
+	}
+	_ = s.repo.RecordAuditLog(ctx, rec)
+	if s.auditSIEMSink != nil {
+		if _, hasObserver := s.repo.(storage.AuditLogObserverRepository); !hasObserver {
+			s.auditSIEMSink.Enqueue(rec)
+		}
+	}
 }
 
 func (s *GatewayServer) validateLifecycleWebhookURL(raw string) (string, error) {

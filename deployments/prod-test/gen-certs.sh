@@ -4,7 +4,7 @@ set -euo pipefail
 OUT_DIR="${1:-.tmp/prod-test-certs}"
 mkdir -p "$OUT_DIR"
 
-if [[ -f "$OUT_DIR/ca.crt" && -f "$OUT_DIR/server.crt" && -f "$OUT_DIR/server.key" ]]; then
+if [[ -f "$OUT_DIR/ca.crt" && -f "$OUT_DIR/server.crt" && -f "$OUT_DIR/server.key" && -f "$OUT_DIR/ca-bundle.crt" ]]; then
   echo "==> Reusing existing ephemeral prod-test TLS certs in $OUT_DIR"
   exit 0
 fi
@@ -47,6 +47,7 @@ DNS.2 = auth.prod.test
 DNS.3 = postgres
 DNS.4 = redis
 DNS.5 = localhost
+DNS.6 = fixtures.prod.test
 IP.1 = 127.0.0.1
 IP.2 = 172.30.10.200
 EOF
@@ -62,6 +63,16 @@ openssl x509 -req -in "$OUT_DIR/server.csr" -CA "$OUT_DIR/ca.crt" -CAkey "$OUT_D
   -CAcreateserial -out "$OUT_DIR/server.crt" -days 2 -sha256 \
   -extfile "$OUT_DIR/server.cnf" -extensions v3_req 2>/dev/null
 
-chmod 644 "$OUT_DIR/ca.crt" "$OUT_DIR/server.crt" "$OUT_DIR/server.key"
+# Build a combined Mozilla + Ephemeral Root CA bundle so GoRoute verifies BOTH
+# internal Docker TLS services (*.prod.test, postgres) AND public LLM APIs over HTTPS.
+cp "$OUT_DIR/ca.crt" "$OUT_DIR/ca-bundle.crt"
+if docker run --rm caddy:2-alpine cat /etc/ssl/certs/ca-certificates.crt >"$OUT_DIR/mozilla-roots.crt" 2>/dev/null; then
+  cat "$OUT_DIR/mozilla-roots.crt" >>"$OUT_DIR/ca-bundle.crt"
+  rm -f "$OUT_DIR/mozilla-roots.crt"
+elif [[ -f "/etc/ssl/cert.pem" ]]; then
+  cat "/etc/ssl/cert.pem" >>"$OUT_DIR/ca-bundle.crt"
+fi
+
+chmod 644 "$OUT_DIR/ca.crt" "$OUT_DIR/ca-bundle.crt" "$OUT_DIR/server.crt" "$OUT_DIR/server.key"
 rm -f "$OUT_DIR/ca.cnf" "$OUT_DIR/server.cnf" "$OUT_DIR/server.csr" "$OUT_DIR/ca.srl"
 echo "==> Ephemeral TLS certificates ready."

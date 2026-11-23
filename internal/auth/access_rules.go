@@ -19,9 +19,29 @@ const jwtClaimsAttributePrefix = "jwt_claims."
 // AccessRuleEvaluation holds the deterministic result of evaluating active dynamic
 // access group rules against an authenticated IdentityContext.
 type AccessRuleEvaluation struct {
-	MatchedRuleIDs []string
-	AccessGroups   []string
-	AllowedModels  []string
+	MatchedRuleIDs    []string
+	AccessGroups      []string
+	AllowedModels     []string
+	AllowedMCPServers []string
+	AllowedMCPTools   []string
+	AllowedA2AAgents  []string
+}
+
+func dedupeTrimStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 // ValidateAccessGroupRule validates and normalizes an AccessGroupRule prior to persistence.
@@ -54,24 +74,18 @@ func ValidateAccessGroupRule(rule *domain.AccessGroupRule) error {
 		return fmt.Errorf("in_list operator requires at least one non-empty value")
 	}
 
-	cleanedModels := make([]string, 0, len(rule.AllowedModels))
-	seenModels := make(map[string]struct{}, len(rule.AllowedModels))
-	for _, m := range rule.AllowedModels {
-		trimmed := strings.TrimSpace(m)
-		if trimmed == "" {
-			continue
-		}
-		if _, dup := seenModels[trimmed]; dup {
-			continue
-		}
-		seenModels[trimmed] = struct{}{}
-		cleanedModels = append(cleanedModels, trimmed)
-	}
-	rule.AllowedModels = cleanedModels
+	rule.AllowedModels = dedupeTrimStrings(rule.AllowedModels)
+	rule.AllowedMCPServers = dedupeTrimStrings(rule.AllowedMCPServers)
+	rule.AllowedMCPTools = dedupeTrimStrings(rule.AllowedMCPTools)
+	rule.AllowedA2AAgents = dedupeTrimStrings(rule.AllowedA2AAgents)
 	rule.AccessGroupID = strings.TrimSpace(rule.AccessGroupID)
 
-	if len(rule.AllowedModels) == 0 && rule.AccessGroupID == "" {
-		return fmt.Errorf("at least one allowed_models entry or access_group_id is required")
+	if len(rule.AllowedModels) == 0 &&
+		len(rule.AllowedMCPServers) == 0 &&
+		len(rule.AllowedMCPTools) == 0 &&
+		len(rule.AllowedA2AAgents) == 0 &&
+		rule.AccessGroupID == "" {
+		return fmt.Errorf("at least one allowed_models, allowed_mcp_servers, allowed_mcp_tools, allowed_a2a_agents entry, or access_group_id is required")
 	}
 	return nil
 }
@@ -126,10 +140,25 @@ func EvaluateAccessGroupRules(rules []*domain.AccessGroupRule, idCtx *domain.Ide
 	})
 
 	var (
-		eval       AccessRuleEvaluation
-		seenGroups = make(map[string]struct{})
-		seenModels = make(map[string]struct{})
+		eval           AccessRuleEvaluation
+		seenGroups     = make(map[string]struct{})
+		seenModels     = make(map[string]struct{})
+		seenMCPServers = make(map[string]struct{})
+		seenMCPTools   = make(map[string]struct{})
+		seenA2AAgents  = make(map[string]struct{})
 	)
+	appendUnique := func(dst *[]string, seen map[string]struct{}, items []string) {
+		for _, item := range items {
+			v := strings.TrimSpace(item)
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; !ok {
+				seen[v] = struct{}{}
+				*dst = append(*dst, v)
+			}
+		}
+	}
 	for _, rule := range ordered {
 		values := extractTrustedAttributeValues(idCtx, rule.Attribute)
 		if !matchAccessRuleValues(values, rule.Operator, rule.Value) {
@@ -142,16 +171,10 @@ func EvaluateAccessGroupRules(rules []*domain.AccessGroupRule, idCtx *domain.Ide
 				eval.AccessGroups = append(eval.AccessGroups, groupID)
 			}
 		}
-		for _, m := range rule.AllowedModels {
-			model := strings.TrimSpace(m)
-			if model == "" {
-				continue
-			}
-			if _, ok := seenModels[model]; !ok {
-				seenModels[model] = struct{}{}
-				eval.AllowedModels = append(eval.AllowedModels, model)
-			}
-		}
+		appendUnique(&eval.AllowedModels, seenModels, rule.AllowedModels)
+		appendUnique(&eval.AllowedMCPServers, seenMCPServers, rule.AllowedMCPServers)
+		appendUnique(&eval.AllowedMCPTools, seenMCPTools, rule.AllowedMCPTools)
+		appendUnique(&eval.AllowedA2AAgents, seenA2AAgents, rule.AllowedA2AAgents)
 	}
 	return eval
 }
@@ -518,18 +541,109 @@ func (e *RBACEngine) EvaluateIdentityAccessRules(ctx context.Context, idCtx *dom
 }
 
 // EnrichIdentityWithAccessRules returns a per-request shallow copy of idCtx populated with
-// dynamically granted AccessGroups and DynamicAllowedModels from matching access group rules.
-// It never mutates the caller's IdentityContext in place.
+// dynamically granted AccessGroups, DynamicAllowedModels, DynamicAllowedMCPServers,
+// DynamicAllowedMCPTools, and DynamicAllowedA2AAgents from matching access group rules
+// and unified Access Groups (ModelAccessGroups). It never mutates the caller's IdentityContext in place.
 func (e *RBACEngine) EnrichIdentityWithAccessRules(ctx context.Context, idCtx *domain.IdentityContext) *domain.IdentityContext {
 	if e == nil || idCtx == nil || idCtx.OrgID == "" {
 		return idCtx
 	}
-	eval, err := e.EvaluateIdentityAccessRules(ctx, idCtx)
-	if err != nil || (len(eval.AllowedModels) == 0 && len(eval.AccessGroups) == 0) {
+	eval, _ := e.EvaluateIdentityAccessRules(ctx, idCtx)
+
+	dynMCPServers := append([]string(nil), eval.AllowedMCPServers...)
+	dynMCPTools := append([]string(nil), eval.AllowedMCPTools...)
+	dynA2AAgents := append([]string(nil), eval.AllowedA2AAgents...)
+
+	if groups, err := e.GetCachedModelAccessGroups(ctx, idCtx.OrgID); err == nil && len(groups) > 0 {
+		groupRefs := make(map[string]struct{}, len(eval.AccessGroups)+len(idCtx.AccessGroups))
+		for _, ref := range eval.AccessGroups {
+			if trimmed := strings.TrimSpace(ref); trimmed != "" {
+				groupRefs[trimmed] = struct{}{}
+			}
+		}
+		for _, ref := range idCtx.AccessGroups {
+			if trimmed := strings.TrimSpace(ref); trimmed != "" {
+				groupRefs[trimmed] = struct{}{}
+			}
+		}
+		for _, g := range groups {
+			if g == nil || !g.IsActive {
+				continue
+			}
+			if len(g.AllowedMCPServers) == 0 && len(g.AllowedMCPTools) == 0 && len(g.AllowedA2AAgents) == 0 {
+				continue
+			}
+			if !identityMatchesUnifiedAccessGroup(idCtx, g, groupRefs) {
+				continue
+			}
+			dynMCPServers = append(dynMCPServers, g.AllowedMCPServers...)
+			dynMCPTools = append(dynMCPTools, g.AllowedMCPTools...)
+			dynA2AAgents = append(dynA2AAgents, g.AllowedA2AAgents...)
+		}
+	}
+
+	dynMCPServers = dedupeTrimStrings(dynMCPServers)
+	dynMCPTools = dedupeTrimStrings(dynMCPTools)
+	dynA2AAgents = dedupeTrimStrings(dynA2AAgents)
+
+	if len(eval.AllowedModels) == 0 &&
+		len(eval.AccessGroups) == 0 &&
+		len(dynMCPServers) == 0 &&
+		len(dynMCPTools) == 0 &&
+		len(dynA2AAgents) == 0 {
 		return idCtx
 	}
 	cp := *idCtx
 	cp.DynamicAllowedModels = append([]string(nil), eval.AllowedModels...)
 	cp.AccessGroups = append([]string(nil), eval.AccessGroups...)
+	if len(dynMCPServers) > 0 {
+		cp.DynamicAllowedMCPServers = dynMCPServers
+	}
+	if len(dynMCPTools) > 0 {
+		cp.DynamicAllowedMCPTools = dynMCPTools
+	}
+	if len(dynA2AAgents) > 0 {
+		cp.DynamicAllowedA2AAgents = dynA2AAgents
+	}
 	return &cp
+}
+
+func identityMatchesUnifiedAccessGroup(idCtx *domain.IdentityContext, g *domain.ModelAccessGroup, groupRefs map[string]struct{}) bool {
+	if idCtx == nil || g == nil {
+		return false
+	}
+	if _, ok := groupRefs[g.ID]; ok {
+		return true
+	}
+	if _, ok := groupRefs[g.Name]; ok {
+		return true
+	}
+	for _, m := range g.Members {
+		if m == nil {
+			continue
+		}
+		switch m.MemberType {
+		case domain.ModelAccessGroupMemberKey:
+			if idCtx.VirtualKeyID != "" && m.MemberID == idCtx.VirtualKeyID {
+				return true
+			}
+		case domain.ModelAccessGroupMemberTeam:
+			if idCtx.TeamID != "" && m.MemberID == idCtx.TeamID {
+				return true
+			}
+		case domain.ModelAccessGroupMemberUser:
+			if idCtx.UserID != "" && m.MemberID == idCtx.UserID {
+				return true
+			}
+		case domain.ModelAccessGroupMemberProject:
+			if idCtx.ProjectID != "" && m.MemberID == idCtx.ProjectID {
+				return true
+			}
+		case domain.ModelAccessGroupMemberOrg:
+			if idCtx.OrgID != "" && m.MemberID == idCtx.OrgID {
+				return true
+			}
+		}
+	}
+	return false
 }

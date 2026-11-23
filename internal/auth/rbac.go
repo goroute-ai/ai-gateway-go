@@ -366,7 +366,8 @@ func (e *RBACEngine) hasDeclaredProjectModelQuota(idCtx *domain.IdentityContext,
 	return false
 }
 
-// AuthorizeMCPServer checks 3-state RBAC allowlists for the requested MCP server slug.
+// AuthorizeMCPServer checks 3-state RBAC allowlists across Key -> Project -> Team scopes
+// plus unified dynamic Access Group grants for the requested MCP server slug.
 func (e *RBACEngine) AuthorizeMCPServer(idCtx *domain.IdentityContext, serverSlug string) error {
 	if idCtx == nil {
 		return &domain.GatewayError{
@@ -376,7 +377,14 @@ func (e *RBACEngine) AuthorizeMCPServer(idCtx *domain.IdentityContext, serverSlu
 			Message:    "No identity context present on request",
 		}
 	}
-	if !domain.CheckAllowlist3State(idCtx.KeyAllowedMCPServers, idCtx.TeamAllowedMCPServers, serverSlug) {
+	if !domain.CheckAllowlist3StateHierarchy(
+		serverSlug,
+		idCtx.DynamicAllowedMCPServers,
+		nil,
+		idCtx.KeyAllowedMCPServers,
+		idCtx.ProjectAllowedMCPServers,
+		idCtx.TeamAllowedMCPServers,
+	) {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,
@@ -387,7 +395,105 @@ func (e *RBACEngine) AuthorizeMCPServer(idCtx *domain.IdentityContext, serverSlu
 	return nil
 }
 
-// AuthorizeA2AAgent checks 3-state RBAC allowlists for the requested A2A agent slug.
+// AuthorizeMCPTool checks 3-state positive tool allowlists across Key -> Project -> Team scopes
+// plus unified dynamic Access Group grants. Patterns support "*", exact "server:tool", exact "tool",
+// "server:*", and prefix wildcards ("server:read_*", "read_*").
+func (e *RBACEngine) AuthorizeMCPTool(idCtx *domain.IdentityContext, serverSlug, toolName string) error {
+	if idCtx == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "No identity context present on request",
+		}
+	}
+	qualified := strings.TrimSpace(toolName)
+	if slug := strings.TrimSpace(serverSlug); slug != "" && qualified != "" && !strings.Contains(qualified, ":") {
+		qualified = slug + ":" + qualified
+	}
+	matcher := func(pattern, _ string) bool {
+		return matchMCPToolPattern(pattern, serverSlug, toolName)
+	}
+	if !domain.CheckAllowlist3StateHierarchy(
+		qualified,
+		idCtx.DynamicAllowedMCPTools,
+		matcher,
+		idCtx.KeyAllowedMCPTools,
+		idCtx.ProjectAllowedMCPTools,
+		idCtx.TeamAllowedMCPTools,
+	) {
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "mcp_tool_restricted",
+			Message:    fmt.Sprintf("Virtual key %s is not authorized to invoke MCP tool %q on server %q", idCtx.KeyPrefix, toolName, serverSlug),
+		}
+	}
+	return nil
+}
+
+// AuthorizeMCPToolset checks 3-state allowlists across Key -> Project -> Team scopes for an MCP toolset slug.
+func (e *RBACEngine) AuthorizeMCPToolset(idCtx *domain.IdentityContext, toolsetSlug string) error {
+	if idCtx == nil {
+		return &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "No identity context present on request",
+		}
+	}
+	if !domain.CheckAllowlist3StateHierarchy(
+		toolsetSlug,
+		nil,
+		nil,
+		idCtx.KeyAllowedMCPToolsets,
+		idCtx.ProjectAllowedMCPToolsets,
+		idCtx.TeamAllowedMCPToolsets,
+	) {
+		return &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "mcp_toolset_restricted",
+			Message:    fmt.Sprintf("Virtual key %s is not authorized to access MCP toolset %q", idCtx.KeyPrefix, toolsetSlug),
+		}
+	}
+	return nil
+}
+
+func matchMCPToolPattern(pattern, serverSlug, toolName string) bool {
+	p := strings.TrimSpace(pattern)
+	if p == "" {
+		return false
+	}
+	if p == "*" {
+		return true
+	}
+	serverSlug = strings.TrimSpace(serverSlug)
+	toolName = strings.TrimSpace(toolName)
+	qualified := toolName
+	if serverSlug != "" && !strings.Contains(toolName, ":") {
+		qualified = serverSlug + ":" + toolName
+	}
+	if strings.Contains(p, ":") {
+		if p == qualified {
+			return true
+		}
+		if strings.HasSuffix(p, "*") && strings.HasPrefix(qualified, strings.TrimSuffix(p, "*")) {
+			return true
+		}
+		return false
+	}
+	if p == toolName {
+		return true
+	}
+	if strings.HasSuffix(p, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(p, "*")) {
+		return true
+	}
+	return false
+}
+
+// AuthorizeA2AAgent checks 3-state RBAC allowlists across Key -> Project -> Team scopes
+// plus unified dynamic Access Group grants for the requested A2A agent slug.
 func (e *RBACEngine) AuthorizeA2AAgent(idCtx *domain.IdentityContext, agentSlug string) error {
 	if idCtx == nil {
 		return &domain.GatewayError{
@@ -397,7 +503,14 @@ func (e *RBACEngine) AuthorizeA2AAgent(idCtx *domain.IdentityContext, agentSlug 
 			Message:    "No identity context present on request",
 		}
 	}
-	if !domain.CheckAllowlist3State(idCtx.KeyAllowedA2AAgents, idCtx.TeamAllowedA2AAgents, agentSlug) {
+	if !domain.CheckAllowlist3StateHierarchy(
+		agentSlug,
+		idCtx.DynamicAllowedA2AAgents,
+		nil,
+		idCtx.KeyAllowedA2AAgents,
+		idCtx.ProjectAllowedA2AAgents,
+		idCtx.TeamAllowedA2AAgents,
+	) {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,

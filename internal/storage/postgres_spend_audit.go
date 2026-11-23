@@ -908,6 +908,13 @@ func (p *PostgresRepository) MarkBudgetResetsDelivered(ctx context.Context, ids 
 	return nil
 }
 
+// SetAuditLogObserver forwards audit log events recorded through PostgresRepository to fn.
+func (p *PostgresRepository) SetAuditLogObserver(fn func(*domain.AuditLog)) {
+	if p != nil && p.mem != nil {
+		p.mem.SetAuditLogObserver(fn)
+	}
+}
+
 func (p *PostgresRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
 	if log.ID == "" {
 		log.ID = uuid.NewString()
@@ -935,24 +942,73 @@ func (p *PostgresRepository) RecordAuditLog(ctx context.Context, log *domain.Aud
 }
 
 func (p *PostgresRepository) ListAuditLogs(ctx context.Context, orgID string, limit int) ([]*domain.AuditLog, error) {
+	logs, _, err := p.ListAuditLogsFiltered(ctx, domain.AuditLogFilter{
+		OrgID: orgID,
+		Limit: limit,
+	})
+	return logs, err
+}
+
+func (p *PostgresRepository) ListAuditLogsFiltered(ctx context.Context, filter domain.AuditLogFilter) ([]*domain.AuditLog, string, error) {
 	if p.pool == nil {
-		return p.mem.ListAuditLogs(ctx, orgID, limit)
+		return p.mem.ListAuditLogsFiltered(ctx, filter)
 	}
+	limit := filter.Limit
 	if limit <= 0 {
-		limit = 100
+		limit = 50
 	}
-	var q string
+	if limit > 200 {
+		limit = 200
+	}
+
+	var conds []string
 	var args []any
-	if orgID != "" {
-		q = `SELECT id, COALESCE(org_id, ''), actor_id, action, resource, resource_id, details, before_value, after_value, created_at FROM audit_logs WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2`
-		args = []any{orgID, limit}
-	} else {
-		q = `SELECT id, COALESCE(org_id, ''), actor_id, action, resource, resource_id, details, before_value, after_value, created_at FROM audit_logs ORDER BY created_at DESC LIMIT $1`
-		args = []any{limit}
+	addCond := func(clause string, vals ...any) {
+		args = append(args, vals...)
+		conds = append(conds, clause)
 	}
+
+	if v := strings.TrimSpace(filter.OrgID); v != "" {
+		addCond(fmt.Sprintf("org_id = $%d", len(args)+1), v)
+	}
+	if v := strings.TrimSpace(filter.ActorID); v != "" {
+		addCond(fmt.Sprintf("actor_id = $%d", len(args)+1), v)
+	}
+	if v := strings.TrimSpace(filter.Action); v != "" {
+		addCond(fmt.Sprintf("action = $%d", len(args)+1), v)
+	}
+	if v := strings.TrimSpace(filter.Resource); v != "" {
+		addCond(fmt.Sprintf("resource = $%d", len(args)+1), v)
+	}
+	if v := strings.TrimSpace(filter.ResourceID); v != "" {
+		addCond(fmt.Sprintf("resource_id = $%d", len(args)+1), v)
+	}
+	if filter.Since != nil {
+		addCond(fmt.Sprintf("created_at >= $%d", len(args)+1), filter.Since.UTC())
+	}
+	if filter.Until != nil {
+		addCond(fmt.Sprintf("created_at <= $%d", len(args)+1), filter.Until.UTC())
+	}
+	if strings.TrimSpace(filter.Cursor) != "" {
+		ct, cid, err := decodeAuditLogCursor(filter.Cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid audit log cursor: %w", err)
+		}
+		pTime := len(args) + 1
+		pID := len(args) + 2
+		addCond(fmt.Sprintf("(created_at, id) < ($%d, $%d)", pTime, pID), ct.UTC(), cid)
+	}
+
+	q := `SELECT id, COALESCE(org_id, ''), actor_id, action, resource, resource_id, details, before_value, after_value, created_at FROM audit_logs`
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	args = append(args, limit+1)
+	q += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
+
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
-		return p.mem.ListAuditLogs(ctx, orgID, limit)
+		return p.mem.ListAuditLogsFiltered(ctx, filter)
 	}
 	defer rows.Close()
 
@@ -961,7 +1017,7 @@ func (p *PostgresRepository) ListAuditLogs(ctx context.Context, orgID string, li
 		var a domain.AuditLog
 		var detailsJSON, beforeJSON, afterJSON []byte
 		if err := rows.Scan(&a.ID, &a.OrgID, &a.ActorID, &a.Action, &a.Resource, &a.ResourceID, &detailsJSON, &beforeJSON, &afterJSON, &a.CreatedAt); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if len(detailsJSON) > 0 {
 			_ = json.Unmarshal(detailsJSON, &a.Details)
@@ -975,10 +1031,16 @@ func (p *PostgresRepository) ListAuditLogs(ctx context.Context, orgID string, li
 		logs = append(logs, &a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if len(logs) == 0 {
-		return p.mem.ListAuditLogs(ctx, orgID, limit)
+	var nextCursor string
+	if len(logs) > limit {
+		logs = logs[:limit]
+		last := logs[len(logs)-1]
+		nextCursor = encodeAuditLogCursor(last.CreatedAt, last.ID)
 	}
-	return logs, nil
+	if len(logs) == 0 && filter.Cursor == "" && filter.ActorID == "" && filter.Action == "" && filter.Resource == "" && filter.ResourceID == "" && filter.Since == nil && filter.Until == nil {
+		return p.mem.ListAuditLogsFiltered(ctx, filter)
+	}
+	return logs, nextCursor, nil
 }

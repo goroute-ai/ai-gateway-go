@@ -125,8 +125,8 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 1. RBAC Model Allowlist Check
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, req.Model); err != nil {
+	// 1. RBAC Model Allowlist + Custom Authorizer Check
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, req.Model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return
@@ -298,7 +298,7 @@ func (s *GatewayServer) handleImageEdits(w http.ResponseWriter, r *http.Request)
 		model = "dall-e-2"
 	}
 
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, model, r.Method, r.URL.Path); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -452,7 +452,7 @@ func (s *GatewayServer) handleImageVariations(w http.ResponseWriter, r *http.Req
 		model = "dall-e-2"
 	}
 
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, model, r.Method, r.URL.Path); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}

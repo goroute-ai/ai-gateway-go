@@ -314,13 +314,24 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 	}
 
 	var autoRegister, allowUnverifiedEmail, allowPrivilegedRoles bool
-	var defaultTeamID, defaultRole string
+	var defaultTeamID, defaultRole, roleMappingStrategy string
+	var groupRoleMappings []GroupRoleMappingRule
+	var groupTeamMappings map[string]string
 	if ov != nil {
 		autoRegister = ov.AutoRegister()
 		allowUnverifiedEmail = ov.AllowUnverifiedEmail()
 		allowPrivilegedRoles = ov.AllowPrivilegedRoleClaims()
 		defaultTeamID = ov.DefaultTeamID()
 		defaultRole = ov.DefaultRole()
+		groupRoleMappings = ov.GroupRoleMappings()
+		roleMappingStrategy = ov.RoleMappingStrategy()
+		groupTeamMappings = ov.GroupTeamMappings()
+	}
+
+	resolvedRole := ResolveMappedRole(claims.Role, claims.Groups, groupRoleMappings, roleMappingStrategy, defaultRole, allowPrivilegedRoles)
+	mappedTeamID := ResolveMappedTeamID(claims.TeamIDs, claims.Groups, groupTeamMappings, "")
+	if mappedTeamID != "" {
+		claimTeamID = mappedTeamID
 	}
 
 	return r.resolveOrProvisionUser(ctx, userResolutionParams{
@@ -334,7 +345,7 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 		allowPrivilegedRoleClaims: allowPrivilegedRoles,
 		displayName:               extractRawDisplayName(claims.RawClaims, claims.Email, claims.Subject),
 		claimTeamID:               claimTeamID,
-		claimRole:                 claims.Role,
+		claimRole:                 string(resolvedRole),
 		autoRegister:              autoRegister,
 		defaultTeamID:             defaultTeamID,
 		defaultRole:               defaultRole,
@@ -841,16 +852,13 @@ func (r *AuthResolver) projectUserIdentity(
 		if err != nil {
 			return nil, err
 		}
-		idCtx.TeamAllowedModels = append([]string(nil), team.AllowedModels...)
-		if team.AllowedMCPServers != nil {
-			idCtx.TeamAllowedMCPServers = append([]string(nil), team.AllowedMCPServers...)
-		}
-		if team.AllowedA2AAgents != nil {
-			idCtx.TeamAllowedA2AAgents = append([]string(nil), team.AllowedA2AAgents...)
-		}
-		if team.AllowedClientApps != nil {
-			idCtx.TeamAllowedClientApps = append([]string(nil), team.AllowedClientApps...)
-		}
+		idCtx.TeamAllowedModels = slices.Clone(team.AllowedModels)
+		idCtx.TeamAllowedDeployments = slices.Clone(team.AllowedDeployments)
+		idCtx.TeamAllowedMCPServers = slices.Clone(team.AllowedMCPServers)
+		idCtx.TeamAllowedMCPTools = slices.Clone(team.AllowedMCPTools)
+		idCtx.TeamAllowedMCPToolsets = slices.Clone(team.AllowedMCPToolsets)
+		idCtx.TeamAllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
+		idCtx.TeamAllowedClientApps = slices.Clone(team.AllowedClientApps)
 		idCtx.TeamMinPriorityRank = team.MinPriorityRank
 		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit

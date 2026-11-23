@@ -260,6 +260,12 @@ type GuardrailRegistryRepository interface {
 	RotateGuardrailSecrets(ctx context.Context, orgID, id, encryptedSecrets, encryptedDEK string) error
 }
 
+// AuditLogObserverRepository is optionally implemented by stores that stream every
+// persisted audit event (admin, MCP, A2A, key rotation, guardrails) to a SIEM observer.
+type AuditLogObserverRepository interface {
+	SetAuditLogObserver(fn func(*domain.AuditLog))
+}
+
 // Repository defines the persistence contract shared across Control Plane and Data Plane services.
 type Repository interface {
 	// Health & Connectivity
@@ -342,6 +348,7 @@ type Repository interface {
 	ResetExpiredBudgets(ctx context.Context, now time.Time) (int, error)
 	RecordAuditLog(ctx context.Context, log *domain.AuditLog) error
 	ListAuditLogs(ctx context.Context, orgID string, limit int) ([]*domain.AuditLog, error)
+	ListAuditLogsFiltered(ctx context.Context, filter domain.AuditLogFilter) ([]*domain.AuditLog, string, error)
 
 	// MCP: Servers, Tools, Toolsets & BYOK Credentials
 	CreateMCPServer(ctx context.Context, server *domain.MCPServer) error

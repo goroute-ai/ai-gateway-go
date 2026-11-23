@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../api/admin';
 import { useAuth } from '../context/AuthContext';
 import { FormModal as BaseFormModal, INPUT_CLS, MONO_INPUT_CLS, BTN_PRIMARY } from '../components/common/Modal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
+import {
+  Allowlist3StateField,
+  INHERIT_ALLOW,
+  encodeAllowState,
+  initAllowState,
+} from '../components/common/Allowlist3State';
 import {
   formatBudgetFallbacks,
   formatUSD,
@@ -18,7 +24,11 @@ import type {
   User,
   SelfServeBudgetPolicy,
 } from '../types';
-import { Building2, Users, Layers, ShieldCheck, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Building2, Users, Layers, ShieldCheck, Plus, Pencil, Trash2, FolderKanban, KeyRound, Shield } from 'lucide-react';
+
+const ProjectsTab = lazy(() => import('./org/ProjectsTab'));
+const AccessGroupsTab = lazy(() => import('./org/AccessGroupsTab'));
+const JWTMappingsTab = lazy(() => import('./org/JWTMappingsTab'));
 
 const cell = 'px-4 py-2.5';
 const panel = 'bg-surface-base border border-border-subtle rounded-xl';
@@ -79,7 +89,7 @@ export const OrganizationsView: React.FC = () => {
   const isPlatformAdmin = authMode === 'master_key' || operator?.role === 'platform_admin';
   const roleOptions = isPlatformAdmin ? [...BASE_ROLES, 'platform_admin'] : BASE_ROLES;
   const qc = useQueryClient();
-  const [tab, setTab] = useState<'orgs' | 'teams' | 'users' | 'policies'>('orgs');
+  const [tab, setTab] = useState<'orgs' | 'teams' | 'projects' | 'users' | 'access' | 'jwt' | 'policies'>('orgs');
   const [modal, setModal] = useState<'org' | 'team' | 'user' | 'sub' | 'policy' | 'members' | null>(null);
   const [f, setF] = useState<Record<string, any>>({
     reset: 'monthly',
@@ -172,7 +182,7 @@ export const OrganizationsView: React.FC = () => {
         </div>
         <div className="flex gap-2">
           {tab === 'orgs' && <button onClick={() => openM('org', { editOrgId: '', orgName: '', orgId: '', orgBudget: '', ...softInit(), selfServe: 'disabled', orgRpm: '', orgTpm: '', orgGuarantee: false, devSelfKeys: false, webhookUrl: '', expiryDays: '7, 1' })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Org</button>}
-          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', ...softInit(), teamRpm: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', teamPerms: '', teamMinPrio: '', teamAllowedTags: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
+          {tab === 'teams' && <button onClick={() => openM('team', { editTeamId: '', teamName: '', teamId: '', teamBudget: '', ...softInit(), teamRpm: '', teamTpm: '', teamConc: '', teamGuarantee: false, defMemBudget: '', defMemRpm: '', defMemTpm: '', defMemModels: '', teamModels: '', teamDeployments: '', teamMcp: INHERIT_ALLOW, teamMcpTools: INHERIT_ALLOW, teamA2a: INHERIT_ALLOW, teamApps: INHERIT_ALLOW, teamPerms: '', teamMinPrio: '', teamAllowedTags: '', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New Team</button>}
           {tab === 'users' && <button onClick={() => openM('user', { editUserId: '', email: '', userName: '', userId: '', userTeamId: '', oidcIssuer: '', oidcSubject: '', scimActive: true, userBudget: '', ...softInit(), role: 'developer', active: true })} className={`${BTN_PRIMARY} flex items-center gap-1`}><Plus className="w-3.5 h-3.5" />New User</button>}
           {tab === 'policies' && <>
             <button onClick={() => setModal('sub')} className="px-3 py-1.5 rounded-md border border-accent-primary/30 text-accent-primary text-xs font-semibold">+ Provider Sub</button>
@@ -182,7 +192,15 @@ export const OrganizationsView: React.FC = () => {
       </div>
 
       <div className="flex gap-2 border-b border-border-subtle pb-2 overflow-x-auto">
-        {([['orgs', `Orgs (${orgs.length})`, Building2], ['teams', `Teams (${teams.length})`, Layers], ['users', `Users (${users.length})`, Users], ['policies', 'Subscriptions & Policies', ShieldCheck]] as const).map(([id, label, Icon]) => (
+        {([
+          ['orgs', `Orgs (${orgs.length})`, Building2],
+          ['teams', `Teams (${teams.length})`, Layers],
+          ['projects', 'Projects', FolderKanban],
+          ['users', `Users (${users.length})`, Users],
+          ['access', 'Access Groups & Rules', Shield],
+          ['jwt', 'JWT Mappings', KeyRound],
+          ['policies', 'Subscriptions & Policies', ShieldCheck],
+        ] as const).map(([id, label, Icon]) => (
           <button key={id} onClick={() => setTab(id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${tab === id ? 'bg-accent-soft text-accent-primary border border-accent-primary/30' : 'text-brand-muted hover:text-brand-title'}`}>
             <Icon className="w-3.5 h-3.5" />{label}
           </button>
@@ -191,7 +209,23 @@ export const OrganizationsView: React.FC = () => {
 
       {!!topErr && <ErrorAlert error={topErr} title="Operation failed" />}
 
-      {tab !== 'policies' ? (
+      {tab === 'projects' && (
+        <Suspense fallback={<div className="text-xs text-brand-muted p-4">Loading Projects...</div>}>
+          <ProjectsTab teams={teams} />
+        </Suspense>
+      )}
+      {tab === 'access' && (
+        <Suspense fallback={<div className="text-xs text-brand-muted p-4">Loading Access Groups...</div>}>
+          <AccessGroupsTab />
+        </Suspense>
+      )}
+      {tab === 'jwt' && (
+        <Suspense fallback={<div className="text-xs text-brand-muted p-4">Loading JWT Mappings...</div>}>
+          <JWTMappingsTab />
+        </Suspense>
+      )}
+
+      {(tab === 'orgs' || tab === 'teams' || tab === 'users') && (
         <div className={`${panel} overflow-x-auto`}>
           <table className="w-full text-left text-xs">
             <thead className="bg-surface-elevated border-b border-border-subtle text-brand-muted font-mono uppercase text-[10px]">
@@ -226,8 +260,8 @@ export const OrganizationsView: React.FC = () => {
                   <td className={`${cell} font-mono text-status-success`}>{formatUSD(t.spent_micros)}</td>
                   <td className={cell}><Badge variant={t.is_active ? 'success' : 'danger'}>{t.is_active ? 'Active' : 'Inactive'}</Badge></td>
                   <td className={`${cell} flex items-center gap-1`}>
-                    <button onClick={() => openM('members', { membersTeamId: t.id, membersTeamName: t.name, addUserIds: '', rmUserIds: '' })} className="px-1.5 py-0.5 text-[10px] font-mono text-accent-primary hover:underline" title="Sync members">Members</button>
-                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), ...softInit(t), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', teamPerms: (t.team_member_permissions || []).join(', '), teamMinPrio: t.min_priority_rank ? String(t.min_priority_rank) : '', teamAllowedTags: (t.allowed_routing_tags || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => openM('members', { membersTeamId: t.id, membersTeamName: t.name, addUserIds: '', rmUserIds: '', memRole: 'developer', memBudget: '', memRpm: '', memTpm: '', memModels: '' })} className="px-1.5 py-0.5 text-[10px] font-mono text-accent-primary hover:underline" title="Sync members">Members</button>
+                    <button onClick={() => openM('team', { editTeamId: t.id, teamName: t.name, teamBudget: microsToUsdInput(t.max_budget_micros), ...softInit(t), teamRpm: t.rpm_limit ? String(t.rpm_limit) : '', teamTpm: t.tpm_limit ? String(t.tpm_limit) : '', teamConc: t.max_concurrent_requests ? String(t.max_concurrent_requests) : '', teamGuarantee: !!t.enforce_guaranteed_throughput, defMemBudget: microsToUsdInput(t.default_member_max_budget_micros), defMemRpm: t.default_member_rpm_limit ? String(t.default_member_rpm_limit) : '', defMemTpm: t.default_member_tpm_limit ? String(t.default_member_tpm_limit) : '', defMemModels: (t.default_member_allowed_models || []).join(', '), teamModels: (t.allowed_models || []).join(', '), teamDeployments: (t.allowed_deployments || []).join(', '), teamMcp: initAllowState(t.allowed_mcp_servers), teamMcpTools: initAllowState(t.allowed_mcp_tools), teamA2a: initAllowState(t.allowed_a2a_agents), teamApps: initAllowState(t.allowed_client_apps), teamPerms: (t.team_member_permissions || []).join(', '), teamMinPrio: t.min_priority_rank ? String(t.min_priority_rank) : '', teamAllowedTags: (t.allowed_routing_tags || []).join(', '), active: t.is_active })} className={icoBtn} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => { if (confirm(`Delete team "${t.name}"?`)) delMut.mutate({ kind: 'teams', id: t.id }); }} disabled={delMut.isPending} className={icoBtn} title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
                   </td>
                 </tr>
@@ -252,7 +286,8 @@ export const OrganizationsView: React.FC = () => {
             </tbody>
           </table>
         </div>
-      ) : (
+      )}
+      {tab === 'policies' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <div className={`${panel} p-4 space-y-2`}>
             <h3 className="text-sm font-semibold text-brand-title">Layer 2: Provider Subscriptions</h3>
@@ -322,51 +357,116 @@ export const OrganizationsView: React.FC = () => {
 
       <FormModal open={modal === 'team'} onClose={() => setModal(null)} title={f.editTeamId ? `Edit Team (${f.editTeamId})` : 'Create Team'} submitLabel={f.editTeamId ? 'Save' : 'Create'} pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
         try {
+          const isEdit = !!f.editTeamId;
           const defMemM = usdToMicros(f.defMemBudget || '');
           const body: Partial<Team> = {
             org_id: activeOrgId,
-            ...(!f.editTeamId && f.teamId?.trim() && { id: f.teamId.trim() }),
+            ...(!isEdit && f.teamId?.trim() && { id: f.teamId.trim() }),
             name: (f.teamName || '').trim(),
             rpm_limit: f.teamRpm ? parseInt(f.teamRpm, 10) : 0,
+            tpm_limit: f.teamTpm ? parseInt(f.teamTpm, 10) : 0,
+            max_concurrent_requests: f.teamConc ? parseInt(f.teamConc, 10) : 0,
             enforce_guaranteed_throughput: !!f.teamGuarantee,
             default_member_max_budget_micros: defMemM ?? 0,
             default_member_rpm_limit: f.defMemRpm ? parseInt(f.defMemRpm, 10) : 0,
+            default_member_tpm_limit: f.defMemTpm ? parseInt(f.defMemTpm, 10) : 0,
+            default_member_allowed_models: splitCSV(f.defMemModels),
+            allowed_models: splitCSV(f.teamModels),
+            allowed_deployments: splitCSV(f.teamDeployments),
             team_member_permissions: splitCSV(f.teamPerms),
             min_priority_rank: f.teamMinPrio ? Math.max(0, parseInt(f.teamMinPrio, 10) || 0) : 0,
             allowed_routing_tags: splitCSV(f.teamAllowedTags),
             ...budgetPatch('teamBudget', true),
             is_active: !!f.active,
           };
-          saveMut.mutate({ k: 'teams', fn: () => f.editTeamId ? adminApi.updateTeam(adminKey, f.editTeamId, body) : adminApi.createTeam(adminKey, body) });
+          const mcp = encodeAllowState(f.teamMcp || INHERIT_ALLOW, isEdit); if (mcp !== undefined) body.allowed_mcp_servers = mcp;
+          const mcpTools = encodeAllowState(f.teamMcpTools || INHERIT_ALLOW, isEdit); if (mcpTools !== undefined) body.allowed_mcp_tools = mcpTools;
+          const a2a = encodeAllowState(f.teamA2a || INHERIT_ALLOW, isEdit); if (a2a !== undefined) body.allowed_a2a_agents = a2a;
+          const apps = encodeAllowState(f.teamApps || INHERIT_ALLOW, isEdit); if (apps !== undefined) body.allowed_client_apps = apps;
+          saveMut.mutate({ k: 'teams', fn: () => isEdit ? adminApi.updateTeam(adminKey, f.editTeamId, body) : adminApi.createTeam(adminKey, body) });
         } catch (err: any) { setFormErr(err?.message || 'Invalid'); }
       }}>
         <input required value={f.teamName || ''} onChange={(e) => set('teamName', e.target.value)} placeholder="Team Name *" className={INPUT_CLS} />
-        <div className={g2}>
+        <div className="grid grid-cols-3 gap-2">
           {!f.editTeamId && txt('teamId', 'Team ID')}
           {txt('teamBudget', 'Max USD', 'number')}
           {txt('teamRpm', 'Team RPM', 'number')}
+          {txt('teamTpm', 'Team TPM', 'number')}
+          {txt('teamConc', 'Max Conc', 'number')}
           {txt('defMemBudget', 'Member USD', 'number')}
           {txt('defMemRpm', 'Member RPM', 'number')}
+          {txt('defMemTpm', 'Member TPM', 'number')}
         </div>
-        {txt('teamPerms', 'Member Perms (keys:create,keys:rotate,keys:revoke)')}
+        <div className={g2}>
+          {txt('teamModels', 'Allowed Models (csv)')}
+          {txt('teamDeployments', 'Allowed Deployments (csv)')}
+        </div>
+        <div className={g2}>
+          {txt('defMemModels', 'Default Member Models (csv)')}
+          {txt('teamPerms', 'Member Perms (keys:create,keys:rotate,keys:revoke)')}
+        </div>
         <div className={g2}>
           {txt('teamMinPrio', 'Min Priority Rank', 'number')}
           {txt('teamAllowedTags', 'Allowed Routing Tags')}
         </div>
+        <Allowlist3StateField label="MCP Servers" state={f.teamMcp || INHERIT_ALLOW} onChange={(v) => set('teamMcp', v)} placeholder="github, jira" />
+        <Allowlist3StateField label="MCP Tools" state={f.teamMcpTools || INHERIT_ALLOW} onChange={(v) => set('teamMcpTools', v)} placeholder="github:get_issue" />
+        <Allowlist3StateField label="A2A Agents" state={f.teamA2a || INHERIT_ALLOW} onChange={(v) => set('teamA2a', v)} placeholder="code-reviewer" />
+        <Allowlist3StateField label="Client Apps" state={f.teamApps || INHERIT_ALLOW} onChange={(v) => set('teamApps', v)} placeholder="cursor" />
         {chk('teamGuarantee', 'Guaranteed Throughput')}
         <SoftPolicyFields f={f} set={set} />
         {f.editTeamId && chk('active', 'Active')}
       </FormModal>
 
       <FormModal open={modal === 'members'} onClose={() => setModal(null)} title={`Members: ${f.membersTeamName || f.membersTeamId}`} submitLabel="Sync" pending={saveMut.isPending} error={formErr || saveMut.error} onSubmit={() => {
-        saveMut.mutate({ k: 'team-members', fn: () => adminApi.bulkSyncTeamMembers(adminKey, f.membersTeamId, { org_id: activeOrgId, members: splitCSV(f.addUserIds).map((user_id) => ({ user_id })), remove_user_ids: splitCSV(f.rmUserIds) }) });
+        const mb = usdToMicros(f.memBudget || '');
+        const models = splitCSV(f.memModels);
+        saveMut.mutate({
+          k: 'team-members',
+          fn: () => adminApi.bulkSyncTeamMembers(adminKey, f.membersTeamId, {
+            org_id: activeOrgId,
+            members: splitCSV(f.addUserIds).map((user_id) => ({
+              user_id,
+              role: f.memRole || 'developer',
+              ...(mb !== undefined ? { max_budget_micros: mb } : {}),
+              ...(f.memRpm ? { rpm_limit: parseInt(f.memRpm, 10) } : {}),
+              ...(f.memTpm ? { tpm_limit: parseInt(f.memTpm, 10) } : {}),
+              ...(models.length > 0 ? { allowed_models: models } : {}),
+            })),
+            remove_user_ids: splitCSV(f.rmUserIds),
+          }),
+        });
       }}>
-        {txt('addUserIds', 'Add User IDs')}
-        {txt('rmUserIds', 'Remove User IDs')}
+        {txt('addUserIds', 'Upsert User IDs (csv)')}
+        <div className="grid grid-cols-4 gap-2">
+          <select value={f.memRole || 'developer'} onChange={(e) => set('memRole', e.target.value)} className={INPUT_CLS}>
+            {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          {txt('memBudget', 'Cap USD', 'number')}
+          {txt('memRpm', 'RPM', 'number')}
+          {txt('memTpm', 'TPM', 'number')}
+        </div>
+        {txt('memModels', 'Member Allowed Models (csv)')}
+        {txt('rmUserIds', 'Remove User IDs (csv)')}
         <div className="max-h-40 overflow-y-auto border border-border-subtle rounded p-2 text-xs space-y-1">
           {(membersQ.data?.data || []).map((m) => (
             <div key={m.user_id} className="flex items-center justify-between font-mono">
-              <span>{m.user_id} ({m.role})</span>
+              <button
+                type="button"
+                className="text-left hover:text-accent-primary"
+                title="Click to load member into editor"
+                onClick={() => setF((p) => ({
+                  ...p,
+                  addUserIds: m.user_id,
+                  memRole: m.role || 'developer',
+                  memBudget: microsToUsdInput(m.max_budget_micros),
+                  memRpm: m.rpm_limit ? String(m.rpm_limit) : '',
+                  memTpm: m.tpm_limit ? String(m.tpm_limit) : '',
+                  memModels: (m.allowed_models || []).join(', '),
+                }))}
+              >
+                {m.user_id} ({m.role})
+              </button>
               <span className="flex items-center gap-2">
                 <span className="text-status-success">{formatUSD(m.spent_micros || 0)}</span>
                 <button type="button" onClick={() => adminApi.resetTeamMemberSpend(adminKey, f.membersTeamId, m.user_id).then(() => inv('team-members'))} className="text-accent-primary" title="Reset spend">$0</button>

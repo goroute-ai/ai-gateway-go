@@ -1105,10 +1105,10 @@ The Operator UI (`LoginView`) supports two authentication mechanisms:
 | Sign In | `LoginView` | OIDC SSO provider selector and secondary Break-Glass Master Admin Key unlock tab. |
 | Sidebar: Overview | `OverviewView` | Gateway health, latency, request, model, and error summaries. |
 | Sidebar: Playground | `PlaygroundView` | Streaming chat playground with cost & guardrail telemetry and escaped code export. |
-| Sidebar: Orgs & Teams | `OrganizationsView` | Organizations, teams, projects, users, micro-dollar budgets, provider subscriptions, and org model policies. |
+| Sidebar: Orgs & Teams | `OrganizationsView` (`ProjectsTab`, `AccessGroupsTab`, `JWTMappingsTab`) | Organizations, teams & member permissions, projects, users, unified access groups & dynamic rules, JWT key mappings, micro-dollar budgets, provider subscriptions, and org model policies. |
 | Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, deployments, PTU shares, and priority classes. |
-| Sidebar: Virtual Keys | `KeysView` + `TempBudgetModal` | Virtual key creation (team/user scope, expiry, MCP/A2A allowlists, soft/hard budgets), rotation, temporary budget increases, and revocation. |
-| Sidebar: FinOps & Spend | `FinOpsView` + `QuotasTab` | Spend summaries (by provider, model, team, virtual key), spend logs, audit trail, multi-window budgets, end-users, tags, and model-access-group quotas. |
+| Sidebar: Virtual Keys | `KeysView` + `TempBudgetModal` | Virtual key creation (project/team/user scope, `allowed_deployments`, `allowed_mcp_tools`/`toolsets`, `can_impersonate`, session/batch/MCP limits, soft/hard budgets), rotation, temporary budget increases, and revocation. |
+| Sidebar: FinOps & Spend | `FinOpsView` + `QuotasTab` | Spend summaries (by provider, model, team, virtual key), spend logs, filtered cursor-paginated audit trail with `before_value`/`after_value` JSON Diff Viewer, multi-window budgets, end-users, tags, and model-access-group quotas. |
 | Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 15-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP servers, toolsets, synchronized tools, and A2A agent management. |

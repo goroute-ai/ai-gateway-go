@@ -13,20 +13,30 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const accessGroupRuleSelectCols = `id, org_id, name, attribute, operator, value, COALESCE(allowed_models, '{}'), COALESCE(access_group_id, ''), priority, is_active, created_at, updated_at`
+const accessGroupRuleSelectCols = `id, org_id, name, attribute, operator, value, COALESCE(allowed_models, '{}'), COALESCE(allowed_mcp_servers, '{}'), COALESCE(allowed_mcp_tools, '{}'), COALESCE(allowed_a2a_agents, '{}'), COALESCE(access_group_id, ''), priority, is_active, created_at, updated_at`
 
 func scanAccessGroupRule(row rowScanner) (*domain.AccessGroupRule, error) {
 	var r domain.AccessGroupRule
 	var op string
 	if err := row.Scan(
 		&r.ID, &r.OrgID, &r.Name, &r.Attribute, &op, &r.Value,
-		&r.AllowedModels, &r.AccessGroupID, &r.Priority, &r.IsActive, &r.CreatedAt, &r.UpdatedAt,
+		&r.AllowedModels, &r.AllowedMCPServers, &r.AllowedMCPTools, &r.AllowedA2AAgents,
+		&r.AccessGroupID, &r.Priority, &r.IsActive, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	r.Operator = domain.AccessRuleOperator(op)
 	if r.AllowedModels == nil {
 		r.AllowedModels = []string{}
+	}
+	if r.AllowedMCPServers == nil {
+		r.AllowedMCPServers = []string{}
+	}
+	if r.AllowedMCPTools == nil {
+		r.AllowedMCPTools = []string{}
+	}
+	if r.AllowedA2AAgents == nil {
+		r.AllowedA2AAgents = []string{}
 	}
 	return &r, nil
 }
@@ -52,13 +62,25 @@ func (p *PostgresRepository) CreateAccessGroupRule(ctx context.Context, rule *do
 	if allowedModels == nil {
 		allowedModels = []string{}
 	}
+	allowedMCPServers := rule.AllowedMCPServers
+	if allowedMCPServers == nil {
+		allowedMCPServers = []string{}
+	}
+	allowedMCPTools := rule.AllowedMCPTools
+	if allowedMCPTools == nil {
+		allowedMCPTools = []string{}
+	}
+	allowedA2AAgents := rule.AllowedA2AAgents
+	if allowedA2AAgents == nil {
+		allowedA2AAgents = []string{}
+	}
 	const q = `
-		INSERT INTO access_group_rules (id, org_id, name, attribute, operator, value, allowed_models, access_group_id, priority, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO access_group_rules (id, org_id, name, attribute, operator, value, allowed_models, allowed_mcp_servers, allowed_mcp_tools, allowed_a2a_agents, access_group_id, priority, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING created_at, updated_at`
 	if err := p.pool.QueryRow(ctx, q,
 		rule.ID, rule.OrgID, rule.Name, rule.Attribute, string(rule.Operator), rule.Value,
-		allowedModels, rule.AccessGroupID, rule.Priority, rule.IsActive,
+		allowedModels, allowedMCPServers, allowedMCPTools, allowedA2AAgents, rule.AccessGroupID, rule.Priority, rule.IsActive,
 	).Scan(&rule.CreatedAt, &rule.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -67,6 +89,9 @@ func (p *PostgresRepository) CreateAccessGroupRule(ctx context.Context, rule *do
 		return err
 	}
 	rule.AllowedModels = allowedModels
+	rule.AllowedMCPServers = allowedMCPServers
+	rule.AllowedMCPTools = allowedMCPTools
+	rule.AllowedA2AAgents = allowedA2AAgents
 	_ = p.mem.CreateAccessGroupRule(ctx, rule)
 	return nil
 }
@@ -138,9 +163,9 @@ func (p *PostgresRepository) DeleteAccessGroupRule(ctx context.Context, id strin
 	return nil
 }
 
-const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, allowed_endpoints, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(staged_key_hash, ''), COALESCE(staged_key_prefix, ''), COALESCE(staged_encrypted_raw_key, ''), COALESCE(staged_key_dek, ''), staged_created_at, last_rotated_at, rotation_count, revoked_at, COALESCE(revoked_by, ''), COALESCE(expiry_alert_sent_days, '{}'), COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
+const virtualKeySelectCols = `id, key_prefix, key_hash, name, org_id, COALESCE(team_id, ''), COALESCE(user_id, ''), role, allowed_models, COALESCE(allowed_deployments, '{}'), allowed_endpoints, allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents, allowed_client_apps, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active, rotation_interval_sec, key_rotation_at, COALESCE(staged_key_hash, ''), COALESCE(staged_key_prefix, ''), COALESCE(staged_encrypted_raw_key, ''), COALESCE(staged_key_dek, ''), staged_created_at, last_rotated_at, rotation_count, revoked_at, COALESCE(revoked_by, ''), COALESCE(expiry_alert_sent_days, '{}'), COALESCE(NULLIF(key_type, ''), 'default'), COALESCE(project_id, ''), can_impersonate, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), COALESCE(tags, '{}'), COALESCE(metadata, '{}'::jsonb)`
 
-const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(vk.staged_key_hash, ''), COALESCE(vk.staged_key_prefix, ''), COALESCE(vk.staged_encrypted_raw_key, ''), COALESCE(vk.staged_key_dek, ''), vk.staged_created_at, vk.last_rotated_at, vk.rotation_count, vk.revoked_at, COALESCE(vk.revoked_by, ''), COALESCE(vk.expiry_alert_sent_days, '{}'), COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, vk.min_priority_rank, COALESCE(vk.allowed_routing_tags, '{}'), COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
+const virtualKeySelectColsAliased = `vk.id, vk.key_prefix, vk.key_hash, vk.name, vk.org_id, COALESCE(vk.team_id, ''), COALESCE(vk.user_id, ''), vk.role, vk.allowed_models, COALESCE(vk.allowed_deployments, '{}'), vk.allowed_endpoints, vk.allowed_mcp_servers, vk.allowed_mcp_tools, vk.allowed_mcp_toolsets, vk.allowed_a2a_agents, vk.allowed_client_apps, vk.max_budget_micros, vk.temp_budget_increase_micros, vk.temp_budget_expires_at, vk.soft_budget_micros, vk.throttle_on_budget_exceeded, COALESCE(vk.budget_fallbacks, '{}'::jsonb), vk.spent_micros, vk.budget_reset_period, vk.budget_reset_at, vk.rpm_limit, vk.tpm_limit, vk.mcp_rpm_limit, vk.max_concurrent_requests, vk.batch_enqueued_token_limit, vk.max_iterations, vk.max_budget_per_session_micros, vk.expires_at, vk.is_active, vk.rotation_interval_sec, vk.key_rotation_at, COALESCE(vk.staged_key_hash, ''), COALESCE(vk.staged_key_prefix, ''), COALESCE(vk.staged_encrypted_raw_key, ''), COALESCE(vk.staged_key_dek, ''), vk.staged_created_at, vk.last_rotated_at, vk.rotation_count, vk.revoked_at, COALESCE(vk.revoked_by, ''), COALESCE(vk.expiry_alert_sent_days, '{}'), COALESCE(NULLIF(vk.key_type, ''), 'default'), COALESCE(vk.project_id, ''), vk.can_impersonate, vk.min_priority_rank, COALESCE(vk.allowed_routing_tags, '{}'), COALESCE(vk.tags, '{}'), COALESCE(vk.metadata, '{}'::jsonb)`
 
 func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var k domain.VirtualKey
@@ -149,8 +174,8 @@ func scanVirtualKey(row rowScanner) (*domain.VirtualKey, error) {
 	var sentDays []int32
 	if err := row.Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
-		&k.AllowedModels, &k.AllowedEndpoints,
-		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
+		&k.AllowedModels, &k.AllowedDeployments, &k.AllowedEndpoints,
+		&k.AllowedMCPServers, &k.AllowedMCPTools, &k.AllowedMCPToolsets, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.TempBudgetIncreaseMicros, &k.TempBudgetExpiresAt, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
@@ -179,8 +204,8 @@ func scanDeprecatedVirtualKey(row rowScanner) (*domain.VirtualKey, time.Time, er
 	var revokeAt time.Time
 	if err := row.Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &role,
-		&k.AllowedModels, &k.AllowedEndpoints,
-		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
+		&k.AllowedModels, &k.AllowedDeployments, &k.AllowedEndpoints,
+		&k.AllowedMCPServers, &k.AllowedMCPTools, &k.AllowedMCPToolsets, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.TempBudgetIncreaseMicros, &k.TempBudgetExpiresAt, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &rawFallbacks, &k.SpentMicros, &period, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
@@ -209,6 +234,10 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 	if vk.AllowedModels == nil {
 		vk.AllowedModels = []string{}
 	}
+	allowedDeployments := vk.AllowedDeployments
+	if allowedDeployments == nil {
+		allowedDeployments = []string{}
+	}
 	if vk.AllowedEndpoints == nil {
 		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
 	}
@@ -232,18 +261,18 @@ func (p *PostgresRepository) CreateVirtualKey(ctx context.Context, vk *domain.Vi
 	}
 	const q = `
 		INSERT INTO virtual_keys (
-			id, key_prefix, key_hash, name, org_id, team_id, user_id, role, allowed_models, allowed_endpoints,
-			allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps,
+			id, key_prefix, key_hash, name, org_id, team_id, user_id, role, allowed_models, allowed_deployments, allowed_endpoints,
+			allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents, allowed_client_apps,
 			max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, expires_at, is_active,
 			rotation_interval_sec, key_rotation_at,
 			staged_key_hash, staged_key_prefix, staged_encrypted_raw_key, staged_key_dek, staged_created_at,
 			key_type, project_id, can_impersonate, min_priority_rank, allowed_routing_tags, tags, metadata
-		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NULLIF($34,''),NULLIF($35,''),NULLIF($36,''),NULLIF($37,''),$38,$39,NULLIF($40,''),$41,$42,$43,$44,$45)`
+		) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,NULLIF($37,''),NULLIF($38,''),NULLIF($39,''),NULLIF($40,''),$41,$42,NULLIF($43,''),$44,$45,$46,$47,$48)`
 	if _, err := p.pool.Exec(ctx, q,
 		vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.OrgID, vk.TeamID, vk.UserID, string(vk.Role),
-		vk.AllowedModels, vk.AllowedEndpoints,
-		vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
+		vk.AllowedModels, allowedDeployments, vk.AllowedEndpoints,
+		vk.AllowedMCPServers, vk.AllowedMCPTools, vk.AllowedMCPToolsets, vk.AllowedA2AAgents, vk.AllowedClientApps,
 		vk.MaxBudgetMicros, vk.TempBudgetIncreaseMicros, vk.TempBudgetExpiresAt, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 		vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
 		vk.RotationIntervalSec, vk.KeyRotationAt,
@@ -261,6 +290,10 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 	}
 	if vk.AllowedModels == nil {
 		vk.AllowedModels = []string{}
+	}
+	allowedDeployments := vk.AllowedDeployments
+	if allowedDeployments == nil {
+		allowedDeployments = []string{}
 	}
 	if vk.AllowedEndpoints == nil {
 		vk.AllowedEndpoints = append([]string(nil), domain.DefaultAllowedEndpoints...)
@@ -286,49 +319,52 @@ func (p *PostgresRepository) UpdateVirtualKey(ctx context.Context, vk *domain.Vi
 			user_id = NULLIF($6, ''),
 			role = $7,
 			allowed_models = $8,
-			allowed_endpoints = $9,
-			allowed_mcp_servers = $10,
-			allowed_a2a_agents = $11,
-			allowed_client_apps = $12,
-			max_budget_micros = $13,
-			temp_budget_increase_micros = $14,
-			temp_budget_expires_at = $15,
-			soft_budget_micros = $16,
-			throttle_on_budget_exceeded = $17,
-			budget_fallbacks = $18,
-			spent_micros = $19,
-			budget_reset_period = $20,
-			budget_reset_at = $21,
-			rpm_limit = $22,
-			tpm_limit = $23,
-			mcp_rpm_limit = $24,
-			max_concurrent_requests = $25,
-			batch_enqueued_token_limit = $26,
-			max_iterations = $27,
-			max_budget_per_session_micros = $28,
-			expires_at = $29,
-			is_active = $30,
-			rotation_interval_sec = $31,
-			key_rotation_at = $32,
-			staged_key_hash = NULLIF($33, ''),
-			staged_key_prefix = NULLIF($34, ''),
-			staged_encrypted_raw_key = NULLIF($35, ''),
-			staged_key_dek = NULLIF($36, ''),
-			staged_created_at = $37,
-			key_type = COALESCE(NULLIF($38, ''), key_type),
-			project_id = NULLIF($39, ''),
-			can_impersonate = $40,
-			min_priority_rank = $41,
-			allowed_routing_tags = $42,
-			tags = $43,
-			metadata = $44,
+			allowed_deployments = $9,
+			allowed_endpoints = $10,
+			allowed_mcp_servers = $11,
+			allowed_mcp_tools = $12,
+			allowed_mcp_toolsets = $13,
+			allowed_a2a_agents = $14,
+			allowed_client_apps = $15,
+			max_budget_micros = $16,
+			temp_budget_increase_micros = $17,
+			temp_budget_expires_at = $18,
+			soft_budget_micros = $19,
+			throttle_on_budget_exceeded = $20,
+			budget_fallbacks = $21,
+			spent_micros = $22,
+			budget_reset_period = $23,
+			budget_reset_at = $24,
+			rpm_limit = $25,
+			tpm_limit = $26,
+			mcp_rpm_limit = $27,
+			max_concurrent_requests = $28,
+			batch_enqueued_token_limit = $29,
+			max_iterations = $30,
+			max_budget_per_session_micros = $31,
+			expires_at = $32,
+			is_active = $33,
+			rotation_interval_sec = $34,
+			key_rotation_at = $35,
+			staged_key_hash = NULLIF($36, ''),
+			staged_key_prefix = NULLIF($37, ''),
+			staged_encrypted_raw_key = NULLIF($38, ''),
+			staged_key_dek = NULLIF($39, ''),
+			staged_created_at = $40,
+			key_type = COALESCE(NULLIF($41, ''), key_type),
+			project_id = NULLIF($42, ''),
+			can_impersonate = $43,
+			min_priority_rank = $44,
+			allowed_routing_tags = $45,
+			tags = $46,
+			metadata = $47,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
 		tag, err := p.pool.Exec(ctx, q,
 			vk.ID, vk.KeyPrefix, vk.KeyHash, vk.Name, vk.TeamID, vk.UserID, string(vk.Role),
-			vk.AllowedModels, vk.AllowedEndpoints,
-			vk.AllowedMCPServers, vk.AllowedA2AAgents, vk.AllowedClientApps,
+			vk.AllowedModels, allowedDeployments, vk.AllowedEndpoints,
+			vk.AllowedMCPServers, vk.AllowedMCPTools, vk.AllowedMCPToolsets, vk.AllowedA2AAgents, vk.AllowedClientApps,
 			vk.MaxBudgetMicros, vk.TempBudgetIncreaseMicros, vk.TempBudgetExpiresAt, vk.SoftBudgetMicros, vk.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(vk.BudgetFallbacks), vk.SpentMicros, string(vk.BudgetResetPeriod), vk.BudgetResetAt,
 			vk.RPMLimit, vk.TPMLimit, vk.MCPRPMLimit, vk.MaxConcurrentRequests, vk.BatchEnqueuedTokenLimit, vk.MaxIterations, vk.MaxBudgetPerSessionMicros, vk.ExpiresAt, vk.IsActive,
 			vk.RotationIntervalSec, vk.KeyRotationAt, vk.StagedKeyHash, vk.StagedKeyPrefix, vk.StagedEncryptedRawKey, vk.StagedKeyDEK, vk.StagedCreatedAt, string(vk.KeyType), vk.ProjectID, vk.CanImpersonate, vk.MinPriorityRank, routingTags, tags, marshalStringMapJSON(vk.Metadata),
@@ -510,13 +546,15 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 			COALESCE(t.enforce_guaranteed_throughput, FALSE), COALESCE(t.default_member_max_budget_micros, 0),
 			COALESCE(t.default_member_rpm_limit, 0), COALESCE(t.default_member_tpm_limit, 0),
 			COALESCE(t.default_member_allowed_models, '{}'), COALESCE(t.team_member_permissions, '{}'),
-			COALESCE(t.allowed_models, '{}'), t.allowed_mcp_servers, t.allowed_a2a_agents, t.allowed_client_apps,
+			COALESCE(t.allowed_models, '{}'), COALESCE(t.allowed_deployments, '{}'), t.allowed_mcp_servers, t.allowed_mcp_tools, t.allowed_mcp_toolsets, t.allowed_a2a_agents, t.allowed_client_apps,
 			COALESCE(t.min_priority_rank, 0), COALESCE(t.allowed_routing_tags, '{}'),
 			COALESCE(t.is_active, FALSE),
 			(pr.id IS NOT NULL) AS has_project,
 			COALESCE(pr.id, ''), COALESCE(pr.org_id, ''), COALESCE(pr.team_id, ''), COALESCE(pr.name, ''), COALESCE(pr.description, ''),
 			COALESCE(pr.max_budget_micros, 0), COALESCE(pr.spent_micros, 0), COALESCE(pr.rpm_limit, 0), COALESCE(pr.tpm_limit, 0),
-			COALESCE(pr.allowed_models, '{}'), COALESCE(pr.enforce_project_model_quota, FALSE), COALESCE(pr.is_active, FALSE),
+			COALESCE(pr.allowed_models, '{}'), COALESCE(pr.allowed_deployments, '{}'), COALESCE(pr.allowed_routing_tags, '{}'),
+			pr.allowed_mcp_servers, pr.allowed_mcp_tools, pr.allowed_mcp_toolsets, pr.allowed_a2a_agents,
+			COALESCE(pr.enforce_project_model_quota, FALSE), COALESCE(pr.is_active, FALSE),
 			(u.id IS NOT NULL) AS has_user,
 			COALESCE(u.id, ''), COALESCE(u.org_id, ''), COALESCE(u.team_id, ''), COALESCE(u.email, ''), COALESCE(u.name, ''), COALESCE(u.role, ''),
 			COALESCE(u.oidc_subject, ''), COALESCE(u.scim_external_id, ''), COALESCE(u.scim_active, TRUE),
@@ -570,8 +608,8 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 
 	err := p.pool.QueryRow(ctx, q, keyHash, now.UTC()).Scan(
 		&k.ID, &k.KeyPrefix, &k.KeyHash, &k.Name, &k.OrgID, &k.TeamID, &k.UserID, &vkRole,
-		&k.AllowedModels, &k.AllowedEndpoints,
-		&k.AllowedMCPServers, &k.AllowedA2AAgents, &k.AllowedClientApps,
+		&k.AllowedModels, &k.AllowedDeployments, &k.AllowedEndpoints,
+		&k.AllowedMCPServers, &k.AllowedMCPTools, &k.AllowedMCPToolsets, &k.AllowedA2AAgents, &k.AllowedClientApps,
 		&k.MaxBudgetMicros, &k.TempBudgetIncreaseMicros, &k.TempBudgetExpiresAt, &k.SoftBudgetMicros, &k.ThrottleOnBudgetExceeded, &vkFallbacks, &k.SpentMicros, &vkPeriod, &k.BudgetResetAt,
 		&k.RPMLimit, &k.TPMLimit, &k.MCPRPMLimit, &k.MaxConcurrentRequests, &k.BatchEnqueuedTokenLimit, &k.MaxIterations, &k.MaxBudgetPerSessionMicros, &k.ExpiresAt, &k.IsActive,
 		&k.RotationIntervalSec, &k.KeyRotationAt, &k.StagedKeyHash, &k.StagedKeyPrefix, &k.StagedEncryptedRawKey, &k.StagedKeyDEK, &k.StagedCreatedAt,
@@ -589,11 +627,13 @@ func (p *PostgresRepository) GetVirtualKeyAuthBundleByHash(ctx context.Context, 
 		&t.RPMLimit, &t.TPMLimit, &t.MCPRPMLimit, &t.MaxConcurrentRequests, &t.BatchEnqueuedTokenLimit, &t.MaxIterations, &t.MaxBudgetPerSessionMicros,
 		&t.EnforceGuaranteedThroughput, &t.DefaultMemberMaxBudgetMicros, &t.DefaultMemberRPMLimit, &t.DefaultMemberTPMLimit,
 		&t.DefaultMemberAllowedModels, &t.TeamMemberPermissions,
-		&t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.AllowedModels, &t.AllowedDeployments, &t.AllowedMCPServers, &t.AllowedMCPTools, &t.AllowedMCPToolsets, &t.AllowedA2AAgents, &t.AllowedClientApps,
 		&t.MinPriorityRank, &t.AllowedRoutingTags, &t.IsActive,
 		&hasProj,
 		&pr.ID, &pr.OrgID, &pr.TeamID, &pr.Name, &pr.Description, &pr.MaxBudgetMicros, &pr.SpentMicros, &pr.RPMLimit, &pr.TPMLimit,
-		&pr.AllowedModels, &pr.EnforceProjectModelQuota, &pr.IsActive,
+		&pr.AllowedModels, &pr.AllowedDeployments, &pr.AllowedRoutingTags,
+		&pr.AllowedMCPServers, &pr.AllowedMCPTools, &pr.AllowedMCPToolsets, &pr.AllowedA2AAgents,
+		&pr.EnforceProjectModelQuota, &pr.IsActive,
 		&hasUser,
 		&u.ID, &u.OrgID, &u.TeamID, &u.Email, &u.Name, &uRole, &u.OIDCSubject, &u.SCIMExternalID, &u.SCIMActive,
 		&u.MaxBudgetMicros, &u.TempBudgetIncreaseMicros, &u.TempBudgetExpiresAt,

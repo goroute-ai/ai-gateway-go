@@ -668,6 +668,16 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 		}
 	}
 
+	mappedRole := auth.ResolveMappedRole(
+		claims.Role,
+		claims.Groups,
+		p.GroupRoleMappings(),
+		p.RoleMappingStrategy(),
+		p.DefaultRole(),
+		p.AllowPrivilegedRoleClaims(),
+	)
+	mappedTeamID := auth.ResolveMappedTeamID(claims.TeamIDs, claims.Groups, p.GroupTeamMappings(), p.DefaultTeamID())
+
 	if user == nil {
 		if !p.AutoRegister() {
 			return nil, &domain.GatewayError{
@@ -679,13 +689,7 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			}
 		}
 
-		teamID := ""
-		if len(claims.TeamIDs) > 0 {
-			teamID = strings.TrimSpace(claims.TeamIDs[0])
-		}
-		if teamID == "" {
-			teamID = p.DefaultTeamID()
-		}
+		teamID := mappedTeamID
 		if teamID != "" {
 			team, teamErr := s.repo.GetTeam(ctx, teamID)
 			if teamErr != nil || team == nil {
@@ -732,7 +736,7 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 			TeamID:            teamID,
 			Email:             email,
 			Name:              name,
-			Role:              resolveSSOProvisionRole(claims.Role, p.DefaultRole(), p.AllowPrivilegedRoleClaims()),
+			Role:              mappedRole,
 			OIDCIssuer:        claims.Issuer,
 			OIDCSubject:       claims.Subject,
 			BudgetResetPeriod: domain.BudgetResetMonthly,
@@ -771,6 +775,46 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 				}
 			}
 			user = jitUser
+		}
+	} else if p.SyncRolesOnLogin() {
+		beforeUser := *user
+		updatedUser := *user
+		roleChanged := updatedUser.Role != mappedRole
+		teamChanged := false
+		if mappedTeamID != "" && mappedTeamID != updatedUser.TeamID {
+			if team, teamErr := s.repo.GetTeam(ctx, mappedTeamID); teamErr == nil && team != nil && team.OrgID == orgID && team.IsActive {
+				updatedUser.TeamID = mappedTeamID
+				teamChanged = true
+			}
+		}
+		if roleChanged {
+			updatedUser.Role = mappedRole
+		}
+		if roleChanged || teamChanged {
+			if updateErr := s.repo.UpdateUser(ctx, &updatedUser); updateErr != nil {
+				return nil, &domain.GatewayError{
+					StatusCode: http.StatusServiceUnavailable,
+					Type:       domain.ErrorTypeServer,
+					Code:       "sso_role_sync_failed",
+					Message:    "Unable to synchronize SSO user role/team: " + updateErr.Error(),
+					Retryable:  true,
+				}
+			}
+			user = &updatedUser
+			if roleChanged && s.sessionMgr != nil {
+				_ = s.sessionMgr.RevokeAllUserSessions(ctx, user.ID)
+			}
+			if s.authSvc != nil {
+				s.authSvc.InvalidateUserKeys(ctx, user.OrgID, user.ID)
+			}
+			s.auditWithDiff(ctx, user.OrgID, "sso.role_synced", "user", user.ID, map[string]any{
+				"provider":     p.ID(),
+				"before_role":  beforeUser.Role,
+				"after_role":   user.Role,
+				"before_team":  beforeUser.TeamID,
+				"after_team":   user.TeamID,
+				"groups_count": len(claims.Groups),
+			}, &beforeUser, user)
 		}
 	}
 

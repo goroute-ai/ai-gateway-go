@@ -4,6 +4,11 @@ import type {
   OrgProviderSubscription,
   OrgModelPolicy,
   Team,
+  Project,
+  AccessGroup,
+  AccessGroupMember,
+  AccessGroupRule,
+  JWTKeyMapping,
   User,
   VirtualKey,
   ProviderCredential,
@@ -17,6 +22,7 @@ import type {
   SpendSummary,
   SpendEvent,
   AuditLog,
+  AuditLogFilter,
   GuardrailPolicy,
   GuardrailStatus,
   GuardrailDefinition,
@@ -78,13 +84,13 @@ export const adminApi = {
   deleteTeam: (key: string, teamId: string) =>
     apiFetch<{ status: string; id: string }>(`/admin/v1/teams/${enc(teamId)}`, { method: 'DELETE' }, key),
   listTeamMembers: (key: string, teamId: string, orgId?: string) =>
-    apiFetch<{ data: Array<{ user_id: string; role: string; max_budget_micros?: number; spent_micros?: number }> }>(`/admin/v1/teams/${enc(teamId)}/members${qs({ org_id: orgId })}`, {}, key),
+    apiFetch<{ data: Array<{ user_id: string; role: string; max_budget_micros?: number; spent_micros?: number; rpm_limit?: number; tpm_limit?: number; allowed_models?: string[] }> }>(`/admin/v1/teams/${enc(teamId)}/members${qs({ org_id: orgId })}`, {}, key),
   bulkSyncTeamMembers: (
     key: string,
     teamId: string,
     data: {
       org_id?: string;
-      members?: Array<{ user_id: string; role?: string }>;
+      members?: Array<{ user_id: string; role?: string; max_budget_micros?: number; rpm_limit?: number; tpm_limit?: number; allowed_models?: string[] }>;
       remove_user_ids?: string[];
     }
   ) =>
@@ -238,12 +244,17 @@ export const adminApi = {
       {},
       key
     ),
-  listAuditLogs: (key: string, orgId?: string, limit: number = 50) =>
-    apiFetch<{ data: AuditLog[] }>(
-      `/admin/v1/audit/logs${qs({ limit, org_id: orgId })}`,
+  listAuditLogs: (key: string, orgOrFilter?: string | AuditLogFilter, limit: number = 50) => {
+    const params: Record<string, string | number | undefined> =
+      typeof orgOrFilter === 'object' && orgOrFilter !== null
+        ? { ...orgOrFilter, limit: orgOrFilter.limit ?? limit }
+        : { org_id: orgOrFilter, limit };
+    return apiFetch<{ data: AuditLog[]; next_cursor?: string }>(
+      `/admin/v1/audit/logs${qs(params)}`,
       {},
       key
-    ),
+    );
+  },
 
   // Guardrails
   getGuardrailPolicy: (key: string, orgId: string) =>
@@ -570,6 +581,42 @@ export const adminApi = {
       { method: 'PUT', body: JSON.stringify(data) },
       key
     ),
+
+  // Projects
+  listProjects: (key: string, orgId?: string, teamId?: string) =>
+    apiFetch<{ data: Project[] }>(`/admin/v1/projects${qs({ org_id: orgId, team_id: teamId })}`, {}, key),
+  createProject: (key: string, data: Partial<Project>) =>
+    apiFetch<Project>('/admin/v1/projects', { method: 'POST', body: JSON.stringify(data) }, key),
+  updateProject: (key: string, projectId: string, data: Partial<Project>) =>
+    apiFetch<Project>(`/admin/v1/projects/${enc(projectId)}`, { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteProject: (key: string, projectId: string) =>
+    apiFetch<{ status?: string; deleted?: boolean; id: string }>(`/admin/v1/projects/${enc(projectId)}`, { method: 'DELETE' }, key),
+
+  // Unified Access Groups & Dynamic Access Rules
+  listAccessGroups: (key: string, orgId?: string) =>
+    apiFetch<{ data: AccessGroup[] }>(`/admin/v1/access-groups${qs({ org_id: orgId })}`, {}, key),
+  upsertAccessGroup: (key: string, data: Partial<AccessGroup>) =>
+    apiFetch<AccessGroup>('/admin/v1/access-groups', { method: 'PUT', body: JSON.stringify(data) }, key),
+  deleteAccessGroup: (key: string, groupId: string) =>
+    apiFetch<{ deleted?: boolean; id: string }>(`/admin/v1/access-groups/${enc(groupId)}`, { method: 'DELETE' }, key),
+  addAccessGroupMember: (key: string, groupId: string, data: { org_id?: string; member_type: AccessGroupMember['member_type']; member_id: string }) =>
+    apiFetch<AccessGroupMember>(`/admin/v1/access-groups/${enc(groupId)}/members`, { method: 'POST', body: JSON.stringify(data) }, key),
+  removeAccessGroupMember: (key: string, groupId: string, memberId: string) =>
+    apiFetch<{ deleted?: boolean; id: string }>(`/admin/v1/access-groups/${enc(groupId)}/members/${enc(memberId)}`, { method: 'DELETE' }, key),
+  listAccessGroupRules: (key: string, orgId?: string) =>
+    apiFetch<{ data: AccessGroupRule[] }>(`/admin/v1/access-group-rules${qs({ org_id: orgId })}`, {}, key),
+  createAccessGroupRule: (key: string, data: Partial<AccessGroupRule>) =>
+    apiFetch<AccessGroupRule>('/admin/v1/access-group-rules', { method: 'POST', body: JSON.stringify(data) }, key),
+  deleteAccessGroupRule: (key: string, ruleId: string) =>
+    apiFetch<{ deleted?: boolean; id: string }>(`/admin/v1/access-group-rules/${enc(ruleId)}`, { method: 'DELETE' }, key),
+
+  // JWT Key Mappings
+  listJWTMappings: (key: string, orgId?: string) =>
+    apiFetch<{ data: JWTKeyMapping[] }>(`/admin/v1/jwt-mappings${qs({ org_id: orgId })}`, {}, key),
+  createJWTMapping: (key: string, data: Partial<JWTKeyMapping>) =>
+    apiFetch<JWTKeyMapping>('/admin/v1/jwt-mappings', { method: 'POST', body: JSON.stringify(data) }, key),
+  deleteJWTMapping: (key: string, mappingId: string) =>
+    apiFetch<{ deleted?: boolean; id: string }>(`/admin/v1/jwt-mappings/${enc(mappingId)}`, { method: 'DELETE' }, key),
 
   // Gateway Runtime Config
   getConfig: (key: string) =>

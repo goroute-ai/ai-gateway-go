@@ -774,10 +774,12 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
 		ID: "dep-priv-br", ModelGroupID: privMG.ID, GlobalModelID: mPriv.ID, CredentialID: privCred.ID,
 		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPriv,
+		Tags: []string{"tier:public"},
 	}))
 	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
 		ID: "dep-pub-br", ModelGroupID: pubMG.ID, GlobalModelID: mPub.ID, CredentialID: pubCred.ID,
 		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPub,
+		Tags: []string{"tier:public"},
 	}))
 
 	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", strings.NewReader(`{"enable_pii_detection":true,"pii_action":"route","sensitive_route_target":"private-local"}`))
@@ -909,6 +911,7 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		_, frame, rErr := conn.Read(h.ctx)
 		require.NoError(t, rErr)
+		require.NotContains(t, string(frame), `"type":"error"`, "unexpected realtime error frame: %s", string(frame))
 		if strings.Contains(string(frame), `"type":"response.done"`) {
 			assert.Contains(t, string(frame), "private-ok")
 			seenDone = true

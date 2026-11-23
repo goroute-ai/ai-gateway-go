@@ -35,6 +35,23 @@ func (s *GatewayServer) authorizeAdmin(w http.ResponseWriter, r *http.Request, t
 		domain.WriteHTTPError(w, err)
 		return nil, false
 	}
+	if s.customAuthorizer != nil {
+		action := auth.AuthzActionAdminRead
+		if write {
+			action = auth.AuthzActionAdminWrite
+		}
+		if err := s.evaluateCustomAuthorizer(r.Context(), &auth.AuthzRequest{
+			Operator:     op,
+			Action:       action,
+			ResourceType: "admin_api",
+			ResourceID:   targetOrgID,
+			HTTPMethod:   r.Method,
+			HTTPPath:     r.URL.Path,
+		}); err != nil {
+			domain.WriteHTTPError(w, err)
+			return nil, false
+		}
+	}
 	return op, true
 }
 
@@ -43,6 +60,27 @@ func (s *GatewayServer) authorizeTeamAdmin(w http.ResponseWriter, r *http.Reques
 	if err := auth.AuthorizeTeamAdminAction(op, targetOrgID, targetTeamID, write); err != nil {
 		domain.WriteHTTPError(w, err)
 		return nil, false
+	}
+	if s.customAuthorizer != nil {
+		action := auth.AuthzActionAdminRead
+		if write {
+			action = auth.AuthzActionAdminWrite
+		}
+		resID := targetOrgID
+		if targetTeamID != "" {
+			resID = targetOrgID + "/" + targetTeamID
+		}
+		if err := s.evaluateCustomAuthorizer(r.Context(), &auth.AuthzRequest{
+			Operator:     op,
+			Action:       action,
+			ResourceType: "admin_team_api",
+			ResourceID:   resID,
+			HTTPMethod:   r.Method,
+			HTTPPath:     r.URL.Path,
+		}); err != nil {
+			domain.WriteHTTPError(w, err)
+			return nil, false
+		}
 	}
 	return op, true
 }
@@ -2035,17 +2073,70 @@ func (s *GatewayServer) handleAdminSpendLogs(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"data": logs})
 }
 func (s *GatewayServer) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
-	orgID := resolveScopedOrgID(r, r.URL.Query().Get("org_id"))
+	q := r.URL.Query()
+	orgID := resolveScopedOrgID(r, q.Get("org_id"))
 	if _, ok := s.authorizeAdmin(w, r, orgID, false); !ok {
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	logs, err := s.repo.ListAuditLogs(r.Context(), orgID, limit)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	filter := domain.AuditLogFilter{
+		OrgID:      orgID,
+		ActorID:    strings.TrimSpace(q.Get("actor_id")),
+		Action:     strings.TrimSpace(q.Get("action")),
+		Resource:   strings.TrimSpace(q.Get("resource")),
+		ResourceID: strings.TrimSpace(q.Get("resource_id")),
+		Cursor:     strings.TrimSpace(q.Get("cursor")),
+		Limit:      limit,
+	}
+	if rawSince := strings.TrimSpace(q.Get("since")); rawSince != "" {
+		ts, err := time.Parse(time.RFC3339, rawSince)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_since_timestamp",
+				Message:    "since must be an RFC3339 timestamp",
+			})
+			return
+		}
+		filter.Since = &ts
+	}
+	if rawUntil := strings.TrimSpace(q.Get("until")); rawUntil != "" {
+		ts, err := time.Parse(time.RFC3339, rawUntil)
+		if err != nil {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_until_timestamp",
+				Message:    "until must be an RFC3339 timestamp",
+			})
+			return
+		}
+		filter.Until = &ts
+	}
+
+	logs, nextCursor, err := s.repo.ListAuditLogsFiltered(r.Context(), filter)
 	if err != nil {
+		if strings.Contains(err.Error(), "cursor") {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_cursor",
+				Message:    err.Error(),
+			})
+			return
+		}
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": logs})
+	if logs == nil {
+		logs = []*domain.AuditLog{}
+	}
+	resp := map[string]any{"data": logs}
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *GatewayServer) handleAdminGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -2284,6 +2375,28 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"auto_register":                cfg.Auth.Introspection.AutoRegister,
 				"allow_unverified_email":       cfg.Auth.Introspection.AllowUnverifiedEmail,
 				"allow_privileged_role_claims": cfg.Auth.Introspection.AllowPrivilegedRoleClaims,
+			},
+			"external_authorizer": map[string]any{
+				"enabled":     cfg.Auth.ExternalAuthorizer.Enabled,
+				"mode":        cfg.Auth.ExternalAuthorizer.Mode,
+				"url":         redactURLPassword(cfg.Auth.ExternalAuthorizer.URL),
+				"timeout":     cfg.Auth.ExternalAuthorizer.Timeout.String(),
+				"fail_mode":   cfg.Auth.ExternalAuthorizer.FailMode,
+				"cache_ttl":   cfg.Auth.ExternalAuthorizer.CacheTTL.String(),
+				"auth_header": redactSecret(cfg.Auth.ExternalAuthorizer.AuthHeader),
+				"hmac_secret": redactSecret(cfg.Auth.ExternalAuthorizer.HMACSecret),
+			},
+		},
+		"audit": map[string]any{
+			"siem_webhook": map[string]any{
+				"enabled":        cfg.Audit.SIEMWebhook.Enabled,
+				"url":            redactURLPassword(cfg.Audit.SIEMWebhook.URL),
+				"secret":         redactSecret(cfg.Audit.SIEMWebhook.Secret),
+				"auth_header":    redactSecret(cfg.Audit.SIEMWebhook.AuthHeader),
+				"batch_size":     cfg.Audit.SIEMWebhook.BatchSize,
+				"flush_interval": cfg.Audit.SIEMWebhook.FlushInterval.String(),
+				"timeout":        cfg.Audit.SIEMWebhook.Timeout.String(),
+				"max_queue_size": cfg.Audit.SIEMWebhook.MaxQueueSize,
 			},
 		},
 		"router": map[string]any{

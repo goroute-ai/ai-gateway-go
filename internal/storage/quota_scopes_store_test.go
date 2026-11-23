@@ -224,7 +224,7 @@ func TestScanQuotaScopeEntities_ColumnAlignment(t *testing.T) {
 	magRow := &fakeTeamScanner{
 		values: []any{
 			"mag-1", "org-1", "frontier", "Frontier group", int64(10_000), int64(500), "monthly", nil,
-			30, 3000, 1500, 1500, int64(9000), 2, true, []byte(`{"owner":"ml"}`), now, now,
+			30, 3000, 1500, 1500, int64(9000), 2, []string{"github"}, []string{"github:get_issue"}, []string{"agent-1"}, true, []byte(`{"owner":"ml"}`), now, now,
 		},
 	}
 	mag, err := scanModelAccessGroup(magRow)

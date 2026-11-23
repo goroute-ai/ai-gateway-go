@@ -63,6 +63,8 @@ export interface Organization {
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  max_iterations?: number;
+  max_budget_per_session_micros?: number;
   enforce_guaranteed_throughput?: boolean;
   developer_self_serve_keys?: boolean;
   key_expiry_alert_days?: number[];
@@ -86,6 +88,8 @@ export interface Team {
   rpm_limit?: number;
   tpm_limit?: number;
   max_concurrent_requests?: number;
+  max_iterations?: number;
+  max_budget_per_session_micros?: number;
   enforce_guaranteed_throughput?: boolean;
   default_member_max_budget_micros?: number;
   default_member_rpm_limit?: number;
@@ -93,12 +97,93 @@ export interface Team {
   default_member_allowed_models?: string[];
   team_member_permissions?: string[];
   allowed_models?: string[];
+  allowed_deployments?: string[];
   allowed_mcp_servers?: string[] | null;
+  allowed_mcp_tools?: string[] | null;
+  allowed_mcp_toolsets?: string[] | null;
   allowed_a2a_agents?: string[] | null;
   allowed_client_apps?: string[] | null;
   min_priority_rank?: number;
   allowed_routing_tags?: string[];
   is_active: boolean;
+  created_at?: string;
+}
+
+export interface Project {
+  id: string;
+  org_id: string;
+  team_id: string;
+  name: string;
+  description?: string;
+  max_budget_micros?: number;
+  spent_micros?: number;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  allowed_models?: string[];
+  allowed_deployments?: string[];
+  allowed_routing_tags?: string[];
+  allowed_mcp_servers?: string[] | null;
+  allowed_mcp_tools?: string[] | null;
+  allowed_mcp_toolsets?: string[] | null;
+  allowed_a2a_agents?: string[] | null;
+  enforce_project_model_quota?: boolean;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AccessGroupMember {
+  id: string;
+  org_id: string;
+  group_id: string;
+  member_type: 'model' | 'key' | 'team' | 'user' | 'project' | 'org';
+  member_id: string;
+  created_at?: string;
+}
+
+export interface AccessGroup {
+  id: string;
+  org_id: string;
+  name: string;
+  description?: string;
+  max_budget_micros?: number;
+  spent_micros?: number;
+  budget_reset_period?: BudgetResetPeriod;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  max_concurrent?: number;
+  allowed_mcp_servers?: string[];
+  allowed_mcp_tools?: string[];
+  allowed_a2a_agents?: string[];
+  is_active: boolean;
+  members?: AccessGroupMember[];
+  created_at?: string;
+}
+
+export interface AccessGroupRule {
+  id: string;
+  org_id: string;
+  name: string;
+  attribute: string;
+  operator: 'equals' | 'contains' | 'prefix' | 'in_list';
+  value: string;
+  allowed_models?: string[];
+  allowed_mcp_servers?: string[];
+  allowed_mcp_tools?: string[];
+  allowed_a2a_agents?: string[];
+  access_group_id?: string;
+  priority: number;
+  is_active: boolean;
+  created_at?: string;
+}
+
+export interface JWTKeyMapping {
+  id: string;
+  org_id: string;
+  issuer: string;
+  claim_name: string;
+  claim_value: string;
+  virtual_key_id: string;
   created_at?: string;
 }
 
@@ -165,15 +250,21 @@ export interface VirtualKey {
   budget_reset_period?: BudgetResetPeriod;
   rpm_limit?: number;
   tpm_limit?: number;
+  mcp_rpm_limit?: number;
   max_concurrent_requests?: number;
+  max_iterations?: number;
+  max_budget_per_session_micros?: number;
   min_priority_rank?: number;
   allowed_routing_tags?: string[];
   batch_enqueued_token_limit?: number;
   rotation_interval_sec?: number;
   key_rotation_at?: string;
   allowed_models?: string[];
+  allowed_deployments?: string[];
   allowed_endpoints?: string[];
   allowed_mcp_servers?: string[] | null;
+  allowed_mcp_tools?: string[] | null;
+  allowed_mcp_toolsets?: string[] | null;
   allowed_a2a_agents?: string[] | null;
   allowed_client_apps?: string[] | null;
   expires_at?: string;
@@ -433,7 +524,21 @@ export interface AuditLog {
   resource: string;
   resource_id: string;
   details?: Record<string, any>;
+  before_value?: Record<string, any>;
+  after_value?: Record<string, any>;
   created_at: string;
+}
+
+export interface AuditLogFilter {
+  org_id?: string;
+  actor_id?: string;
+  action?: string;
+  resource?: string;
+  resource_id?: string;
+  since?: string;
+  until?: string;
+  cursor?: string;
+  limit?: number;
 }
 
 export type GuardrailPolicyAction = 'block' | 'redact' | 'audit' | 'route';

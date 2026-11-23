@@ -19,7 +19,7 @@ func TestScanVirtualKey_AndDeprecatedKeyFields(t *testing.T) {
 	baseValues := []any{
 		"vk-1", "sk-gw-12345678", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"prod-key", "org-1", "team-1", "user-1", "service_account",
-		[]string{"gpt-4.1"}, []string{"/v1/*"}, []string{}, []string{}, []string{},
+		[]string{"gpt-4.1"}, []string{"dep-1"}, []string{"/v1/*"}, []string{}, []string{"github:get_issue"}, []string{"ts-1"}, []string{}, []string{},
 		int64(10_000_000), int64(2_000_000), &expAt, int64(5_000_000), true, []byte(`{"gpt-4.1":["gpt-4.1-mini"]}`),
 		int64(1000), "monthly", nil,
 		60, 10000, 15, 10, int64(50000), 8, int64(250_000), &expAt, true,

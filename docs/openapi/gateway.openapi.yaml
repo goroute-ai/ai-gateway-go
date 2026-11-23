@@ -1617,6 +1617,22 @@ components:
             type: string
         min_priority_rank:
           type: integer
+        allowed_deployments:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_toolsets:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
         allowed_routing_tags:
           type: array
           items:
@@ -1721,6 +1737,22 @@ components:
           type: integer
         min_priority_rank:
           type: integer
+        allowed_deployments:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_toolsets:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
         allowed_routing_tags:
           type: array
           items:
@@ -1860,6 +1892,18 @@ components:
           type: array
           items:
             type: string
+        allowed_mcp_servers:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          type: array
+          items:
+            type: string
+        allowed_a2a_agents:
+          type: array
+          items:
+            type: string
         access_group_id:
           type: string
         priority:
@@ -1902,6 +1946,18 @@ components:
           type: array
           items:
             type: string
+        allowed_mcp_servers:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          type: array
+          items:
+            type: string
+        allowed_a2a_agents:
+          type: array
+          items:
+            type: string
         access_group_id:
           type: string
         priority:
@@ -1938,6 +1994,38 @@ components:
           type: array
           items:
             type: string
+        allowed_deployments:
+          type: array
+          items:
+            type: string
+        allowed_routing_tags:
+          type: array
+          items:
+            type: string
+        allowed_mcp_servers:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_tools:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_toolsets:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_a2a_agents:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
         enforce_project_model_quota:
           type: boolean
         is_active:
@@ -1978,6 +2066,38 @@ components:
           type: array
           items:
             type: string
+        allowed_deployments:
+          type: array
+          items:
+            type: string
+        allowed_routing_tags:
+          type: array
+          items:
+            type: string
+        allowed_mcp_servers:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_tools:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_mcp_toolsets:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+        allowed_a2a_agents:
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
         enforce_project_model_quota:
           type: boolean
         is_active:
@@ -3491,6 +3611,18 @@ components:
           format: int64
         max_concurrent:
           type: integer
+        allowed_mcp_servers:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          type: array
+          items:
+            type: string
+        allowed_a2a_agents:
+          type: array
+          items:
+            type: string
         is_active:
           type: boolean
         metadata:
@@ -3542,6 +3674,18 @@ components:
           format: int64
         max_concurrent:
           type: integer
+        allowed_mcp_servers:
+          type: array
+          items:
+            type: string
+        allowed_mcp_tools:
+          type: array
+          items:
+            type: string
+        allowed_a2a_agents:
+          type: array
+          items:
+            type: string
         is_active:
           type: boolean
         metadata:
@@ -6395,6 +6539,213 @@ paths:
                 $ref: '#/components/schemas/AdminDeleteStatusResponse'
         '404':
           description: Member or group not found
+  /admin/v1/access-groups:
+    post:
+      operationId: createAccessGroup
+      summary: Create or update an organization-scoped unified access group (models, MCP servers/tools, A2A agents)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupUpsertRequest'
+      responses:
+        '201':
+          description: Created access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '400':
+          description: Invalid access group request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    put:
+      operationId: upsertAccessGroup
+      summary: Upsert an organization-scoped unified access group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupUpsertRequest'
+      responses:
+        '200':
+          description: Upserted access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '400':
+          description: Invalid access group request
+        '403':
+          description: Forbidden for non org_admin/platform_admin or cross-org request
+    get:
+      operationId: listAccessGroups
+      summary: List unified access groups for an organization
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of unified access groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelAccessGroup'
+  /admin/v1/access-groups/{id}:
+    get:
+      operationId: getAccessGroup
+      summary: Retrieve a unified access group by ID or name
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Access group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroup'
+        '404':
+          description: Access group not found
+    delete:
+      operationId: deleteAccessGroup
+      summary: Delete a unified access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Access group deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Access group not found
+  /admin/v1/access-groups/{id}/members:
+    post:
+      operationId: addAccessGroupMember
+      summary: Add a model pattern or tenant/principal member to a unified access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelAccessGroupMemberCreateRequest'
+      responses:
+        '201':
+          description: Created access group member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelAccessGroupMember'
+        '400':
+          description: Invalid member request
+        '404':
+          description: Access group not found
+    get:
+      operationId: listAccessGroupMembers
+      summary: List members of a unified access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of access group members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminModelAccessGroupMember'
+  /admin/v1/access-groups/{id}/members/{memberID}:
+    delete:
+      operationId: removeAccessGroupMember
+      summary: Remove a member from a unified access group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: memberID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: member_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [model, key, team, user, project, org]
+        - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteStatusResponse'
+        '404':
+          description: Member or group not found
   /admin/v1/spend/summary:
     get:
       operationId: getSpendSummary
@@ -6443,9 +6794,46 @@ paths:
   /admin/v1/audit/logs:
     get:
       operationId: listAuditLogs
-      summary: List admin and security audit log records
+      summary: List admin and security audit log records with optional server-side filters and cursor pagination
       parameters:
         - name: org_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resource
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resource_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
           in: query
           required: false
           schema:
@@ -6468,6 +6856,8 @@ paths:
                     items:
                       type: object
                       additionalProperties: true
+                  next_cursor:
+                    type: string
   /admin/v1/mcp/spec:
     get:
       operationId: getMCPSpec

@@ -104,6 +104,7 @@ type Option func(*clientConfig)
 type clientConfig struct {
 	customAuthMode        CustomAuthMode
 	customAuthenticator   CustomAuthenticator
+	customAuthorizer      CustomAuthorizer
 	configPath            string
 	remoteURL             string
 	apiKey                string
@@ -557,6 +558,9 @@ func New(opts ...Option) (*Client, error) {
 			}
 			return &identity, nil
 		})
+	}
+	if cc.customAuthorizer != nil {
+		gw.SetCustomAuthorizer(cc.customAuthorizer)
 	}
 	if cc.keyRotationSecretSink != nil {
 		gw.SetKeyRotationSecretSink(cc.keyRotationSecretSink)

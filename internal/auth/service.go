@@ -1013,10 +1013,13 @@ func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.
 		RotationIntervalSec:          vk.RotationIntervalSec,
 		KeyRotationAt:                keyRotationAt,
 		KeyAllowedModels:             vk.AllowedModels,
+		KeyAllowedDeployments:        slices.Clone(vk.AllowedDeployments),
 		AllowedEndpoints:             vk.AllowedEndpoints,
-		KeyAllowedMCPServers:         vk.AllowedMCPServers,
-		KeyAllowedA2AAgents:          vk.AllowedA2AAgents,
-		KeyAllowedClientApps:         vk.AllowedClientApps,
+		KeyAllowedMCPServers:         slices.Clone(vk.AllowedMCPServers),
+		KeyAllowedMCPTools:           slices.Clone(vk.AllowedMCPTools),
+		KeyAllowedMCPToolsets:        slices.Clone(vk.AllowedMCPToolsets),
+		KeyAllowedA2AAgents:          slices.Clone(vk.AllowedA2AAgents),
+		KeyAllowedClientApps:         slices.Clone(vk.AllowedClientApps),
 		KeyRPMLimit:                  vk.RPMLimit,
 		KeyTPMLimit:                  vk.TPMLimit,
 		KeyMCPRPMLimit:               vk.MCPRPMLimit,
@@ -1088,6 +1091,12 @@ func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.
 			idCtx.TeamID = proj.TeamID
 		}
 		idCtx.ProjectAllowedModels = slices.Clone(proj.AllowedModels)
+		idCtx.ProjectAllowedDeployments = slices.Clone(proj.AllowedDeployments)
+		idCtx.ProjectAllowedRoutingTags = slices.Clone(proj.AllowedRoutingTags)
+		idCtx.ProjectAllowedMCPServers = slices.Clone(proj.AllowedMCPServers)
+		idCtx.ProjectAllowedMCPTools = slices.Clone(proj.AllowedMCPTools)
+		idCtx.ProjectAllowedMCPToolsets = slices.Clone(proj.AllowedMCPToolsets)
+		idCtx.ProjectAllowedA2AAgents = slices.Clone(proj.AllowedA2AAgents)
 		idCtx.ProjectMaxBudgetMicros = proj.MaxBudgetMicros
 		idCtx.ProjectSpentMicros = proj.SpentMicros
 		idCtx.ProjectRPMLimit = proj.RPMLimit
@@ -1127,9 +1136,12 @@ func (s *Service) identityFromAuthBundle(vk *domain.VirtualKey, bundle *storage.
 			}
 		}
 		idCtx.TeamAllowedModels = team.AllowedModels
-		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
-		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
-		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamAllowedDeployments = slices.Clone(team.AllowedDeployments)
+		idCtx.TeamAllowedMCPServers = slices.Clone(team.AllowedMCPServers)
+		idCtx.TeamAllowedMCPTools = slices.Clone(team.AllowedMCPTools)
+		idCtx.TeamAllowedMCPToolsets = slices.Clone(team.AllowedMCPToolsets)
+		idCtx.TeamAllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
+		idCtx.TeamAllowedClientApps = slices.Clone(team.AllowedClientApps)
 		idCtx.TeamMinPriorityRank = team.MinPriorityRank
 		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit
@@ -1258,10 +1270,13 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 		RotationIntervalSec:          vk.RotationIntervalSec,
 		KeyRotationAt:                keyRotationAt,
 		KeyAllowedModels:             vk.AllowedModels,
+		KeyAllowedDeployments:        slices.Clone(vk.AllowedDeployments),
 		AllowedEndpoints:             vk.AllowedEndpoints,
-		KeyAllowedMCPServers:         vk.AllowedMCPServers,
-		KeyAllowedA2AAgents:          vk.AllowedA2AAgents,
-		KeyAllowedClientApps:         vk.AllowedClientApps,
+		KeyAllowedMCPServers:         slices.Clone(vk.AllowedMCPServers),
+		KeyAllowedMCPTools:           slices.Clone(vk.AllowedMCPTools),
+		KeyAllowedMCPToolsets:        slices.Clone(vk.AllowedMCPToolsets),
+		KeyAllowedA2AAgents:          slices.Clone(vk.AllowedA2AAgents),
+		KeyAllowedClientApps:         slices.Clone(vk.AllowedClientApps),
 		KeyRPMLimit:                  vk.RPMLimit,
 		KeyTPMLimit:                  vk.TPMLimit,
 		KeyMCPRPMLimit:               vk.MCPRPMLimit,
@@ -1343,6 +1358,12 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 				idCtx.TeamID = proj.TeamID
 			}
 			idCtx.ProjectAllowedModels = slices.Clone(proj.AllowedModels)
+			idCtx.ProjectAllowedDeployments = slices.Clone(proj.AllowedDeployments)
+			idCtx.ProjectAllowedRoutingTags = slices.Clone(proj.AllowedRoutingTags)
+			idCtx.ProjectAllowedMCPServers = slices.Clone(proj.AllowedMCPServers)
+			idCtx.ProjectAllowedMCPTools = slices.Clone(proj.AllowedMCPTools)
+			idCtx.ProjectAllowedMCPToolsets = slices.Clone(proj.AllowedMCPToolsets)
+			idCtx.ProjectAllowedA2AAgents = slices.Clone(proj.AllowedA2AAgents)
 			idCtx.ProjectMaxBudgetMicros = proj.MaxBudgetMicros
 			idCtx.ProjectSpentMicros = proj.SpentMicros
 			idCtx.ProjectRPMLimit = proj.RPMLimit
@@ -1387,9 +1408,12 @@ func (s *Service) resolveVirtualKeyIdentity(ctx context.Context, vk *domain.Virt
 			}
 		}
 		idCtx.TeamAllowedModels = team.AllowedModels
-		idCtx.TeamAllowedMCPServers = team.AllowedMCPServers
-		idCtx.TeamAllowedA2AAgents = team.AllowedA2AAgents
-		idCtx.TeamAllowedClientApps = team.AllowedClientApps
+		idCtx.TeamAllowedDeployments = slices.Clone(team.AllowedDeployments)
+		idCtx.TeamAllowedMCPServers = slices.Clone(team.AllowedMCPServers)
+		idCtx.TeamAllowedMCPTools = slices.Clone(team.AllowedMCPTools)
+		idCtx.TeamAllowedMCPToolsets = slices.Clone(team.AllowedMCPToolsets)
+		idCtx.TeamAllowedA2AAgents = slices.Clone(team.AllowedA2AAgents)
+		idCtx.TeamAllowedClientApps = slices.Clone(team.AllowedClientApps)
 		idCtx.TeamMinPriorityRank = team.MinPriorityRank
 		idCtx.TeamAllowedRoutingTags = slices.Clone(team.AllowedRoutingTags)
 		idCtx.TeamRPMLimit = team.RPMLimit

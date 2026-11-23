@@ -35,8 +35,22 @@ auth:
         - "goroute.local"
       auto_register: true
       default_org_id: "org_default"
-      org_claim: "org_id"
-      role_claim: "role"
+      claim_mapping:
+        org_id: "org_id"
+        role: "role"
+        groups: "groups"
+      group_role_mappings:
+        - group: "goroute-platform-admins"
+          role: "platform_admin"
+        - group: "goroute-org-admins"
+          role: "org_admin"
+        - group: "goroute-org-viewers"
+          role: "org_viewer"
+        - group: "goroute-developers"
+          role: "developer"
+      role_mapping_strategy: "highest_privilege"
+      group_team_mappings:
+        goroute-team-alpha: "team-prod-alpha"
       default_role: "developer"
     - name: "keycloak-tenant-b"
       issuer: "https://auth.prod.test:18443/realms/tenant-b"
@@ -69,8 +83,41 @@ auth:
       default_org_id: "org_default"
       default_role: "org_viewer"
       allow_privileged_role_claims: true
-      org_claim: "org_id"
-      role_claim: "role"
+      claim_mapping:
+        org_id: "org_id"
+        role: "role"
+        groups: "groups"
+      group_role_mappings:
+        - group: "goroute-platform-admins"
+          role: "platform_admin"
+        - group: "goroute-org-admins"
+          role: "org_admin"
+        - group: "goroute-org-viewers"
+          role: "org_viewer"
+        - group: "goroute-developers"
+          role: "developer"
+      role_mapping_strategy: "highest_privilege"
+      group_team_mappings:
+        goroute-team-alpha: "team-prod-alpha"
+      sync_roles_on_login: true
+  external_authorizer:
+    enabled: true
+    mode: "webhook"
+    url: "https://fixtures.prod.test:18443/authz/webhook"
+    timeout: "2s"
+    fail_mode: "closed"
+    cache_ttl: "0s"
+    hmac_secret: "os.environ/PROD_AUTHZ_HMAC_SECRET"
+
+audit:
+  siem_webhook:
+    enabled: true
+    url: "https://fixtures.prod.test:18443/siem/audit"
+    secret: "os.environ/PROD_SIEM_HMAC_SECRET"
+    batch_size: 10
+    flush_interval: "500ms"
+    timeout: "3s"
+    max_queue_size: 1024
 
 rate_limit:
   enabled: true

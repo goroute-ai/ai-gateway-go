@@ -564,6 +564,9 @@ func (s *GatewayServer) handleAdminUpsertModelAccessGroup(w http.ResponseWriter,
 		OTPMLimit         int                              `json:"otpm_limit,omitempty"`
 		TPDLimit          int64                            `json:"tpd_limit,omitempty"`
 		MaxConcurrent     int                              `json:"max_concurrent,omitempty"`
+		AllowedMCPServers []string                         `json:"allowed_mcp_servers,omitempty"`
+		AllowedMCPTools   []string                         `json:"allowed_mcp_tools,omitempty"`
+		AllowedA2AAgents  []string                         `json:"allowed_a2a_agents,omitempty"`
 		IsActive          *bool                            `json:"is_active,omitempty"`
 		Metadata          map[string]string                `json:"metadata,omitempty"`
 		Members           []*domain.ModelAccessGroupMember `json:"members,omitempty"`
@@ -612,6 +615,9 @@ func (s *GatewayServer) handleAdminUpsertModelAccessGroup(w http.ResponseWriter,
 		OTPMLimit:         req.OTPMLimit,
 		TPDLimit:          req.TPDLimit,
 		MaxConcurrent:     req.MaxConcurrent,
+		AllowedMCPServers: req.AllowedMCPServers,
+		AllowedMCPTools:   req.AllowedMCPTools,
+		AllowedA2AAgents:  req.AllowedA2AAgents,
 		IsActive:          isActive,
 		Metadata:          req.Metadata,
 	}

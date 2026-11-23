@@ -247,7 +247,7 @@ func TestProjectAndMembershipRepository_PostgresNilPoolFallbackAndScanners(t *te
 	scannedP, err := scanProject(&fakeTeamScanner{
 		values: []any{
 			"proj-1", "org-1", "team-1", "Prod", "Production API",
-			int64(9000), int64(100), 60, 12000, []string{"gpt-4.1-mini"}, true, true, now, now,
+			int64(9000), int64(100), 60, 12000, []string{"gpt-4.1-mini"}, []string{"dep-eu"}, []string{"eu-gdpr"}, []string{"github"}, []string{"github:get_issue"}, []string{"ts-dev"}, []string{"agent-1"}, true, true, now, now,
 		},
 	})
 	if err != nil {

@@ -62,6 +62,12 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		RPMLimit                 int      `json:"rpm_limit,omitempty"`
 		TPMLimit                 int      `json:"tpm_limit,omitempty"`
 		AllowedModels            []string `json:"allowed_models,omitempty"`
+		AllowedDeployments       []string `json:"allowed_deployments,omitempty"`
+		AllowedRoutingTags       []string `json:"allowed_routing_tags,omitempty"`
+		AllowedMCPServers        []string `json:"allowed_mcp_servers"`
+		AllowedMCPTools          []string `json:"allowed_mcp_tools"`
+		AllowedMCPToolsets       []string `json:"allowed_mcp_toolsets"`
+		AllowedA2AAgents         []string `json:"allowed_a2a_agents"`
 		EnforceProjectModelQuota bool     `json:"enforce_project_model_quota,omitempty"`
 		IsActive                 *bool    `json:"is_active,omitempty"`
 	}
@@ -181,6 +187,12 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		RPMLimit:                 req.RPMLimit,
 		TPMLimit:                 req.TPMLimit,
 		AllowedModels:            req.AllowedModels,
+		AllowedDeployments:       req.AllowedDeployments,
+		AllowedRoutingTags:       normalizeRoutingTags(req.AllowedRoutingTags),
+		AllowedMCPServers:        req.AllowedMCPServers,
+		AllowedMCPTools:          req.AllowedMCPTools,
+		AllowedMCPToolsets:       req.AllowedMCPToolsets,
+		AllowedA2AAgents:         req.AllowedA2AAgents,
 		EnforceProjectModelQuota: req.EnforceProjectModelQuota,
 		IsActive:                 isActive,
 	}
@@ -286,6 +298,12 @@ func (s *GatewayServer) handleAdminUpdateProject(w http.ResponseWriter, r *http.
 		RPMLimit                 *int                `json:"rpm_limit,omitempty"`
 		TPMLimit                 *int                `json:"tpm_limit,omitempty"`
 		AllowedModels            optionalStringSlice `json:"allowed_models"`
+		AllowedDeployments       optionalStringSlice `json:"allowed_deployments"`
+		AllowedRoutingTags       optionalStringSlice `json:"allowed_routing_tags"`
+		AllowedMCPServers        optionalStringSlice `json:"allowed_mcp_servers"`
+		AllowedMCPTools          optionalStringSlice `json:"allowed_mcp_tools"`
+		AllowedMCPToolsets       optionalStringSlice `json:"allowed_mcp_toolsets"`
+		AllowedA2AAgents         optionalStringSlice `json:"allowed_a2a_agents"`
 		EnforceProjectModelQuota *bool               `json:"enforce_project_model_quota,omitempty"`
 		IsActive                 *bool               `json:"is_active,omitempty"`
 	}
@@ -399,6 +417,24 @@ func (s *GatewayServer) handleAdminUpdateProject(w http.ResponseWriter, r *http.
 	}
 	if req.AllowedModels.Set {
 		updated.AllowedModels = req.AllowedModels.Value
+	}
+	if req.AllowedDeployments.Set {
+		updated.AllowedDeployments = req.AllowedDeployments.Value
+	}
+	if req.AllowedRoutingTags.Set {
+		updated.AllowedRoutingTags = normalizeRoutingTags(req.AllowedRoutingTags.Value)
+	}
+	if req.AllowedMCPServers.Set {
+		updated.AllowedMCPServers = req.AllowedMCPServers.Value
+	}
+	if req.AllowedMCPTools.Set {
+		updated.AllowedMCPTools = req.AllowedMCPTools.Value
+	}
+	if req.AllowedMCPToolsets.Set {
+		updated.AllowedMCPToolsets = req.AllowedMCPToolsets.Value
+	}
+	if req.AllowedA2AAgents.Set {
+		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value
 	}
 	if req.EnforceProjectModelQuota != nil {
 		updated.EnforceProjectModelQuota = *req.EnforceProjectModelQuota

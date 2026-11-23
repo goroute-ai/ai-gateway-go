@@ -365,7 +365,7 @@ func TestE2E_ProductionRoutingHardening_MaxParallelSaturationRPDAndGuardrailRout
 		"org_id":               org.ID,
 		"name":                 "p3-batch-key",
 		"allowed_models":       []string{satAlias, privAlias},
-		"allowed_routing_tags": []string{"tier:public"},
+		"allowed_routing_tags": []string{"tier:public", "tier:private"},
 	}, nil)
 	if batchKeyRes.StatusCode != http.StatusCreated {
 		t.Fatalf("create batch key (%d): %s", batchKeyRes.StatusCode, string(batchKeyBody))

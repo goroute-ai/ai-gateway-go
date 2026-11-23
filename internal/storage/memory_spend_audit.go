@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -451,9 +452,15 @@ func (r *MemoryRepository) MarkBudgetResetsDelivered(ctx context.Context, ids []
 	return nil
 }
 
+// SetAuditLogObserver registers a synchronous callback invoked after each RecordAuditLog write.
+func (r *MemoryRepository) SetAuditLogObserver(fn func(*domain.AuditLog)) {
+	r.mu.Lock()
+	r.auditObserver = fn
+	r.mu.Unlock()
+}
+
 func (r *MemoryRepository) RecordAuditLog(ctx context.Context, log *domain.AuditLog) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if log.ID == "" {
 		log.ID = uuid.NewString()
 	}
@@ -465,25 +472,100 @@ func (r *MemoryRepository) RecordAuditLog(ctx context.Context, log *domain.Audit
 	cp.BeforeValue = cloneAnyMap(log.BeforeValue)
 	cp.AfterValue = cloneAnyMap(log.AfterValue)
 	r.auditLogs = append(r.auditLogs, &cp)
+	obs := r.auditObserver
+	r.mu.Unlock()
+	if obs != nil {
+		obs(&cp)
+	}
 	return nil
 }
 
 func (r *MemoryRepository) ListAuditLogs(ctx context.Context, orgID string, limit int) ([]*domain.AuditLog, error) {
+	logs, _, err := r.ListAuditLogsFiltered(ctx, domain.AuditLogFilter{
+		OrgID: orgID,
+		Limit: limit,
+	})
+	return logs, err
+}
+
+func (r *MemoryRepository) ListAuditLogsFiltered(_ context.Context, filter domain.AuditLogFilter) ([]*domain.AuditLog, string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	limit := filter.Limit
 	if limit <= 0 {
-		limit = 100
+		limit = 50
 	}
-	var out []*domain.AuditLog
-	for i := len(r.auditLogs) - 1; i >= 0 && len(out) < limit; i-- {
-		l := r.auditLogs[i]
-		if orgID == "" || l.OrgID == orgID {
-			cp := *l
-			cp.Details = cloneAnyMap(l.Details)
-			cp.BeforeValue = cloneAnyMap(l.BeforeValue)
-			cp.AfterValue = cloneAnyMap(l.AfterValue)
-			out = append(out, &cp)
+	if limit > 200 {
+		limit = 200
+	}
+
+	var cursorTime time.Time
+	var cursorID string
+	hasCursor := false
+	if strings.TrimSpace(filter.Cursor) != "" {
+		ct, cid, err := decodeAuditLogCursor(filter.Cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid audit log cursor: %w", err)
 		}
+		cursorTime = ct
+		cursorID = cid
+		hasCursor = true
 	}
-	return out, nil
+
+	orgID := strings.TrimSpace(filter.OrgID)
+	actorID := strings.TrimSpace(filter.ActorID)
+	action := strings.TrimSpace(filter.Action)
+	resource := strings.TrimSpace(filter.Resource)
+	resourceID := strings.TrimSpace(filter.ResourceID)
+
+	matched := make([]*domain.AuditLog, 0, len(r.auditLogs))
+	for _, l := range r.auditLogs {
+		if orgID != "" && l.OrgID != orgID {
+			continue
+		}
+		if actorID != "" && l.ActorID != actorID {
+			continue
+		}
+		if action != "" && l.Action != action {
+			continue
+		}
+		if resource != "" && l.Resource != resource {
+			continue
+		}
+		if resourceID != "" && l.ResourceID != resourceID {
+			continue
+		}
+		if filter.Since != nil && l.CreatedAt.Before(*filter.Since) {
+			continue
+		}
+		if filter.Until != nil && l.CreatedAt.After(*filter.Until) {
+			continue
+		}
+		if hasCursor {
+			if l.CreatedAt.After(cursorTime) || (l.CreatedAt.Equal(cursorTime) && l.ID >= cursorID) {
+				continue
+			}
+		}
+		cp := *l
+		cp.Details = cloneAnyMap(l.Details)
+		cp.BeforeValue = cloneAnyMap(l.BeforeValue)
+		cp.AfterValue = cloneAnyMap(l.AfterValue)
+		matched = append(matched, &cp)
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+
+	var nextCursor string
+	if len(matched) > limit {
+		matched = matched[:limit]
+		last := matched[len(matched)-1]
+		nextCursor = encodeAuditLogCursor(last.CreatedAt, last.ID)
+	}
+	return matched, nextCursor, nil
 }

@@ -87,8 +87,8 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		model = "whisper-1"
 	}
 
-	// 1. RBAC Model Allowlist Check
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+	// 1. RBAC Model Allowlist + Custom Authorizer Check
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return
@@ -327,8 +327,8 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		raw.Voice = "alloy"
 	}
 
-	// 1. RBAC Model Allowlist Check
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, raw.Model); err != nil {
+	// 1. RBAC Model Allowlist + Custom Authorizer Check
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, raw.Model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return

@@ -21,16 +21,19 @@ func (s *GatewayServer) accessRuleRepo() (storage.AccessRuleRepository, bool) {
 
 func (s *GatewayServer) handleAdminCreateAccessGroupRule(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID            string                    `json:"id,omitempty"`
-		OrgID         string                    `json:"org_id,omitempty"`
-		Name          string                    `json:"name"`
-		Attribute     string                    `json:"attribute"`
-		Operator      domain.AccessRuleOperator `json:"operator"`
-		Value         string                    `json:"value"`
-		AllowedModels []string                  `json:"allowed_models,omitempty"`
-		AccessGroupID string                    `json:"access_group_id,omitempty"`
-		Priority      int                       `json:"priority,omitempty"`
-		IsActive      *bool                     `json:"is_active,omitempty"`
+		ID                string                    `json:"id,omitempty"`
+		OrgID             string                    `json:"org_id,omitempty"`
+		Name              string                    `json:"name"`
+		Attribute         string                    `json:"attribute"`
+		Operator          domain.AccessRuleOperator `json:"operator"`
+		Value             string                    `json:"value"`
+		AllowedModels     []string                  `json:"allowed_models,omitempty"`
+		AllowedMCPServers []string                  `json:"allowed_mcp_servers,omitempty"`
+		AllowedMCPTools   []string                  `json:"allowed_mcp_tools,omitempty"`
+		AllowedA2AAgents  []string                  `json:"allowed_a2a_agents,omitempty"`
+		AccessGroupID     string                    `json:"access_group_id,omitempty"`
+		Priority          int                       `json:"priority,omitempty"`
+		IsActive          *bool                     `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
@@ -81,16 +84,19 @@ func (s *GatewayServer) handleAdminCreateAccessGroupRule(w http.ResponseWriter, 
 		isActive = *req.IsActive
 	}
 	rule := &domain.AccessGroupRule{
-		ID:            strings.TrimSpace(req.ID),
-		OrgID:         orgID,
-		Name:          req.Name,
-		Attribute:     req.Attribute,
-		Operator:      req.Operator,
-		Value:         req.Value,
-		AllowedModels: req.AllowedModels,
-		AccessGroupID: req.AccessGroupID,
-		Priority:      req.Priority,
-		IsActive:      isActive,
+		ID:                strings.TrimSpace(req.ID),
+		OrgID:             orgID,
+		Name:              req.Name,
+		Attribute:         req.Attribute,
+		Operator:          req.Operator,
+		Value:             req.Value,
+		AllowedModels:     req.AllowedModels,
+		AllowedMCPServers: req.AllowedMCPServers,
+		AllowedMCPTools:   req.AllowedMCPTools,
+		AllowedA2AAgents:  req.AllowedA2AAgents,
+		AccessGroupID:     req.AccessGroupID,
+		Priority:          req.Priority,
+		IsActive:          isActive,
 	}
 	if err := auth.ValidateAccessGroupRule(rule); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{

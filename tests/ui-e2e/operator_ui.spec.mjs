@@ -293,14 +293,14 @@ async function run() {
     await teamRow.locator('button[title="Sync members"]').click();
     const membersModal = modalByTitle(page, 'Members: UI E2E Engineering');
     await membersModal.waitFor({ state: 'visible' });
-    await membersModal.locator('input[placeholder="Add User IDs"]').fill(opUserRes.json.id);
+    await membersModal.locator('input[placeholder*="Upsert User IDs"]').fill(opUserRes.json.id);
     await membersModal.getByRole('button', { name: 'Sync', exact: true }).click();
     await membersModal.waitFor({ state: 'hidden' });
 
     await teamRow.locator('button[title="Sync members"]').click();
     await membersModal.waitFor({ state: 'visible' });
     await membersModal.getByText(opUserRes.json.id).waitFor({ state: 'visible' });
-    await membersModal.locator('input[placeholder="Remove User IDs"]').fill(opUserRes.json.id);
+    await membersModal.locator('input[placeholder*="Remove User IDs"]').fill(opUserRes.json.id);
     await membersModal.getByRole('button', { name: 'Sync', exact: true }).click();
     await membersModal.waitFor({ state: 'hidden' });
 

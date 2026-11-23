@@ -120,6 +120,27 @@ auth:
   #    auto_register: true
   #    default_org_id: "org_default"
   #    default_role: "org_viewer"
+  #    claim_mapping:
+  #      groups: "realm_access.roles"
+  #    group_role_mappings:
+  #      - group: "goroute-org-admins"
+  #        role: "org_admin"
+  #      - group: "goroute-developers"
+  #        role: "developer"
+  #    role_mapping_strategy: "highest_privilege" # or "first_match"
+  #    group_team_mappings:
+  #      eng-ml: "team_ml"
+  #    sync_roles_on_login: false     # When true, synchronizes role/team on every SSO login and revokes prior sessions on role change
+  # Optional standalone external post-auth authorizer (Webhook or OPA Data API, SSRF-protected)
+  external_authorizer:
+    enabled: false
+    # mode: "webhook"                # "webhook" or "opa"
+    # url: "https://policy.internal.example.com/v1/authorize"
+    # timeout: 500ms
+    # fail_mode: "closed"            # "closed" (recommended) or "open"
+    # cache_ttl: 5s
+    # auth_header: "os.environ/POLICY_AUTH_HEADER"
+    # hmac_secret: "os.environ/POLICY_HMAC_SECRET"
   # OAuth 2.0 RFC 7662 Token Introspection / OIDC UserInfo (supports OIDC Discovery via issuer/discovery_url)
   introspection: {}
   #  issuer: "https://keycloak.example.com/realms/goroute"

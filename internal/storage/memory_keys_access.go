@@ -22,6 +22,21 @@ func cloneAccessGroupRule(rule *domain.AccessGroupRule) *domain.AccessGroupRule 
 	} else {
 		cp.AllowedModels = []string{}
 	}
+	if rule.AllowedMCPServers != nil {
+		cp.AllowedMCPServers = slices.Clone(rule.AllowedMCPServers)
+	} else {
+		cp.AllowedMCPServers = []string{}
+	}
+	if rule.AllowedMCPTools != nil {
+		cp.AllowedMCPTools = slices.Clone(rule.AllowedMCPTools)
+	} else {
+		cp.AllowedMCPTools = []string{}
+	}
+	if rule.AllowedA2AAgents != nil {
+		cp.AllowedA2AAgents = slices.Clone(rule.AllowedA2AAgents)
+	} else {
+		cp.AllowedA2AAgents = []string{}
+	}
 	return &cp
 }
 
@@ -111,8 +126,11 @@ func cloneVirtualKey(vk *domain.VirtualKey) *domain.VirtualKey {
 	cp.RawKey = ""
 	cp.BudgetFallbacks = domain.CloneBudgetFallbacks(vk.BudgetFallbacks)
 	cp.AllowedModels = slices.Clone(vk.AllowedModels)
+	cp.AllowedDeployments = slices.Clone(vk.AllowedDeployments)
 	cp.AllowedEndpoints = slices.Clone(vk.AllowedEndpoints)
 	cp.AllowedMCPServers = slices.Clone(vk.AllowedMCPServers)
+	cp.AllowedMCPTools = slices.Clone(vk.AllowedMCPTools)
+	cp.AllowedMCPToolsets = slices.Clone(vk.AllowedMCPToolsets)
 	cp.AllowedA2AAgents = slices.Clone(vk.AllowedA2AAgents)
 	cp.AllowedClientApps = slices.Clone(vk.AllowedClientApps)
 	cp.AllowedRoutingTags = slices.Clone(vk.AllowedRoutingTags)

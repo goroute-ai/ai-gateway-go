@@ -91,6 +91,9 @@ type GatewayServer struct {
 	a2aOutboxWorker    *a2a.OutboxWorker
 	a2aBridge          *a2a.OpenAIBridge
 	orchestrator       *orchestrator.ToolLoopOrchestrator
+	externalAuthorizer auth.Authorizer
+	customAuthorizer   auth.Authorizer
+	auditSIEMSink      *AuditSIEMSink
 	router             chi.Router
 	uploadSem          chan struct{}
 	uploadInFlightMu   sync.Mutex
@@ -309,6 +312,36 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		protoDeps.toolOrchestrator.SetToolPolicyRepository(tpRepo)
 	}
 	protoDeps.toolOrchestrator.SetToolGuardrails(s.newOrchestratorToolGuardrailDriver())
+	if cfg.Auth.ExternalAuthorizer.Enabled {
+		extAuthz, extErr := auth.NewExternalAuthorizer(auth.ExternalAuthorizerConfig{
+			Mode:       cfg.Auth.ExternalAuthorizer.Mode,
+			URL:        cfg.Auth.ExternalAuthorizer.URL,
+			Timeout:    cfg.Auth.ExternalAuthorizer.Timeout,
+			FailMode:   cfg.Auth.ExternalAuthorizer.FailMode,
+			CacheTTL:   cfg.Auth.ExternalAuthorizer.CacheTTL,
+			AuthHeader: config.ResolveEnvValue(cfg.Auth.ExternalAuthorizer.AuthHeader),
+			HMACSecret: config.ResolveEnvValue(cfg.Auth.ExternalAuthorizer.HMACSecret),
+		}, netPolicy)
+		if extErr != nil {
+			return cleanupOnErr(fmt.Errorf("initialize external authorizer: %w", extErr))
+		}
+		s.externalAuthorizer = extAuthz
+		s.SetCustomAuthorizer(nil)
+	}
+	if cfg.Audit.SIEMWebhook.Enabled && strings.TrimSpace(cfg.Audit.SIEMWebhook.URL) != "" {
+		s.auditSIEMSink = NewAuditSIEMSink(AuditSIEMSinkConfig{
+			URL:           cfg.Audit.SIEMWebhook.URL,
+			Secret:        config.ResolveEnvValue(cfg.Audit.SIEMWebhook.Secret),
+			AuthHeader:    config.ResolveEnvValue(cfg.Audit.SIEMWebhook.AuthHeader),
+			BatchSize:     cfg.Audit.SIEMWebhook.BatchSize,
+			FlushInterval: cfg.Audit.SIEMWebhook.FlushInterval,
+			Timeout:       cfg.Audit.SIEMWebhook.Timeout,
+			MaxQueueSize:  cfg.Audit.SIEMWebhook.MaxQueueSize,
+		}, netPolicy)
+		if obsRepo, ok := repo.(storage.AuditLogObserverRepository); ok && obsRepo != nil {
+			obsRepo.SetAuditLogObserver(s.auditSIEMSink.Enqueue)
+		}
+	}
 	return s, nil
 }
 
@@ -1185,6 +1218,15 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 		adm.Post("/model-access-groups/{id}/members", s.handleAdminAddModelAccessGroupMember)
 		adm.Get("/model-access-groups/{id}/members", s.handleAdminListModelAccessGroupMembers)
 		adm.Delete("/model-access-groups/{id}/members/{memberID}", s.handleAdminRemoveModelAccessGroupMember)
+		// Unified Access Groups alias (Models + MCP Servers + MCP Tools + A2A Agents)
+		adm.Post("/access-groups", s.handleAdminUpsertModelAccessGroup)
+		adm.Put("/access-groups", s.handleAdminUpsertModelAccessGroup)
+		adm.Get("/access-groups", s.handleAdminListModelAccessGroups)
+		adm.Get("/access-groups/{id}", s.handleAdminGetModelAccessGroup)
+		adm.Delete("/access-groups/{id}", s.handleAdminDeleteModelAccessGroup)
+		adm.Post("/access-groups/{id}/members", s.handleAdminAddModelAccessGroupMember)
+		adm.Get("/access-groups/{id}/members", s.handleAdminListModelAccessGroupMembers)
+		adm.Delete("/access-groups/{id}/members/{memberID}", s.handleAdminRemoveModelAccessGroupMember)
 		adm.Post("/keys/{keyID}/temp-budget", s.handleAdminSetKeyTempBudget)
 		adm.Get("/spend/summary", s.handleAdminSpendSummary)
 		adm.Get("/spend/logs", s.handleAdminSpendLogs)
@@ -1384,6 +1426,44 @@ func (s *GatewayServer) SetKeyRotationSecretSink(sink auth.KeySecretSink) {
 	s.keyRotation.SetSecretSink(sink)
 }
 
+// SetCustomAuthorizer attaches a post-authentication Authorizer (chained with any configured
+// external Webhook/OPA authorizer) evaluated across inference, MCP, A2A, and Control Plane routes.
+func (s *GatewayServer) SetCustomAuthorizer(authorizer auth.Authorizer) {
+	if s == nil {
+		return
+	}
+	effective := auth.NewChainAuthorizer(s.externalAuthorizer, authorizer)
+	s.customAuthorizer = effective
+	if s.mcpHub != nil {
+		s.mcpHub.SetCustomAuthorizer(effective)
+	}
+}
+
+func (s *GatewayServer) evaluateCustomAuthorizer(ctx context.Context, req *auth.AuthzRequest) error {
+	if s == nil || s.customAuthorizer == nil {
+		return nil
+	}
+	return auth.EvaluateAuthorizer(ctx, s.customAuthorizer, req)
+}
+
+func (s *GatewayServer) authorizeInferenceModel(ctx context.Context, idCtx *domain.IdentityContext, model, method, path string) error {
+	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+		return err
+	}
+	if s.customAuthorizer != nil {
+		return s.evaluateCustomAuthorizer(ctx, &auth.AuthzRequest{
+			Identity:     idCtx,
+			Action:       auth.AuthzActionInference,
+			ResourceType: "model",
+			ResourceID:   model,
+			Model:        model,
+			HTTPMethod:   method,
+			HTTPPath:     path,
+		})
+	}
+	return nil
+}
+
 // RBAC returns the operator and virtual-key RBAC engine.
 func (s *GatewayServer) RBAC() *auth.RBACEngine {
 	return s.rbac
@@ -1496,6 +1576,9 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	s.healthMon.Stop()
 	s.discovery.Stop()
 	s.spendWorker.Stop(ctx)
+	if s.auditSIEMSink != nil {
+		s.auditSIEMSink.Close(ctx)
+	}
 	if s.metricsStop != nil {
 		s.metricsStop()
 	}
@@ -1653,13 +1736,17 @@ func buildOIDCIssuerConfigs(issuers []config.OIDCIssuerConfig, netPolicy *networ
 				OrgID:   iss.ClaimMapping.OrgID,
 				TeamIDs: iss.ClaimMapping.TeamIDs,
 				Role:    iss.ClaimMapping.Role,
+				Groups:  iss.ClaimMapping.Groups,
 				EndUser: iss.ClaimMapping.EndUser,
 			},
-			AutoRegister:  iss.AutoRegister,
-			DefaultOrgID:  iss.DefaultOrgID,
-			DefaultTeamID: iss.DefaultTeamID,
-			DefaultRole:   iss.DefaultRole,
-			NetworkPolicy: netPolicy,
+			GroupRoleMappings:   convertGroupRoleMappings(iss.GroupRoleMappings),
+			RoleMappingStrategy: iss.RoleMappingStrategy,
+			GroupTeamMappings:   iss.GroupTeamMappings,
+			AutoRegister:        iss.AutoRegister,
+			DefaultOrgID:        iss.DefaultOrgID,
+			DefaultTeamID:       iss.DefaultTeamID,
+			DefaultRole:         iss.DefaultRole,
+			NetworkPolicy:       netPolicy,
 		})
 	}
 	return out
@@ -1699,8 +1786,27 @@ func buildSSOProviderConfigs(providers []config.SSOProviderConfig) []auth.SSOPro
 				OrgID:   p.ClaimMapping.OrgID,
 				TeamIDs: p.ClaimMapping.TeamIDs,
 				Role:    p.ClaimMapping.Role,
+				Groups:  p.ClaimMapping.Groups,
 				EndUser: p.ClaimMapping.EndUser,
 			},
+			GroupRoleMappings:   convertGroupRoleMappings(p.GroupRoleMappings),
+			RoleMappingStrategy: p.RoleMappingStrategy,
+			GroupTeamMappings:   p.GroupTeamMappings,
+			SyncRolesOnLogin:    p.SyncRolesOnLogin,
+		})
+	}
+	return out
+}
+
+func convertGroupRoleMappings(in []config.GroupRoleMappingRule) []auth.GroupRoleMappingRule {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]auth.GroupRoleMappingRule, 0, len(in))
+	for _, r := range in {
+		out = append(out, auth.GroupRoleMappingRule{
+			Group: r.Group,
+			Role:  r.Role,
 		})
 	}
 	return out

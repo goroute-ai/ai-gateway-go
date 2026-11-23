@@ -98,6 +98,10 @@ type SSOProviderConfig struct {
 	DefaultRole               string
 	Algorithms                []string
 	ClaimMapping              OIDCClaimMapping
+	GroupRoleMappings         []GroupRoleMappingRule
+	RoleMappingStrategy       string
+	GroupTeamMappings         map[string]string
+	SyncRolesOnLogin          bool
 }
 
 // SSOProviderPublicInfo exposes non-sensitive SSO provider metadata for login UI discovery.
@@ -132,6 +136,7 @@ type SSOIDTokenClaims struct {
 	OrgID         string
 	TeamIDs       []string
 	Role          string
+	Groups        []string
 	RawIDToken    string `json:"-"`
 	RawClaims     map[string]any
 }
@@ -206,6 +211,10 @@ type SSOProvider struct {
 	derivedDiscovery          bool
 	algorithms                []string
 	claimMapping              OIDCClaimMapping
+	groupRoleMappings         []GroupRoleMappingRule
+	roleMappingStrategy       string
+	groupTeamMappings         map[string]string
+	syncRolesOnLogin          bool
 
 	httpClient *http.Client
 	netPolicy  *network.Policy
@@ -248,6 +257,27 @@ func (p *SSOProvider) AllowUnverifiedEmail() bool { return p.allowUnverifiedEmai
 
 // AllowPrivilegedRoleClaims reports whether IdP role claims may JIT-provision platform_admin.
 func (p *SSOProvider) AllowPrivilegedRoleClaims() bool { return p.allowPrivilegedRoleClaims }
+
+// GroupRoleMappings returns the declarative IdP group-to-GoRoute role mapping rules.
+func (p *SSOProvider) GroupRoleMappings() []GroupRoleMappingRule {
+	if p == nil || len(p.groupRoleMappings) == 0 {
+		return nil
+	}
+	out := make([]GroupRoleMappingRule, len(p.groupRoleMappings))
+	copy(out, p.groupRoleMappings)
+	return out
+}
+
+// RoleMappingStrategy returns the configured role precedence strategy ("highest_privilege" or "first_match").
+func (p *SSOProvider) RoleMappingStrategy() string { return p.roleMappingStrategy }
+
+// GroupTeamMappings returns the declarative IdP group-to-team mapping table.
+func (p *SSOProvider) GroupTeamMappings() map[string]string {
+	return cloneStringMap(p.groupTeamMappings)
+}
+
+// SyncRolesOnLogin reports whether existing SSO users have their role and team synchronized on each login.
+func (p *SSOProvider) SyncRolesOnLogin() bool { return p.syncRolesOnLogin }
 
 // PublicInfo returns non-sensitive provider metadata safe for unauthenticated exposure.
 func (p *SSOProvider) PublicInfo() SSOProviderPublicInfo {
@@ -406,6 +436,10 @@ func (m *SSOProviderManager) buildProvider(cfg SSOProviderConfig) (*SSOProvider,
 		derivedDiscovery:          derivedDiscovery,
 		algorithms:                append([]string(nil), cfg.Algorithms...),
 		claimMapping:              cfg.ClaimMapping,
+		groupRoleMappings:         append([]GroupRoleMappingRule(nil), cfg.GroupRoleMappings...),
+		roleMappingStrategy:       strings.TrimSpace(cfg.RoleMappingStrategy),
+		groupTeamMappings:         cloneStringMap(cfg.GroupTeamMappings),
+		syncRolesOnLogin:          cfg.SyncRolesOnLogin,
 		httpClient:                m.httpClient,
 		netPolicy:                 m.netPolicy,
 		now:                       m.currentTime,
@@ -1198,6 +1232,7 @@ func (p *SSOProvider) verifyIDToken(ctx context.Context, ep SSOEndpoints, rawIDT
 		OrgID:         claims.OrgID,
 		TeamIDs:       claims.TeamIDs,
 		Role:          claims.Role,
+		Groups:        claims.Groups,
 		RawIDToken:    rawIDToken,
 		RawClaims:     claims.RawClaims,
 	}, hdr.Alg, nil

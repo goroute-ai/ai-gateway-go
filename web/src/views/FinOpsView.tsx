@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Badge } from '../components/common/Badge';
 import { Modal, CARD_CLS, THEAD_CLS } from '../components/common/Modal';
 import { CodeBlock } from '../components/common/CodeBlock';
+import { JsonDiffViewer } from '../components/common/JsonDiffViewer';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import { SpendEvent, AuditLog } from '../types';
 import {
@@ -74,6 +75,10 @@ export const FinOpsView: React.FC = () => {
   const [selectedSpendEvent, setSelectedSpendEvent] = useState<SpendEvent | null>(null);
   const [selectedAuditLog, setSelectedAuditLog] = useState<AuditLog | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [auditActor, setAuditActor] = useState('');
+  const [auditAction, setAuditAction] = useState('');
+  const [auditResource, setAuditResource] = useState('');
+  const [auditCursor, setAuditCursor] = useState('');
   const [logLimit, setLogLimit] = useState(50);
 
   // Spend summary query
@@ -104,7 +109,7 @@ export const FinOpsView: React.FC = () => {
     refetchInterval: 10000,
   });
 
-  // Audit logs query
+  // Audit logs query (server-side filtered + keyset cursor pagination)
   const {
     data: auditLogsData,
     isLoading: isAuditLoading,
@@ -112,10 +117,18 @@ export const FinOpsView: React.FC = () => {
     error: auditError,
     refetch: refetchAudit,
   } = useQuery({
-    queryKey: ['admin', 'audit-logs', adminKey, activeOrgId, logLimit],
-    queryFn: () => adminApi.listAuditLogs(adminKey, activeOrgId || undefined, logLimit),
+    queryKey: ['admin', 'audit-logs', adminKey, activeOrgId, logLimit, auditActor, auditAction, auditResource, auditCursor],
+    queryFn: () =>
+      adminApi.listAuditLogs(adminKey, {
+        org_id: activeOrgId || undefined,
+        actor_id: auditActor.trim() || undefined,
+        action: auditAction.trim() || undefined,
+        resource: auditResource.trim() || undefined,
+        cursor: auditCursor || undefined,
+        limit: logLimit,
+      }),
     enabled: isUnlocked && activeTab === 'audit',
-    refetchInterval: 10000,
+    refetchInterval: auditCursor ? false : 10000,
   });
 
   const spendLogs = spendLogsData?.data || [];
@@ -371,7 +384,19 @@ export const FinOpsView: React.FC = () => {
 
       {/* Tab 2: Administrative Audit Trail Table */}
       {activeTab === 'audit' && (
-        <div className={`${CARD_CLS} overflow-hidden`}>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+            <input value={auditActor} onChange={(e) => { setAuditActor(e.target.value); setAuditCursor(''); }} placeholder="Actor ID..." className="px-2.5 py-1.5 rounded bg-surface-base border border-border-subtle text-brand-body w-40" />
+            <input value={auditAction} onChange={(e) => { setAuditAction(e.target.value); setAuditCursor(''); }} placeholder="Action (e.g. sso.role_synced)..." className="px-2.5 py-1.5 rounded bg-surface-base border border-border-subtle text-brand-body w-52" />
+            <input value={auditResource} onChange={(e) => { setAuditResource(e.target.value); setAuditCursor(''); }} placeholder="Resource (e.g. virtual_key)..." className="px-2.5 py-1.5 rounded bg-surface-base border border-border-subtle text-brand-body w-44" />
+            {(auditActor || auditAction || auditResource || auditCursor) && (
+              <button onClick={() => { setAuditActor(''); setAuditAction(''); setAuditResource(''); setAuditCursor(''); }} className="px-2.5 py-1.5 rounded border border-border-subtle text-brand-muted hover:text-brand-title">Reset</button>
+            )}
+            {auditLogsData?.next_cursor && (
+              <button onClick={() => setAuditCursor(auditLogsData.next_cursor!)} className="ml-auto px-2.5 py-1.5 rounded border border-accent-primary/40 text-accent-primary hover:bg-accent-soft">Next Page →</button>
+            )}
+          </div>
+          <div className={`${CARD_CLS} overflow-hidden`}>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead className={THEAD_CLS}>
@@ -436,6 +461,7 @@ export const FinOpsView: React.FC = () => {
             </table>
           </div>
         </div>
+        </div>
       )}
 
       {/* Spend Event / Audit Log Inspector Modal */}
@@ -476,6 +502,14 @@ export const FinOpsView: React.FC = () => {
                   </div>
                 ))}
               </div>
+              {!isSpend && (selectedAuditLog?.before_value || selectedAuditLog?.after_value) && (
+                <div>
+                  <label className="text-xs text-brand-muted font-mono block mb-1">
+                    State Diff (Before vs. After):
+                  </label>
+                  <JsonDiffViewer before={selectedAuditLog.before_value} after={selectedAuditLog.after_value} />
+                </div>
+              )}
               <div>
                 <label className="text-xs text-brand-muted font-mono block mb-1">
                   {isSpend ? 'Raw Ledger Record:' : 'Audit Details / Payload:'}

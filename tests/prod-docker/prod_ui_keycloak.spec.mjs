@@ -7,6 +7,7 @@ const { chromium } = require('../ui-e2e/node_modules/playwright');
 const BASE_URL = process.env.PROD_BASE_URL || 'https://gateway.prod.test:18443';
 const AUTH_URL = process.env.PROD_AUTH_URL || 'https://auth.prod.test:18443';
 const ADMIN_KEY = process.env.PROD_MASTER_ADMIN_KEY || 'sk-gw-prod-test-master-admin-key-2026-secure';
+const CLI_APPROVE_URL = process.env.PROD_CLI_APPROVE_URL || '';
 
 async function keycloakSignIn(page, username, password) {
   await page.locator('#username').waitFor({ state: 'visible', timeout: 15000 });
@@ -15,14 +16,55 @@ async function keycloakSignIn(page, username, password) {
   await page.locator('#kc-login').click();
 }
 
-async function run() {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--host-resolver-rules=MAP *.prod.test 127.0.0.1'],
-  });
+function modalByTitle(page, titleText) {
+  return page.locator('div.fixed.inset-0').filter({
+    has: page.locator('h3').filter({ hasText: titleText }),
+  }).first();
+}
+
+async function runCLIApprove(browser) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
+  try {
+    await page.goto(CLI_APPROVE_URL, { waitUntil: 'networkidle' });
+    // If redirected to /ui/ Sign In or Keycloak, complete Keycloak SSO login first
+    const loginHeading = page.getByRole('heading', { name: 'Control Plane Sign In' });
+    if (await loginHeading.isVisible().catch(() => false)) {
+      await page.getByRole('button', { name: /Continue with Keycloak Production/i }).click();
+    }
+    if (page.url().startsWith(`${AUTH_URL}/realms/`)) {
+      await keycloakSignIn(page, 'admin@goroute.local', 'ProdAdmin!2026');
+    } else {
+      await page.waitForTimeout(500);
+      if (page.url().startsWith(`${AUTH_URL}/realms/`)) {
+        await keycloakSignIn(page, 'admin@goroute.local', 'ProdAdmin!2026');
+      }
+    }
+    // Wait to land back on /ui/cli
+    await page.waitForURL((u) => u.href.includes('/ui/cli'), { timeout: 20000 });
+    await page.getByRole('heading', { name: 'Approve CLI Login' }).waitFor({ state: 'visible', timeout: 15000 });
+    await page.getByRole('button', { name: /Approve CLI Login/i }).click();
+    await page.getByText('CLI Session Approved').waitFor({ state: 'visible', timeout: 15000 });
+    console.log('PROD CLI BROWSER APPROVAL PASS');
+  } finally {
+    await context.close();
+  }
+}
 
+async function runFullSuite2(browser) {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  await context.addInitScript(() => {
+    window.__cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (ev) => {
+      window.__cspViolations.push({
+        blockedURI: ev.blockedURI,
+        violatedDirective: ev.violatedDirective,
+        effectiveDirective: ev.effectiveDirective,
+      });
+    });
+  });
+
+  const page = await context.newPage();
   const pageErrors = [];
   const consoleErrors = [];
   let allowExpected403 = false;
@@ -37,12 +79,13 @@ async function run() {
   });
 
   try {
-    // 1. Load /ui/ over TLS 1.3 and verify strict CSP + OIDC-only LoginView
+    // 1. Load /ui/ over TLS 1.3 and verify strict CSP (style-src 'self') + OIDC-only LoginView
     const uiResp = await page.goto(`${BASE_URL}/ui/`, { waitUntil: 'networkidle' });
     assert(uiResp && uiResp.status() === 200, `expected 200 from ${BASE_URL}/ui/`);
     const headers = uiResp.headers();
     assert((headers['strict-transport-security'] || '').includes('max-age='), 'expected HSTS header on /ui/');
-    assert((headers['content-security-policy'] || '').toLowerCase().includes("script-src 'self'"), 'expected strict CSP');
+    const csp = (headers['content-security-policy'] || '').toLowerCase();
+    assert(csp.includes("script-src 'self'") && csp.includes("style-src 'self'"), `expected strict CSP with style-src 'self', got: ${csp}`);
 
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
     const kcBtn = page.getByRole('button', { name: /Continue with Keycloak Production/i });
@@ -67,10 +110,113 @@ async function run() {
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('button[title*="Click to sign out"]').waitFor({ state: 'visible' });
+
+    // 3. Verify Gateway Config redacted config & Rotate KEK visibility
     await page.locator('aside button', { hasText: 'Gateway Config' }).click();
     await page.getByRole('button', { name: 'Rotate KEK' }).waitFor({ state: 'visible' });
+    await page.getByRole('heading', { name: 'Gateway Configuration' }).waitFor({ state: 'visible' });
 
-    // 3. /ui/cli device approval flow while authenticated via live Keycloak session
+    // 4. Phase 5 Operator Web UI Authorization Parity checks (Orgs/Teams/Projects/Access Groups/JWT Mappings/Keys/FinOps Audit Diff)
+    await page.locator('aside button', { hasText: 'Orgs & Teams' }).click();
+    await page.getByRole('heading', { name: /Organizations & Teams/i }).waitFor({ state: 'visible' });
+
+    // Create a Team with expanded Phase 5 controls (Allowed Deployments, TPM Limit, Concurrent Reqs, 3-state MCP)
+    const suffix = Date.now();
+    const uiTeamName = `Prod UI Team ${suffix}`;
+    await page.getByRole('button', { name: /^Teams \(/ }).click();
+    await page.getByRole('button', { name: /\+ New Team|New Team/i }).click();
+    const teamModal = modalByTitle(page, 'Create Team');
+    await teamModal.waitFor({ state: 'visible' });
+    await teamModal.locator('input[placeholder="Team Name *"]').fill(uiTeamName);
+    await teamModal.locator('input[placeholder="Team TPM"]').fill('25000');
+    await teamModal.locator('input[placeholder="Max Conc"]').fill('10');
+    await teamModal.locator('input[placeholder*="Allowed Deployments"]').fill('dep-eu-mock');
+    await teamModal.getByRole('button', { name: 'Create', exact: true }).click();
+    await teamModal.waitFor({ state: 'hidden' });
+    await page.getByText(uiTeamName).waitFor({ state: 'visible' });
+
+    // Projects lazy tab -> Create Project
+    const uiProjName = `prod-ui-project-${suffix}`;
+    await page.getByRole('button', { name: 'Projects', exact: true }).click();
+    await page.getByRole('button', { name: /New Project/i }).waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: /New Project/i }).click();
+    const projModal = modalByTitle(page, 'Create Project');
+    await projModal.waitFor({ state: 'visible' });
+    await projModal.locator('input[placeholder="Project Name *"]').fill(uiProjName);
+    await projModal.locator('select').first().selectOption({ label: uiTeamName });
+    await projModal.locator('input[placeholder="Allowed Models (csv)"]').fill('prod-residency-group');
+    await projModal.locator('input[placeholder="Allowed Deployments (csv)"]').fill('dep-eu-mock');
+    await projModal.locator('input[placeholder*="Allowed Routing Tags"]').fill('eu-gdpr');
+    await projModal.getByRole('button', { name: 'Create', exact: true }).click();
+    await projModal.waitFor({ state: 'hidden' });
+    await page.getByText(uiProjName).waitFor({ state: 'visible' });
+
+    // Access Groups & Rules lazy tab -> Create Unified Access Group + Dynamic Rule
+    const uiGroupName = `prod-ui-group-${suffix}`;
+    const uiRuleName = `prod-ui-rule-${suffix}`;
+    await page.getByRole('button', { name: 'Access Groups & Rules', exact: true }).click();
+    await page.getByRole('button', { name: /New Access Group/i }).waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: /New Access Group/i }).click();
+    const grpModal = modalByTitle(page, 'Create / Upsert Access Group');
+    await grpModal.waitFor({ state: 'visible' });
+    await grpModal.locator('input[placeholder*="Group Name"]').fill(uiGroupName);
+    await grpModal.locator('input[placeholder="Allowed MCP Servers (csv)"]').fill('github');
+    await grpModal.locator('input[placeholder*="Allowed MCP Tools"]').fill('github:get_issue');
+    await grpModal.locator('input[placeholder="Allowed A2A Agents (csv)"]').fill('researcher');
+    await grpModal.getByRole('button', { name: 'Save', exact: true }).click();
+    await grpModal.waitFor({ state: 'hidden' });
+    await page.getByText(uiGroupName).waitFor({ state: 'visible' });
+
+    await page.getByRole('button', { name: /New Rule/i }).click();
+    const ruleModal = modalByTitle(page, 'Create Dynamic Access Rule');
+    await ruleModal.waitFor({ state: 'visible' });
+    await ruleModal.locator('input[placeholder="Rule Name *"]').fill(uiRuleName);
+    await ruleModal.locator('input[placeholder="Match Value *"]').fill('goroute-developers');
+    await ruleModal.locator('input[placeholder="Allowed Models (csv)"]').fill('prod-residency-group');
+    await ruleModal.locator('input[placeholder="Allowed MCP Tools (csv)"]').fill('github:list_files');
+    await ruleModal.getByRole('button', { name: 'Save', exact: true }).click();
+    await ruleModal.waitFor({ state: 'hidden' });
+    await page.getByText(uiRuleName).waitFor({ state: 'visible' });
+
+    // JWT Mappings lazy tab -> verify render & modal presence
+    await page.getByRole('button', { name: 'JWT Mappings', exact: true }).click();
+    await page.getByRole('button', { name: /New JWT Mapping/i }).waitFor({ state: 'visible', timeout: 10000 });
+
+    // Virtual Keys -> Issue Key wired to Project + Deployments + 3-state MCP Tools + Session Limits
+    const uiKeyName = `prod-ui-key-${suffix}`;
+    await page.locator('aside button', { hasText: 'Virtual Keys' }).click();
+    await page.getByRole('button', { name: /Issue Key/i }).click();
+    const keyModal = modalByTitle(page, 'Issue Key');
+    await keyModal.waitFor({ state: 'visible' });
+    await keyModal.locator('input[placeholder="production-backend"]').fill(uiKeyName);
+    // Select Project dropdown
+    const projectSelect = keyModal.locator('label', { hasText: /^Project$/ }).locator('..').locator('select');
+    await projectSelect.selectOption({ label: uiProjName });
+    await keyModal.locator('input[placeholder="dep-eu-1"]').fill('dep-eu-mock');
+    await keyModal.locator('input[placeholder="tier:*, eu"]').fill('eu-gdpr');
+    await keyModal.locator('input[placeholder="5.00"]').fill('1.00');
+    await keyModal.getByRole('button', { name: 'Issue', exact: true }).click();
+    await keyModal.waitFor({ state: 'hidden' });
+    // Dismiss newly issued key modal if shown
+    const closeReveal = page.getByRole('button', { name: /Close|Done/i });
+    if (await closeReveal.isVisible().catch(() => false)) {
+      await closeReveal.click();
+    }
+
+    // FinOps -> Audit Log -> Server-side Action Filter + JSON Diff Viewer Modal
+    await page.locator('aside button', { hasText: 'FinOps & Spend' }).click();
+    await page.getByRole('button', { name: /Administrative Audit Log/i }).click();
+    const actionFilter = page.locator('input[placeholder*="Action (e.g."]');
+    await actionFilter.waitFor({ state: 'visible', timeout: 10000 });
+    await actionFilter.fill('virtual_key.issued');
+    await page.getByRole('button', { name: /Details/i }).first().waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: /Details/i }).first().click();
+    await page.getByText('State Diff (Before vs. After):').waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: 'Close', exact: true }).click().catch(async () => {
+      await page.keyboard.press('Escape');
+    });
+
+    // 5. /ui/cli device approval flow while authenticated via live Keycloak session
     const cliStartRes = await page.evaluate(async () => {
       const r = await fetch('/auth/cli/start', {
         method: 'POST',
@@ -95,7 +241,7 @@ async function run() {
     assert.equal(cliPollRes.body.status, 'completed');
     assert(cliPollRes.body.api_key && cliPollRes.body.api_key.startsWith('sk-gw-'), 'expected minted sk-gw key');
 
-    // 4. Seamless RP-Initiated Logout (with Vault-decrypted id_token_hint -> NO Keycloak confirmation prompt!)
+    // 6. Seamless RP-Initiated Logout (with Vault-decrypted id_token_hint -> NO Keycloak confirmation prompt!)
     const logoutNavUrls = [];
     const onReq = (req) => {
       if (req.url().includes('/protocol/openid-connect/logout')) {
@@ -108,7 +254,6 @@ async function run() {
     const logoutResp = await logoutRespPromise;
     assert.equal(logoutResp.status(), 200, 'POST /auth/logout must return 200');
 
-    // Wait for automatic redirect through Keycloak logout back to /ui/ Sign In screen
     await page.waitForURL((u) => u.href.startsWith(`${BASE_URL}/ui`), { timeout: 15000 });
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible', timeout: 15000 });
     page.off('request', onReq);
@@ -117,12 +262,11 @@ async function run() {
       `expected browser navigation to Keycloak RP-Initiated Logout with id_token_hint, saw: ${JSON.stringify(logoutNavUrls)}`
     );
 
-    // Confirm Keycloak SSO session was genuinely terminated: clicking Keycloak login MUST prompt for credentials again
+    // 7. Confirm Keycloak SSO session was genuinely terminated & verify org_admin RBAC
     await page.getByRole('button', { name: /Continue with Keycloak Production/i }).click();
     await page.waitForURL((u) => u.href.startsWith(`${AUTH_URL}/realms/goroute-prod/`), { timeout: 15000 });
     await page.locator('#username').waitFor({ state: 'visible', timeout: 15000 });
 
-    // 5. Sign in as org_admin and verify ConfigView hides Rotate KEK
     allowExpected403 = true;
     await keycloakSignIn(page, 'orgadmin@goroute.local', 'ProdOrgAdmin!2026');
     await page.waitForURL((u) => u.href.startsWith(`${BASE_URL}/ui`), { timeout: 15000 });
@@ -135,7 +279,7 @@ async function run() {
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible', timeout: 15000 });
 
-    // 6. Break-Glass Key emergency tab works cleanly
+    // 8. Break-Glass Key emergency tab works cleanly
     await page.getByRole('button', { name: /Break-Glass Key/i }).click();
     await page.locator('input[placeholder="Enter Master Admin Key..."]').fill(ADMIN_KEY);
     await page.getByRole('button', { name: /Unlock Break-Glass Session/i }).click();
@@ -143,12 +287,29 @@ async function run() {
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });
 
+    const cspViolations = await page.evaluate(() => window.__cspViolations || []);
+    assert.deepEqual(cspViolations, [], `unexpected CSP violations: ${JSON.stringify(cspViolations)}`);
     assert.deepEqual(pageErrors, [], `unexpected pageerror: ${JSON.stringify(pageErrors)}`);
     assert.deepEqual(consoleErrors, [], `unexpected console.error: ${JSON.stringify(consoleErrors)}`);
 
-    console.log('PROD DOCKER UI E2E PASS: Live Keycloak 26 TLS PKCE login, HttpOnly/Secure cookie, /ui/cli approval, seamless id_token_hint RP-Initiated Logout, org_admin RBAC, and Break-Glass Key verified.');
+    console.log('PROD DOCKER UI E2E PASS: Strict CSP (0 violations), Keycloak 26 PKCE SSO, Projects, Unified Access Groups & Rules, JWT Mappings tab, Keys Project/Deployment modal, FinOps Audit Filter + JSON Diff Viewer, /ui/cli, RP-Initiated Logout, org_admin RBAC, and Break-Glass Key verified.');
   } finally {
     await context.close();
+  }
+}
+
+async function run() {
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--host-resolver-rules=MAP *.prod.test 127.0.0.1'],
+  });
+  try {
+    if (CLI_APPROVE_URL) {
+      await runCLIApprove(browser);
+    } else {
+      await runFullSuite2(browser);
+    }
+  } finally {
     await browser.close();
   }
 }

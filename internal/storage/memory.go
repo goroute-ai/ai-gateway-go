@@ -63,6 +63,7 @@ type MemoryRepository struct {
 	pricingHistory                 map[string][]*domain.ModelPricingHistory
 	guardrails                     map[string]*domain.GuardrailPolicy
 	guardrailDefs                  map[string]*domain.GuardrailDefinition
+	auditObserver                  func(*domain.AuditLog)
 	guardrailBindings              map[string]*domain.GuardrailBinding
 	spendLogs                      []domain.SpendEvent
 	spendOutbox                    map[string]*spendOutboxEntry

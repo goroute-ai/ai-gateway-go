@@ -40,20 +40,22 @@ func WithLimiter(l *ratelimit.Limiter) HubOption {
 
 // Hub orchestrates multi-server MCP routing, tool aggregation, toolsets, and security enforcement.
 type Hub struct {
-	repo            storage.Repository
-	vault           *auth.Vault
-	rbac            *auth.RBACEngine
-	dispatcher      *TransportDispatcher
-	authResolver    *AuthResolver
-	cache           *MCPCache
-	mrtr            *MRTRManager
-	subs            *SubscriptionManager
-	guardrails      *guardrails.Engine
-	pipeline        *guardrails.Pipeline
-	limiter         *ratelimit.Limiter
-	spendRecorder   SpendRecorder
-	progressive     *ProgressiveDiscoveryManager
-	runtimeSettings atomic.Pointer[domain.MCPRuntimeSettings]
+	repo             storage.Repository
+	vault            *auth.Vault
+	rbac             *auth.RBACEngine
+	dispatcher       *TransportDispatcher
+	authResolver     *AuthResolver
+	cache            *MCPCache
+	mrtr             *MRTRManager
+	subs             *SubscriptionManager
+	guardrails       *guardrails.Engine
+	pipeline         *guardrails.Pipeline
+	limiter          *ratelimit.Limiter
+	spendRecorder    SpendRecorder
+	progressive      *ProgressiveDiscoveryManager
+	toolPolicyStore  storage.ToolPolicyRepository
+	customAuthorizer auth.Authorizer
+	runtimeSettings  atomic.Pointer[domain.MCPRuntimeSettings]
 }
 
 // SetCache attaches the response cache used for cacheable MCP tool calls and listings.
@@ -136,13 +138,19 @@ func NewHub(
 ) *Hub {
 	pdm := NewProgressiveDiscoveryManager(repo, nil, HandleTTL)
 	pdm.SetRBAC(rbac)
+	var tpStore storage.ToolPolicyRepository
+	if r, ok := repo.(storage.ToolPolicyRepository); ok {
+		tpStore = r
+		pdm.SetToolPolicyStore(tpStore)
+	}
 	h := &Hub{
-		repo:         repo,
-		vault:        vault,
-		rbac:         rbac,
-		dispatcher:   dispatcher,
-		authResolver: authResolver,
-		progressive:  pdm,
+		repo:            repo,
+		vault:           vault,
+		rbac:            rbac,
+		dispatcher:      dispatcher,
+		authResolver:    authResolver,
+		progressive:     pdm,
+		toolPolicyStore: tpStore,
 	}
 	h.SetRuntimeSettings(domain.MCPRuntimeSettings{
 		ActiveProtocolVersion: spec.DefaultVersion,
@@ -197,6 +205,7 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		orgID = idCtx.OrgID
 	}
 
+	policies := h.loadToolPolicies(ctx, idCtx)
 	serverSlug = strings.TrimSpace(serverSlug)
 	if serverSlug != "" {
 		server, err := h.repo.GetMCPServerBySlug(ctx, orgID, serverSlug)
@@ -219,6 +228,9 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		var activeTools []domain.MCPTool
 		for _, t := range tools {
 			if t != nil && t.IsActive {
+				if h.authorizeToolCall(ctx, idCtx, server.Slug, t.Name, policies, false) != nil {
+					continue
+				}
 				activeTools = append(activeTools, *t)
 			}
 		}
@@ -245,6 +257,9 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		}
 		for _, t := range tools {
 			if t != nil && t.IsActive {
+				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, policies, false) != nil {
+					continue
+				}
 				aggregatedTools = append(aggregatedTools, *t)
 			}
 		}
@@ -274,6 +289,22 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, err
 	}
 	input.ToolName = resolvedToolName
+
+	if err := h.authorizeToolCall(ctx, idCtx, targetServer.Slug, input.ToolName, h.loadToolPolicies(ctx, idCtx), true); err != nil {
+		return nil, err
+	}
+	if h.customAuthorizer != nil {
+		if err := auth.EvaluateAuthorizer(ctx, h.customAuthorizer, &auth.AuthzRequest{
+			Identity:     idCtx,
+			Action:       auth.AuthzActionMCPToolCall,
+			ResourceType: "mcp_tool",
+			ResourceID:   targetServer.Slug + "/" + input.ToolName,
+			MCPServer:    targetServer.Slug,
+			MCPTool:      input.ToolName,
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := h.verifyToolPinning(targetServer, targetTool, input.ToolName); err != nil {
 		return nil, err
@@ -1039,6 +1070,7 @@ func (h *Hub) dispatchScopedRequest(
 			}
 			shapedCopy := *cachedResp
 			shapedCopy.ID = jsonReq.ID
+			shapedCopy.Result = h.filterScopedToolsListResult(ctx, idCtx, serverSlug, shapedCopy.Result)
 			shapedCopy.Result = profile.ShapeResult(jsonReq.Method, shapedCopy.Result)
 			return &shapedCopy, nil, nil
 		}
@@ -1090,6 +1122,9 @@ func (h *Hub) dispatchScopedRequest(
 	}
 
 	if resp.Result != nil {
+		if jsonReq.Method == "tools/list" {
+			resp.Result = h.filterScopedToolsListResult(ctx, idCtx, serverSlug, resp.Result)
+		}
 		resp.Result = profile.ShapeResult(jsonReq.Method, resp.Result)
 	}
 	return resp, respHeaders, nil
@@ -1204,6 +1239,22 @@ func (h *Hub) dispatchToolsetRequest(
 			},
 		}, nil, nil
 	}
+	if h.rbac != nil {
+		if rbacErr := h.rbac.AuthorizeMCPToolset(idCtx, toolsetSlug); rbacErr != nil {
+			h.recordAudit(ctx, idCtx, "mcp.rbac.denied", "mcp_toolset", toolsetSlug, map[string]any{
+				"operation": jsonReq.Method,
+				"reason":    rbacErr.Error(),
+			})
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      jsonReq.ID,
+				Error: &JSONRPCError{
+					Code:    CodeInvalidRequest,
+					Message: fmt.Sprintf("Forbidden: %v", rbacErr),
+				},
+			}, nil, nil
+		}
+	}
 
 	switch jsonReq.Method {
 	case "server/discover":
@@ -1232,6 +1283,7 @@ func (h *Hub) dispatchToolsetRequest(
 			},
 		}, nil, nil
 	case "tools/list":
+		policies := h.loadToolPolicies(ctx, idCtx)
 		allowedTools := make([]map[string]any, 0, len(toolset.ToolIDs))
 		for _, toolID := range toolset.ToolIDs {
 			tool, err := h.repo.GetMCPTool(ctx, toolID)
@@ -1243,6 +1295,9 @@ func (h *Hub) dispatchToolsetRequest(
 				continue
 			}
 			if h.rbac != nil && h.rbac.AuthorizeMCPServer(idCtx, server.Slug) != nil {
+				continue
+			}
+			if h.authorizeToolCall(ctx, idCtx, server.Slug, tool.Name, policies, false) != nil {
 				continue
 			}
 			inSchema := tool.InputSchema
@@ -1358,6 +1413,7 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 		return nil, nil, err
 	}
 
+	policies := h.loadToolPolicies(ctx, idCtx)
 	aggregatedTools := make([]map[string]any, 0)
 	serverOutcomes := make(map[string]string)
 
@@ -1375,8 +1431,12 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 			continue
 		}
 
+		shownCount := 0
 		for _, t := range tools {
 			if t != nil && t.IsActive {
+				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, policies, false) != nil {
+					continue
+				}
 				inSchema := t.InputSchema
 				if inSchema == nil {
 					inSchema = map[string]any{"type": "object"}
@@ -1386,9 +1446,10 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 					"description": t.Description,
 					"inputSchema": inSchema,
 				})
+				shownCount++
 			}
 		}
-		serverOutcomes[s.Slug] = fmt.Sprintf("ok: %d tools", len(tools))
+		serverOutcomes[s.Slug] = fmt.Sprintf("ok: %d tools", shownCount)
 	}
 
 	return &JSONRPCResponse{

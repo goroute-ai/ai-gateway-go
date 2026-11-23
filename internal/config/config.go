@@ -21,6 +21,7 @@ type Config struct {
 	Security   SecurityConfig   `yaml:"security"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Auth       AuthConfig       `yaml:"auth"`
+	Audit      AuditConfig      `yaml:"audit,omitempty"`
 	Router     RouterConfig     `yaml:"router"`
 	RateLimit  RateLimitConfig  `yaml:"rate_limit"`
 	FinOps     FinOpsConfig     `yaml:"finops"`
@@ -269,24 +270,34 @@ type OIDCClaimMapping struct {
 	OrgID   string `yaml:"org_id,omitempty"`
 	TeamIDs string `yaml:"team_ids,omitempty"`
 	Role    string `yaml:"role,omitempty"`
+	Groups  string `yaml:"groups,omitempty"`
 	EndUser string `yaml:"end_user,omitempty"`
+}
+
+// GroupRoleMappingRule maps an IdP group or realm-role value to a GoRoute role.
+type GroupRoleMappingRule struct {
+	Group string `yaml:"group" json:"group"`
+	Role  string `yaml:"role" json:"role"`
 }
 
 // OIDCIssuerConfig configures a single OIDC/JWT issuer for multi-issuer verification.
 type OIDCIssuerConfig struct {
-	Issuer                    string           `yaml:"issuer"`
-	Audience                  string           `yaml:"audience,omitempty"`
-	JWKSURL                   string           `yaml:"jwks_url,omitempty"`
-	DiscoveryURL              string           `yaml:"discovery_url,omitempty"`
-	Algorithms                []string         `yaml:"algorithms,omitempty"`
-	AllowedEmailDomains       []string         `yaml:"allowed_email_domains,omitempty"`
-	AllowUnverifiedEmail      bool             `yaml:"allow_unverified_email,omitempty"`
-	AllowPrivilegedRoleClaims bool             `yaml:"allow_privileged_role_claims,omitempty"`
-	ClaimMapping              OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
-	AutoRegister              bool             `yaml:"auto_register,omitempty"`
-	DefaultOrgID              string           `yaml:"default_org_id,omitempty"`
-	DefaultTeamID             string           `yaml:"default_team_id,omitempty"`
-	DefaultRole               string           `yaml:"default_role,omitempty"`
+	Issuer                    string                 `yaml:"issuer"`
+	Audience                  string                 `yaml:"audience,omitempty"`
+	JWKSURL                   string                 `yaml:"jwks_url,omitempty"`
+	DiscoveryURL              string                 `yaml:"discovery_url,omitempty"`
+	Algorithms                []string               `yaml:"algorithms,omitempty"`
+	AllowedEmailDomains       []string               `yaml:"allowed_email_domains,omitempty"`
+	AllowUnverifiedEmail      bool                   `yaml:"allow_unverified_email,omitempty"`
+	AllowPrivilegedRoleClaims bool                   `yaml:"allow_privileged_role_claims,omitempty"`
+	ClaimMapping              OIDCClaimMapping       `yaml:"claim_mapping,omitempty"`
+	GroupRoleMappings         []GroupRoleMappingRule `yaml:"group_role_mappings,omitempty"`
+	RoleMappingStrategy       string                 `yaml:"role_mapping_strategy,omitempty"`
+	GroupTeamMappings         map[string]string      `yaml:"group_team_mappings,omitempty"`
+	AutoRegister              bool                   `yaml:"auto_register,omitempty"`
+	DefaultOrgID              string                 `yaml:"default_org_id,omitempty"`
+	DefaultTeamID             string                 `yaml:"default_team_id,omitempty"`
+	DefaultRole               string                 `yaml:"default_role,omitempty"`
 }
 
 // IntrospectionConfig configures OAuth 2.0 RFC 7662 token introspection or OIDC UserInfo verification.
@@ -313,28 +324,61 @@ type IntrospectionConfig struct {
 
 // SSOProviderConfig configures an interactive OIDC SSO identity provider for Control Plane and CLI login.
 type SSOProviderConfig struct {
-	ID                        string           `yaml:"id,omitempty"`
-	Name                      string           `yaml:"name,omitempty"`
-	Type                      string           `yaml:"type,omitempty"`
-	DisplayName               string           `yaml:"display_name,omitempty"`
-	ClientID                  string           `yaml:"client_id"`
-	ClientSecret              string           `yaml:"client_secret,omitempty"`
-	Issuer                    string           `yaml:"issuer,omitempty"`
-	AuthorizationEndpoint     string           `yaml:"authorization_endpoint,omitempty"`
-	TokenEndpoint             string           `yaml:"token_endpoint,omitempty"`
-	JWKSURL                   string           `yaml:"jwks_url,omitempty"`
-	DiscoveryURL              string           `yaml:"discovery_url,omitempty"`
-	Scopes                    []string         `yaml:"scopes,omitempty"`
-	RedirectURL               string           `yaml:"redirect_url,omitempty"`
-	AllowedEmailDomains       []string         `yaml:"allowed_email_domains,omitempty"`
-	AllowUnverifiedEmail      bool             `yaml:"allow_unverified_email,omitempty"`
-	AllowPrivilegedRoleClaims bool             `yaml:"allow_privileged_role_claims,omitempty"`
-	AutoRegister              bool             `yaml:"auto_register,omitempty"`
-	DefaultOrgID              string           `yaml:"default_org_id,omitempty"`
-	DefaultTeamID             string           `yaml:"default_team_id,omitempty"`
-	DefaultRole               string           `yaml:"default_role,omitempty"`
-	Algorithms                []string         `yaml:"algorithms,omitempty"`
-	ClaimMapping              OIDCClaimMapping `yaml:"claim_mapping,omitempty"`
+	ID                        string                 `yaml:"id,omitempty"`
+	Name                      string                 `yaml:"name,omitempty"`
+	Type                      string                 `yaml:"type,omitempty"`
+	DisplayName               string                 `yaml:"display_name,omitempty"`
+	ClientID                  string                 `yaml:"client_id"`
+	ClientSecret              string                 `yaml:"client_secret,omitempty"`
+	Issuer                    string                 `yaml:"issuer,omitempty"`
+	AuthorizationEndpoint     string                 `yaml:"authorization_endpoint,omitempty"`
+	TokenEndpoint             string                 `yaml:"token_endpoint,omitempty"`
+	JWKSURL                   string                 `yaml:"jwks_url,omitempty"`
+	DiscoveryURL              string                 `yaml:"discovery_url,omitempty"`
+	Scopes                    []string               `yaml:"scopes,omitempty"`
+	RedirectURL               string                 `yaml:"redirect_url,omitempty"`
+	AllowedEmailDomains       []string               `yaml:"allowed_email_domains,omitempty"`
+	AllowUnverifiedEmail      bool                   `yaml:"allow_unverified_email,omitempty"`
+	AllowPrivilegedRoleClaims bool                   `yaml:"allow_privileged_role_claims,omitempty"`
+	AutoRegister              bool                   `yaml:"auto_register,omitempty"`
+	DefaultOrgID              string                 `yaml:"default_org_id,omitempty"`
+	DefaultTeamID             string                 `yaml:"default_team_id,omitempty"`
+	DefaultRole               string                 `yaml:"default_role,omitempty"`
+	Algorithms                []string               `yaml:"algorithms,omitempty"`
+	ClaimMapping              OIDCClaimMapping       `yaml:"claim_mapping,omitempty"`
+	GroupRoleMappings         []GroupRoleMappingRule `yaml:"group_role_mappings,omitempty"`
+	RoleMappingStrategy       string                 `yaml:"role_mapping_strategy,omitempty"`
+	GroupTeamMappings         map[string]string      `yaml:"group_team_mappings,omitempty"`
+	SyncRolesOnLogin          bool                   `yaml:"sync_roles_on_login,omitempty"`
+}
+
+// ExternalAuthorizerConfig configures an optional standalone HTTP Webhook or OPA REST API policy authorizer.
+type ExternalAuthorizerConfig struct {
+	Enabled    bool          `yaml:"enabled,omitempty"`
+	Mode       string        `yaml:"mode,omitempty"`        // "webhook" (default) or "opa"
+	URL        string        `yaml:"url,omitempty"`         // HTTPS endpoint (SSRF-validated via network.Policy)
+	Timeout    time.Duration `yaml:"timeout,omitempty"`     // Default 500ms, max 5s
+	FailMode   string        `yaml:"fail_mode,omitempty"`   // "closed" (default) or "open"
+	CacheTTL   time.Duration `yaml:"cache_ttl,omitempty"`   // Optional short-lived L1 decision cache TTL
+	AuthHeader string        `yaml:"auth_header,omitempty"` // Optional Authorization header (supports os.environ/...)
+	HMACSecret string        `yaml:"hmac_secret,omitempty"` // Optional secret for X-GoRoute-Signature-256 (supports os.environ/...)
+}
+
+// AuditConfig configures administrative audit logging and optional SIEM export.
+type AuditConfig struct {
+	SIEMWebhook AuditSIEMWebhookConfig `yaml:"siem_webhook,omitempty"`
+}
+
+// AuditSIEMWebhookConfig configures async batched SIEM webhook delivery for audit records.
+type AuditSIEMWebhookConfig struct {
+	Enabled       bool          `yaml:"enabled,omitempty"`
+	URL           string        `yaml:"url,omitempty"`
+	Secret        string        `yaml:"secret,omitempty"`      // Optional HMAC-SHA256 signing secret
+	AuthHeader    string        `yaml:"auth_header,omitempty"` // Optional Authorization header
+	BatchSize     int           `yaml:"batch_size,omitempty"`
+	FlushInterval time.Duration `yaml:"flush_interval,omitempty"`
+	Timeout       time.Duration `yaml:"timeout,omitempty"`
+	MaxQueueSize  int           `yaml:"max_queue_size,omitempty"`
 }
 
 // KeyRotationSinkConfig configures declarative external secret-manager synchronization
@@ -350,34 +394,35 @@ type KeyRotationSinkConfig struct {
 
 // AuthConfig configures virtual-key, OIDC/JWKS, SSO, introspection, and key rotation.
 type AuthConfig struct {
-	AllowAmbientCloudIAM         bool                  `yaml:"allow_ambient_cloud_iam,omitempty"`
-	MasterAdminKey               string                `yaml:"master_admin_key"`
-	MasterEncryptionKey          string                `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
-	PreviousMasterEncryptionKeys []string              `yaml:"previous_master_encryption_keys,omitempty"`
-	AllowMasterKeyDataPlane      bool                  `yaml:"allow_master_key_data_plane"`
-	EnableDataPlaneJWT           bool                  `yaml:"enable_data_plane_jwt"`
-	CustomAPIKeyHeader           string                `yaml:"custom_api_key_header"`
-	JWTIssuer                    string                `yaml:"jwt_issuer"`
-	JWTAudience                  string                `yaml:"jwt_audience"`
-	OIDCJWKSURL                  string                `yaml:"oidc_jwks_url"`
-	OIDCIssuers                  []OIDCIssuerConfig    `yaml:"oidc_issuers,omitempty"`
-	SSOProviders                 []SSOProviderConfig   `yaml:"sso_providers,omitempty"`
-	Introspection                IntrospectionConfig   `yaml:"introspection,omitempty"`
-	DefaultOrgID                 string                `yaml:"default_org_id"`
-	DefaultVirtualKey            string                `yaml:"default_virtual_key"`
-	L1CacheTTL                   time.Duration         `yaml:"l1_cache_ttl"`
-	L2CacheTTL                   time.Duration         `yaml:"l2_cache_ttl"`
-	KeyRotationDeliveryURL       string                `yaml:"key_rotation_delivery_url,omitempty"`
-	KeyRotationDeliveryToken     string                `yaml:"key_rotation_delivery_token,omitempty"`
-	KeyRotationSink              KeyRotationSinkConfig `yaml:"key_rotation_sink,omitempty"`
-	KeyRotationPollInterval      time.Duration         `yaml:"key_rotation_poll_interval,omitempty"`
-	KeyRotationGracePeriod       time.Duration         `yaml:"key_rotation_grace_period,omitempty"`
-	KeyExpiryAlertPollInterval   time.Duration         `yaml:"key_expiry_alert_poll_interval,omitempty"`
-	SessionSecret                string                `yaml:"session_secret,omitempty"`
-	SessionTTL                   time.Duration         `yaml:"session_ttl,omitempty"`
-	CLILoginDefaultTTL           time.Duration         `yaml:"cli_login_default_ttl,omitempty"`
-	CLILoginMaxTTL               time.Duration         `yaml:"cli_login_max_ttl,omitempty"`
-	AuthStartRateLimitPerMin     int                   `yaml:"auth_start_rate_limit_per_min,omitempty"`
+	AllowAmbientCloudIAM         bool                     `yaml:"allow_ambient_cloud_iam,omitempty"`
+	MasterAdminKey               string                   `yaml:"master_admin_key"`
+	MasterEncryptionKey          string                   `yaml:"master_encryption_key"` // 32-byte hex or raw string for AES-256-GCM KEK
+	PreviousMasterEncryptionKeys []string                 `yaml:"previous_master_encryption_keys,omitempty"`
+	AllowMasterKeyDataPlane      bool                     `yaml:"allow_master_key_data_plane"`
+	EnableDataPlaneJWT           bool                     `yaml:"enable_data_plane_jwt"`
+	CustomAPIKeyHeader           string                   `yaml:"custom_api_key_header"`
+	JWTIssuer                    string                   `yaml:"jwt_issuer"`
+	JWTAudience                  string                   `yaml:"jwt_audience"`
+	OIDCJWKSURL                  string                   `yaml:"oidc_jwks_url"`
+	OIDCIssuers                  []OIDCIssuerConfig       `yaml:"oidc_issuers,omitempty"`
+	SSOProviders                 []SSOProviderConfig      `yaml:"sso_providers,omitempty"`
+	Introspection                IntrospectionConfig      `yaml:"introspection,omitempty"`
+	DefaultOrgID                 string                   `yaml:"default_org_id"`
+	DefaultVirtualKey            string                   `yaml:"default_virtual_key"`
+	L1CacheTTL                   time.Duration            `yaml:"l1_cache_ttl"`
+	L2CacheTTL                   time.Duration            `yaml:"l2_cache_ttl"`
+	KeyRotationDeliveryURL       string                   `yaml:"key_rotation_delivery_url,omitempty"`
+	KeyRotationDeliveryToken     string                   `yaml:"key_rotation_delivery_token,omitempty"`
+	KeyRotationSink              KeyRotationSinkConfig    `yaml:"key_rotation_sink,omitempty"`
+	KeyRotationPollInterval      time.Duration            `yaml:"key_rotation_poll_interval,omitempty"`
+	KeyRotationGracePeriod       time.Duration            `yaml:"key_rotation_grace_period,omitempty"`
+	KeyExpiryAlertPollInterval   time.Duration            `yaml:"key_expiry_alert_poll_interval,omitempty"`
+	SessionSecret                string                   `yaml:"session_secret,omitempty"`
+	SessionTTL                   time.Duration            `yaml:"session_ttl,omitempty"`
+	CLILoginDefaultTTL           time.Duration            `yaml:"cli_login_default_ttl,omitempty"`
+	CLILoginMaxTTL               time.Duration            `yaml:"cli_login_max_ttl,omitempty"`
+	AuthStartRateLimitPerMin     int                      `yaml:"auth_start_rate_limit_per_min,omitempty"`
+	ExternalAuthorizer           ExternalAuthorizerConfig `yaml:"external_authorizer,omitempty"`
 }
 
 // RouterConfig configures intelligent model routing, retries, cooldowns, fallbacks, hedging, and scheduling.
@@ -1254,6 +1299,27 @@ func validateOIDCIssuers(issuers []OIDCIssuerConfig) error {
 				return fmt.Errorf("auth.oidc_issuers[%d].algorithms contains unsupported or symmetric algorithm %q", i, alg)
 			}
 		}
+		if err := validateGroupRoleMappings(fmt.Sprintf("auth.oidc_issuers[%d]", i), iss.GroupRoleMappings, iss.RoleMappingStrategy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGroupRoleMappings(prefix string, rules []GroupRoleMappingRule, strategy string) error {
+	strategyNorm := strings.ToLower(strings.TrimSpace(strategy))
+	if strategyNorm != "" && strategyNorm != "highest_privilege" && strategyNorm != "first_match" {
+		return fmt.Errorf("%s.role_mapping_strategy must be \"highest_privilege\" or \"first_match\"", prefix)
+	}
+	for idx, r := range rules {
+		if strings.TrimSpace(r.Group) == "" {
+			return fmt.Errorf("%s.group_role_mappings[%d].group is required", prefix, idx)
+		}
+		switch strings.ToLower(strings.TrimSpace(r.Role)) {
+		case "platform_admin", "org_admin", "org_viewer", "team_admin", "developer", "service_account", "viewer":
+		default:
+			return fmt.Errorf("%s.group_role_mappings[%d].role %q is not a valid GoRoute role", prefix, idx, r.Role)
+		}
 	}
 	return nil
 }
@@ -1330,6 +1396,9 @@ func validateSSOProviders(providers []SSOProviderConfig, publicBaseURL string, n
 			if !isAllowedOIDCAlgorithm(alg) {
 				return fmt.Errorf("auth.sso_providers[%d] (%q).algorithms contains unsupported or symmetric algorithm %q", i, id, alg)
 			}
+		}
+		if err := validateGroupRoleMappings(fmt.Sprintf("auth.sso_providers[%d] (%q)", i, id), sso.GroupRoleMappings, sso.RoleMappingStrategy); err != nil {
+			return err
 		}
 	}
 	return nil

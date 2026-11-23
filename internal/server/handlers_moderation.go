@@ -81,8 +81,8 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		model = "omni-moderation-latest"
 	}
 
-	// 1. RBAC Model Allowlist Check
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+	// 1. RBAC Model Allowlist + Custom Authorizer Check
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return

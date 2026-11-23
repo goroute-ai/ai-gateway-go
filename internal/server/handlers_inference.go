@@ -341,7 +341,7 @@ func (s *GatewayServer) decodeAndValidateChatRequest(w http.ResponseWriter, r *h
 		return nil, nil, 0, false
 	}
 
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, chatReq.Model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, chatReq.Model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return nil, nil, 0, false
@@ -1242,7 +1242,7 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, raw.Model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, raw.Model, r.Method, r.URL.Path); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
@@ -1809,6 +1809,14 @@ func enforceRoutingHintPoliciesOnExtensions(idCtx *domain.IdentityContext, extPt
 					Type:       domain.ErrorTypePermission,
 					Code:       "routing_tag_not_allowed",
 					Message:    fmt.Sprintf("Routing tag %q is not permitted by virtual key allowed_routing_tags policy", trimmed),
+				}
+			}
+			if len(idCtx.ProjectAllowedRoutingTags) > 0 && !routingTagMatchesAllowlist(base, idCtx.ProjectAllowedRoutingTags) {
+				return &domain.GatewayError{
+					StatusCode: http.StatusForbidden,
+					Type:       domain.ErrorTypePermission,
+					Code:       "routing_tag_not_allowed",
+					Message:    fmt.Sprintf("Routing tag %q is not permitted by project allowed_routing_tags policy", trimmed),
 				}
 			}
 			if len(idCtx.TeamAllowedRoutingTags) > 0 && !routingTagMatchesAllowlist(base, idCtx.TeamAllowedRoutingTags) {

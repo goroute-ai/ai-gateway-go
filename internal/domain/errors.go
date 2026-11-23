@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -117,13 +118,17 @@ type AnthropicErrorEnvelope struct {
 }
 
 func normalizeGatewayError(err error) *GatewayError {
-	gwErr, ok := err.(*GatewayError)
-	if !ok {
+	var gwErr *GatewayError
+	if !errors.As(err, &gwErr) || gwErr == nil {
+		msg := "internal server error"
+		if err != nil {
+			msg = err.Error()
+		}
 		gwErr = &GatewayError{
 			StatusCode: http.StatusInternalServerError,
 			Type:       ErrorTypeServer,
 			Code:       "internal_server_error",
-			Message:    err.Error(),
+			Message:    msg,
 		}
 	}
 	if gwErr.StatusCode == 0 {

@@ -47,6 +47,20 @@ func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
+	if s.customAuthorizer != nil {
+		if err := s.evaluateCustomAuthorizer(r.Context(), &auth.AuthzRequest{
+			Identity:     idCtx,
+			Action:       auth.AuthzActionA2AInvoke,
+			ResourceType: "a2a_agent",
+			ResourceID:   agentSlug,
+			A2AAgent:     agentSlug,
+			HTTPMethod:   r.Method,
+			HTTPPath:     r.URL.Path,
+		}); err != nil {
+			domain.WriteHTTPError(w, err)
+			return
+		}
+	}
 
 	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10*1024*1024))
 	if err != nil {

@@ -78,6 +78,12 @@ func normalizeProject(p *domain.Project) error {
 	if p.AllowedModels == nil {
 		p.AllowedModels = []string{}
 	}
+	if p.AllowedDeployments == nil {
+		p.AllowedDeployments = []string{}
+	}
+	if p.AllowedRoutingTags == nil {
+		p.AllowedRoutingTags = []string{}
+	}
 	return nil
 }
 
@@ -104,6 +110,20 @@ func cloneProject(p *domain.Project) *domain.Project {
 	} else {
 		cp.AllowedModels = []string{}
 	}
+	if p.AllowedDeployments != nil {
+		cp.AllowedDeployments = slices.Clone(p.AllowedDeployments)
+	} else {
+		cp.AllowedDeployments = []string{}
+	}
+	if p.AllowedRoutingTags != nil {
+		cp.AllowedRoutingTags = slices.Clone(p.AllowedRoutingTags)
+	} else {
+		cp.AllowedRoutingTags = []string{}
+	}
+	cp.AllowedMCPServers = slices.Clone(p.AllowedMCPServers)
+	cp.AllowedMCPTools = slices.Clone(p.AllowedMCPTools)
+	cp.AllowedMCPToolsets = slices.Clone(p.AllowedMCPToolsets)
+	cp.AllowedA2AAgents = slices.Clone(p.AllowedA2AAgents)
 	return &cp
 }
 

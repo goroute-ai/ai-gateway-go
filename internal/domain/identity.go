@@ -139,10 +139,13 @@ type Team struct {
 	DefaultMemberTPMLimit        int                 `json:"default_member_tpm_limit,omitempty"`
 	DefaultMemberAllowedModels   []string            `json:"default_member_allowed_models,omitempty"`
 	TeamMemberPermissions        []string            `json:"team_member_permissions,omitempty"`
-	AllowedModels                []string            `json:"allowed_models,omitempty"` // Empty = inherit Org enabled models
-	AllowedMCPServers            []string            `json:"allowed_mcp_servers"`      // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents             []string            `json:"allowed_a2a_agents"`       // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps            []string            `json:"allowed_client_apps"`      // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedModels                []string            `json:"allowed_models,omitempty"`      // Empty = inherit Org enabled models
+	AllowedDeployments           []string            `json:"allowed_deployments,omitempty"` // Empty = all eligible deployments
+	AllowedMCPServers            []string            `json:"allowed_mcp_servers"`           // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPTools              []string            `json:"allowed_mcp_tools"`             // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPToolsets           []string            `json:"allowed_mcp_toolsets"`          // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents             []string            `json:"allowed_a2a_agents"`            // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps            []string            `json:"allowed_client_apps"`           // nil = inherit, [] = DenyAll, [...] = allowlist
 	MinPriorityRank              int                 `json:"min_priority_rank,omitempty"`
 	AllowedRoutingTags           []string            `json:"allowed_routing_tags,omitempty"`
 	IsActive                     bool                `json:"is_active"`
@@ -208,6 +211,12 @@ type Project struct {
 	RPMLimit                 int       `json:"rpm_limit"`
 	TPMLimit                 int       `json:"tpm_limit"`
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
+	AllowedDeployments       []string  `json:"allowed_deployments,omitempty"`
+	AllowedRoutingTags       []string  `json:"allowed_routing_tags,omitempty"`
+	AllowedMCPServers        []string  `json:"allowed_mcp_servers"`
+	AllowedMCPTools          []string  `json:"allowed_mcp_tools"`
+	AllowedMCPToolsets       []string  `json:"allowed_mcp_toolsets"`
+	AllowedA2AAgents         []string  `json:"allowed_a2a_agents"`
 	EnforceProjectModelQuota bool      `json:"enforce_project_model_quota"`
 	IsActive                 bool      `json:"is_active"`
 	CreatedAt                time.Time `json:"created_at"`
@@ -249,10 +258,13 @@ type VirtualKey struct {
 	Role                      Role                `json:"role"`
 	KeyType                   KeyType             `json:"key_type,omitempty"`
 	AllowedModels             []string            `json:"allowed_models,omitempty"`
+	AllowedDeployments        []string            `json:"allowed_deployments,omitempty"`
 	AllowedEndpoints          []string            `json:"allowed_endpoints,omitempty"`
-	AllowedMCPServers         []string            `json:"allowed_mcp_servers"` // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedA2AAgents          []string            `json:"allowed_a2a_agents"`  // nil = inherit, [] = DenyAll, [...] = allowlist
-	AllowedClientApps         []string            `json:"allowed_client_apps"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPServers         []string            `json:"allowed_mcp_servers"`  // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPTools           []string            `json:"allowed_mcp_tools"`    // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedMCPToolsets        []string            `json:"allowed_mcp_toolsets"` // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedA2AAgents          []string            `json:"allowed_a2a_agents"`   // nil = inherit, [] = DenyAll, [...] = allowlist
+	AllowedClientApps         []string            `json:"allowed_client_apps"`  // nil = inherit, [] = DenyAll, [...] = allowlist
 	MaxBudgetMicros           int64               `json:"max_budget_micros"`
 	TempBudgetIncreaseMicros  int64               `json:"temp_budget_increase_micros"`
 	TempBudgetExpiresAt       *time.Time          `json:"temp_budget_expires_at,omitempty"`
@@ -325,20 +337,23 @@ const (
 )
 
 // AccessGroupRule defines an organization-scoped attribute rule that dynamically grants
-// model allowlists and/or access group membership to matching authenticated principals.
+// model, MCP server, MCP tool, A2A agent allowlists and/or access group membership to matching authenticated principals.
 type AccessGroupRule struct {
-	ID            string             `json:"id"`
-	OrgID         string             `json:"org_id"`
-	Name          string             `json:"name"`
-	Attribute     string             `json:"attribute"`
-	Operator      AccessRuleOperator `json:"operator"`
-	Value         string             `json:"value"`
-	AllowedModels []string           `json:"allowed_models"`
-	AccessGroupID string             `json:"access_group_id,omitempty"`
-	Priority      int                `json:"priority"`
-	IsActive      bool               `json:"is_active"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
+	ID                string             `json:"id"`
+	OrgID             string             `json:"org_id"`
+	Name              string             `json:"name"`
+	Attribute         string             `json:"attribute"`
+	Operator          AccessRuleOperator `json:"operator"`
+	Value             string             `json:"value"`
+	AllowedModels     []string           `json:"allowed_models"`
+	AllowedMCPServers []string           `json:"allowed_mcp_servers,omitempty"`
+	AllowedMCPTools   []string           `json:"allowed_mcp_tools,omitempty"`
+	AllowedA2AAgents  []string           `json:"allowed_a2a_agents,omitempty"`
+	AccessGroupID     string             `json:"access_group_id,omitempty"`
+	Priority          int                `json:"priority"`
+	IsActive          bool               `json:"is_active"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 // IdentityContext is resolved on the hot path from L1/L2 cache and attached to `r.Context()`.
@@ -364,12 +379,26 @@ type IdentityContext struct {
 	TeamAllowedModels             []string            `json:"team_allowed_models,omitempty"`
 	TeamMemberAllowedModels       []string            `json:"team_member_allowed_models,omitempty"`
 	DynamicAllowedModels          []string            `json:"dynamic_allowed_models,omitempty"`
+	KeyAllowedDeployments         []string            `json:"key_allowed_deployments,omitempty"`
+	ProjectAllowedDeployments     []string            `json:"project_allowed_deployments,omitempty"`
+	TeamAllowedDeployments        []string            `json:"team_allowed_deployments,omitempty"`
 	AccessGroups                  []string            `json:"access_groups,omitempty"`
 	AllowedEndpoints              []string            `json:"allowed_endpoints"`
 	KeyAllowedMCPServers          []string            `json:"key_allowed_mcp_servers"`
+	ProjectAllowedMCPServers      []string            `json:"project_allowed_mcp_servers"`
 	TeamAllowedMCPServers         []string            `json:"team_allowed_mcp_servers"`
+	DynamicAllowedMCPServers      []string            `json:"dynamic_allowed_mcp_servers,omitempty"`
+	KeyAllowedMCPTools            []string            `json:"key_allowed_mcp_tools"`
+	ProjectAllowedMCPTools        []string            `json:"project_allowed_mcp_tools"`
+	TeamAllowedMCPTools           []string            `json:"team_allowed_mcp_tools"`
+	DynamicAllowedMCPTools        []string            `json:"dynamic_allowed_mcp_tools,omitempty"`
+	KeyAllowedMCPToolsets         []string            `json:"key_allowed_mcp_toolsets"`
+	ProjectAllowedMCPToolsets     []string            `json:"project_allowed_mcp_toolsets"`
+	TeamAllowedMCPToolsets        []string            `json:"team_allowed_mcp_toolsets"`
 	KeyAllowedA2AAgents           []string            `json:"key_allowed_a2a_agents"`
+	ProjectAllowedA2AAgents       []string            `json:"project_allowed_a2a_agents"`
 	TeamAllowedA2AAgents          []string            `json:"team_allowed_a2a_agents"`
+	DynamicAllowedA2AAgents       []string            `json:"dynamic_allowed_a2a_agents,omitempty"`
 	KeyAllowedClientApps          []string            `json:"key_allowed_client_apps"`
 	TeamAllowedClientApps         []string            `json:"team_allowed_client_apps"`
 	KeyRPMLimit                   int                 `json:"key_rpm_limit"`
@@ -381,6 +410,7 @@ type IdentityContext struct {
 	KeyMaxBudgetPerSessionMicros  int64               `json:"key_max_budget_per_session_micros,omitempty"`
 	KeyMinPriorityRank            int                 `json:"key_min_priority_rank,omitempty"`
 	KeyAllowedRoutingTags         []string            `json:"key_allowed_routing_tags,omitempty"`
+	ProjectAllowedRoutingTags     []string            `json:"project_allowed_routing_tags,omitempty"`
 	TeamMinPriorityRank           int                 `json:"team_min_priority_rank,omitempty"`
 	TeamAllowedRoutingTags        []string            `json:"team_allowed_routing_tags,omitempty"`
 	KeyTags                       []string            `json:"key_tags,omitempty"`
@@ -467,6 +497,19 @@ type AuditLog struct {
 	CreatedAt   time.Time      `json:"created_at"`
 }
 
+// AuditLogFilter specifies server-side filter and keyset pagination parameters for listing audit logs.
+type AuditLogFilter struct {
+	OrgID      string
+	ActorID    string
+	Action     string
+	Resource   string
+	ResourceID string
+	Since      *time.Time
+	Until      *time.Time
+	Limit      int
+	Cursor     string
+}
+
 // CheckAllowlist3State evaluates 3-state allowlist semantics across VirtualKey and Team scopes:
 // 1. If keyAllowlist is non-nil:
 //   - If empty ([]string{}): DenyAll (blocks access)
@@ -478,29 +521,62 @@ type AuditLog struct {
 //   - If non-empty: target must match teamAllowlist (or "*")
 //   - If teamAllowlist is nil: inherit Org default (permits access)
 func CheckAllowlist3State(keyAllowlist, teamAllowlist []string, target string) bool {
-	if keyAllowlist != nil {
-		if len(keyAllowlist) == 0 {
-			return false // DenyAll
+	return CheckAllowlist3StateHierarchy(target, nil, nil, keyAllowlist, teamAllowlist)
+}
+
+// CheckAllowlist3StateHierarchy evaluates 3-state allowlist semantics across an ordered scope
+// hierarchy (most specific first, e.g. Key -> Project -> Team) plus optional additive dynamic grants
+// from AccessGroupRules / Unified AccessGroups.
+//
+// Security invariant:
+//   - If the most-specific scope (scopes[0], typically VirtualKey) is explicitly empty ([]string{}),
+//     it acts as an authoritative DenyAll that overrides dynamic Access Group grants.
+//   - Otherwise, the first non-nil scope governs; if it does not match target, dynamicGrants are
+//     checked as an additive union.
+//   - If all scopes are nil, access is permitted (org default allow).
+func CheckAllowlist3StateHierarchy(
+	target string,
+	dynamicGrants []string,
+	matchFn func(pattern, target string) bool,
+	scopes ...[]string,
+) bool {
+	if matchFn == nil {
+		matchFn = func(pattern, tgt string) bool {
+			return pattern == "*" || pattern == tgt
 		}
-		for _, item := range keyAllowlist {
-			if item == "*" || item == target {
-				return true
-			}
-		}
+	}
+
+	// Explicit DenyAll on the most-specific scope (VirtualKey) always wins over dynamic grants.
+	if len(scopes) > 0 && scopes[0] != nil && len(scopes[0]) == 0 {
 		return false
 	}
 
-	if teamAllowlist != nil {
-		if len(teamAllowlist) == 0 {
-			return false // DenyAll
+	staticChecked := false
+	for _, scope := range scopes {
+		if scope == nil {
+			continue
 		}
-		for _, item := range teamAllowlist {
-			if item == "*" || item == target {
+		staticChecked = true
+		if len(scope) == 0 {
+			// Non-key DenyAll (e.g., Team/Project DenyAll): dynamic grants may still additively grant.
+			break
+		}
+		for _, item := range scope {
+			if matchFn(item, target) {
 				return true
 			}
 		}
-		return false
+		break
 	}
 
-	return true // Inherit parent default allow
+	if !staticChecked {
+		return true // Inherit parent default allow
+	}
+
+	for _, item := range dynamicGrants {
+		if matchFn(item, target) {
+			return true
+		}
+	}
+	return false
 }

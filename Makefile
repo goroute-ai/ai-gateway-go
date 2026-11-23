@@ -17,6 +17,10 @@ build: generate
 	@mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/ai-gateway ./cmd/gateway
 
+build-cli:
+	@mkdir -p bin
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/goroute ./cmd/goroute
+
 run:
 	go run ./cmd/gateway -config configs/config.yaml
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/health"
@@ -94,6 +95,110 @@ func (e *ContextWindowExhaustedError) Error() string {
 
 // Unwrap exposes the underlying *domain.GatewayError for errors.As matching.
 func (e *ContextWindowExhaustedError) Unwrap() error {
+	if e == nil || e.GatewayErr == nil {
+		return nil
+	}
+	return e.GatewayErr
+}
+
+// DeploymentAccessPolicy encodes tenant-scoped deployment ID and mandatory routing-tag allowlists
+// enforced inside FilterPipeline regardless of whether the caller supplied routing tag hints.
+type DeploymentAccessPolicy struct {
+	KeyAllowedDeployments     []string
+	ProjectAllowedDeployments []string
+	TeamAllowedDeployments    []string
+	KeyAllowedRoutingTags     []string
+	ProjectAllowedRoutingTags []string
+	TeamAllowedRoutingTags    []string
+}
+
+// HasConstraints reports whether any deployment ID or routing-tag restriction is active.
+func (p *DeploymentAccessPolicy) HasConstraints() bool {
+	if p == nil {
+		return false
+	}
+	return len(p.KeyAllowedDeployments) > 0 ||
+		len(p.ProjectAllowedDeployments) > 0 ||
+		len(p.TeamAllowedDeployments) > 0 ||
+		len(p.KeyAllowedRoutingTags) > 0 ||
+		len(p.ProjectAllowedRoutingTags) > 0 ||
+		len(p.TeamAllowedRoutingTags) > 0
+}
+
+type deploymentAccessPolicyCtxKey struct{}
+
+// WithDeploymentAccessPolicy attaches an explicit DeploymentAccessPolicy to ctx.
+func WithDeploymentAccessPolicy(ctx context.Context, policy *DeploymentAccessPolicy) context.Context {
+	if ctx == nil || policy == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, deploymentAccessPolicyCtxKey{}, policy)
+}
+
+// DeploymentAccessPolicyFromContext resolves an explicit DeploymentAccessPolicy from ctx,
+// falling back to auth.IdentityFromContext(ctx) so every authenticated inference path
+// enforces deployment and routing-tag policies unconditionally.
+func DeploymentAccessPolicyFromContext(ctx context.Context) *DeploymentAccessPolicy {
+	if ctx == nil {
+		return nil
+	}
+	if p, ok := ctx.Value(deploymentAccessPolicyCtxKey{}).(*DeploymentAccessPolicy); ok && p != nil {
+		return p
+	}
+	idCtx := auth.IdentityFromContext(ctx)
+	if idCtx == nil {
+		return nil
+	}
+	p := &DeploymentAccessPolicy{
+		KeyAllowedDeployments:     idCtx.KeyAllowedDeployments,
+		ProjectAllowedDeployments: idCtx.ProjectAllowedDeployments,
+		TeamAllowedDeployments:    idCtx.TeamAllowedDeployments,
+		KeyAllowedRoutingTags:     idCtx.KeyAllowedRoutingTags,
+		ProjectAllowedRoutingTags: idCtx.ProjectAllowedRoutingTags,
+		TeamAllowedRoutingTags:    idCtx.TeamAllowedRoutingTags,
+	}
+	if !p.HasConstraints() {
+		return nil
+	}
+	return p
+}
+
+// DeploymentRestrictedError is returned when every otherwise-eligible deployment
+// is excluded solely by tenant DeploymentAccessPolicy (allowed_deployments or allowed_routing_tags).
+type DeploymentRestrictedError struct {
+	Reason     string
+	GatewayErr *domain.GatewayError
+}
+
+func newDeploymentRestrictedError(reason string) *DeploymentRestrictedError {
+	msg := "No eligible deployments match the caller's deployment access policy"
+	if strings.TrimSpace(reason) != "" {
+		msg = reason
+	}
+	return &DeploymentRestrictedError{
+		Reason: msg,
+		GatewayErr: &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "deployment_restricted",
+			Message:    msg,
+		},
+	}
+}
+
+// Error returns the underlying GatewayError message.
+func (e *DeploymentRestrictedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.GatewayErr != nil {
+		return e.GatewayErr.Error()
+	}
+	return e.Reason
+}
+
+// Unwrap exposes the underlying *domain.GatewayError for errors.As matching.
+func (e *DeploymentRestrictedError) Unwrap() error {
 	if e == nil || e.GatewayErr == nil {
 		return nil
 	}
@@ -302,6 +407,30 @@ func (p *FilterPipeline) FilterEligibleDeploymentsForGroup(
 		return nil, false, nil
 	}
 
+	// Stage 1b: Mandatory tenant Deployment ID allowlist (intersection across Key, Project, Team).
+	depPolicy := DeploymentAccessPolicyFromContext(ctx)
+	if depPolicy != nil && (len(depPolicy.KeyAllowedDeployments) > 0 || len(depPolicy.ProjectAllowedDeployments) > 0 || len(depPolicy.TeamAllowedDeployments) > 0) {
+		var stage1b []*domain.Deployment
+		for i, d := range candidates {
+			if deploymentMatchesAllowlists(d.ID, depPolicy.KeyAllowedDeployments, depPolicy.ProjectAllowedDeployments, depPolicy.TeamAllowedDeployments) {
+				if stage1b != nil {
+					stage1b = append(stage1b, d)
+				}
+				continue
+			}
+			if stage1b == nil {
+				stage1b = make([]*domain.Deployment, i, len(candidates)-1)
+				copy(stage1b, candidates[:i])
+			}
+		}
+		if stage1b != nil {
+			candidates = stage1b
+		}
+		if len(candidates) == 0 {
+			return nil, false, newDeploymentRestrictedError("No active deployments match allowed_deployments policy")
+		}
+	}
+
 	// Stage 2: Active health + staleness gate with all-unhealthy safety net.
 	if healthMon != nil {
 		var stage2 []*domain.Deployment
@@ -438,6 +567,32 @@ func (p *FilterPipeline) FilterEligibleDeploymentsForGroup(
 		}
 		if len(candidates) == 0 {
 			return nil, false, nil
+		}
+	}
+
+	// Stage 5b: Mandatory tenant routing-tag allowlist enforcement.
+	// Even when the caller omits request routing tags, deployments must carry at least one tag
+	// permitted by every configured scope (Key, Project, Team) so data-residency / tier policies
+	// cannot be bypassed by omitting tag headers.
+	if depPolicy != nil && (len(depPolicy.KeyAllowedRoutingTags) > 0 || len(depPolicy.ProjectAllowedRoutingTags) > 0 || len(depPolicy.TeamAllowedRoutingTags) > 0) {
+		var stage5b []*domain.Deployment
+		for i, d := range candidates {
+			if deploymentSatisfiesRoutingTagPolicy(d.Tags, depPolicy) {
+				if stage5b != nil {
+					stage5b = append(stage5b, d)
+				}
+				continue
+			}
+			if stage5b == nil {
+				stage5b = make([]*domain.Deployment, i, len(candidates)-1)
+				copy(stage5b, candidates[:i])
+			}
+		}
+		if stage5b != nil {
+			candidates = stage5b
+		}
+		if len(candidates) == 0 {
+			return nil, false, newDeploymentRestrictedError("No eligible deployments satisfy allowed_routing_tags policy")
 		}
 	}
 
@@ -844,4 +999,80 @@ func filterByPTUReservationsWithSignals(
 		return candidates
 	}
 	return filtered
+}
+
+func deploymentMatchesAllowlists(depID string, scopes ...[]string) bool {
+	depID = strings.TrimSpace(depID)
+	for _, allowlist := range scopes {
+		if len(allowlist) == 0 {
+			continue
+		}
+		matched := false
+		for _, pattern := range allowlist {
+			p := strings.TrimSpace(pattern)
+			if p == "" {
+				continue
+			}
+			if p == "*" || p == depID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func deploymentSatisfiesRoutingTagPolicy(depTags []string, policy *DeploymentAccessPolicy) bool {
+	if policy == nil {
+		return true
+	}
+	checkScope := func(allowlist []string) bool {
+		if len(allowlist) == 0 {
+			return true
+		}
+		for _, rawPattern := range allowlist {
+			if strings.TrimSpace(rawPattern) == "*" {
+				return true
+			}
+		}
+		if len(depTags) == 0 {
+			return false
+		}
+		for _, depTag := range depTags {
+			dt := strings.TrimSpace(depTag)
+			if dt == "" {
+				continue
+			}
+			if routingTagAllowedByPolicy(dt, allowlist) {
+				return true
+			}
+		}
+		return false
+	}
+	return checkScope(policy.KeyAllowedRoutingTags) &&
+		checkScope(policy.ProjectAllowedRoutingTags) &&
+		checkScope(policy.TeamAllowedRoutingTags)
+}
+
+func routingTagAllowedByPolicy(tag string, allowlist []string) bool {
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	if tag == "" {
+		return false
+	}
+	for _, raw := range allowlist {
+		pat := strings.ToLower(strings.TrimSpace(raw))
+		if pat == "" {
+			continue
+		}
+		if pat == "*" || pat == tag {
+			return true
+		}
+		if strings.HasSuffix(pat, "*") && strings.HasPrefix(tag, strings.TrimSuffix(pat, "*")) {
+			return true
+		}
+	}
+	return false
 }

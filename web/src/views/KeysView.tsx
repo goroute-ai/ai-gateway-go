@@ -8,6 +8,13 @@ import { TempBudgetModal } from '../components/common/TempBudgetModal';
 import { Badge } from '../components/common/Badge';
 import { ErrorAlert } from '../components/common/ErrorAlert';
 import {
+  Allowlist3StateField,
+  INHERIT_ALLOW,
+  encodeAllowState,
+  initAllowState,
+  parseCSVList,
+} from '../components/common/Allowlist3State';
+import {
   formatBudgetFallbacks,
   formatUSD,
   microsToUsdInput,
@@ -17,9 +24,6 @@ import {
 import type { VirtualKey, Role, BudgetResetPeriod, KeyType } from '../types';
 import { Key, Plus, Pencil, RotateCw, AlertTriangle, Zap } from 'lucide-react';
 
-type AllowMode = 'inherit' | 'deny' | 'allowlist';
-type AllowState = { mode: AllowMode; text: string };
-const INHERIT: AllowState = { mode: 'inherit', text: '' };
 const ROLES: Role[] = ['developer', 'service_account', 'team_admin', 'org_admin', 'org_viewer', 'viewer', 'platform_admin'];
 const KEY_TYPES: Array<[KeyType, string]> = [
   ['default', 'default'],
@@ -30,11 +34,6 @@ const KEY_TYPES: Array<[KeyType, string]> = [
 ];
 const td = 'px-5 py-3';
 const RESET_PERIODS: BudgetResetPeriod[] = ['daily', 'monthly', 'never'];
-const parseCSV = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
-const initAllow = (v?: string[] | null): AllowState =>
-  v == null ? INHERIT : v.length === 0 ? { mode: 'deny', text: '' } : { mode: 'allowlist', text: v.join(', ') };
-const encodeAllow = (s: AllowState, isEdit: boolean): string[] | null | undefined =>
-  s.mode === 'inherit' ? (isEdit ? null : undefined) : s.mode === 'deny' ? [] : parseCSV(s.text);
 
 const fmtDuration = (sec?: number) => {
   if (!sec || sec <= 0) return 'Off';
@@ -43,30 +42,6 @@ const fmtDuration = (sec?: number) => {
   if (sec % 60 === 0) return `${sec / 60}m`;
   return `${sec}s`;
 };
-
-const AllowlistField: React.FC<{
-  label: string;
-  state: AllowState;
-  onChange: (next: AllowState) => void;
-  placeholder: string;
-}> = ({ label, state, onChange, placeholder }) => (
-  <Field label={label}>
-    <div className="flex gap-2">
-      <select
-        value={state.mode}
-        onChange={(e) => onChange({ ...state, mode: e.target.value as AllowMode })}
-        className={`${INPUT_CLS} w-40 shrink-0`}
-      >
-        <option value="inherit">Inherit</option>
-        <option value="deny">Deny</option>
-        <option value="allowlist">Allowlist</option>
-      </select>
-      {state.mode === 'allowlist' && (
-        <input type="text" value={state.text} onChange={(e) => onChange({ ...state, text: e.target.value })} placeholder={placeholder} className={MONO_INPUT_CLS} />
-      )}
-    </div>
-  </Field>
-);
 
 export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
   const { adminKey, isUnlocked, activeOrgId, setCapturedVirtualKey } = useAuth();
@@ -86,16 +61,18 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const INIT_KF = {
-    name: '', teamId: '', userId: '', role: 'developer' as Role, keyType: 'default' as KeyType,
+    name: '', teamId: '', projectId: '', userId: '', role: 'developer' as Role, keyType: 'default' as KeyType,
     rotationIntervalSec: '0', keyRotationAt: '', expiresAt: '',
     maxBudgetUSD: '', softBudgetUSD: '', throttleOnBudget: false, budgetFallbacksText: '',
-    budgetResetPeriod: 'monthly' as BudgetResetPeriod, rpmLimit: '', tpmLimit: '', maxConcurrent: '',
+    budgetResetPeriod: 'monthly' as BudgetResetPeriod, rpmLimit: '', tpmLimit: '', mcpRpmLimit: '', maxConcurrent: '',
+    maxIterations: '', sessionBudgetUSD: '', batchTokenLimit: '', canImpersonate: false,
     minPriorityRank: '', allowedRoutingTags: '',
-    allowedModels: '', allowedEndpoints: '', mcpAllow: INHERIT, a2aAllow: INHERIT, clientAppAllow: INHERIT,
+    allowedModels: '', allowedDeployments: '', allowedEndpoints: '',
+    mcpAllow: INHERIT_ALLOW, mcpToolsAllow: INHERIT_ALLOW, mcpToolsetsAllow: INHERIT_ALLOW, a2aAllow: INHERIT_ALLOW, clientAppAllow: INHERIT_ALLOW,
   };
   const [kf, setKf] = useState(INIT_KF);
   const setK = <K extends keyof typeof INIT_KF>(k: K, v: (typeof INIT_KF)[K]) => setKf((p) => ({ ...p, [k]: v }));
-  const inp = (l: string, k: 'name' | 'expiresAt' | 'keyRotationAt' | 'allowedModels' | 'allowedEndpoints' | 'maxBudgetUSD' | 'softBudgetUSD' | 'rpmLimit' | 'tpmLimit' | 'maxConcurrent' | 'minPriorityRank' | 'allowedRoutingTags', t = 'text', ph?: string, mono = true) => (
+  const inp = (l: string, k: 'name' | 'expiresAt' | 'keyRotationAt' | 'allowedModels' | 'allowedDeployments' | 'allowedEndpoints' | 'maxBudgetUSD' | 'softBudgetUSD' | 'sessionBudgetUSD' | 'rpmLimit' | 'tpmLimit' | 'mcpRpmLimit' | 'maxConcurrent' | 'maxIterations' | 'batchTokenLimit' | 'minPriorityRank' | 'allowedRoutingTags', t = 'text', ph?: string, mono = true) => (
     <Field key={k} label={l}><input type={t} min={t === 'number' ? '0' : undefined} step={ph?.includes('.') ? '0.01' : undefined} value={kf[k]} onChange={(e) => setK(k, e.target.value)} placeholder={ph} className={mono ? MONO_INPUT_CLS : INPUT_CLS} /></Field>
   );
 
@@ -111,6 +88,11 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
   const { data: teamsData } = useQuery({
     queryKey: ['admin', 'teams', adminKey, activeOrgId],
     queryFn: () => adminApi.listTeams(adminKey, activeOrgId),
+    enabled: isUnlocked && !!activeOrgId,
+  });
+  const { data: projectsData } = useQuery({
+    queryKey: ['admin', 'projects', adminKey, activeOrgId],
+    queryFn: () => adminApi.listProjects(adminKey, activeOrgId),
     enabled: isUnlocked && !!activeOrgId,
   });
   const { data: usersData } = useQuery({
@@ -195,7 +177,7 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     setFormError(null);
     setEditingKeyId(k.id);
     setKf({
-      name: k.name, teamId: k.team_id || '', userId: k.user_id || '',
+      name: k.name, teamId: k.team_id || '', projectId: k.project_id || '', userId: k.user_id || '',
       role: k.role || 'developer', keyType: k.key_type || 'default',
       rotationIntervalSec: k.rotation_interval_sec ? String(k.rotation_interval_sec) : '0',
       keyRotationAt: k.key_rotation_at ? k.key_rotation_at.slice(0, 16) : '',
@@ -207,14 +189,22 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
       budgetResetPeriod: k.budget_reset_period || 'monthly',
       rpmLimit: k.rpm_limit ? String(k.rpm_limit) : '',
       tpmLimit: k.tpm_limit ? String(k.tpm_limit) : '',
+      mcpRpmLimit: k.mcp_rpm_limit ? String(k.mcp_rpm_limit) : '',
       maxConcurrent: k.max_concurrent_requests ? String(k.max_concurrent_requests) : '',
+      maxIterations: k.max_iterations ? String(k.max_iterations) : '',
+      sessionBudgetUSD: microsToUsdInput(k.max_budget_per_session_micros),
+      batchTokenLimit: k.batch_enqueued_token_limit ? String(k.batch_enqueued_token_limit) : '',
+      canImpersonate: !!k.can_impersonate,
       minPriorityRank: k.min_priority_rank ? String(k.min_priority_rank) : '',
       allowedRoutingTags: (k.allowed_routing_tags || []).join(', '),
       allowedModels: (k.allowed_models || []).join(', '),
+      allowedDeployments: (k.allowed_deployments || []).join(', '),
       allowedEndpoints: (k.allowed_endpoints || []).join(', '),
-      mcpAllow: initAllow(k.allowed_mcp_servers),
-      a2aAllow: initAllow(k.allowed_a2a_agents),
-      clientAppAllow: initAllow(k.allowed_client_apps),
+      mcpAllow: initAllowState(k.allowed_mcp_servers),
+      mcpToolsAllow: initAllowState(k.allowed_mcp_tools),
+      mcpToolsetsAllow: initAllowState(k.allowed_mcp_toolsets),
+      a2aAllow: initAllowState(k.allowed_a2a_agents),
+      clientAppAllow: initAllowState(k.allowed_client_apps),
     });
     setShowIssueModal(true);
   };
@@ -227,16 +217,23 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     catch (err: any) { setFormError(err?.message || 'Invalid fallbacks'); return; }
 
     const isEdit = !!editingKeyId;
+    const sessM = usdToMicros(kf.sessionBudgetUSD);
     const payload: Partial<VirtualKey> = {
-      org_id: activeOrgId, name: kf.name.trim(), team_id: kf.teamId.trim(), user_id: kf.userId.trim(),
+      org_id: activeOrgId, name: kf.name.trim(), team_id: kf.teamId.trim(), project_id: kf.projectId.trim(), user_id: kf.userId.trim(),
       role: kf.role, key_type: kf.keyType, rotation_interval_sec: Math.max(0, parseInt(kf.rotationIntervalSec, 10) || 0),
       budget_reset_period: kf.budgetResetPeriod, throttle_on_budget_exceeded: kf.throttleOnBudget,
       rpm_limit: kf.rpmLimit ? parseInt(kf.rpmLimit, 10) : 0,
       tpm_limit: kf.tpmLimit ? parseInt(kf.tpmLimit, 10) : 0,
+      mcp_rpm_limit: kf.mcpRpmLimit ? parseInt(kf.mcpRpmLimit, 10) : 0,
       max_concurrent_requests: kf.maxConcurrent ? parseInt(kf.maxConcurrent, 10) : 0,
+      max_iterations: kf.maxIterations ? parseInt(kf.maxIterations, 10) : 0,
+      max_budget_per_session_micros: sessM ?? 0,
+      batch_enqueued_token_limit: kf.batchTokenLimit ? parseInt(kf.batchTokenLimit, 10) : 0,
+      can_impersonate: kf.canImpersonate,
       min_priority_rank: kf.minPriorityRank ? Math.max(0, parseInt(kf.minPriorityRank, 10) || 0) : 0,
-      allowed_routing_tags: kf.allowedRoutingTags.trim() ? parseCSV(kf.allowedRoutingTags) : [],
-      allowed_models: kf.allowedModels.trim() ? parseCSV(kf.allowedModels) : [],
+      allowed_routing_tags: kf.allowedRoutingTags.trim() ? parseCSVList(kf.allowedRoutingTags) : [],
+      allowed_models: kf.allowedModels.trim() ? parseCSVList(kf.allowedModels) : [],
+      allowed_deployments: kf.allowedDeployments.trim() ? parseCSVList(kf.allowedDeployments) : [],
     };
     if (kf.keyRotationAt) { const d = new Date(kf.keyRotationAt); if (!isNaN(d.getTime())) payload.key_rotation_at = d.toISOString(); }
     if (kf.expiresAt) { const d = new Date(kf.expiresAt); if (!isNaN(d.getTime())) payload.expires_at = d.toISOString(); }
@@ -245,10 +242,12 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
     const softM = usdToMicros(kf.softBudgetUSD);
     if (softM !== undefined) payload.soft_budget_micros = softM; else if (isEdit) payload.soft_budget_micros = 0;
     if (Object.keys(fb).length > 0 || isEdit) payload.budget_fallbacks = fb;
-    if (kf.allowedEndpoints.trim() || isEdit) payload.allowed_endpoints = kf.allowedEndpoints.trim() ? parseCSV(kf.allowedEndpoints) : [];
-    const mcpVal = encodeAllow(kf.mcpAllow, isEdit); if (mcpVal !== undefined) payload.allowed_mcp_servers = mcpVal;
-    const a2aVal = encodeAllow(kf.a2aAllow, isEdit); if (a2aVal !== undefined) payload.allowed_a2a_agents = a2aVal;
-    const appVal = encodeAllow(kf.clientAppAllow, isEdit); if (appVal !== undefined) payload.allowed_client_apps = appVal;
+    if (kf.allowedEndpoints.trim() || isEdit) payload.allowed_endpoints = kf.allowedEndpoints.trim() ? parseCSVList(kf.allowedEndpoints) : [];
+    const mcpVal = encodeAllowState(kf.mcpAllow, isEdit); if (mcpVal !== undefined) payload.allowed_mcp_servers = mcpVal;
+    const mcpToolsVal = encodeAllowState(kf.mcpToolsAllow, isEdit); if (mcpToolsVal !== undefined) payload.allowed_mcp_tools = mcpToolsVal;
+    const mcpToolsetsVal = encodeAllowState(kf.mcpToolsetsAllow, isEdit); if (mcpToolsetsVal !== undefined) payload.allowed_mcp_toolsets = mcpToolsetsVal;
+    const a2aVal = encodeAllowState(kf.a2aAllow, isEdit); if (a2aVal !== undefined) payload.allowed_a2a_agents = a2aVal;
+    const appVal = encodeAllowState(kf.clientAppAllow, isEdit); if (appVal !== undefined) payload.allowed_client_apps = appVal;
     issueMutation.mutate(payload);
   };
 
@@ -408,8 +407,9 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
           {inp('Key Name *', 'name', 'text', 'production-backend', false)}
           <Field label="Key Type"><select value={kf.keyType} onChange={(e) => setK('keyType', e.target.value as KeyType)} className={INPUT_CLS}>{KEY_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <Field label="Team"><select value={kf.teamId} onChange={(e) => setK('teamId', e.target.value)} className={INPUT_CLS}><option value="">Org-wide</option>{(teamsData?.data || []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></Field>
+          <Field label="Project"><select value={kf.projectId} onChange={(e) => setK('projectId', e.target.value)} className={INPUT_CLS}><option value="">None</option>{(projectsData?.data || []).filter((p) => !kf.teamId || p.team_id === kf.teamId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
           <Field label="User"><select value={kf.userId} onChange={(e) => setK('userId', e.target.value)} className={INPUT_CLS}><option value="">Unassigned</option>{(usersData?.data || []).map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}</select></Field>
           {inp('Expires At', 'expiresAt', 'datetime-local')}
         </div>
@@ -431,17 +431,31 @@ export const KeysView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onN
           <Field label="Reset"><select value={kf.budgetResetPeriod} onChange={(e) => setK('budgetResetPeriod', e.target.value as BudgetResetPeriod)} className={INPUT_CLS}>{RESET_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}</select></Field>
           <label className="flex items-end pb-2 gap-1.5 text-xs"><input type="checkbox" checked={kf.throttleOnBudget} onChange={(e) => setK('throttleOnBudget', e.target.checked)} />Throttle</label>
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          {inp('RPM', 'rpmLimit', 'number')}{inp('TPM', 'tpmLimit', 'number')}{inp('Conc', 'maxConcurrent', 'number')}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {inp('RPM', 'rpmLimit', 'number')}{inp('TPM', 'tpmLimit', 'number')}{inp('MCP RPM', 'mcpRpmLimit', 'number')}{inp('Conc', 'maxConcurrent', 'number')}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {inp('Models', 'allowedModels', 'text', 'fast, openai/gpt-4o')}{inp('Endpoints', 'allowedEndpoints', 'text', '/v1/*')}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {inp('Session Cap ($)', 'sessionBudgetUSD', 'number', '5.00')}
+          {inp('Max Iters', 'maxIterations', 'number')}
+          {inp('Batch Tok Limit', 'batchTokenLimit', 'number')}
+          <label className="flex items-end pb-2 gap-1.5 text-xs"><input type="checkbox" checked={kf.canImpersonate} onChange={(e) => setK('canImpersonate', e.target.checked)} />Can Impersonate</label>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {inp('Models', 'allowedModels', 'text', 'fast, openai/gpt-4o')}
+          {inp('Deployments', 'allowedDeployments', 'text', 'dep-eu-1')}
+          {inp('Endpoints', 'allowedEndpoints', 'text', '/v1/*')}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {inp('Min Priority Rank', 'minPriorityRank', 'number', '0')}{inp('Allowed Routing Tags', 'allowedRoutingTags', 'text', 'tier:*, eu')}
         </div>
-        {([['MCP', 'mcpAllow', 'mcp_github'], ['A2A', 'a2aAllow', 'agent_1'], ['Apps', 'clientAppAllow', 'cursor']] as const).map(([l, k, ph]) => (
-          <AllowlistField key={l} label={l} state={kf[k]} onChange={(v) => setK(k, v)} placeholder={ph} />
+        {([
+          ['MCP Servers', 'mcpAllow', 'github, jira'],
+          ['MCP Tools', 'mcpToolsAllow', 'github:get_issue, jira:*'],
+          ['MCP Toolsets', 'mcpToolsetsAllow', 'gh-ops'],
+          ['A2A Agents', 'a2aAllow', 'agent_1'],
+          ['Client Apps', 'clientAppAllow', 'cursor'],
+        ] as const).map(([l, k, ph]) => (
+          <Allowlist3StateField key={l} label={l} state={kf[k]} onChange={(v) => setK(k, v)} placeholder={ph} />
         ))}
         <Field label="Fallbacks">
           <textarea rows={2} value={kf.budgetFallbacksText} onChange={(e) => setK('budgetFallbacksText', e.target.value)} placeholder="gpt-4o: gpt-4o-mini" className={MONO_INPUT_CLS} />

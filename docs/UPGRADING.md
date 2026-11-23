@@ -29,10 +29,15 @@ This guide covers safe zero-downtime upgrades and rollback precautions when upgr
    - For local development with HTTP IdPs (such as Docker Keycloak on `http://localhost:8081`), enable `security.network.outbound_ssrf.allow_loopback_http: true` (`GATEWAY_ALLOW_LOOPBACK_HTTP=true`).
 6. **AWS RDS IAM Requires TLS Verification (`sslmode=verify-full` / `verify-ca`)**:
    - When `storage.rds_iam.enabled: true`, every PostgreSQL connection candidate must verify the server certificate. Use `sslmode=verify-full` or `verify-ca`. The gateway rejects unverified TLS or plaintext fallback before dialing.
+7. **Authorization Parity & Hardening (Migration `0041_authorization_parity`)**:
+   - **Mandatory `allowed_routing_tags` & `allowed_deployments` Filtering**: Non-empty `allowed_routing_tags` on a Virtual Key, Project, or Team now unconditionally prune candidate deployments in `FilterPipeline` even when a request omits routing tag headers (returning `403 deployment_restricted` when no active deployments qualify). Explicit `allowed_deployments` allowlists intersect across Key, Project, and Team scopes.
+   - **Unconditional Direct `/mcp` `ToolPolicy` & Positive Tool Allowlists**: Stored `ToolPolicy` rules (`input_policy: blocked`) are now enforced automatically on direct `/mcp`, `/mcp/{serverSlug}`, `/mcp/toolsets/{slug}`, and progressive discovery (`tools/list` hides blocked tools; `tools/call` blocks them with `403 violated_tool_policy`) without requiring a separate `GuardrailBinding`. Keys, Projects, and Teams also support 3-state `allowed_mcp_tools` and `allowed_mcp_toolsets`.
+   - **Unified Access Groups & SSO Group-to-Role Sync**: Access Groups (`/admin/v1/access-groups` and `/admin/v1/model-access-groups`) and `AccessGroupRule` now grant `allowed_mcp_servers`, `allowed_mcp_tools`, and `allowed_a2a_agents` alongside models. SSO providers and OIDC issuers support `claim_mapping.groups`, `group_role_mappings`, `group_team_mappings`, `role_mapping_strategy`, and opt-in `sync_roles_on_login: true` (revoking stale sessions on role change/demotion).
+   - **Custom Post-Auth Authorization & Audit SIEM Sink**: Embedded SDK callers can attach `gateway.WithCustomAuthorizer`; standalone deployments can configure `auth.external_authorizer` (`webhook` or `opa`, fail-closed by default) and `audit.siem_webhook` (async HMAC-signed batch export), both strictly guarded by `internal/security/network`.
 
 ---
 
-## 2. Database Migrations (`0022`–`0040`)
+## 2. Database Migrations (`0022`–`0041`)
 
 Run migrations with the `-migrate-only` flag before rolling gateway pods:
 
@@ -61,6 +66,7 @@ ai-gateway -config /etc/goroute/config.yaml -migrate-only
 | `0038_mcp_runtime_spec` | Creates `mcp_runtime_settings` (`active_protocol_version` defaulting to `'2026-07-28'`, `strict_schema_validation`, `updated_by`, `updated_at`) backing live UI/API MCP specification switching. |
 | `0039_drop_user_credentials` | Drops legacy local password `user_credentials` table cleanly as part of the vendor-neutral OIDC-only migration. |
 | `0040_operator_sessions_oidc_metadata` | Adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for multi-provider logout routing and Vault-encrypted `id_token_hint` RP-Initiated Logout. |
+| `0041_authorization_parity` | Adds `allowed_deployments`, `allowed_mcp_tools`, `allowed_mcp_toolsets` (`virtual_keys`, `teams`, `projects`), Project `allowed_routing_tags`/`allowed_mcp_servers`/`allowed_a2a_agents`, Unified Access Group MCP/A2A grants (`access_group_rules`, `model_access_groups`), and composite `audit_logs` indexes for server-side filtering and cursor pagination. |
 
 All columns added in `0036_production_routing_hardening` are nullable or defaulted idempotently (`ADD COLUMN IF NOT EXISTS`) with safe zero/false defaults:
 - `allow_strategy_override: false` and `debug_routing_headers: false` ensure untrusted request strategy overrides and diagnostic fallback error headers remain off unless explicitly opted in.

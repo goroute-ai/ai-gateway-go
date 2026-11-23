@@ -68,8 +68,8 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 1. RBAC Model Allowlist Check
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, req.Model); err != nil {
+	// 1. RBAC Model Allowlist + Custom Authorizer Check
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, req.Model, r.Method, r.URL.Path); err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusForbidden})
 		domain.WriteHTTPError(w, err)
 		return

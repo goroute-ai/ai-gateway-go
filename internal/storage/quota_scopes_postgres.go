@@ -506,7 +506,7 @@ func (p *PostgresRepository) IncrementTagSpend(ctx context.Context, orgID, tagNa
 	return nil
 }
 
-const modelAccessGroupSelectCols = `id, org_id, name, description, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit, max_concurrent, is_active, COALESCE(metadata, '{}'::jsonb), created_at, updated_at`
+const modelAccessGroupSelectCols = `id, org_id, name, description, max_budget_micros, spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, itpm_limit, otpm_limit, tpd_limit, max_concurrent, COALESCE(allowed_mcp_servers, '{}'), COALESCE(allowed_mcp_tools, '{}'), COALESCE(allowed_a2a_agents, '{}'), is_active, COALESCE(metadata, '{}'::jsonb), created_at, updated_at`
 const modelAccessGroupMemberSelectCols = `id, org_id, group_id, member_type, member_id, created_at`
 
 func scanModelAccessGroup(row rowScanner) (*domain.ModelAccessGroup, error) {
@@ -517,6 +517,7 @@ func scanModelAccessGroup(row rowScanner) (*domain.ModelAccessGroup, error) {
 		&g.ID, &g.OrgID, &g.Name, &g.Description,
 		&g.MaxBudgetMicros, &g.SpentMicros, &period, &g.BudgetResetAt,
 		&g.RPMLimit, &g.TPMLimit, &g.ITPMLimit, &g.OTPMLimit, &g.TPDLimit, &g.MaxConcurrent,
+		&g.AllowedMCPServers, &g.AllowedMCPTools, &g.AllowedA2AAgents,
 		&g.IsActive, &rawMeta, &g.CreatedAt, &g.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -581,15 +582,27 @@ func (p *PostgresRepository) UpsertModelAccessGroup(ctx context.Context, group *
 	if group.ID == "" {
 		group.ID = uuid.NewString()
 	}
+	allowedMCPServers := group.AllowedMCPServers
+	if allowedMCPServers == nil {
+		allowedMCPServers = []string{}
+	}
+	allowedMCPTools := group.AllowedMCPTools
+	if allowedMCPTools == nil {
+		allowedMCPTools = []string{}
+	}
+	allowedA2AAgents := group.AllowedA2AAgents
+	if allowedA2AAgents == nil {
+		allowedA2AAgents = []string{}
+	}
 	const q = `
 		INSERT INTO model_access_groups (
 			id, org_id, name, description, max_budget_micros, spent_micros,
 			budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, itpm_limit,
-			otpm_limit, tpd_limit, max_concurrent, is_active, metadata
+			otpm_limit, tpd_limit, max_concurrent, allowed_mcp_servers, allowed_mcp_tools, allowed_a2a_agents, is_active, metadata
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16
+			$12, $13, $14, $15, $16, $17, $18, $19
 		)
 		ON CONFLICT (org_id, name) DO UPDATE SET
 			description = EXCLUDED.description,
@@ -603,6 +616,9 @@ func (p *PostgresRepository) UpsertModelAccessGroup(ctx context.Context, group *
 			otpm_limit = EXCLUDED.otpm_limit,
 			tpd_limit = EXCLUDED.tpd_limit,
 			max_concurrent = EXCLUDED.max_concurrent,
+			allowed_mcp_servers = EXCLUDED.allowed_mcp_servers,
+			allowed_mcp_tools = EXCLUDED.allowed_mcp_tools,
+			allowed_a2a_agents = EXCLUDED.allowed_a2a_agents,
 			is_active = EXCLUDED.is_active,
 			metadata = EXCLUDED.metadata,
 			updated_at = NOW()
@@ -610,7 +626,7 @@ func (p *PostgresRepository) UpsertModelAccessGroup(ctx context.Context, group *
 	if err := p.pool.QueryRow(ctx, q,
 		group.ID, group.OrgID, group.Name, group.Description, group.MaxBudgetMicros, group.SpentMicros,
 		string(group.BudgetResetPeriod), group.BudgetResetAt, group.RPMLimit, group.TPMLimit, group.ITPMLimit,
-		group.OTPMLimit, group.TPDLimit, group.MaxConcurrent, group.IsActive, marshalStringMapJSON(group.Metadata),
+		group.OTPMLimit, group.TPDLimit, group.MaxConcurrent, allowedMCPServers, allowedMCPTools, allowedA2AAgents, group.IsActive, marshalStringMapJSON(group.Metadata),
 	).Scan(&group.ID, &group.SpentMicros, &group.CreatedAt, &group.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {

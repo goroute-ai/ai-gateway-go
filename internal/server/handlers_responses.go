@@ -115,7 +115,7 @@ func (s *GatewayServer) decodeAndBuildResponsesChatRequest(w http.ResponseWriter
 		})
 		return nil, domain.CanonicalResponseRequest{}, nil, "", false
 	}
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, req.Model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, req.Model, r.Method, r.URL.Path); err != nil {
 		domain.WriteHTTPError(w, err)
 		return nil, domain.CanonicalResponseRequest{}, nil, "", false
 	}

@@ -263,7 +263,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-const teamSelectCols = `id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, COALESCE(default_member_allowed_models, '{}'), COALESCE(team_member_permissions, '{}'), allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), is_active, created_at, updated_at`
+const teamSelectCols = `id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, COALESCE(budget_fallbacks, '{}'::jsonb), spent_micros, budget_reset_period, budget_reset_at, rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros, enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, COALESCE(default_member_allowed_models, '{}'), COALESCE(team_member_permissions, '{}'), allowed_models, COALESCE(allowed_deployments, '{}'), allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents, allowed_client_apps, min_priority_rank, COALESCE(allowed_routing_tags, '{}'), is_active, created_at, updated_at`
 
 func scanTeam(row rowScanner) (*domain.Team, error) {
 	var t domain.Team
@@ -273,7 +273,7 @@ func scanTeam(row rowScanner) (*domain.Team, error) {
 		&t.ID, &t.OrgID, &t.Name, &t.MaxBudgetMicros, &t.TempBudgetIncreaseMicros, &t.TempBudgetExpiresAt, &t.SoftBudgetMicros, &t.ThrottleOnBudgetExceeded, &rawFallbacks, &t.SpentMicros, &period, &t.BudgetResetAt,
 		&t.RPMLimit, &t.TPMLimit, &t.MCPRPMLimit, &t.MaxConcurrentRequests, &t.BatchEnqueuedTokenLimit, &t.MaxIterations, &t.MaxBudgetPerSessionMicros,
 		&t.EnforceGuaranteedThroughput, &t.DefaultMemberMaxBudgetMicros, &t.DefaultMemberRPMLimit, &t.DefaultMemberTPMLimit, &t.DefaultMemberAllowedModels, &t.TeamMemberPermissions,
-		&t.AllowedModels, &t.AllowedMCPServers, &t.AllowedA2AAgents, &t.AllowedClientApps,
+		&t.AllowedModels, &t.AllowedDeployments, &t.AllowedMCPServers, &t.AllowedMCPTools, &t.AllowedMCPToolsets, &t.AllowedA2AAgents, &t.AllowedClientApps,
 		&t.MinPriorityRank, &t.AllowedRoutingTags,
 		&t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
@@ -292,6 +292,10 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 	allowedModels := team.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
+	}
+	allowedDeployments := team.AllowedDeployments
+	if allowedDeployments == nil {
+		allowedDeployments = []string{}
 	}
 	defaultMemberAllowedModels := team.DefaultMemberAllowedModels
 	if defaultMemberAllowedModels == nil {
@@ -313,13 +317,13 @@ func (p *PostgresRepository) CreateTeam(ctx context.Context, team *domain.Team) 
 			id, org_id, name, max_budget_micros, temp_budget_increase_micros, temp_budget_expires_at, soft_budget_micros, throttle_on_budget_exceeded, budget_fallbacks, spent_micros, budget_reset_period, budget_reset_at,
 			rpm_limit, tpm_limit, mcp_rpm_limit, max_concurrent_requests, batch_enqueued_token_limit, max_iterations, max_budget_per_session_micros,
 			enforce_guaranteed_throughput, default_member_max_budget_micros, default_member_rpm_limit, default_member_tpm_limit, default_member_allowed_models, team_member_permissions,
-			allowed_models, allowed_mcp_servers, allowed_a2a_agents, allowed_client_apps, min_priority_rank, allowed_routing_tags, is_active
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`
+			allowed_models, allowed_deployments, allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents, allowed_client_apps, min_priority_rank, allowed_routing_tags, is_active
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`
 	if _, err := p.pool.Exec(ctx, q,
 		team.ID, team.OrgID, team.Name, team.MaxBudgetMicros, team.TempBudgetIncreaseMicros, team.TempBudgetExpiresAt, team.SoftBudgetMicros, team.ThrottleOnBudgetExceeded, marshalBudgetFallbacks(team.BudgetFallbacks), team.SpentMicros, string(team.BudgetResetPeriod), team.BudgetResetAt,
 		team.RPMLimit, team.TPMLimit, team.MCPRPMLimit, team.MaxConcurrentRequests, team.BatchEnqueuedTokenLimit, team.MaxIterations, team.MaxBudgetPerSessionMicros,
 		team.EnforceGuaranteedThroughput, team.DefaultMemberMaxBudgetMicros, team.DefaultMemberRPMLimit, team.DefaultMemberTPMLimit, defaultMemberAllowedModels, teamMemberPermissions,
-		allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
+		allowedModels, allowedDeployments, team.AllowedMCPServers, team.AllowedMCPTools, team.AllowedMCPToolsets, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
 	); err != nil {
 		return err
 	}
@@ -334,6 +338,10 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 	allowedModels := team.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
+	}
+	allowedDeployments := team.AllowedDeployments
+	if allowedDeployments == nil {
+		allowedDeployments = []string{}
 	}
 	defaultMemberAllowedModels := team.DefaultMemberAllowedModels
 	if defaultMemberAllowedModels == nil {
@@ -355,7 +363,7 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 			rpm_limit = $12, tpm_limit = $13, mcp_rpm_limit = $14, max_concurrent_requests = $15, batch_enqueued_token_limit = $16,
 			max_iterations = $17, max_budget_per_session_micros = $18,
 			enforce_guaranteed_throughput = $19, default_member_max_budget_micros = $20, default_member_rpm_limit = $21, default_member_tpm_limit = $22, default_member_allowed_models = $23, team_member_permissions = $24,
-			allowed_models = $25, allowed_mcp_servers = $26, allowed_a2a_agents = $27, allowed_client_apps = $28, min_priority_rank = $29, allowed_routing_tags = $30, is_active = $31,
+			allowed_models = $25, allowed_deployments = $26, allowed_mcp_servers = $27, allowed_mcp_tools = $28, allowed_mcp_toolsets = $29, allowed_a2a_agents = $30, allowed_client_apps = $31, min_priority_rank = $32, allowed_routing_tags = $33, is_active = $34,
 			updated_at = NOW()
 		WHERE id = $1`
 	if p.pool != nil {
@@ -366,7 +374,7 @@ func (p *PostgresRepository) UpdateTeam(ctx context.Context, team *domain.Team) 
 			team.RPMLimit, team.TPMLimit, team.MCPRPMLimit, team.MaxConcurrentRequests, team.BatchEnqueuedTokenLimit,
 			team.MaxIterations, team.MaxBudgetPerSessionMicros,
 			team.EnforceGuaranteedThroughput, team.DefaultMemberMaxBudgetMicros, team.DefaultMemberRPMLimit, team.DefaultMemberTPMLimit, defaultMemberAllowedModels, teamMemberPermissions,
-			allowedModels, team.AllowedMCPServers, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
+			allowedModels, allowedDeployments, team.AllowedMCPServers, team.AllowedMCPTools, team.AllowedMCPToolsets, team.AllowedA2AAgents, team.AllowedClientApps, team.MinPriorityRank, allowedRoutingTags, team.IsActive,
 		)
 		if err != nil {
 			return err
@@ -926,20 +934,28 @@ func (p *PostgresRepository) RotateKEKsTransactionally(ctx context.Context, rewr
 	return summary, nil
 }
 
-const projectSelectCols = `id, org_id, team_id, name, description, max_budget_micros, spent_micros, rpm_limit, tpm_limit, COALESCE(allowed_models, '{}'), enforce_project_model_quota, is_active, created_at, updated_at`
+const projectSelectCols = `id, org_id, team_id, name, description, max_budget_micros, spent_micros, rpm_limit, tpm_limit, COALESCE(allowed_models, '{}'), COALESCE(allowed_deployments, '{}'), COALESCE(allowed_routing_tags, '{}'), allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents, enforce_project_model_quota, is_active, created_at, updated_at`
 
 func scanProject(row rowScanner) (*domain.Project, error) {
 	var pr domain.Project
 	if err := row.Scan(
 		&pr.ID, &pr.OrgID, &pr.TeamID, &pr.Name, &pr.Description,
 		&pr.MaxBudgetMicros, &pr.SpentMicros, &pr.RPMLimit, &pr.TPMLimit,
-		&pr.AllowedModels, &pr.EnforceProjectModelQuota, &pr.IsActive,
+		&pr.AllowedModels, &pr.AllowedDeployments, &pr.AllowedRoutingTags,
+		&pr.AllowedMCPServers, &pr.AllowedMCPTools, &pr.AllowedMCPToolsets, &pr.AllowedA2AAgents,
+		&pr.EnforceProjectModelQuota, &pr.IsActive,
 		&pr.CreatedAt, &pr.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	if pr.AllowedModels == nil {
 		pr.AllowedModels = []string{}
+	}
+	if pr.AllowedDeployments == nil {
+		pr.AllowedDeployments = []string{}
+	}
+	if pr.AllowedRoutingTags == nil {
+		pr.AllowedRoutingTags = []string{}
 	}
 	return &pr, nil
 }
@@ -958,13 +974,17 @@ func (p *PostgresRepository) CreateProject(ctx context.Context, pr *domain.Proje
 		INSERT INTO projects (
 			id, org_id, team_id, name, description,
 			max_budget_micros, spent_micros, rpm_limit, tpm_limit,
-			allowed_models, enforce_project_model_quota, is_active
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			allowed_models, allowed_deployments, allowed_routing_tags,
+			allowed_mcp_servers, allowed_mcp_tools, allowed_mcp_toolsets, allowed_a2a_agents,
+			enforce_project_model_quota, is_active
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING created_at, updated_at`
 	if err := p.pool.QueryRow(ctx, q,
 		pr.ID, pr.OrgID, pr.TeamID, pr.Name, pr.Description,
 		pr.MaxBudgetMicros, pr.SpentMicros, pr.RPMLimit, pr.TPMLimit,
-		pr.AllowedModels, pr.EnforceProjectModelQuota, pr.IsActive,
+		pr.AllowedModels, pr.AllowedDeployments, pr.AllowedRoutingTags,
+		pr.AllowedMCPServers, pr.AllowedMCPTools, pr.AllowedMCPToolsets, pr.AllowedA2AAgents,
+		pr.EnforceProjectModelQuota, pr.IsActive,
 	).Scan(&pr.CreatedAt, &pr.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -1051,15 +1071,23 @@ func (p *PostgresRepository) UpdateProject(ctx context.Context, pr *domain.Proje
 			rpm_limit = $7,
 			tpm_limit = $8,
 			allowed_models = $9,
-			enforce_project_model_quota = $10,
-			is_active = $11,
+			allowed_deployments = $10,
+			allowed_routing_tags = $11,
+			allowed_mcp_servers = $12,
+			allowed_mcp_tools = $13,
+			allowed_mcp_toolsets = $14,
+			allowed_a2a_agents = $15,
+			enforce_project_model_quota = $16,
+			is_active = $17,
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING created_at, updated_at`
 	if err := p.pool.QueryRow(ctx, q,
 		pr.ID, pr.TeamID, pr.Name, pr.Description,
 		pr.MaxBudgetMicros, pr.SpentMicros, pr.RPMLimit, pr.TPMLimit,
-		pr.AllowedModels, pr.EnforceProjectModelQuota, pr.IsActive,
+		pr.AllowedModels, pr.AllowedDeployments, pr.AllowedRoutingTags,
+		pr.AllowedMCPServers, pr.AllowedMCPTools, pr.AllowedMCPToolsets, pr.AllowedA2AAgents,
+		pr.EnforceProjectModelQuota, pr.IsActive,
 	).Scan(&pr.CreatedAt, &pr.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("project %q %w", pr.ID, ErrNotFound)

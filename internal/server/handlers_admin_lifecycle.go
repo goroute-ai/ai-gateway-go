@@ -242,7 +242,10 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 		MaxIterations                *int                      `json:"max_iterations,omitempty"`
 		MaxBudgetPerSessionMicros    *int64                    `json:"max_budget_per_session_micros,omitempty"`
 		AllowedModels                optionalStringSlice       `json:"allowed_models"`
+		AllowedDeployments           optionalStringSlice       `json:"allowed_deployments"`
 		AllowedMCPServers            optionalStringSlice       `json:"allowed_mcp_servers"`
+		AllowedMCPTools              optionalStringSlice       `json:"allowed_mcp_tools"`
+		AllowedMCPToolsets           optionalStringSlice       `json:"allowed_mcp_toolsets"`
 		AllowedA2AAgents             optionalStringSlice       `json:"allowed_a2a_agents"`
 		AllowedClientApps            optionalStringSlice       `json:"allowed_client_apps"`
 		MinPriorityRank              *int                      `json:"min_priority_rank,omitempty"`
@@ -398,8 +401,17 @@ func (s *GatewayServer) handleAdminUpdateTeam(w http.ResponseWriter, r *http.Req
 	if req.AllowedModels.Set {
 		updated.AllowedModels = req.AllowedModels.Value
 	}
+	if req.AllowedDeployments.Set {
+		updated.AllowedDeployments = req.AllowedDeployments.Value
+	}
 	if req.AllowedMCPServers.Set {
 		updated.AllowedMCPServers = req.AllowedMCPServers.Value
+	}
+	if req.AllowedMCPTools.Set {
+		updated.AllowedMCPTools = req.AllowedMCPTools.Value
+	}
+	if req.AllowedMCPToolsets.Set {
+		updated.AllowedMCPToolsets = req.AllowedMCPToolsets.Value
 	}
 	if req.AllowedA2AAgents.Set {
 		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value
@@ -918,8 +930,11 @@ type adminUpdateKeyRequest struct {
 	Role                      *domain.Role              `json:"role,omitempty"`
 	KeyType                   *domain.KeyType           `json:"key_type,omitempty"`
 	AllowedModels             optionalStringSlice       `json:"allowed_models"`
+	AllowedDeployments        optionalStringSlice       `json:"allowed_deployments"`
 	AllowedEndpoints          optionalStringSlice       `json:"allowed_endpoints"`
 	AllowedMCPServers         optionalStringSlice       `json:"allowed_mcp_servers"`
+	AllowedMCPTools           optionalStringSlice       `json:"allowed_mcp_tools"`
+	AllowedMCPToolsets        optionalStringSlice       `json:"allowed_mcp_toolsets"`
 	AllowedA2AAgents          optionalStringSlice       `json:"allowed_a2a_agents"`
 	AllowedClientApps         optionalStringSlice       `json:"allowed_client_apps"`
 	MaxBudgetMicros           *int64                    `json:"max_budget_micros,omitempty"`
@@ -1089,6 +1104,9 @@ func (s *GatewayServer) applyVirtualKeyAccessAndLimitsPatch(
 	if req.AllowedModels.Set {
 		updated.AllowedModels = req.AllowedModels.Value
 	}
+	if req.AllowedDeployments.Set {
+		updated.AllowedDeployments = req.AllowedDeployments.Value
+	}
 	if req.AllowedEndpoints.Set {
 		if op.Role == domain.OperatorRoleTeamAdmin && hasDisallowedTeamAdminEndpoint(req.AllowedEndpoints.Value) {
 			domain.WriteHTTPError(w, &domain.GatewayError{
@@ -1103,6 +1121,12 @@ func (s *GatewayServer) applyVirtualKeyAccessAndLimitsPatch(
 	}
 	if req.AllowedMCPServers.Set {
 		updated.AllowedMCPServers = req.AllowedMCPServers.Value
+	}
+	if req.AllowedMCPTools.Set {
+		updated.AllowedMCPTools = req.AllowedMCPTools.Value
+	}
+	if req.AllowedMCPToolsets.Set {
+		updated.AllowedMCPToolsets = req.AllowedMCPToolsets.Value
 	}
 	if req.AllowedA2AAgents.Set {
 		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value

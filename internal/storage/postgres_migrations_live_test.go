@@ -560,7 +560,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0040) down through 0022.
+	// Exercise reverse down migrations from latest (0041) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -573,8 +573,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 19 {
-		t.Fatalf("expected 19 down migrations for 0022..0040, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 20 {
+		t.Fatalf("expected 20 down migrations for 0022..0041, got %d: %v", len(waveDowns), waveDowns)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
@@ -615,6 +615,13 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 			WHERE table_schema = 'public' AND table_name = 'jwt_key_mappings'
 		)`).Scan(&jwtMapExists); err != nil || !jwtMapExists {
 		t.Fatalf("expected jwt_key_mappings restored after reapply (exists=%v, err=%v)", jwtMapExists, err)
+	}
+	var auditIdxExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_audit_logs_org_created_id'
+		)`).Scan(&auditIdxExists); err != nil || !auditIdxExists {
+		t.Fatalf("expected idx_audit_logs_org_created_id restored after 0041 reapply (exists=%v, err=%v)", auditIdxExists, err)
 	}
 
 	// Verify live Postgres RotateKEKsTransactionally re-wraps virtual_keys.staged_key_dek atomically.

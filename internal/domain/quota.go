@@ -460,6 +460,9 @@ type ModelAccessGroup struct {
 	OTPMLimit         int                       `json:"otpm_limit"`
 	TPDLimit          int64                     `json:"tpd_limit"`
 	MaxConcurrent     int                       `json:"max_concurrent"`
+	AllowedMCPServers []string                  `json:"allowed_mcp_servers,omitempty"`
+	AllowedMCPTools   []string                  `json:"allowed_mcp_tools,omitempty"`
+	AllowedA2AAgents  []string                  `json:"allowed_a2a_agents,omitempty"`
 	IsActive          bool                      `json:"is_active"`
 	Metadata          map[string]string         `json:"metadata,omitempty"`
 	Members           []*ModelAccessGroupMember `json:"members,omitempty"`
@@ -479,6 +482,15 @@ func (g *ModelAccessGroup) Clone() *ModelAccessGroup {
 	}
 	if len(g.Metadata) > 0 {
 		cp.Metadata = maps.Clone(g.Metadata)
+	}
+	if len(g.AllowedMCPServers) > 0 {
+		cp.AllowedMCPServers = slices.Clone(g.AllowedMCPServers)
+	}
+	if len(g.AllowedMCPTools) > 0 {
+		cp.AllowedMCPTools = slices.Clone(g.AllowedMCPTools)
+	}
+	if len(g.AllowedA2AAgents) > 0 {
+		cp.AllowedA2AAgents = slices.Clone(g.AllowedA2AAgents)
 	}
 	if len(g.Members) > 0 {
 		cp.Members = make([]*ModelAccessGroupMember, len(g.Members))

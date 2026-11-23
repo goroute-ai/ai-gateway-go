@@ -80,6 +80,7 @@ type JWTClaims struct {
 	Email         string         `json:"email,omitempty"`
 	EmailVerified bool           `json:"email_verified,omitempty"`
 	Role          string         `json:"role,omitempty"`
+	Groups        []string       `json:"groups,omitempty"`
 	OrgID         string         `json:"org_id,omitempty"`
 	TeamIDs       []string       `json:"team_ids,omitempty"`
 	EndUserID     string         `json:"end_user_id,omitempty"`
@@ -94,6 +95,7 @@ type OIDCClaimMapping struct {
 	OrgID   string
 	TeamIDs string
 	Role    string
+	Groups  string
 	EndUser string
 }
 
@@ -108,6 +110,9 @@ type OIDCIssuerConfig struct {
 	AllowUnverifiedEmail      bool
 	AllowPrivilegedRoleClaims bool
 	ClaimMapping              OIDCClaimMapping
+	GroupRoleMappings         []GroupRoleMappingRule
+	RoleMappingStrategy       string
+	GroupTeamMappings         map[string]string
 	AutoRegister              bool
 	DefaultOrgID              string
 	DefaultTeamID             string
@@ -183,6 +188,9 @@ type OIDCVerifier struct {
 	allowUnverifiedEmail      bool
 	allowPrivilegedRoleClaims bool
 	claimMapping              OIDCClaimMapping
+	groupRoleMappings         []GroupRoleMappingRule
+	roleMappingStrategy       string
+	groupTeamMappings         map[string]string
 	autoRegister              bool
 	defaultOrgID              string
 	defaultTeamID             string
@@ -304,6 +312,9 @@ func newOIDCVerifier(cfg OIDCIssuerConfig, defaultAttempts int) *OIDCVerifier {
 		allowUnverifiedEmail:      cfg.AllowUnverifiedEmail,
 		allowPrivilegedRoleClaims: cfg.AllowPrivilegedRoleClaims,
 		claimMapping:              cfg.ClaimMapping,
+		groupRoleMappings:         slices.Clone(cfg.GroupRoleMappings),
+		roleMappingStrategy:       strings.TrimSpace(cfg.RoleMappingStrategy),
+		groupTeamMappings:         cloneStringMap(cfg.GroupTeamMappings),
 		autoRegister:              cfg.AutoRegister,
 		defaultOrgID:              strings.TrimSpace(cfg.DefaultOrgID),
 		defaultTeamID:             strings.TrimSpace(cfg.DefaultTeamID),
@@ -340,6 +351,41 @@ func (o *OIDCVerifier) currentTime() time.Time {
 		return time.Now()
 	}
 	return fn()
+}
+
+// GroupRoleMappings returns the configured IdP group-to-GoRoute role mappings.
+func (o *OIDCVerifier) GroupRoleMappings() []GroupRoleMappingRule {
+	if o == nil {
+		return nil
+	}
+	return slices.Clone(o.groupRoleMappings)
+}
+
+// RoleMappingStrategy returns the configured role mapping precedence strategy.
+func (o *OIDCVerifier) RoleMappingStrategy() string {
+	if o == nil {
+		return ""
+	}
+	return o.roleMappingStrategy
+}
+
+// GroupTeamMappings returns the configured IdP group-to-team mappings.
+func (o *OIDCVerifier) GroupTeamMappings() map[string]string {
+	if o == nil {
+		return nil
+	}
+	return cloneStringMap(o.groupTeamMappings)
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // Enabled reports whether this issuer verifier has a static JWKS URL or OIDC discovery URL configured.
@@ -790,6 +836,14 @@ func (o *OIDCVerifier) applyClaimMappings(claims *JWTClaims, raw map[string]any)
 		claims.Role = v
 	} else if o.defaultRole != "" {
 		claims.Role = o.defaultRole
+	}
+
+	groupsPath := strings.TrimSpace(o.claimMapping.Groups)
+	if groupsPath == "" {
+		groupsPath = "groups"
+	}
+	if v, ok := extractStringSliceClaim(raw, groupsPath); ok {
+		claims.Groups = v
 	}
 
 	if endUserPath := strings.TrimSpace(o.claimMapping.EndUser); endUserPath != "" {

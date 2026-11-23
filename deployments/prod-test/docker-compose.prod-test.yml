@@ -92,6 +92,23 @@ services:
         ipv4_address: 172.30.30.10
     command: ["caddy", "respond", "--listen", ":8080", "--body", "SSRF_TRAP_REACHED", "--status", "200"]
 
+  prod-test-fixtures:
+    build:
+      context: ../..
+      dockerfile: deployments/prod-test/Dockerfile.fixtures
+    image: goroute-prod-test-fixtures:prod-test
+    networks:
+      - edge_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      FIXTURES_ADDR: ":8080"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
+
   gateway-migrate:
     build:
       context: ../..
@@ -108,7 +125,7 @@ services:
       - /tmp
     command: ["-config", "/etc/goroute/config.yaml", "-migrate-only"]
     environment:
-      SSL_CERT_FILE: /certs/ca.crt
+      SSL_CERT_FILE: /certs/ca-bundle.crt
       GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
       GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
       GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
@@ -117,6 +134,8 @@ services:
       KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
       GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
       GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
     volumes:
       - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
       - ../../.tmp/prod-test-certs:/certs:ro
@@ -134,6 +153,7 @@ services:
     extra_hosts:
       - "gateway.prod.test:172.30.10.200"
       - "auth.prod.test:172.30.10.200"
+      - "fixtures.prod.test:172.30.10.200"
     user: "65532:65532"
     read_only: true
     cap_drop: ["ALL"]
@@ -143,7 +163,7 @@ services:
       - /tmp
     command: ["-config", "/etc/goroute/config.yaml"]
     environment:
-      SSL_CERT_FILE: /certs/ca.crt
+      SSL_CERT_FILE: /certs/ca-bundle.crt
       GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
       GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
       GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
@@ -152,6 +172,8 @@ services:
       KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
       GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
       GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
     volumes:
       - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
       - ../../.tmp/prod-test-certs:/certs:ro
@@ -174,6 +196,7 @@ services:
     extra_hosts:
       - "gateway.prod.test:172.30.10.200"
       - "auth.prod.test:172.30.10.200"
+      - "fixtures.prod.test:172.30.10.200"
     user: "65532:65532"
     read_only: true
     cap_drop: ["ALL"]
@@ -183,7 +206,7 @@ services:
       - /tmp
     command: ["-config", "/etc/goroute/config.yaml"]
     environment:
-      SSL_CERT_FILE: /certs/ca.crt
+      SSL_CERT_FILE: /certs/ca-bundle.crt
       GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-test-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
       GATEWAY_REDIS_PASS: "prod-test-redis-pass-2026"
       GATEWAY_MASTER_ADMIN_KEY: "sk-gw-prod-test-master-admin-key-2026-secure"
@@ -192,6 +215,8 @@ services:
       KEYCLOAK_SSO_SECRET: "goroute-prod-oidc-secret-2026"
       GATEWAY_INTROSPECTION_CLIENT_ID: "goroute-gateway"
       GATEWAY_INTROSPECTION_CLIENT_SECRET: "goroute-prod-oidc-secret-2026"
+      PROD_AUTHZ_HMAC_SECRET: "prod-test-authz-hmac-secret-2026"
+      PROD_SIEM_HMAC_SECRET: "prod-test-siem-hmac-secret-2026"
     volumes:
       - ./config.prod-test.yaml:/etc/goroute/config.yaml:ro
       - ../../.tmp/prod-test-certs:/certs:ro

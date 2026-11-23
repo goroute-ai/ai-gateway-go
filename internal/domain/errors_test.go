@@ -56,4 +56,25 @@ func TestWriteAnthropicHTTPError(t *testing.T) {
 			t.Fatalf("unexpected envelope: %+v", body)
 		}
 	})
+
+	t.Run("wrapped GatewayError preserves HTTP status and code", func(t *testing.T) {
+		wrapped := errors.Join(errors.New("outer context"), &GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       ErrorTypePermission,
+			Code:       "deployment_restricted",
+			Message:    "tag mismatch",
+		})
+		rec := httptest.NewRecorder()
+		WriteHTTPError(rec, wrapped)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d (%s)", rec.Code, rec.Body.String())
+		}
+		var env OpenAIErrorEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if env.Error == nil || env.Error.Code != "deployment_restricted" {
+			t.Fatalf("unexpected error payload: %+v", env)
+		}
+	})
 }

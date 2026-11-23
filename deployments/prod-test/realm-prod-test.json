@@ -99,6 +99,19 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "goroute-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
         }
       ]
     },
@@ -151,6 +164,19 @@
             "claim.name": "role",
             "jsonType.label": "String",
             "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "goroute-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
           }
         }
       ]
@@ -298,6 +324,43 @@
       "credentials": [
         { "type": "password", "value": "ProdUnverified!2026", "temporary": false }
       ]
+    },
+    {
+      "username": "syncuser@goroute.local",
+      "email": "syncuser@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "SyncUser",
+      "attributes": {
+        "org_id": ["org_default"]
+      },
+      "groups": ["goroute-org-admins", "goroute-team-alpha"],
+      "credentials": [
+        { "type": "password", "value": "ProdSyncUser!2026", "temporary": false }
+      ]
+    },
+    {
+      "username": "privcap@goroute.local",
+      "email": "privcap@goroute.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Prod",
+      "lastName": "PrivCap",
+      "attributes": {
+        "org_id": ["org_default"]
+      },
+      "groups": ["goroute-platform-admins"],
+      "credentials": [
+        { "type": "password", "value": "ProdPrivCap!2026", "temporary": false }
+      ]
     }
+  ],
+  "groups": [
+    { "name": "goroute-platform-admins" },
+    { "name": "goroute-org-admins" },
+    { "name": "goroute-org-viewers" },
+    { "name": "goroute-developers" },
+    { "name": "goroute-team-alpha" }
   ]
 }

@@ -434,7 +434,7 @@ func (s *GatewayServer) handleRealtimeWebSocket(w http.ResponseWriter, r *http.R
 		model = "gpt-4o-realtime-preview"
 	}
 
-	if err := s.rbac.AuthorizeRequestedModel(idCtx, model); err != nil {
+	if err := s.authorizeInferenceModel(r.Context(), idCtx, model, r.Method, r.URL.Path); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
 	}
